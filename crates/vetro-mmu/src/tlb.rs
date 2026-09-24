@@ -8,6 +8,8 @@
 //! AF e address size non entrano mai, come richiede l'architettura); i
 //! permessi si controllano a ogni accesso dai bit AP/XN salvati.
 
+pub use vetro_cpu::sys::TlbiOp;
+
 use crate::regs::MmuRegs;
 use crate::walk::{Perms, Translation};
 
@@ -65,54 +67,6 @@ impl TlbEntry {
             ng: !self.global,
             asid: self.asid,
         }
-    }
-}
-
-/// Istruzioni TLBI del regime EL1&0 (SYS #0, C8, CRm, #op2).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TlbiOp {
-    Vmalle1,
-    Vae1,
-    Aside1,
-    Vaae1,
-    Vale1,
-    Vaale1,
-    Vmalle1is,
-    Vae1is,
-    Aside1is,
-    Vaae1is,
-    Vale1is,
-    Vaale1is,
-}
-
-impl TlbiOp {
-    /// Riconosce una TLBI dai campi di SYS (op0 = 1 implicito).
-    pub fn from_sys(op1: u32, crn: u32, crm: u32, op2: u32) -> Option<TlbiOp> {
-        if op1 != 0 || crn != 8 {
-            return None;
-        }
-        use TlbiOp::*;
-        Some(match (crm, op2) {
-            (3, 0) => Vmalle1is,
-            (3, 1) => Vae1is,
-            (3, 2) => Aside1is,
-            (3, 3) => Vaae1is,
-            (3, 5) => Vale1is,
-            (3, 7) => Vaale1is,
-            (7, 0) => Vmalle1,
-            (7, 1) => Vae1,
-            (7, 2) => Aside1,
-            (7, 3) => Vaae1,
-            (7, 5) => Vale1,
-            (7, 7) => Vaale1,
-            _ => return None,
-        })
-    }
-
-    /// Variante Inner Shareable: il sistema la applica al TLB di ogni core.
-    pub fn is_broadcast(self) -> bool {
-        use TlbiOp::*;
-        matches!(self, Vmalle1is | Vae1is | Aside1is | Vaae1is | Vale1is | Vaale1is)
     }
 }
 

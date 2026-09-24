@@ -11,3 +11,7 @@ workspace = true
 
 [dependencies]
 vetro-diff = { path = "../diff" }
+
+[dev-dependencies]
+vetro-cpu = { path = "../../crates/vetro-cpu" }
+vetro-mmu = { path = "../../crates/vetro-mmu" }

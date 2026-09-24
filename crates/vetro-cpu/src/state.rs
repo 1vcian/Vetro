@@ -1,4 +1,5 @@
-//! Stato architetturale visibile a EL0.
+//! Stato architetturale: registri di EL0 e, per la modalità sistema,
+//! [`SysState`](crate::sys::SysState).
 
 /// Monitor esclusivo locale: impostato da LDXR/LDAXR/LDXP, consumato da
 /// STXR/STLXR/STXP (vedi docs/specs/cpu.md, "Esclusive").
@@ -13,7 +14,8 @@ pub struct Monitor {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Cpu {
     pub x: [u64; 31],
-    /// SP_EL0.
+    /// Stack pointer in uso: SP_EL0 in modalità utente; in modalità sistema
+    /// SP_EL0 o SP_EL1 secondo PSTATE (l'altro sta in `sys.sp_el`).
     pub sp: u64,
     pub pc: u64,
     /// Flag N, Z, C, V nei bit 31:28 (stesso formato di `MRS Xt, NZCV`).
@@ -25,6 +27,8 @@ pub struct Cpu {
     pub v: [u128; 32],
     pub fpcr: u32,
     pub fpsr: u32,
+    /// PSTATE oltre NZCV e registri di EL1 (modalità sistema).
+    pub sys: crate::sys::SysState,
 }
 
 /// Bit scrivibili di FPCR su Cortex-A53: AHP, DN, FZ, RMode. Le abilitazioni

@@ -29,6 +29,9 @@ pub enum FaultKind {
     AccessFlag(u8),
     /// Accesso negato da AP, UXN, PXN o WXN.
     Permission(u8),
+    /// Accesso ai dati non allineato su memoria Device (o DC ZVA su Device),
+    /// controllato dopo il walk e prima dei permessi.
+    Alignment,
     /// Abort esterno sincrono leggendo un descrittore.
     ExternalWalk(u8, BusError),
     /// Abort esterno sincrono sull'accesso finale (indirizzo fisico dove non
@@ -49,6 +52,7 @@ impl FaultKind {
             FaultKind::Translation(l) => 0b00_0100 | l,
             FaultKind::AccessFlag(l) => 0b00_1000 | l,
             FaultKind::Permission(l) => 0b00_1100 | l,
+            FaultKind::Alignment => 0b10_0001,
             FaultKind::External(_) => 0b01_0000,
             FaultKind::ExternalWalk(l, _) => 0b01_0100 | l,
             FaultKind::Unimplemented(_) => return None,
@@ -63,13 +67,13 @@ impl FaultKind {
             | FaultKind::AccessFlag(l)
             | FaultKind::Permission(l)
             | FaultKind::ExternalWalk(l, _) => Some(l),
-            FaultKind::External(_) | FaultKind::Unimplemented(_) => None,
+            FaultKind::External(_) | FaultKind::Alignment | FaultKind::Unimplemented(_) => None,
         }
     }
 
     /// Bit EA (External abort type). Come QEMU: 1 per uno slave error, 0 per
     /// un decode error e per i fault che non sono abort esterni.
-    fn ea(self) -> bool {
+    pub fn ea(self) -> bool {
         matches!(self, FaultKind::External(BusError::Slave) | FaultKind::ExternalWalk(_, BusError::Slave))
     }
 }
