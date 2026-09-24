@@ -7,7 +7,7 @@ set -eu
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 cat > "$tmp/in.s"
-clang --target=aarch64-linux-gnu -march=armv8-a+crc -c "$tmp/in.s" -o "$tmp/in.o"
+clang --target=aarch64-linux-gnu -march=armv8-a+crc+crypto -c "$tmp/in.s" -o "$tmp/in.o"
 OBJDUMP="$(command -v llvm-objdump || xcrun --find llvm-objdump)"
 # Una rilocazione lascerebbe un campo a zero nella codifica: meglio fallire.
 if "$OBJDUMP" -r "$tmp/in.o" | grep -q "R_AARCH64"; then

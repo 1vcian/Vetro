@@ -5,12 +5,14 @@
 //! sottomoduli. Tutto ciò che è valido su ARMv8.0/Cortex-A53 ma non ancora
 //! scritto resta `Unimplemented`.
 
+mod crypto;
 pub mod fp;
 mod fpinsn;
 mod int;
 mod ldst;
 pub mod vreg;
 
+pub use crypto::CryptoInsn;
 pub use fpinsn::FpInsn;
 pub use int::IntInsn;
 pub use ldst::VecMemInsn;
@@ -23,6 +25,7 @@ pub enum SimdInsn {
     Mem(VecMemInsn),
     Int(IntInsn),
     Fp(FpInsn),
+    Crypto(CryptoInsn),
 }
 
 /// Decodifica un load/store con V=1 (chiamato dal decoder principale).
@@ -51,6 +54,10 @@ pub(crate) fn exec_mem<M: crate::mem::Memory>(
 
 pub(crate) fn exec_int(cpu: &mut crate::state::Cpu, i: IntInsn) {
     int::exec(cpu, i)
+}
+
+pub(crate) fn exec_crypto(cpu: &mut crate::state::Cpu, i: CryptoInsn) {
+    crypto::exec(cpu, i)
 }
 
 pub(crate) fn exec_fp(cpu: &mut crate::state::Cpu, i: FpInsn) {

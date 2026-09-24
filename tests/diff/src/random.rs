@@ -87,6 +87,9 @@ pub const SIMD_CLASSES: &[(u32, u32, &str)] = &[
     (0xBF20_8C00, 0x0E00_0000, "simd tbl"),
     (0xBF20_8C00, 0x0E00_0800, "simd permute"),
     (0xBF20_8400, 0x2E00_0000, "simd ext"),
+    (0xFF3E_0C00, 0x4E28_0800, "crypto aes"),
+    (0xFF20_8C00, 0x5E00_0000, "crypto sha 3-reg"),
+    (0xFF3E_0C00, 0x5E28_0800, "crypto sha 2-reg"),
 ];
 
 const WEIGHTS: &[(Class, u64)] = &[
@@ -633,17 +636,21 @@ pub fn generate(seed: u64, body_len: usize) -> Case {
 /// speciali (NaN, infiniti, zeri con segno, denormali): per le regole fini
 /// della virgola mobile, che i programmi lunghi osservano di rado.
 pub fn generate_fp_focused(seed: u64) -> Case {
+    generate_focused(seed, |name| {
+        name.starts_with("fp") || name.contains("three same") || name.contains("two misc")
+    })
+}
+
+/// Programma breve di istruzioni SIMD/FP scelte (3 volte su 4) tra le classi
+/// di `SIMD_CLASSES` il cui nome soddisfa `pick`.
+pub fn generate_focused(seed: u64, pick: impl Fn(&str) -> bool) -> Case {
     let mut rng = Rng::new(seed ^ 0xf00d_0000_0000_0000);
     let mut body = Vec::new();
     {
         let mut g = Gen { rng: &mut rng, simd: true };
         // Tre volte su quattro una classe con aritmetica FP.
-        let fp: Vec<usize> = SIMD_CLASSES
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| c.2.starts_with("fp") || c.2.contains("three same") || c.2.contains("two misc"))
-            .map(|(i, _)| i)
-            .collect();
+        let fp: Vec<usize> =
+            SIMD_CLASSES.iter().enumerate().filter(|(_, c)| pick(c.2)).map(|(i, _)| i).collect();
         for _ in 0..6 {
             let k = if g.rng.chance(3, 4) {
                 *g.rng.pick(&fp)

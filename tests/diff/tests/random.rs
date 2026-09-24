@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use vetro_diff::harness::{Program, compare, run_qemu, run_vetro};
 use vetro_diff::qemu;
-use vetro_diff::random::{Case, generate_fp_focused, generate_with};
+use vetro_diff::random::{Case, generate_focused, generate_fp_focused, generate_with};
 
 const BODY_LEN: usize = 48;
 
@@ -45,6 +45,17 @@ fn random_simd_programs_match_qemu() {
 #[test]
 fn random_fp_focused_match_qemu() {
     run_with("random_fp_focused_match_qemu", "fp-", env_u64("VETRO_DIFF_FP_CASES", 600), generate_fp_focused);
+}
+
+/// Programmi brevi di istruzioni crittografiche (AES, SHA1, SHA256).
+#[test]
+fn random_crypto_focused_match_qemu() {
+    run_with(
+        "random_crypto_focused_match_qemu",
+        "crypto-",
+        env_u64("VETRO_DIFF_FP_CASES", 600) / 3,
+        |seed| generate_focused(seed, |name| name.starts_with("crypto")),
+    );
 }
 
 fn run(name: &str, simd: bool, cases: u64) {

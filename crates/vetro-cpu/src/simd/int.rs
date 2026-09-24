@@ -155,7 +155,7 @@ pub fn decode(w: u32) -> Insn {
 
     // Crittografia (AES, SHA1, SHA256): valida su Cortex-A53, non ancora scritta.
     if m(w, 0xFF3E_0C00, 0x4E28_0800) || m(w, 0xFF20_8C00, 0x5E00_0000) || m(w, 0xFF3E_0C00, 0x5E28_0800) {
-        return if size == 0 { Insn::Unimplemented("crittografia AES/SHA") } else { Insn::Undefined };
+        return super::crypto::decode(w);
     }
 
     let scalar = field(w, 31, 30) == 0b01 && bit(w, 28);

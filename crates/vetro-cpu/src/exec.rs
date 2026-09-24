@@ -517,6 +517,7 @@ impl Cpu {
                 crate::simd::SimdInsn::Mem(m) => crate::simd::exec_mem(self, m, mem)?,
                 crate::simd::SimdInsn::Int(i) => crate::simd::exec_int(self, i),
                 crate::simd::SimdInsn::Fp(f) => crate::simd::exec_fp(self, f),
+                crate::simd::SimdInsn::Crypto(c) => crate::simd::exec_crypto(self, c),
             },
 
             Insn::Undefined => return Err(Exception::Undefined(raw)),
