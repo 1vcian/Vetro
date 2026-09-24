@@ -1,0 +1,16 @@
+# Sottoinsieme LTP eseguito per default (veloce); il giro completo con VETRO_LTP_FULL=1.
+getpid01
+getppid01
+uname01
+access01
+brk01
+close01
+dup01
+fork01
+wait401
+write01
+read01
+pipe01
+kill01
+lseek01
+mkdir02

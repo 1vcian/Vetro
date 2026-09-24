@@ -110,7 +110,20 @@ fn ltp_matches_qemu() {
     // SAFETY: il test è l'unico thread che tocca l'ambiente a questo punto.
     unsafe { std::env::set_var("VETRO_ORACLE_MOUNTS", joined) };
 
-    let only = std::env::var("VETRO_LTP_ONLY").ok();
+    // Per default un sottoinsieme rapido (tools/ltp/quick.txt); il giro
+    // completo con VETRO_LTP_FULL=1 (job linux della CI, in release).
+    let full = std::env::var("VETRO_LTP_FULL").is_ok_and(|v| v == "1");
+    let quick = std::fs::read_to_string(root().join("tools/ltp/quick.txt")).unwrap_or_default();
+    let only = std::env::var("VETRO_LTP_ONLY").ok().or_else(|| {
+        (!full).then(|| {
+            quick
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+    });
     let skip = skip_list();
     let mut names: Vec<String> = std::fs::read_dir(&dir)
         .unwrap()

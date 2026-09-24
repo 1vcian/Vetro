@@ -5,7 +5,8 @@
 //!     -kernel Image -initrd initramfs.cpio.gz -append "console=ttyAMA0"
 //! ```
 //!
-//! Controlla, ciascuno entro `VETRO_BOOT_TIMEOUT`: il marcatore di `/init`,
+//! Senza qemu-system-aarch64 il test viene saltato, salvo
+//! `VETRO_REQUIRE_SYSTEM_ORACLE=1`. Controlla, ciascuno entro `VETRO_BOOT_TIMEOUT`: il marcatore di `/init`,
 //! la fine dell'autotest senza errori, una shell interattiva che esegue un
 //! comando scritto sulla console, lo spegnimento con `poweroff -f` (PSCI).
 //! Il log completo va in `target/guest-kernel/qemu-boot.log`; il riferimento
@@ -25,7 +26,7 @@ fn qemu_boots_guest_kernel_to_shell() {
     };
     let Some(qemu) = qemu_system() else {
         return skip_or_fail(
-            "VETRO_REQUIRE_ORACLE",
+            "VETRO_REQUIRE_SYSTEM_ORACLE",
             "qemu-system-aarch64 assente (su macOS: VETRO_QEMU_SYSTEM_AARCH64=tools/guest-kernel/qemu-system-aarch64-docker.sh)",
         );
     };
