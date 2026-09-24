@@ -9,6 +9,10 @@ version = "0.0.0"
 [[package]]
 name = "vetro-cli"
 version = "0.0.0"
+dependencies = [
+ "vetro-cpu",
+ "vetro-diff",
+]
 
 [[package]]
 name = "vetro-cpu"
@@ -17,6 +21,17 @@ version = "0.0.0"
 [[package]]
 name = "vetro-diff"
 version = "0.0.0"
+dependencies = [
+ "vetro-cli",
+ "vetro-cpu",
+]
+
+[[package]]
+name = "vetro-isa-tests"
+version = "0.0.0"
+dependencies = [
+ "vetro-diff",
+]
 
 [[package]]
 name = "vetro-jit"

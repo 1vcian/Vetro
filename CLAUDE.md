@@ -27,7 +27,9 @@ se ne capisce il motivo, scritto in `docs/progress/`.
 ```sh
 tools/ci.sh                          # tutti i controlli della CI in locale
 cargo test --workspace               # test nativi
-cargo test -p vetro-diff             # oracolo QEMU e harness differenziale
+cargo test -p vetro-diff             # oracolo QEMU e programmi casuali (ADR 0006)
+cargo test -p vetro-isa-tests        # test per istruzione (anche contro QEMU)
+VETRO_DIFF_SEED=<seme> VETRO_DIFF_CASES=1 cargo test -p vetro-diff --test random   # riproduce un caso
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 cargo build --target wasm32-unknown-unknown --workspace --exclude vetro-cli --exclude vetro-diff
@@ -38,6 +40,9 @@ Oracolo su macOS (QEMU user mode esiste solo su Linux; serve Docker attivo):
 ```sh
 export VETRO_QEMU_AARCH64="$PWD/tools/oracle/qemu-aarch64-docker.sh"
 ```
+
+Codifiche per i test: `printf 'add x0, x1, #1\n' | tools/a64asm.sh` (assembler
+vero, rifiuta le rilocazioni). Mai scrivere codifiche a mano nei test.
 
 `VETRO_REQUIRE_ORACLE=1` trasforma lo skip dell'oracolo in un fallimento
 (attivo in CI). Usalo anche in locale prima di dichiarare chiuso un lavoro.

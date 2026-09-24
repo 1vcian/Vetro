@@ -15,12 +15,7 @@ fn qemu_exit_code() {
     let path = qemu::write_temp_elf("exit42", &elf::build(&code, &[])).unwrap();
 
     let out = qemu::run(&q, &path, qemu::DEFAULT_TIMEOUT).unwrap();
-    assert_eq!(
-        out.exit_code,
-        Some(42),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert_eq!(out.exit_code, Some(42), "stderr: {}", String::from_utf8_lossy(&out.stderr));
 }
 
 #[test]
@@ -46,11 +41,6 @@ fn qemu_stdout() {
     let path = qemu::write_temp_elf("hello", &elf::build(&code, msg)).unwrap();
 
     let out = qemu::run(&q, &path, qemu::DEFAULT_TIMEOUT).unwrap();
-    assert_eq!(
-        out.exit_code,
-        Some(0),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert_eq!(out.exit_code, Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(out.stdout, msg);
 }

@@ -1,0 +1,13 @@
+[package]
+name = "vetro-isa-tests"
+description = "Test per istruzione della CPU, con valori attesi verificati anche contro QEMU."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+vetro-diff = { path = "../diff" }

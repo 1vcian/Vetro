@@ -17,6 +17,10 @@ jobs:
       - run: rustup show active-toolchain || rustup toolchain install
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-user
       - uses: Swatinem/rust-cache@v2
-      # M0: solo l'oracolo. Da M1: sequenze RISU con numero alto di casi.
+      # Programmi casuali con semi nuovi a ogni notte (ADR 0006); un caso
+      # fallito si riproduce con VETRO_DIFF_SEED=<seme> VETRO_DIFF_CASES=1.
       # Da M3: avvio del kernel headless.
-      - run: cargo test --release -p vetro-diff
+      - run: cargo test --release -p vetro-diff -p vetro-isa-tests
+        env:
+          VETRO_DIFF_CASES: "20000"
+          VETRO_DIFF_SEED: "${{ github.run_number }}000000"

@@ -78,8 +78,8 @@ done only when that command passes in CI.
 | | Milestone | Exit criterion | Status |
 |---|---|---|---|
 | M0 | Scaffolding and oracle | `cargo test` green; a test runs QEMU and reads its output in CI | ✅ done |
-| M1 | AArch64 CPU interpreter | per-instruction suite; ≥200 random programs match `qemu-aarch64` | 🚧 in progress |
-| M2 | Linux user-mode syscalls | LTP subset, static BusyBox runs | — |
+| M1 | AArch64 CPU interpreter | per-instruction suite; ≥200 random programs match `qemu-aarch64` | ✅ done |
+| M2 | Linux user-mode syscalls | LTP subset, static BusyBox runs | 🚧 next |
 | M3 | System mode, kernel boot | kernel + initramfs reaches a shell; kselftest subset | — |
 | M4 | JIT to WebAssembly | M1/M2 tests pass with JIT; interpreter/JIT parity | — |
 | M5 | Android boots | home screen in Chrome; `adb install` of an APK works | — |

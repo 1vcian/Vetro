@@ -5,6 +5,8 @@
 //!    `tools/oracle/qemu-aarch64-docker.sh` su macOS);
 //! 2. `qemu-aarch64` nel PATH.
 //!
+//! QEMU emula sempre la CPU di [`cpu`] (default `cortex-a53`, ADR 0005).
+//!
 //! Se l'oracolo manca, [`locate`] restituisce `None`: i test lo segnalano e
 //! si saltano, a meno che `VETRO_REQUIRE_ORACLE=1` (impostato in CI), nel
 //! qual caso falliscono.
@@ -24,14 +26,27 @@ pub struct Outcome {
     pub stderr: Vec<u8>,
 }
 
+impl Outcome {
+    /// Segnale che ha terminato il guest, letto dal messaggio di QEMU
+    /// ("uncaught target signal N"): vale sia in nativo sia via Docker.
+    pub fn signal(&self) -> Option<i32> {
+        let err = String::from_utf8_lossy(&self.stderr);
+        let rest = err.split("uncaught target signal ").nth(1)?;
+        rest.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
+    }
+}
+
+/// Modello di CPU passato a QEMU (`VETRO_QEMU_CPU`, default `cortex-a53`).
+pub fn cpu() -> String {
+    std::env::var("VETRO_QEMU_CPU").unwrap_or_else(|_| "cortex-a53".into())
+}
+
 pub fn locate() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("VETRO_QEMU_AARCH64") {
         return Some(PathBuf::from(p));
     }
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join("qemu-aarch64"))
-        .find(|p| p.is_file())
+    std::env::split_paths(&path).map(|dir| dir.join("qemu-aarch64")).find(|p| p.is_file())
 }
 
 /// `true` se la CI (o l'utente) esige che l'oracolo sia presente.
@@ -59,7 +74,15 @@ pub fn locate_or_skip(test: &str) -> Option<PathBuf> {
 
 /// Esegue `elf` sotto QEMU con timeout.
 pub fn run(qemu: &Path, elf: &Path, timeout: Duration) -> std::io::Result<Outcome> {
-    let mut child = Command::new(qemu)
+    // Niente core dump: dopo un SIGILL del guest QEMU ne scriverebbe uno,
+    // lentissimo, invece di uscire.
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg("ulimit -c 0; exec \"$@\"")
+        .arg("sh")
+        .arg(qemu)
+        .arg("-cpu")
+        .arg(cpu())
         .arg(elf)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
