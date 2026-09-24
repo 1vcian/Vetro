@@ -372,6 +372,9 @@ impl UserMemory {
 impl Memory for UserMemory {
     fn read(&mut self, addr: u64, buf: &mut [u8]) -> Result<(), MemFault> {
         let len = buf.len();
+        if len == 0 {
+            return Ok(()); // un accesso vuoto non tocca memoria (es. iovec {NULL, 0})
+        }
         if let Some((b, off)) = self.locate(addr, len, Access::Read)? {
             self.regions[&b].read(off, buf);
             return Ok(());
@@ -388,6 +391,9 @@ impl Memory for UserMemory {
     }
 
     fn write(&mut self, addr: u64, data: &[u8]) -> Result<(), MemFault> {
+        if data.is_empty() {
+            return Ok(());
+        }
         if let Some((b, off)) = self.locate(addr, data.len(), Access::Write)? {
             self.regions.get_mut(&b).unwrap().write(off, data);
             return Ok(());
@@ -459,6 +465,14 @@ mod tests {
         m.poke(0x12000, &[5]).unwrap();
         m.read(0x12000, &mut b).unwrap();
         assert_eq!(b[0], 5);
+    }
+
+    #[test]
+    fn empty_access_never_faults() {
+        let mut m = UserMemory::new();
+        m.read(0, &mut []).unwrap();
+        m.write(0, &[]).unwrap();
+        assert!(m.read(0, &mut [0u8; 1]).is_err());
     }
 
     #[test]

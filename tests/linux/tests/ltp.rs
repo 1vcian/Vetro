@@ -120,7 +120,7 @@ fn ltp_matches_qemu() {
         .filter(|n| only.as_ref().is_none_or(|o| o.split(',').any(|x| x == n)))
         .collect();
     names.sort();
-    let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).min(4);
+    let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).min(2);
     let queue = std::sync::Mutex::new(names.clone());
     let results = std::sync::Mutex::new(BTreeMap::new());
     std::thread::scope(|s| {
