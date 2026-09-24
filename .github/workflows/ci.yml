@@ -30,6 +30,23 @@ jobs:
       - name: Toolchain (da rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --target wasm32-unknown-unknown --workspace --exclude vetro-cli --exclude vetro-diff
+      - run: cargo build --target wasm32-unknown-unknown --workspace --exclude vetro-cli --exclude vetro-diff --exclude vetro-isa-tests --exclude vetro-linux-tests
+
+  # Binari Linux arm64 (BusyBox, programmi C) confrontati con QEMU. Gira su
+  # un runner arm64: il container Alpine che compila i binari è nativo.
+  linux:
+    runs-on: ubuntu-24.04-arm
+    env:
+      VETRO_REQUIRE_GUEST_BINS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain (da rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Oracolo QEMU
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-user
+      - uses: Swatinem/rust-cache@v2
+      - name: Binari guest
+        run: tools/guest-bins/build.sh
+      - run: cargo test -p vetro-linux-tests
 
   # Il lint TypeScript (tsc --noEmit) si aggiunge quando nasce web/ (M5).

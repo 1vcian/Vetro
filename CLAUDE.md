@@ -32,7 +32,7 @@ cargo test -p vetro-isa-tests        # test per istruzione (anche contro QEMU)
 VETRO_DIFF_SEED=<seme> VETRO_DIFF_CASES=1 cargo test -p vetro-diff --test random   # riproduce un caso
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
-cargo build --target wasm32-unknown-unknown --workspace --exclude vetro-cli --exclude vetro-diff
+cargo build --target wasm32-unknown-unknown --workspace --exclude vetro-cli --exclude vetro-diff --exclude vetro-isa-tests --exclude vetro-linux-tests
 ```
 
 Oracolo su macOS (QEMU user mode esiste solo su Linux; serve Docker attivo):

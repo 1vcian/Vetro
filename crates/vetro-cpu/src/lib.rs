@@ -5,8 +5,9 @@
 
 pub mod bits;
 pub mod decode;
-mod exec;
+pub(crate) mod exec;
 pub mod mem;
+pub mod simd;
 pub mod state;
 
 pub use decode::{Insn, decode};

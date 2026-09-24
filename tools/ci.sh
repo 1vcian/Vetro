@@ -6,5 +6,5 @@ cd "$(dirname "$0")/.."
 echo "==> fmt";    cargo fmt --all --check
 echo "==> clippy"; cargo clippy --workspace --all-targets -- -D warnings
 echo "==> test";   cargo test --workspace
-echo "==> wasm";   cargo build --target wasm32-unknown-unknown --workspace --exclude vetro-cli --exclude vetro-diff
+echo "==> wasm";   cargo build --target wasm32-unknown-unknown --workspace --exclude vetro-cli --exclude vetro-diff --exclude vetro-isa-tests --exclude vetro-linux-tests
 echo "OK"

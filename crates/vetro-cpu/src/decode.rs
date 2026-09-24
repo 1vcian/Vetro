@@ -102,6 +102,12 @@ pub enum SysReg {
     Nzcv,
     TpidrEl0,
     TpidrroEl0,
+    Fpcr,
+    Fpsr,
+    /// Sola lettura: dimensione del blocco di DC ZVA.
+    DczidEl0,
+    /// Sola lettura: geometria delle cache.
+    CtrEl0,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -352,6 +358,8 @@ pub enum Insn {
         rn: u8,
     },
 
+    Simd(crate::simd::SimdInsn),
+
     Undefined,
     Unimplemented(&'static str),
 }
@@ -369,7 +377,7 @@ pub fn decode(w: u32) -> Insn {
         0b1010 | 0b1011 => branch_sys(w),
         0b0100 | 0b0110 | 0b1100 | 0b1110 => ldst(w),
         0b0101 | 0b1101 => dp_reg(w),
-        0b0111 | 0b1111 => Unimplemented("SIMD/FP"),
+        0b0111 | 0b1111 => crate::simd::decode_dp(w),
         // 0000 riservato (UDF, SME), 0010 SVE, 0001/0011 non allocati.
         _ => Undefined,
     }
@@ -558,11 +566,15 @@ fn system(w: u32) -> Insn {
                 (3, 3, 4, 2, 0) => SysReg::Nzcv,
                 (3, 3, 13, 0, 2) => SysReg::TpidrEl0,
                 (3, 3, 13, 0, 3) => SysReg::TpidrroEl0,
+                (3, 3, 4, 4, 0) => SysReg::Fpcr,
+                (3, 3, 4, 4, 1) => SysReg::Fpsr,
+                (3, 3, 0, 0, 7) => SysReg::DczidEl0,
+                (3, 3, 0, 0, 1) => SysReg::CtrEl0,
                 _ => return Unimplemented("MRS/MSR registro di sistema"),
             };
             if l {
                 Insn::Mrs { reg, rt }
-            } else if reg == SysReg::TpidrroEl0 {
+            } else if matches!(reg, SysReg::TpidrroEl0 | SysReg::DczidEl0 | SysReg::CtrEl0) {
                 Undefined // sola lettura a EL0
             } else {
                 Insn::Msr { reg, rt }
@@ -573,7 +585,7 @@ fn system(w: u32) -> Insn {
 
 fn ldst(w: u32) -> Insn {
     if bit(w, 26) {
-        return Unimplemented("SIMD/FP load/store");
+        return crate::simd::decode_ldst(w);
     }
     let rt = r(w, 0);
     let rn = r(w, 5);

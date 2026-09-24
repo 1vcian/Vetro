@@ -18,6 +18,7 @@ workspace = true
 
 [dependencies]
 vetro-cpu = { path = "../vetro-cpu" }
+vetro-analysis = { path = "../vetro-analysis" }
 
 [dev-dependencies]
 vetro-diff = { path = "../../tests/diff" }

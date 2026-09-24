@@ -149,17 +149,19 @@ pub enum Run {
 }
 
 pub fn run_vetro(image: &[u8]) -> Run {
-    use vetro_cli::user::{Exit, Process};
-    let mut p = match Process::load(image, "test") {
-        Ok(p) => p,
+    use vetro_cli::linux::{Config, Exit};
+    let cfg = Config { max_steps: 1_000_000, ..Config::default() };
+    let out = match vetro_cli::run_elf(image, &["test"], &[], "/test", cfg) {
+        Ok(o) => o,
         Err(e) => return Run::Other(format!("caricamento: {e}")),
     };
-    match p.run(1_000_000) {
-        Exit::Code(0) => match Dump::parse(&p.stdout) {
+    match out.exit {
+        Exit::Code(0) => match Dump::parse(&out.stdout) {
             Some(d) => Run::Dump(Box::new(d)),
-            None => Run::Other(format!("stdout di {} byte", p.stdout.len())),
+            None => Run::Other(format!("stdout di {} byte", out.stdout.len())),
         },
         Exit::Signal { signo, .. } => Run::Signal(signo),
+        Exit::Unimplemented { .. } => Run::Signal(4),
         other => Run::Other(format!("{other:?}")),
     }
 }

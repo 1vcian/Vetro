@@ -141,3 +141,72 @@ pub fn write_temp_elf(name: &str, image: &[u8]) -> std::io::Result<PathBuf> {
     }
     Ok(path)
 }
+
+/// Esecuzione di un programma Linux con argomenti, ambiente, directory di
+/// lavoro e stdin controllati. L'ambiente del guest è esattamente `env`
+/// (passato con `-E`, su un processo QEMU senza variabili ereditate).
+pub fn run_program(
+    qemu: &Path,
+    prog: &Path,
+    args: &[String],
+    env: &[(String, String)],
+    cwd: &Path,
+    stdin: &[u8],
+    timeout: Duration,
+) -> std::io::Result<Outcome> {
+    use std::io::Write;
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c").arg("ulimit -c 0; exec \"$@\"").arg("sh").arg(qemu).arg("-cpu").arg(cpu());
+    for (k, v) in env {
+        cmd.arg("-E").arg(format!("{k}={v}"));
+    }
+    cmd.arg(prog).args(args);
+    // Il wrapper Docker ha bisogno di PATH per trovare docker.
+    cmd.env_clear();
+    if let Some(p) = std::env::var_os("PATH") {
+        cmd.env("PATH", p);
+    }
+    if let Some(h) = std::env::var_os("HOME") {
+        cmd.env("HOME", h);
+    }
+    for k in ["VETRO_ORACLE_IMAGE", "VETRO_ORACLE_MOUNTS", "DOCKER_HOST"] {
+        if let Some(v) = std::env::var_os(k) {
+            cmd.env(k, v);
+        }
+    }
+    let mut child =
+        cmd.current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let mut sin = child.stdin.take().expect("stdin piped");
+    let data = stdin.to_vec();
+    let t_in = std::thread::spawn(move || {
+        let _ = sin.write_all(&data);
+    });
+    let mut out = child.stdout.take().expect("stdout piped");
+    let mut err = child.stderr.take().expect("stderr piped");
+    let t_out = std::thread::spawn(move || {
+        let mut b = Vec::new();
+        out.read_to_end(&mut b).map(|_| b)
+    });
+    let t_err = std::thread::spawn(move || {
+        let mut b = Vec::new();
+        err.read_to_end(&mut b).map(|_| b)
+    });
+    let start = Instant::now();
+    let status = loop {
+        if let Some(s) = child.try_wait()? {
+            break s;
+        }
+        if start.elapsed() > timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, format!("qemu oltre {timeout:?}")));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let _ = t_in.join();
+    Ok(Outcome {
+        exit_code: status.code(),
+        stdout: t_out.join().expect("thread stdout")?,
+        stderr: t_err.join().expect("thread stderr")?,
+    })
+}

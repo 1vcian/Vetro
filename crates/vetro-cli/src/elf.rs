@@ -35,6 +35,8 @@ pub struct Loaded {
     pub entry: u64,
     pub phdr_addr: u64,
     pub phnum: u16,
+    /// Fine dell'ultimo segmento caricato (inizio del brk).
+    pub end: u64,
 }
 
 fn u16_at(b: &[u8], o: usize) -> Result<u16, LoadError> {
@@ -67,6 +69,7 @@ pub fn load(image: &[u8], mem: &mut UserMemory) -> Result<Loaded, LoadError> {
     let phentsize = u16_at(image, 54)? as usize;
     let phnum = u16_at(image, 56)?;
     let mut phdr_addr = 0;
+    let mut load_end = 0;
 
     for i in 0..phnum as usize {
         let ph = phoff + i * phentsize;
@@ -103,9 +106,10 @@ pub fn load(image: &[u8], mem: &mut UserMemory) -> Result<Loaded, LoadError> {
         }
         let perm = Perm { read: flags & 4 != 0, write: flags & 2 != 0, exec: flags & 1 != 0 };
         mem.map(start, data, perm).map_err(|e| LoadError::Overlap(e.base))?;
+        load_end = load_end.max(vaddr + memsz);
         if offset <= phoff as u64 && (phoff as u64) < offset + filesz {
             phdr_addr = vaddr + (phoff as u64 - offset);
         }
     }
-    Ok(Loaded { entry, phdr_addr, phnum })
+    Ok(Loaded { entry, phdr_addr, phnum, end: load_end })
 }

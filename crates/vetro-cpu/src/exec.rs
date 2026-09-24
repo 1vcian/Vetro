@@ -85,7 +85,7 @@ fn shift_reg(v: u64, shift: Shift, amount: u32, sf: bool) -> u64 {
 }
 
 /// `ExtendReg(reg, type, shift)` su 64 bit, poi troncato dal chiamante.
-fn extend_reg(v: u64, extend: u8, shift: u8) -> u64 {
+pub(crate) fn extend_reg(v: u64, extend: u8, shift: u8) -> u64 {
     let e = match extend {
         0 => v as u8 as u64,
         1 => v as u16 as u64,
@@ -390,6 +390,12 @@ impl Cpu {
                     SysReg::Nzcv => self.nzcv as u64,
                     SysReg::TpidrEl0 => self.tpidr_el0,
                     SysReg::TpidrroEl0 => self.tpidrro_el0,
+                    SysReg::Fpcr => self.fpcr as u64,
+                    SysReg::Fpsr => self.fpsr as u64,
+                    // Blocco DC ZVA di 2^4 parole = 64 byte, DC ZVA permesso.
+                    SysReg::DczidEl0 => 4,
+                    // Valore della Cortex-A53 (come QEMU `-cpu cortex-a53`).
+                    SysReg::CtrEl0 => 0x8444_8004,
                 };
                 self.set_x(rt, v);
             }
@@ -398,7 +404,11 @@ impl Cpu {
                 match reg {
                     SysReg::Nzcv => self.nzcv = (v as u32) & 0xf000_0000,
                     SysReg::TpidrEl0 => self.tpidr_el0 = v,
-                    SysReg::TpidrroEl0 => unreachable!("rifiutato dal decoder"),
+                    SysReg::TpidrroEl0 | SysReg::DczidEl0 | SysReg::CtrEl0 => {
+                        unreachable!("rifiutato dal decoder")
+                    }
+                    SysReg::Fpcr => self.fpcr = v as u32 & crate::state::FPCR_MASK,
+                    SysReg::Fpsr => self.fpsr = v as u32 & crate::state::FPSR_MASK,
                 }
             }
 
@@ -502,6 +512,12 @@ impl Cpu {
                 check_aligned(address, 1 << size)?;
                 write_uint(mem, address, 1 << size, self.xr(rt) as u128)?;
             }
+
+            Insn::Simd(s) => match s {
+                crate::simd::SimdInsn::Mem(m) => crate::simd::exec_mem(self, m, mem)?,
+                crate::simd::SimdInsn::Int(i) => crate::simd::exec_int(self, i),
+                crate::simd::SimdInsn::Fp(f) => crate::simd::exec_fp(self, f),
+            },
 
             Insn::Undefined => return Err(Exception::Undefined(raw)),
             Insn::Unimplemented(what) => return Err(Exception::Unimplemented { raw, what }),

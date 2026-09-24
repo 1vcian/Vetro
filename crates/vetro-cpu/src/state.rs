@@ -21,7 +21,17 @@ pub struct Cpu {
     pub tpidr_el0: u64,
     pub tpidrro_el0: u64,
     pub monitor: Option<Monitor>,
+    /// Registri SIMD/FP V0–V31.
+    pub v: [u128; 32],
+    pub fpcr: u32,
+    pub fpsr: u32,
 }
+
+/// Bit scrivibili di FPCR su Cortex-A53: AHP, DN, FZ, RMode. Le abilitazioni
+/// delle trap sono RAZ/WI (niente trap FP), Len/Stride sono RES0 in AArch64.
+pub const FPCR_MASK: u32 = 0x07C0_0000;
+/// Bit di FPSR: QC, IDC e i flag cumulativi IXC, UFC, OFC, DZC, IOC.
+pub const FPSR_MASK: u32 = 0x0800_009F;
 
 pub const N: u32 = 1 << 31;
 pub const Z: u32 = 1 << 30;
