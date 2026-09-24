@@ -38,7 +38,9 @@ dependencies = [
 name = "vetro-isa-tests"
 version = "0.0.0"
 dependencies = [
+ "vetro-cpu",
  "vetro-diff",
+ "vetro-mmu",
 ]
 
 [[package]]
