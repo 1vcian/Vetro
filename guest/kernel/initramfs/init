@@ -19,8 +19,12 @@ esac
 case " $cmdline " in
   *" vetro.poweroff "*) poweroff -f ;;
 esac
-# Shell interattiva con terminale di controllo (cttyhack apre la console
-# vera, es. /dev/ttyAMA0, invece di /dev/console). Se esce, se ne apre un'altra.
+# Shell interattiva con terminale di controllo sulla console vera
+# (/dev/console non può diventare terminale di controllo). La BusyBox di
+# Alpine non ha cttyhack: si apre direttamente la PL011. Se esce, se ne apre
+# un'altra.
+tty=/dev/ttyAMA0
+[ -c "$tty" ] || tty=/dev/console
 while true; do
-  setsid cttyhack sh -l
+  setsid sh -c "exec sh -l <>$tty >&0 2>&1"
 done
