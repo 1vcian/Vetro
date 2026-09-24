@@ -31,3 +31,13 @@ completo: è lavoro di M2.
 Suite per istruzione verde (valori attesi verificati anche contro QEMU) e
 almeno 200 programmi casuali di `vetro-diff::random` identici a
 `qemu-aarch64 -cpu cortex-a53`, con `VETRO_REQUIRE_ORACLE=1`.
+
+## Aggiornamento (M2, 2026-09-24)
+RISU è integrato: `tools/risu/build.sh` compila `risu` (musl, statico),
+genera immagini ARMv8.0 con `risugen` (esclusi i pattern v8.1+) e registra
+le tracce con `qemu-aarch64 -cpu cortex-a53` come maestro;
+`tests/linux/tests/risu.rs` esegue `risu` su Vetro come apprendista. Il
+primo giro ha trovato un bug del decoder (logiche vettoriali con size = 11 e
+Q = 0 rifiutate) che il generatore di M1 non vedeva. Il repository ufficiale
+di Linaro non rispondeva: si usa il fork di Richard Henderson, a commit
+fissato.

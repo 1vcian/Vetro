@@ -411,19 +411,25 @@ fn three_same(w: u32, scalar: bool, q: bool, u: bool, size: u8, rm: u8, rn: u8, 
     } else {
         let no64 = !s3;
         let base = !(s3 && !q);
-        base && match (u, opcode) {
-            (_, 0b00011) => true, // logiche: size codifica l'operazione
-            (_, 0b00000 | 0b00010 | 0b00100 | 0b01100 | 0b01101 | 0b01110 | 0b01111 | 0b10100 | 0b10101) => {
-                no64
-            }
-            (_, 0b10010) => no64,         // MLA/MLS
-            (false, 0b10011) => no64,     // MUL
-            (true, 0b10011) => size == 0, // PMUL
-            (_, 0b10110) => size == 1 || size == 2,
-            (false, 0b10111) => true, // ADDP
-            (true, 0b10111) => false,
-            _ => true,
-        }
+        // Le logiche (opcode 00011) usano size per scegliere l'operazione:
+        // valide anche con size = 11 e Q = 0.
+        opcode == 0b00011
+            || base
+                && match (u, opcode) {
+                    (_, 0b00011) => true,
+                    (
+                        _,
+                        0b00000 | 0b00010 | 0b00100 | 0b01100 | 0b01101 | 0b01110 | 0b01111 | 0b10100
+                        | 0b10101,
+                    ) => no64,
+                    (_, 0b10010) => no64,         // MLA/MLS
+                    (false, 0b10011) => no64,     // MUL
+                    (true, 0b10011) => size == 0, // PMUL
+                    (_, 0b10110) => size == 1 || size == 2,
+                    (false, 0b10111) => true, // ADDP
+                    (true, 0b10111) => false,
+                    _ => true,
+                }
     };
     if !valid {
         return Insn::Undefined;

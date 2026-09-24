@@ -47,6 +47,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Binari guest
         run: tools/guest-bins/build.sh
-      - run: cargo test -p vetro-linux-tests
+      - name: RISU (immagini e tracce di QEMU)
+        run: tools/risu/build.sh
+      - run: cargo test --release -p vetro-linux-tests
 
   # Il lint TypeScript (tsc --noEmit) si aggiunge quando nasce web/ (M5).
