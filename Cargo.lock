@@ -173,6 +173,10 @@ name = "vetro-analysis"
 version = "0.0.0"
 
 [[package]]
+name = "vetro-boot-tests"
+version = "0.0.0"
+
+[[package]]
 name = "vetro-cli"
 version = "0.0.0"
 dependencies = [

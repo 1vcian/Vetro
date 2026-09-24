@@ -1,0 +1,19 @@
+# Contenuto dell'initramfs (formato di usr/gen_init_cpio del kernel).
+# I percorsi sorgente sono relativi alla radice del repository. /dev/console
+# serve al kernel per aprire la console di /init prima di devtmpfs.
+dir /dev 0755 0 0
+nod /dev/console 0600 0 0 c 5 1
+dir /proc 0555 0 0
+dir /sys 0555 0 0
+dir /tmp 1777 0 0
+dir /root 0700 0 0
+dir /etc 0755 0 0
+dir /bin 0755 0 0
+dir /sbin 0755 0 0
+dir /usr 0755 0 0
+dir /usr/bin 0755 0 0
+dir /usr/sbin 0755 0 0
+file /bin/busybox target/guest-bins/busybox 0755 0 0
+slink /bin/sh busybox 0777 0 0
+file /init guest/kernel/initramfs/init 0755 0 0
+file /etc/autotest.sh guest/kernel/initramfs/autotest.sh 0644 0 0

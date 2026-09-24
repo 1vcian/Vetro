@@ -4,6 +4,7 @@
 //! tempo virtuale. È il banco di prova della CPU prima dell'avvio del kernel
 //! vero (M3) e il motore dei test differenziali contro QEMU.
 
+pub mod boot;
 pub mod elf;
 pub mod linux;
 
