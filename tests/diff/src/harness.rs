@@ -1,10 +1,11 @@
 //! Programmi di test con stato iniziale noto e dump dello stato finale.
 //!
 //! Layout del programma:
-//! - **prologo**: SP = [`STACK_TOP`], NZCV, x0–x30 ai valori dati;
+//! - **prologo**: SP = [`STACK_TOP`], V0–V31, FPCR, FPSR, NZCV, x0–x30 ai
+//!   valori dati;
 //! - **corpo**: le istruzioni sotto test;
-//! - **epilogo**: scrive x0–x30, SP e NZCV nel buffer di dump e li manda su
-//!   stdout insieme al blocco di memoria, poi `exit(0)`.
+//! - **epilogo**: scrive x0–x30, SP, NZCV, V0–V31, FPCR e FPSR nel buffer di
+//!   dump e li manda su stdout insieme al blocco di memoria, poi `exit(0)`.
 //!
 //! Convenzioni per il corpo: x28 ([`BASE_REG`]) punta al centro del blocco di
 //! memoria e l'epilogo lo usa come base, quindi il corpo non deve lasciarlo
@@ -22,26 +23,35 @@ pub const INDEX_REG: u32 = 27;
 pub const BASE_PTR: u64 = RW_BASE + 0x800;
 const DUMP_OFF: u32 = 0x800; // rispetto a BASE_PTR: RW_BASE + 0x1000
 const DUMP_WORDS: usize = 33; // x0..x30, sp, nzcv
+/// Nel dump: V0–V31 da questo offset, poi FPCR e FPSR.
+const DUMP_V: usize = 0x200;
+const DUMP_FP: usize = 0x400;
+const DUMP_LEN: usize = 0x410;
+/// Valori iniziali di V0–V31 nel segmento RW.
+const VINIT_OFF: u64 = 0x2000;
 pub const STACK_TOP: u64 = RW_BASE + 0x4000;
 const RW_MEMSZ: u64 = 0x4000;
 
 #[derive(Clone, Debug)]
 pub struct Program {
     pub x: [u64; 31],
+    pub v: [u128; 32],
     /// Flag nei bit 31:28.
     pub nzcv: u32,
+    pub fpcr: u32,
+    pub fpsr: u32,
     pub mem: Vec<u8>,
     pub body: Vec<u32>,
 }
 
 /// Istruzioni del prologo: il corpo inizia a questo indice.
-pub const PROLOGUE_LEN: usize = 4 + 1 + 4 + 1 + 31 * 4;
+pub const PROLOGUE_LEN: usize = 4 + 1 + 4 + 16 + 4 + 1 + 4 + 1 + 4 + 1 + 31 * 4;
 
 impl Program {
     pub fn new(body: Vec<u32>) -> Self {
         let mut x = [0u64; 31];
         x[BASE_REG as usize] = BASE_PTR;
-        Program { x, nzcv: 0, mem: vec![0; MEM_SIZE], body }
+        Program { x, v: [0; 32], nzcv: 0, fpcr: 0, fpsr: 0, mem: vec![0; MEM_SIZE], body }
     }
 
     /// Indice (nell'immagine) dell'istruzione `i` del corpo.
@@ -53,6 +63,14 @@ impl Program {
         let mut c = Vec::with_capacity(PROLOGUE_LEN + self.body.len() + 64);
         c.extend(a64::mov64(0, STACK_TOP));
         c.push(a64::add_imm(a64::SP, 0, 0));
+        c.extend(a64::mov64(0, RW_BASE + VINIT_OFF));
+        for r in (0..32).step_by(2) {
+            c.push(a64::ldp_q(r, r + 1, 0, r * 16));
+        }
+        c.extend(a64::mov64(0, self.fpcr as u64));
+        c.push(a64::msr_fpcr(0));
+        c.extend(a64::mov64(0, self.fpsr as u64));
+        c.push(a64::msr_fpsr(0));
         c.extend(a64::mov64(0, self.nzcv as u64));
         c.push(a64::msr_nzcv(0));
         for (r, v) in self.x.iter().enumerate() {
@@ -69,11 +87,18 @@ impl Program {
         c.push(a64::str_x(0, b, DUMP_OFF + 8 * 31));
         c.push(a64::mrs_nzcv(0));
         c.push(a64::str_x(0, b, DUMP_OFF + 8 * 32));
-        // write(1, dump, 264)
+        for r in 0..32 {
+            c.push(a64::str_q(r, b, DUMP_OFF + DUMP_V as u32 + 16 * r));
+        }
+        c.push(a64::mrs_fpcr(0));
+        c.push(a64::str_x(0, b, DUMP_OFF + DUMP_FP as u32));
+        c.push(a64::mrs_fpsr(0));
+        c.push(a64::str_x(0, b, DUMP_OFF + DUMP_FP as u32 + 8));
+        // write(1, dump, DUMP_LEN)
         c.extend([
             a64::movz(0, 1, 0),
             a64::add_imm(1, b, DUMP_OFF),
-            a64::movz(2, (DUMP_WORDS * 8) as u16, 0),
+            a64::movz(2, DUMP_LEN as u16, 0),
             a64::movz(8, a64::sys::WRITE, 0),
             a64::svc(0),
         ]);
@@ -91,7 +116,12 @@ impl Program {
 
     pub fn build(&self) -> Vec<u8> {
         assert_eq!(self.mem.len(), MEM_SIZE);
-        elf::build_with_rw(&self.code(), &[], Some(Rw { init: &self.mem, memsz: RW_MEMSZ }))
+        let mut init = self.mem.clone();
+        init.resize(VINIT_OFF as usize, 0);
+        for v in &self.v {
+            init.extend_from_slice(&v.to_le_bytes());
+        }
+        elf::build_with_rw(&self.code(), &[], Some(Rw { init: &init, memsz: RW_MEMSZ }))
     }
 }
 
@@ -100,12 +130,15 @@ pub struct Dump {
     pub x: [u64; 31],
     pub sp: u64,
     pub nzcv: u32,
+    pub v: [u128; 32],
+    pub fpcr: u32,
+    pub fpsr: u32,
     pub mem: Vec<u8>,
 }
 
 impl Dump {
     pub fn parse(stdout: &[u8]) -> Option<Dump> {
-        if stdout.len() != DUMP_WORDS * 8 + MEM_SIZE {
+        if stdout.len() != DUMP_LEN + MEM_SIZE {
             return None;
         }
         let w = |i: usize| u64::from_le_bytes(stdout[i * 8..i * 8 + 8].try_into().unwrap());
@@ -113,7 +146,21 @@ impl Dump {
         for (i, r) in x.iter_mut().enumerate() {
             *r = w(i);
         }
-        Some(Dump { x, sp: w(31), nzcv: w(32) as u32, mem: stdout[DUMP_WORDS * 8..].to_vec() })
+        let mut v = [0u128; 32];
+        for (i, r) in v.iter_mut().enumerate() {
+            let o = DUMP_V + 16 * i;
+            *r = u128::from_le_bytes(stdout[o..o + 16].try_into().unwrap());
+        }
+        let _ = DUMP_WORDS;
+        Some(Dump {
+            x,
+            sp: w(31),
+            nzcv: w(32) as u32,
+            v,
+            fpcr: w(DUMP_FP / 8) as u32,
+            fpsr: w(DUMP_FP / 8 + 1) as u32,
+            mem: stdout[DUMP_LEN..].to_vec(),
+        })
     }
 
     /// Differenze leggibili rispetto a `other` (vuoto se identici).
@@ -129,6 +176,17 @@ impl Dump {
         }
         if self.nzcv != other.nzcv {
             s += &format!("  nzcv vetro={:#x} qemu={:#x}\n", self.nzcv >> 28, other.nzcv >> 28);
+        }
+        for r in 0..32 {
+            if self.v[r] != other.v[r] {
+                s += &format!("  v{r:<2} vetro={:#034x} qemu={:#034x}\n", self.v[r], other.v[r]);
+            }
+        }
+        if self.fpcr != other.fpcr {
+            s += &format!("  fpcr vetro={:#010x} qemu={:#010x}\n", self.fpcr, other.fpcr);
+        }
+        if self.fpsr != other.fpsr {
+            s += &format!("  fpsr vetro={:#010x} qemu={:#010x}\n", self.fpsr, other.fpsr);
         }
         for (i, (a, b)) in self.mem.iter().zip(&other.mem).enumerate() {
             if a != b {

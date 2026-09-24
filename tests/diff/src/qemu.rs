@@ -157,6 +157,13 @@ pub fn run_program(
     use std::io::Write;
     let mut cmd = Command::new("sh");
     cmd.arg("-c").arg("ulimit -c 0; exec \"$@\"").arg("sh").arg(qemu).arg("-cpu").arg(cpu());
+    // QEMU passa al guest il proprio ambiente: toglie le variabili che
+    // teniamo solo per il processo QEMU (e il wrapper Docker).
+    for k in ["PATH", "HOME"] {
+        if !env.iter().any(|(n, _)| n == k) {
+            cmd.arg("-U").arg(k);
+        }
+    }
     for (k, v) in env {
         cmd.arg("-E").arg(format!("{k}={v}"));
     }

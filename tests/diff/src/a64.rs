@@ -55,6 +55,29 @@ pub const fn msr_nzcv(rt: u32) -> u32 {
     0xD51B_4200 | rt
 }
 
+/// `LDP Qt, Qt2, [Xn, #offset]` (offset multiplo di 16, < 1024)
+pub const fn ldp_q(rt: u32, rt2: u32, rn: u32, offset: u32) -> u32 {
+    0xAD40_0000 | ((offset / 16) << 15) | (rt2 << 10) | (rn << 5) | rt
+}
+
+/// `STR Qt, [Xn, #offset]` (offset multiplo di 16)
+pub const fn str_q(rt: u32, rn: u32, offset: u32) -> u32 {
+    0x3D80_0000 | ((offset / 16) << 10) | (rn << 5) | rt
+}
+
+pub const fn msr_fpcr(rt: u32) -> u32 {
+    0xD51B_4400 | rt
+}
+pub const fn msr_fpsr(rt: u32) -> u32 {
+    0xD51B_4420 | rt
+}
+pub const fn mrs_fpcr(rt: u32) -> u32 {
+    0xD53B_4400 | rt
+}
+pub const fn mrs_fpsr(rt: u32) -> u32 {
+    0xD53B_4420 | rt
+}
+
 /// `NOP`
 pub const NOP: u32 = 0xD503_201F;
 
@@ -82,5 +105,12 @@ mod tests {
         assert_eq!(add_imm(SP, 0, 0), 0x9100_001F); // mov sp, x0
         assert_eq!(str_x(1, 28, 0x808), 0xF904_0781); // str x1, [x28, #2056]
         assert_eq!(mov_reg(3, 28), 0xAA1C_03E3); // mov x3, x28
+        // Da tools/a64asm.sh:
+        assert_eq!(ldp_q(2, 3, 0, 32), 0xad41_0c02); // ldp q2, q3, [x0, #32]
+        assert_eq!(str_q(5, 28, 0xa00), 0x3d82_8385); // str q5, [x28, #0xa00]
+        assert_eq!(msr_fpcr(0), 0xd51b_4400);
+        assert_eq!(msr_fpsr(0), 0xd51b_4420);
+        assert_eq!(mrs_fpcr(0), 0xd53b_4400);
+        assert_eq!(mrs_fpsr(0), 0xd53b_4420);
     }
 }

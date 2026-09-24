@@ -59,4 +59,76 @@ impl Rng {
             _ => self.next_u64(),
         }
     }
+
+    /// Valore FP a 32 bit con molti casi limite.
+    pub fn fp32(&mut self) -> u32 {
+        const SPECIAL: [u32; 20] = [
+            0x0000_0000,
+            0x8000_0000,
+            0x3f80_0000,
+            0xbf80_0000,
+            0x7f80_0000,
+            0xff80_0000,
+            0x7fc0_0000,
+            0xffc0_0001,
+            0x7f80_0001,
+            0xff90_0000, // qNaN e sNaN
+            0x0000_0001,
+            0x807f_ffff,
+            0x0080_0000,
+            0x7f7f_ffff, // denormali, min/max normali
+            0x3f00_0000,
+            0x3fc0_0000,
+            0x4020_0000, // 0.5, 1.5, 2.5 (pareggi)
+            0x4f00_0000,
+            0xcf00_0000,
+            0x5f00_0000, // 2^31, -2^31, 2^63
+        ];
+        match self.below(8) {
+            0..=2 => *self.pick(&SPECIAL),
+            3 => ((self.below(2001) as i32 - 1000) as f32).to_bits(), // interi piccoli
+            4 => ((self.below(2001) as i32 - 1000) as f32 / 8.0).to_bits(),
+            _ => self.next_u32(),
+        }
+    }
+
+    /// Valore FP a 64 bit con molti casi limite.
+    pub fn fp64(&mut self) -> u64 {
+        const SPECIAL: [u64; 18] = [
+            0,
+            0x8000_0000_0000_0000,
+            0x3ff0_0000_0000_0000,
+            0xbff0_0000_0000_0000,
+            0x7ff0_0000_0000_0000,
+            0xfff0_0000_0000_0000,
+            0x7ff8_0000_0000_0000,
+            0xfff8_0000_0000_0001,
+            0x7ff0_0000_0000_0001,
+            0xfff4_0000_0000_0000,
+            0x0000_0000_0000_0001,
+            0x800f_ffff_ffff_ffff,
+            0x0010_0000_0000_0000,
+            0x7fef_ffff_ffff_ffff,
+            0x3fe0_0000_0000_0000,
+            0x4004_0000_0000_0000,
+            0x41e0_0000_0000_0000,
+            0x43e0_0000_0000_0000,
+        ];
+        match self.below(8) {
+            0..=2 => *self.pick(&SPECIAL),
+            3 => ((self.below(2001) as i64 - 1000) as f64).to_bits(),
+            4 => ((self.below(2001) as i64 - 1000) as f64 / 8.0).to_bits(),
+            _ => self.next_u64(),
+        }
+    }
+
+    /// Registro vettoriale: corsie a 32 o 64 bit con valori FP, o bit casuali.
+    pub fn fp_vector(&mut self) -> u128 {
+        match self.below(4) {
+            0 => (0..4).fold(0u128, |v, i| v | (self.fp32() as u128) << (32 * i)),
+            1 => (self.fp64() as u128) | (self.fp64() as u128) << 64,
+            2 => (0..8).fold(0u128, |v, i| v | ((self.fp32() >> 16) as u128) << (16 * i)),
+            _ => (self.next_u64() as u128) | (self.next_u64() as u128) << 64,
+        }
+    }
 }

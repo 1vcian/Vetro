@@ -52,7 +52,42 @@ pub enum Class {
     Exclusive,
     AcqRel,
     Branch,
+    /// Classe SIMD/FP di elaborazione dati: indice in `SIMD_CLASSES`.
+    Simd(usize),
+    /// Load/store SIMD con base x28.
+    SimdMem,
 }
+
+/// Classi SIMD/FP di elaborazione dati: (maschera, valore, nome).
+pub const SIMD_CLASSES: &[(u32, u32, &str)] = &[
+    (0x5F20_7C00, 0x1E20_4000, "fp 1-source"),
+    (0x5F20_0C00, 0x1E20_0800, "fp 2-source"),
+    (0x5F00_0000, 0x1F00_0000, "fp 3-source"),
+    (0x5F20_3C00, 0x1E20_2000, "fp compare"),
+    (0x5F20_0C00, 0x1E20_0400, "fp ccmp"),
+    (0x5F20_0C00, 0x1E20_0C00, "fp csel"),
+    (0x5F20_1C00, 0x1E20_1000, "fp imm"),
+    (0x5F20_FC00, 0x1E20_0000, "fp <-> int"),
+    (0x5F20_0000, 0x1E00_0000, "fp <-> fixed"),
+    (0x9F20_0400, 0x0E20_0400, "simd three same"),
+    (0xDF20_0400, 0x5E20_0400, "simd scalar three same"),
+    (0x9F20_0C00, 0x0E20_0000, "simd three diff"),
+    (0xDF20_0C00, 0x5E20_0000, "simd scalar three diff"),
+    (0x9F3E_0C00, 0x0E20_0800, "simd two misc"),
+    (0xDF3E_0C00, 0x5E20_0800, "simd scalar two misc"),
+    (0x9F3E_0C00, 0x0E30_0800, "simd across"),
+    (0xDF3E_0C00, 0x5E30_0800, "simd scalar pairwise"),
+    (0x9FE0_8400, 0x0E00_0400, "simd copy"),
+    (0xDFE0_8400, 0x5E00_0400, "simd scalar copy"),
+    (0x9FF8_0400, 0x0F00_0400, "simd modified imm"),
+    (0x9F80_0400, 0x0F00_0400, "simd shift imm"),
+    (0xDF80_0400, 0x5F00_0400, "simd scalar shift imm"),
+    (0x9F00_0400, 0x0F00_0000, "simd indexed"),
+    (0xDF00_0400, 0x5F00_0000, "simd scalar indexed"),
+    (0xBF20_8C00, 0x0E00_0000, "simd tbl"),
+    (0xBF20_8C00, 0x0E00_0800, "simd permute"),
+    (0xBF20_8400, 0x2E00_0000, "simd ext"),
+];
 
 const WEIGHTS: &[(Class, u64)] = &[
     (Class::AddSubImm, 6),
@@ -78,7 +113,12 @@ const WEIGHTS: &[(Class, u64)] = &[
     (Class::Exclusive, 3),
     (Class::AcqRel, 2),
     (Class::Branch, 6),
+    (Class::SimdMem, 6),
 ];
+
+/// Peso complessivo delle classi SIMD/FP di elaborazione dati (ripartito
+/// in parti uguali tra le classi di `SIMD_CLASSES`).
+const SIMD_WEIGHT: u64 = 60;
 
 /// Classi da cui si pesca l'istruzione UNDEFINED finale: solo bit casuali
 /// nella maschera, senza correzioni.
@@ -159,6 +199,8 @@ fn accepted(w: u32) -> bool {
 
 struct Gen<'a> {
     rng: &'a mut Rng,
+    /// Includere le classi SIMD/FP.
+    simd: bool,
 }
 
 impl Gen<'_> {
@@ -427,6 +469,10 @@ impl Gen<'_> {
 
     fn unit(&mut self) -> Unit {
         let total: u64 = WEIGHTS.iter().map(|(_, w)| w).sum();
+        if self.simd && self.rng.below(total + SIMD_WEIGHT) >= total {
+            let k = self.rng.below(SIMD_CLASSES.len() as u64) as usize;
+            return Unit::Plain(vec![self.simd_dp(k)]);
+        }
         let mut pick = self.rng.below(total);
         let class = WEIGHTS
             .iter()
@@ -445,10 +491,85 @@ impl Gen<'_> {
                 Unit::Plain(self.mem_unit(class))
             }
             Class::Exclusive => Unit::Plain(self.exclusive_unit()),
+            Class::SimdMem if self.simd => Unit::Plain(self.simd_mem()),
+            Class::SimdMem => Unit::Plain(vec![self.dp(Class::AddSubImm)]),
             Class::AcqRel => Unit::Plain(vec![self.acq_rel()]),
             Class::Branch => self.branch(),
             Class::LdLiteral => self.literal(),
             c => Unit::Plain(vec![self.dp(c)]),
+        }
+    }
+
+    /// Istruzione SIMD/FP della classe `k`, accettata dal decoder.
+    fn simd_dp(&mut self, k: usize) -> u32 {
+        let (mask, value, _) = SIMD_CLASSES[k];
+        loop {
+            let w = fix_rd(self.raw(mask, value), self.rng);
+            if accepted(w) {
+                return w;
+            }
+        }
+    }
+
+    /// Load/store SIMD con base x28 e indirizzi dentro il blocco di memoria.
+    fn simd_mem(&mut self) -> Vec<u32> {
+        loop {
+            let mut writeback = false;
+            let w = match self.rng.below(4) {
+                0 => {
+                    // LDR/STR B/H/S/D/Q, offset senza segno
+                    let mut w = self.raw(0x3F00_0000, 0x3D00_0000);
+                    let scale = (get(w, 23, 23) << 2) | get(w, 31, 30);
+                    if scale > 4 {
+                        continue;
+                    }
+                    w = set(w, 21, 10, self.rng.below(0x700 >> scale) as u32);
+                    w
+                }
+                1 => {
+                    // LDP/STP S/D/Q
+                    let w = self.raw(0x3E00_0000, 0x2C00_0000);
+                    let idx = get(w, 24, 23);
+                    writeback = idx == 0b01 || idx == 0b11;
+                    if get(w, 22, 22) == 1 && get(w, 4, 0) == get(w, 14, 10) {
+                        continue; // Rt == Rt2 in un load: UNPREDICTABLE
+                    }
+                    w
+                }
+                2 => {
+                    // LD1–LD4/ST1–ST4 strutture multiple (con o senza post-indice)
+                    let mut w = self.raw(0xBFA0_0000, 0x0C00_0000);
+                    if self.rng.chance(1, 2) {
+                        w |= 1 << 23;
+                        w = set(w, 20, 16, if self.rng.chance(1, 2) { 31 } else { INDEX_REG });
+                        writeback = true;
+                    } else {
+                        w = set(w, 20, 16, 0);
+                    }
+                    w
+                }
+                _ => {
+                    // Struttura singola / replica
+                    let mut w = self.raw(0xBF80_0000, 0x0D00_0000);
+                    if self.rng.chance(1, 2) {
+                        w |= 1 << 23;
+                        w = set(w, 20, 16, if self.rng.chance(1, 2) { 31 } else { INDEX_REG });
+                        writeback = true;
+                    } else {
+                        w = set(w, 20, 16, 0);
+                    }
+                    w
+                }
+            };
+            let w = set(w, 9, 5, BASE_REG);
+            if !accepted(w) {
+                continue;
+            }
+            let mut out = vec![w];
+            if writeback {
+                self.capture_and_restore(&mut out);
+            }
+            return out;
         }
     }
 
@@ -502,13 +623,19 @@ fn layout(units: Vec<Unit>) -> Vec<u32> {
     body
 }
 
-/// Genera il caso `seed` con circa `body_len` istruzioni nel corpo.
+/// Genera il caso `seed` con circa `body_len` istruzioni nel corpo, solo
+/// istruzioni intere.
 pub fn generate(seed: u64, body_len: usize) -> Case {
+    generate_with(seed, body_len, false)
+}
+
+/// Come [`generate`], con le classi SIMD/FP se `simd`.
+pub fn generate_with(seed: u64, body_len: usize, simd: bool) -> Case {
     let mut rng = Rng::new(seed);
     let mut units = Vec::new();
     let mut n = 0;
     {
-        let mut g = Gen { rng: &mut rng };
+        let mut g = Gen { rng: &mut rng, simd };
         while n < body_len {
             let u = g.unit();
             n += match &u {
@@ -520,7 +647,7 @@ pub fn generate(seed: u64, body_len: usize) -> Case {
     }
     let mut body = layout(units);
     let undefined_tail = if rng.chance(1, 8) {
-        let w = Gen { rng: &mut rng }.undefined();
+        let w = Gen { rng: &mut rng, simd }.undefined();
         body.push(w);
         Some(w)
     } else {
@@ -536,6 +663,14 @@ pub fn generate(seed: u64, body_len: usize) -> Case {
         };
     }
     program.nzcv = (rng.below(16) as u32) << 28;
+    if simd {
+        for v in program.v.iter_mut() {
+            *v = rng.fp_vector();
+        }
+        // FPCR: AHP, DN, FZ, RMode casuali (metà dei casi a zero).
+        program.fpcr = if rng.chance(1, 2) { 0 } else { (rng.below(32) as u32) << 22 };
+        program.fpsr = if rng.chance(1, 4) { rng.next_u32() & 0x0800_009F } else { 0 };
+    }
     program.mem = (0..MEM_SIZE).map(|_| rng.next_u32() as u8).collect();
     Case { seed, program, undefined_tail }
 }
