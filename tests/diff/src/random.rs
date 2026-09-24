@@ -629,6 +629,46 @@ pub fn generate(seed: u64, body_len: usize) -> Case {
     generate_with(seed, body_len, false)
 }
 
+/// Programma breve di sole istruzioni SIMD/FP su registri pieni di casi
+/// speciali (NaN, infiniti, zeri con segno, denormali): per le regole fini
+/// della virgola mobile, che i programmi lunghi osservano di rado.
+pub fn generate_fp_focused(seed: u64) -> Case {
+    let mut rng = Rng::new(seed ^ 0xf00d_0000_0000_0000);
+    let mut body = Vec::new();
+    {
+        let mut g = Gen { rng: &mut rng, simd: true };
+        // Tre volte su quattro una classe con aritmetica FP.
+        let fp: Vec<usize> = SIMD_CLASSES
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.2.starts_with("fp") || c.2.contains("three same") || c.2.contains("two misc"))
+            .map(|(i, _)| i)
+            .collect();
+        for _ in 0..6 {
+            let k = if g.rng.chance(3, 4) {
+                *g.rng.pick(&fp)
+            } else {
+                g.rng.below(SIMD_CLASSES.len() as u64) as usize
+            };
+            body.push(g.simd_dp(k));
+        }
+    }
+    let mut program = Program::new(body);
+    for (i, x) in program.x.iter_mut().enumerate() {
+        *x = match i as u32 {
+            BASE_REG => BASE_PTR,
+            INDEX_REG => rng.below(256),
+            _ => rng.interesting_u64(),
+        };
+    }
+    for v in program.v.iter_mut() {
+        *v = rng.fp_vector_special();
+    }
+    program.fpcr = if rng.chance(1, 2) { 0 } else { (rng.below(32) as u32) << 22 };
+    program.nzcv = (rng.below(16) as u32) << 28;
+    Case { seed, program, undefined_tail: None }
+}
+
 /// Come [`generate`], con le classi SIMD/FP se `simd`.
 pub fn generate_with(seed: u64, body_len: usize, simd: bool) -> Case {
     let mut rng = Rng::new(seed);

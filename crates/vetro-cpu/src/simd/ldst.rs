@@ -337,7 +337,8 @@ pub(crate) fn exec<M: Memory>(cpu: &mut Cpu, i: VecMemInsn, mem: &mut M) -> Resu
                     cpu.v[t] = v;
                 } else if load {
                     let x = read(mem, a, ebytes)? as u64;
-                    cpu.v[t] = set_elem(clip(cpu.v[t], datasize), index as usize, esize, x);
+                    // Una corsia: il registro resta intero (Q conta solo per l'indice).
+                    cpu.v[t] = set_elem(cpu.v[t], index as usize, esize, x);
                 } else {
                     write(mem, a, ebytes, elem(cpu.v[t], index as usize, esize) as u128)?;
                 }

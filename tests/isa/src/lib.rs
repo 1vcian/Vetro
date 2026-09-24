@@ -37,6 +37,8 @@ pub struct Case {
     want_flags: Option<u32>,
     want_mem: Vec<(i64, Vec<u8>)>,
     want_signal: Option<i32>,
+    want_v: Vec<(usize, u128)>,
+    want_fpsr: Option<u32>,
 }
 
 pub fn case(name: &str, body: &[u32]) -> Case {
@@ -48,6 +50,8 @@ pub fn case(name: &str, body: &[u32]) -> Case {
         want_flags: None,
         want_mem: Vec::new(),
         want_signal: None,
+        want_v: Vec::new(),
+        want_fpsr: None,
     }
 }
 
@@ -61,6 +65,28 @@ impl Case {
     pub fn x(mut self, r: usize, v: u64) -> Self {
         assert!(r != 28, "x28 è riservato alla base della memoria");
         self.program.x[r] = v;
+        self
+    }
+
+    /// Valore iniziale di un registro vettoriale.
+    pub fn v(mut self, r: usize, val: u128) -> Self {
+        self.program.v[r] = val;
+        self
+    }
+
+    pub fn fpcr(mut self, val: u32) -> Self {
+        self.program.fpcr = val;
+        self
+    }
+
+    pub fn want_v(mut self, r: usize, val: u128) -> Self {
+        self.want_v.push((r, val));
+        self
+    }
+
+    /// FPSR atteso (flag cumulativi).
+    pub fn want_fpsr(mut self, val: u32) -> Self {
+        self.want_fpsr = Some(val);
         self
     }
 
@@ -133,6 +159,12 @@ impl Case {
         }
         if let Some(f) = self.want_flags {
             assert_eq!(d.nzcv >> 28, f, "{name}: NZCV = {:04b}, atteso {f:04b}", d.nzcv >> 28);
+        }
+        for &(r, v) in &self.want_v {
+            assert_eq!(d.v[r], v, "{name}: v{r} = {:#034x}, atteso {v:#034x}", d.v[r]);
+        }
+        if let Some(f) = self.want_fpsr {
+            assert_eq!(d.fpsr, f, "{name}: FPSR = {:#x}, atteso {f:#x}", d.fpsr);
         }
         for (off, bytes) in &self.want_mem {
             let i = mem_index(*off, bytes.len());

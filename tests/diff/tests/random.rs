@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use vetro_diff::harness::{Program, compare, run_qemu, run_vetro};
 use vetro_diff::qemu;
-use vetro_diff::random::generate;
+use vetro_diff::random::{Case, generate_fp_focused, generate_with};
 
 const BODY_LEN: usize = 48;
 
@@ -32,8 +32,28 @@ fn describe(p: &Program) -> String {
 
 #[test]
 fn random_programs_match_qemu() {
-    let Some(q) = qemu::locate_or_skip("random_programs_match_qemu") else { return };
-    let cases = env_u64("VETRO_DIFF_CASES", 250);
+    run("random_programs_match_qemu", false, env_u64("VETRO_DIFF_CASES", 250));
+}
+
+/// Stesso confronto con le classi SIMD e virgola mobile.
+#[test]
+fn random_simd_programs_match_qemu() {
+    run("random_simd_programs_match_qemu", true, env_u64("VETRO_DIFF_CASES", 250));
+}
+
+/// Programmi brevi di sola virgola mobile su casi speciali.
+#[test]
+fn random_fp_focused_match_qemu() {
+    run_with("random_fp_focused_match_qemu", "fp-", env_u64("VETRO_DIFF_FP_CASES", 600), generate_fp_focused);
+}
+
+fn run(name: &str, simd: bool, cases: u64) {
+    let prefix = if simd { "simd-" } else { "" };
+    run_with(name, prefix, cases, move |seed| generate_with(seed, BODY_LEN, simd));
+}
+
+fn run_with(name: &str, prefix: &str, cases: u64, make: impl Fn(u64) -> Case + Sync) {
+    let Some(q) = qemu::locate_or_skip(name) else { return };
     let first = env_u64("VETRO_DIFF_SEED", 0);
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).min(8);
 
@@ -49,10 +69,10 @@ fn random_programs_match_qemu() {
                         break;
                     }
                     let seed = first + i;
-                    let case = generate(seed, BODY_LEN);
+                    let case = make(seed);
                     let image = case.program.build();
                     let ours = run_vetro(&image);
-                    let theirs = run_qemu(&q, &format!("random-{seed}"), &image);
+                    let theirs = run_qemu(&q, &format!("random-{prefix}{seed}"), &image);
                     let diff = compare(&ours, &theirs);
                     match &theirs {
                         vetro_diff::harness::Run::Signal(4) => sigill.fetch_add(1, Ordering::Relaxed),
@@ -70,7 +90,7 @@ fn random_programs_match_qemu() {
     let mut failures = failures.into_inner().unwrap();
     failures.sort_by_key(|f| f.0);
     eprintln!(
-        "{cases} programmi: {} con dump, {} con SIGILL atteso in coda, {} differenze",
+        "{name}: {cases} programmi: {} con dump, {} con SIGILL atteso in coda, {} differenze",
         dumps.into_inner(),
         sigill.into_inner(),
         failures.len()
