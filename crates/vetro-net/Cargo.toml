@@ -8,3 +8,8 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+# Solo per i test: parser indipendente per validare i pacchetti prodotti
+# (checksum, campi, DHCP, DNS). Non entra nel crate né nel build WASM. ADR 0007.
+[dev-dependencies]
+smoltcp = { version = "0.14", default-features = false, features = ["std", "medium-ethernet", "proto-ipv4", "proto-dhcpv4", "proto-dns", "socket-raw"] }
