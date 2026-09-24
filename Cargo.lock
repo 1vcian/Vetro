@@ -49,6 +49,9 @@ dependencies = [
 [[package]]
 name = "vetro-mmu"
 version = "0.0.0"
+dependencies = [
+ "vetro-cpu",
+]
 
 [[package]]
 name = "vetro-net"
