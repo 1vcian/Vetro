@@ -31,8 +31,8 @@ Safari mobile; qualsiasi componente cloud obbligatorio.
 | Milestone | Stato | Comando di uscita |
 |---|---|---|
 | M0 Impalcatura e oracolo | **completata** (CI verde, 2026-09-24) | `VETRO_REQUIRE_ORACLE=1 tools/ci.sh` |
-| M1 Interprete CPU AArch64 | **completata in locale** (in attesa della CI) | test per istruzione + 200 programmi casuali uguali a qemu-aarch64 (ADR 0006) |
-| M2 Syscall Linux utente | — | selezione LTP user mode, BusyBox statica |
+| M1 Interprete CPU AArch64 | **completata** (CI verde, 2026-09-24) | test per istruzione + 200 programmi casuali uguali a qemu-aarch64 (ADR 0006) |
+| M2 Syscall Linux utente | prossima | selezione LTP user mode, BusyBox statica |
 | M3 Modalità sistema e kernel | — | kernel + initramfs fino alla shell, kselftest scelti |
 | M4 JIT verso WASM | — | test M1/M2 col JIT, parità interprete-JIT |
 | M5 Avvio di Android | — | home in Chrome, adb install di un APK |
