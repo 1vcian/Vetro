@@ -11,7 +11,7 @@ Un unico workspace Cargo. Un crate per componente in `crates/`
 (`vetro-cpu`, `vetro-mmu`, `vetro-jit`, `vetro-platform`, `vetro-net`,
 `vetro-analysis`, `vetro-snapshot`, `vetro-wasm`, `vetro-cli`). L'harness
 differenziale è il crate `vetro-diff` in `tests/diff`. Edizione 2024,
-licenza Apache-2.0 ereditata dal workspace.
+licenza ereditata dal workspace (PolyForm Noncommercial 1.0.0, vedi ADR 0004).
 
 I crate del core non usano `std::process`, `std::fs` o thread dell'host
 direttamente: devono compilare in WASM (la CI lo verifica). `vetro-cli` e

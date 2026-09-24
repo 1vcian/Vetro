@@ -5,7 +5,7 @@ nel browser e fa girare Android (AOSP + microG) con strumenti di analisi
 dall'esterno. Il piano, le milestone e lo stato stanno in `docs/PLAN.md`; il
 diario di lavoro in `docs/progress/`. Leggili a inizio sessione.
 
-"Vetro" è un nome provvisorio. Il prodotto non si chiama mai "Android".
+"Vetro" è il nome ufficiale. Il prodotto non si presenta mai come "Android" (marchio Google).
 
 ## Principi
 
@@ -74,5 +74,6 @@ Aggiungi tre righe in `docs/progress/Mx.md`: fatto, manca, bloccato.
 
 ## Licenze
 
-Codice nostro: Apache-2.0. Il kernel Linux è GPL-2.0: per ogni immagine
+Codice nostro: PolyForm Noncommercial 1.0.0 (`LICENSE.md`, vedi ADR 0004):
+niente uso commerciale. Il kernel Linux è GPL-2.0: per ogni immagine
 distribuita si pubblicano anche i sorgenti del kernel usato.

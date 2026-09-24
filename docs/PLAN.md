@@ -30,8 +30,8 @@ Safari mobile; qualsiasi componente cloud obbligatorio.
 
 | Milestone | Stato | Comando di uscita |
 |---|---|---|
-| M0 Impalcatura e oracolo | **in chiusura** (verde in locale, CI da attivare sul remoto) | `VETRO_REQUIRE_ORACLE=1 tools/ci.sh` |
-| M1 Interprete CPU AArch64 | da iniziare | test per istruzione + 200 casi RISU uguali a qemu-aarch64 |
+| M0 Impalcatura e oracolo | **completata** (CI verde, 2026-09-24) | `VETRO_REQUIRE_ORACLE=1 tools/ci.sh` |
+| M1 Interprete CPU AArch64 | **in corso** | test per istruzione + 200 casi RISU uguali a qemu-aarch64 |
 | M2 Syscall Linux utente | — | selezione LTP user mode, BusyBox statica |
 | M3 Modalità sistema e kernel | — | kernel + initramfs fino alla shell, kselftest scelti |
 | M4 JIT verso WASM | — | test M1/M2 col JIT, parità interprete-JIT |

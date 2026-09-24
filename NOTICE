@@ -1,0 +1,8 @@
+Required Notice: Copyright (c) 2026 Lucian Medrihan (https://github.com/1vcian/Vetro)
+
+Vetro is licensed under the PolyForm Noncommercial License 1.0.0 (see LICENSE.md).
+Commercial use is not permitted without a separate written agreement.
+
+Third-party components keep their own licenses. In particular, the Linux kernel
+shipped in guest images is GPL-2.0, and its exact sources are published with
+every distributed image.
