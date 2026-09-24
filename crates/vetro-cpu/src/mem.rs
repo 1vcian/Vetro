@@ -19,10 +19,29 @@ pub struct MemFault {
 }
 
 /// Memoria vista dalla CPU (indirizzi virtuali, little-endian).
+///
+/// I metodi con un'implementazione di default servono alla modalità
+/// sistema; in modalità utente coincidono con `read` e `write`.
 pub trait Memory {
     fn read(&mut self, addr: u64, buf: &mut [u8]) -> Result<(), MemFault>;
     fn write(&mut self, addr: u64, data: &[u8]) -> Result<(), MemFault>;
     fn fetch(&mut self, addr: u64) -> Result<u32, MemFault>;
+
+    /// Lettura di LDTR: a EL1 i permessi sono quelli di EL0.
+    fn read_unpriv(&mut self, addr: u64, buf: &mut [u8]) -> Result<(), MemFault> {
+        self.read(addr, buf)
+    }
+
+    /// Scrittura di STTR: a EL1 i permessi sono quelli di EL0.
+    fn write_unpriv(&mut self, addr: u64, data: &[u8]) -> Result<(), MemFault> {
+        self.write(addr, data)
+    }
+
+    /// DC ZVA: azzera il blocco di 64 byte allineato che parte da `addr`.
+    /// Su memoria Device dà un fault di allineamento (modalità sistema).
+    fn zero_block(&mut self, addr: u64) -> Result<(), MemFault> {
+        self.write(addr, &[0u8; 64])
+    }
 }
 
 /// Permessi di una regione.

@@ -96,18 +96,36 @@ pub enum CcmpOperand {
     Imm(u8),
 }
 
-/// Registri di sistema accessibili a EL0 che implementiamo.
+pub use crate::sysreg::{EnvReg, SysReg};
+
+/// Campo di PSTATE scritto da MSR (immediato).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SysReg {
-    Nzcv,
-    TpidrEl0,
-    TpidrroEl0,
-    Fpcr,
-    Fpsr,
-    /// Sola lettura: dimensione del blocco di DC ZVA.
-    DczidEl0,
-    /// Sola lettura: geometria delle cache.
-    CtrEl0,
+pub enum PstateField {
+    SpSel,
+    DaifSet,
+    DaifClr,
+}
+
+/// Traduzione d'indirizzo (AT) del regime EL1&0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AtOp {
+    S1e1r,
+    S1e1w,
+    S1e0r,
+    S1e0w,
+}
+
+/// Istruzioni di sistema (SYS) accessibili solo a EL1.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SysOp {
+    Tlbi(crate::sys::TlbiOp),
+    At(AtOp),
+    /// IC IALLU, IC IALLUIS.
+    IcIall,
+    /// DC IVAC.
+    DcIvac,
+    /// DC ISW, DC CSW, DC CISW.
+    DcSetWay,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -293,8 +311,32 @@ pub enum Insn {
     Svc {
         imm: u16,
     },
+    /// UNDEFINED a EL0; a EL1 chiamata all'hypervisor (PSCI).
+    Hvc {
+        imm: u16,
+    },
+    /// UNDEFINED a EL0; a EL1 chiamata al monitor (PSCI).
+    Smc {
+        imm: u16,
+    },
     Brk {
         imm: u16,
+    },
+    /// Ritorno da eccezione (UNDEFINED a EL0).
+    Eret,
+    /// In modalità utente è un NOP.
+    Wfi,
+    /// Come in QEMU è sempre un NOP (mai in attesa, quindi mai trappato).
+    Wfe,
+    /// MSR (immediato) su SPSel o DAIF: `imm` è CRm.
+    MsrImm {
+        field: PstateField,
+        imm: u8,
+    },
+    /// Istruzione SYS riservata a EL1 (TLBI, AT, manutenzione cache).
+    Sys {
+        op: SysOp,
+        rt: u8,
     },
     Nop,
     Barrier,
@@ -302,7 +344,8 @@ pub enum Insn {
     DcZva {
         rt: u8,
     },
-    /// DC CVAC/CVAU/CIVAC, IC IVAU: nessun effetto osservabile in M1.
+    /// DC CVAC/CVAU/CIVAC, IC IVAU: nessun effetto osservabile (come in
+    /// QEMU); a EL0 si possono trappare con SCTLR_EL1.UCI = 0.
     CacheMaint,
     Mrs {
         reg: SysReg,
@@ -320,6 +363,8 @@ pub enum Insn {
         addr: AddrMode,
         rt: u8,
         rn: u8,
+        /// LDTR/STTR: a EL1 l'accesso si controlla come se fosse da EL0.
+        unpriv: bool,
     },
     LdLiteral {
         size: u8,
@@ -500,8 +545,11 @@ fn branch_sys(w: u32) -> Insn {
 }
 
 fn branch_reg(w: u32) -> Insn {
+    if w == 0xD69F_03E0 {
+        return Insn::Eret;
+    }
     // opc(24:21) op2(20:16)=11111 op3(15:10)=0 Rn op4(4:0)=0; il resto è
-    // PAuth, ERET, DRPS: non disponibili (o non a EL0) su v8.0.
+    // PAuth o DRPS: non disponibili (o fuori dallo stato di debug) su v8.0.
     if field(w, 20, 16) != 0b11111 || field(w, 15, 10) != 0 || field(w, 4, 0) != 0 {
         return Undefined;
     }
@@ -518,9 +566,11 @@ fn exception(w: u32) -> Insn {
     let imm = field(w, 20, 5) as u16;
     match (field(w, 23, 21), field(w, 4, 2), field(w, 1, 0)) {
         (0b000, 0, 0b01) => Insn::Svc { imm },
+        (0b000, 0, 0b10) => Insn::Hvc { imm },
+        (0b000, 0, 0b11) => Insn::Smc { imm },
         (0b001, 0, 0b00) => Insn::Brk { imm },
-        // HVC/SMC sono UNDEFINED a EL0; HLT lo è con halting disabilitato;
-        // DCPSx fuori dallo stato di debug.
+        // HLT è UNDEFINED con halting disabilitato; DCPSx fuori dallo stato
+        // di debug.
         _ => Undefined,
     }
 }
@@ -541,41 +591,52 @@ fn system(w: u32) -> Insn {
             match (crn, op1) {
                 // HINT: gli hint non allocati si comportano come NOP (così
                 // anche PAC*SP, BTI ecc. su una CPU v8.0).
-                (0b0010, 0b011) => Insn::Nop,
+                (0b0010, 0b011) => match (crm, op2) {
+                    (0, 0b010) => Insn::Wfe,
+                    (0, 0b011) => Insn::Wfi,
+                    _ => Insn::Nop,
+                },
                 (0b0011, 0b011) => match op2 {
                     0b010 => Insn::Clrex,
                     0b100..=0b110 => Insn::Barrier,
                     _ => Undefined,
                 },
-                // MSR (immediato) su PSTATE: nulla è accessibile a EL0 su v8.0.
+                // MSR (immediato) su PSTATE: su v8.0 solo SPSel e DAIF.
+                (0b0100, 0b000) if op2 == 0b101 => Insn::MsrImm { field: PstateField::SpSel, imm: crm as u8 },
+                (0b0100, 0b011) if op2 == 0b110 => Insn::MsrImm { field: PstateField::DaifSet, imm: crm as u8 },
+                (0b0100, 0b011) if op2 == 0b111 => Insn::MsrImm { field: PstateField::DaifClr, imm: crm as u8 },
                 _ => Undefined,
             }
         }
         0b01 => {
-            if l || op1 != 0b011 || crn != 0b0111 || op2 != 1 {
-                return Undefined;
+            if l {
+                return Undefined; // SYSL: nessuna codifica allocata su v8.0
             }
-            match crm {
-                0b0100 => Insn::DcZva { rt },
-                0b0101 | 0b1010 | 0b1011 | 0b1110 => Insn::CacheMaint,
-                _ => Undefined,
-            }
+            let op = match (op1, crn, crm, op2) {
+                (3, 7, 4, 1) => return Insn::DcZva { rt },
+                (3, 7, 5 | 10 | 11 | 14, 1) => return Insn::CacheMaint,
+                (0, 7, 1 | 5, 0) => SysOp::IcIall,
+                (0, 7, 6, 1) => SysOp::DcIvac,
+                (0, 7, 6 | 10 | 14, 2) => SysOp::DcSetWay,
+                (0, 7, 8, 0) => SysOp::At(AtOp::S1e1r),
+                (0, 7, 8, 1) => SysOp::At(AtOp::S1e1w),
+                (0, 7, 8, 2) => SysOp::At(AtOp::S1e0r),
+                (0, 7, 8, 3) => SysOp::At(AtOp::S1e0w),
+                _ => match crate::sys::TlbiOp::from_sys(op1, crn, crm, op2) {
+                    Some(t) => SysOp::Tlbi(t),
+                    None => return Undefined,
+                },
+            };
+            Insn::Sys { op, rt }
         }
         _ => {
-            let reg = match (op0, op1, crn, crm, op2) {
-                (3, 3, 4, 2, 0) => SysReg::Nzcv,
-                (3, 3, 13, 0, 2) => SysReg::TpidrEl0,
-                (3, 3, 13, 0, 3) => SysReg::TpidrroEl0,
-                (3, 3, 4, 4, 0) => SysReg::Fpcr,
-                (3, 3, 4, 4, 1) => SysReg::Fpsr,
-                (3, 3, 0, 0, 7) => SysReg::DczidEl0,
-                (3, 3, 0, 0, 1) => SysReg::CtrEl0,
-                _ => return Unimplemented("MRS/MSR registro di sistema"),
+            let Some(reg) = SysReg::lookup(op0, op1, crn, crm, op2) else {
+                return Unimplemented("MRS/MSR registro di sistema");
             };
             if l {
                 Insn::Mrs { reg, rt }
-            } else if matches!(reg, SysReg::TpidrroEl0 | SysReg::DczidEl0 | SysReg::CtrEl0) {
-                Undefined // sola lettura a EL0
+            } else if matches!(reg, SysReg::DczidEl0 | SysReg::CtrEl0) {
+                Undefined // sola lettura a ogni livello
             } else {
                 Insn::Msr { reg, rt }
             }
@@ -635,7 +696,14 @@ fn ldst(w: u32) -> Insn {
                     return Undefined;
                 };
                 let offset = (field(w, 21, 10) as i64) << size;
-                return Insn::LdSt { size, op, addr: AddrMode::Imm { offset, index: Index::Offset }, rt, rn };
+                return Insn::LdSt {
+                    size,
+                    op,
+                    addr: AddrMode::Imm { offset, index: Index::Offset },
+                    rt,
+                    rn,
+                    unpriv: false,
+                };
             }
             if bit(w, 21) {
                 if field(w, 11, 10) != 0b10 {
@@ -649,19 +717,27 @@ fn ldst(w: u32) -> Insn {
                     return Undefined;
                 };
                 let shift = if bit(w, 12) { size } else { 0 };
-                return Insn::LdSt { size, op, addr: AddrMode::Reg { rm: r(w, 16), extend, shift }, rt, rn };
+                return Insn::LdSt {
+                    size,
+                    op,
+                    addr: AddrMode::Reg { rm: r(w, 16), extend, shift },
+                    rt,
+                    rn,
+                    unpriv: false,
+                };
             }
             let offset = sext(field(w, 20, 12) as u64, 9);
             let (index, prfm_ok) = match field(w, 11, 10) {
                 0b00 => (Index::Offset, true), // LDUR/STUR/PRFUM
                 0b01 => (Index::Post, false),
-                0b10 => (Index::Offset, false), // LDTR/STTR: a EL0 come i normali
+                0b10 => (Index::Offset, false), // LDTR/STTR
                 _ => (Index::Pre, false),
             };
             let Some(op) = mem_op(size, opc, prfm_ok) else {
                 return Undefined;
             };
-            Insn::LdSt { size, op, addr: AddrMode::Imm { offset, index }, rt, rn }
+            let unpriv = field(w, 11, 10) == 0b10;
+            Insn::LdSt { size, op, addr: AddrMode::Imm { offset, index }, rt, rn, unpriv }
         }
     }
 }

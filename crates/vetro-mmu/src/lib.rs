@@ -12,9 +12,12 @@
 //!   ([`Mmu::walk`]), invalidazioni TLBI ([`Mmu::tlbi`]).
 //! - [`Fault`]: fault con codifiche DFSC/IFSC, ESR, FAR e PAR.
 //! - [`VirtMemory`]: implementa [`vetro_cpu::Memory`] sopra MMU e memoria
-//!   fisica.
+//!   fisica (un solo privilegio, fault restituiti al chiamante).
+//! - [`MmuBus`]: implementa [`vetro_cpu::SysBus`] per la modalità sistema
+//!   della CPU (ADR 0007).
 
 mod adapter;
+mod bus;
 mod fault;
 mod mmu;
 mod regs;
@@ -25,6 +28,7 @@ mod walk;
 mod tests;
 
 pub use adapter::VirtMemory;
+pub use bus::MmuBus;
 pub use fault::{Fault, FaultKind, ec};
 pub use mmu::Mmu;
 pub use regs::{MmuRegs, PAGE_SIZE, sctlr, tcr};

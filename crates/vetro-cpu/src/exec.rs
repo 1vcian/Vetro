@@ -158,7 +158,7 @@ impl Cpu {
     }
 
     /// Restituisce `Some(target)` se l'istruzione salta.
-    fn execute<M: Memory>(&mut self, insn: Insn, raw: u32, mem: &mut M) -> Result<Option<u64>, Exception> {
+    pub(crate) fn execute<M: Memory>(&mut self, insn: Insn, raw: u32, mem: &mut M) -> Result<Option<u64>, Exception> {
         let pc = self.pc;
         match insn {
             Insn::AddSubImm { sf, sub, setflags, imm, rn, rd } => {
@@ -383,7 +383,17 @@ impl Cpu {
             Insn::Clrex => self.monitor = None,
             Insn::DcZva { rt } => {
                 let addr = self.xr(rt) & !63;
-                mem.write(addr, &[0u8; 64])?;
+                mem.zero_block(addr)?;
+            }
+            // Istruzioni che la modalità sistema esegue prima di arrivare qui
+            // (`crate::sys`): in modalità utente si comportano come prima
+            // che il decoder le riconoscesse.
+            Insn::Wfi | Insn::Wfe => {}
+            Insn::Hvc { .. } | Insn::Smc { .. } | Insn::Eret | Insn::MsrImm { .. } | Insn::Sys { .. } => {
+                return Err(Exception::Undefined(raw));
+            }
+            Insn::Mrs { reg, .. } | Insn::Msr { reg, .. } if !reg.is_el0_legacy() => {
+                return Err(Exception::Unimplemented { raw, what: "MRS/MSR registro di sistema" });
             }
             Insn::Mrs { reg, rt } => {
                 let v = match reg {
@@ -395,7 +405,8 @@ impl Cpu {
                     // Blocco DC ZVA di 2^4 parole = 64 byte, DC ZVA permesso.
                     SysReg::DczidEl0 => 4,
                     // Valore della Cortex-A53 (come QEMU `-cpu cortex-a53`).
-                    SysReg::CtrEl0 => 0x8444_8004,
+                    SysReg::CtrEl0 => crate::sys::id::CTR_EL0,
+                    _ => unreachable!("registro non di M1, escluso sopra"),
                 };
                 self.set_x(rt, v);
             }
@@ -404,15 +415,15 @@ impl Cpu {
                 match reg {
                     SysReg::Nzcv => self.nzcv = (v as u32) & 0xf000_0000,
                     SysReg::TpidrEl0 => self.tpidr_el0 = v,
-                    SysReg::TpidrroEl0 | SysReg::DczidEl0 | SysReg::CtrEl0 => {
-                        unreachable!("rifiutato dal decoder")
-                    }
+                    // Sola lettura a EL0 (DCZID e CTR li rifiuta già il decoder).
+                    SysReg::TpidrroEl0 => return Err(Exception::Undefined(raw)),
                     SysReg::Fpcr => self.fpcr = v as u32 & crate::state::FPCR_MASK,
                     SysReg::Fpsr => self.fpsr = v as u32 & crate::state::FPSR_MASK,
+                    _ => unreachable!("registro non di M1, escluso sopra"),
                 }
             }
 
-            Insn::LdSt { size, op, addr, rt, rn } => {
+            Insn::LdSt { size, op, addr, rt, rn, unpriv } => {
                 let base = self.xsp(rn);
                 let (address, writeback) = match addr {
                     AddrMode::Imm { offset, index } => {
@@ -429,9 +440,18 @@ impl Cpu {
                 };
                 let bytes = 1usize << size;
                 match op {
+                    MemOp::Store if unpriv => {
+                        mem.write_unpriv(address, &(self.xr(rt) as u128).to_le_bytes()[..bytes])?
+                    }
                     MemOp::Store => write_uint(mem, address, bytes, self.xr(rt) as u128)?,
                     MemOp::Load { .. } => {
-                        let raw = read_uint(mem, address, bytes)? as u64;
+                        let raw = if unpriv {
+                            let mut b = [0u8; 8];
+                            mem.read_unpriv(address, &mut b[..bytes])?;
+                            u64::from_le_bytes(b)
+                        } else {
+                            read_uint(mem, address, bytes)? as u64
+                        };
                         self.set_x(rt, extend_load(raw, size, op));
                     }
                     MemOp::Prefetch => {}

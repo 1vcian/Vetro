@@ -5,7 +5,9 @@ use vetro_cpu::Access;
 use crate::fault::Fault;
 use crate::regs::MmuRegs;
 use crate::tlb::{Tlb, TlbEntry, TlbiOp, VA_MASK};
-use crate::walk::{PhysMemory, Translation, check, fault, mmu_off, select, walk_tables};
+use crate::walk::{
+    PhysMemory, Translation, check, check_device_alignment, fault, mmu_off, select, walk_tables,
+};
 
 /// MMU stage 1 del regime EL1&0 per un core.
 #[derive(Clone, Debug)]
@@ -45,9 +47,26 @@ impl Mmu {
         access: Access,
         el: u8,
     ) -> Result<Translation, Fault> {
+        self.translate_checked(phys, va, access, el, true)
+    }
+
+    /// Come [`translate`](Self::translate), ma con `aligned = false` un
+    /// accesso ai dati su memoria Device (anche a MMU spenta, dove i dati
+    /// sono Device-nGnRnE) dà [`FaultKind::Alignment`]: dopo i fault del
+    /// walk e prima dei permessi, come `AArch64.FirstStageTranslate`.
+    pub fn translate_checked<P: PhysMemory + ?Sized>(
+        &mut self,
+        phys: &mut P,
+        va: u64,
+        access: Access,
+        el: u8,
+        aligned: bool,
+    ) -> Result<Translation, Fault> {
         let regs = self.regs;
         if !regs.enabled() {
-            return mmu_off(&regs, self.pa_bits, va, access, el);
+            let t = mmu_off(&regs, self.pa_bits, va, access, el)?;
+            check_device_alignment(&t, access, aligned).map_err(|k| fault(k, va, access, el))?;
+            return Ok(t);
         }
         let hi = select(&regs, va).map_err(|k| fault(k, va, access, el))?;
         let key = va & VA_MASK;
@@ -60,6 +79,7 @@ impl Mmu {
                 t
             }
         };
+        check_device_alignment(&t, access, aligned).map_err(|k| fault(k, va, access, el))?;
         check(&regs, &t, access, el).map_err(|k| fault(k, va, access, el))?;
         Ok(t)
     }
