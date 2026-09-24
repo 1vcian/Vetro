@@ -1,5 +1,5 @@
 //! Adattatore da MMU + memoria fisica al trait [`SysBus`] della modalità
-//! sistema della CPU (ADR 0007).
+//! sistema della CPU (ADR 0009).
 
 use vetro_cpu::Access;
 use vetro_cpu::sys::{AccessReq, AtResult, BusFault, SysBus, TlbiOp, TranslationRegs};

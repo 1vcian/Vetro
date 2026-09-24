@@ -434,6 +434,7 @@ _start:
     tlbi vmalle1
     dsb sy
     isb
+    adr x0, el0_data
     ldr x3, [x0]
     PX x3
 

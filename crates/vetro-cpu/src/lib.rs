@@ -1,7 +1,7 @@
 //! CPU AArch64 di Vetro: stato, decoder e interprete di riferimento.
 //!
 //! Livello ARMv8.0-A (ADR 0005), solo AArch64. Modalità utente (EL0, M1/M2)
-//! e modalità sistema (EL0/EL1 con MMU ed eccezioni, M3, ADR 0007).
+//! e modalità sistema (EL0/EL1 con MMU ed eccezioni, M3, ADR 0009).
 //! Interfaccia e invarianti in `docs/specs/cpu.md`.
 
 pub mod bits;

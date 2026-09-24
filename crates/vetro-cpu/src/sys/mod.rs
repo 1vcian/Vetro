@@ -1,5 +1,5 @@
 //! Modalità sistema: EL0 ed EL1, eccezioni, registri di sistema, MMU e
-//! interrupt (ADR 0007, `docs/specs/cpu.md`).
+//! interrupt (ADR 0009, `docs/specs/cpu.md`).
 //!
 //! La modalità utente ([`Cpu::step`] con una [`Memory`](crate::Memory))
 //! resta com'era: le eccezioni tornano al chiamante e nessun registro EL1

@@ -14,7 +14,7 @@
 //! - [`VirtMemory`]: implementa [`vetro_cpu::Memory`] sopra MMU e memoria
 //!   fisica (un solo privilegio, fault restituiti al chiamante).
 //! - [`MmuBus`]: implementa [`vetro_cpu::SysBus`] per la modalità sistema
-//!   della CPU (ADR 0007).
+//!   della CPU (ADR 0009).
 
 mod adapter;
 mod bus;

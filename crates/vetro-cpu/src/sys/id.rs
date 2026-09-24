@@ -3,7 +3,7 @@
 //! Letti da `qemu-system-aarch64 -M virt,gic-version=3 -cpu cortex-a53`
 //! (QEMU 10.0.13) con un programma bare-metal. Unica differenza voluta:
 //! ID_AA64PFR0_EL1.EL0/EL1 dichiarano solo AArch64 (1) invece di AArch64 e
-//! AArch32 (2), perché Vetro non implementa AArch32 (ADR 0005 e 0007).
+//! AArch32 (2), perché Vetro non implementa AArch32 (ADR 0005 e 0009).
 
 /// MIDR_EL1: Arm, variante 0, Cortex-A53 (0xd03), revisione 4.
 pub const MIDR_EL1: u64 = 0x410f_d034;
