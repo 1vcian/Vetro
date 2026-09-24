@@ -1,0 +1,14 @@
+[package]
+name = "vetro-cli"
+description = "Runner nativo headless per test e CI."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "vetro"
+path = "src/main.rs"
+
+[lints]
+workspace = true

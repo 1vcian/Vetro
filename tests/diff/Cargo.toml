@@ -1,0 +1,10 @@
+[package]
+name = "vetro-diff"
+description = "Harness differenziale: oracolo QEMU e generazione di ELF minimi."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

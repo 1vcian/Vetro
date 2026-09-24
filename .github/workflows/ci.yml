@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # In CI uno skip dell'oracolo è un fallimento.
+  VETRO_REQUIRE_ORACLE: "1"
+
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain (da rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Oracolo QEMU
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-user
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  wasm:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain (da rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --target wasm32-unknown-unknown --workspace --exclude vetro-cli --exclude vetro-diff
+
+  # Il lint TypeScript (tsc --noEmit) si aggiunge quando nasce web/ (M5).

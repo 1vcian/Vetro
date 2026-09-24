@@ -1,0 +1,10 @@
+[package]
+name = "vetro-platform"
+description = "Piattaforma virt: GICv3, timer, UART PL011, RTC PL031, virtio-mmio, device tree."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

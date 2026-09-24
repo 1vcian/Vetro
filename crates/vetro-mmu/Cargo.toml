@@ -1,0 +1,10 @@
+[package]
+name = "vetro-mmu"
+description = "Tabelle delle pagine stage 1 e TLB software."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

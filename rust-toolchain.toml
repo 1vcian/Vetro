@@ -1,0 +1,7 @@
+# Nightly fissato: i thread WASM richiedono build-std (vedi docs/adr/0002).
+# Aggiornare solo con un ADR e CI verde.
+[toolchain]
+channel = "nightly-2026-09-15"
+components = ["rust-src", "clippy", "rustfmt"]
+targets = ["wasm32-unknown-unknown"]
+profile = "minimal"

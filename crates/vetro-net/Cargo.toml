@@ -1,0 +1,10 @@
+[package]
+name = "vetro-net"
+description = "Stack TCP/IP virtuale, sinkhole e client del relay."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

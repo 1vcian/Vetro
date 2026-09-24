@@ -1,0 +1,10 @@
+[package]
+name = "vetro-wasm"
+description = "Binding verso il browser."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

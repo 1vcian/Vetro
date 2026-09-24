@@ -1,0 +1,10 @@
+[package]
+name = "vetro-analysis"
+description = "Hook, decoder syscall/Binder/TLS, formato delle tracce."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

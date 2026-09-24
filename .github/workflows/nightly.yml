@@ -1,0 +1,22 @@
+name: nightly
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  VETRO_REQUIRE_ORACLE: "1"
+
+jobs:
+  differential:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-user
+      - uses: Swatinem/rust-cache@v2
+      # M0: solo l'oracolo. Da M1: sequenze RISU con numero alto di casi.
+      # Da M3: avvio del kernel headless.
+      - run: cargo test --release -p vetro-diff
