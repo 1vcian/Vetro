@@ -22,7 +22,13 @@ const ISS_FP: u64 = 1 << 24 | 0xe << 20;
 /// Op0, Op2, Op1, CRn, Rt, CRm, direzione (1 = lettura).
 fn sysreg_iss(raw: u32) -> u64 {
     let f = |hi, lo| u64::from(field(raw, hi, lo));
-    f(20, 19) << 20 | f(7, 5) << 17 | f(18, 16) << 14 | f(15, 12) << 10 | f(4, 0) << 5 | f(11, 8) << 1 | f(21, 21)
+    f(20, 19) << 20
+        | f(7, 5) << 17
+        | f(18, 16) << 14
+        | f(15, 12) << 10
+        | f(4, 0) << 5
+        | f(11, 8) << 1
+        | f(21, 21)
 }
 
 /// Istruzioni soggette alla trap di CPACR_EL1.FPEN.
@@ -45,7 +51,11 @@ impl Cpu {
     /// Esegue un'istruzione in modalità sistema, oppure prende un interrupt
     /// o un'eccezione. Richiede [`Cpu::reset_system`] (o
     /// `sys.mode = Mode::System`) prima del primo passo.
-    pub fn step_system<B: SysBus + ?Sized, E: CpuEnv + ?Sized>(&mut self, bus: &mut B, env: &mut E) -> SysEvent {
+    pub fn step_system<B: SysBus + ?Sized, E: CpuEnv + ?Sized>(
+        &mut self,
+        bus: &mut B,
+        env: &mut E,
+    ) -> SysEvent {
         debug_assert_eq!(self.sys.mode, Mode::System, "step_system in modalità utente");
         if let Some(ev) = self.take_interrupt(env) {
             return ev;
@@ -90,6 +100,8 @@ impl Cpu {
                     let f = Pending::Abort { va: addr, fsc: BusFault::FSC_ALIGNMENT, ea: false, access };
                     self.deliver_fault(Some(f), raw, false)
                 }
+                // Architetturale; QEMU non controlla SCTLR_EL1.SA/SA0.
+                Exception::SpAlignment => self.sync(esr(ec::SP_ALIGN, 0), None, pc),
                 Exception::Svc(_) | Exception::PcAlignment { .. } => {
                     unreachable!("non prodotte dall'interprete comune")
                 }
@@ -159,7 +171,10 @@ impl Cpu {
                     Access::Read | Access::Write => {
                         let wnr = u64::from(access == Access::Write) << 6;
                         let cm = u64::from(cm) << 8;
-                        esr(if lower { ec::DATA_ABORT_LOWER } else { ec::DATA_ABORT_SAME }, ea | cm | wnr | fsc)
+                        esr(
+                            if lower { ec::DATA_ABORT_LOWER } else { ec::DATA_ABORT_SAME },
+                            ea | cm | wnr | fsc,
+                        )
                     }
                 };
                 self.sync(e, Some(va), self.pc)
@@ -250,7 +265,9 @@ impl Cpu {
                                 let f = Pending::Abort { va: xt, fsc, ea, access: Access::Write };
                                 return Some(self.deliver_fault(Some(f), raw, true));
                             }
-                            AtResult::Unimplemented(what) => return Some(SysEvent::Unimplemented { raw, what }),
+                            AtResult::Unimplemented(what) => {
+                                return Some(SysEvent::Unimplemented { raw, what });
+                            }
                         }
                     }
                     // Nessuna cache modellata: come QEMU non fanno nulla.

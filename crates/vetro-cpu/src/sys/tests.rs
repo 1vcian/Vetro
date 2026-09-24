@@ -785,3 +785,43 @@ fn modalita_utente_invariata() {
         assert_eq!(cpu.sys, SysState::default());
     }
 }
+
+#[test]
+fn allineamento_dello_stack_pointer() {
+    // SCTLR di reset: SA = SA0 = 1. Architetturale (EC 0x26); QEMU non lo
+    // controlla (differenza documentata in docs/specs/cpu.md).
+    let insns = [
+        0xf94003e0, // ldr x0, [sp]
+        0xa9bf0be1, // stp x1, x2, [sp, #-0x10]!
+        0x3dc003e0, // ldr q0, [sp]
+    ];
+    for insn in insns {
+        let mut m = M::new();
+        m.cpu.sys.cpacr_el1 = 3 << 20;
+        m.cpu.sp = RAM + 0x8008;
+        m.expect_sync(insn, 0x9a00_0000);
+        assert_eq!(m.cpu.sp_el(1), RAM + 0x8008, "{insn:#010x}: niente writeback");
+        let mut m = M::at_el0(RAM + 0x3000);
+        m.cpu.sys.cpacr_el1 = 3 << 20;
+        m.cpu.sp = RAM + 0x8004;
+        m.expect_sync(insn, 0x9a00_0000);
+        // Senza SA0 il disallineato va.
+        let mut m = M::at_el0(RAM + 0x3000);
+        m.cpu.sys.cpacr_el1 = 3 << 20;
+        m.cpu.sys.sctlr_el1 &= !sctlr::SA0;
+        m.cpu.sp = RAM + 0x8014;
+        assert_eq!(m.one(insn), SysEvent::Executed, "{insn:#010x}");
+    }
+    // PRFM non controlla lo SP.
+    let mut m = M::new();
+    m.cpu.sp = RAM + 0x8008;
+    assert_eq!(m.one(0xf98003e0), SysEvent::Executed); // prfm pldl1keep, [sp]
+    // In modalità utente nessun controllo.
+    let mut mem = UserMemory::new();
+    mem.map(0x1000, 0xf94003e0u32.to_le_bytes().to_vec(), crate::Perm::RX).unwrap();
+    mem.map(0x8000, vec![0; 64], crate::Perm::RW).unwrap();
+    let mut cpu = Cpu::new();
+    cpu.pc = 0x1000;
+    cpu.sp = 0x8008;
+    assert_eq!(cpu.step(&mut mem), Ok(()));
+}

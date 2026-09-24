@@ -31,6 +31,9 @@ pub enum Exception {
     PcAlignment {
         addr: u64,
     },
+    /// Load/store con base SP non allineato a 16 byte con SCTLR_EL1.SA/SA0
+    /// (solo in modalità sistema: la modalità utente non lo produce).
+    SpAlignment,
 }
 
 impl From<MemFault> for Exception {
@@ -138,6 +141,20 @@ fn extend_load(raw: u64, size: u8, op: MemOp) -> u64 {
 }
 
 impl Cpu {
+    /// Controllo dell'allineamento dello stack pointer (`CheckSPAlignment`)
+    /// per un load/store con base `rn`: solo in modalità sistema, con
+    /// SCTLR_EL1.SA0 a EL0 o SA a EL1.
+    #[inline]
+    pub(crate) fn check_sp_alignment(&self, rn: u8) -> Result<(), Exception> {
+        if rn == 31 && self.sys.mode == crate::sys::Mode::System && self.sp & 15 != 0 {
+            let bit = if self.sys.el == 0 { crate::sys::sctlr::SA0 } else { crate::sys::sctlr::SA };
+            if self.sys.sctlr_el1 & bit != 0 {
+                return Err(Exception::SpAlignment);
+            }
+        }
+        Ok(())
+    }
+
     /// Esegue un'istruzione. Su eccezione lo stato resta invariato (tranne
     /// `Svc`, vedi docs/specs/cpu.md).
     pub fn step<M: Memory>(&mut self, mem: &mut M) -> Result<(), Exception> {
@@ -158,7 +175,12 @@ impl Cpu {
     }
 
     /// Restituisce `Some(target)` se l'istruzione salta.
-    pub(crate) fn execute<M: Memory>(&mut self, insn: Insn, raw: u32, mem: &mut M) -> Result<Option<u64>, Exception> {
+    pub(crate) fn execute<M: Memory>(
+        &mut self,
+        insn: Insn,
+        raw: u32,
+        mem: &mut M,
+    ) -> Result<Option<u64>, Exception> {
         let pc = self.pc;
         match insn {
             Insn::AddSubImm { sf, sub, setflags, imm, rn, rd } => {
@@ -424,6 +446,9 @@ impl Cpu {
             }
 
             Insn::LdSt { size, op, addr, rt, rn, unpriv } => {
+                if op != MemOp::Prefetch {
+                    self.check_sp_alignment(rn)?;
+                }
                 let base = self.xsp(rn);
                 let (address, writeback) = match addr {
                     AddrMode::Imm { offset, index } => {
@@ -467,6 +492,7 @@ impl Cpu {
                 }
             }
             Insn::LdStPair { size, load, signed, index, offset, rt, rt2, rn } => {
+                self.check_sp_alignment(rn)?;
                 let base = self.xsp(rn);
                 let moved = base.wrapping_add(offset as u64);
                 let address = if index == Index::Post { base } else { moved };
@@ -488,6 +514,7 @@ impl Cpu {
                 }
             }
             Insn::Exclusive { size, load, pair, rs, rt, rt2, rn } => {
+                self.check_sp_alignment(rn)?;
                 let address = self.xsp(rn);
                 let elem = 1u32 << size;
                 let total = if pair { elem * 2 } else { elem };
@@ -522,12 +549,14 @@ impl Cpu {
                 }
             }
             Insn::LoadAcquire { size, rt, rn } => {
+                self.check_sp_alignment(rn)?;
                 let address = self.xsp(rn);
                 check_aligned(address, 1 << size)?;
                 let v = read_uint(mem, address, 1 << size)? as u64;
                 self.set_x(rt, v);
             }
             Insn::StoreRelease { size, rt, rn } => {
+                self.check_sp_alignment(rn)?;
                 let address = self.xsp(rn);
                 check_aligned(address, 1 << size)?;
                 write_uint(mem, address, 1 << size, self.xr(rt) as u128)?;

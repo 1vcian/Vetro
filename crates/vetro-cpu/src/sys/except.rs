@@ -21,6 +21,7 @@ pub mod ec {
     pub const PC_ALIGN: u64 = 0x22;
     pub const DATA_ABORT_LOWER: u64 = 0x24;
     pub const DATA_ABORT_SAME: u64 = 0x25;
+    pub const SP_ALIGN: u64 = 0x26;
     pub const SERROR: u64 = 0x2f;
     pub const BRK: u64 = 0x3c;
 }
@@ -62,7 +63,13 @@ impl Cpu {
     ///
     /// Serve anche alla piattaforma, per esempio per consegnare un
     /// Undefined dopo una HVC che non vuole gestire.
-    pub fn take_exception(&mut self, kind: ExceptionKind, esr: Option<u64>, far: Option<u64>, preferred: u64) {
+    pub fn take_exception(
+        &mut self,
+        kind: ExceptionKind,
+        esr: Option<u64>,
+        far: Option<u64>,
+        preferred: u64,
+    ) {
         let from_el = self.sys.el;
         let group = if from_el == 0 {
             0x400 // da EL0 in AArch64

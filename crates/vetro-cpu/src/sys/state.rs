@@ -52,6 +52,10 @@ pub mod sctlr {
     pub const M: u64 = 1 << 0;
     /// Controllo di allineamento per tutti gli accessi ai dati.
     pub const A: u64 = 1 << 1;
+    /// Controllo di allineamento dello SP a EL1.
+    pub const SA: u64 = 1 << 3;
+    /// Controllo di allineamento dello SP a EL0.
+    pub const SA0: u64 = 1 << 4;
     /// EL0 può accedere a DAIF.
     pub const UMA: u64 = 1 << 9;
     /// DC ZVA permesso a EL0.
@@ -217,7 +221,13 @@ impl Cpu {
 
     pub(crate) fn translation_regs(&self) -> TranslationRegs {
         let s = &self.sys;
-        TranslationRegs { sctlr: s.sctlr_el1, tcr: s.tcr_el1, ttbr0: s.ttbr0_el1, ttbr1: s.ttbr1_el1, mair: s.mair_el1 }
+        TranslationRegs {
+            sctlr: s.sctlr_el1,
+            tcr: s.tcr_el1,
+            ttbr0: s.ttbr0_el1,
+            ttbr1: s.ttbr1_el1,
+            mair: s.mair_el1,
+        }
     }
 
     /// Vero se le istruzioni FP/SIMD sono trappate al livello corrente

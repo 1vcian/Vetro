@@ -247,6 +247,13 @@ fn write<M: Memory>(mem: &mut M, addr: u64, bytes: usize, v: u128) -> Result<(),
 
 pub(crate) fn exec<M: Memory>(cpu: &mut Cpu, i: VecMemInsn, mem: &mut M) -> Result<(), Exception> {
     match i {
+        VecMemInsn::Reg { rn, .. }
+        | VecMemInsn::Pair { rn, .. }
+        | VecMemInsn::Multi { rn, .. }
+        | VecMemInsn::Single { rn, .. } => cpu.check_sp_alignment(rn)?,
+        VecMemInsn::Literal { .. } => {}
+    }
+    match i {
         VecMemInsn::Reg { scale, load, addr, rt, rn } => {
             let base = cpu.xsp(rn);
             let (address, writeback) = match addr {

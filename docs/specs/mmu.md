@@ -37,18 +37,29 @@ crate esterno. Compila in `wasm32-unknown-unknown`.
   | `Translation(l)` | `0b0001ll` |
   | `AccessFlag(l)` | `0b0010ll` |
   | `Permission(l)` | `0b0011ll` |
+  | `Alignment` | `0b100001` |
   | `External(_)` | `0b010000` |
   | `ExternalWalk(l, _)` | `0b0101ll` |
   | `Unimplemented(_)` | nessuno (`None`): limite di Vetro, non fault |
 
 - `Tlb`: `flush_all`, `flush_va(va, asid)`, `flush_asid(asid)`,
   `flush_va_all_asids(va)`, `tlbi(op, xt)`, `len`.
-- `TlbiOp`: VMALLE1, VAE1, ASIDE1, VAAE1, VALE1, VAALE1 e varianti IS;
+- `TlbiOp` (definito in `vetro_cpu::sys` e riesportato qui): VMALLE1, VAE1, ASIDE1, VAAE1, VALE1, VAALE1 e varianti IS;
   `from_sys(op1, crn, crm, op2)` per il decoder della CPU, `is_broadcast()`.
 - `VirtMemory { mmu, phys, el }`: implementa `vetro_cpu::Memory` sopra MMU e
   memoria fisica; `last_fault()` dà il `Fault` completo dell'ultimo accesso
   fallito (resta anche in `Mmu::last_fault()` dopo che l'adattatore è stato
   distrutto).
+- `MmuBus { mmu, phys }` (ADR 0009): implementa `vetro_cpu::SysBus` per la
+  modalità sistema della CPU. A ogni traduzione copia in `mmu.regs` i
+  registri che la CPU passa (`TranslationRegs`: la CPU ne è l'unica
+  proprietaria) e usa `translate_checked`; `at` usa `walk` (un abort
+  esterno sul walk diventa `AtResult::Abort`, gli altri fault vanno in PAR);
+  `tlbi` e `tlb_flush_all` agiscono sul TLB del core.
+- `Mmu::translate_checked(phys, va, access, el, aligned)`: come
+  `translate`, ma con `aligned = false` un accesso ai dati su memoria Device
+  (anche a MMU spenta) dà `FaultKind::Alignment`, dopo i fault del walk e
+  prima dei permessi (`AArch64.FirstStageTranslate`).
 
 ## Comportamento
 - SCTLR.M = 0: identità; VA (senza tag, se c'è TBI) oltre PARange → address
@@ -83,7 +94,7 @@ comunque ammesso). Chiave: VA[55:0] e ASID (le voci globali valgono per ogni
 ASID). Le varianti "last level" coincidono con le altre perché non c'è cache
 dei livelli intermedi.
 
-Doveri del sistema:
+Doveri del sistema (con `MmuBus` li fa la CPU in modalità sistema):
 - dopo una scrittura di SCTLR_EL1 o TCR_EL1 chiamare `tlb_mut().flush_all()`
   (come fa QEMU);
 - le TLBI `...IS` vanno applicate al TLB di ogni core.
@@ -93,9 +104,8 @@ Doveri del sistema:
   `Unimplemented`). SCTLR.E0E (dati a EL0) è affare della CPU.
 - Niente FEAT_HAFDBS, PAN, TTST, LPA, HPD: sono oltre ARMv8.0.
 - Il bit Contiguous è ignorato (ammesso: è un suggerimento).
-- Allineamento e memoria Device (fault di allineamento sugli accessi non
-  allineati a Device) sono della CPU: `Translation::mair_attr` le dà
-  l'informazione.
+- SCTLR.A è della CPU; il fault di allineamento su memoria Device lo dà
+  `translate_checked` quando la CPU segnala un accesso non allineato.
 - `esr` non conosce l'istruzione: ISV = 0 (come QEMU per gli abort stage 1)
   e CM = 0 (chi esegue DC su un indirizzo lo aggiunge).
 - Accessi a cavallo di pagina: si traducono prima tutte le pagine, quindi un

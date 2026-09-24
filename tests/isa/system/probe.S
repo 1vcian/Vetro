@@ -8,8 +8,11 @@
 // Esclusi di proposito (differenze documentate in docs/specs/cpu.md):
 // ID_AA64PFR0_EL1 (Vetro dichiara solo AArch64), trap di MSR DAIFSet da EL0
 // (QEMU scambia Op1 e Op2 nella sindrome), STXR disallineata senza monitor
-// (QEMU non la controlla), registri della piattaforma (CNT*, ICC_*), PMU e
-// registri di debug che Vetro non modella.
+// (QEMU non la controlla), SP disallineato con SCTLR_EL1.SA/SA0 (QEMU non
+// lo controlla), accessi disallineati a memoria Device con MMU accesa e DC
+// ZVA su Device (QEMU 10 non dà il fault di allineamento; a MMU spenta sì),
+// registri della piattaforma (CNT*, ICC_*), PMU e registri di debug che
+// Vetro non modella.
 
     .equ UART, 0x09000000
     .equ PSCI_SYSTEM_OFF, 0x84000008
@@ -603,9 +606,6 @@ el0_code:
     hvc #0
     eret
     ldtr x2, [x20]
-    sub sp, sp, #8
-    ldr x2, [sp]
-    add sp, sp, #8
     svc #2
 
     .balign 4096

@@ -132,7 +132,9 @@ impl<B: SysBus + ?Sized> Memory for SysMem<'_, B> {
     fn fetch(&mut self, addr: u64) -> Result<u32, MemFault> {
         let mut w = [0u8; 4];
         let el = self.el;
-        self.access(addr, 4, Access::Fetch, el, false, |b, pa, off, n| b.read_phys(pa, &mut w[off..off + n]))?;
+        self.access(addr, 4, Access::Fetch, el, false, |b, pa, off, n| {
+            b.read_phys(pa, &mut w[off..off + n])
+        })?;
         Ok(u32::from_le_bytes(w))
     }
 

@@ -19,7 +19,7 @@ mod step;
 mod tests;
 
 pub use except::{ExceptionKind, ec};
-pub use state::{Mode, PsciConduit, SysConfig, SysState, cpacr, cntkctl, sctlr, spsr};
+pub use state::{Mode, PsciConduit, SysConfig, SysState, cntkctl, cpacr, sctlr, spsr};
 
 use crate::mem::Access;
 use crate::sysreg::EnvReg;
@@ -72,7 +72,10 @@ pub enum AtResult {
     /// Valore da scrivere in PAR_EL1 (riuscita o fault riportato in PAR).
     Par(u64),
     /// Abort esterno durante il walk: si prende come Data Abort (CM = 1).
-    Abort { fsc: u8, ea: bool },
+    Abort {
+        fsc: u8,
+        ea: bool,
+    },
     Unimplemented(&'static str),
 }
 

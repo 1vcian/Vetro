@@ -336,7 +336,10 @@ fn abort_delle_istruzioni_e_allineamento_su_device() {
     assert_eq!(m.step(), SysEvent::Executed);
     let ev = m.step();
     assert_eq!(ev, SysEvent::Exception { kind: ExceptionKind::Sync, esr: 0x8200_000f, from_el: 0 });
-    assert_eq!((m.cpu.sys.far_el1, m.cpu.sys.elr_el1, m.cpu.pc), (KCODE + 0x40, KCODE + 0x40, VECTORS + 0x400));
+    assert_eq!(
+        (m.cpu.sys.far_el1, m.cpu.sys.elr_el1, m.cpu.pc),
+        (KCODE + 0x40, KCODE + 0x40, VECTORS + 0x400)
+    );
 
     // Accesso disallineato a una pagina Device: fault di allineamento dopo
     // il walk; allineato va.

@@ -24,26 +24,26 @@ pub const SCTLR_EL1_RESET: u64 = 0x00c5_0838;
 pub fn id_reg(index: u8, gicv3: bool) -> u64 {
     let gic = u64::from(gicv3);
     match index {
-        8 => 0x0000_0131,               // ID_PFR0_EL1
-        9 => 0x0001_0001 | gic << 28,   // ID_PFR1_EL1
-        10 => 0x0300_0006,              // ID_DFR0_EL1
-        12 => 0x1010_1105,              // ID_MMFR0_EL1
-        13 => 0x4000_0000,              // ID_MMFR1_EL1
-        14 => 0x0126_0000,              // ID_MMFR2_EL1
-        15 => 0x0210_2211,              // ID_MMFR3_EL1
-        16 => 0x0210_1110,              // ID_ISAR0_EL1
-        17 => 0x1311_2111,              // ID_ISAR1_EL1
-        18 => 0x2123_2042,              // ID_ISAR2_EL1
-        19 => 0x0111_2131,              // ID_ISAR3_EL1
-        20 => 0x0001_1142,              // ID_ISAR4_EL1
-        21 => 0x0001_1121,              // ID_ISAR5_EL1
-        24 => 0x1011_0222,              // MVFR0_EL1
-        25 => 0x1211_1111,              // MVFR1_EL1
-        26 => 0x0000_0043,              // MVFR2_EL1
-        32 => 0x0000_0011 | gic << 24,  // ID_AA64PFR0_EL1: EL0/EL1 solo AArch64, FP e AdvSIMD
-        40 => 0x1030_5106,              // ID_AA64DFR0_EL1: 6 breakpoint, 4 watchpoint, PMUv3
-        48 => 0x0001_1120,              // ID_AA64ISAR0_EL1: AES+PMULL, SHA1, SHA256, CRC32
-        56 => 0x0000_1122,              // ID_AA64MMFR0_EL1: PA 40 bit, ASID 16 bit, 4K e 64K
+        8 => 0x0000_0131,              // ID_PFR0_EL1
+        9 => 0x0001_0001 | gic << 28,  // ID_PFR1_EL1
+        10 => 0x0300_0006,             // ID_DFR0_EL1
+        12 => 0x1010_1105,             // ID_MMFR0_EL1
+        13 => 0x4000_0000,             // ID_MMFR1_EL1
+        14 => 0x0126_0000,             // ID_MMFR2_EL1
+        15 => 0x0210_2211,             // ID_MMFR3_EL1
+        16 => 0x0210_1110,             // ID_ISAR0_EL1
+        17 => 0x1311_2111,             // ID_ISAR1_EL1
+        18 => 0x2123_2042,             // ID_ISAR2_EL1
+        19 => 0x0111_2131,             // ID_ISAR3_EL1
+        20 => 0x0001_1142,             // ID_ISAR4_EL1
+        21 => 0x0001_1121,             // ID_ISAR5_EL1
+        24 => 0x1011_0222,             // MVFR0_EL1
+        25 => 0x1211_1111,             // MVFR1_EL1
+        26 => 0x0000_0043,             // MVFR2_EL1
+        32 => 0x0000_0011 | gic << 24, // ID_AA64PFR0_EL1: EL0/EL1 solo AArch64, FP e AdvSIMD
+        40 => 0x1030_5106,             // ID_AA64DFR0_EL1: 6 breakpoint, 4 watchpoint, PMUv3
+        48 => 0x0001_1120,             // ID_AA64ISAR0_EL1: AES+PMULL, SHA1, SHA256, CRC32
+        56 => 0x0000_1122,             // ID_AA64MMFR0_EL1: PA 40 bit, ASID 16 bit, 4K e 64K
         _ => 0,
     }
 }

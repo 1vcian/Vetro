@@ -603,8 +603,12 @@ fn system(w: u32) -> Insn {
                 },
                 // MSR (immediato) su PSTATE: su v8.0 solo SPSel e DAIF.
                 (0b0100, 0b000) if op2 == 0b101 => Insn::MsrImm { field: PstateField::SpSel, imm: crm as u8 },
-                (0b0100, 0b011) if op2 == 0b110 => Insn::MsrImm { field: PstateField::DaifSet, imm: crm as u8 },
-                (0b0100, 0b011) if op2 == 0b111 => Insn::MsrImm { field: PstateField::DaifClr, imm: crm as u8 },
+                (0b0100, 0b011) if op2 == 0b110 => {
+                    Insn::MsrImm { field: PstateField::DaifSet, imm: crm as u8 }
+                }
+                (0b0100, 0b011) if op2 == 0b111 => {
+                    Insn::MsrImm { field: PstateField::DaifClr, imm: crm as u8 }
+                }
                 _ => Undefined,
             }
         }

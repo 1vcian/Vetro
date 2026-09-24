@@ -250,7 +250,11 @@ pub(crate) fn walk_tables<P: PhysMemory + ?Sized>(
 }
 
 /// Accesso ai dati non allineato su memoria Device (byte MAIR 0b0000xxxx).
-pub(crate) fn check_device_alignment(t: &Translation, access: Access, aligned: bool) -> Result<(), FaultKind> {
+pub(crate) fn check_device_alignment(
+    t: &Translation,
+    access: Access,
+    aligned: bool,
+) -> Result<(), FaultKind> {
     if !aligned && access != Access::Fetch && t.mair_attr & 0xf0 == 0 {
         Err(FaultKind::Alignment)
     } else {
