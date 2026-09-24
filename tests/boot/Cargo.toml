@@ -1,0 +1,10 @@
+[package]
+name = "vetro-boot-tests"
+description = "Avvio del kernel guest di M3 (Image + initramfs) sotto qemu-system-aarch64, e da M3 sotto Vetro."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
