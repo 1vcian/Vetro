@@ -154,9 +154,24 @@ pub fn run_program(
     stdin: &[u8],
     timeout: Duration,
 ) -> std::io::Result<Outcome> {
+    run_program_with(qemu, &[], prog, args, env, cwd, stdin, timeout)
+}
+
+/// Come [`run_program`], con opzioni di QEMU in più (es. `-L sysroot`).
+#[allow(clippy::too_many_arguments)]
+pub fn run_program_with(
+    qemu: &Path,
+    qemu_opts: &[String],
+    prog: &Path,
+    args: &[String],
+    env: &[(String, String)],
+    cwd: &Path,
+    stdin: &[u8],
+    timeout: Duration,
+) -> std::io::Result<Outcome> {
     use std::io::Write;
     let mut cmd = Command::new("sh");
-    cmd.arg("-c").arg("ulimit -c 0; exec \"$@\"").arg("sh").arg(qemu).arg("-cpu").arg(cpu());
+    cmd.arg("-c").arg("ulimit -c 0; exec \"$@\"").arg("sh").arg(qemu).arg("-cpu").arg(cpu()).args(qemu_opts);
     // QEMU passa al guest il proprio ambiente: toglie le variabili che
     // teniamo solo per il processo QEMU (e il wrapper Docker).
     for k in ["PATH", "HOME"] {

@@ -274,6 +274,8 @@ impl Kernel {
     }
 
     fn finish_process(&mut self, tgid: Pid, status: i32) {
+        self.flush_shared();
+        self.locks.release(tgid, None);
         let Some(leader) = self.tasks.iter().position(|x| x.tid == tgid) else { return };
         // Chiudere i descrittori libera le pipe (EOF per i lettori).
         let empty = Rc::new(RefCell::new(FdTable::default()));

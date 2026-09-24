@@ -86,7 +86,17 @@ impl Kernel {
     /// Percorso assoluto del guest per una *at: `path` rispetto a `dirfd`.
     fn at_path(&self, t: usize, dirfd: u64, path: &[u8]) -> Result<String, i64> {
         let dirfd = dirfd as i64 as i32;
-        if path.first() == Some(&b'/') || dirfd == AT_FDCWD {
+        if path.first() == Some(&b'/') {
+            // Come `qemu -L`: un percorso assoluto si cerca prima nel sysroot.
+            if let Some(root) = &self.cfg.sysroot {
+                let inside = fs::join(root, &path[1..]);
+                if std::fs::symlink_metadata(&inside).is_ok() {
+                    return Ok(inside);
+                }
+            }
+            return Ok(fs::join("/", path));
+        }
+        if dirfd == AT_FDCWD {
             return Ok(fs::join(&self.tasks[t].cwd.borrow(), path));
         }
         let f = self.tasks[t].files.borrow().get(dirfd as i64)?;
@@ -109,7 +119,11 @@ impl Kernel {
         match nr {
             // --- file ---
             56 => self.sys_openat(t, a[0], a[1], a[2], a[3] as u32),
-            57 => ret(self.tasks[t].files.borrow_mut().close(a[0] as i64)?),
+            57 => {
+                let f = self.tasks[t].files.borrow().get(a[0] as i64)?;
+                self.release_locks_on_close(t, &f);
+                ret(self.tasks[t].files.borrow_mut().close(a[0] as i64)?)
+            }
             63 => self.sys_read(t, a[0] as i64, a[1], a[2] as usize),
             64 => self.sys_write(t, a[0] as i64, a[1], a[2] as usize),
             65 => self.sys_readv(t, a[0] as i64, a[1], a[2] as usize),
@@ -224,6 +238,58 @@ impl Kernel {
             }
             54 | 55 => ret(0), // fchownat/fchown: proprietari invariati (siamo "root" per finta)
             88 => self.sys_utimensat(t, a[0], a[1], a[2], a[3]),
+            33 => {
+                // mknodat: FIFO e file regolari; i dispositivi solo con privilegi.
+                let p = self.path_arg(t, a[0], a[1])?;
+                let mode = (a[2] as u32 & !self.tasks[t].umask) as libc::mode_t;
+                let cpath = std::ffi::CString::new(p).map_err(|_| EINVAL)?;
+                // SAFETY: percorso C valido.
+                let r = match a[2] as u32 & S_IFMT {
+                    0 | S_IFREG => unsafe {
+                        libc::open(
+                            cpath.as_ptr(),
+                            libc::O_CREAT | libc::O_EXCL | libc::O_WRONLY,
+                            mode as libc::c_uint,
+                        )
+                    },
+                    S_IFIFO => unsafe { libc::mkfifo(cpath.as_ptr(), mode & 0o7777) },
+                    _ => unsafe { libc::mknod(cpath.as_ptr(), a[2] as libc::mode_t, a[3] as libc::dev_t) },
+                };
+                if r < 0 {
+                    return Err(host_errno(&std::io::Error::last_os_error()));
+                }
+                if a[2] as u32 & S_IFMT == 0 || a[2] as u32 & S_IFMT == S_IFREG {
+                    // SAFETY: r è il descrittore appena aperto.
+                    unsafe { libc::close(r) };
+                }
+                ret(0)
+            }
+            47 => {
+                // fallocate: modo 0 estende il file; KEEP_SIZE non cambia nulla.
+                let f = self.tasks[t].files.borrow().get(a[0] as i64)?;
+                let f = f.borrow();
+                let Kind::Host { file, .. } = &f.kind else { return Err(19) };
+                let (mode, off, len) = (a[1], a[2] as i64, a[3] as i64);
+                if off < 0 || len <= 0 {
+                    return Err(EINVAL);
+                }
+                match mode {
+                    0 => {
+                        let end = (off + len) as u64;
+                        let cur = file.metadata().map_err(|e| host_errno(&e))?.len();
+                        if end > cur {
+                            file.set_len(end).map_err(|e| host_errno(&e))?;
+                        }
+                        ret(0)
+                    }
+                    1 => ret(0),
+                    _ => Err(95), // EOPNOTSUPP
+                }
+            }
+            194 => ret(self.sys_shmget(a[0] as i32, a[1], a[2])?),
+            195 => ret(self.sys_shmctl(t, a[0], a[1], a[2])?),
+            196 => ret(self.sys_shmat(t, a[0], a[1], a[2])?),
+            197 => ret(self.sys_shmdt(t, a[0])?),
             198 => {
                 // socket: esiste, ma non si connette a nulla (niente rete fino a M7).
                 let f = OpenFile::new(Kind::Socket, O_RDWR, "socket:".into());
@@ -296,11 +362,18 @@ impl Kernel {
             // --- memoria ---
             214 => ret(self.mem(t).borrow_mut().sys_brk(a[0])),
             222 => self.sys_mmap(t, a),
-            215 => ret(self.mem(t).borrow_mut().munmap(a[0], a[1])?),
+            215 => {
+                let r = self.mem(t).borrow_mut().munmap(a[0], a[1])?;
+                self.flush_shared();
+                ret(r)
+            }
             226 => ret(self.mem(t).borrow_mut().mprotect(a[0], a[1], a[2])?),
             216 => ret(self.mem(t).borrow_mut().mremap(a[0], a[1], a[2], a[3], a[4])?),
             233 => ret(self.mem(t).borrow_mut().madvise(a[0], a[1], a[2])?),
-            227 => ret(0),
+            227 => {
+                self.flush_shared(); // msync
+                ret(0)
+            }
 
             // --- processi ---
             93 => {
@@ -350,7 +423,13 @@ impl Kernel {
             172 => ret(self.tasks[t].tgid as i64),
             173 => ret(self.tasks[t].ppid as i64),
             178 => ret(self.tasks[t].tid as i64),
-            174..=177 => ret(0),
+            // Come QEMU user mode: gli id del processo sono quelli dell'host, così
+            // i permessi dei file si comportano in modo coerente.
+            // SAFETY: getuid & co. non hanno precondizioni.
+            174 => ret(unsafe { libc::getuid() } as i64),
+            175 => ret(unsafe { libc::geteuid() } as i64),
+            176 => ret(unsafe { libc::getgid() } as i64),
+            177 => ret(unsafe { libc::getegid() } as i64),
             158 => ret(0), // getgroups: nessun gruppo supplementare
             146 | 144 | 143 | 147 | 149 | 151 | 152 => ret(0), // set*id
             154 => {
@@ -554,29 +633,9 @@ impl Kernel {
     /// File di /proc/self (e /proc/<pid>) generati: il /proc dell'host
     /// descriverebbe l'emulatore, non il guest.
     fn proc_file(&self, t: usize, path: &str) -> Option<Result<Rc<RefCell<OpenFile>>, i64>> {
-        let rest = path.strip_prefix("/proc/")?;
-        let (who, file) = rest.split_once('/').unwrap_or((rest, ""));
-        let task = &self.tasks[t];
-        if who != "self" && who.parse::<i32>().ok() != Some(task.tgid) {
-            return None;
-        }
-        let data = match file {
-            "comm" => format!("{}\n", task.comm).into_bytes(),
-            "cmdline" => format!("{}\0", task.exe).into_bytes(),
-            "stat" => format!("{} ({}) R {} {} {} 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 0 0 0\n", task.tgid, task.comm, task.ppid, task.pgid, task.pgid).into_bytes(),
-            "status" => {
-                format!("Name:\t{}\nState:\tR (running)\nTgid:\t{}\nPid:\t{}\nPPid:\t{}\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\n", task.comm, task.tgid, task.tid, task.ppid)
-                    .into_bytes()
-            }
-            "maps" => {
-                let mut s = String::new();
-                for (a, b, p) in task.mm.borrow().mem.ranges() {
-                    let perms = format!("{}{}{}p", if p.read { 'r' } else { '-' }, if p.write { 'w' } else { '-' }, if p.exec { 'x' } else { '-' });
-                    s += &format!("{a:08x}-{b:08x} {perms} 00000000 00:00 0\n");
-                }
-                s.into_bytes()
-            }
-            _ => return Some(Err(ENOENT)),
+        let data = match self.proc_content(t, path)? {
+            Ok(d) => d,
+            Err(e) => return Some(Err(e)),
         };
         Some(Ok(OpenFile::new(Kind::Mem { data, pos: 0 }, 0, path.to_string())))
     }
@@ -648,7 +707,7 @@ impl Kernel {
 
     fn sys_readv(&mut self, t: usize, fd: i64, iov: u64, cnt: usize) -> R {
         let vecs = self.iovecs(t, iov, cnt)?;
-        let total: usize = vecs.iter().map(|v| v.1).sum();
+        let total: usize = vecs.iter().map(|v| v.1).fold(0usize, usize::saturating_add).min(1 << 24);
         let f = self.tasks[t].files.borrow().get(fd)?;
         let io = {
             let mut rng = self.rng_fn();
@@ -780,7 +839,13 @@ impl Kernel {
                 f.flags = (f.flags & O_ACCMODE) | (arg & (O_APPEND | O_NONBLOCK));
                 ret(0)
             }
-            5..=7 => ret(0), // lock: sempre concessi
+            5..=7 => {
+                drop(files);
+                match self.fcntl_lock(t, fd, cmd, arg)? {
+                    super::locks::LockResult::Done(v) => ret(v),
+                    super::locks::LockResult::Wait => Ok(Sys::Block(Wait::Retry)),
+                }
+            }
             _ => Err(EINVAL),
         }
     }
@@ -798,6 +863,10 @@ impl Kernel {
             return self.tasks[t].files.borrow().get(dirfd as i64)?.borrow().stat();
         }
         let path = self.at_path(t, dirfd, &raw)?;
+        if let Some(r) = self.proc_content(t, &path) {
+            r?;
+            return Ok(Stat { mode: S_IFREG | 0o444, nlink: 1, blksize: 1024, ..Default::default() });
+        }
         match path.as_str() {
             "/dev/null" | "/dev/zero" | "/dev/urandom" | "/dev/random" => {
                 return Ok(Stat {
@@ -858,33 +927,29 @@ impl Kernel {
         } else {
             self.path_arg(t, dirfd, p)?
         };
-        let meta = if flags & AT_SYMLINK_NOFOLLOW != 0 {
-            std::fs::symlink_metadata(&path)
-        } else {
-            std::fs::metadata(&path)
-        };
-        meta.map_err(|e| host_errno(&e))?;
-        let now = std::time::SystemTime::now();
-        let mut ft = std::fs::FileTimes::new();
         let mm = self.mem(t);
-        for i in 0..2u64 {
-            let when = if times == 0 {
-                Some(now)
-            } else {
-                let s = read_u64(&mut mm.borrow_mut().mem, times + 16 * i)?;
-                let n = read_u64(&mut mm.borrow_mut().mem, times + 16 * i + 8)?;
-                match n {
-                    UTIME_NOW => Some(now),
-                    UTIME_OMIT => None,
-                    _ => Some(std::time::UNIX_EPOCH + std::time::Duration::new(s, n as u32)),
-                }
-            };
-            if let Some(w) = when {
-                ft = if i == 0 { ft.set_accessed(w) } else { ft.set_modified(w) };
+        let mut ts = [libc::timespec { tv_sec: 0, tv_nsec: libc::UTIME_NOW }; 2];
+        if times != 0 {
+            for (i, slot) in ts.iter_mut().enumerate() {
+                let off = times + 16 * i as u64;
+                let s = read_u64(&mut mm.borrow_mut().mem, off)?;
+                let n = read_u64(&mut mm.borrow_mut().mem, off + 8)?;
+                slot.tv_sec = s as libc::time_t;
+                slot.tv_nsec = match n {
+                    UTIME_NOW => libc::UTIME_NOW,
+                    UTIME_OMIT => libc::UTIME_OMIT,
+                    n if n < 1_000_000_000 => n as _,
+                    _ => return Err(EINVAL),
+                };
             }
         }
-        let file = std::fs::File::open(&path).map_err(|e| host_errno(&e))?;
-        file.set_times(ft).map_err(|e| host_errno(&e))?;
+        let cpath = std::ffi::CString::new(path).map_err(|_| EINVAL)?;
+        let hflags = if flags & AT_SYMLINK_NOFOLLOW != 0 { libc::AT_SYMLINK_NOFOLLOW } else { 0 };
+        // SAFETY: percorso C valido e array di due timespec, come vuole utimensat(2).
+        let r = unsafe { libc::utimensat(libc::AT_FDCWD, cpath.as_ptr(), ts.as_ptr(), hflags) };
+        if r != 0 {
+            return Err(host_errno(&std::io::Error::last_os_error()));
+        }
         ret(0)
     }
 
@@ -907,24 +972,48 @@ impl Kernel {
         if off & 0xfff != 0 {
             return Err(EINVAL);
         }
-        let data = if flags & super::mm::MAP_ANONYMOUS == 0 {
-            use std::os::unix::fs::FileExt;
+        let anon = flags & super::mm::MAP_ANONYMOUS != 0;
+        let shared_flag = flags & super::mm::MAP_SHARED != 0;
+        let mut data = None;
+        let mut shared = None;
+        if anon {
+            if shared_flag {
+                if len == 0 || len > super::mm::MAX_MAPPING {
+                    return Err(if len == 0 { EINVAL } else { ENOMEM });
+                }
+                let size = len.next_multiple_of(4096) as usize;
+                shared = Some((Rc::new(RefCell::new(vec![0u8; size])), 0));
+            }
+        } else {
+            use std::os::unix::fs::{FileExt, MetadataExt};
             let f = self.tasks[t].files.borrow().get(fd)?;
             let f = f.borrow();
             match &f.kind {
-                Kind::Host { file, .. } => {
-                    let mut d = vec![0u8; len as usize];
-                    let n = file.read_at(&mut d, off).map_err(|e| host_errno(&e))?;
-                    d.truncate(n);
-                    Some(d)
+                Kind::Host { file, path } => {
+                    if shared_flag {
+                        let meta = file.metadata().map_err(|e| host_errno(&e))?;
+                        let key = (meta.dev(), meta.ino());
+                        let entry = self.shared_files.entry(key).or_insert_with(|| {
+                            let mut content = Vec::new();
+                            let _ = std::fs::File::open(path).and_then(|mut h| {
+                                use std::io::Read;
+                                h.read_to_end(&mut content)
+                            });
+                            (path.clone(), Rc::new(RefCell::new(content)))
+                        });
+                        shared = Some((entry.1.clone(), off as usize));
+                    } else {
+                        let mut d = vec![0u8; len as usize];
+                        let n = file.read_at(&mut d, off).map_err(|e| host_errno(&e))?;
+                        d.truncate(n);
+                        data = Some(d);
+                    }
                 }
-                Kind::Zero => None,
+                Kind::Zero => {}
                 _ => return Err(19), // ENODEV
             }
-        } else {
-            None
-        };
-        ret(self.mem(t).borrow_mut().mmap(addr, len, prot, flags, data)?)
+        }
+        ret(self.mem(t).borrow_mut().mmap(addr, len, prot, flags, data, shared)?)
     }
 
     fn sys_futex(&mut self, t: usize, a: [u64; 6]) -> R {

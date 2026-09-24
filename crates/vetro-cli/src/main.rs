@@ -1,7 +1,7 @@
 //! `vetro`: runner nativo headless.
 //!
 //! ```text
-//! vetro run [--strace] [--host-clock] <elf> [argomenti...]
+//! vetro run [--strace] [--host-clock] [--sysroot=DIR] <elf> [argomenti...]
 //! ```
 
 use std::process::ExitCode;
@@ -20,7 +20,7 @@ fn main() -> ExitCode {
 }
 
 fn usage() -> ExitCode {
-    eprintln!("uso: vetro run [--strace] [--host-clock] <elf> [argomenti...]");
+    eprintln!("uso: vetro run [--strace] [--host-clock] [--sysroot=DIR] <elf> [argomenti...]");
     ExitCode::from(2)
 }
 
@@ -31,6 +31,7 @@ fn run(args: &[String]) -> ExitCode {
         match args[i].as_str() {
             "--strace" => cfg.strace = true,
             "--host-clock" => cfg.clock = ClockMode::Host,
+            a if a.starts_with("--sysroot=") => cfg.sysroot = Some(a["--sysroot=".len()..].to_string()),
             _ => return usage(),
         }
         i += 1;

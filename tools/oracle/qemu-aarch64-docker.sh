@@ -37,4 +37,5 @@ unset IFS
 # shellcheck disable=SC2086
 # env -i: il guest vede solo le variabili passate con -E, come in nativo
 # con Command::env_clear().
-exec docker run --rm -i --init --ulimit core=0 $mounts -w "$cwd" "$IMAGE" env -i qemu-aarch64 $opts "$prog" "$@"
+# --user: lo stesso utente dell'host, come in nativo (permessi e getuid).
+exec docker run --rm -i --init --ulimit core=0 --user "$(id -u):$(id -g)" $mounts -w "$cwd" "$IMAGE" env -i qemu-aarch64 $opts "$prog" "$@"

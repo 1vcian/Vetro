@@ -92,7 +92,14 @@ pub fn write_u32(mem: &mut UserMemory, addr: u64, v: u32) -> Result<(), i64> {
     mem.write(addr, &v.to_le_bytes()).map_err(|_| EFAULT)
 }
 
+/// Oltre questa lunghezza un buffer del guest non può essere tutto mappato
+/// (e allocarlo potrebbe far abortire l'emulatore).
+pub const MAX_IO: usize = 1 << 30;
+
 pub fn read_bytes(mem: &mut UserMemory, addr: u64, len: usize) -> Result<Vec<u8>, i64> {
+    if len > MAX_IO {
+        return Err(EFAULT);
+    }
     let mut b = vec![0u8; len];
     mem.read(addr, &mut b).map_err(|_| EFAULT)?;
     Ok(b)

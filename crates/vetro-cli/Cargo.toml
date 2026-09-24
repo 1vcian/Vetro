@@ -19,6 +19,9 @@ workspace = true
 [dependencies]
 vetro-cpu = { path = "../vetro-cpu" }
 vetro-analysis = { path = "../vetro-analysis" }
+# Solo per il runner nativo: syscall dell'host che std non espone
+# (utimensat, mknodat...). Il core resta senza dipendenze.
+libc = "0.2"
 
 [dev-dependencies]
 vetro-diff = { path = "../../tests/diff" }

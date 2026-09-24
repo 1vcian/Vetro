@@ -1,6 +1,8 @@
 //! Memoria di un processo: brk, mmap, munmap, mprotect, mremap, madvise.
 
 use super::abi::*;
+use std::cell::RefCell;
+use std::rc::Rc;
 use vetro_cpu::{Memory, Perm, UserMemory};
 
 pub const PAGE: u64 = 0x1000;
@@ -9,6 +11,11 @@ pub const STACK_SIZE: u64 = 8 << 20;
 /// Le mmap senza indirizzo vanno dall'alto verso il basso sotto questa soglia.
 pub const MMAP_TOP: u64 = 0x0000_7fff_0000_0000;
 pub const MMAP_BOTTOM: u64 = 0x0000_0010_0000_0000;
+
+/// Tetti di memoria: oltre, ENOMEM come su una macchina con memoria finita
+/// (e l'emulatore non tenta allocazioni che lo farebbero abortire).
+pub const MAX_MAPPING: u64 = 8 << 30;
+pub const MAX_TOTAL: u64 = 16 << 30;
 
 pub const MAP_SHARED: u64 = 0x01;
 pub const MAP_PRIVATE: u64 = 0x02;
@@ -32,6 +39,12 @@ impl Mm {
         Mm { mem, brk_start: brk, brk }
     }
 
+    /// Vero se si possono mappare altri `extra` byte.
+    fn fits(&self, extra: u64) -> bool {
+        let total: u64 = self.mem.ranges().map(|(a, b, _)| b - a).sum();
+        extra <= MAX_MAPPING && total.saturating_add(extra) <= MAX_TOTAL
+    }
+
     pub fn sys_brk(&mut self, addr: u64) -> i64 {
         if addr < self.brk_start {
             return self.brk as i64;
@@ -39,10 +52,11 @@ impl Mm {
         let old_end = page_up(self.brk);
         let new_end = page_up(addr);
         if new_end > old_end {
-            if self.mem.ranges().any(|(s, e, _)| s < new_end && e > old_end) {
+            if !self.fits(new_end - old_end) || self.mem.ranges().any(|(s, e, _)| s < new_end && e > old_end)
+            {
                 return self.brk as i64;
             }
-            self.mem.map_fixed(old_end, vec![0; (new_end - old_end) as usize], Perm::RW);
+            self.mem.map_zeroed(old_end, (new_end - old_end) as usize, Perm::RW);
         } else if new_end < old_end {
             self.mem.unmap(new_end, old_end);
         }
@@ -51,8 +65,16 @@ impl Mm {
     }
 
     /// mmap anonima o con contenuto già letto (`data`, per le mappature di
-    /// file private).
-    pub fn mmap(&mut self, addr: u64, len: u64, prot: u64, flags: u64, data: Option<Vec<u8>>) -> SysResult {
+    /// file private), oppure condivisa su `shared` (buffer e offset).
+    pub fn mmap(
+        &mut self,
+        addr: u64,
+        len: u64,
+        prot: u64,
+        flags: u64,
+        data: Option<Vec<u8>>,
+        shared: Option<(Rc<RefCell<Vec<u8>>>, usize)>,
+    ) -> SysResult {
         if len == 0 || addr & (PAGE - 1) != 0 && flags & (MAP_FIXED | MAP_FIXED_NOREPLACE) != 0 {
             return Err(EINVAL);
         }
@@ -60,7 +82,7 @@ impl Mm {
             return Err(EINVAL);
         }
         let size = page_up(len);
-        if size == 0 {
+        if size == 0 || !self.fits(size) {
             return Err(ENOMEM);
         }
         let base = if flags & MAP_FIXED != 0 {
@@ -81,12 +103,19 @@ impl Mm {
                 self.mem.find_free(size, MMAP_BOTTOM, MMAP_TOP).ok_or(ENOMEM)?
             }
         };
-        let mut bytes = vec![0u8; size as usize];
-        if let Some(d) = data {
-            let n = d.len().min(bytes.len());
-            bytes[..n].copy_from_slice(&d[..n]);
+        if let Some((buf, off)) = shared {
+            self.mem.map_shared(base, buf, off, size as usize, Perm::from_prot(prot as u32));
+            return Ok(base as i64);
         }
-        self.mem.map_fixed(base, bytes, Perm::from_prot(prot as u32));
+        match data {
+            None => self.mem.map_zeroed(base, size as usize, Perm::from_prot(prot as u32)),
+            Some(d) => {
+                let mut bytes = vec![0u8; size as usize];
+                let n = d.len().min(bytes.len());
+                bytes[..n].copy_from_slice(&d[..n]);
+                self.mem.map_fixed(base, bytes, Perm::from_prot(prot as u32));
+            }
+        }
         Ok(base as i64)
     }
 
@@ -133,6 +162,9 @@ impl Mm {
             return Err(EINVAL);
         }
         let (old_size, new_size) = (page_up(old_len), page_up(new_len));
+        if new_size == 0 || new_size > old_size && !self.fits(new_size - old_size) {
+            return Err(ENOMEM);
+        }
         if !self.mem.is_mapped(old, old + old_size) {
             return Err(EFAULT);
         }
@@ -146,7 +178,7 @@ impl Mm {
             if !self.mem.ranges().any(|(s, e, _)| s < old + new_size && e > tail)
                 && old + new_size <= MMAP_TOP
             {
-                self.mem.map_fixed(tail, vec![0; (new_size - old_size) as usize], perm);
+                self.mem.map_zeroed(tail, (new_size - old_size) as usize, perm);
                 return Ok(old as i64);
             }
             if flags & MREMAP_MAYMOVE == 0 {

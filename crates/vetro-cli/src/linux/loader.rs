@@ -4,6 +4,10 @@ use super::mm::{Mm, STACK_SIZE, STACK_TOP};
 use crate::elf::{self, LoadError, PAGE};
 use vetro_cpu::{Perm, UserMemory};
 
+/// Pagina del trampolino di ritorno dai gestori di segnale (il `sigtramp`
+/// del vDSO di Linux arm64): usato quando sa_restorer non è impostato.
+pub const SIGTRAMP: u64 = 0x0000_7fff_fff0_0000;
+
 pub struct Image {
     pub mm: Mm,
     pub entry: u64,

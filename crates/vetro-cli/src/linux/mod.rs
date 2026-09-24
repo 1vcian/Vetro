@@ -12,9 +12,12 @@
 
 pub mod abi;
 mod fs;
+mod ipc;
 mod loader;
+mod locks;
 mod mm;
 mod process;
+mod procfs;
 mod signal;
 mod syscall;
 
@@ -30,6 +33,9 @@ use mm::Mm;
 use signal::{SigHand, SigState};
 
 pub type Pid = i32;
+
+/// File mappato con MAP_SHARED: percorso sull'host e buffer comune.
+pub type SharedFile = (std::path::PathBuf, Rc<RefCell<Vec<u8>>>);
 
 /// Numeri di segnale Linux.
 pub mod sig {
@@ -76,6 +82,8 @@ pub struct Config {
     pub stdin: Vec<u8>,
     /// Directory di lavoro iniziale del guest.
     pub cwd: String,
+    /// Come `qemu -L`: i percorsi assoluti si cercano prima qui.
+    pub sysroot: Option<String>,
 }
 
 impl Default for Config {
@@ -89,6 +97,7 @@ impl Default for Config {
             cwd: std::env::current_dir()
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_else(|_| "/".into()),
+            sysroot: None,
         }
     }
 }
@@ -135,6 +144,9 @@ pub enum Wait {
     Vfork { child: Pid },
     /// pause/rt_sigsuspend: solo un segnale sveglia.
     Signal,
+    /// Condizione da ricontrollare a ogni giro (F_SETLKW): la syscall si
+    /// riesegue finché non riesce.
+    Retry,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -195,6 +207,12 @@ pub struct Kernel {
     init_exit: Option<Exit>,
     /// Ultima eccezione della CPU che ha ucciso un processo (per il report).
     last_fault: Option<(Pid, Exception, u64)>,
+    /// Mappature MAP_SHARED di file: (dispositivo, inode) → (percorso, buffer).
+    pub shared_files: std::collections::HashMap<(u64, u64), SharedFile>,
+    /// Lock POSIX sui file.
+    locks: locks::LockTable,
+    /// IPC System V.
+    ipc: ipc::Ipc,
 }
 
 /// Istruzioni per quanto di scheduling.
@@ -217,6 +235,9 @@ impl Kernel {
             rng: 0x5eed_0000_0000_0001,
             init_exit: None,
             last_fault: None,
+            shared_files: std::collections::HashMap::new(),
+            locks: locks::LockTable::default(),
+            ipc: ipc::Ipc::default(),
         }
     }
 
@@ -276,6 +297,19 @@ impl Kernel {
             self.init = pid;
         }
         Ok(pid)
+    }
+
+    /// Riscrive sui file il contenuto delle mappature condivise.
+    pub fn flush_shared(&self) {
+        use std::os::unix::fs::FileExt;
+        for (path, buf) in self.shared_files.values() {
+            if let Ok(f) = std::fs::OpenOptions::new().write(true).open(path) {
+                let len = f.metadata().map(|m| m.len() as usize).unwrap_or(0);
+                let b = buf.borrow();
+                let n = len.min(b.len());
+                let _ = f.write_at(&b[..n], 0);
+            }
+        }
     }
 
     pub fn find(&self, tid: Pid) -> Option<usize> {
@@ -396,6 +430,7 @@ impl Kernel {
             Wait::Futex { until, .. } => self.tasks[i].futex_woken || until.is_some_and(|u| self.now() >= u),
             Wait::Vfork { child } => self.find(*child).is_none_or(|c| self.tasks[c].vfork_parent.is_none()),
             Wait::Signal => false,
+            Wait::Retry => true,
         }
     }
 

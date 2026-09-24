@@ -13,6 +13,7 @@ use vetro_cpu::{Exception, Memory};
 
 pub const SA_NOCLDWAIT: u64 = 0x2;
 pub const SA_ONSTACK: u64 = 0x0800_0000;
+pub const SA_RESTORER: u64 = 0x0400_0000;
 pub const SA_RESTART: u64 = 0x1000_0000;
 pub const SA_NODEFER: u64 = 0x4000_0000;
 pub const SA_RESETHAND: u64 = 0x8000_0000;
@@ -331,7 +332,8 @@ impl Kernel {
         task.cpu.x[1] = frame;
         task.cpu.x[2] = frame + SIGINFO_SIZE;
         task.cpu.x[29] = record;
-        task.cpu.x[30] = act.restorer;
+        // Senza SA_RESTORER Linux torna al sigtramp del vDSO.
+        task.cpu.x[30] = if act.flags & SA_RESTORER != 0 { act.restorer } else { super::loader::SIGTRAMP };
         task.cpu.sp = frame;
         task.cpu.pc = act.handler;
         task.sig.saved_mask = None;

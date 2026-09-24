@@ -1,0 +1,2 @@
+# Test LTP compilati ma esclusi dal confronto, con il motivo.
+# Formato: nome  # motivo

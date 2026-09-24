@@ -1,0 +1,2 @@
+Sysroot minimo del guest per i test (usato come `qemu -L` da Vetro e da QEMU):
+solo i file di /etc che le librerie leggono.
