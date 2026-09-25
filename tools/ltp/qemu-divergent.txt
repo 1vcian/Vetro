@@ -14,7 +14,8 @@ futex_waitv02    # come futex_waitv01
 futex_waitv03    # come futex_waitv01
 getcwd01         # nativo 5 TPASS / QEMU TFAIL: getcwd con buffer non valido
 kill11           # nativo 24 TPASS / QEMU TCONF: l'harness avvia QEMU con `ulimit -c 0` (anche il limite hard)
-mmap08           # nativo TPASS / QEMU TFAIL: errore di mmap su un descrittore non valido
+mmap08           # nativo TPASS / QEMU TFAIL: controlla la lunghezza prima del descrittore (EINVAL invece di EBADF)
 mmap17           # nativo TPASS / QEMU TFAIL: MAP_FIXED_NOREPLACE non rispettato
+mmap20           # nativo TPASS / QEMU TFAIL: MAP_SHARED_VALIDATE con flag ignoti dà EINVAL invece di EOPNOTSUPP
 mremap03         # nativo TPASS / QEMU TFAIL: mremap su un intervallo non mappato
 waitpid01        # nativo 146 TPASS / QEMU TCONF: come kill11 (core dump)

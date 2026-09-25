@@ -215,6 +215,7 @@ version = "0.0.0"
 name = "vetro-linux-tests"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "vetro-cli",
  "vetro-diff",
 ]

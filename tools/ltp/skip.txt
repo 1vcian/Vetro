@@ -1,2 +1,3 @@
 # Test LTP compilati ma esclusi dal confronto, con il motivo.
 # Formato: nome  # motivo
+fork14      # 16384 mmap da 1 GiB e altrettanti fork: Vetro limita lo spazio mappato a 16 GiB (MAX_TOTAL) e va in TCONF, QEMU va in timeout; in nativo passa

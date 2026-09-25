@@ -49,30 +49,88 @@ pub const O_DIRECTORY: u64 = 0o40000;
 pub const O_NOFOLLOW: u64 = 0o100000;
 pub const O_CLOEXEC: u64 = 0o2000000;
 pub const O_PATH: u64 = 0o10000000;
+/// __O_TMPFILE (O_TMPFILE = __O_TMPFILE | O_DIRECTORY).
+pub const O_TMPFILE: u64 = 0o20000000;
 
 /// Errore di una syscall: il valore da restituire è `-errno`.
 pub type SysResult = Result<i64, i64>;
 
 /// Converte un errore di I/O dell'host nell'errno Linux corrispondente.
 pub fn host_errno(e: &std::io::Error) -> i64 {
-    use std::io::ErrorKind::*;
-    match e.kind() {
-        NotFound => ENOENT,
-        PermissionDenied => EACCES,
-        AlreadyExists => EEXIST,
-        InvalidInput => EINVAL,
-        NotADirectory => ENOTDIR,
-        IsADirectory => EISDIR,
-        DirectoryNotEmpty => ENOTEMPTY,
-        _ => match e.raw_os_error() {
-            // Codici POSIX comuni a Linux e macOS.
-            Some(n @ (1 | 2 | 9 | 13 | 17 | 20 | 21 | 22)) => n as i64,
-            Some(40) | Some(62) => 40, // ELOOP (macOS 62)
-            Some(66) => ENOTEMPTY,     // macOS
-            Some(63) => ENAMETOOLONG,  // macOS
+    match e.raw_os_error() {
+        Some(n) => linux_errno(n),
+        None => match e.kind() {
+            std::io::ErrorKind::NotFound => ENOENT,
+            std::io::ErrorKind::PermissionDenied => EACCES,
+            std::io::ErrorKind::AlreadyExists => EEXIST,
+            std::io::ErrorKind::InvalidInput => EINVAL,
             _ => EIO,
         },
     }
+}
+
+/// Errno dell'host → errno Linux arm64. Su Linux sono gli stessi numeri.
+#[cfg(target_os = "linux")]
+fn linux_errno(n: i32) -> i64 {
+    n as i64
+}
+
+/// Errno dell'host → errno Linux arm64. Da 1 a 34 i numeri coincidono con
+/// quelli di Linux tranne 11 (EDEADLK sull'host, EAGAIN su Linux); il resto
+/// si traduce per nome.
+#[cfg(not(target_os = "linux"))]
+fn linux_errno(n: i32) -> i64 {
+    use libc::*;
+    let l = match n {
+        EDEADLK => 35,
+        EAGAIN => 11,
+        1..=34 => n,
+        ENAMETOOLONG => 36,
+        ENOLCK => 37,
+        ENOSYS => 38,
+        ENOTEMPTY => 39,
+        ELOOP => 40,
+        ENOMSG => 42,
+        EIDRM => 43,
+        EOVERFLOW => 75,
+        EILSEQ => 84,
+        EUSERS => 87,
+        ENOTSOCK => 88,
+        EDESTADDRREQ => 89,
+        EMSGSIZE => 90,
+        EPROTOTYPE => 91,
+        ENOPROTOOPT => 92,
+        EPROTONOSUPPORT => 93,
+        ESOCKTNOSUPPORT => 94,
+        EOPNOTSUPP | ENOTSUP => 95,
+        EPFNOSUPPORT => 96,
+        EAFNOSUPPORT => 97,
+        EADDRINUSE => 98,
+        EADDRNOTAVAIL => 99,
+        ENETDOWN => 100,
+        ENETUNREACH => 101,
+        ENETRESET => 102,
+        ECONNABORTED => 103,
+        ECONNRESET => 104,
+        ENOBUFS => 105,
+        EISCONN => 106,
+        ENOTCONN => 107,
+        ESHUTDOWN => 108,
+        ETOOMANYREFS => 109,
+        ETIMEDOUT => 110,
+        ECONNREFUSED => 111,
+        EHOSTDOWN => 112,
+        EHOSTUNREACH => 113,
+        EALREADY => 114,
+        EINPROGRESS => 115,
+        ESTALE => 116,
+        EDQUOT => 122,
+        ECANCELED => 125,
+        EOWNERDEAD => 130,
+        ENOTRECOVERABLE => 131,
+        _ => 5, // EIO
+    };
+    l as i64
 }
 
 pub fn read_u64(mem: &mut UserMemory, addr: u64) -> Result<u64, i64> {

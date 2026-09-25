@@ -12,3 +12,4 @@ workspace = true
 [dependencies]
 vetro-cli = { path = "../../crates/vetro-cli" }
 vetro-diff = { path = "../diff" }
+libc = "0.2"

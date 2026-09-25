@@ -18,6 +18,31 @@ pub struct Outcome {
 }
 
 /// Esegue un ELF con gli argomenti e l'ambiente dati.
+/// Porta il limite soft dei descrittori dell'host al massimo consentito: ogni
+/// file aperto dal guest è un descrittore dell'host, e il guest deve arrivare
+/// al proprio RLIMIT_NOFILE (EMFILE) prima che l'host finisca i suoi.
+/// Restituisce il limite soft di prima.
+pub fn raise_fd_limit() -> u64 {
+    let mut r = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    let before;
+    // SAFETY: `r` è una struct rlimit valida per get/setrlimit.
+    unsafe {
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut r) != 0 {
+            return 1024;
+        }
+        before = r.rlim_cur;
+        if r.rlim_cur < r.rlim_max {
+            // macOS rifiuta valori oltre OPEN_MAX anche con hard illimitato.
+            r.rlim_cur = r.rlim_max.min(1 << 20);
+            if libc::setrlimit(libc::RLIMIT_NOFILE, &r) != 0 {
+                r.rlim_cur = 10240;
+                libc::setrlimit(libc::RLIMIT_NOFILE, &r);
+            }
+        }
+    }
+    before
+}
+
 pub fn run_elf(
     image: &[u8],
     argv: &[&str],

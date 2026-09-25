@@ -31,7 +31,11 @@ impl Outcome {
     /// ("uncaught target signal N"): vale sia in nativo sia via Docker.
     pub fn signal(&self) -> Option<i32> {
         let err = String::from_utf8_lossy(&self.stderr);
-        let rest = err.split("uncaught target signal ").nth(1)?;
+        // L'ultimo messaggio: i figli muoiono prima del processo principale.
+        let rest = err
+            .rsplit("uncaught target signal ")
+            .next()
+            .filter(|_| err.contains("uncaught target signal "))?;
         rest.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()
     }
 }
@@ -171,7 +175,20 @@ pub fn run_program_with(
 ) -> std::io::Result<Outcome> {
     use std::io::Write;
     let mut cmd = Command::new("sh");
-    cmd.arg("-c").arg("ulimit -c 0; exec \"$@\"").arg("sh").arg(qemu).arg("-cpu").arg(cpu()).args(qemu_opts);
+    // VETRO_ORACLE_NOFILE: limite soft dei descrittori da ridare a QEMU se
+    // chi lancia l'oracolo ha alzato il proprio (vetro_cli::raise_fd_limit).
+    let nofile = std::env::var("VETRO_ORACLE_NOFILE")
+        .ok()
+        .filter(|n| n.chars().all(|c| c.is_ascii_digit()))
+        .map(|n| format!("ulimit -S -n {n}; "))
+        .unwrap_or_default();
+    cmd.arg("-c")
+        .arg(format!("ulimit -c 0; {nofile}exec \"$@\""))
+        .arg("sh")
+        .arg(qemu)
+        .arg("-cpu")
+        .arg(cpu())
+        .args(qemu_opts);
     // QEMU passa al guest il proprio ambiente: toglie le variabili che
     // teniamo solo per il processo QEMU (e il wrapper Docker).
     for k in ["PATH", "HOME"] {

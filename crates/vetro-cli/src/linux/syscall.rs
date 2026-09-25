@@ -296,9 +296,22 @@ impl Kernel {
                 ret(0)
             }
             37 => {
+                // linkat: con AT_SYMLINK_FOLLOW (0x400) si segue il link, anche
+                // quelli di /proc/<pid>/fd (file O_TMPFILE).
+                if a[4] & !(0x400 | 0x1000) != 0 {
+                    return Err(EINVAL);
+                }
                 let old = self.path_arg(t, a[0], a[1])?;
                 let new = self.path_arg(t, a[2], a[3])?;
-                std::fs::hard_link(&old, &new).map_err(|e| host_errno(&e))?;
+                let c = |p: &str| std::ffi::CString::new(p).map_err(|_| EINVAL);
+                let (co, cn) = (c(&old)?, c(&new)?);
+                let follow = if a[4] & 0x400 != 0 { libc::AT_SYMLINK_FOLLOW } else { 0 };
+                // SAFETY: percorsi C validi.
+                let r =
+                    unsafe { libc::linkat(libc::AT_FDCWD, co.as_ptr(), libc::AT_FDCWD, cn.as_ptr(), follow) };
+                if r < 0 {
+                    return Err(host_errno(&std::io::Error::last_os_error()));
+                }
                 ret(0)
             }
             38 | 276 => {
@@ -1477,7 +1490,11 @@ impl Kernel {
             return Err(EINVAL);
         }
         let anon = flags & super::mm::MAP_ANONYMOUS != 0;
-        // Ordine dei controlli di do_mmap: lunghezza, tipo, poi il file.
+        // Ordine dei controlli di Linux: il descrittore (ksys_mmap_pgoff),
+        // poi in do_mmap lunghezza, tipo e modo d'apertura del file.
+        if !anon {
+            self.tasks[t].files.borrow().get(fd)?;
+        }
         if len == 0 {
             return Err(EINVAL);
         }

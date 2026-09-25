@@ -329,6 +329,15 @@ impl OpenFile {
     pub fn lseek(&mut self, off: i64, whence: u64) -> SysResult {
         match &mut self.kind {
             Kind::Host { file, .. } => {
+                // SEEK_DATA (3) e SEEK_HOLE (4): i numeri dell'host possono
+                // essere diversi (su macOS sono scambiati).
+                if whence == 3 || whence == 4 {
+                    use std::os::fd::AsRawFd;
+                    let w = if whence == 3 { libc::SEEK_DATA } else { libc::SEEK_HOLE };
+                    // SAFETY: descrittore valido di proprietà di `file`.
+                    let r = unsafe { libc::lseek(file.as_raw_fd(), off, w) };
+                    return if r < 0 { Err(host_errno(&std::io::Error::last_os_error())) } else { Ok(r) };
+                }
                 let pos = match whence {
                     0 => SeekFrom::Start(off as u64),
                     1 => SeekFrom::Current(off),
@@ -636,6 +645,51 @@ pub fn join(base: &str, path: &[u8]) -> String {
     if full.ends_with('/') && s != "/" { s + "/" } else { s }
 }
 
+/// O_TMPFILE: file senza nome nella directory `dir`. Su un host Linux è
+/// quello del kernel, raggiungibile come /proc/self/fd/N (per linkat con
+/// AT_SYMLINK_FOLLOW); altrove non è supportato.
+#[cfg(target_os = "linux")]
+fn open_tmpfile(
+    dir: &std::path::Path,
+    flags: u64,
+    mode: u32,
+    status: u64,
+    guest: &str,
+) -> Result<Rc<RefCell<OpenFile>>, i64> {
+    use std::os::fd::FromRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    if flags & O_ACCMODE == 0 || flags & O_DIRECTORY == 0 {
+        return Err(EINVAL);
+    }
+    let c = std::ffi::CString::new(dir.as_os_str().as_bytes()).map_err(|_| EINVAL)?;
+    let acc = if flags & O_ACCMODE == O_WRONLY { libc::O_WRONLY } else { libc::O_RDWR };
+    let excl = if flags & O_EXCL != 0 { libc::O_EXCL } else { 0 };
+    // SAFETY: percorso C valido; il descrittore restituito passa a File.
+    let fd = unsafe { libc::open(c.as_ptr(), libc::O_TMPFILE | acc | excl | libc::O_CLOEXEC, mode) };
+    if fd < 0 {
+        return Err(host_errno(&std::io::Error::last_os_error()));
+    }
+    // SAFETY: `fd` è appena stato aperto ed è nostro.
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    // I permessi solo dalla umask del guest.
+    // SAFETY: descrittore valido.
+    unsafe { libc::fchmod(fd, mode as libc::mode_t) };
+    let path = PathBuf::from(format!("/proc/self/fd/{fd}"));
+    let _ = guest;
+    Ok(OpenFile::new(Kind::Host { file, path: path.clone() }, status, path.to_string_lossy().into_owned()))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn open_tmpfile(
+    _dir: &std::path::Path,
+    _flags: u64,
+    _mode: u32,
+    _status: u64,
+    _guest: &str,
+) -> Result<Rc<RefCell<OpenFile>>, i64> {
+    Err(95) // EOPNOTSUPP: il file system dell'host non ha file senza nome
+}
+
 /// Dopo una creazione: i permessi devono dipendere solo dalla umask del
 /// guest, non da quella del processo host (che li avrebbe già ridotti).
 pub fn fix_mode(host: &std::path::Path, want: u32) {
@@ -664,6 +718,9 @@ pub fn open(guest: &str, flags: u64, mode: u32, umask: u32) -> Result<Rc<RefCell
     let host = PathBuf::from(guest.trim_end_matches('/').to_string() + if guest == "/" { "/" } else { "" });
     let meta =
         if flags & O_NOFOLLOW != 0 { std::fs::symlink_metadata(&host) } else { std::fs::metadata(&host) };
+    if flags & O_TMPFILE != 0 {
+        return open_tmpfile(&host, flags, mode & !umask & 0o7777, status, guest);
+    }
     if flags & O_PATH != 0 {
         // Nessun permesso richiesto sul file: basta che esista.
         // Con O_NOFOLLOW il riferimento è al link stesso.

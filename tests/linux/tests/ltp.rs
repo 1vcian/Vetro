@@ -2,6 +2,11 @@
 //! Linux Test Project gira su Vetro e su `qemu-aarch64` con lo stesso
 //! ambiente; l'esito (codice d'uscita e conteggi TPASS/TFAIL/TBROK/TCONF)
 //! deve coincidere. Binari da `tools/ltp/build.sh` (in `target/ltp/bin`).
+//!
+//! Vetro riceve dall'oracolo versione del kernel e numero di CPU. I test di
+//! `tools/ltp/qemu-divergent.txt`, su cui QEMU si discosta da Linux, si
+//! confrontano con l'esecuzione nativa su un host Linux aarch64; quelli di
+//! `tools/ltp/skip.txt` sono esclusi. Vedi l'ADR 0010.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -144,10 +149,15 @@ fn run_qemu(q: &Path, bin: &Path, name: &str) -> Esito {
     let out = qemu::run_program_with(q, &opts, bin, &[], &env_for(&wd), &wd, &[], Duration::from_secs(300));
     match out {
         Ok(o) => {
-            let status = match (o.signal(), o.exit_code) {
-                (Some(s), _) => format!("segnale {s}"),
-                (None, Some(c)) => format!("exit {c}"),
-                _ => "?".into(),
+            // QEMU scrive "uncaught target signal" anche quando muore un
+            // figlio del test (atteso in molti casi): il segnale conta solo
+            // se il processo non è uscito normalmente (codice assente, o
+            // 128+N dal wrapper Docker).
+            let status = match (o.exit_code, o.signal()) {
+                (Some(c), _) if c < 128 => format!("exit {c}"),
+                (_, Some(s)) => format!("segnale {s}"),
+                (Some(c), None) => format!("exit {c}"),
+                (None, None) => "?".into(),
             };
             let text = String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr);
             conta(&text, status)
@@ -161,7 +171,19 @@ fn run_native(bin: &Path, name: &str) -> Esito {
     use std::os::unix::process::ExitStatusExt;
     use std::process::{Command, Stdio};
     let wd = workdir(&format!("{name}.native"));
-    let mut child = match Command::new(bin)
+    let nofile: u64 = std::env::var("VETRO_ORACLE_NOFILE").ok().and_then(|n| n.parse().ok()).unwrap_or(1024);
+    let mut cmd = Command::new(bin);
+    // SAFETY: tra fork ed exec solo setrlimit, che è async-signal-safe.
+    unsafe {
+        std::os::unix::process::CommandExt::pre_exec(&mut cmd, move || {
+            let mut r = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+            libc::getrlimit(libc::RLIMIT_NOFILE, &mut r);
+            r.rlim_cur = nofile as libc::rlim_t;
+            libc::setrlimit(libc::RLIMIT_NOFILE, &r);
+            Ok(())
+        });
+    }
+    let mut child = match cmd
         .env_clear()
         .envs(env_for(&wd))
         .current_dir(&wd)
@@ -237,6 +259,11 @@ fn ltp_matches_qemu() {
                 .join(",")
         })
     });
+    // Vetro gira in questo processo e usa un descrittore dell'host per ogni
+    // file del guest; l'oracolo invece deve vedere il limite originale.
+    let nofile = vetro_cli::raise_fd_limit();
+    // SAFETY: il test è l'unico thread che tocca l'ambiente a questo punto.
+    unsafe { std::env::set_var("VETRO_ORACLE_NOFILE", nofile.to_string()) };
     let host = oracle_host(&q);
     eprintln!("oracolo: kernel {}, {} CPU", host.release, host.cpus);
     let skip = skip_list();
@@ -256,28 +283,44 @@ fn ltp_matches_qemu() {
         .filter(|n| only.as_ref().is_none_or(|o| o.split(',').any(|x| x == n)))
         .collect();
     names.sort();
-    let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).min(2);
-    let queue = std::sync::Mutex::new(names.clone());
+    // I test di temporizzazione girano da soli alla fine (tools/ltp/timing.txt).
+    let timing = list("tools/ltp/timing.txt");
+    let (serial, parallel): (Vec<String>, Vec<String>) =
+        names.iter().cloned().partition(|n| timing.contains(n));
     let results = std::sync::Mutex::new(BTreeMap::new());
+    let run_one = |name: &String| {
+        let bin = dir.join(name);
+        // Un panic nel kernel emulato è un fallimento di questo caso, non
+        // di tutta la corsa.
+        let ours = run_vetro_limited(&bin, name, &host);
+        let oracle =
+            || if divergent.contains(name) { run_native(&bin, name) } else { run_qemu(&q, &bin, name) };
+        // Vetro è deterministico, l'oracolo no (tempi reali su un host
+        // carico): se diverge si riprova fino a due volte.
+        let mut theirs = oracle();
+        for _ in 0..2 {
+            if theirs == ours {
+                break;
+            }
+            theirs = oracle();
+        }
+        results.lock().unwrap().insert(name.clone(), (ours, theirs));
+    };
+    let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).min(2);
+    let queue = std::sync::Mutex::new(parallel);
     std::thread::scope(|s| {
         for _ in 0..workers {
             s.spawn(|| {
                 loop {
                     let Some(name) = queue.lock().unwrap().pop() else { break };
-                    let bin = dir.join(&name);
-                    // Un panic nel kernel emulato è un fallimento di questo
-                    // caso, non di tutta la corsa.
-                    let ours = run_vetro_limited(&bin, &name, &host);
-                    let theirs = if divergent.contains(&name) {
-                        run_native(&bin, &name)
-                    } else {
-                        run_qemu(&q, &bin, &name)
-                    };
-                    results.lock().unwrap().insert(name, (ours, theirs));
+                    run_one(&name);
                 }
             });
         }
     });
+    for name in &serial {
+        run_one(name);
+    }
     let results = results.into_inner().unwrap();
     let mut diff = Vec::new();
     let (mut ok_pass, mut total_pass) = (0, 0);

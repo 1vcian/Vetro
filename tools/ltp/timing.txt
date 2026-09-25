@@ -1,0 +1,8 @@
+# Test LTP che misurano tempi reali (libreria tst_timer_test): l'oracolo
+# (QEMU o il nativo) li sbaglia se l'host è carico, quindi l'harness li
+# esegue da soli, dopo la fase in parallelo. Vetro usa il tempo virtuale e
+# non ne risente. Nella VM di Docker Desktop (macOS) falliscono anche in
+# nativo, per la scarsa precisione dei timer: servono un host arm64 vero.
+clock_nanosleep02
+futex_wait05
+nanosleep01

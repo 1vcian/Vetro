@@ -8,6 +8,7 @@ use std::process::ExitCode;
 use vetro_cli::linux::{ClockMode, Config, Exit};
 
 fn main() -> ExitCode {
+    let _ = vetro_cli::raise_fd_limit();
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("--version" | "-V") => {
