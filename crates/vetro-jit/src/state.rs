@@ -15,7 +15,8 @@ pub struct JitState {
     pub steps: u64,
     /// Flag N, Z, C, V nei bit 31:28, come `Cpu::nzcv`.
     pub nzcv: u32,
-    /// Riservato all'host: vale [`crate::FAULT`] dopo un `ld`/`st` fallito.
+    /// 0 all'ingresso del blocco (lo azzera l'host), [`crate::FAULT`] dopo
+    /// un `ld`/`st` fallito, [`crate::STOP`] dopo uno `st` su codice sorvegliato.
     pub exit_detail: u32,
     /// Livello di eccezione (0 in modalità utente).
     pub el: u32,
