@@ -38,7 +38,7 @@ Safari mobile; qualsiasi componente cloud obbligatorio.
 | M5 Avvio di Android | **in corso** (dispositivi, GKI fino a zygote) | home in Chrome, adb install di un APK |
 | M6 Snapshot e installazione | **in corso** (save/restore completo della macchina, ADR 0015) | home < 15 s da snapshot, APK trascinato |
 | M7 Rete e timeline | **in corso** (cattura, pcapng, HTTP, decodificatori, HAR sul guest BusyBox, ADR 0016; mancano hook TLS e timeline) | 10 app con HTTPS in chiaro e legato all'azione, HAR riapribile |
-| M8 Binder e privacy | — | app di test: ogni accesso rilevato, identificativo esca tracciato |
+| M8 Binder e privacy | — | app di test: ogni accesso rilevato, identificativo esca tracciato, file dell'app visibili e modificabili dal vivo |
 | M9 Tracciamento codice e scripting | — | hook su metodo, dex dinamico salvato, script Frida adattato |
 | M10 Record & replay, 1.0 | — | replay identico, 30 app, criteri 1.0 |
 
@@ -101,9 +101,27 @@ Safari mobile; qualsiasi componente cloud obbligatorio.
 
 ### M8 — Binder e privacy
 - **Consegne:** decoder Binder con mappatura AIDL; ispettore privacy; dati
-  esca tracciati fino alla rete.
+  esca tracciati fino alla rete; gestore dei file dell'app in primo piano.
+- **Gestore dei file:** pannello affiancato allo schermo che segue l'app in
+  primo piano (rilevata dal decoder Binder su ActivityTaskManager) e ne mostra
+  l'albero dei file: `/sdcard/Android/data/<pacchetto>`,
+  `/sdcard/Android/media/<pacchetto>` e i dati privati
+  `/data/data/<pacchetto>` (`/data/user/0`, `/data/user_de/0`). Aggiornamento
+  dal vivo quando l'app crea o cambia file; apertura con visualizzatori per
+  testo, JSON, XML delle SharedPreferences, SQLite (tabelle), immagini ed
+  esadecimale; modifica dal vivo con salvataggio immediato nel guest.
+  Vincoli: letture e scritture passano dal kernel guest (demone di Vetro su
+  virtio-vsock con i privilegi di root dell'immagine userdebug, non accesso
+  diretto all'immagine ext4/f2fs, che con il guest acceso corromperebbe il
+  file system); proprietario, permessi e contesto SELinux del file si
+  conservano; ogni modifica dell'utente è un ingresso registrato nel punto
+  unico di M10, quindi il replay resta identico. Il meccanismo diventa un ADR
+  prima del codice.
 - **Uscita:** su un'app di test nostra ogni accesso previsto compare; un
-  identificativo esca viene rilevato quando esce in rete.
+  identificativo esca viene rilevato quando esce in rete; il gestore mostra i
+  file che l'app di test scrive entro 1 s e una modifica fatta dal pannello
+  (un valore nelle SharedPreferences e una riga di un database SQLite) viene
+  letta dall'app dopo il riavvio dell'attività.
 
 ### M9 — Tracciamento del codice e scripting
 - **Consegne:** introspezione ART dall'emulatore; tracciamento nativo con
