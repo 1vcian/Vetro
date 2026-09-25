@@ -30,7 +30,7 @@ fn risu_traces_match_qemu() {
     for bin in &images {
         let trace = bin.with_extension("trace");
         let args = ["risu", "-t", trace.to_str().unwrap(), bin.to_str().unwrap()];
-        let cfg = Config { cwd: dir.to_string_lossy().into_owned(), ..Config::default() };
+        let cfg = Config { cwd: dir.to_string_lossy().into_owned(), ..Config::default() }.jit_from_env();
         let out = vetro_cli::run_elf(&image, &args, &[], risu.to_str().unwrap(), cfg).unwrap();
         let name = bin.file_stem().unwrap().to_string_lossy().into_owned();
         if out.exit != Exit::Code(0) {

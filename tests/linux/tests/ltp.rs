@@ -114,7 +114,8 @@ fn run_vetro(bin: &Path, name: &str, host: &Host) -> Esito {
         cpus: host.cpus,
         release: host.release.clone(),
         ..Config::default()
-    };
+    }
+    .jit_from_env();
     let image = std::fs::read(bin).unwrap();
     let out = vetro_cli::run_elf(&image, &[name], &envp, &bin.to_string_lossy(), cfg).unwrap();
     let status = match out.exit {

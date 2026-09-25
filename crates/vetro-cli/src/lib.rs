@@ -16,6 +16,10 @@ pub struct Outcome {
     pub exit: Exit,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
+    /// Istruzioni eseguite (tutti i processi).
+    pub steps: u64,
+    /// Contatori del JIT, se attivo.
+    pub jit: Option<vetro_jit::JitStats>,
 }
 
 /// Esegue un ELF con gli argomenti e l'ambiente dati.
@@ -56,5 +60,5 @@ pub fn run_elf(
     let envp: Vec<Vec<u8>> = envp.iter().map(|s| s.as_bytes().to_vec()).collect();
     k.spawn(image, &argv, &envp, exe)?;
     let exit = k.run();
-    Ok(Outcome { exit, stdout: k.stdout(), stderr: k.stderr() })
+    Ok(Outcome { exit, stdout: k.stdout(), stderr: k.stderr(), steps: k.steps(), jit: k.jit_stats() })
 }

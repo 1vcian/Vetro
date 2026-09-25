@@ -206,9 +206,20 @@ pub enum Run {
     Other(String),
 }
 
+/// Esegue su Vetro con l'interprete.
 pub fn run_vetro(image: &[u8]) -> Run {
+    run_vetro_with(image, false)
+}
+
+/// Esegue su Vetro col JIT (M4), traducendo ogni blocco dalla prima
+/// esecuzione: i programmi di test passano quasi sempre una volta sola.
+pub fn run_vetro_jit(image: &[u8]) -> Run {
+    run_vetro_with(image, true)
+}
+
+fn run_vetro_with(image: &[u8], jit: bool) -> Run {
     use vetro_cli::linux::{Config, Exit};
-    let cfg = Config { max_steps: 1_000_000, ..Config::default() };
+    let cfg = Config { max_steps: 1_000_000, jit, jit_threshold: 0, ..Config::default() };
     let out = match vetro_cli::run_elf(image, &["test"], &[], "/test", cfg) {
         Ok(o) => o,
         Err(e) => return Run::Other(format!("caricamento: {e}")),

@@ -1,6 +1,10 @@
 //! Criterio di uscita M1 (ADR 0006): programmi casuali di istruzioni intere,
 //! stato finale di Vetro identico a `qemu-aarch64 -cpu cortex-a53`.
 //!
+//! Da M4 (ADR 0012) ogni programma gira su Vetro due volte, con
+//! l'interprete e col JIT: i due esiti devono essere identici tra loro e a
+//! quello di QEMU.
+//!
 //! - `VETRO_DIFF_CASES`: numero di programmi (default 250).
 //! - `VETRO_DIFF_SEED`: primo seme (default 0); i casi usano semi
 //!   consecutivi, quindi un caso fallito si riproduce con
@@ -8,7 +12,7 @@
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use vetro_diff::harness::{Program, compare, run_qemu, run_vetro};
+use vetro_diff::harness::{Program, compare, run_qemu, run_vetro, run_vetro_jit};
 use vetro_diff::qemu;
 use vetro_diff::random::{Case, generate_focused, generate_fp_focused, generate_with};
 
@@ -83,8 +87,15 @@ fn run_with(name: &str, prefix: &str, cases: u64, make: impl Fn(u64) -> Case + S
                     let case = make(seed);
                     let image = case.program.build();
                     let ours = run_vetro(&image);
+                    let jit = run_vetro_jit(&image);
                     let theirs = run_qemu(&q, &format!("random-{prefix}{seed}"), &image);
-                    let diff = compare(&ours, &theirs);
+                    let mut diff = compare(&ours, &theirs);
+                    if jit != ours {
+                        diff += &format!(
+                            "  JIT diverso dall'interprete (vetro = JIT, qemu = interprete):\n{}",
+                            compare(&jit, &ours)
+                        );
+                    }
                     match &theirs {
                         vetro_diff::harness::Run::Signal(4) => sigill.fetch_add(1, Ordering::Relaxed),
                         vetro_diff::harness::Run::Dump(_) => dumps.fetch_add(1, Ordering::Relaxed),

@@ -4,6 +4,8 @@
 //! esegue il programma su Vetro e verifica le attese; se l'oracolo è
 //! disponibile lo esegue anche su QEMU e pretende uno stato finale
 //! identico, così anche i valori attesi scritti a mano sono verificati.
+//! Da M4 il programma gira anche col JIT, che deve dare lo stesso esito
+//! dell'interprete (ADR 0012).
 //!
 //! Le codifiche vengono da `tools/a64asm.sh` (assembler vero); il commento
 //! accanto a ogni parola è l'istruzione assemblata.
@@ -12,7 +14,7 @@
 //! deve lasciarlo modificato; gli offset di memoria sono relativi a x28.
 
 use vetro_diff::harness::{
-    BASE_PTR, Dump, MEM_SIZE, PROLOGUE_LEN, Program, Run, compare, run_qemu, run_vetro,
+    BASE_PTR, Dump, MEM_SIZE, PROLOGUE_LEN, Program, Run, compare, run_qemu, run_vetro, run_vetro_jit,
 };
 use vetro_diff::qemu;
 
@@ -132,6 +134,14 @@ impl Case {
         let image = self.program.build();
         let ours = run_vetro(&image);
         self.check(&ours);
+        // M4: lo stesso programma col JIT deve dare lo stesso esito.
+        let jit = run_vetro_jit(&image);
+        assert!(
+            jit == ours,
+            "{}: JIT e interprete divergono (vetro = JIT, qemu = interprete)\n{}",
+            self.name,
+            compare(&jit, &ours)
+        );
         if let Some(q) = qemu::locate_or_skip(&self.name) {
             let slug: String =
                 self.name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();

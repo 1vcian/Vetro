@@ -153,7 +153,8 @@ impl Case {
             cwd: dir.to_string_lossy().into_owned(),
             max_steps: 5_000_000_000,
             ..Config::default()
-        };
+        }
+        .jit_from_env();
         let out = vetro_cli::run_elf(&image, &argv, &envp, &self.prog.to_string_lossy(), cfg);
         let (status, stdout, stderr) = match out {
             Ok(o) => {

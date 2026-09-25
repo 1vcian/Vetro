@@ -20,6 +20,10 @@ workspace = true
 vetro-cpu = { path = "../vetro-cpu" }
 vetro-analysis = { path = "../vetro-analysis" }
 vetro-machine = { path = "../vetro-machine" }
+vetro-jit = { path = "../vetro-jit" }
+# Motore del JIT per `vetro run --jit` (wasmtime): il runner nativo non va
+# nel browser.
+vetro-jit-native = { path = "../vetro-jit-native" }
 # Solo per il runner nativo: syscall dell'host che std non espone
 # (utimensat, mknodat...). Il core resta senza dipendenze.
 libc = "0.2"

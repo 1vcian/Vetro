@@ -1,11 +1,13 @@
 //! `vetro`: runner nativo headless.
 //!
 //! ```text
-//! vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] <elf> [argomenti...]
+//! vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]
 //! vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB]
 //! ```
 //!
 //! `boot` avvia la macchina virt (M3) con la console PL011 su stdin/stdout.
+//! `--jit` esegue col JIT verso WASM (M4, wasmtime); `--stats` stampa su
+//! stderr istruzioni, tempo e MIPS (e i contatori del JIT).
 
 use std::process::ExitCode;
 use vetro_cli::linux::{ClockMode, Config, Exit};
@@ -25,7 +27,9 @@ fn main() -> ExitCode {
 }
 
 fn usage() -> ExitCode {
-    eprintln!("uso: vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] <elf> [argomenti...]");
+    eprintln!(
+        "uso: vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]"
+    );
     eprintln!("     vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB]");
     ExitCode::from(2)
 }
@@ -34,10 +38,17 @@ fn run(args: &[String]) -> ExitCode {
     // Le CPU viste dal guest sono fisse (una, deterministico) salvo --cpus=N:
     // non dipendono dalla macchina che esegue.
     let mut cfg = Config { echo: true, ..Config::default() };
+    let mut stats = false;
     let mut i = 0;
     while i < args.len() && args[i].starts_with("--") {
         match args[i].as_str() {
             "--strace" => cfg.strace = true,
+            "--jit" => cfg.jit = true,
+            "--stats" => stats = true,
+            a if a.starts_with("--jit-threshold=") => match a["--jit-threshold=".len()..].parse::<u32>() {
+                Ok(n) => cfg.jit_threshold = n,
+                _ => return usage(),
+            },
             "--host-clock" => cfg.clock = ClockMode::Host,
             a if a.starts_with("--sysroot=") => cfg.sysroot = Some(a["--sysroot=".len()..].to_string()),
             a if a.starts_with("--cpus=") => match a["--cpus=".len()..].parse::<usize>() {
@@ -62,6 +73,7 @@ fn run(args: &[String]) -> ExitCode {
     let exe = std::fs::canonicalize(path)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| path.clone());
+    let t0 = std::time::Instant::now();
     let out = match vetro_cli::run_elf(&image, &argv, &envp, &exe, cfg) {
         Ok(o) => o,
         Err(e) => {
@@ -69,6 +81,13 @@ fn run(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if stats {
+        let s = t0.elapsed().as_secs_f64();
+        eprintln!("vetro: {} istruzioni in {s:.3} s = {:.1} MIPS", out.steps, out.steps as f64 / s / 1e6);
+        if let Some(j) = out.jit {
+            eprintln!("vetro: jit {j:?}");
+        }
+    }
     match out.exit {
         Exit::Code(c) => ExitCode::from(c as u8),
         Exit::Signal { signo, cause, pc } => {

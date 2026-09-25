@@ -26,6 +26,8 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use vetro_cpu::{Cpu, Exception};
+use vetro_jit::{JitConfig, JitCpu, JitStats};
+use vetro_jit_native::NativeEngine;
 
 pub use fs::Console;
 use fs::FdTable;
@@ -125,6 +127,28 @@ pub struct Config {
     pub cpus: usize,
     /// Versione del kernel in uname (QEMU user mode riporta quella dell'host).
     pub release: String,
+    /// Esegue con il JIT (M4, ADR 0012): stessi risultati e stesso orologio
+    /// dell'interprete.
+    pub jit: bool,
+    /// Esecuzioni di un blocco con l'interprete prima di compilarlo (0 =
+    /// subito; i test di parità lo usano per tradurre anche il codice
+    /// eseguito una volta sola).
+    pub jit_threshold: u32,
+}
+
+impl Config {
+    /// Per gli harness dei test: `VETRO_JIT=1` accende il JIT e
+    /// `VETRO_JIT_THRESHOLD=N` ne fissa la soglia (0 = traduce tutto dalla
+    /// prima esecuzione).
+    pub fn jit_from_env(mut self) -> Self {
+        if std::env::var("VETRO_JIT").is_ok_and(|v| v == "1") {
+            self.jit = true;
+        }
+        if let Some(n) = std::env::var("VETRO_JIT_THRESHOLD").ok().and_then(|v| v.parse().ok()) {
+            self.jit_threshold = n;
+        }
+        self
+    }
 }
 
 impl Default for Config {
@@ -141,6 +165,8 @@ impl Default for Config {
             sysroot: None,
             cpus: 1,
             release: "6.6.0-vetro".into(),
+            jit: false,
+            jit_threshold: DEFAULT_JIT_THRESHOLD,
         }
     }
 }
@@ -277,7 +303,13 @@ pub struct Kernel {
     /// FIFO del file system, per (dispositivo, inode): aprirle sull'host
     /// bloccherebbe l'emulatore.
     fifos: std::collections::HashMap<(u64, u64), fs::Fifo>,
+    /// Il JIT, se `cfg.jit`: uno per tutto il kernel (la cache dei blocchi
+    /// è per spazio d'indirizzamento).
+    jit: Option<Box<JitCpu<NativeEngine>>>,
 }
+
+/// Soglia di default del JIT (vedi [`Config::jit_threshold`]).
+pub const DEFAULT_JIT_THRESHOLD: u32 = 16;
 
 /// Istruzioni per quanto di scheduling.
 const QUANTUM: u64 = 20_000;
@@ -287,6 +319,10 @@ const EPOCH: u64 = 1_767_225_600;
 impl Kernel {
     pub fn new(cfg: Config) -> Self {
         let console = Rc::new(RefCell::new(Console::new(cfg.stdin.clone(), cfg.echo)));
+        let jit = cfg.jit.then(|| {
+            let jc = JitConfig { hot_threshold: cfg.jit_threshold, ..JitConfig::default() };
+            Box::new(JitCpu::new(NativeEngine::new(), jc))
+        });
         Kernel {
             cfg,
             tasks: Vec::new(),
@@ -304,7 +340,18 @@ impl Kernel {
             locks: locks::LockTable::default(),
             ipc: ipc::Ipc::default(),
             fifos: std::collections::HashMap::new(),
+            jit,
         }
+    }
+
+    /// Istruzioni eseguite finora (tutti i task).
+    pub fn steps(&self) -> u64 {
+        self.steps
+    }
+
+    /// Contatori del JIT, se attivo.
+    pub fn jit_stats(&self) -> Option<JitStats> {
+        self.jit.as_ref().map(|j| j.stats)
     }
 
     pub fn stdout(&self) -> Vec<u8> {
@@ -590,14 +637,21 @@ impl Kernel {
                 }
             }
             let mm = self.tasks[t].mm.clone();
-            let res = {
-                let mut mm = mm.borrow_mut();
-                self.tasks[t].cpu.step(&mut mm.mem)
+            let budget = if self.jit.is_some() { self.jit_budget(t, QUANTUM - n) } else { 1 };
+            let (k, res) = match self.jit.as_mut() {
+                Some(jit) => {
+                    let mut mm = mm.borrow_mut();
+                    jit.run(&mut self.tasks[t].cpu, &mut mm.mem, budget)
+                }
+                None => {
+                    let mut mm = mm.borrow_mut();
+                    (1, self.tasks[t].cpu.step(&mut mm.mem))
+                }
             };
-            n += 1;
-            self.steps += 1;
+            n += k;
+            self.steps += k;
             if self.cfg.clock == ClockMode::Virtual {
-                self.clock_ns += NS_PER_STEP;
+                self.clock_ns += k * NS_PER_STEP;
             }
             match res {
                 Ok(()) => {}
@@ -642,6 +696,27 @@ impl Kernel {
             }
         }
         None
+    }
+}
+
+impl Kernel {
+    /// Passi che il JIT può eseguire di fila senza che il ciclo di
+    /// [`run_task`](Self::run_task) passo per passo si comporti in modo
+    /// diverso: dentro il quanto e il limite di istruzioni, prima della
+    /// prossima scadenza di un alarm (col tempo virtuale), e uno solo se c'è
+    /// un segnale da consegnare (se ne consegna uno per passo).
+    fn jit_budget(&self, t: usize, quantum_left: u64) -> u64 {
+        let mut b = quantum_left.min(self.cfg.max_steps.saturating_sub(self.steps)).max(1);
+        if self.signal_wakes(t) {
+            return 1;
+        }
+        if self.cfg.clock == ClockMode::Virtual && self.next_alarm != u64::MAX {
+            // check_alarms prima del passo j (j ≥ 1) vede clock + j·NS_PER_STEP:
+            // deve restare sotto la scadenza.
+            let left = self.next_alarm.saturating_sub(self.clock_ns);
+            b = b.min(left.div_ceil(NS_PER_STEP).max(1));
+        }
+        b
     }
 }
 

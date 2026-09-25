@@ -30,7 +30,7 @@ jobs:
       - name: Toolchain (da rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --target wasm32-unknown-unknown --workspace --exclude vetro-cli --exclude vetro-diff --exclude vetro-isa-tests --exclude vetro-linux-tests
+      - run: cargo build --target wasm32-unknown-unknown --workspace --exclude vetro-cli --exclude vetro-diff --exclude vetro-isa-tests --exclude vetro-linux-tests --exclude vetro-jit-native
 
   # Binari Linux arm64 (BusyBox, programmi C) confrontati con QEMU. Gira su
   # un runner arm64: il container Alpine che compila i binari è nativo.
