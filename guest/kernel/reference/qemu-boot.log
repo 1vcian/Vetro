@@ -16,7 +16,7 @@ psci: PSCIv1.1 detected in firmware.
 psci: Using standard PSCI v0.2 function IDs
 psci: Trusted OS migration not required
 psci: SMC Calling Convention v1.0
-percpu: Embedded 14 pages/cpu s25752 r0 d31592 u57344
+percpu: Embedded 14 pages/cpu s26136 r0 d31208 u57344
 Detected VIPT I-cache on CPU0
 CPU features: detected: GICv3 CPU interface
 alternatives: applying boot alternatives
@@ -61,7 +61,7 @@ CPU: All CPU(s) started at EL1
 CPU features: detected: 32-bit EL0 Support
 CPU features: detected: CRC32 instructions
 alternatives: applying system-wide alternatives
-Memory: 1015980K/1048576K available (3840K kernel code, 664K rwdata, 792K rodata, 832K init, 243K bss, 29448K reserved, 0K cma-reserved)
+Memory: 1015252K/1048576K available (4224K kernel code, 676K rwdata, 936K rodata, 896K init, 251K bss, 30176K reserved, 0K cma-reserved)
 devtmpfs: initialized
 posixtimers hash table entries: 512 (order: 1, 8192 bytes, linear)
 futex hash table entries: 256 (16384 bytes on 1 NUMA nodes, total 16 KiB, linear).
@@ -86,19 +86,27 @@ UDP-Lite hash table entries: 512 (order: 3, 32768 bytes, linear)
 NET: Registered PF_UNIX/PF_LOCAL protocol family
 Unpacking initramfs...
 workingset: timestamp_bits=62 max_order=18 bucket_order=0
+input: QEMU Virtio Tablet as /devices/platform/a003a00.virtio_mmio/virtio0/input/input0
+input: QEMU Virtio Keyboard as /devices/platform/a003c00.virtio_mmio/virtio1/input/input1
+[drm] features: -virgl +edid -resource_blob -host_visible
+[drm] features: -context_init
+[drm] number of scanouts: 1
+[drm] number of cap sets: 0
+[drm] Initialized virtio_gpu 0.1.0 for a003e00.virtio_mmio on minor 0
+Freeing initrd memory: 732K
 rtc-pl031 9010000.pl031: registered as rtc0
-Freeing initrd memory: 644K
+NET: Registered PF_VSOCK protocol family
 clk: Disabling unused clocks
-Freeing unused kernel memory: 832K
+Freeing unused kernel memory: 896K
 Run /init as init process
 VETRO-BOOT-OK: /init avviato (6.18.53)
 VETRO-AUTOTEST-INIZIO
 Linux (none) 6.18.53 #1 SMP Thu Sep 24 00:00:00 UTC 2026 aarch64 Linux
 VETRO-AUTOTEST ok: uname -m è aarch64
-rootfs on / type rootfs (rw,size=509564k,nr_inodes=127391)
+rootfs on / type rootfs (rw,size=509200k,nr_inodes=127300)
 proc on /proc type proc (rw,relatime)
 sysfs on /sys type sysfs (rw,relatime)
-devtmpfs on /dev type devtmpfs (rw,relatime,size=509564k,nr_inodes=127391,mode=755)
+devtmpfs on /dev type devtmpfs (rw,relatime,size=509200k,nr_inodes=127300,mode=755)
 tmpfs on /tmp type tmpfs (rw,relatime)
 VETRO-AUTOTEST ok: proc montato
 VETRO-AUTOTEST ok: sysfs montato
@@ -111,9 +119,110 @@ VETRO-AUTOTEST ok: RTC PL031
 VETRO-AUTOTEST ok: echo e pipe
 VETRO-AUTOTEST ok: file su tmpfs
 VETRO-AUTOTEST ok: aritmetica della shell
-  40200000-4069ffff : Kernel code
-  40770000-4086ffff : Kernel data
+  40200000-4072ffff : Kernel code
+  40810000-4090ffff : Kernel data
 initrd-start:  00 00 00 00 48 00 00 00
+VETRO-AUTOTEST ok: DRM: /dev/dri/card0
+vetro-dev: drm driver virtio_gpu 0.1.0
+vetro-dev: drm crtc 1 connettori 1 encoder 1, fb da 32x32 a 8192x8192
+vetro-dev: drm connettore tipo 15 stato 1, 26 modi, 320x200 mm
+vetro-dev: drm modo 1280x800 75 Hz clock 107300 tipo 0x48 preferito
+vetro-dev: drm modo 5120x2160 50 Hz clock 742500 tipo 0x40
+vetro-dev: drm modo 4096x2160 50 Hz clock 594000 tipo 0x40
+vetro-dev: drm modo 3840x2160 60 Hz clock 594000 tipo 0x40
+vetro-dev: drm modo 3840x2160 60 Hz clock 593407 tipo 0x40
+vetro-dev: drm modo 3840x2160 50 Hz clock 594000 tipo 0x40
+vetro-dev: drm modo 1920x1440 60 Hz clock 234000 tipo 0x40
+vetro-dev: drm modo 2560x1080 50 Hz clock 185625 tipo 0x40
+vetro-dev: drm modo 1856x1392 60 Hz clock 218250 tipo 0x40
+vetro-dev: drm modo 1792x1344 60 Hz clock 204750 tipo 0x40
+vetro-dev: drm modo 2048x1152 60 Hz clock 162000 tipo 0x40
+vetro-dev: drm modo 1920x1200 60 Hz clock 193250 tipo 0x40
+vetro-dev: drm modo 1920x1080 60 Hz clock 148500 tipo 0x40
+vetro-dev: drm modo 1920x1080 50 Hz clock 148500 tipo 0x40
+vetro-dev: drm modo 1600x1200 60 Hz clock 162000 tipo 0x40
+vetro-dev: drm modo 1680x1050 60 Hz clock 146250 tipo 0x40
+vetro-dev: drm modo 1400x1050 60 Hz clock 121750 tipo 0x40
+vetro-dev: drm modo 1280x1024 60 Hz clock 108000 tipo 0x40
+vetro-dev: drm modo 1440x900 60 Hz clock 106500 tipo 0x40
+vetro-dev: drm modo 1280x960 60 Hz clock 108000 tipo 0x40
+vetro-dev: drm modo 1360x768 60 Hz clock 85500 tipo 0x40
+vetro-dev: drm modo 1280x768 60 Hz clock 79500 tipo 0x40
+vetro-dev: drm modo 1024x768 60 Hz clock 65000 tipo 0x40
+vetro-dev: drm modo 800x600 60 Hz clock 40000 tipo 0x40
+vetro-dev: drm modo 640x480 60 Hz clock 25200 tipo 0x40
+vetro-dev: drm modo 640x480 60 Hz clock 25175 tipo 0x40
+vetro-dev: drm dumb 1280x800 pitch 5120 size 4096000
+vetro-dev: drm modeset 1280x800 ok
+vetro-dev: drm dirtyfb ok
+vetro-dev: drm cursore ok
+vetro-dev: drm chiuso
+VETRO-AUTOTEST ok: DRM: dumb buffer, modeset, dirtyfb e cursore
+drm Virtual-1: connected, enabled, modi: 1280x800 5120x2160 4096x2160 3840x2160 3840x2160 3840x2160 1920x1440 2560x1080 1856x1392 1792x1344 2048x1152 1920x1200 1920x1080 1920x1080 1600x1200 1680x1050 1400x1050 1280x1024 1440x900 1280x960 1360x768 1280x768 1024x768 800x600 640x480 640x480 
+VETRO-AUTOTEST ok: DRM: modo preferito 1280x800
+EDID:
+ 00 ff ff ff ff ff ff 00 49 14 34 12 00 00 00 00
+ 2a 18 01 04 a5 20 14 78 06 ee 91 a3 54 4c 99 26
+ 0f 50 54 21 08 00 e1 c0 d1 c0 d1 00 a9 40 b3 00
+ 95 00 81 80 81 40 ea 29 00 c0 51 20 1c 30 40 26
+ 44 40 45 cb 10 00 00 18 00 00 00 f7 00 0a 00 40
+ 82 00 28 20 00 00 00 00 00 00 00 00 00 fd 00 32
+ 7d 1e a0 ff 01 0a 20 20 20 20 20 20 00 00 00 fc
+ 00 51 45 4d 55 20 4d 6f 6e 69 74 6f 72 0a 01 3a
+ 02 03 0b 00 46 7d 65 60 59 1f 61 00 00 00 10 00
+ 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+ 10 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+ 00 00 10 00 00 00 00 00 00 00 00 00 00 00 00 00
+ 00 00 00 00 10 00 00 00 00 00 00 00 00 00 00 00
+ 00 00 00 00 00 00 10 00 00 00 00 00 00 00 00 00
+ 00 00 00 00 00 00 00 00 10 00 00 00 00 00 00 00
+ 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 2f
+VETRO-AUTOTEST ok: input: tastiera e tablet
+I: Bus=0006 Vendor=0627 Product=0003 Version=0002
+N: Name="QEMU Virtio Tablet"
+P: Phys=virtio0/input0
+S: Sysfs=/devices/platform/a003a00.virtio_mmio/virtio0/input/input0
+U: Uniq=
+H: Handlers=event0 
+B: PROP=0
+B: EV=f
+B: KEY=30400 1f0000 0 0 0 0
+B: REL=100
+B: ABS=3
+
+I: Bus=0006 Vendor=0627 Product=0001 Version=0001
+N: Name="QEMU Virtio Keyboard"
+P: Phys=virtio1/input0
+S: Sysfs=/devices/platform/a003c00.virtio_mmio/virtio1/input/input1
+U: Uniq=
+H: Handlers=kbd event1 
+B: PROP=0
+B: EV=120003
+B: KEY=400000007 ff803078f800dfff febeffff7bcfffff fffffffffffffffe
+B: LED=7
+
+vetro-dev: /dev/input/event0 nome "QEMU Virtio Tablet"
+vetro-dev:   phys "virtio0/input0"
+vetro-dev:   uniq ""
+vetro-dev:   id bus 0006 vendor 0627 product 0003 version 0002, evdev 10001
+vetro-dev:   prop:
+vetro-dev:   ev: 0 1 2 3
+vetro-dev:   key: 110 111 112 113 114 14a 150 151
+vetro-dev:   rel: 8
+vetro-dev:   abs: 0 1
+vetro-dev:   abs 0 min 0 max 32767 fuzz 0 flat 0 res 0
+vetro-dev:   abs 1 min 0 max 32767 fuzz 0 flat 0 res 0
+vetro-dev: /dev/input/event1 nome "QEMU Virtio Keyboard"
+vetro-dev:   phys "virtio1/input0"
+vetro-dev:   uniq ""
+vetro-dev:   id bus 0006 vendor 0627 product 0001 version 0001, evdev 10001
+vetro-dev:   prop:
+vetro-dev:   ev: 0 1 11 14
+vetro-dev:   key: 1 2 3 4 5 6 7 8 9 a b c d e f 10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f 20 21 22 23 24 25 26 27 28 29 2a 2b 2c 2d 2e 2f 30 31 32 33 34 35 36 37 38 39 3a 3b 3c 3d 3e 3f 40 41 42 43 44 45 46 47 48 49 4a 4b 4c 4d 4e 4f 50 51 52 53 56 57 58 59 5b 5c 5d 5e 60 61 62 63 64 65 66 67 68 69 6a 6b 6c 6d 6e 6f 71 72 73 74 75 77 79 7a 7b 7c 7d 7e 7f 80 81 82 83 84 85 86 87 88 89 8a 8b 8c 8e 8f 9b 9c 9d 9e 9f a3 a4 a5 a6 ac ad b7 b8 b9 ba bb bc bd be bf c0 c1 c2 e2
+vetro-dev:   led: 0 1 2
+vetro-dev:   rep ritardo 250 periodo 33
+VETRO-AUTOTEST ok: input: capacità di evdev
+VETRO-AUTOTEST ok: vsock: /dev/vsock
 VETRO-AUTOTEST-FINE: ok
 ~ # [6necho VETRO-SHELL-$((6*7))
 VETRO-SHELL-42

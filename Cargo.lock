@@ -177,6 +177,7 @@ name = "vetro-boot-tests"
 version = "0.0.0"
 dependencies = [
  "vetro-machine",
+ "vetro-platform",
 ]
 
 [[package]]

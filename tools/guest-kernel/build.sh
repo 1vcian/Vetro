@@ -1,7 +1,8 @@
 #!/bin/sh
 # Costruisce il kernel guest di M3 e il suo initramfs in target/guest-kernel:
 #   Image               kernel Linux arm64 (formato Image, avvio diretto)
-#   initramfs.cpio.gz   BusyBox statica + /init + autotest
+#   initramfs.cpio.gz   BusyBox statica + /init + autotest + vetro-dev
+#   vetro-dev           prova dei dispositivi di M5 (nell'initramfs)
 #   config, System.map  configurazione completa e simboli (per il debug)
 #   sources/            sorgenti esatti usati (GPL-2.0, vedi CLAUDE.md)
 #   VERSIONS            versioni di kernel, compilatore e BusyBox
@@ -89,6 +90,10 @@ docker run --rm --platform linux/arm64 \
   # installano qui, perché i programmi di supporto del kernel in $obj sono
   # compilati con musl e non girano nel container Debian dei kselftest.
   make -s -C "$src" O="$obj" headers
+  # Programma di prova dei dispositivi di M5: gli header di drm/ vengono dal
+  # kernel (Alpine non li ha); -idirafter lascia la precedenza a quelli di musl.
+  gcc -static -O2 -Wall -Werror -idirafter "$obj/usr/include" \
+    -o "$out/vetro-dev" /src/guest/kernel/initramfs/vetro-dev.c
   cp "$obj/arch/arm64/boot/Image" "$obj/.config" "$obj/System.map" "$out/"
   mv "$out/.config" "$out/config"
 
@@ -101,6 +106,7 @@ docker run --rm --platform linux/arm64 \
   cp /src/guest/kernel/config/vetro.config /src/guest/kernel/config/defconfig \
      /src/guest/kernel/initramfs/files.list /src/guest/kernel/initramfs/init \
      /src/guest/kernel/initramfs/autotest.sh /src/guest/kernel/initramfs/kselftest.sh \
+     /src/guest/kernel/initramfs/vetro-dev.c \
      /src/tools/guest-kernel/build.sh \
      /src/tools/guest-kernel/Dockerfile "$out/sources/"
   {

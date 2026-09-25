@@ -204,8 +204,33 @@ pub fn normalize(log: &str) -> String {
 /// con GICv3 senza ITS (Vetro non ha LPI), Cortex-A53, 1 GiB, senza la
 /// scheda di rete PCI che QEMU aggiunge da sé (Vetro non ha PCI, e la sua ROM
 /// `efi-virtio.rom` non c'è sui runner senza ipxe-qemu).
-pub const QEMU_MACHINE: [&str; 8] =
-    ["-M", "virt,gic-version=3,its=off", "-cpu", "cortex-a53", "-m", "1G", "-nic", "none"];
+///
+/// I dispositivi virtio sono quelli di `vetro_machine::Devices::default`,
+/// nello stesso ordine (quindi negli stessi slot): GPU, tastiera, tablet.
+/// `force-legacy=false` perché il virtio-mmio di Vetro è la versione 2
+/// (virtio 1.x); QEMU di default presenta la versione 1 legacy, e i driver
+/// di GPU e input (che vogliono VIRTIO_F_VERSION_1) non partirebbero.
+/// Niente vsock: `vhost-vsock-device` vuole `/dev/vhost-vsock` dell'host, che
+/// né Docker Desktop né i runner hanno; virtio-vsock si prova solo sotto
+/// Vetro (`tests/boot/tests/devices.rs`).
+pub const QEMU_MACHINE: [&str; 16] = [
+    "-M",
+    "virt,gic-version=3,its=off",
+    "-cpu",
+    "cortex-a53",
+    "-m",
+    "1G",
+    "-nic",
+    "none",
+    "-global",
+    "virtio-mmio.force-legacy=false",
+    "-device",
+    "virtio-gpu-device",
+    "-device",
+    "virtio-keyboard-device",
+    "-device",
+    "virtio-tablet-device",
+];
 
 /// Differenze note tra l'avvio sotto QEMU e sotto Vetro, con il motivo.
 /// Una riga che contiene uno di questi testi si ignora nel confronto.

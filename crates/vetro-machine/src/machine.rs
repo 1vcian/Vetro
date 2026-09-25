@@ -5,7 +5,8 @@ use core::cell::RefCell;
 use vetro_cpu::sys::SysEvent;
 use vetro_cpu::{Cpu, SysConfig};
 use vetro_mmu::{Mmu, MmuBus};
-use vetro_platform::{VirtDtbConfig, map, virt_dtb};
+use vetro_platform::virtio::{GpuConfig, InputConfig, MemDisplay, VirtioGpu, VirtioInput, VirtioVsock};
+use vetro_platform::{VirtDtbConfig, VirtioDevice, map, virt_dtb};
 
 use crate::board::{Board, Env, Phys};
 use crate::boot::{self, BootError, BootPlan, RamConfig};
@@ -33,6 +34,60 @@ impl Default for MachineConfig {
     }
 }
 
+/// Il dispositivo di puntamento assoluto.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pointer {
+    /// `virtio-tablet-device` di QEMU: puntatore assoluto con pulsanti.
+    Tablet,
+    /// `virtio-multitouch-device` di QEMU: touchscreen diretto a più
+    /// contatti (quello che vuole Android).
+    Multitouch,
+}
+
+/// Dispositivi virtio-mmio della macchina, oltre a GIC, UART e RTC.
+///
+/// Si montano in quest'ordine, ciascuno nello slot libero più alto (come i
+/// `-device` di QEMU in ordine di riga di comando): GPU nello slot 31,
+/// tastiera nel 30, puntatore nel 29, vsock nel successivo libero. Il
+/// default è quello del test di avvio confrontato con QEMU
+/// (`tests/boot/src/lib.rs`, `QEMU_MACHINE`): GPU 1280x800, tastiera e
+/// tablet, senza vsock (QEMU in container non ha vhost-vsock).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Devices {
+    pub gpu: Option<GpuConfig>,
+    pub keyboard: bool,
+    pub pointer: Option<Pointer>,
+    /// CID del guest, se c'è virtio-vsock.
+    pub vsock_cid: Option<u64>,
+}
+
+impl Default for Devices {
+    fn default() -> Self {
+        Devices {
+            gpu: Some(GpuConfig::default()),
+            keyboard: true,
+            pointer: Some(Pointer::Tablet),
+            vsock_cid: None,
+        }
+    }
+}
+
+impl Devices {
+    /// Nessun dispositivo virtio (la macchina di M3).
+    pub fn none() -> Self {
+        Devices { gpu: None, keyboard: false, pointer: None, vsock_cid: None }
+    }
+}
+
+/// Slot virtio-mmio dei dispositivi montati.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Slots {
+    pub gpu: Option<u32>,
+    pub keyboard: Option<u32>,
+    pub pointer: Option<u32>,
+    pub vsock: Option<u32>,
+}
+
 /// Perché [`Machine::run`] si è fermata.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stop {
@@ -58,6 +113,7 @@ pub struct Machine {
     pub steps: u64,
     /// Prossimo CNTPCT a cui il timer cambia livello (cache).
     timer_deadline: Option<u64>,
+    slots: Slots,
 }
 
 /// CNTPCT dopo `steps` istruzioni: 62,5 MHz su 100 MHz nominali.
@@ -75,17 +131,91 @@ fn steps_for(c: u64) -> u64 {
 }
 
 impl Machine {
+    /// Macchina con i dispositivi di default ([`Devices::default`]).
     pub fn new(cfg: &MachineConfig) -> Self {
+        Self::with_devices(cfg, &Devices::default())
+    }
+
+    /// Macchina con i dispositivi virtio scelti. La GPU parte con un
+    /// [`MemDisplay`]; il browser lo sostituisce con `VirtioGpu::set_backend`
+    /// (da [`Machine::gpu`]).
+    pub fn with_devices(cfg: &MachineConfig, devices: &Devices) -> Self {
         let mut cpu = Cpu::new();
         cpu.reset_system(SysConfig::default());
+        let mut board = Board::new(cfg.ram_size, cfg.now_secs);
+        let mut slots = Slots::default();
+        let mut attach = |dev: Box<dyn VirtioDevice>| {
+            Some(
+                board.virt.attach_virtio_next(dev).expect("32 slot bastano per i dispositivi della macchina"),
+            )
+        };
+        if let Some(g) = &devices.gpu {
+            slots.gpu = attach(Box::new(VirtioGpu::new(Box::new(MemDisplay::default()), g.clone())));
+        }
+        if devices.keyboard {
+            slots.keyboard = attach(Box::new(VirtioInput::new(InputConfig::keyboard())));
+        }
+        if let Some(p) = devices.pointer {
+            let cfg = match p {
+                Pointer::Tablet => InputConfig::tablet(),
+                Pointer::Multitouch => InputConfig::multitouch(),
+            };
+            slots.pointer = attach(Box::new(VirtioInput::new(cfg)));
+        }
+        if let Some(cid) = devices.vsock_cid {
+            slots.vsock = attach(Box::new(VirtioVsock::new(cid)));
+        }
         Machine {
             cpu,
             mmu: Mmu::new(PA_BITS),
-            board: RefCell::new(Board::new(cfg.ram_size, cfg.now_secs)),
+            board: RefCell::new(board),
             steps: 0,
             timer_deadline: None,
             seed: cfg.seed,
+            slots,
         }
+    }
+
+    /// Slot dei dispositivi virtio montati.
+    pub fn slots(&self) -> Slots {
+        self.slots
+    }
+
+    /// Agisce sul dispositivo virtio dello slot `slot`, di tipo `T`. Il
+    /// dispositivo viene servito prima della prossima istruzione (eventi,
+    /// dati, cambi di configurazione dell'host arrivano al guest). È il
+    /// punto d'ingresso dell'host verso i dispositivi: va registrato per il
+    /// replay (M10).
+    pub fn device<T: VirtioDevice, R>(
+        &mut self,
+        slot: Option<u32>,
+        f: impl FnOnce(&mut T) -> R,
+    ) -> Option<R> {
+        let mut b = self.board.borrow_mut();
+        let d = b.virt.virtio_mut(slot?)?.device_as_mut::<T>()?;
+        let r = f(d);
+        b.virtio_dirty = true;
+        Some(r)
+    }
+
+    /// La GPU, se c'è.
+    pub fn gpu<R>(&mut self, f: impl FnOnce(&mut VirtioGpu) -> R) -> Option<R> {
+        self.device(self.slots.gpu, f)
+    }
+
+    /// La tastiera, se c'è.
+    pub fn keyboard<R>(&mut self, f: impl FnOnce(&mut VirtioInput) -> R) -> Option<R> {
+        self.device(self.slots.keyboard, f)
+    }
+
+    /// Il tablet o il touchscreen, se c'è.
+    pub fn pointer<R>(&mut self, f: impl FnOnce(&mut VirtioInput) -> R) -> Option<R> {
+        self.device(self.slots.pointer, f)
+    }
+
+    /// virtio-vsock, se c'è.
+    pub fn vsock<R>(&mut self, f: impl FnOnce(&mut VirtioVsock) -> R) -> Option<R> {
+        self.device(self.slots.vsock, f)
     }
 
     /// Carica un kernel Linux arm64 (`Image`) con initramfs e riga di comando,
@@ -251,6 +381,29 @@ mod tests {
         m.console_input(b"x");
         assert_eq!(m.run(1_000_000), Stop::Idle);
         assert!(m.steps < 10, "si ferma subito, non esaurisce il quanto");
+    }
+
+    /// Dispositivi negli slot dei `-device` di QEMU, nello stesso ordine
+    /// (tests/boot/src/lib.rs, `QEMU_MACHINE`); l'host li raggiunge per tipo
+    /// e ogni accesso li fa servire.
+    #[test]
+    fn dispositivi_negli_slot_di_qemu() {
+        let cfg = MachineConfig { ram_size: 1 << 20, ..MachineConfig::default() };
+        let m = Machine::new(&cfg);
+        assert_eq!(m.slots(), Slots { gpu: Some(31), keyboard: Some(30), pointer: Some(29), vsock: None });
+        let devices =
+            Devices { pointer: Some(Pointer::Multitouch), vsock_cid: Some(5), ..Devices::default() };
+        let mut m = Machine::with_devices(&cfg, &devices);
+        assert_eq!(m.slots().vsock, Some(28));
+        assert_eq!(m.vsock(|v| v.guest_cid()), Some(5));
+        assert_eq!(m.gpu(|g| g.resource_count()), Some(0));
+        m.board.borrow_mut().virtio_dirty = false;
+        m.pointer(|p| p.touch(0, Some((1, 2))));
+        assert!(m.board.borrow().virtio_dirty, "l'host ha toccato un dispositivo");
+        assert_eq!(m.pointer(|p| p.config().clone()), Some(InputConfig::multitouch()));
+        let m = Machine::with_devices(&cfg, &Devices::none());
+        assert_eq!(m.slots(), Slots::default());
+        assert!(m.board.borrow().virt.virtio(31).unwrap().device().is_none());
     }
 
     #[test]

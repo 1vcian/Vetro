@@ -6,7 +6,10 @@
 //! - [`boot`]: dove vanno kernel, initramfs e device tree, e come parte la
 //!   CPU (come `hw/arm/boot.c` di QEMU).
 //! - [`Machine`]: costruzione, caricamento di un kernel Linux, esecuzione a
-//!   quanti ([`Machine::run`]), console PL011.
+//!   quanti ([`Machine::run`]), console PL011, dispositivi virtio di M5
+//!   ([`Devices`]: GPU, tastiera, tablet o touchscreen, vsock) con l'accesso
+//!   dell'host ([`Machine::gpu`], [`Machine::keyboard`], [`Machine::pointer`],
+//!   [`Machine::vsock`]).
 //!
 //! Il tempo del guest è il numero di istruzioni eseguite: CNTPCT avanza di 5
 //! ogni 8 istruzioni, cioè 62,5 MHz con una CPU nominale da 100 MHz (lo stesso
@@ -19,4 +22,4 @@ mod machine;
 mod psci;
 
 pub use board::Board;
-pub use machine::{Machine, MachineConfig, Stop};
+pub use machine::{Devices, Machine, MachineConfig, Pointer, Slots, Stop};
