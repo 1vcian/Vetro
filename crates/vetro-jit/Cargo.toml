@@ -8,3 +8,10 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+vetro-cpu = { path = "../vetro-cpu" }
+
+[dev-dependencies]
+# Solo nei test: valida i moduli generati.
+wasmparser = "0.259"

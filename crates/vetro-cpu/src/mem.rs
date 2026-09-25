@@ -1,9 +1,11 @@
 //! Interfaccia verso la memoria del guest e spazio d'indirizzamento utente.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Access {
@@ -225,13 +227,74 @@ impl Region {
     }
 }
 
+/// Hash per numeri di pagina (moltiplicazione di Fibonacci): le pagine
+/// sorvegliate si controllano a ogni scrittura, SipHash costerebbe troppo.
+#[derive(Default)]
+struct PageHasher(u64);
+
+impl Hasher for PageHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0.rotate_left(8) ^ b as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        }
+    }
+    fn write_u64(&mut self, v: u64) {
+        self.0 = v.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+}
+
+type PageSet = HashSet<u64, BuildHasherDefault<PageHasher>>;
+
+/// Identità degli spazi d'indirizzamento (vedi [`UserMemory::space_id`]).
+static NEXT_SPACE: AtomicU64 = AtomicU64::new(1);
+
+/// Sorveglianza delle pagine di codice per il JIT (ADR 0012,
+/// "Invalidazione"). Il JIT segna con [`UserMemory::watch_code`] le pagine
+/// da cui ha tradotto dei blocchi; ogni cambiamento del contenuto o della
+/// mappatura di una di esse (scrittura del guest o del kernel emulato, mmap,
+/// munmap, mprotect, mremap...) la toglie dalla sorveglianza e la mette tra
+/// le pagine sporche, che il JIT raccoglie con
+/// [`UserMemory::take_code_dirty`] e invalida.
+#[derive(Default)]
+struct CodeWatch {
+    pages: PageSet,
+    dirty: Vec<u64>,
+}
+
 /// Spazio d'indirizzamento di un processo in user mode: regioni disgiunte
 /// con permessi, che si possono sovrascrivere, togliere e riproteggere a
 /// pezzi (mmap MAP_FIXED, munmap, mprotect). È l'implementazione di
 /// [`Memory`] per il livello Linux user mode; da M3 la traduzione la fa la MMU.
-#[derive(Default, Clone)]
 pub struct UserMemory {
     regions: BTreeMap<u64, Region>,
+    /// Identità unica di questo spazio: una copia (fork) ne ha un'altra.
+    space: u64,
+    watch: CodeWatch,
+}
+
+impl Default for UserMemory {
+    fn default() -> Self {
+        UserMemory {
+            regions: BTreeMap::new(),
+            space: NEXT_SPACE.fetch_add(1, Ordering::Relaxed),
+            watch: CodeWatch::default(),
+        }
+    }
+}
+
+/// La copia è un altro spazio (fork): nuova identità e nessuna pagina
+/// sorvegliata, perché i blocchi tradotti del JIT sono per spazio.
+impl Clone for UserMemory {
+    fn clone(&self) -> Self {
+        UserMemory {
+            regions: self.regions.clone(),
+            space: NEXT_SPACE.fetch_add(1, Ordering::Relaxed),
+            watch: CodeWatch::default(),
+        }
+    }
 }
 
 impl fmt::Debug for UserMemory {
@@ -254,6 +317,71 @@ impl UserMemory {
         Self::default()
     }
 
+    /// Identità dello spazio d'indirizzamento, unica nel processo host (una
+    /// copia ne riceve una nuova). Chiave della cache dei blocchi del JIT.
+    pub fn space_id(&self) -> u64 {
+        self.space
+    }
+
+    /// Sorveglia la pagina `page` (indirizzo >> 12): il prossimo
+    /// cambiamento del suo contenuto o della sua mappatura la segna sporca.
+    pub fn watch_code(&mut self, page: u64) {
+        self.watch.pages.insert(page);
+    }
+
+    /// Vero se ci sono pagine sorvegliate diventate sporche.
+    #[inline]
+    pub fn code_dirty(&self) -> bool {
+        !self.watch.dirty.is_empty()
+    }
+
+    /// Pagine sorvegliate cambiate dall'ultima chiamata (e non più
+    /// sorvegliate).
+    pub fn take_code_dirty(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.watch.dirty)
+    }
+
+    /// Vero se il codice a `addr` può stare in una cache di blocchi
+    /// tradotti: solo memoria privata. Le mappature condivise (MAP_SHARED)
+    /// cambiano anche da altri processi o dai file, fuori dalla vista di
+    /// questo spazio.
+    pub fn is_private(&self, addr: u64) -> bool {
+        match self.find(addr) {
+            Some((b, _)) => matches!(self.regions[&b].backing, Backing::Pages { .. }),
+            None => false,
+        }
+    }
+
+    /// Segna sporche le pagine sorvegliate che toccano `[start, end)`.
+    fn touch(&mut self, start: u64, end: u64) {
+        if self.watch.pages.is_empty() || start >= end {
+            return;
+        }
+        let (first, last) = (start >> 12, (end - 1) >> 12);
+        if last - first < 64 {
+            for p in first..=last {
+                if self.watch.pages.remove(&p) {
+                    self.watch.dirty.push(p);
+                }
+            }
+        } else {
+            let hit: Vec<u64> =
+                self.watch.pages.iter().copied().filter(|p| (first..=last).contains(p)).collect();
+            for p in hit {
+                self.watch.pages.remove(&p);
+                self.watch.dirty.push(p);
+            }
+        }
+    }
+
+    /// Come [`touch`](Self::touch) per una scrittura di `len` byte a `addr`.
+    #[inline]
+    fn touch_write(&mut self, addr: u64, len: usize) {
+        if !self.watch.pages.is_empty() {
+            self.touch(addr, addr.saturating_add(len as u64));
+        }
+    }
+
     fn overlaps(&self, start: u64, end: u64) -> bool {
         if let Some((b, r)) = self.regions.range(..end).next_back() {
             return b + r.len as u64 > start;
@@ -267,6 +395,7 @@ impl UserMemory {
         if data.is_empty() || self.overlaps(base, end) {
             return Err(Overlap { base });
         }
+        self.touch(base, end);
         self.regions.insert(base, Region::own(data, perm));
         Ok(())
     }
@@ -327,6 +456,8 @@ impl UserMemory {
     /// Sposta le regioni di `[old, old+len)` a `dst` con il loro contenuto e
     /// la loro memoria (anche condivisa), sostituendo ciò che c'era (mremap).
     pub fn remap(&mut self, old: u64, len: u64, dst: u64) {
+        self.touch(old, old.saturating_add(len));
+        self.touch(dst, dst.saturating_add(len));
         self.split_at(old);
         self.split_at(old + len);
         let keys: Vec<u64> = self.regions.range(old..old + len).map(|(&k, _)| k).collect();
@@ -364,6 +495,7 @@ impl UserMemory {
             }
         }
         let len = (b - page) as usize;
+        self.touch(page, b);
         self.regions.insert(
             page,
             Region {
@@ -443,6 +575,7 @@ impl UserMemory {
         if start >= end {
             return;
         }
+        self.touch(start, end);
         self.split_at(start);
         self.split_at(end);
         let keys: Vec<u64> = self.regions.range(start..end).map(|(&k, _)| k).collect();
@@ -457,6 +590,7 @@ impl UserMemory {
         if !self.is_mapped(start, end) {
             return Err(MemFault { addr: start, access: Access::Read });
         }
+        self.touch(start, end);
         self.split_at(start);
         self.split_at(end);
         for (_, r) in self.regions.range_mut(start..end) {
@@ -597,6 +731,7 @@ impl UserMemory {
     /// Scrittura che ignora i permessi (caricatore ELF, kernel che prepara
     /// lo stack su pagine già mappate).
     pub fn poke(&mut self, addr: u64, data: &[u8]) -> Result<(), MemFault> {
+        self.touch_write(addr, data.len());
         for (k, &byte) in data.iter().enumerate() {
             let p = addr.wrapping_add(k as u64);
             let Some((b, _)) = self.find(p) else {
@@ -636,9 +771,11 @@ impl Memory for UserMemory {
         }
         if let Some((b, off)) = self.locate(addr, data.len(), Access::Write)? {
             self.regions.get_mut(&b).unwrap().write(off, data);
+            self.touch_write(addr, data.len());
             return Ok(());
         }
         self.check_slow(addr, data.len(), Access::Write)?;
+        self.touch_write(addr, data.len());
         for (k, &byte) in data.iter().enumerate() {
             let p = addr.wrapping_add(k as u64);
             let (b, _) = self.find(p).expect("verificato sopra");
@@ -750,5 +887,49 @@ mod tests {
         a.read(0x41001, &mut x).unwrap();
         assert_eq!(x[0], 7);
         assert_eq!(buf.borrow()[0x1001], 7);
+    }
+
+    /// Sorveglianza del codice per il JIT: ogni cambiamento di una pagina
+    /// sorvegliata la segna sporca una volta sola, le altre no.
+    #[test]
+    fn code_watch_reports_every_kind_of_change() {
+        let mut m = UserMemory::new();
+        m.map(0x10000, vec![1; 0x4000], Perm::RWX).unwrap();
+        let watch_all = |m: &mut UserMemory| {
+            for p in 0x10..0x14 {
+                m.watch_code(p);
+            }
+        };
+        watch_all(&mut m);
+        assert!(!m.code_dirty());
+        m.write(0x10ffe, &[0; 4]).unwrap(); // a cavallo di due pagine
+        assert_eq!(m.take_code_dirty(), [0x10, 0x11]);
+        m.write(0x10000, &[0]).unwrap(); // non più sorvegliata
+        assert!(!m.code_dirty());
+        assert!(m.write(0x20000, &[0]).is_err());
+        assert!(!m.code_dirty());
+        m.poke(0x12000, &[5]).unwrap();
+        assert_eq!(m.take_code_dirty(), [0x12]);
+        watch_all(&mut m);
+        m.protect(0x13000, 0x14000, Perm::RW).unwrap();
+        assert_eq!(m.take_code_dirty(), [0x13]);
+        m.unmap(0x11000, 0x12000);
+        assert_eq!(m.take_code_dirty(), [0x11]);
+        m.map_fixed(0x10000, vec![2; 0x1000], Perm::RX);
+        assert_eq!(m.take_code_dirty(), [0x10]);
+        m.remap(0x12000, 0x1000, 0x30000);
+        assert_eq!(m.take_code_dirty(), [0x12]);
+        // Una copia (fork) è un altro spazio, senza pagine sorvegliate.
+        m.watch_code(0x10);
+        let mut c = m.clone();
+        assert_ne!(c.space_id(), m.space_id());
+        c.poke(0x10000, &[9]).unwrap();
+        assert!(!c.code_dirty());
+        assert!(!m.code_dirty());
+        // Solo la memoria privata può stare nella cache dei blocchi.
+        assert!(m.is_private(0x10000));
+        m.map_shared(0x50000, Rc::new(RefCell::new(vec![0; 0x1000])), 0, 0x1000, Perm::RX, false);
+        assert!(!m.is_private(0x50000));
+        assert!(!m.is_private(0x90000));
     }
 }
