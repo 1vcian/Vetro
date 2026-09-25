@@ -96,6 +96,7 @@ impl Kernel {
             exe: parent.exe.clone(),
             umask: parent.umask,
             deadline: None,
+            oom_score_adj: parent.oom_score_adj,
         };
         if flags & CLONE_PARENT_SETTID != 0 {
             write_u32(&mut self.tasks[t].mm.borrow_mut().mem, ptid, tid as u32)?;

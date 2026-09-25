@@ -195,6 +195,8 @@ pub struct Task {
     /// con timeout): fissata al primo blocco, così la riesecuzione dell'SVC
     /// non la sposta.
     pub deadline: Option<u64>,
+    /// /proc/<pid>/oom_score_adj.
+    pub oom_score_adj: i32,
 }
 
 pub struct Kernel {
@@ -300,6 +302,7 @@ impl Kernel {
             exe: exe.into(),
             umask: 0o022,
             deadline: None,
+            oom_score_adj: 0,
         };
         self.tasks.push(task);
         if self.init == 0 {

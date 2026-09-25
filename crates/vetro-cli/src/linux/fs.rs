@@ -132,7 +132,7 @@ impl OpenFile {
     }
 
     pub fn writable(&self) -> bool {
-        self.flags & O_ACCMODE != 0
+        self.flags & O_ACCMODE != 0 || self.guest_path.ends_with("/oom_score_adj")
     }
 
     pub fn read(&mut self, len: usize, rng: &mut dyn FnMut(usize) -> Vec<u8>) -> Io {
@@ -237,6 +237,9 @@ impl OpenFile {
             Kind::PipeR(_) => Io::Err(EBADF),
             Kind::Socket => Io::Err(107), // ENOTCONN
             Kind::Null | Kind::Zero | Kind::Random => Io::Written(data.len()),
+            // /proc/<pid>/oom_score_adj si può scrivere (e non ha effetto);
+            // il resto del /proc virtuale è in sola lettura.
+            Kind::Mem { .. } if self.guest_path.ends_with("/oom_score_adj") => Io::Written(data.len()),
             Kind::Mem { .. } => Io::Err(EACCES),
         }
     }

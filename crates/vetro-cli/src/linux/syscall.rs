@@ -156,6 +156,11 @@ impl Kernel {
             78 => self.sys_readlinkat(t, a[0], a[1], a[2], a[3] as usize),
             48 | 439 => {
                 let p = self.path_arg(t, a[0], a[1])?;
+                // /proc è sempre quello virtuale: quello dell'host descrive l'emulatore.
+                if let Some(r) = self.proc_content(t, &p) {
+                    r?;
+                    return ret(0);
+                }
                 std::fs::metadata(&p).map_err(|e| host_errno(&e))?;
                 ret(0)
             }
@@ -732,6 +737,10 @@ impl Kernel {
 
     fn do_write(&mut self, t: usize, fd: i64, data: &[u8]) -> R {
         let f = self.tasks[t].files.borrow().get(fd)?;
+        let oom = f.borrow().guest_path.clone();
+        if matches!(f.borrow().kind, Kind::Mem { .. }) && oom.ends_with("/oom_score_adj") {
+            return ret(self.write_oom_score_adj(t, &oom, data)? as i64);
+        }
         let io = f.borrow_mut().write(data);
         match io {
             Io::Written(n) => ret(n as i64),

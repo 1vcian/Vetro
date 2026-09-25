@@ -132,8 +132,30 @@ impl Kernel {
                 }
                 text(s)
             }
-            "oom_score_adj" => text("0\n".into()),
+            "oom_score_adj" => text(format!("{}\n", task.oom_score_adj)),
             _ => Some(Err(ENOENT)),
         }
+    }
+}
+
+impl Kernel {
+    /// Scrittura in /proc/<pid>/oom_score_adj: abbassarlo richiede privilegi.
+    pub(super) fn write_oom_score_adj(&mut self, t: usize, path: &str, data: &[u8]) -> Result<usize, i64> {
+        let v: i32 = std::str::from_utf8(data).ok().and_then(|s| s.trim().parse().ok()).ok_or(EINVAL)?;
+        if !(-1000..=1000).contains(&v) {
+            return Err(EINVAL);
+        }
+        let who = path.trim_start_matches("/proc/").split('/').next().unwrap_or("self");
+        let pid = if who == "self" { self.tasks[t].tgid } else { who.parse().map_err(|_| ENOENT)? };
+        // SAFETY: geteuid non ha precondizioni.
+        let root = unsafe { libc::geteuid() } == 0;
+        let cur = self.tasks.iter().find(|x| x.tgid == pid).ok_or(ENOENT)?.oom_score_adj;
+        if v < cur && !root {
+            return Err(EACCES);
+        }
+        for task in self.tasks.iter_mut().filter(|x| x.tgid == pid) {
+            task.oom_score_adj = v;
+        }
+        Ok(data.len())
     }
 }
