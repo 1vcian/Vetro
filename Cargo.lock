@@ -878,6 +878,7 @@ dependencies = [
  "vetro-jit-native",
  "vetro-machine",
  "vetro-platform",
+ "vetro-wasm",
 ]
 
 [[package]]
@@ -985,6 +986,7 @@ version = "0.0.0"
 dependencies = [
  "vetro-jit",
  "vetro-machine",
+ "vetro-platform",
 ]
 
 [[package]]

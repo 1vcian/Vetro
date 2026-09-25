@@ -120,9 +120,16 @@ jobs:
           set -o pipefail
           tools/wasm-boot.sh --jit 2>&1 | tee wasm-boot.log
           grep -A4 '^==> tempi' wasm-boot.log | sed 's/^/::notice title=tempi di avvio::/'
+      # M5: l'app web e l'API dei dispositivi di vetro-wasm in Node: disco
+      # via HTTP Range (stesse istruzioni e stesso log di un disco locale),
+      # framebuffer e ingressi; l'app in Chrome headless se il runner ce l'ha.
+      - name: App web (Node, Chrome headless se c'è)
+        run: |
+          set -o pipefail
+          tools/web-test.sh 2>&1 | tee web-test.log
       - if: failure()
         run: |
-          for f in boot-build.log boot-test.log boot-jit.log wasm-boot.log; do
+          for f in boot-build.log boot-test.log boot-jit.log wasm-boot.log web-test.log; do
             [ -s "$f" ] || continue
             echo "::error title=$f::$(grep -vE '^\s*$' "$f" | tail -n 60 | awk '{gsub(/%/, "%25"); gsub(/\r/, ""); printf "%s%%0A", $0}')"
           done

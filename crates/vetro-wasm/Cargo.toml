@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 vetro-machine = { path = "../vetro-machine" }
 vetro-jit = { path = "../vetro-jit" }
+vetro-platform = { path = "../vetro-platform" }
 
 [lints]
 workspace = true

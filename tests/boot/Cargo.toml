@@ -9,6 +9,8 @@ publish.workspace = true
 [dev-dependencies]
 vetro-machine = { path = "../../crates/vetro-machine" }
 vetro-platform = { path = "../../crates/vetro-platform" }
+# L'API di vetro-wasm compilata per l'host: riferimento dei test web (tests/web).
+vetro-wasm = { path = "../../crates/vetro-wasm" }
 # Il JIT della modalità sistema su wasmtime (VETRO_JIT=1, ADR 0013).
 vetro-jit-native = { path = "../../crates/vetro-jit-native" }
 

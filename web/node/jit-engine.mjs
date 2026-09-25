@@ -98,7 +98,7 @@ export class JitEngine {
     return {
       compile: (ptr, len) => {
         // Copia: la memoria può crescere, e il modulo resta valido.
-        const bytes = new Uint8Array(this.#vetro.memory.buffer, ptr, len).slice();
+        const bytes = new Uint8Array(this.#vetro.memory.buffer, ptr >>> 0, len).slice();
         try {
           return this.compile(bytes);
         } catch (e) {

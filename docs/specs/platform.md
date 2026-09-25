@@ -197,7 +197,9 @@ La RAM non passa dal bus MMIO: la gestisce la memoria della CPU/MMU.
   resto UNSUPP; accessi fuori capacità o non multipli di 512 e scritture in
   sola lettura: IOERR. I/O a pezzi da 64 KiB. `BlockError::NotReady` lascia
   la richiesta in sospeso e la riprova al `service` successivo (per i dischi
-  scaricati a pezzi di M5).
+  scaricati a pezzi di M5). Con una richiesta in sospeso `Machine::run`
+  restituisce `Stop::Blocked` senza eseguire istruzioni finché l'host non
+  consegna i dati (ADR 0014): il tempo del guest non dipende dalla rete.
 - **virtio-net**: MAC, STATUS, MRG_RXBUF (disattivabile); niente offload,
   coda di controllo né multiqueue. Header di 12 byte a zero tranne
   num_buffers. Il backend si interroga solo con buffer liberi e link su;

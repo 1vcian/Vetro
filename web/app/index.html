@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vetro</title>
+  <link rel="stylesheet" href="app.css">
+  <script type="module" src="main.mjs"></script>
+</head>
+<body>
+  <header>
+    <h1>Vetro</h1>
+    <span id="status">pronto</span>
+  </header>
+
+  <form id="setup">
+    <fieldset>
+      <legend>Macchina</legend>
+      <label>Kernel (Image)
+        <input name="kernelUrl" value="/guest/Image" spellcheck="false">
+        <input name="kernelFile" type="file">
+      </label>
+      <label>Initramfs
+        <input name="initrdUrl" value="/guest/initramfs.cpio.gz" spellcheck="false">
+        <input name="initrdFile" type="file">
+      </label>
+      <label>Disco (virtio-blk, facoltativo)
+        <input name="diskUrl" placeholder="URL con HTTP Range, es. /disks/system.img" spellcheck="false">
+        <input name="diskFile" type="file">
+      </label>
+      <label>Riga di comando
+        <input name="cmdline" value="console=ttyAMA0" spellcheck="false">
+      </label>
+    </fieldset>
+    <fieldset>
+      <legend>Opzioni</legend>
+      <label>RAM (MiB) <input name="ramMiB" type="number" value="1024" min="64" step="64"></label>
+      <label>Schermo <input name="width" type="number" value="1280" min="64"> x <input name="height" type="number" value="800" min="64"></label>
+      <label>Puntatore
+        <select name="pointer">
+          <option value="tablet">tablet (mouse)</option>
+          <option value="multitouch">touchscreen</option>
+        </select>
+      </label>
+      <label>Blocchi del disco
+        <select name="blockKiB">
+          <option value="64">64 KiB</option>
+          <option value="1024" selected>1 MiB</option>
+        </select>
+      </label>
+      <label title="virtio-net con lo stack di vetro-net e il sinkhole (DHCP 10.0.2.15)"><input name="net" type="checkbox" checked> rete</label>
+      <label><input name="jit" type="checkbox" checked> JIT</label>
+      <label><input name="realtime" type="checkbox" checked> tempo reale</label>
+      <label><input name="opfs" type="checkbox" checked> cache OPFS</label>
+      <label><input name="webgpu" type="checkbox"> WebGPU</label>
+    </fieldset>
+    <button type="submit">Avvia</button>
+  </form>
+
+  <main id="machine" hidden>
+    <section id="screen-box">
+      <div id="screen-wrap">
+        <canvas id="screen" width="1280" height="800" tabindex="0" title="Clic per mandare tastiera e mouse al guest"></canvas>
+        <canvas id="cursor" width="64" height="64" hidden></canvas>
+        <div id="screen-off">scanout spento</div>
+      </div>
+      <div id="controls">
+        <button id="power" type="button" title="Tasto di accensione (GPIO 3, KEY_POWER): tieni premuto">Tasto di accensione</button>
+        <span id="stats"></span>
+      </div>
+    </section>
+    <section id="console-box">
+      <pre id="console" tabindex="0" title="Console seriale: clic e scrivi"></pre>
+    </section>
+  </main>
+</body>
+</html>

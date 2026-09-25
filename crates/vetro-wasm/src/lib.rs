@@ -6,9 +6,13 @@
 //! Il contratto è in `docs/specs/wasm.md`:
 //! - memoria: [`vetro_alloc`] e [`vetro_free`] danno a JS i buffer in cui
 //!   copiare kernel, initramfs e riga di comando, e in cui leggere la console;
-//! - macchina: [`vetro_machine_new`], [`vetro_load_linux`], [`vetro_run`]
-//!   (un quanto di istruzioni, con il motivo dell'arresto), console,
-//!   contatore di istruzioni;
+//! - macchina: [`vetro_machine_new`] (o [`vetro_machine_new_with`] con i
+//!   dispositivi scelti), [`vetro_load_linux`], [`vetro_run`] (un quanto di
+//!   istruzioni, con il motivo dell'arresto), console, contatore di
+//!   istruzioni;
+//! - dispositivi (M5): scanout di virtio-gpu in RGBA ([`display`]),
+//!   eventi di virtio-input, linee del GPIO (tasto di accensione), dischi
+//!   virtio-blk con i dati forniti dal JS a blocchi ([`disk`]);
 //! - import dal JS: `vetro_host.panic` (messaggio di un panic prima della
 //!   trappola) e il motore JIT di [`jit`] (`vetro_jit.*`).
 //!
@@ -17,16 +21,27 @@
 
 #![allow(clippy::missing_safety_doc)]
 
+pub mod disk;
+pub mod display;
 pub mod jit;
 
 use std::alloc::Layout;
 
-use vetro_machine::{Machine, MachineConfig, Stop};
+use vetro_machine::{Devices, Machine, MachineConfig, NetSetup, Pointer, Stop};
+use vetro_platform::virtio::input::InputEvent;
+use vetro_platform::virtio::{
+    BlockBackend, CowBackend, GpuConfig, MemBackend, VirtioBlk, VirtioBlkConfig, VirtioGpu,
+};
+
+use disk::HostDisk;
+use display::WebDisplay;
 
 /// Versione dell'API C: cambia a ogni modifica incompatibile delle firme.
 /// 2: JIT della modalità sistema (`vetro_machine_set_jit`, import
 /// `vetro_jit.reset` e tabella `env.tbl` dei blocchi).
-pub const ABI_VERSION: u32 = 2;
+/// 3: dispositivi (`vetro_machine_new_with`, display, input, GPIO, dischi)
+/// e codice d'arresto `BLOCKED`.
+pub const ABI_VERSION: u32 = 3;
 
 /// Allineamento dei buffer di [`vetro_alloc`] (basta per `JitState`).
 const ALLOC_ALIGN: usize = 16;
@@ -38,6 +53,34 @@ pub mod stop {
     pub const RESET: u32 = 2;
     pub const IDLE: u32 = 3;
     pub const UNIMPLEMENTED: u32 = 4;
+    /// Un disco aspetta blocchi dal JS (`vetro_disk_wanted`): il tempo del
+    /// guest è fermo finché non arrivano.
+    pub const BLOCKED: u32 = 5;
+}
+
+/// Bit dei dispositivi di [`vetro_machine_new_with`].
+pub mod dev {
+    pub const GPU: u32 = 1;
+    pub const KEYBOARD: u32 = 2;
+    pub const TABLET: u32 = 4;
+    pub const MULTITOUCH: u32 = 8;
+    /// virtio-net con lo stack di `vetro-net` e il sinkhole (`NetSetup::default`).
+    pub const NET: u32 = 16;
+    /// Quelli di `Devices::default` (la macchina del test di avvio).
+    pub const DEFAULT: u32 = GPU | KEYBOARD | TABLET | NET;
+}
+
+/// Bit di `flags` di [`vetro_disk_add`] e [`vetro_disk_add_mem`].
+pub mod disk_flags {
+    /// Il guest vede il disco in sola lettura (senza, le sue scritture
+    /// finiscono in un livello copy-on-write in memoria).
+    pub const READ_ONLY: u32 = 1;
+}
+
+/// Dispositivi di virtio-input per [`vetro_input_events`].
+pub mod input_dev {
+    pub const KEYBOARD: u32 = 0;
+    pub const POINTER: u32 = 1;
 }
 
 /// Codici di [`vetro_load_linux`].
@@ -58,11 +101,102 @@ pub struct Vm {
     /// Ultimo messaggio (errore di caricamento, istruzione non implementata).
     message: String,
     unimpl: (u64, u32),
+    /// Slot virtio dei dischi, nell'ordine di aggiunta (l'indice è quello
+    /// dell'API).
+    disks: Vec<u32>,
 }
 
 impl Vm {
     pub fn new(cfg: &MachineConfig) -> Self {
-        Vm { m: Machine::new(cfg), out: Vec::new(), out_pos: 0, message: String::new(), unimpl: (0, 0) }
+        Self::with_devices(cfg, &Devices::default())
+    }
+
+    /// Macchina con i dispositivi dati; la GPU mostra su un [`WebDisplay`].
+    pub fn with_devices(cfg: &MachineConfig, devices: &Devices) -> Self {
+        let vm = Vm {
+            m: Machine::with_devices(cfg, devices),
+            out: Vec::new(),
+            out_pos: 0,
+            message: String::new(),
+            unimpl: (0, 0),
+            disks: Vec::new(),
+        };
+        // Senza `Machine::gpu`: cambiare backend non deve far servire la GPU.
+        vm.with_gpu(|g| g.set_backend(Box::new(WebDisplay::default())));
+        vm
+    }
+
+    fn with_gpu<R>(&self, f: impl FnOnce(&mut VirtioGpu) -> R) -> Option<R> {
+        let slot = self.m.slots().gpu?;
+        let mut b = self.m.board.borrow_mut();
+        b.virt.virtio_mut(slot)?.device_as_mut::<VirtioGpu>().map(f)
+    }
+
+    /// Agisce sul display della GPU, se c'è. Non passa da
+    /// `Machine::device`: leggere l'immagine non deve far servire la GPU
+    /// (il guest non vede niente, e il momento della lettura lo sceglie la
+    /// pagina, non il guest).
+    pub fn with_display<R>(&self, f: impl FnOnce(&mut WebDisplay) -> R) -> Option<R> {
+        self.with_gpu(|g| g.backend_as_mut::<WebDisplay>().map(f)).flatten()
+    }
+
+    /// Aggiunge un disco virtio-blk nel primo slot libero (dall'alto, dopo
+    /// GPU e input); restituisce il suo indice.
+    pub fn add_disk(&mut self, backend: Box<dyn BlockBackend>, read_only: bool) -> Result<u32, String> {
+        let cfg = VirtioBlkConfig {
+            read_only,
+            serial: format!("vetro-disk{}", self.disks.len()).into_bytes(),
+            ..VirtioBlkConfig::default()
+        };
+        let blk = VirtioBlk::new(backend, cfg);
+        let slot =
+            self.m.board.borrow_mut().virt.attach_virtio_next(Box::new(blk)).map_err(|e| format!("{e:?}"))?;
+        self.disks.push(slot);
+        Ok(self.disks.len() as u32 - 1)
+    }
+
+    /// Agisce sul [`HostDisk`] del disco `index`, se lo è. Se la macchina
+    /// aspetta dati (`Stop::Blocked`) il dispositivo si fa servire di nuovo
+    /// prima della prossima istruzione, altrimenti no (una consegna
+    /// anticipata non deve cambiare i tempi del guest).
+    pub fn with_host_disk<R>(&mut self, index: u32, f: impl FnOnce(&mut HostDisk) -> R) -> Option<R> {
+        let slot = *self.disks.get(index as usize)?;
+        let pick = |b: &mut VirtioBlk| -> Option<R> {
+            if let Some(c) = b.backend_as_mut::<CowBackend<HostDisk>>() {
+                return Some(f(c.base_mut()));
+            }
+            b.backend_as_mut::<HostDisk>().map(f)
+        };
+        if self.m.blocked() {
+            self.m.device::<VirtioBlk, _>(Some(slot), pick).flatten()
+        } else {
+            let mut b = self.m.board.borrow_mut();
+            pick(b.virt.virtio_mut(slot)?.device_as_mut::<VirtioBlk>()?)
+        }
+    }
+
+    /// Blocchi chiesti dai dischi dall'ultima chiamata: (disco, blocco).
+    pub fn disk_wanted(&mut self) -> Vec<(u32, u64)> {
+        let mut out = Vec::new();
+        for i in 0..self.disks.len() as u32 {
+            if let Some(w) = self.with_host_disk(i, |d| d.take_wanted()) {
+                out.extend(w.into_iter().map(|b| (i, b)));
+            }
+        }
+        out
+    }
+
+    /// Cluster scritti dal guest nel livello copy-on-write del disco `index`.
+    fn disk_dirty_clusters(&mut self, index: u32) -> usize {
+        let Some(&slot) = self.disks.get(index as usize) else { return 0 };
+        let mut b = self.m.board.borrow_mut();
+        let Some(blk) = b.virt.virtio_mut(slot).and_then(|t| t.device_as_mut::<VirtioBlk>()) else {
+            return 0;
+        };
+        blk.backend_as_mut::<CowBackend<HostDisk>>()
+            .map(|c| c.dirty_clusters())
+            .or_else(|| blk.backend_as_mut::<CowBackend<MemBackend>>().map(|c| c.dirty_clusters()))
+            .unwrap_or(0)
     }
 
     pub fn machine(&mut self) -> &mut Machine {
@@ -105,6 +239,7 @@ impl Vm {
                 self.message = what.into();
                 stop::UNIMPLEMENTED
             }
+            Stop::Blocked => stop::BLOCKED,
         }
     }
 
@@ -186,13 +321,7 @@ pub unsafe extern "C" fn vetro_free(ptr: *mut u8, len: usize) {
 #[unsafe(no_mangle)]
 pub extern "C" fn vetro_machine_new(ram_size: u64, now_secs: u64, seed: u64) -> *mut Vm {
     install_panic_hook();
-    let d = MachineConfig::default();
-    let cfg = MachineConfig {
-        ram_size: if ram_size == 0 { d.ram_size } else { ram_size },
-        now_secs: if now_secs == 0 { d.now_secs } else { now_secs },
-        seed: if seed == 0 { d.seed } else { seed },
-    };
-    Box::into_raw(Box::new(Vm::new(&cfg)))
+    Box::into_raw(Box::new(Vm::new(&config(ram_size, now_secs, seed))))
 }
 
 #[unsafe(no_mangle)]
@@ -332,6 +461,388 @@ pub unsafe extern "C" fn vetro_unimplemented_raw(vm: *const Vm) -> u32 {
     unsafe { &*vm }.unimpl.1
 }
 
+// ---- Dispositivi (ABI 3) ----------------------------------------------------
+
+/// `Devices` dai bit di [`dev`] e dalla risoluzione iniziale della GPU (0 =
+/// quella di default, 1280x800).
+pub fn devices_from(bits: u32, width: u32, height: u32) -> Devices {
+    let d = GpuConfig::default();
+    let gpu = GpuConfig {
+        width: if width == 0 { d.width } else { width },
+        height: if height == 0 { d.height } else { height },
+        ..d
+    };
+    let pointer = if bits & dev::MULTITOUCH != 0 {
+        Some(Pointer::Multitouch)
+    } else if bits & dev::TABLET != 0 {
+        Some(Pointer::Tablet)
+    } else {
+        None
+    };
+    Devices {
+        gpu: (bits & dev::GPU != 0).then_some(gpu),
+        keyboard: bits & dev::KEYBOARD != 0,
+        pointer,
+        net: (bits & dev::NET != 0).then(NetSetup::default),
+        vsock_cid: None,
+    }
+}
+
+fn config(ram_size: u64, now_secs: u64, seed: u64) -> MachineConfig {
+    let d = MachineConfig::default();
+    MachineConfig {
+        ram_size: if ram_size == 0 { d.ram_size } else { ram_size },
+        now_secs: if now_secs == 0 { d.now_secs } else { now_secs },
+        seed: if seed == 0 { d.seed } else { seed },
+    }
+}
+
+/// Come [`vetro_machine_new`], con i dispositivi scelti: `devices` sono bit
+/// di [`dev`] (`MULTITOUCH` vince su `TABLET`), `width`x`height` la
+/// risoluzione iniziale dello scanout 0 (0 = 1280x800).
+#[unsafe(no_mangle)]
+pub extern "C" fn vetro_machine_new_with(
+    ram_size: u64,
+    now_secs: u64,
+    seed: u64,
+    devices: u32,
+    width: u32,
+    height: u32,
+) -> *mut Vm {
+    install_panic_hook();
+    let cfg = config(ram_size, now_secs, seed);
+    Box::into_raw(Box::new(Vm::with_devices(&cfg, &devices_from(devices, width, height))))
+}
+
+/// Dimensioni dello scanout `scanout`: `(larghezza << 32) | altezza`, 0 se
+/// spento o se non c'è la GPU.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_display_size(vm: *const Vm, scanout: u32) -> u64 {
+    // SAFETY: `vm` viene da `vetro_machine_new`.
+    let vm = unsafe { &*vm };
+    vm.with_display(|d| match d.screen(scanout) {
+        Some(s) if s.on => u64::from(s.width) << 32 | u64::from(s.height),
+        _ => 0,
+    })
+    .unwrap_or(0)
+}
+
+/// Pixel RGBA dello scanout (righe da `larghezza * 4` byte), nullo se
+/// spento. Valido fino alla prossima chiamata che esegue il guest.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_display_ptr(vm: *const Vm, scanout: u32) -> *const u8 {
+    // SAFETY: `vm` viene da `vetro_machine_new`.
+    let vm = unsafe { &*vm };
+    vm.with_display(|d| match d.screen(scanout) {
+        Some(s) if s.on => s.rgba.as_ptr(),
+        _ => core::ptr::null(),
+    })
+    .unwrap_or(core::ptr::null())
+}
+
+/// Aggiornamenti dello scanout (immagine o spegnimento): se non cambia non
+/// c'è niente da ridisegnare.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_display_updates(vm: *const Vm, scanout: u32) -> u64 {
+    // SAFETY: `vm` viene da `vetro_machine_new`.
+    let vm = unsafe { &*vm };
+    vm.with_display(|d| d.screen(scanout).map_or(0, |s| s.updates)).unwrap_or(0)
+}
+
+/// Rettangolo cambiato dall'ultima chiamata (unione): scrive `x, y,
+/// larghezza, altezza` in `out` e restituisce 1, o 0 se niente è cambiato.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_display_take_dirty(vm: *const Vm, scanout: u32, out: *mut u32) -> u32 {
+    // SAFETY: `vm` viene da `vetro_machine_new`, `out` vale per 4 valori.
+    let vm = unsafe { &*vm };
+    match vm.with_display(|d| d.take_dirty(scanout)).flatten() {
+        Some(r) => {
+            unsafe { core::slice::from_raw_parts_mut(out, 4) }
+                .copy_from_slice(&[r.x, r.y, r.width, r.height]);
+            1
+        }
+        None => 0,
+    }
+}
+
+/// Risoluzione chiesta per lo scanout (come ridimensionare la finestra):
+/// il driver la vede con un interrupt di configurazione. È un ingresso
+/// dell'host.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_display_resize(vm: *mut Vm, scanout: u32, width: u32, height: u32) -> u32 {
+    // SAFETY: `vm` viene da `vetro_machine_new`.
+    let vm = unsafe { &mut *vm };
+    vm.m.gpu(|g| g.set_display(scanout, width, height)).is_some() as u32
+}
+
+/// Stato del cursore dello scanout in `out` (6 valori): risorsa (0 =
+/// nascosto), x, y, hot_x, hot_y, numero di cambi. Restituisce 0 senza GPU.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_cursor_state(vm: *const Vm, scanout: u32, out: *mut u32) -> u32 {
+    // SAFETY: `vm` viene da `vetro_machine_new`, `out` vale per 6 valori.
+    let vm = unsafe { &*vm };
+    let Some(v) = vm
+        .with_display(|d| {
+            d.screen(scanout).map(|s| {
+                let c = &s.cursor;
+                [c.resource_id, c.x, c.y, c.hot_x, c.hot_y, s.cursor_updates as u32]
+            })
+        })
+        .flatten()
+    else {
+        return 0;
+    };
+    unsafe { core::slice::from_raw_parts_mut(out, 6) }.copy_from_slice(&v);
+    1
+}
+
+/// Immagine del cursore, 64x64 RGBA; nulla se non c'è. Valida fino alla
+/// prossima chiamata che esegue il guest.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_cursor_image(vm: *const Vm, scanout: u32) -> *const u8 {
+    // SAFETY: `vm` viene da `vetro_machine_new`.
+    let vm = unsafe { &*vm };
+    let n = (display::CURSOR_SIZE * display::CURSOR_SIZE * 4) as usize;
+    vm.with_display(|d| match d.screen(scanout) {
+        Some(s) if s.cursor_rgba.len() == n => s.cursor_rgba.as_ptr(),
+        _ => core::ptr::null(),
+    })
+    .unwrap_or(core::ptr::null())
+}
+
+/// Accoda `count` eventi evdev (`tipo, codice, valore` come tre `u32`
+/// consecutivi) sul dispositivo `device` di [`input_dev`]. Chi chiama mette
+/// i SYN_REPORT. Restituisce 0 se il dispositivo non c'è.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_input_events(
+    vm: *mut Vm,
+    device: u32,
+    events: *const u32,
+    count: usize,
+) -> u32 {
+    // SAFETY: `vm` viene da `vetro_machine_new`, `events` vale per 3 * count valori.
+    let vm = unsafe { &mut *vm };
+    let raw = if count == 0 { &[][..] } else { unsafe { core::slice::from_raw_parts(events, 3 * count) } };
+    let ev: Vec<InputEvent> = raw
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|e| InputEvent { ty: e[0] as u16, code: e[1] as u16, value: e[2] })
+        .collect();
+    let r = match device {
+        input_dev::KEYBOARD => vm.m.keyboard(|k| k.inject(&ev)),
+        input_dev::POINTER => vm.m.pointer(|p| p.inject(&ev)),
+        _ => None,
+    };
+    r.is_some() as u32
+}
+
+/// Un tasto della tastiera (codice Linux `KEY_*`) premuto o rilasciato, con
+/// SYN_REPORT. 0 se non c'è la tastiera.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_input_key(vm: *mut Vm, code: u32, down: u32) -> u32 {
+    // SAFETY: `vm` viene da `vetro_machine_new`.
+    let vm = unsafe { &mut *vm };
+    vm.m.keyboard(|k| k.key(code as u16, down != 0)).is_some() as u32
+}
+
+/// Posizione assoluta del tablet (0..=32767 per asse), con SYN_REPORT.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_input_abs(vm: *mut Vm, x: u32, y: u32) -> u32 {
+    // SAFETY: `vm` viene da `vetro_machine_new`.
+    let vm = unsafe { &mut *vm };
+    vm.m.pointer(|p| p.move_abs(x, y)).is_some() as u32
+}
+
+/// Pulsante del puntatore (`BTN_LEFT` = 0x110, ...), con SYN_REPORT.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_input_button(vm: *mut Vm, code: u32, down: u32) -> u32 {
+    // SAFETY: `vm` viene da `vetro_machine_new`.
+    let vm = unsafe { &mut *vm };
+    vm.m.pointer(|p| p.key(code as u16, down != 0)).is_some() as u32
+}
+
+/// Contatto `slot` del touchscreen: `down` != 0 lo mette o lo sposta in
+/// (x, y) (0..=32767), 0 lo toglie.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_input_touch(vm: *mut Vm, slot: u32, x: u32, y: u32, down: u32) -> u32 {
+    // SAFETY: `vm` viene da `vetro_machine_new`.
+    let vm = unsafe { &mut *vm };
+    vm.m.pointer(|p| p.touch(slot, (down != 0).then_some((x, y)))).is_some() as u32
+}
+
+/// LED della tastiera accesi dal guest (bit `LED_*`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_input_leds(vm: *mut Vm) -> u32 {
+    // SAFETY: `vm` viene da `vetro_machine_new`.
+    let vm = unsafe { &mut *vm };
+    let slot = vm.m.slots().keyboard;
+    let b = vm.m.board.borrow();
+    slot.and_then(|s| b.virt.virtio(s)?.device_as::<vetro_platform::virtio::VirtioInput>().map(|k| k.leds()))
+        .unwrap_or(0)
+}
+
+/// Pilota la linea `line` del GPIO PL061 (3 = tasto di accensione,
+/// `gpio-keys` KEY_POWER). È un ingresso dell'host.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_gpio_input(vm: *mut Vm, line: u32, level: u32) {
+    // SAFETY: `vm` viene da `vetro_machine_new`.
+    let vm = unsafe { &mut *vm };
+    vm.m.board.borrow_mut().gpio_input(line, level != 0);
+}
+
+/// Linea del GPIO del tasto di accensione.
+#[unsafe(no_mangle)]
+pub extern "C" fn vetro_power_key_line() -> u32 {
+    vetro_platform::pl061::POWER_KEY_LINE
+}
+
+// ---- Dischi (ABI 3) ---------------------------------------------------------
+
+/// Aggiunge un disco virtio-blk di `size` byte con i dati dal JS a blocchi
+/// da `block_size` byte (potenza di due, almeno 512), al più `max_blocks`
+/// blocchi in memoria (0 = nessun limite). `flags`: bit di [`disk_flags`].
+/// Restituisce l'indice del disco, o -1 (motivo nel messaggio). Da
+/// chiamare prima di eseguire il guest.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_disk_add(
+    vm: *mut Vm,
+    size: u64,
+    block_size: u32,
+    max_blocks: u32,
+    flags: u32,
+) -> i32 {
+    // SAFETY: `vm` viene da `vetro_machine_new`.
+    let vm = unsafe { &mut *vm };
+    let d = match HostDisk::new(size, block_size, max_blocks as usize) {
+        Ok(d) => d,
+        Err(e) => {
+            vm.message = format!("disco rifiutato: {e:?}");
+            return -1;
+        }
+    };
+    let ro = flags & disk_flags::READ_ONLY != 0;
+    let backend: Box<dyn BlockBackend> = if ro { Box::new(d) } else { Box::new(CowBackend::new(d)) };
+    match vm.add_disk(backend, ro) {
+        Ok(i) => i as i32,
+        Err(e) => {
+            vm.message = e;
+            -1
+        }
+    }
+}
+
+/// Aggiunge un disco con tutto il contenuto già in memoria (copiato da
+/// `data`; lunghezza arrotondata per difetto a 512 come per [`vetro_disk_add`]): sempre pronto, per i file
+/// piccoli e come riferimento nei test. Stessi `flags` e risultato di
+/// [`vetro_disk_add`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_disk_add_mem(vm: *mut Vm, data: *const u8, len: usize, flags: u32) -> i32 {
+    // SAFETY: `vm` viene da `vetro_machine_new`, `data` vale per `len` byte.
+    let vm = unsafe { &mut *vm };
+    let len = len / 512 * 512;
+    let mem = MemBackend::from_vec(unsafe { bytes(data, len) }.to_vec()).read_only();
+    let ro = flags & disk_flags::READ_ONLY != 0;
+    let backend: Box<dyn BlockBackend> = if ro { Box::new(mem) } else { Box::new(CowBackend::new(mem)) };
+    match vm.add_disk(backend, ro) {
+        Ok(i) => i as i32,
+        Err(e) => {
+            vm.message = e;
+            -1
+        }
+    }
+}
+
+/// Blocchi chiesti dai dischi dall'ultima chiamata, come coppie `(disco,
+/// blocco)` di `u64` in `out` (al più `cap` coppie; il resto resta per la
+/// chiamata successiva). Restituisce quante coppie. Ogni blocco compare una
+/// volta sola finché non arriva ([`vetro_disk_fill`]) o fallisce
+/// ([`vetro_disk_fail`]).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_disk_wanted(vm: *mut Vm, out: *mut u64, cap: usize) -> usize {
+    // SAFETY: `vm` viene da `vetro_machine_new`, `out` vale per 2 * cap valori.
+    let vm = unsafe { &mut *vm };
+    let all = vm.disk_wanted();
+    let n = all.len().min(cap);
+    if n > 0 {
+        let o = unsafe { core::slice::from_raw_parts_mut(out, 2 * n) };
+        for (k, &(d, b)) in all[..n].iter().enumerate() {
+            o[2 * k] = u64::from(d);
+            o[2 * k + 1] = b;
+        }
+    }
+    // Quelli che non stanno in `out` tornano in lista.
+    for &(d, b) in &all[n..] {
+        vm.with_host_disk(d, |h| h.requeue(b));
+    }
+    n
+}
+
+/// Consegna il blocco `block` del disco `disk` (`len` = la dimensione del
+/// blocco, o meno per l'ultimo). 0 = accettato; 1 = disco sconosciuto; 2 =
+/// blocco fuori dal disco; 3 = lunghezza sbagliata.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_disk_fill(
+    vm: *mut Vm,
+    disk: u32,
+    block: u64,
+    data: *const u8,
+    len: usize,
+) -> u32 {
+    // SAFETY: `vm` viene da `vetro_machine_new`, `data` vale per `len` byte.
+    let vm = unsafe { &mut *vm };
+    let data = unsafe { bytes(data, len) };
+    match vm.with_host_disk(disk, |d| d.fill(block, data)) {
+        None => 1,
+        Some(Ok(())) => 0,
+        Some(Err(disk::DiskError::OutOfRange)) => 2,
+        Some(Err(_)) => 3,
+    }
+}
+
+/// Il JS non ha potuto procurare il blocco: la richiesta del guest che lo
+/// aspetta finisce con un errore di I/O.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_disk_fail(vm: *mut Vm, disk: u32, block: u64) -> u32 {
+    // SAFETY: `vm` viene da `vetro_machine_new`.
+    let vm = unsafe { &mut *vm };
+    vm.with_host_disk(disk, |d| d.fail(block)).is_some() as u32
+}
+
+/// Contatori del disco in `out` (al più `cap`): dimensione in byte,
+/// dimensione del blocco, blocchi in memoria, letture mancate, blocchi
+/// consegnati, blocchi tolti, blocchi falliti, cluster copy-on-write
+/// scritti dal guest. Restituisce quanti valori (0 = disco sconosciuto; per
+/// un disco in memoria solo dimensione e cluster sono significativi).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_disk_stats(vm: *mut Vm, disk: u32, out: *mut u64, cap: usize) -> usize {
+    // SAFETY: `vm` viene da `vetro_machine_new`, `out` vale per `cap` valori.
+    let vm = unsafe { &mut *vm };
+    let Some(&slot) = vm.disks.get(disk as usize) else { return 0 };
+    let size = {
+        let b = vm.m.board.borrow();
+        b.virt.virtio(slot).and_then(|t| t.device_as::<VirtioBlk>()).map_or(0, |x| x.backend().size())
+    };
+    let h = vm
+        .with_host_disk(disk, |d| {
+            [
+                d.block_size(),
+                d.cached_blocks() as u64,
+                d.stats.misses,
+                d.stats.fills,
+                d.stats.evictions,
+                d.stats.failures,
+            ]
+        })
+        .unwrap_or_default();
+    let v = [size, h[0], h[1], h[2], h[3], h[4], h[5], vm.disk_dirty_clusters(disk) as u64];
+    let n = v.len().min(cap);
+    if n > 0 {
+        unsafe { core::slice::from_raw_parts_mut(out, n) }.copy_from_slice(&v[..n]);
+    }
+    n
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -379,6 +890,70 @@ mod tests {
         assert_eq!(&buf[..2], b"ef");
         assert_eq!(vm.console_read(&mut buf), 0);
         assert_eq!(vm.out_pos, 0);
+    }
+
+    /// Dispositivi scelti dai bit, display e input senza driver, dischi con
+    /// le loro regole.
+    #[test]
+    fn dispositivi_e_dischi_dall_api() {
+        let vm = vetro_machine_new_with(64 << 20, 0, 0, dev::KEYBOARD | dev::MULTITOUCH, 0, 0);
+        let slots = unsafe { &mut *vm }.m.slots();
+        assert_eq!((slots.gpu, slots.keyboard, slots.pointer), (None, Some(31), Some(30)));
+        assert_eq!(devices_from(dev::DEFAULT, 0, 0), Devices::default());
+        let d = devices_from(dev::GPU, 640, 480).gpu.unwrap();
+        assert_eq!((d.width, d.height), (640, 480));
+        unsafe {
+            assert_eq!(vetro_display_size(vm, 0), 0);
+            assert!(vetro_display_ptr(vm, 0).is_null());
+            assert_eq!(vetro_display_resize(vm, 0, 800, 600), 0, "senza GPU");
+            assert_eq!(vetro_input_key(vm, 30, 1), 1);
+            assert_eq!(vetro_input_touch(vm, 0, 10, 10, 1), 1);
+            assert_eq!(vetro_input_abs(vm, 1, 1), 1);
+            let ev = [1u32, 30, 1, 0, 0, 0];
+            assert_eq!(vetro_input_events(vm, input_dev::KEYBOARD, ev.as_ptr(), 2), 1);
+            assert_eq!(vetro_input_events(vm, 7, ev.as_ptr(), 2), 0);
+            assert_eq!(vetro_input_leds(vm), 0);
+            vetro_gpio_input(vm, vetro_power_key_line(), 1);
+
+            assert_eq!(vetro_disk_add(vm, 1 << 20, 1000, 0, 0), -1);
+            assert_eq!(vetro_disk_add(vm, (1 << 20) + 100, 65536, 0, 0), 0);
+            let img = [7u8; 1000];
+            assert_eq!(vetro_disk_add_mem(vm, img.as_ptr(), img.len(), disk_flags::READ_ONLY), 1);
+            let mut st = [0u64; 8];
+            assert_eq!(vetro_disk_stats(vm, 0, st.as_mut_ptr(), 8), 8);
+            assert_eq!(st[..2], [1 << 20, 65536]);
+            assert_eq!(vetro_disk_stats(vm, 1, st.as_mut_ptr(), 8), 8);
+            assert_eq!(st[0], 512, "arrotondato per difetto a 512");
+            assert_eq!(vetro_disk_stats(vm, 2, st.as_mut_ptr(), 8), 0);
+            let blk = vec![1u8; 65536];
+            assert_eq!(vetro_disk_fill(vm, 0, 3, blk.as_ptr(), blk.len()), 0);
+            assert_eq!(vetro_disk_fill(vm, 0, 16, blk.as_ptr(), blk.len()), 2);
+            assert_eq!(vetro_disk_fill(vm, 0, 2, blk.as_ptr(), 512), 3);
+            assert_eq!(vetro_disk_fill(vm, 1, 0, blk.as_ptr(), 512), 1, "disco in memoria");
+            assert_eq!(vetro_disk_fill(vm, 5, 0, blk.as_ptr(), 512), 1);
+            let mut w = [0u64; 4];
+            assert_eq!(vetro_disk_wanted(vm, w.as_mut_ptr(), 2), 0);
+            vetro_machine_free(vm);
+        }
+    }
+
+    /// `vetro_disk_wanted` con poco spazio: il resto resta in lista.
+    #[test]
+    fn blocchi_chiesti_a_pezzi() {
+        let vm = vetro_machine_new_with(64 << 20, 0, 0, 0, 0, 0);
+        unsafe {
+            assert_eq!(vetro_disk_add(vm, 4 * 4096, 4096, 0, 0), 0);
+            let mut buf = vec![0u8; 3 * 4096];
+            let r = (*vm).with_host_disk(0, |d| d.read_sectors(0, &mut buf)).unwrap();
+            assert_eq!(r, Err(vetro_platform::virtio::BlockError::NotReady));
+            let mut w = [0u64; 4];
+            assert_eq!(vetro_disk_wanted(vm, w.as_mut_ptr(), 2), 2);
+            assert_eq!(w, [0, 0, 0, 1]);
+            assert_eq!(vetro_disk_wanted(vm, w.as_mut_ptr(), 2), 1);
+            assert_eq!(w[..2], [0, 2]);
+            assert_eq!(vetro_disk_fail(vm, 0, 2), 1);
+            vetro_machine_free(vm);
+        }
     }
 
     /// Una macchina senza kernel: il PC di reset non è in RAM, e ogni fetch

@@ -112,6 +112,14 @@ pub enum Stop {
     Idle,
     /// Istruzione o configurazione che Vetro non implementa.
     Unimplemented { pc: u64, raw: u32, what: &'static str },
+    /// Una richiesta di virtio-blk aspetta dati dall'host
+    /// (`BlockError::NotReady`, es. un disco scaricato a pezzi nel browser).
+    /// Nessuna istruzione eseguita da quando la richiesta è arrivata: il
+    /// tempo del guest è fermo. L'host fornisce i dati al backend (da
+    /// [`Machine::device`], che fa servire di nuovo il dispositivo) e
+    /// richiama [`Machine::run`]: la richiesta si completa allo stesso
+    /// numero di istruzioni di un disco sempre pronto.
+    Blocked,
 }
 
 pub struct Machine {
@@ -132,6 +140,9 @@ pub struct Machine {
     /// Che cosa fa l'interprete prima di richiamare il JIT: niente
     /// (`Jit`), un'istruzione (`One`), fino al prossimo salto (`Cold`).
     interp: Next,
+    /// Una WFI interrotta da [`Stop::Blocked`]: la si riprende prima della
+    /// prossima istruzione.
+    wfi_pending: bool,
 }
 
 /// CNTPCT dopo `steps` istruzioni: 62,5 MHz su 100 MHz nominali.
@@ -197,6 +208,7 @@ impl Machine {
             slots,
             jit: None,
             interp: Next::Jit,
+            wfi_pending: false,
         }
     }
 
@@ -327,6 +339,11 @@ impl Machine {
         self.board.borrow_mut().virt.uart_mut().take_output()
     }
 
+    /// Una richiesta di virtio-blk aspetta dati dall'host ([`Stop::Blocked`]).
+    pub fn blocked(&self) -> bool {
+        self.board.borrow().host_wait
+    }
+
     /// Tempo del guest in nanosecondi (10 ns per istruzione).
     pub fn guest_ns(&self) -> u64 {
         self.steps * 10
@@ -411,6 +428,14 @@ impl Machine {
     pub fn run(&mut self, budget: u64) -> Stop {
         let end = self.steps.saturating_add(budget);
         self.sync_irqs();
+        if self.blocked() {
+            return Stop::Blocked;
+        }
+        if core::mem::take(&mut self.wfi_pending)
+            && let Some(stop) = self.wait_for_interrupt()
+        {
+            return stop;
+        }
         while self.steps < end {
             let now = counter(self.steps);
             {
@@ -420,6 +445,9 @@ impl Machine {
                 if b.irq_dirty || b.virtio_dirty || crossed {
                     drop(b);
                     self.sync_irqs();
+                    if self.blocked() {
+                        return Stop::Blocked;
+                    }
                 }
             }
             if self.interp == Next::Jit
@@ -487,6 +515,10 @@ impl Machine {
     /// inattiva.
     fn wait_for_interrupt(&mut self) -> Option<Stop> {
         self.sync_irqs();
+        if self.blocked() {
+            self.wfi_pending = true;
+            return Some(Stop::Blocked);
+        }
         // Come una CPU vera, la WFI finisce solo con un interrupt: dati in
         // arrivo sulla UART senza il suo interrupt abilitato non la svegliano.
         if self.board.borrow().virt.irq_line() {
@@ -511,6 +543,7 @@ impl Machine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vetro_platform::virtio::{self as vio, BlockBackend, BlockError, MemBackend, VirtioBlk};
 
     /// WFI con byte in arrivo sulla UART ma senza il suo interrupt: nessun
     /// risveglio, e senza scadenze del timer la macchina è inattiva (prima
@@ -556,6 +589,134 @@ mod tests {
         let m = Machine::with_devices(&cfg, &Devices::none());
         assert_eq!(m.slots(), Slots::default());
         assert!(m.board.borrow().virt.virtio(31).unwrap().device().is_none());
+    }
+
+    /// Disco che risponde `NotReady` finché l'host non lo apre (come il
+    /// disco via HTTP del browser prima dell'arrivo dei dati).
+    struct Gate {
+        open: bool,
+        disk: MemBackend,
+    }
+
+    impl BlockBackend for Gate {
+        fn size(&self) -> u64 {
+            self.disk.size()
+        }
+        fn read_sectors(&mut self, sector: u64, buf: &mut [u8]) -> Result<(), BlockError> {
+            if !self.open {
+                return Err(BlockError::NotReady);
+            }
+            self.disk.read_sectors(sector, buf)
+        }
+        fn write_sectors(&mut self, sector: u64, data: &[u8]) -> Result<(), BlockError> {
+            self.disk.write_sectors(sector, data)
+        }
+        fn flush(&mut self) -> Result<(), BlockError> {
+            Ok(())
+        }
+    }
+
+    const R: u64 = map::RAM_BASE;
+    const DATA: u64 = R + 0x5000;
+    const USED: u64 = R + 0x3000;
+
+    /// Una macchina con un virtio-blk già inizializzato (come farebbe il
+    /// driver) e una lettura del settore 1 pubblicata nella coda; il codice
+    /// notifica la coda e poi conta in x2 all'infinito.
+    fn blk_machine(open: bool) -> (Machine, u32) {
+        let cfg = MachineConfig { ram_size: 1 << 20, ..MachineConfig::default() };
+        let mut m = Machine::with_devices(&cfg, &Devices::none());
+        let disk = MemBackend::from_vec((0..2048u32).map(|i| (i * 7 + i / 512) as u8).collect());
+        let blk = VirtioBlk::new(Box::new(Gate { open, disk }), Default::default());
+        let slot = m.board.borrow_mut().virt.attach_virtio_next(Box::new(blk)).unwrap();
+        let base = map::VIRTIO_BASE + u64::from(slot) * map::VIRTIO_SLOT_SIZE;
+        {
+            let mut b = m.board.borrow_mut();
+            let mut w = |off: u64, v: u64| assert!(b.virt.bus.write(base + off, 4, v));
+            let (ack, drv, fok, dok) = (
+                u64::from(vio::STATUS_ACKNOWLEDGE),
+                u64::from(vio::STATUS_DRIVER),
+                u64::from(vio::STATUS_FEATURES_OK),
+                u64::from(vio::STATUS_DRIVER_OK),
+            );
+            w(vio::STATUS, 0);
+            w(vio::STATUS, ack | drv);
+            w(vio::DRIVER_FEATURES_SEL, 1);
+            w(vio::DRIVER_FEATURES, 1); // VIRTIO_F_VERSION_1
+            w(vio::STATUS, ack | drv | fok);
+            w(vio::QUEUE_SEL, 0);
+            w(vio::QUEUE_NUM, 8);
+            w(vio::QUEUE_DESC_LOW, R + 0x1000);
+            w(vio::QUEUE_DRIVER_LOW, R + 0x2000);
+            w(vio::QUEUE_DEVICE_LOW, USED);
+            w(vio::QUEUE_READY, 1);
+            w(vio::STATUS, ack | drv | fok | dok);
+            let ram = &mut b.ram;
+            let desc = |i: u64, addr: u64, len: u32, flags: u16, next: u16| {
+                let mut d = [0u8; 16];
+                d[0..8].copy_from_slice(&addr.to_le_bytes());
+                d[8..12].copy_from_slice(&len.to_le_bytes());
+                d[12..14].copy_from_slice(&flags.to_le_bytes());
+                d[14..16].copy_from_slice(&next.to_le_bytes());
+                (R + 0x1000 + 16 * i, d)
+            };
+            // IN dal settore 1: intestazione, 512 byte di dati (scrivibili),
+            // byte di stato (scrivibile). Flag: 1 = NEXT, 2 = WRITE.
+            for (a, d) in
+                [desc(0, R + 0x4000, 16, 1, 1), desc(1, DATA, 512, 3, 2), desc(2, R + 0x6000, 1, 2, 0)]
+            {
+                assert!(ram.write(a, &d));
+            }
+            let mut hdr = [0u8; 16];
+            hdr[8] = 1;
+            assert!(ram.write(R + 0x4000, &hdr));
+            assert!(ram.write(R + 0x2000, &[0, 0, 1, 0, 0, 0])); // avail: idx 1, ring[0] = 0
+            let code: [u32; 3] = [
+                0xb9000001, // str w1, [x0]
+                0x91000442, // add x2, x2, #0x1
+                0x17ffffff, // b .-4
+            ];
+            for (i, c) in code.iter().enumerate() {
+                assert!(ram.write(R + 4 * i as u64, &c.to_le_bytes()));
+            }
+        }
+        m.cpu.pc = R;
+        m.cpu.x[0] = base + vio::QUEUE_NOTIFY;
+        (m, slot)
+    }
+
+    fn ram(m: &Machine, pa: u64, len: usize) -> Vec<u8> {
+        let mut v = vec![0; len];
+        assert!(m.board.borrow().ram.read(pa, &mut v));
+        v
+    }
+
+    /// Un disco non pronto ferma la macchina subito dopo la notifica, senza
+    /// far avanzare il tempo; quando l'host apre il disco la richiesta si
+    /// completa allo stesso numero di istruzioni di un disco sempre pronto,
+    /// e il resto dell'esecuzione è identico.
+    #[test]
+    fn disco_non_pronto_ferma_il_tempo_del_guest() {
+        let (mut ready, _) = blk_machine(true);
+        assert_eq!(ready.run(1000), Stop::Budget);
+
+        let (mut m, slot) = blk_machine(false);
+        assert_eq!(m.run(1000), Stop::Blocked);
+        assert_eq!(m.steps, 1, "solo la notifica: nessuna istruzione dopo la richiesta");
+        assert!(m.blocked());
+        assert_eq!(m.run(1000), Stop::Blocked, "senza dati resta ferma");
+        assert_eq!(m.steps, 1);
+        assert_eq!(ram(&m, USED + 2, 2), [0, 0], "nessuna risposta al guest");
+        m.device::<VirtioBlk, _>(Some(slot), |b| b.backend_as_mut::<Gate>().unwrap().open = true).unwrap();
+        assert_eq!(m.run(999), Stop::Budget);
+        assert!(!m.blocked());
+        assert_eq!(m.steps, ready.steps);
+        assert_eq!(m.cpu.x[2], ready.cpu.x[2]);
+        assert_eq!(ram(&m, USED, 16), ram(&ready, USED, 16));
+        assert_eq!(ram(&m, DATA, 512), ram(&ready, DATA, 512));
+        let expected: Vec<u8> = (512..516u32).map(|i| (i * 7 + 1) as u8).collect();
+        assert_eq!(ram(&m, DATA, 4), expected, "settore 1 del disco");
+        assert_eq!(ram(&m, USED + 2, 2), [1, 0], "una risposta nello used ring");
     }
 
     #[test]

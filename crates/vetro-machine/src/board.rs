@@ -10,7 +10,7 @@ use vetro_jit::SysPhys;
 use vetro_mmu::{BusError, PhysMemory};
 use vetro_platform::Virt;
 use vetro_platform::map;
-use vetro_platform::virtio::{GuestRam, RamError};
+use vetro_platform::virtio::{GuestRam, RamError, VirtioBlk};
 
 /// La RAM del guest, da `map::RAM_BASE`.
 ///
@@ -155,6 +155,10 @@ pub struct Board {
     /// tutti gli interrupt. Si azzera a ogni operazione che può cambiare lo
     /// stato del GIC (MMIO, ICC_*, `update_irqs`, virtio).
     pub(crate) irq_cache: Option<bool>,
+    /// Dopo l'ultimo servizio virtio una richiesta di virtio-blk aspetta
+    /// dati dall'host (`BlockError::NotReady`): la macchina non esegue
+    /// istruzioni finché non arrivano (`Stop::Blocked`).
+    pub(crate) host_wait: bool,
 }
 
 impl Board {
@@ -166,6 +170,7 @@ impl Board {
             irq_dirty: true,
             virtio_dirty: false,
             irq_cache: None,
+            host_wait: false,
         }
     }
 
@@ -180,6 +185,9 @@ impl Board {
     pub fn service_virtio(&mut self) {
         let Board { ram, virt, .. } = self;
         virt.service_virtio(ram);
+        self.host_wait = (0..map::VIRTIO_SLOTS as u32).any(|k| {
+            virt.virtio(k).and_then(|t| t.device_as::<VirtioBlk>()).is_some_and(VirtioBlk::has_pending)
+        });
         self.irq_cache = None;
         self.virtio_dirty = false;
         self.irq_dirty = true;

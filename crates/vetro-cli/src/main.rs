@@ -309,6 +309,11 @@ fn boot(args: &[String]) -> ExitCode {
                 eprintln!("vetro: il guest ha chiesto un reset");
                 return ExitCode::SUCCESS;
             }
+            Stop::Blocked => {
+                // I dischi da file sono sempre pronti: non succede.
+                eprintln!("vetro: un disco non ha dati pronti");
+                return ExitCode::from(2);
+            }
             Stop::Unimplemented { pc, raw, what } => {
                 report(&m);
                 eprintln!("vetro: {raw:#010x} non ancora implementata ({what}) a pc={pc:#x}");
