@@ -34,7 +34,7 @@ Safari mobile; qualsiasi componente cloud obbligatorio.
 | M1 Interprete CPU AArch64 | **completata** (CI verde, 2026-09-24) | test per istruzione + 200 programmi casuali uguali a qemu-aarch64 (ADR 0006) |
 | M2 Syscall Linux utente | **completata** (CI verde, 2026-09-25) | 355 test LTP, BusyBox e RISU uguali all'oracolo nel job linux (ADR 0010) |
 | M3 Modalità sistema e kernel | **completata** (CI verde, 2026-09-25) | Linux 6.18 fino alla shell con log uguale a QEMU; 95 kselftest con esiti uguali (ADR 0011) |
-| M4 JIT verso WASM | **in corso** (ADR 0012) | test M1/M2 col JIT, parità interprete-JIT |
+| M4 JIT verso WASM | **in corso** (ADR 0012, 0013; criterio verde in locale, manca la CI) | test M1/M2 col JIT, parità interprete-JIT |
 | M5 Avvio di Android | — | home in Chrome, adb install di un APK |
 | M6 Snapshot e installazione | — | home < 15 s da snapshot, APK trascinato |
 | M7 Rete e timeline | — | 10 app con HTTPS in chiaro e legato all'azione, HAR riapribile |

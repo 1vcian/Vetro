@@ -34,6 +34,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 cargo build --target wasm32-unknown-unknown --workspace --exclude vetro-cli --exclude vetro-diff --exclude vetro-isa-tests --exclude vetro-linux-tests --exclude vetro-jit-native
 VETRO_JIT=1 cargo test --release -p vetro-linux-tests   # gli stessi test col JIT (ADR 0012)
+VETRO_JIT=1 cargo test --release -p vetro-boot-tests --test vetro   # avvio del kernel col JIT di sistema (ADR 0013)
+tools/wasm-boot.sh --jit             # avvio in Node: interprete e JIT in V8, soglia di M4
 ```
 
 Oracolo su macOS (QEMU user mode esiste solo su Linux; serve Docker attivo):

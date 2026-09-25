@@ -19,7 +19,8 @@ Tipi WASM: `usize` e i puntatori sono `i32` (in JS `number`), `u64` è `i64`
 
 ## Export
 
-Versione: `vetro_abi_version() -> u32`, oggi **1**. Cambia a ogni modifica
+Versione: `vetro_abi_version() -> u32`, oggi **2** (JIT della modalità
+sistema: `vetro_machine_set_jit`, import `vetro_jit.entry/place/reset`). Cambia a ogni modifica
 incompatibile delle firme o dei codici qui sotto. Il caricatore JS
 (`web/node/vetro.mjs`) la controlla.
 
@@ -48,6 +49,8 @@ pratica: prendere la vista dopo ogni chiamata che può allocare.
 | `vetro_console_write` | `(vm, src: *const u8, len: usize)` | accoda byte in ingresso, come dalla tastiera |
 | `vetro_message_ptr` / `vetro_message_len` | `(vm) -> *const u8` / `usize` | ultimo messaggio UTF-8: errore di caricamento o `what` di un'istruzione non implementata. Vale fino alla chiamata successiva sulla macchina |
 | `vetro_unimplemented_pc` / `vetro_unimplemented_raw` | `(vm) -> u64` / `u32` | PC e codifica dell'ultima istruzione non implementata |
+| `vetro_machine_set_jit` | `(vm, hot_threshold: u32, batch: u32)` | attiva il JIT della modalità sistema (ADR 0013) sul motore JS: ingressi prima di tradurre un blocco, blocchi per modulo (0 = 1). Il risultato non cambia, solo la velocità |
+| `vetro_jit_stats` | `(vm, out: *mut u64, cap: usize) -> usize` | contatori del JIT (`SysJitStats`, nell'ordine dei campi) in `out`; restituisce quanti (0 senza JIT) |
 
 Codici di `vetro_load_linux`: 0 riuscito; 1 il caricatore ha rifiutato i file
 (motivo nel messaggio); 2 riga di comando non UTF-8.
@@ -72,6 +75,8 @@ conteggio che in nativo. `tools/wasm-boot.sh` lo verifica.
 |---|---|---|
 | `vetro_jit_ld` | `(state: usize, va: u64, size: u32) -> u64` | `env.ld` dei moduli generati (spec `jit.md`) |
 | `vetro_jit_st` | `(state: usize, va: u64, size: u32, value: u64) -> u32` | `env.st` dei moduli generati |
+| `vetro_jit_resolve` | `(state: usize) -> u32` | `env.resolve` del dispatcher |
+| `__indirect_function_table` | tabella | la tabella delle funzioni di vetro-wasm, esportata ed estendibile (`build.rs`): il JS vi mette il dispatcher, che Rust chiama come un puntatore a funzione |
 | `vetro_jit_selftest` | `(wasm: *const u8, len: usize) -> u64` | prova del giro completo con un modulo di prova (sotto) |
 
 ## Import
@@ -82,7 +87,9 @@ Il JS li fornisce all'istanziazione (`web/node/vetro.mjs`):
 |---|---|---|
 | `vetro_host.panic` | `(ptr: *const u8, len: usize)` | messaggio UTF-8 di un panic, subito prima della trappola `unreachable` |
 | `vetro_jit.compile` | `(ptr: *const u8, len: usize) -> i32` | compila e istanzia un modulo generato; indice ≥ 0, o < 0 se rifiutato |
-| `vetro_jit.run` | `(module: i32, index: u32, state: usize) -> u32` | chiama l'export `b<index>(state)` del modulo; restituisce il codice d'uscita del blocco |
+| `vetro_jit.entry` | `(module: i32, index: u32) -> u32` | mette l'export `b<index>` del modulo in una voce nuova di `__indirect_function_table` e la restituisce: `JsEngine::run` la chiama come un puntatore a funzione, senza passare da JS |
+| `vetro_jit.place` | `(module: i32, count: u32, base: u32)` | mette `b0..b<count-1>` del modulo nella tabella dei blocchi (`env.tbl` del dispatcher) dalla voce `base` |
+| `vetro_jit.reset` | `()` | scarta tutte le istanze e ricrea la tabella dei blocchi |
 | `vetro_jit.drop` | `(module: i32)` | libera il modulo |
 
 ## Il motore JIT in JavaScript
@@ -93,33 +100,31 @@ ADR 0012: nel browser il codice generato lo compila ed esegue l'API
 - `web/node/jit-engine.mjs`, classe `JitEngine`, l'equivalente JS del trait
   `vetro_jit::Engine` di `jit.md`:
   - `compile(bytes)`: `new WebAssembly.Module(bytes)` e subito
-    `new WebAssembly.Instance(module, { env: { mem, ld, st } })`, con
-    `env.mem` = `memory` di vetro-wasm e `env.ld`/`env.st` =
-    `vetro_jit_ld`/`vetro_jit_st`. Un export di un'istanza passato come import
-    di un'altra è chiamato da V8 direttamente, senza passare dal JS;
-  - `run(id, index, state)`: il codice d'uscita di `b<index>(state)`;
+    `new WebAssembly.Instance(module, { env: { mem, tbl, ld, st, resolve } })`,
+    con `env.mem` = `memory` di vetro-wasm, `env.tbl` = la tabella dei
+    blocchi (la importa solo il dispatcher) e `env.ld`/`env.st`/`env.resolve`
+    = `vetro_jit_ld`/`vetro_jit_st`/`vetro_jit_resolve`. Un export di
+    un'istanza passato come import di un'altra è chiamato da V8
+    direttamente, senza passare dal JS;
+  - `place`, `entry`, `reset` come gli import qui sopra;
   - la memoria condivisa è la memoria lineare di vetro-wasm;
-  - `imports()`: gli import `vetro_jit.*` qui sopra; `attach(exports)` dopo
+  - `imports()`: gli import `vetro_jit.*`; `attach(exports)` dopo
     l'istanziazione.
-- `crates/vetro-wasm/src/jit.rs`, lato Rust:
-  - `JsEngine` ha la forma del trait `Engine`: `compile(&[u8]) ->
-    Result<JsModule, String>`, `run(&JsModule, index, state, &mut dyn Host) ->
-    u32`, `memory() -> &mut [u8]`. La memoria condivisa è un buffer di 4 KiB
-    allineato a 16 dentro vetro-wasm: `state` è un offset in quel buffer, e al
-    blocco arriva l'indirizzo assoluto (buffer + `state`), perché per il
-    blocco `env.mem` è l'intera memoria lineare;
-  - durante `run` l'`Host` è raggiungibile da `vetro_jit_ld`/`vetro_jit_st`
-    (una cella per thread, impostata e ripristinata da `run`, quindi anche
-    rientrante);
-  - fault: `vetro_jit_ld` scrive `FAULT` (1) in `exit_detail` (offset 276) e
-    restituisce 0; `vetro_jit_st` fa lo stesso e restituisce 1. Il blocco
-    generato controlla `exit_detail` dopo ogni `ld` (è la lettura di questa
-    spec di "scrive `exit = FAULT`" in `jit.md`: da confermare con il
-    traduttore);
-  - `Host` è per ora una copia locale di `vetro_jit::Host`. Quando
-    `vetro-jit` esporrà `Engine` e `Host`, `vetro-wasm` ne dipenderà:
-    `impl vetro_jit::Engine for JsEngine` e `Host` diventa quello di
-    `vetro-jit`.
+- `crates/vetro-wasm/src/jit.rs`, lato Rust: `impl vetro_jit::Engine for
+  JsEngine`.
+  - La memoria condivisa è un buffer di 256 KiB allineato a 16 dentro
+    vetro-wasm (`JitState` e l'area della modalità sistema): `state` è un
+    offset in quel buffer, e al blocco arriva l'indirizzo assoluto (buffer +
+    `state`), perché per il blocco `env.mem` è l'intera memoria lineare. Per
+    lo stesso motivo `host_address` è l'indirizzo stesso: la TLB software dei
+    blocchi punta direttamente alla RAM del guest.
+  - `run` chiama la funzione attraverso `__indirect_function_table` (voce
+    data da `vetro_jit.entry` e tenuta in cache): nessun passaggio da JS.
+  - Durante `run` l'`Host` e la memoria condivisa sono raggiungibili da
+    `vetro_jit_ld`/`vetro_jit_st`/`vetro_jit_resolve` (celle per thread,
+    impostate e ripristinate da `run`, quindi anche rientranti).
+  - Fault: `vetro_jit_ld` scrive `FAULT` (1) in `exit_detail` e restituisce
+    0; `vetro_jit_st` scrive `FAULT` o `STOP` (2) e restituisce 1.
 - `vetro_jit_selftest` e `web/node/jit-selftest.mjs`: il JS codifica un
   modulo con un blocco `b0` che fa `x2 = ld(x0) + x1; st(x0 + 8, x2);
   pc += 12; steps += 3`; Rust lo compila con `JsEngine`, lo esegue su un
@@ -127,10 +132,8 @@ ADR 0012: nel browser il codice generato lo compila ed esegue l'API
   37, e restituisce il valore scritto (42). Prova il giro Rust → JS → modulo
   generato → `ld`/`st` in Rust.
 
-Resta da fare, quando il traduttore c'è: il ciclo di esecuzione con i blocchi
-nella `Machine` (in `vetro-machine` o `vetro-jit`, non qui), la cache dei
-moduli per pagina e l'invalidazione (ADR 0012), e il raggruppamento di più
-blocchi in un modulo per ammortizzare `new WebAssembly.Module`.
+Il ciclo di esecuzione con i blocchi sta in `vetro-machine` e in
+`vetro_jit::sys` (ADR 0013).
 
 ## Node
 
@@ -139,7 +142,11 @@ blocchi in un modulo per ammortizzare `new WebAssembly.Module`.
 - `web/node/boot.mjs`: il copione di `tests/boot/tests/vetro.rs` (marcatore di
   `/init`, autotest ok, `echo VETRO-SHELL-$((6*7))` a prompt completo,
   `poweroff -f` fino a `PowerOff`), con i tempi reali, `--expect-steps N` e il
-  log in `target/guest-kernel/node-boot.log`.
-- `tools/wasm-boot.sh`: costruisce il .wasm, esegue `jit-selftest.mjs`,
-  l'avvio nativo e l'avvio in Node; istruzioni e log devono coincidere.
-  Gira nel job `boot` della CI (Node 22).
+  log in `target/guest-kernel/node-boot.log`. Con `--jit` (`--jit-threshold
+  N`, `--jit-batch N`) gira col JIT, stampa i contatori e scrive
+  `node-boot-jit.log`.
+- `tools/wasm-boot.sh [--jit]`: costruisce il .wasm, esegue
+  `jit-selftest.mjs`, l'avvio nativo e l'avvio in Node (e col JIT); istruzioni
+  e log devono coincidere. Con `--jit` fallisce se il JIT in V8 è più lento
+  dell'interprete nativo (soglia di M4). Gira nel job `boot` della CI
+  (Node 22).
