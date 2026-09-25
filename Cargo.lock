@@ -175,6 +175,9 @@ version = "0.0.0"
 [[package]]
 name = "vetro-boot-tests"
 version = "0.0.0"
+dependencies = [
+ "vetro-machine",
+]
 
 [[package]]
 name = "vetro-cli"
@@ -184,6 +187,7 @@ dependencies = [
  "vetro-analysis",
  "vetro-cpu",
  "vetro-diff",
+ "vetro-machine",
 ]
 
 [[package]]
@@ -218,6 +222,15 @@ dependencies = [
  "libc",
  "vetro-cli",
  "vetro-diff",
+]
+
+[[package]]
+name = "vetro-machine"
+version = "0.0.0"
+dependencies = [
+ "vetro-cpu",
+ "vetro-mmu",
+ "vetro-platform",
 ]
 
 [[package]]

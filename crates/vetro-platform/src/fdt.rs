@@ -254,6 +254,32 @@ pub struct VirtDtbConfig {
     pub psci_method: &'static str,
     /// Clock fisso della PL011 in Hz.
     pub uart_clock_hz: u32,
+    /// Seme di `/chosen/rng-seed` (32 byte) e `/chosen/kaslr-seed`, che
+    /// QEMU virt mette sempre: deriva da questo numero, così l'avvio resta
+    /// deterministico. `None` = niente semi.
+    pub seed: Option<u64>,
+    /// Dimensione totale del DTB (`totalsize`), con spazio libero in coda:
+    /// QEMU non compatta il suo device tree da 1 MiB e Linux riserva tutto
+    /// `totalsize`. 0 = nessuna aggiunta.
+    pub pad_to: usize,
+}
+
+/// Dimensione del device tree di QEMU virt (`create_device_tree`).
+pub const QEMU_FDT_SIZE: usize = 1 << 20;
+
+/// splitmix64: byte deterministici per i semi del device tree.
+fn seed_bytes(seed: u64, n: usize) -> Vec<u8> {
+    let mut x = seed;
+    let mut out = Vec::with_capacity(n);
+    while out.len() < n {
+        x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = x;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        out.extend_from_slice(&(z ^ (z >> 31)).to_le_bytes());
+    }
+    out.truncate(n);
+    out
 }
 
 impl Default for VirtDtbConfig {
@@ -264,6 +290,8 @@ impl Default for VirtDtbConfig {
             initrd: None,
             psci_method: "hvc",
             uart_clock_hz: map::UART_CLOCK_HZ,
+            seed: None,
+            pad_to: 0,
         }
     }
 }
@@ -291,14 +319,16 @@ pub fn virt_dtb(cfg: &VirtDtbConfig) -> Vec<u8> {
     let mut b = FdtBuilder::new();
     b.begin_node("")
         .prop_str("compatible", "linux,dummy-virt")
-        .prop_str("model", "Vetro virt")
         .prop_u32("#address-cells", 2)
         .prop_u32("#size-cells", 2)
         .prop_u32("interrupt-parent", PHANDLE_GIC);
 
-    b.begin_node("chosen")
-        .prop_str("bootargs", &cfg.bootargs)
-        .prop_str("stdout-path", &format!("/{UART_NODE}"));
+    b.begin_node("chosen");
+    if let Some(seed) = cfg.seed {
+        let bytes = seed_bytes(seed, 40);
+        b.prop_bytes("rng-seed", &bytes[..32]).prop_bytes("kaslr-seed", &bytes[32..]);
+    }
+    b.prop_str("bootargs", &cfg.bootargs).prop_str("stdout-path", &format!("/{UART_NODE}"));
     if let Some((start, end)) = cfg.initrd {
         b.prop_u64("linux,initrd-start", start).prop_u64("linux,initrd-end", end);
     }
@@ -380,7 +410,13 @@ pub fn virt_dtb(cfg: &VirtDtbConfig) -> Vec<u8> {
 
     b.end_node();
     // La struttura è fissa e ben formata: un errore qui è un bug nostro.
-    b.finish().expect("device tree virt ben formato")
+    let mut dtb = b.finish().expect("device tree virt ben formato");
+    if dtb.len() < cfg.pad_to {
+        dtb.resize(cfg.pad_to, 0);
+        let total = (cfg.pad_to as u32).to_be_bytes();
+        dtb[4..8].copy_from_slice(&total);
+    }
+    dtb
 }
 
 #[cfg(test)]
@@ -445,6 +481,20 @@ mod tests {
 
     fn strs(v: &[u8]) -> Vec<&str> {
         v.strip_suffix(&[0]).unwrap().split(|&c| c == 0).map(|s| core::str::from_utf8(s).unwrap()).collect()
+    }
+
+    #[test]
+    fn semi_e_spazio_libero_come_qemu() {
+        let cfg = VirtDtbConfig { seed: Some(7), pad_to: QEMU_FDT_SIZE, ..VirtDtbConfig::default() };
+        let dtb = virt_dtb(&cfg);
+        assert_eq!(dtb.len(), QEMU_FDT_SIZE);
+        assert_eq!(be32(&dtb, 4) as usize, QEMU_FDT_SIZE, "totalsize con lo spazio libero");
+        assert_eq!(virt_dtb(&cfg), dtb, "deterministico");
+        let other = virt_dtb(&VirtDtbConfig { seed: Some(8), ..cfg.clone() });
+        assert_ne!(other, dtb);
+        let find = |d: &[u8], name: &[u8]| d.windows(name.len()).any(|w| w == name);
+        assert!(find(&dtb, b"rng-seed\0") && find(&dtb, b"kaslr-seed\0"));
+        assert!(!find(&virt_dtb(&VirtDtbConfig::default()), b"rng-seed\0"));
     }
 
     #[test]

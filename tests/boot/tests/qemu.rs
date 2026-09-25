@@ -1,7 +1,7 @@
 //! Il kernel guest di M3 si avvia sotto l'oracolo fino alla shell:
 //!
 //! ```text
-//! qemu-system-aarch64 -M virt -cpu cortex-a53 -m 1G -nographic \
+//! qemu-system-aarch64 -M virt,gic-version=3,its=off -cpu cortex-a53 -m 1G -nographic \
 //!     -kernel Image -initrd initramfs.cpio.gz -append "console=ttyAMA0"
 //! ```
 //!
@@ -31,7 +31,8 @@ fn qemu_boots_guest_kernel_to_shell() {
         );
     };
     let mut cmd = Command::new(qemu);
-    cmd.args(["-M", "virt", "-cpu", "cortex-a53", "-m", "1G", "-nographic", "-kernel"])
+    cmd.args(QEMU_MACHINE)
+        .args(["-nographic", "-kernel"])
         .arg(&image)
         .arg("-initrd")
         .arg(&initrd)

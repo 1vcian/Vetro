@@ -56,3 +56,26 @@ jobs:
           VETRO_LTP_FULL: "1"
 
   # Il lint TypeScript (tsc --noEmit) si aggiunge quando nasce web/ (M5).
+
+  # M3: il kernel guest (Linux + initramfs) si avvia fino alla shell sotto
+  # qemu-system-aarch64 (riferimento) e sotto Vetro, con lo stesso log.
+  # Il kernel si ricompila solo se cambiano configurazione o script.
+  boot:
+    runs-on: ubuntu-24.04-arm
+    env:
+      VETRO_REQUIRE_GUEST_KERNEL: "1"
+      VETRO_REQUIRE_SYSTEM_ORACLE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain (da rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Oracolo QEMU (sistema)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-system-arm
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v4
+        with:
+          path: target/guest-kernel
+          key: guest-kernel-${{ hashFiles('guest/kernel/config/**', 'guest/kernel/initramfs/**', 'tools/guest-kernel/**', 'tools/guest-bins/**') }}
+      - name: Kernel guest e initramfs
+        run: test -f target/guest-kernel/Image || tools/guest-kernel/build.sh
+      - run: cargo test --release -p vetro-boot-tests -- --nocapture

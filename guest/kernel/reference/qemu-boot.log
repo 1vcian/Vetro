@@ -1,0 +1,121 @@
+Booting Linux on physical CPU 0x0000000000 [0x410fd034]
+Linux version 6.18.53 (vetro@vetro) (gcc (Alpine 14.2.0) 14.2.0, GNU ld (GNU Binutils) 2.44) #1 SMP Thu Sep 24 00:00:00 UTC 2026
+random: crng init done
+Machine model: linux,dummy-virt
+OF: reserved mem: Reserved memory: No reserved-memory node in the DT
+Zone ranges:
+  DMA      [mem 0x0000000040000000-0x000000007fffffff]
+  DMA32    empty
+  Normal   empty
+Movable zone start for each node
+Early memory node ranges
+  node   0: [mem 0x0000000040000000-0x000000007fffffff]
+Initmem setup node 0 [mem 0x0000000040000000-0x000000007fffffff]
+psci: probing for conduit method from DT.
+psci: PSCIv1.1 detected in firmware.
+psci: Using standard PSCI v0.2 function IDs
+psci: Trusted OS migration not required
+psci: SMC Calling Convention v1.0
+percpu: Embedded 14 pages/cpu s25752 r0 d31592 u57344
+Detected VIPT I-cache on CPU0
+CPU features: detected: GICv3 CPU interface
+alternatives: applying boot alternatives
+Kernel command line: console=ttyAMA0
+printk: log buffer data + meta data: 131072 + 458752 = 589824 bytes
+Dentry cache hash table entries: 131072 (order: 8, 1048576 bytes, linear)
+Inode-cache hash table entries: 65536 (order: 7, 524288 bytes, linear)
+software IO TLB: SWIOTLB bounce buffer size adjusted to 1MB
+software IO TLB: area num 1.
+software IO TLB: mapped [mem 0x000000007eb00000-0x000000007ec00000] (1MB)
+Built 1 zonelists, mobility grouping on.  Total pages: 262144
+mem auto-init: stack:all(zero), heap alloc:off, heap free:off
+SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=1, Nodes=1
+rcu: Hierarchical RCU implementation.
+rcu: 	RCU restricting CPUs from NR_CPUS=2 to nr_cpu_ids=1.
+rcu: RCU calculated value of scheduler-enlistment delay is 10 jiffies.
+rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=1
+NR_IRQS: 64, nr_irqs: 64, preallocated irqs: 0
+GICv3: 256 SPIs implemented
+GICv3: 0 Extended SPIs implemented
+Root IRQ handler: gic_handle_irq
+GICv3: GICv3 features: 16 PPIs
+GICv3: GICD_CTLR.DS=1, SCR_EL3.FIQ=0
+GICv3: CPU0: found redistributor 0 region 0:0x00000000080a0000
+ITS: No ITS available, not enabling LPIs
+rcu: srcu_init: Setting srcu_struct sizes based on contention.
+clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 19112604462750000 ns
+arch_timer: cp15 timer running at 62.50MHz (virt).
+clocksource: arch_sys_counter: mask: 0x1ffffffffffffff max_cycles: 0x1cd42e208c, max_idle_ns: 881590405314 ns
+sched_clock: 57 bits at 63MHz, resolution 16ns, wraps every 4398046511096ns
+Console: colour dummy device 80x25
+Calibrating delay loop (skipped), value calculated using timer frequency.. 125.00 BogoMIPS (lpj=625000)
+pid_max: default: 32768 minimum: 301
+Mount-cache hash table entries: 2048 (order: 2, 16384 bytes, linear)
+Mountpoint-cache hash table entries: 2048 (order: 2, 16384 bytes, linear)
+rcu: Hierarchical SRCU implementation.
+rcu: 	Max phase no-delay instances is 1000.
+smp: Bringing up secondary CPUs ...
+smp: Brought up 1 node, 1 CPU
+SMP: Total of 1 processors activated.
+CPU: All CPU(s) started at EL1
+CPU features: detected: 32-bit EL0 Support
+CPU features: detected: CRC32 instructions
+alternatives: applying system-wide alternatives
+Memory: 1015980K/1048576K available (3840K kernel code, 664K rwdata, 792K rodata, 832K init, 243K bss, 29448K reserved, 0K cma-reserved)
+devtmpfs: initialized
+posixtimers hash table entries: 512 (order: 1, 8192 bytes, linear)
+futex hash table entries: 256 (16384 bytes on 1 NUMA nodes, total 16 KiB, linear).
+NET: Registered PF_NETLINK/PF_ROUTE protocol family
+DMA: preallocated 128 KiB GFP_KERNEL pool for atomic allocations
+DMA: preallocated 128 KiB GFP_KERNEL|GFP_DMA pool for atomic allocations
+DMA: preallocated 128 KiB GFP_KERNEL|GFP_DMA32 pool for atomic allocations
+ASID allocator initialised with 65536 entries
+Serial: AMBA PL011 UART driver
+9000000.pl011: ttyAMA0 at MMIO 0x9000000 (irq = 13, base_baud = 0) is a PL011 rev1
+printk: console [ttyAMA0] enabled
+clocksource: Switched to clocksource arch_sys_counter
+NET: Registered PF_INET protocol family
+IP idents hash table entries: 16384 (order: 5, 131072 bytes, linear)
+tcp_listen_portaddr_hash hash table entries: 512 (order: 1, 8192 bytes, linear)
+Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+TCP established hash table entries: 8192 (order: 4, 65536 bytes, linear)
+TCP bind hash table entries: 8192 (order: 6, 262144 bytes, linear)
+TCP: Hash tables configured (established 8192 bind 8192)
+UDP hash table entries: 512 (order: 3, 32768 bytes, linear)
+UDP-Lite hash table entries: 512 (order: 3, 32768 bytes, linear)
+NET: Registered PF_UNIX/PF_LOCAL protocol family
+Unpacking initramfs...
+workingset: timestamp_bits=62 max_order=18 bucket_order=0
+rtc-pl031 9010000.pl031: registered as rtc0
+Freeing initrd memory: 644K
+clk: Disabling unused clocks
+Freeing unused kernel memory: 832K
+Run /init as init process
+VETRO-BOOT-OK: /init avviato (6.18.53)
+VETRO-AUTOTEST-INIZIO
+Linux (none) 6.18.53 #1 SMP Thu Sep 24 00:00:00 UTC 2026 aarch64 Linux
+VETRO-AUTOTEST ok: uname -m è aarch64
+rootfs on / type rootfs (rw,size=509564k,nr_inodes=127391)
+proc on /proc type proc (rw,relatime)
+sysfs on /sys type sysfs (rw,relatime)
+devtmpfs on /dev type devtmpfs (rw,relatime,size=509564k,nr_inodes=127391,mode=755)
+tmpfs on /tmp type tmpfs (rw,relatime)
+VETRO-AUTOTEST ok: proc montato
+VETRO-AUTOTEST ok: sysfs montato
+VETRO-AUTOTEST ok: devtmpfs montato
+[1;34mblock[m     [1;34mclass[m     [1;34mdevices[m   [1;34mfs[m        [1;34mmodule[m
+[1;34mbus[m       [1;34mdev[m       [1;34mfirmware[m  [1;34mkernel[m
+VETRO-AUTOTEST ok: /sys/devices presente
+VETRO-AUTOTEST ok: console PL011
+VETRO-AUTOTEST ok: RTC PL031
+VETRO-AUTOTEST ok: echo e pipe
+VETRO-AUTOTEST ok: file su tmpfs
+VETRO-AUTOTEST ok: aritmetica della shell
+  40200000-4069ffff : Kernel code
+  40770000-4086ffff : Kernel data
+initrd-start:  00 00 00 00 48 00 00 00
+VETRO-AUTOTEST-FINE: ok
+~ # [6necho VETRO-SHELL-$((6*7))
+VETRO-SHELL-42
+~ # [6npoweroff -f
+reboot: Power down

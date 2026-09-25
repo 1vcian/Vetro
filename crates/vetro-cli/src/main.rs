@@ -2,7 +2,10 @@
 //!
 //! ```text
 //! vetro run [--strace] [--host-clock] [--sysroot=DIR] <elf> [argomenti...]
+//! vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB]
 //! ```
+//!
+//! `boot` avvia la macchina virt (M3) con la console PL011 su stdin/stdout.
 
 use std::process::ExitCode;
 use vetro_cli::linux::{ClockMode, Config, Exit};
@@ -16,12 +19,14 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("run") => run(&args[2..]),
+        Some("boot") => boot(&args[2..]),
         _ => usage(),
     }
 }
 
 fn usage() -> ExitCode {
     eprintln!("uso: vetro run [--strace] [--host-clock] [--sysroot=DIR] <elf> [argomenti...]");
+    eprintln!("     vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB]");
     ExitCode::from(2)
 }
 
@@ -87,6 +92,87 @@ fn run(args: &[String]) -> ExitCode {
         Exit::Deadlock => {
             eprintln!("vetro: tutti i processi bloccati");
             ExitCode::from(123)
+        }
+    }
+}
+
+fn boot(args: &[String]) -> ExitCode {
+    use std::io::{Read, Write};
+    use vetro_machine::{Machine, MachineConfig, Stop};
+    let (mut kernel, mut initrd, mut append) = (None, None, "console=ttyAMA0".to_string());
+    let mut cfg = MachineConfig::default();
+    for a in args {
+        match a.split_once('=') {
+            Some(("--kernel", v)) => kernel = Some(v.to_string()),
+            Some(("--initrd", v)) => initrd = Some(v.to_string()),
+            Some(("--append", v)) => append = v.to_string(),
+            Some(("--mem", v)) => match v.parse::<u64>() {
+                Ok(m) => cfg.ram_size = m << 20,
+                Err(_) => return usage(),
+            },
+            _ => return usage(),
+        }
+    }
+    let Some(kernel) = kernel else { return usage() };
+    let read = |p: &str| {
+        std::fs::read(p).map_err(|e| {
+            eprintln!("vetro: {p}: {e}");
+            ExitCode::from(2)
+        })
+    };
+    let image = match read(&kernel) {
+        Ok(b) => b,
+        Err(c) => return c,
+    };
+    let initrd = match initrd.as_deref().map(read).transpose() {
+        Ok(i) => i,
+        Err(c) => return c,
+    };
+    let mut m = Machine::new(&cfg);
+    if let Err(e) = m.load_linux(&image, initrd.as_deref(), &append) {
+        eprintln!("vetro: {kernel}: {e}");
+        return ExitCode::from(2);
+    }
+    // stdin in un thread: i byte arrivano alla PL011 tra un quanto e l'altro.
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 256];
+        let mut stdin = std::io::stdin();
+        while let Ok(n) = stdin.read(&mut buf) {
+            if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+    let mut out = std::io::stdout();
+    loop {
+        let stop = m.run(2_000_000);
+        let o = m.console_output();
+        if !o.is_empty() {
+            let _ = out.write_all(&o);
+            let _ = out.flush();
+        }
+        while let Ok(b) = rx.try_recv() {
+            m.console_input(&b);
+        }
+        match stop {
+            Stop::Budget => {}
+            Stop::Idle => match rx.recv() {
+                Ok(b) => m.console_input(&b),
+                Err(_) => {
+                    eprintln!("vetro: il guest aspetta un ingresso e stdin è chiuso");
+                    return ExitCode::from(3);
+                }
+            },
+            Stop::PowerOff => return ExitCode::SUCCESS,
+            Stop::Reset => {
+                eprintln!("vetro: il guest ha chiesto un reset");
+                return ExitCode::SUCCESS;
+            }
+            Stop::Unimplemented { pc, raw, what } => {
+                eprintln!("vetro: {raw:#010x} non ancora implementata ({what}) a pc={pc:#x}");
+                return ExitCode::from(125);
+            }
         }
     }
 }

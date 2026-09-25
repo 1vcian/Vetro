@@ -179,9 +179,107 @@ pub fn normalize(log: &str) -> String {
     log.replace("\r\n", "\n").replace('\r', "\n")
 }
 
+/// Opzioni di `qemu-system-aarch64` per la stessa macchina di Vetro: virt
+/// con GICv3 senza ITS (Vetro non ha LPI), Cortex-A53, 1 GiB.
+pub const QEMU_MACHINE: [&str; 6] = ["-M", "virt,gic-version=3,its=off", "-cpu", "cortex-a53", "-m", "1G"];
+
+/// Differenze note tra l'avvio sotto QEMU e sotto Vetro, con il motivo.
+/// Una riga che contiene uno di questi testi si ignora nel confronto.
+pub const KNOWN_DIFFERENCES: &[(&str, &str)] = &[
+    // Il GICv3 di QEMU dichiara gli LPI (GICD_TYPER.LPIS) anche con its=off;
+    // quello di Vetro no, e Linux non stampa nulla.
+    ("ITS: No ITS available", "QEMU dichiara gli LPI senza ITS"),
+    // Vetro non esegue AArch32 (ADR 0005): ID_AA64PFR0_EL1.EL0 = 1.
+    ("CPU features: detected: 32-bit EL0 Support", "niente AArch32 in Vetro (ADR 0005)"),
+];
+
+/// Righe il cui contenuto numerico dipende dalla dimensione del device tree
+/// di QEMU, che descrive anche dispositivi che Vetro non ha (PCIe, fw-cfg,
+/// flash, GPIO): pochi KiB di memoria in più riservati. Si confrontano senza
+/// i numeri.
+pub const MEMORY_LINES: &[&str] = &["Memory: ", "rootfs on / type rootfs", "devtmpfs on /dev type devtmpfs"];
+
+/// Righe di un log pronte per il confronto: senza tempi del kernel, senza le
+/// differenze note, senza i numeri delle righe di memoria, in ordine
+/// alfabetico (l'ordine di alcuni initcall asincroni dipende dai tempi reali
+/// dell'host sotto QEMU).
+pub fn comparable_lines(log: &str) -> Vec<String> {
+    let mut v: Vec<String> = normalize(log)
+        .lines()
+        .map(|l| strip_timestamp(l).trim_end().to_string())
+        .filter(|l| !l.is_empty())
+        .filter(|l| !KNOWN_DIFFERENCES.iter().any(|(k, _)| l.contains(k)))
+        .map(|l| {
+            if MEMORY_LINES.iter().any(|m| l.contains(m)) {
+                l.chars().filter(|c| !c.is_ascii_digit()).collect()
+            } else {
+                l
+            }
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+/// Toglie `[    1.234567] ` in testa a una riga del kernel.
+fn strip_timestamp(l: &str) -> &str {
+    let t = l.trim_start();
+    if let Some(rest) = t.strip_prefix('[')
+        && let Some((ts, after)) = rest.split_once(']')
+        && ts.trim().chars().all(|c| c.is_ascii_digit() || c == '.')
+        && !ts.trim().is_empty()
+    {
+        return after.strip_prefix(' ').unwrap_or(after);
+    }
+    l
+}
+
+/// Differenze tra due insiemi di righe (`-` solo nel primo, `+` solo nel
+/// secondo), per i messaggi dei test.
+pub fn line_diff(a: &[String], b: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() || j < b.len() {
+        match (a.get(i), b.get(j)) {
+            (Some(x), Some(y)) if x == y => {
+                i += 1;
+                j += 1;
+            }
+            (Some(x), Some(y)) if x < y => {
+                out.push(format!("- {x}"));
+                i += 1;
+            }
+            (Some(_), Some(y)) => {
+                out.push(format!("+ {y}"));
+                j += 1;
+            }
+            (Some(x), None) => {
+                out.push(format!("- {x}"));
+                i += 1;
+            }
+            (None, Some(y)) => {
+                out.push(format!("+ {y}"));
+                j += 1;
+            }
+            (None, None) => break,
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn righe_confrontabili() {
+        let log = "[    0.000000] Booting Linux\r\n[    0.1] Memory: 1016024K/1048576K available\n\
+                   [    0.2] CPU features: detected: 32-bit EL0 Support\nVETRO-BOOT-OK\n";
+        assert_eq!(comparable_lines(log), ["Booting Linux", "Memory: K/K available", "VETRO-BOOT-OK"]);
+        let a = vec!["a".to_string(), "c".into()];
+        let b = vec!["b".to_string(), "c".into()];
+        assert_eq!(line_diff(&a, &b), ["- a", "+ b"]);
+    }
 
     #[test]
     fn find_and_normalize() {

@@ -4,7 +4,8 @@
 //! tempo virtuale. È il banco di prova della CPU prima dell'avvio del kernel
 //! vero (M3) e il motore dei test differenziali contro QEMU.
 
-pub mod boot;
+/// Il caricatore del kernel sta in `vetro-machine` (serve anche al browser).
+pub use vetro_machine::boot;
 pub mod elf;
 pub mod linux;
 

@@ -1,0 +1,15 @@
+[package]
+name = "vetro-machine"
+description = "La macchina virt completa: CPU in modalità sistema, MMU, piattaforma e RAM, con tempo deterministico."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+vetro-cpu = { path = "../vetro-cpu" }
+vetro-mmu = { path = "../vetro-mmu" }
+vetro-platform = { path = "../vetro-platform" }
+
+[lints]
+workspace = true
