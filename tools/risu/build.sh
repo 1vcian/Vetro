@@ -13,10 +13,14 @@ COMMIT="eed224965e7bde899dda788c65020adbdab20e5e"
 N="${RISU_INSNS:-3000}"
 mkdir -p "$OUT"
 
-if [ ! -d "$OUT/src/.git" ]; then
+# La cache della CI può restituire target/ a metà: se il clone non è sano o
+# non ha il commit, si rifà da capo.
+if ! { git -C "$OUT/src" fsck --no-progress --no-dangling >/dev/null 2>&1 &&
+       git -C "$OUT/src" checkout -q "$COMMIT" 2>/dev/null; }; then
+  rm -rf "$OUT/src"
   git clone -q "$REPO" "$OUT/src"
+  git -C "$OUT/src" checkout -q "$COMMIT"
 fi
-git -C "$OUT/src" checkout -q "$COMMIT"
 
 # 1. risu statico (musl), come gli altri binari guest.
 docker build -q -t vetro-guest-bins:latest "$ROOT/tools/guest-bins" >/dev/null

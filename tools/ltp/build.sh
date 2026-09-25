@@ -7,7 +7,11 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT="$ROOT/target/ltp"
 TAG="20260529"
 mkdir -p "$OUT/bin"
-if [ ! -d "$OUT/src/.git" ]; then
+# La cache della CI può restituire target/ a metà: se il clone non è sano o
+# non è al tag giusto, si rifà da capo.
+if ! { git -C "$OUT/src" fsck --no-progress --no-dangling >/dev/null 2>&1 &&
+       [ "$(git -C "$OUT/src" describe --tags --exact-match 2>/dev/null)" = "$TAG" ]; }; then
+  rm -rf "$OUT/src"
   git clone -q --depth 1 -b "$TAG" https://github.com/linux-test-project/ltp.git "$OUT/src"
 fi
 # Directory di testcases/kernel/syscalls da compilare.
