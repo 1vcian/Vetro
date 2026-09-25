@@ -6,6 +6,11 @@
 //
 // Parametri dell'URL per precompilare ed eventualmente avviare:
 //   ?kernel=URL&initrd=URL&disk=URL&cmdline=...&pointer=multitouch&webgpu=1&autostart=1
+//   &snapshot=0 (niente cache degli snapshot) &persist=0 (dischi non persistenti)
+//
+// Persistenza (M6, ADR 0016): il Worker salva in OPFS lo snapshot della
+// macchina e l'overlay dei dischi; al secondo avvio riparte dallo snapshot.
+// Lo stato si legge anche da `window.vetroState` (per i test nel browser).
 
 import { absAxis, BUTTONS, evdevCode } from './keymap.mjs';
 import { keyToBytes, Terminal } from './terminal.mjs';
@@ -22,6 +27,9 @@ let renderer = null;
 let fb = { width: 0, height: 0 };
 let cursor = null;
 let pointerKind = 'tablet';
+/** Stato visibile ai test: come è partita la macchina, snapshot salvati, dischi. */
+const vetroState = (window.vetroState = { boot: null, snapshots: [], disks: [], stopped: null });
+let startedAt = 0;
 
 const setStatus = (t) => {
   statusEl.textContent = t;
@@ -30,7 +38,11 @@ const setStatus = (t) => {
 
 // ---- Console ---------------------------------------------------------------
 
-const term = new Terminal({ onReply: (s) => worker?.postMessage({ type: 'serial', text: s }) });
+// Durante la ripresa della coda della console di uno snapshot il terminale
+// non risponde (la risposta a ESC[6n l'aveva già data la sessione salvata:
+// ripeterla sarebbe un ingresso in più per il guest).
+let replaying = false;
+const term = new Terminal({ onReply: (s) => !replaying && worker?.postMessage({ type: 'serial', text: s }) });
 let consoleDirty = false;
 
 function renderConsole() {
@@ -197,7 +209,8 @@ function fmtStats(s) {
     `${s.mips.toFixed(1)} MIPS`,
   ];
   for (const [i, d] of s.disks.entries()) {
-    parts.push(`vd${String.fromCharCode(97 + i)}: ${d.fills} blocchi, ${d.http.requests} letture, cow ${d.dirtyClusters}`);
+    const ov = d.overlay ? ` (persistente, gen. ${d.overlay.generation})` : '';
+    parts.push(`vd${String.fromCharCode(97 + i)}: ${d.fills} blocchi, ${d.http.requests} letture, cow ${d.dirtyClusters}${ov}`);
   }
   if (s.feeder.served) parts.push(`attesa disco ${(s.feeder.waitMs / 1000).toFixed(1)} s`);
   if (s.jit) parts.push(`JIT ${s.jit.modules} moduli`);
@@ -223,11 +236,14 @@ async function start() {
     jit: el.jit.checked,
     realtime: el.realtime.checked,
     opfs: el.opfs.checked,
+    snapshot: el.snapshot.checked,
+    persist: el.persist.checked,
   };
   pointerKind = config.pointer;
   renderer = (el.webgpu.checked && (await WebGpuRenderer.create(screen).catch(() => null))) || new Canvas2DRenderer(screen);
   form.hidden = true;
   $('machine').hidden = false;
+  startedAt = performance.now();
   worker = new Worker(new URL('./worker.mjs', import.meta.url), { type: 'module' });
   worker.onmessage = (e) => {
     const msg = e.data;
@@ -247,15 +263,35 @@ async function start() {
         break;
       case 'stats':
         $('stats').textContent = fmtStats(msg);
+        vetroState.disks = msg.disks;
+        break;
+      case 'restored': {
+        vetroState.boot = { mode: 'snapshot', ms: performance.now() - startedAt, steps: msg.steps, size: msg.size, times: msg.times };
+        replaying = true;
+        term.feed(msg.console);
+        replaying = false;
+        renderConsole();
+        const t = msg.times;
+        setStatus(`ripristinato dallo snapshot del ${new Date(msg.savedAt).toLocaleString()} (${(msg.size / 2 ** 20).toFixed(1)} MiB, ` +
+          `ripristino ${t.restore.toFixed(0)} ms, pronto in ${(vetroState.boot.ms / 1000).toFixed(2)} s)`);
+        break;
+      }
+      case 'cold':
+        vetroState.boot = { mode: 'cold', ms: performance.now() - startedAt, times: msg.times };
+        break;
+      case 'snapshot':
+        vetroState.snapshots.push({ ...msg, at: performance.now() - startedAt });
+        $('snapinfo').textContent = `snapshot salvato (${msg.why}): ${(msg.size / 2 ** 20).toFixed(1)} MiB in ${(msg.saveMs + msg.writeMs).toFixed(0)} ms`;
         break;
       case 'status':
         setStatus(msg.text);
         break;
       case 'started':
-        setStatus(`in esecuzione (${renderer.name}, ${config.jit ? 'JIT' : 'interprete'}${crossOriginIsolated ? ', isolata' : ''})`);
+        if (!msg.restored) setStatus(`in esecuzione (${renderer.name}, ${config.jit ? 'JIT' : 'interprete'}${crossOriginIsolated ? ', isolata' : ''})`);
         consoleEl.focus();
         break;
       case 'stopped':
+        vetroState.stopped = msg;
         setStatus(`macchina ferma: ${msg.reason} dopo ${msg.steps} istruzioni`);
         break;
       case 'error':
@@ -268,6 +304,24 @@ async function start() {
   worker.postMessage({ type: 'start', config });
 }
 
+$('save').addEventListener('click', () => send({ type: 'save' }));
+
+// Cancella snapshot, overlay e cache dei blocchi (solo a macchina spenta:
+// il Worker tiene aperti i file).
+$('forget').addEventListener('click', async () => {
+  try {
+    const root = await navigator.storage.getDirectory();
+    for (const name of ['vetro-snapshots', 'vetro-overlays', 'vetro-disks']) {
+      await root.removeEntry(name, { recursive: true }).catch((e) => {
+        if (e.name !== 'NotFoundError') throw e;
+      });
+    }
+    setStatus('dati salvati cancellati (snapshot, dischi persistenti, cache dei blocchi)');
+  } catch (e) {
+    setStatus(`cancellazione non riuscita: ${e.message ?? e}`);
+  }
+});
+
 form.addEventListener('submit', (e) => {
   e.preventDefault();
   start().catch((err) => setStatus(`errore: ${err.message ?? err}`));
@@ -279,4 +333,6 @@ for (const [param, field] of [['kernel', 'kernelUrl'], ['initrd', 'initrdUrl'], 
   if (q.has(param)) form.elements[field].value = q.get(param);
 }
 if (q.get('webgpu') === '1') form.elements.webgpu.checked = true;
+if (q.get('snapshot') === '0') form.elements.snapshot.checked = false;
+if (q.get('persist') === '0') form.elements.persist.checked = false;
 if (q.get('autostart') === '1') start().catch((err) => setStatus(`errore: ${err.message ?? err}`));

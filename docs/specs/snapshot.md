@@ -75,6 +75,7 @@ traduzioni recenti e fa crescere `Tlb::flushes`.
 - `vetro boot --save-at=ISTRUZIONI:FILE` (ripetibile: primo confine fra
   quanti con almeno quelle istruzioni) e `--restore=FILE` (senza
   `--kernel`; stesse opzioni di macchina e stessi `--disk`).
+- `vetro boot --disk=FILE --overlay=FILE`: overlay persistente (sotto).
 - vetro-wasm ABI 4 (`docs/specs/wasm.md`): `vetro_snapshot_version`,
   `vetro_snapshot_save`, `vetro_snapshot_ptr`, `vetro_snapshot_clear`,
   `vetro_snapshot_restore` con codici `OK`, `BAD_MAGIC`, `VERSION`,
@@ -95,3 +96,34 @@ traduzioni recenti e fa crescere `Tlb::flushes`.
   shell, rete, disco, GPU/input/vsock, interprete e JIT; misure.
 - `crates/vetro-cli/tests/boot_snapshot.rs`, `vetro-wasm`
   `snapshot_dall_api`.
+
+## Overlay persistente dei dischi (`vetro_snapshot::overlay`, ADR 0016)
+
+File delle scritture del guest su un disco copy-on-write, uguale per la CLI
+e per il browser (OPFS). Little endian.
+
+| Parte | Contenuto |
+|---|---|
+| intestazione (4096 byte) | `"VETROCOW"`, u32 versione (1), u32 cluster (4096), u64 dimensione del disco, u64 generazione, u64 slot, u32 lunghezza dell'identità, identità (al più 4032 byte), zeri, u64 `hash64` dei primi 4088 byte all'offset 4088 |
+| slot k (offset 4096 + k × 4112) | u64 cluster (`u64::MAX` = libero), u64 controllo = `hash64(dati) ^ rotl(cluster, 17) ^ costante`, 4096 byte di dati (l'ultimo cluster del disco completato con zeri) |
+
+- `Overlay::load(file, identità, dimensione)`: file vuoto = overlay nuovo;
+  identità o dimensione diverse = `LoadError::Mismatch`; magia, versione,
+  cluster o intestazione rovinata = `LoadError::Corrupt` (in entrambi i casi
+  si riparte da un overlay vuoto e il file si tronca). Slot con il controllo
+  sbagliato, indice fuori dal disco o doppio: ignorati (contati in
+  `damaged`) e liberi; slot oltre la fine del file: liberi.
+- `Overlay::update(cambi)`: `(cluster, Some(dati))` scrive (se il controllo
+  è cambiato) nello slot del cluster, o in uno libero, o in fondo;
+  `(cluster, None)` libera lo slot. `Overlay::sync(tutti)`: lo stato completo
+  (toglie i cluster assenti). Restituiscono `Patches { truncate, writes }`;
+  se c'è qualcosa la generazione cresce e l'ultima scrittura è
+  l'intestazione. `Patches::encode` è la codifica di `vetro_overlay_take`.
+- `CowBackend` (vetro-platform): `take_dirty` (cluster scritti dal guest
+  dall'ultima volta; non negli snapshot, svuotato da `restore_state`),
+  `cluster`, `clusters`, `load_cluster`.
+- CLI (`vetro-cli/src/disk.rs`): `FileOverlay::open/persist/after_restore`,
+  identità `file:<nome>|<dimensione>|<mtime in ns>`; le scritture si
+  applicano con `write_at`, l'intestazione dopo `sync_data`. `vetro boot`
+  salva a ogni confine di quanto e all'uscita, e dopo `--restore` riallinea
+  il file ai cluster dello snapshot.

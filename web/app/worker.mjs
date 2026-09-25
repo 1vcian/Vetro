@@ -13,12 +13,37 @@
 // non lascia correre il tempo del guest davanti all'orologio vero (dorme la
 // differenza); senza, va alla massima velocità. Mentre un disco aspetta
 // dati (`Blocked`) il tempo del guest è fermo (ADR 0014).
+//
+// Persistenza (M6, ADR 0016):
+// - le scritture del guest sui dischi vanno nell'overlay copy-on-write, che
+//   si salva in OPFS (`vetro-overlays/`) fra una fetta e l'altra (al più
+//   una volta al secondo, e sempre quando il guest si ferma in attesa) e si
+//   riapplica alla sessione successiva; un overlay di un'altra immagine base
+//   si scarta;
+// - lo snapshot della macchina si salva in OPFS (`vetro-snapshots/`) la
+//   prima volta che il guest è a riposo (avvio finito), e di nuovo quando è
+//   a riposo e i dischi sono cambiati da allora, o a richiesta della pagina.
+//   A riposo: `Idle`, oppure REST_NS di tempo del guest senza uscita sulla
+//   console, senza cambi dello scanout, senza ingressi e senza attività dei
+//   dischi (il kernel ha sempre un timer, quindi `Idle` da solo non basta). La chiave comprende la versione del formato,
+//   gli hash di kernel e initramfs, la riga di comando, la configurazione
+//   della macchina e l'identità dei dischi; i metadati tengono la
+//   generazione dell'overlay di ogni disco al momento del salvataggio. Alla
+//   sessione successiva lo snapshot si ripristina invece di avviare il
+//   kernel, se gli overlay sono ancora a quella generazione.
 
 import { DEV, INPUT, instantiate, Machine } from '../node/vetro.mjs';
 import { BlobSource, DiskFeeder, MemoryCache, OpfsCache, RangeSource } from '../node/disk.mjs';
+import { DiskOverlay, fromBase64, opfsFile, sha256Hex, SnapshotStore, snapshotKey, staleReason, toBase64 } from '../node/persist.mjs';
 
 const QUANTUM = 1_000_000;
 const SLICE_MS = 12;
+/** Salvataggio degli overlay al più ogni tanti ms mentre il guest lavora. */
+const PERSIST_MS = 1000;
+/** Tempo del guest senza attività dopo cui il guest è a riposo (1,5 s). */
+const REST_NS = 1_500_000_000n;
+/** Coda della console tenuta per lo snapshot (la pagina la rimostra). */
+const CONSOLE_TAIL = 64 * 1024;
 const EV_SYN = 0;
 const EV_REL = 2;
 const REL_WHEEL = 8;
@@ -31,6 +56,15 @@ let running = false;
 const inbox = [];
 let wake = null;
 const inputLog = [];
+/** Overlay persistente di ogni disco (o null). */
+let overlays = [];
+let store = null;
+let snapKey = null;
+/** Metadati dell'ultimo snapshot salvato o ripristinato in questa sessione. */
+let lastSnapshot = null;
+let saveRequested = false;
+let consoleTail = [];
+let consoleTailLen = 0;
 
 const post = (msg, transfer = []) => postMessage(msg, transfer);
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
@@ -46,8 +80,9 @@ async function bytesOf(src, what) {
   return new Uint8Array(await res.arrayBuffer());
 }
 
-async function openDisk(d, i) {
-  const source = d.file ? new BlobSource(d.file) : await new RangeSource(d.url).open();
+async function openDisk(d, i, sources) {
+  const source = sources[i] ?? (d.file ? new BlobSource(d.file) : await new RangeSource(d.url).open());
+  sources[i] = source;
   let cache = null;
   if (d.url) {
     if (cfg.opfs) {
@@ -61,25 +96,149 @@ async function openDisk(d, i) {
   }
   const index = feeder.add(source, { cache, blockSize: d.blockSize, readOnly: d.readOnly, readahead: d.readahead ?? 1 });
   status(`disco ${i}: ${d.url ?? d.file.name}, ${(source.size / 2 ** 20).toFixed(1)} MiB, blocchi da ${d.blockSize >> 10} KiB`);
+  overlays[index] = null;
+  if (cfg.persist && cfg.opfs && !d.readOnly) {
+    try {
+      const file = await opfsFile('vetro-overlays', `${(await sha256Hex(source.key)).slice(0, 32)}.cow`);
+      const o = DiskOverlay.open(m, index, file, source.key);
+      overlays[index] = o;
+      const info = o.info;
+      if (o.opened.code === 'Mismatch' || o.opened.code === 'Corrupt') status(`disco ${i}: ${o.opened.message}`);
+      else if (o.opened.code === 'Loaded') status(`disco ${i}: overlay persistente, ${info.clusters} cluster scritti nelle sessioni precedenti`);
+    } catch (e) {
+      status(`disco ${i}: overlay persistente non disponibile (${e.message ?? e}): scritture solo in memoria`);
+    }
+  }
   return index;
+}
+
+function devicesOf(c) {
+  let devices = DEV.GPU | DEV.KEYBOARD;
+  devices |= c.pointer === 'multitouch' ? DEV.MULTITOUCH : DEV.TABLET;
+  if (c.net) devices |= DEV.NET;
+  return devices;
+}
+
+/** Macchina nuova con i dischi (e i loro overlay). */
+async function build(c, sources) {
+  for (const o of overlays) o?.close();
+  overlays = [];
+  m?.free();
+  m = new Machine(exports, { ramSize: BigInt(c.ramMiB) << 20n, devices: devicesOf(c), width: c.width, height: c.height });
+  feeder = new DiskFeeder(m);
+  for (const [i, d] of (c.disks ?? []).entries()) await openDisk(d, i, sources);
+}
+
+/** Salva gli overlay cambiati; restituisce se ha scritto qualcosa. */
+function persistOverlays() {
+  let wrote = false;
+  for (const o of overlays) if (o?.persist()) wrote = true;
+  return wrote;
+}
+
+const generations = () => overlays.map((o) => (o ? o.generation : null));
+
+/** Snapshot della macchina in OPFS, insieme agli overlay (salvati prima). */
+async function saveSnapshot(why) {
+  persistOverlays();
+  const t0 = performance.now();
+  const bytes = m.snapshotSave();
+  const saveMs = performance.now() - t0;
+  const meta = {
+    steps: String(m.steps),
+    generations: generations(),
+    console: toBase64(joinTail()),
+    savedAt: new Date().toISOString(),
+    why,
+  };
+  const t1 = performance.now();
+  await store.save(snapKey, meta, bytes);
+  lastSnapshot = meta;
+  const writeMs = performance.now() - t1;
+  post({ type: 'snapshot', why, steps: Number(m.steps), size: bytes.length, saveMs, writeMs, generations: meta.generations });
+}
+
+function joinTail() {
+  const out = new Uint8Array(consoleTailLen);
+  let at = 0;
+  for (const c of consoleTail) {
+    out.set(c, at);
+    at += c.length;
+  }
+  return out;
+}
+
+function keepTail(bytes) {
+  consoleTail.push(bytes.slice());
+  consoleTailLen += bytes.length;
+  while (consoleTailLen - consoleTail[0].length >= CONSOLE_TAIL) consoleTailLen -= consoleTail.shift().length;
 }
 
 async function start(c) {
   cfg = c;
+  const t0 = performance.now();
+  const times = {};
   status('carico vetro-wasm');
   const wasm = await (await fetch(c.wasmUrl)).arrayBuffer();
   ({ exports } = await instantiate(wasm));
+  times.wasm = performance.now() - t0;
   const kernel = await bytesOf(c.kernel, 'il kernel');
   const initrd = await bytesOf(c.initrd, "l'initramfs");
-  let devices = DEV.GPU | DEV.KEYBOARD;
-  devices |= c.pointer === 'multitouch' ? DEV.MULTITOUCH : DEV.TABLET;
-  if (c.net) devices |= DEV.NET;
-  m = new Machine(exports, { ramSize: BigInt(c.ramMiB) << 20n, devices, width: c.width, height: c.height });
-  feeder = new DiskFeeder(m);
-  for (const [i, d] of (c.disks ?? []).entries()) await openDisk(d, i);
-  m.loadLinux(kernel, initrd, c.cmdline);
+  times.files = performance.now() - t0 - times.wasm;
+  const sources = [];
+  await build(c, sources);
+  let restored = null;
+  if (c.snapshot && c.opfs) {
+    try {
+      store = await SnapshotStore.opfs();
+      const t1 = performance.now();
+      snapKey = await snapshotKey({
+        format: m.snapshotVersion,
+        kernel: await sha256Hex(kernel),
+        initrd: initrd ? await sha256Hex(initrd) : null,
+        cmdline: c.cmdline,
+        ramMiB: c.ramMiB,
+        width: c.width,
+        height: c.height,
+        devices: devicesOf(c),
+        disks: sources.map((s, i) => ({ identity: s.key, size: Math.floor(s.size / 512) * 512, readOnly: !!c.disks[i].readOnly })),
+      });
+      times.key = performance.now() - t1;
+      const t2 = performance.now();
+      const rec = await store.load(snapKey);
+      times.read = performance.now() - t2;
+      const stale = rec && staleReason(rec.meta, overlays);
+      if (rec && stale) status(`snapshot non usato: ${stale}`);
+      if (rec && !stale) {
+        const t3 = performance.now();
+        try {
+          m.snapshotRestore(rec.bytes);
+          times.restore = performance.now() - t3;
+          restored = rec;
+        } catch (e) {
+          status(`snapshot non usato: ${e.message}`);
+          // Con 'Corrupt' la macchina va scartata: si rifà da capo.
+          if (e.code === 'Corrupt') await build(c, sources);
+        }
+      }
+    } catch (e) {
+      status(`cache degli snapshot non disponibile (${e.message ?? e})`);
+      store = null;
+    }
+  }
+  if (restored) {
+    lastSnapshot = restored.meta;
+    const tail = fromBase64(restored.meta.console ?? '');
+    if (tail.length) keepTail(tail);
+    times.total = performance.now() - t0;
+    post({ type: 'restored', steps: Number(m.steps), size: restored.bytes.length, times, savedAt: restored.meta.savedAt, console: tail }, [tail.buffer]);
+  } else {
+    m.loadLinux(kernel, initrd, c.cmdline);
+    times.total = performance.now() - t0;
+    post({ type: 'cold', times });
+  }
   if (c.jit) m.setJit(16, 16);
-  post({ type: 'started', pointer: c.pointer });
+  post({ type: 'started', pointer: c.pointer, restored: !!restored });
   running = true;
   loop().catch((e) => {
     running = false;
@@ -124,12 +283,18 @@ let lastUpdates = -1;
 let lastCursor = -1;
 let lastCursorResource = -1;
 
-/** Console, fotogramma, cursore. */
+/** Console, fotogramma, cursore; restituisce se il guest ha mostrato qualcosa. */
 function flush() {
+  let active = false;
   const out = m.consoleRead();
-  if (out.length) post({ type: 'console', bytes: out }, [out.buffer]);
+  if (out.length) {
+    active = true;
+    keepTail(out);
+    post({ type: 'console', bytes: out }, [out.buffer]);
+  }
   const updates = m.displayUpdates();
   if (updates !== lastUpdates) {
+    active = true;
     lastUpdates = updates;
     const size = m.displaySize();
     if (!size) {
@@ -152,31 +317,61 @@ function flush() {
     }
     post(msg, msg.image ? [msg.image.buffer] : []);
   }
+  return active;
 }
 
 async function loop() {
   const t0 = performance.now();
+  // Tempo del guest all'inizio (dopo un ripristino non è zero).
+  const g0 = m.guestNs;
+  const guestMs = () => Number(m.guestNs - g0) / 1e6;
   let paused = 0;
   let lastStats = 0;
+  let lastPersist = performance.now();
+  // Ultima attività del guest (tempo del guest) e riposo già usato.
+  let activeNs = m.guestNs;
+  let rested = false;
+  const activity = () => {
+    activeNs = m.guestNs;
+    rested = false;
+  };
   let steps0 = m.steps;
   let wall0 = t0;
   for (;;) {
+    if (inbox.length) activity();
     while (inbox.length) apply(inbox.shift());
     const slice = performance.now();
     let stop;
     for (;;) {
       stop = m.run(QUANTUM);
       if (stop === 'Blocked') {
+        activity();
         const w = performance.now();
         await feeder.serve();
         paused += performance.now() - w;
         continue;
       }
       if (stop !== 'Budget' || performance.now() - slice > SLICE_MS) break;
-      if (cfg.realtime && Number(m.guestNs) / 1e6 > performance.now() - t0 - paused + 20) break;
+      if (cfg.realtime && guestMs() > performance.now() - t0 - paused + 20) break;
     }
-    flush();
+    if (flush()) activity();
     const now = performance.now();
+    if (stop !== 'Budget' || now - lastPersist > PERSIST_MS) {
+      if (persistOverlays()) activity();
+      lastPersist = now;
+    }
+    // Snapshot: la prima volta che il guest è a riposo (avvio finito), poi a
+    // riposo se i dischi sono cambiati, o a richiesta.
+    const rest = stop === 'Idle' || (!rested && m.guestNs - activeNs >= REST_NS);
+    if (rest && stop !== 'Idle') {
+      rested = true;
+      if (persistOverlays()) activity();
+    }
+    if (store && (saveRequested || (rest && (!lastSnapshot || String(generations()) !== String(lastSnapshot.generations))))) {
+      const why = saveRequested ? 'richiesta' : lastSnapshot ? 'dischi cambiati' : 'avvio finito';
+      saveRequested = false;
+      await saveSnapshot(why).catch((e) => status(`snapshot non salvato: ${e.message ?? e}`));
+    }
     if (now - lastStats > 500) {
       const mips = Number(m.steps - steps0) / ((now - wall0) * 1000);
       post({
@@ -184,7 +379,7 @@ async function loop() {
         steps: Number(m.steps),
         guestSecs: Number(m.guestNs) / 1e9,
         mips,
-        disks: feeder.disks.map((d, i) => ({ ...m.diskStats(i), http: d.source.stats })),
+        disks: feeder.disks.map((d, i) => ({ ...m.diskStats(i), http: d.source.stats, overlay: overlays[i]?.info ?? null })),
         feeder: feeder.stats,
         jit: m.jitStats(),
         inputs: inputLog.length,
@@ -195,7 +390,7 @@ async function loop() {
     }
     if (stop === 'Idle') {
       status('il guest aspetta un ingresso');
-      await new Promise((ok) => (wake = ok));
+      if (!inbox.length && !saveRequested) await new Promise((ok) => (wake = ok));
       wake = null;
       continue;
     }
@@ -205,7 +400,7 @@ async function loop() {
       return;
     }
     // Tempo reale: il guest non corre davanti all'orologio.
-    const ahead = cfg.realtime ? Number(m.guestNs) / 1e6 - (performance.now() - t0 - paused) : 0;
+    const ahead = cfg.realtime ? guestMs() - (performance.now() - t0 - paused) : 0;
     await sleep(Math.max(0, Math.min(ahead, 50)));
   }
 }
@@ -218,6 +413,13 @@ onmessage = (e) => {
     return;
   }
   if (!m) return;
+  if (msg.type === 'save') {
+    // Non è un ingresso del guest: si salva fra due fette.
+    if (store) saveRequested = true;
+    else status('cache degli snapshot non attiva');
+    wake?.();
+    return;
+  }
   inbox.push(msg);
   wake?.();
 };

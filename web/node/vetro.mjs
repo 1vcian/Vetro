@@ -4,7 +4,7 @@
 
 import { JitEngine } from './jit-engine.mjs';
 
-export const ABI_VERSION = 5;
+export const ABI_VERSION = 6;
 /** Codici di vetro_run. */
 export const STOP = ['Budget', 'PowerOff', 'Reset', 'Idle', 'Unimplemented', 'Blocked'];
 
@@ -16,6 +16,10 @@ export const DISK = { READ_ONLY: 1 };
 export const INPUT = { KEYBOARD: 0, POINTER: 1 };
 /** Stati e motivi di chiusura di vetro_net_state (GuestSocket.state). */
 export const NET_STATE = ['Unknown', 'Connecting', 'Open', 'Closed'];
+/** Codici di vetro_snapshot_restore (0 = riuscito). */
+export const RESTORE = [null, 'BadMagic', 'Version', 'Config', 'Corrupt'];
+/** Codici di vetro_overlay_open. */
+export const OVERLAY = ['Loaded', 'New', 'Mismatch', 'Corrupt', 'NoDisk'];
 export const NET_REASON = [null, 'Normal', 'GuestReset', 'RemoteReset', 'Refused', 'Timeout'];
 
 const utf8 = new TextDecoder();
@@ -256,6 +260,100 @@ export class Machine {
     const id = this.#x.vetro_net_connect(this.#vm, port);
     if (id === 0n) throw new Error(`vetro_net_connect(${port}): rete assente o porta non valida`);
     return new GuestSocket(this.#x, this.#vm, id);
+  }
+
+  // ---- Snapshot (ABI 4, ADR 0015) ---------------------------------------
+
+  /** Versione del formato degli snapshot (da mettere nelle chiavi delle cache). */
+  get snapshotVersion() {
+    return this.#x.vetro_snapshot_version();
+  }
+
+  /**
+   * Snapshot della macchina intera, copiato fuori dalla memoria del modulo
+   * (Uint8Array). Leggere prima la console: l'uscita non ancora letta dal JS
+   * non entra.
+   */
+  snapshotSave() {
+    const x = this.#x;
+    const n = x.vetro_snapshot_save(this.#vm) >>> 0;
+    const ptr = x.vetro_snapshot_ptr(this.#vm) >>> 0;
+    const out = new Uint8Array(x.memory.buffer, ptr, n).slice();
+    x.vetro_snapshot_clear(this.#vm);
+    return out;
+  }
+
+  /**
+   * Ripristina uno snapshot su questa macchina, costruita come quella salvata
+   * (stessi dispositivi, stessi dischi aggiunti nello stesso ordine). Lancia
+   * un Error con `code` ('BadMagic', 'Version', 'Config', 'Corrupt') e il
+   * motivo; con i primi tre la macchina non è cambiata.
+   */
+  snapshotRestore(bytes) {
+    const x = this.#x;
+    const [p, n] = copyIn(x, bytes);
+    const r = x.vetro_snapshot_restore(this.#vm, p, n);
+    if (n) x.vetro_free(p, n);
+    if (r !== 0) {
+      const e = new Error(`vetro_snapshot_restore: ${RESTORE[r] ?? r}: ${this.#message()}`);
+      e.code = RESTORE[r] ?? String(r);
+      throw e;
+    }
+  }
+
+  // ---- Overlay persistente dei dischi (ABI 6, ADR 0016) -----------------
+
+  /**
+   * Apre l'overlay del disco `disk` dal contenuto del file (`bytes`, vuoto se
+   * non c'è) per l'immagine base `identity` (stringa). Restituisce
+   * { code: 'Loaded' | 'New' | 'Mismatch' | 'Corrupt' | 'NoDisk', message }.
+   * Con 'Mismatch' e 'Corrupt' l'overlay è scartato: la prossima
+   * `overlayTake` tronca il file.
+   */
+  overlayOpen(disk, identity, bytes) {
+    const x = this.#x;
+    const id = copyIn(x, toUtf8.encode(identity));
+    const data = copyIn(x, bytes);
+    const r = x.vetro_overlay_open(this.#vm, disk, ...id, ...data);
+    for (const [p, n] of [id, data]) if (n) x.vetro_free(p, n);
+    return { code: OVERLAY[r] ?? String(r), message: r >= 2 ? this.#message() : '' };
+  }
+
+  /**
+   * Scritture da fare sul file dell'overlay del disco `disk` per salvarci le
+   * scritture del guest fatte finora: { truncate: Number | null, writes:
+   * [{ at: Number, bytes: Uint8Array }] } in ordine (l'intestazione per
+   * ultima), o null se non c'è niente di nuovo.
+   */
+  overlayTake(disk) {
+    const x = this.#x;
+    const n = x.vetro_overlay_take(this.#vm, disk) >>> 0;
+    if (n === 0) return null;
+    const ptr = x.vetro_overlay_ptr(this.#vm) >>> 0;
+    const buf = new Uint8Array(x.memory.buffer, ptr, n).slice();
+    x.vetro_overlay_clear(this.#vm);
+    const v = new DataView(buf.buffer);
+    const t = v.getBigUint64(0, true);
+    const count = v.getUint32(8, true);
+    const writes = [];
+    let at = 12;
+    for (let k = 0; k < count; k++) {
+      const off = Number(v.getBigUint64(at, true));
+      const len = v.getUint32(at + 8, true);
+      writes.push({ at: off, bytes: buf.subarray(at + 12, at + 12 + len) });
+      at += 12 + len;
+    }
+    return { truncate: t === 0xffffffffffffffffn ? null : Number(t), writes };
+  }
+
+  /** Contatori dell'overlay del disco, o null senza overlay. */
+  overlayInfo(disk) {
+    const names = ['generation', 'clusters', 'slots', 'damaged', 'fileLength'];
+    const p = this.#scratch(8 * names.length);
+    const n = this.#x.vetro_overlay_info(this.#vm, disk, p, names.length);
+    if (!n) return null;
+    const v = new BigUint64Array(this.#x.memory.buffer, p, names.length);
+    return Object.fromEntries(names.map((k, i) => [k, Number(v[i])]));
   }
 
   #message() {

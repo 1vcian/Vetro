@@ -52,9 +52,12 @@
       <label><input name="jit" type="checkbox" checked> JIT</label>
       <label><input name="realtime" type="checkbox" checked> tempo reale</label>
       <label><input name="opfs" type="checkbox" checked> cache OPFS</label>
+      <label title="Le scritture del guest sui dischi restano fra una sessione e l'altra (OPFS)"><input name="persist" type="checkbox" checked> dischi persistenti</label>
+      <label title="Dal secondo avvio la macchina riparte dallo snapshot salvato in OPFS"><input name="snapshot" type="checkbox" checked> snapshot in cache</label>
       <label><input name="webgpu" type="checkbox"> WebGPU</label>
     </fieldset>
     <button type="submit">Avvia</button>
+    <button id="forget" type="button" title="Cancella da OPFS snapshot, dischi persistenti e cache dei blocchi">Cancella dati salvati</button>
   </form>
 
   <main id="machine" hidden>
@@ -66,6 +69,8 @@
       </div>
       <div id="controls">
         <button id="power" type="button" title="Tasto di accensione (GPIO 3, KEY_POWER): tieni premuto">Tasto di accensione</button>
+        <button id="save" type="button" title="Salva ora lo snapshot della macchina e i dischi (OPFS)">Salva stato</button>
+        <span id="snapinfo"></span>
         <span id="stats"></span>
       </div>
     </section>

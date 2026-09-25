@@ -36,7 +36,7 @@ Safari mobile; qualsiasi componente cloud obbligatorio.
 | M3 Modalità sistema e kernel | **completata** (CI verde, 2026-09-25) | Linux 6.18 fino alla shell con log uguale a QEMU; 95 kselftest con esiti uguali (ADR 0011) |
 | M4 JIT verso WASM | **completata** (CI verde, 2026-09-26) | test M1/M2 col JIT, parità interprete-JIT, avvio col JIT in V8 3,85 s ≤ interprete nativo 4,36 s (ADR 0012, 0013) |
 | M5 Avvio di Android | **in corso** (dispositivi, GKI fino a zygote) | home in Chrome, adb install di un APK |
-| M6 Snapshot e installazione | **in corso** (save/restore completo della macchina, ADR 0015) | home < 15 s da snapshot, APK trascinato |
+| M6 Snapshot e installazione | **in corso** (save/restore completo della macchina, ADR 0015; dischi persistenti e snapshot in cache nel browser, ADR 0016) | home < 15 s da snapshot, APK trascinato |
 | M7 Rete e timeline | — | 10 app con HTTPS in chiaro e legato all'azione, HAR riapribile |
 | M8 Binder e privacy | — | app di test: ogni accesso rilevato, identificativo esca tracciato |
 | M9 Tracciamento codice e scripting | — | hook su metodo, dex dinamico salvato, script Frida adattato |

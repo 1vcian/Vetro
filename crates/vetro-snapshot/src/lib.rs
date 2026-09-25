@@ -12,13 +12,16 @@
 //!   LZ semplice ([`lz`]);
 //! - [`encode_file`] / [`decode_file`]: intestazione (magia, versione del
 //!   formato, hash della configurazione, lunghezza, somma di controllo) e
-//!   contenuto.
+//!   contenuto;
+//! - [`overlay`]: il file dell'overlay copy-on-write persistente di un
+//!   disco (ADR 0016).
 //!
 //! Determinismo: la stessa macchina nello stesso stato dà gli stessi byte.
 //! Niente tabelle hash, niente orologi, niente puntatori nel formato.
 //! Specifica in `docs/specs/snapshot.md`.
 
 pub mod lz;
+pub mod overlay;
 
 use core::fmt;
 

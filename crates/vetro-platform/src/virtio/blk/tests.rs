@@ -411,6 +411,45 @@ fn copy_on_write_sopra_la_base() {
     assert_eq!(b, [5; 512]);
 }
 
+/// Overlay persistente (ADR 0016): i cluster scritti dal guest dall'ultima
+/// `take_dirty`, i cluster caricati da un overlay non contano come scritti,
+/// e dopo il ripristino di uno snapshot l'insieme è vuoto.
+#[test]
+fn copy_on_write_cluster_scritti_e_caricati() {
+    let base = || MemBackend::from_vec(vec![0x5A; 3 * 4096 + 1024]).read_only();
+    let mut cow = CowBackend::new(base());
+    cow.write_sectors(1, &[1; 512]).unwrap();
+    cow.write_sectors(7, &[2; 1024]).unwrap();
+    assert_eq!(cow.take_dirty(), [0, 1]);
+    assert!(cow.take_dirty().is_empty());
+    cow.write_sectors(0, &[3; 512]).unwrap();
+    assert_eq!(cow.take_dirty(), [0]);
+    let mut c0 = vec![0x5A; 4096];
+    c0[..512].fill(3);
+    c0[512..1024].fill(1);
+    c0[3584..].fill(2);
+    assert_eq!(cow.cluster(0), Some(&c0[..]));
+    assert_eq!(cow.cluster(2), None);
+
+    let mut other = CowBackend::new(base());
+    other.load_cluster(3, &[9; 1024]).unwrap();
+    assert_eq!(other.load_cluster(3, &[9; 4096]), Err(BlockError::Io), "l'ultimo cluster è corto");
+    assert_eq!(other.load_cluster(4, &[9; 4096]), Err(BlockError::OutOfRange));
+    assert!(other.take_dirty().is_empty(), "caricato, non scritto dal guest");
+    let mut s = [0u8; 512];
+    other.read_sectors(25, &mut s).unwrap();
+    assert_eq!(s, [9; 512]);
+    assert_eq!(other.clusters().map(|(c, d)| (c, d.len())).collect::<Vec<_>>(), [(3, 1024)]);
+
+    let mut w = vetro_snapshot::Writer::new();
+    cow.save_state(&mut w);
+    other.write_sectors(0, &[4; 512]).unwrap();
+    let bytes = w.into_bytes();
+    other.restore_state(&mut vetro_snapshot::Reader::new(&bytes)).unwrap();
+    assert!(other.take_dirty().is_empty(), "dopo il ripristino si confronta tutto");
+    assert_eq!(other.clusters().map(|(c, _)| c).collect::<Vec<_>>(), [0, 1]);
+}
+
 #[test]
 fn disco_cow_dietro_virtio_blk() {
     let base = MemBackend::from_vec(vec![0x5A; 8192]).read_only();

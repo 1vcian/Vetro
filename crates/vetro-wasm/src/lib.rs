@@ -15,6 +15,9 @@
 //!   virtio-blk con i dati forniti dal JS a blocchi ([`disk`]);
 //! - rete (ABI 5): connessioni TCP dal JS verso i servizi del guest
 //!   (inoltro di porte, [`net`]);
+//! - snapshot della macchina (ABI 4, ADR 0015) e overlay copy-on-write
+//!   persistente dei dischi (ABI 6, ADR 0016): le scritture del guest diventano
+//!   scritture su un file che il JS tiene in OPFS;
 //! - import dal JS: `vetro_host.panic` (messaggio di un panic prima della
 //!   trappola) e il motore JIT di [`jit`] (`vetro_jit.*`).
 //!
@@ -30,6 +33,7 @@ pub mod net;
 
 use std::alloc::Layout;
 
+use vetro_machine::vetro_snapshot::overlay::{self, Overlay, Patches};
 use vetro_machine::{Devices, Machine, MachineConfig, NetSetup, Pointer, Stop};
 use vetro_platform::virtio::input::InputEvent;
 use vetro_platform::virtio::{
@@ -47,7 +51,9 @@ use display::WebDisplay;
 /// 4: snapshot della macchina (`vetro_snapshot_*`, ADR 0015).
 /// 5: connessioni TCP dal JS verso i servizi del guest (`vetro_net_*`,
 /// inoltro di porte).
-pub const ABI_VERSION: u32 = 5;
+/// 6: overlay copy-on-write persistente dei dischi (`vetro_overlay_*`,
+/// ADR 0016).
+pub const ABI_VERSION: u32 = 6;
 
 /// Allineamento dei buffer di [`vetro_alloc`] (basta per `JitState`).
 const ALLOC_ALIGN: usize = 16;
@@ -112,6 +118,61 @@ pub struct Vm {
     disks: Vec<u32>,
     /// Ultimo snapshot di `vetro_snapshot_save`, finché JS non lo copia.
     snapshot: Vec<u8>,
+    /// Overlay persistente di ogni disco (indice dell'API), se aperto.
+    overlays: Vec<Option<DiskOverlay>>,
+    /// Ultime scritture di `vetro_overlay_take`, finché JS non le applica.
+    patches: Vec<u8>,
+}
+
+/// L'overlay persistente di un disco dal lato di Rust: dove sta ogni
+/// cluster nel file del JS.
+struct DiskOverlay {
+    file: Overlay,
+    /// Dopo un ripristino i cluster in memoria possono differire dal file:
+    /// la prossima `take` li confronta tutti invece dei soli scritti.
+    full_sync: bool,
+}
+
+/// Il livello copy-on-write di un disco, qualunque sia la base.
+trait CowLayer {
+    fn size(&self) -> u64;
+    fn take_dirty(&mut self) -> Vec<u64>;
+    fn cluster(&self, c: u64) -> Option<&[u8]>;
+    fn all(&self) -> Vec<(u64, &[u8])>;
+    fn load(&mut self, c: u64, data: &[u8]) -> bool;
+}
+
+impl<B: BlockBackend> CowLayer for CowBackend<B> {
+    fn size(&self) -> u64 {
+        BlockBackend::size(self)
+    }
+    fn take_dirty(&mut self) -> Vec<u64> {
+        CowBackend::take_dirty(self)
+    }
+    fn cluster(&self, c: u64) -> Option<&[u8]> {
+        CowBackend::cluster(self, c)
+    }
+    fn all(&self) -> Vec<(u64, &[u8])> {
+        self.clusters().collect()
+    }
+    fn load(&mut self, c: u64, data: &[u8]) -> bool {
+        self.load_cluster(c, data).is_ok()
+    }
+}
+
+/// Codici di [`vetro_overlay_open`].
+pub mod overlay_open {
+    /// Overlay letto: i suoi cluster sono nel disco.
+    pub const LOADED: u32 = 0;
+    /// File vuoto: overlay nuovo.
+    pub const NEW: u32 = 1;
+    /// Overlay di un'altra immagine base (o dimensione): scartato, il file
+    /// si riscrive da capo con la prossima `vetro_overlay_take`.
+    pub const MISMATCH: u32 = 2;
+    /// File illeggibile: scartato come sopra.
+    pub const CORRUPT: u32 = 3;
+    /// Disco sconosciuto o senza copy-on-write (sola lettura).
+    pub const NO_DISK: u32 = 4;
 }
 
 impl Vm {
@@ -129,6 +190,8 @@ impl Vm {
             unimpl: (0, 0),
             disks: Vec::new(),
             snapshot: Vec::new(),
+            overlays: Vec::new(),
+            patches: Vec::new(),
         };
         // Senza `Machine::gpu`: cambiare backend non deve far servire la GPU.
         vm.with_gpu(|g| g.set_backend(Box::new(WebDisplay::default())));
@@ -208,6 +271,80 @@ impl Vm {
             .unwrap_or(0)
     }
 
+    /// Agisce sul livello copy-on-write del disco `index`, se c'è. Senza
+    /// `Machine::device`: leggere o caricare cluster non è un ingresso che il
+    /// guest vede in un momento preciso (si carica prima dell'avvio, si legge
+    /// fra un quanto e l'altro).
+    fn with_cow<R>(&self, index: u32, f: impl FnOnce(&mut dyn CowLayer) -> R) -> Option<R> {
+        let slot = *self.disks.get(index as usize)?;
+        let mut b = self.m.board.borrow_mut();
+        let blk = b.virt.virtio_mut(slot)?.device_as_mut::<VirtioBlk>()?;
+        if blk.backend_as_mut::<CowBackend<HostDisk>>().is_some() {
+            return blk.backend_as_mut::<CowBackend<HostDisk>>().map(|c| f(c));
+        }
+        blk.backend_as_mut::<CowBackend<MemBackend>>().map(|c| f(c))
+    }
+
+    /// Apre l'overlay persistente del disco `index` dal contenuto del file
+    /// (`bytes`, vuoto se non esiste) per la base `identity`; i cluster letti
+    /// vanno nel copy-on-write. Da fare prima di eseguire il guest (e prima
+    /// di ripristinare uno snapshot). Restituisce un codice di
+    /// [`overlay_open`]; con `MISMATCH` e `CORRUPT` il motivo è nel messaggio.
+    pub fn overlay_open(&mut self, index: u32, identity: &[u8], bytes: &[u8]) -> u32 {
+        let Some(size) = self.with_cow(index, |c| c.size()) else {
+            self.message = format!("disco {index} sconosciuto o senza copy-on-write");
+            return overlay_open::NO_DISK;
+        };
+        let (file, code) = match Overlay::load(bytes, identity, size) {
+            Ok(l) => {
+                let code = if bytes.is_empty() { overlay_open::NEW } else { overlay_open::LOADED };
+                let ok = self
+                    .with_cow(index, |c| l.clusters.iter().all(|&(k, d)| c.load(k, d)))
+                    .expect("disco appena trovato");
+                debug_assert!(ok, "cluster dell'overlay controllati da Overlay::load");
+                (l.overlay, code)
+            }
+            Err(e) => {
+                self.message = e.to_string();
+                let code = match e {
+                    overlay::LoadError::Mismatch(_) => overlay_open::MISMATCH,
+                    overlay::LoadError::Corrupt(_) => overlay_open::CORRUPT,
+                };
+                (Overlay::new(identity, size), code)
+            }
+        };
+        let i = index as usize;
+        if self.overlays.len() <= i {
+            self.overlays.resize_with(i + 1, || None);
+        }
+        self.overlays[i] = Some(DiskOverlay { file, full_sync: false });
+        code
+    }
+
+    /// Le scritture da fare sul file dell'overlay del disco `index` perché
+    /// contenga i cluster scritti finora (vuote se non c'è niente di nuovo).
+    pub fn overlay_take(&mut self, index: u32) -> Option<Patches> {
+        let mut ov = self.overlays.get_mut(index as usize)?.take()?;
+        let p = self.with_cow(index, |c| {
+            if core::mem::take(&mut ov.full_sync) {
+                c.take_dirty();
+                ov.file.sync(c.all())
+            } else {
+                let dirty = c.take_dirty();
+                ov.file.update(dirty.into_iter().map(|k| (k, c.cluster(k))))
+            }
+        });
+        self.overlays[index as usize] = Some(ov);
+        p
+    }
+
+    /// (generazione, cluster, slot, slot rovinati, lunghezza del file)
+    /// dell'overlay del disco `index`.
+    pub fn overlay_info(&self, index: u32) -> Option<[u64; 5]> {
+        let o = &self.overlays.get(index as usize)?.as_ref()?.file;
+        Some([o.generation(), o.clusters() as u64, o.slots(), o.damaged(), o.file_len()])
+    }
+
     pub fn machine(&mut self) -> &mut Machine {
         &mut self.m
     }
@@ -267,6 +404,11 @@ impl Vm {
         self.m.load_state(bytes)?;
         self.out.clear();
         self.out_pos = 0;
+        // I cluster ripristinati sono quelli dello snapshot: il file
+        // dell'overlay si confronta per intero alla prossima `take`.
+        for o in self.overlays.iter_mut().flatten() {
+            o.full_sync = true;
+        }
         Ok(())
     }
 
@@ -946,6 +1088,79 @@ pub unsafe extern "C" fn vetro_snapshot_restore(vm: *mut Vm, data: *const u8, le
     }
 }
 
+// ---- Overlay persistente dei dischi (ABI 6, ADR 0016) ----------------------
+
+/// Apre l'overlay persistente del disco `disk` (aggiunto con
+/// [`vetro_disk_add`] o [`vetro_disk_add_mem`] senza sola lettura): `data`
+/// è il contenuto del file salvato (lunghezza 0 se non c'è ancora),
+/// `identity` la stringa che identifica l'immagine base (URL, dimensione,
+/// ETag). I cluster letti entrano nel copy-on-write del disco. Da chiamare
+/// prima di [`vetro_run`] e prima di [`vetro_snapshot_restore`]. Codici di
+/// [`overlay_open`]; motivo di `MISMATCH`/`CORRUPT`/`NO_DISK` nel messaggio.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_overlay_open(
+    vm: *mut Vm,
+    disk: u32,
+    identity: *const u8,
+    identity_len: usize,
+    data: *const u8,
+    data_len: usize,
+) -> u32 {
+    // SAFETY: `vm` viene da `vetro_machine_new`, i buffer valgono per le
+    // lunghezze date.
+    let vm = unsafe { &mut *vm };
+    let (identity, data) = unsafe { (bytes(identity, identity_len), bytes(data, data_len)) };
+    vm.overlay_open(disk, identity, data)
+}
+
+/// Prepara le scritture da fare sul file dell'overlay del disco `disk`
+/// perché contenga le scritture del guest fatte finora, e ne restituisce la
+/// lunghezza (0 = niente da scrivere, o disco senza overlay). I byte, in
+/// [`vetro_overlay_ptr`]: u64 lunghezza a cui troncare il file prima
+/// (`u64::MAX` = non troncare), u32 numero di scritture, poi per ognuna u64
+/// offset, u32 lunghezza e i byte (little endian). Vanno applicate in
+/// ordine: l'intestazione del file è l'ultima.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_overlay_take(vm: *mut Vm, disk: u32) -> usize {
+    // SAFETY: `vm` viene da `vetro_machine_new`.
+    let vm = unsafe { &mut *vm };
+    vm.patches = vm.overlay_take(disk).filter(|p| !p.is_empty()).map(|p| p.encode()).unwrap_or_default();
+    vm.patches.len()
+}
+
+/// I byte dell'ultima [`vetro_overlay_take`] (nullo se vuota), validi fino
+/// alla prossima `vetro_overlay_take`, a [`vetro_overlay_clear`] o alla
+/// distruzione della macchina.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_overlay_ptr(vm: *const Vm) -> *const u8 {
+    // SAFETY: `vm` viene da `vetro_machine_new`.
+    let vm = unsafe { &*vm };
+    if vm.patches.is_empty() { core::ptr::null() } else { vm.patches.as_ptr() }
+}
+
+/// Libera il buffer dell'ultima [`vetro_overlay_take`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_overlay_clear(vm: *mut Vm) {
+    // SAFETY: `vm` viene da `vetro_machine_new`.
+    unsafe { &mut *vm }.patches = Vec::new();
+}
+
+/// Contatori dell'overlay del disco `disk` in `out` (al più `cap`):
+/// generazione, cluster nel file, slot nel file, slot rovinati trovati
+/// all'apertura, lunghezza del file dopo le scritture date. Restituisce
+/// quanti valori (0 = disco senza overlay).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_overlay_info(vm: *const Vm, disk: u32, out: *mut u64, cap: usize) -> usize {
+    // SAFETY: `vm` viene da `vetro_machine_new`, `out` vale per `cap` valori.
+    let vm = unsafe { &*vm };
+    let Some(v) = vm.overlay_info(disk) else { return 0 };
+    let n = v.len().min(cap);
+    if n > 0 {
+        unsafe { core::slice::from_raw_parts_mut(out, n) }.copy_from_slice(&v[..n]);
+    }
+    n
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1137,6 +1352,137 @@ mod tests {
             assert_eq!(vetro_snapshot_restore(c, bad.as_ptr(), bad.len()), restore::CORRUPT);
             assert_eq!(vetro_snapshot_version(), vetro_machine::vetro_snapshot::FORMAT_VERSION);
             for vm in [a, b, c, d] {
+                vetro_machine_free(vm);
+            }
+        }
+    }
+
+    /// Le scritture di `vetro_overlay_take` applicate a un file in memoria,
+    /// come fa il JS.
+    fn take_into(vm: *mut Vm, disk: u32, file: &mut Vec<u8>) -> bool {
+        let n = unsafe { vetro_overlay_take(vm, disk) };
+        if n == 0 {
+            return false;
+        }
+        let buf = unsafe { bytes(vetro_overlay_ptr(vm), n) };
+        let trunc = u64::from_le_bytes(buf[..8].try_into().unwrap());
+        if trunc != u64::MAX {
+            file.truncate(trunc as usize);
+        }
+        let count = u32::from_le_bytes(buf[8..12].try_into().unwrap());
+        let mut at = 12;
+        for _ in 0..count {
+            let off = u64::from_le_bytes(buf[at..at + 8].try_into().unwrap()) as usize;
+            let len = u32::from_le_bytes(buf[at + 8..at + 12].try_into().unwrap()) as usize;
+            let data = &buf[at + 12..at + 12 + len];
+            if file.len() < off + len {
+                file.resize(off + len, 0);
+            }
+            file[off..off + len].copy_from_slice(data);
+            at += 12 + len;
+        }
+        assert_eq!(at, n);
+        true
+    }
+
+    fn write_disk(vm: *mut Vm, sector: u64, data: &[u8]) {
+        let slot = unsafe { &*vm }.disks[0];
+        unsafe { &mut *vm }
+            .m
+            .device::<VirtioBlk, _>(Some(slot), |b| b.backend_mut().write_sectors(sector, data))
+            .unwrap()
+            .unwrap();
+    }
+
+    fn read_disk(vm: *mut Vm, sector: u64, n: usize) -> Vec<u8> {
+        let slot = unsafe { &*vm }.disks[0];
+        let mut buf = vec![0u8; n];
+        unsafe { &mut *vm }
+            .m
+            .device::<VirtioBlk, _>(Some(slot), |b| b.backend_mut().read_sectors(sector, &mut buf))
+            .unwrap()
+            .unwrap();
+        buf
+    }
+
+    fn info(vm: *mut Vm) -> [u64; 5] {
+        let mut v = [0u64; 5];
+        assert_eq!(unsafe { vetro_overlay_info(vm, 0, v.as_mut_ptr(), 5) }, 5);
+        v
+    }
+
+    /// Overlay persistente dall'API C (ABI 6): le scritture del guest vanno
+    /// nel file di una sessione e tornano nella successiva; un overlay di
+    /// un'altra base si scarta (file riscritto da capo); dopo il ripristino
+    /// di uno snapshot il file si riallinea ai cluster dello snapshot.
+    #[test]
+    fn overlay_persistente_dall_api() {
+        let base: Vec<u8> = (0..64 * 1024u32).map(|i| (i * 7) as u8).collect();
+        let id = b"http://x/disco.img|65536|\"e1\"";
+        let new = |file: &[u8], identity: &[u8]| {
+            let vm = vetro_machine_new_with(64 << 20, 0, 0, 0, 0, 0);
+            assert_eq!(unsafe { vetro_disk_add_mem(vm, base.as_ptr(), base.len(), 0) }, 0);
+            let code = unsafe {
+                vetro_overlay_open(vm, 0, identity.as_ptr(), identity.len(), file.as_ptr(), file.len())
+            };
+            (vm, code)
+        };
+        let mut file = Vec::new();
+        let (a, code) = new(&file, id);
+        assert_eq!(code, overlay_open::NEW);
+        assert!(take_into(a, 0, &mut file), "file nuovo: si scrive l'intestazione");
+        assert_eq!(info(a)[..3], [1, 0, 0]);
+        assert!(!take_into(a, 0, &mut file), "niente di nuovo");
+        write_disk(a, 9, &[0xab; 512]);
+        write_disk(a, 40, &[0xcd; 1024]);
+        assert!(take_into(a, 0, &mut file));
+        assert_eq!(info(a)[..3], [2, 2, 2]);
+        let snap = unsafe { (&*a).save_state() };
+        write_disk(a, 9, &[0x11; 512]);
+        assert!(take_into(a, 0, &mut file));
+        assert_eq!(info(a)[..3], [3, 2, 2], "riscritto sul posto");
+
+        // Sessione dopo: i cluster tornano dal file.
+        let (b, code) = new(&file, id);
+        assert_eq!(code, overlay_open::LOADED);
+        assert_eq!(read_disk(b, 9, 512), [0x11; 512]);
+        assert_eq!(read_disk(b, 40, 1024), [0xcd; 1024]);
+        assert_eq!(read_disk(b, 0, 512), base[..512]);
+        assert!(!take_into(b, 0, &mut file), "caricati, non scritti dal guest");
+        assert_eq!(info(b)[0], 3);
+
+        // Snapshot preso prima dell'ultima scrittura: il disco torna quello
+        // dello snapshot e il file si riallinea (un cluster riscritto).
+        assert_eq!(unsafe { vetro_snapshot_restore(b, snap.as_ptr(), snap.len()) }, restore::OK);
+        assert_eq!(read_disk(b, 9, 512), [0xab; 512]);
+        assert!(take_into(b, 0, &mut file));
+        assert_eq!(info(b)[..3], [4, 2, 2]);
+        assert!(!take_into(b, 0, &mut file));
+        let (c, _) = new(&file, id);
+        assert_eq!(read_disk(c, 9, 512), [0xab; 512]);
+
+        // Altra base: scartato, il disco è quello della base, il file si
+        // riscrive da capo.
+        let (d, code) = new(&file, b"http://x/disco.img|65536|\"e2\"");
+        assert_eq!(code, overlay_open::MISMATCH);
+        assert!(message(d).contains("altra immagine base"), "{}", message(d));
+        assert_eq!(read_disk(d, 9, 512), base[9 * 512..10 * 512]);
+        assert!(take_into(d, 0, &mut file));
+        assert_eq!(file.len() as u64, overlay::HEADER_LEN);
+        let (e, code) = new(b"rovinato", id);
+        assert_eq!(code, overlay_open::CORRUPT);
+        let ro = vetro_machine_new_with(64 << 20, 0, 0, 0, 0, 0);
+        unsafe {
+            assert_eq!(vetro_disk_add_mem(ro, base.as_ptr(), base.len(), disk_flags::READ_ONLY), 0);
+            assert_eq!(
+                vetro_overlay_open(ro, 0, id.as_ptr(), id.len(), core::ptr::null(), 0),
+                overlay_open::NO_DISK
+            );
+            assert_eq!(vetro_overlay_take(ro, 0), 0);
+            assert_eq!(vetro_overlay_info(ro, 0, [0u64; 5].as_mut_ptr(), 5), 0);
+            vetro_overlay_clear(a);
+            assert!(vetro_overlay_ptr(a).is_null());
+            for vm in [a, b, c, d, e, ro] {
                 vetro_machine_free(vm);
             }
         }
