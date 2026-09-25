@@ -81,8 +81,8 @@ done only when that command passes in CI.
 | M1 | AArch64 CPU interpreter | per-instruction suite; ≥200 random programs match `qemu-aarch64` | ✅ done |
 | M2 | Linux user-mode syscalls | LTP subset, static BusyBox runs | ✅ done |
 | M3 | System mode, kernel boot | kernel + initramfs reaches a shell; kselftest subset | ✅ done |
-| M4 | JIT to WebAssembly | M1/M2 tests pass with JIT; interpreter/JIT parity | 🚧 next |
-| M5 | Android boots | home screen in Chrome; `adb install` of an APK works | — |
+| M4 | JIT to WebAssembly | M1/M2 tests pass with JIT; interpreter/JIT parity | ✅ done |
+| M5 | Android boots | home screen in Chrome; `adb install` of an APK works | 🚧 next |
 | M6 | Snapshots and install | home in < 15 s from snapshot; drag-and-drop APK | — |
 | M7 | Network analysis and timeline | HTTPS in clear text, linked to user actions; HAR export | — |
 | M8 | Binder and privacy | every sensitive access reported; decoy data tracked to the network | — |
@@ -108,7 +108,15 @@ outcomes as under QEMU. Everything is deterministic: guest time is the
 instruction count, so a boot is exactly 98,439,742 instructions, about 2 s on
 an M2.
 
-Next is M4, a JIT to WebAssembly.
+A block JIT translates guest code to WebAssembly. In V8 it boots the
+kernel faster than the native interpreter (3.9 s against 4.4 s on the CI
+runner), with an identical log and instruction count. Every test runs with
+both the interpreter and the JIT, and the two must agree (ADR 0012, 0013).
+
+Next is M5, Android. So far:
+- the virtio display, input and vsock devices are in place;
+- Android 15's GKI kernel and userspace reach zygote under Vetro exactly as
+  under QEMU.
 
 Detailed plan and progress log (Italian): [`docs/PLAN.md`](docs/PLAN.md),
 [`docs/progress/`](docs/progress/), architecture decisions in
