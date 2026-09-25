@@ -904,3 +904,222 @@ fn adattatore_mmu_spenta() {
     assert_eq!(err.addr, 1 << 40);
     assert_eq!(e.mmu.last_fault().unwrap().kind, FaultKind::AddressSize(0));
 }
+
+// --- Cache delle traduzioni recenti (`translate_pa`) ---
+
+impl Env {
+    fn fast(&mut self, va: u64, access: Access, el: u8, aligned: bool) -> Result<u64, Fault> {
+        self.mmu.translate_pa(&mut self.ram, va, access, el, aligned)
+    }
+}
+
+#[test]
+fn cache_recente_segue_tlbi_ttbr_e_asid() {
+    const VA: u64 = 0x40_0000_5000;
+    let mut e = Env::new();
+    let desc = e.map(VA, 0x20_a000, 3, NORMAL | AP_RW_EL1 | NG);
+    assert_eq!(e.fast(VA + 8, Access::Read, 1, true), Ok(0x20_a008));
+    assert_eq!(e.fast(VA + 16, Access::Read, 1, true), Ok(0x20_a010));
+    assert_eq!(e.mmu.recent_hits, 1);
+    // Descrittore cambiato senza TLBI: resta la voce del TLB.
+    e.wr(desc, 0x20_b000 | NORMAL | AP_RW_EL1 | NG | PAGE);
+    assert_eq!(e.fast(VA, Access::Read, 1, true), Ok(0x20_a000));
+    // TLBI VAE1 con l'ASID giusto: si rilegge la tabella.
+    e.mmu.tlbi(TlbiOp::Vae1, tlbi_xt(VA, 0));
+    assert_eq!(e.fast(VA, Access::Read, 1, true), Ok(0x20_b000));
+    // Nuovo ASID in TTBR0: la voce non globale dell'ASID 0 non vale più.
+    let root = e.root0;
+    e.wr(desc, 0x20_c000 | NORMAL | AP_RW_EL1 | NG | PAGE);
+    e.mmu.regs.ttbr0 = root | 1 << 48;
+    assert_eq!(e.fast(VA, Access::Read, 1, true), Ok(0x20_c000));
+    // Un'altra tabella con lo stesso ASID: con una voce globale nel TLB
+    // vale ancora la vecchia traduzione, dopo VMALLE1 la nuova.
+    let other = e.alloc();
+    e.root0 = other;
+    e.map(VA, 0x20_d000, 3, NORMAL | AP_RW_EL1);
+    e.root0 = root;
+    e.wr(desc, 0x20_e000 | NORMAL | AP_RW_EL1 | PAGE);
+    e.mmu.tlb_mut().flush_all();
+    assert_eq!(e.fast(VA, Access::Read, 1, true), Ok(0x20_e000));
+    e.mmu.regs.ttbr0 = other | 1 << 48;
+    assert_eq!(e.fast(VA, Access::Read, 1, true), Ok(0x20_e000), "voce globale nel TLB");
+    e.mmu.tlbi(TlbiOp::Vmalle1, 0);
+    assert_eq!(e.fast(VA, Access::Read, 1, true), Ok(0x20_d000));
+}
+
+#[test]
+fn cache_recente_rispetta_permessi_device_e_mair() {
+    const VA: u64 = 0x40_0000_7000;
+    const DEV: u64 = 0x40_0000_8000;
+    let mut e = Env::new();
+    e.map(VA, 0x30_0000, 3, NORMAL | AP_RW_EL1 | UXN);
+    assert_eq!(e.fast(VA, Access::Read, 1, true), Ok(0x30_0000));
+    // Stessa pagina, altro livello o altro accesso: il fault è quello del
+    // percorso completo.
+    assert_eq!(e.fast(VA, Access::Read, 0, true).unwrap_err().kind, FaultKind::Permission(3));
+    assert_eq!(e.fast(VA, Access::Fetch, 0, true).unwrap_err().kind, FaultKind::Permission(3));
+    assert_eq!(e.fast(VA, Access::Fetch, 1, true), Ok(0x30_0000));
+    // WXN: la pagina scrivibile non è più eseguibile.
+    e.mmu.regs.sctlr |= sctlr::WXN;
+    assert_eq!(e.fast(VA, Access::Fetch, 1, true).unwrap_err().kind, FaultKind::Permission(3));
+    e.mmu.regs.sctlr &= !sctlr::WXN;
+    // Device: disallineato fa fault anche dopo un accesso allineato.
+    e.map(DEV, 0x30_1000, 3, DEVICE | AP_RW_EL1 | UXN | PXN);
+    assert_eq!(e.fast(DEV, Access::Read, 1, true), Ok(0x30_1000));
+    assert_eq!(e.fast(DEV + 2, Access::Read, 1, false).unwrap_err().kind, FaultKind::Alignment);
+    // MAIR cambiato: la pagina Normal diventa Device.
+    assert_eq!(e.fast(VA + 1, Access::Read, 1, false), Ok(0x30_0001));
+    e.mmu.regs.mair = MAIR & !0xff00;
+    assert_eq!(e.fast(VA + 1, Access::Read, 1, false).unwrap_err().kind, FaultKind::Alignment);
+    // MMU spenta: identità.
+    e.mmu.regs.sctlr = 0;
+    assert_eq!(e.fast(VA, Access::Read, 1, true), Ok(VA));
+}
+
+#[test]
+fn cache_recente_dopo_lo_sfratto_dal_tlb() {
+    // Due pagine sullo stesso slot del TLB (distanza 2 MiB): la seconda
+    // sfratta la prima, che poi si rilegge dalla tabella cambiata.
+    const A: u64 = 0x40_0000_3000;
+    const B: u64 = A + (512 << 12);
+    let mut e = Env::new();
+    let da = e.map(A, 0x21_0000, 3, NORMAL | AP_RW_EL1);
+    e.map(B, 0x22_0000, 3, NORMAL | AP_RW_EL1);
+    assert_eq!(e.fast(A, Access::Read, 1, true), Ok(0x21_0000));
+    e.wr(da, 0x23_0000 | NORMAL | AP_RW_EL1 | PAGE);
+    assert_eq!(e.fast(A, Access::Read, 1, true), Ok(0x21_0000), "ancora nel TLB");
+    assert_eq!(e.fast(B, Access::Read, 1, true), Ok(0x22_0000));
+    assert_eq!(e.fast(A, Access::Read, 1, true), Ok(0x23_0000), "sfrattata: nuovo walk");
+}
+
+/// Generatore deterministico (xorshift64).
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+
+    fn pick<T: Copy>(&mut self, v: &[T]) -> T {
+        v[self.below(v.len() as u64) as usize]
+    }
+}
+
+#[test]
+fn cache_recente_equivale_al_percorso_completo() {
+    let mut hits = 0;
+    for seed in [0x5645_5452_4f4d_4d55, 1, 0xdead_beef, 0x0123_4567_89ab_cdef] {
+        hits += equivalenza_con_seme(seed, 30_000);
+    }
+    assert!(hits > 5_000, "la cache recente non è stata usata: {hits} colpi");
+}
+
+/// Due MMU sulla stessa memoria e con le stesse operazioni: una traduce con
+/// `translate_pa` (cache recente), l'altra con `translate_checked`. Risultati
+/// e TLB devono coincidere passo per passo, anche quando le tabelle cambiano
+/// senza TLBI. Restituisce i colpi della cache.
+fn equivalenza_con_seme(seed: u64, steps: usize) -> u64 {
+    const LOW: u64 = 0x40_0000_0000;
+    const BLOCK: u64 = LOW + 0x40_0000;
+    const HIGH: u64 = 0xffff_8000_0000_0000;
+    let mut e = Env::new();
+    let root_a = e.root0;
+    let root_b = e.alloc();
+    let mut pages: Vec<u64> = (0..6).map(|i| LOW + i * 0x1000).collect();
+    // Stessi slot del TLB delle prime tre (2 MiB più avanti).
+    pages.extend((0..3).map(|i| LOW + 0x20_0000 + i * 0x1000));
+    pages.extend((0..3).map(|i| HIGH + i * 0x1000));
+    let attrs = [
+        NORMAL | AP_RW_ALL,
+        NORMAL | AP_RW_EL1 | UXN,
+        NORMAL | AP_RO_ALL | PXN,
+        NORMAL | AP_RO_EL1 | NG,
+        NORMAL | AP_RW_ALL | NG | UXN | PXN,
+        DEVICE | AP_RW_EL1 | UXN | PXN,
+        NORMAL & !AF | AP_RW_EL1,
+    ];
+    let mut slots = Vec::new();
+    for (i, &va) in pages.iter().enumerate() {
+        slots.push(e.map(va, 0x20_0000 + (i as u64) * 0x1000, 3, attrs[i % attrs.len()]));
+        e.root0 = root_b;
+        e.map(va, 0x28_0000 + (i as u64) * 0x1000, 3, attrs[(i + 3) % attrs.len()]);
+        e.root0 = root_a;
+    }
+    let block_desc = e.map(BLOCK, 0x4000_0000, 2, NORMAL | AP_RW_ALL);
+    let mut vas = pages.clone();
+    vas.extend([BLOCK, BLOCK + 0x1000, BLOCK + 0x1f_f000, LOW + 0x100_0000]);
+
+    let mut slow = e.mmu.clone();
+    let mut rng = Rng(seed);
+    let accesses = [Access::Read, Access::Read, Access::Read, Access::Write, Access::Fetch];
+    for step in 0..steps {
+        match rng.below(100) {
+            0..=95 => {
+                let mut va = rng.pick(&vas) + rng.below(0x1000);
+                if rng.below(8) == 0 && va >> 55 & 1 == 0 {
+                    va |= 0x5a << 56; // tag: vale solo con TBI0
+                }
+                let access = rng.pick(&accesses);
+                let el = u8::from(rng.below(4) != 0);
+                let aligned = rng.below(8) != 0;
+                let got = if rng.below(2) == 0 {
+                    e.fast(va, access, el, aligned)
+                } else {
+                    let regs = e.mmu.regs;
+                    e.mmu.translate_pa_with(&regs, &mut e.ram, va, access, el, aligned)
+                };
+                let want = slow.translate_checked(&mut e.ram, va, access, el, aligned).map(|t| t.pa);
+                assert_eq!(
+                    got, want,
+                    "seme {seed:#x} passo {step}: {va:#x} {access:?} EL{el} allineato {aligned}"
+                );
+            }
+            96..=97 => {
+                // Descrittore cambiato senza TLBI (o reso non valido).
+                let k = rng.below(slots.len() as u64) as usize;
+                let d = if rng.below(6) == 0 {
+                    0
+                } else {
+                    (0x20_0000 + rng.below(32) * 0x1000) | rng.pick(&attrs) | PAGE
+                };
+                e.wr(slots[k], d);
+                if rng.below(4) == 0 {
+                    let pa = 0x4000_0000 + rng.below(4) * 0x20_0000;
+                    e.wr(block_desc, pa | rng.pick(&attrs) | 0b01);
+                }
+            }
+            98 => {
+                use TlbiOp::*;
+                let op = rng.pick(&[Vmalle1, Vae1, Aside1, Vaae1, Vale1, Vaale1, Vae1is, Aside1is]);
+                let xt = tlbi_xt(rng.pick(&vas), rng.pick(&[0, 1, 0x101]));
+                e.mmu.tlbi(op, xt);
+                slow.tlbi(op, xt);
+            }
+            _ => {
+                let mut r = e.mmu.regs;
+                match rng.below(6) {
+                    0 => r.ttbr0 = rng.pick(&[root_a, root_b]) | rng.pick(&[0u64, 1, 0x101]) << 48,
+                    1 => r.ttbr1 = (r.ttbr1 & ((1 << 48) - 1)) | rng.pick(&[0u64, 1, 0x101]) << 48,
+                    2 => r.tcr ^= rng.pick(&[tcr::TBI0, tcr::TBI1, tcr::AS, tcr::A1]),
+                    3 => r.mair ^= 0xfb << 8, // AttrIndx 1: 0xff Normal ↔ 0x04 Device
+                    4 => r.sctlr ^= rng.pick(&[sctlr::M, sctlr::WXN, sctlr::WXN]),
+                    _ => {
+                        e.mmu.tlb_mut().flush_all();
+                        slow.tlb_mut().flush_all();
+                    }
+                }
+                e.mmu.regs = r;
+                slow.regs = r;
+            }
+        }
+        assert_eq!(e.mmu.tlb().len(), slow.tlb().len(), "seme {seed:#x} passo {step}: TLB diversi");
+    }
+    e.mmu.recent_hits
+}

@@ -60,6 +60,17 @@ pub(crate) enum Granule {
 }
 
 impl MmuRegs {
+    /// Uguaglianza senza salti (si controlla a ogni accesso).
+    #[inline]
+    pub(crate) fn same(&self, o: &MmuRegs) -> bool {
+        (self.sctlr ^ o.sctlr)
+            | (self.tcr ^ o.tcr)
+            | (self.ttbr0 ^ o.ttbr0)
+            | (self.ttbr1 ^ o.ttbr1)
+            | (self.mair ^ o.mair)
+            == 0
+    }
+
     /// SCTLR_EL1.M.
     pub fn enabled(&self) -> bool {
         self.sctlr & sctlr::M != 0

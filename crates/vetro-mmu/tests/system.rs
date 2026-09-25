@@ -381,3 +381,159 @@ fn granulo_64k_e_limite_di_vetro() {
     assert!(matches!(ev, SysEvent::Unimplemented { raw: 0, .. }), "{ev:?}");
     assert_eq!((m.cpu.pc, m.cpu.sys.el), (KCODE, 1), "stato invariato");
 }
+
+// --- Cache delle traduzioni recenti (fetch e dati) ---
+//
+// La MMU tiene una scorciatoia per le traduzioni recenti
+// (`Mmu::translate_pa`), usata anche per ogni fetch. Questi programmi
+// verificano che il codice eseguito resti quello della memoria e della
+// mappatura correnti.
+
+/// Pagina di codice chiamata con BLR e le due pagine fisiche che le si
+/// possono mappare sotto.
+const XCODE: u64 = 0x4000_9000;
+const CODE_A: u64 = 0x4000_a000;
+const CODE_B: u64 = 0x4000_b000;
+/// Tabelle alternative per il cambio di TTBR0.
+const L1B: u64 = 0x4001_3000;
+const L2B: u64 = 0x4001_4000;
+const L3B: u64 = 0x4001_5000;
+const NG: u64 = 1 << 11;
+
+const RET_1: &[u32] = &[
+    0xd2800020, // mov x0, #0x1
+    0xd65f03c0, // ret
+];
+const RET_2: &[u32] = &[
+    0xd2800040, // mov x0, #0x2
+    0xd65f03c0, // ret
+];
+
+#[test]
+fn codice_automodificante_su_una_pagina_gia_eseguita() {
+    let mut m = Machine::new();
+    m.mmu_on();
+    m.ram.put(
+        KCODE,
+        &[
+            0xd2800000, // mov x0, #0x0
+            0x94000008, // bl 0x24 <.text+0x24>
+            0xaa0003e5, // mov x5, x0
+            0xb9000041, // str w1, [x2]
+            0xd5033b9f, // dsb ish
+            0xd5033fdf, // isb
+            0x94000003, // bl 0x24 <.text+0x24>
+            0xaa0003e6, // mov x6, x0
+            0xd4000002, // hvc #0
+            0xd2800020, // mov x0, #0x1
+            0xd65f03c0, // ret
+        ],
+    );
+    m.cpu.x[1] = 0xd2800040; // mov x0, #0x2
+    m.cpu.x[2] = KCODE + 9 * 4;
+    assert_eq!(m.run_until_event(100), SysEvent::Hvc(0));
+    assert_eq!((m.cpu.x[5], m.cpu.x[6]), (1, 2), "la seconda chiamata esegue la parola nuova");
+}
+
+#[test]
+fn codice_rimappato_visibile_dopo_la_tlbi() {
+    let mut m = Machine::new();
+    m.mmu_on();
+    m.map(L3, L3, NORMAL | AP_RW_EL1 | UXN | PXN);
+    m.map(XCODE, CODE_A, NORMAL | AP_RW_EL1 | UXN);
+    m.ram.put(CODE_A, RET_1);
+    m.ram.put(CODE_B, RET_2);
+    m.ram.put(
+        KCODE,
+        &[
+            0xd2800000, // mov x0, #0x0
+            0xd63f0120, // blr x9
+            0xaa0003e5, // mov x5, x0
+            0xf9000064, // str x4, [x3]
+            0xd5033b9f, // dsb ish
+            0xd5033fdf, // isb
+            0xd63f0120, // blr x9
+            0xaa0003e6, // mov x6, x0
+            0xd5088727, // tlbi vae1, x7
+            0xd5033b9f, // dsb ish
+            0xd5033fdf, // isb
+            0xd63f0120, // blr x9
+            0xaa0003eb, // mov x11, x0
+            0xd4000002, // hvc #0
+        ],
+    );
+    m.cpu.x[9] = XCODE;
+    m.cpu.x[3] = L3 + ((XCODE >> 12) & 511) * 8;
+    m.cpu.x[4] = CODE_B | NORMAL | AP_RW_EL1 | UXN | PAGE;
+    m.cpu.x[7] = XCODE >> 12;
+    assert_eq!(m.run_until_event(100), SysEvent::Hvc(0));
+    // Senza TLBI resta la voce del TLB (come senza la cache), dopo la TLBI
+    // si esegue la pagina nuova.
+    assert_eq!((m.cpu.x[5], m.cpu.x[6], m.cpu.x[11]), (1, 1, 2));
+}
+
+#[test]
+fn cambio_di_ttbr0_e_asid_per_il_codice() {
+    let mut m = Machine::new();
+    m.mmu_on();
+    // Pagina non globale: vale solo per l'ASID con cui è stata letta.
+    m.map(XCODE, CODE_A, NORMAL | AP_RW_EL1 | UXN | NG);
+    m.ram.put(CODE_A, RET_1);
+    m.ram.put(CODE_B, RET_2);
+    // Seconda serie di tabelle: uguale, ma XCODE va a CODE_B.
+    m.ram.wr(L1B + 8, L2B | TABLE);
+    m.ram.wr(L2B, L3B | TABLE);
+    for i in 0..512 {
+        let d = m.ram.rd(L3 + i * 8);
+        m.ram.wr(L3B + i * 8, d);
+    }
+    m.ram.wr(L3B + ((XCODE >> 12) & 511) * 8, CODE_B | NORMAL | AP_RW_EL1 | UXN | NG | PAGE);
+    m.ram.put(
+        KCODE,
+        &[
+            0xd2800000, // mov x0, #0x0
+            0xd63f0120, // blr x9
+            0xaa0003e5, // mov x5, x0
+            0xd5182008, // msr TTBR0_EL1, x8
+            0xd5033fdf, // isb
+            0xd63f0120, // blr x9
+            0xaa0003e6, // mov x6, x0
+            0xd518200c, // msr TTBR0_EL1, x12
+            0xd5033fdf, // isb
+            0xd63f0120, // blr x9
+            0xaa0003eb, // mov x11, x0
+            0xd4000002, // hvc #0
+        ],
+    );
+    m.cpu.x[9] = XCODE;
+    m.cpu.x[8] = L1B | 1 << 48; // ASID 1
+    m.cpu.x[12] = L1; // di nuovo ASID 0
+    assert_eq!(m.run_until_event(100), SysEvent::Hvc(0));
+    assert_eq!((m.cpu.x[5], m.cpu.x[6], m.cpu.x[11]), (1, 2, 1));
+}
+
+#[test]
+fn fetch_da_el0_su_una_pagina_eseguita_a_el1() {
+    // La pagina del kernel è eseguibile solo a EL1 (UXN): dopo averla
+    // eseguita a EL1, un ERET a EL0 dentro la stessa pagina dà un
+    // Instruction Abort (permesso, livello 3).
+    let mut m = Machine::new();
+    m.mmu_on();
+    m.cpu.sys.vbar_el1 = VECTORS;
+    m.ram.put(
+        KCODE,
+        &[
+            0xd5184021, // msr ELR_EL1, x1
+            0xd518401f, // msr SPSR_EL1, xzr
+            0xd69f03e0, // eret
+        ],
+    );
+    m.cpu.x[1] = KCODE + 0x40;
+    for _ in 0..3 {
+        assert_eq!(m.step(), SysEvent::Executed);
+    }
+    assert_eq!((m.cpu.pc, m.cpu.sys.el), (KCODE + 0x40, 0));
+    let ev = m.step();
+    assert_eq!(ev, SysEvent::Exception { kind: ExceptionKind::Sync, esr: 0x8200_000f, from_el: 0 });
+    assert_eq!(m.cpu.sys.far_el1, KCODE + 0x40);
+}
