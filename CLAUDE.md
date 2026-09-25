@@ -17,7 +17,8 @@ diario di lavoro in `docs/progress/`. Leggili a inizio sessione.
 
 ## Regola d'oro
 
-Nessuna milestone è completa finché il suo comando di uscita non passa in CI.
+Nessuna milestone è completa finché il suo comando di uscita non passa in CI
+(in un giro completo: notturno o con `[ci full]` nel commit, ADR 0025).
 Non dichiarare fatto ciò che un test non conferma. Un test saltato (`SKIP`) non
 è un test passato. Se un test è rosso, si lavora finché diventa verde o finché
 se ne capisce il motivo, scritto in `docs/progress/`.

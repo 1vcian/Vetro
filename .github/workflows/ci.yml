@@ -3,6 +3,10 @@ name: ci
 on:
   push:
   pull_request:
+  # Giro completo ogni notte (tutti i job, kselftest compresi) e a mano.
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -10,7 +14,33 @@ env:
   VETRO_REQUIRE_ORACLE: "1"
 
 jobs:
+  # Quali job servono (ADR 0025): si guarda cosa cambia rispetto al commit
+  # precedente (push) o alla base (PR). Tutto gira comunque di notte, a mano,
+  # su un push che crea il branch, o con "[ci full]" nel messaggio di commit.
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      rust: ${{ steps.f.outputs.rust }}
+      linux: ${{ steps.f.outputs.linux }}
+      boot: ${{ steps.f.outputs.boot }}
+      kernel: ${{ steps.f.outputs.kernel }}
+      web: ${{ steps.f.outputs.web }}
+      site: ${{ steps.f.outputs.site }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: f
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          MESSAGE: ${{ github.event.head_commit.message }}
+        run: tools/ci-changes.sh >> "$GITHUB_OUTPUT"
+
   native:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -24,6 +54,8 @@ jobs:
       - run: cargo test --workspace
 
   wasm:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -35,6 +67,8 @@ jobs:
   # Binari Linux arm64 (BusyBox, programmi C) confrontati con QEMU. Gira su
   # un runner arm64: il container Alpine che compila i binari è nativo.
   linux:
+    needs: changes
+    if: needs.changes.outputs.linux == 'true'
     runs-on: ubuntu-24.04-arm
     env:
       VETRO_REQUIRE_GUEST_BINS: "1"
@@ -67,13 +101,17 @@ jobs:
   # M3: il kernel guest (Linux + initramfs) si avvia fino alla shell sotto
   # qemu-system-aarch64 (riferimento) e sotto Vetro, con lo stesso log.
   # Il kernel si ricompila solo se cambiano configurazione o script.
+  # Con solo web/ cambiato girano soltanto il kernel (dalla cache) e i test
+  # web; i kselftest (i più lunghi) solo se cambia il kernel guest.
   boot:
+    needs: changes
+    if: needs.changes.outputs.boot == 'true' || needs.changes.outputs.web == 'true'
     runs-on: ubuntu-24.04-arm
     env:
       VETRO_REQUIRE_GUEST_KERNEL: "1"
       VETRO_REQUIRE_SYSTEM_ORACLE: "1"
       # kselftest nel guest sotto QEMU e sotto Vetro (tests/boot/tests/kselftest.rs).
-      VETRO_KSELFTEST: "1"
+      VETRO_KSELFTEST: ${{ needs.changes.outputs.kernel == 'true' && '1' || '0' }}
       # pcapng e HAR riletti da tshark, har-validator e haralyzer in Docker
       # (tests/boot/tests/analysis.rs, tools/analysis/check.sh, ADR 0016).
       VETRO_REQUIRE_ANALYSIS_TOOLS: "1"
@@ -98,6 +136,7 @@ jobs:
       # I log dei job si leggono solo da autenticati: in caso di errore le
       # ultime righe diventano annotazioni, visibili dall'API pubblica.
       - name: Avvio sotto QEMU e sotto Vetro
+        if: needs.changes.outputs.boot == 'true'
         run: |
           set -o pipefail
           cargo test --release -p vetro-boot-tests -- --nocapture --test-threads=1 2>&1 | tee boot-test.log
@@ -105,6 +144,7 @@ jobs:
       # (wasmtime) deve dare le stesse istruzioni e lo stesso log, byte per
       # byte, dell'interprete (il test esegue entrambi e li confronta).
       - name: Avvio sotto Vetro col JIT
+        if: needs.changes.outputs.boot == 'true'
         run: |
           set -o pipefail
           cargo test --release -p vetro-boot-tests --test vetro -- --nocapture 2>&1 | tee boot-jit.log
@@ -139,11 +179,12 @@ jobs:
 
   # Il sito di GitHub Pages (tools/pages/build.sh): l'app web col kernel guest
   # e i sorgenti GPL. Si costruisce e si prova (Chrome, sotto /Vetro/ senza
-  # COOP/COEP, come lo serve Pages) a ogni push; si pubblica solo da main e
-  # solo se tutti gli altri job sono verdi. Il kernel guest è quello messo in
+  # COOP/COEP, come lo serve Pages) quando cambia qualcosa che finisce nel
+  # sito; si pubblica solo da main e solo se nessun job è fallito. Il kernel guest è quello messo in
   # cache dal job boot (stessa chiave).
   pages:
-    needs: [native, wasm, linux, boot]
+    needs: [changes, native, wasm, linux, boot]
+    if: always() && !failure() && !cancelled() && needs.changes.outputs.site == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -180,7 +221,7 @@ jobs:
           path: target/pages
 
   deploy:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: always() && needs.pages.result == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: pages
     runs-on: ubuntu-24.04
     permissions:
