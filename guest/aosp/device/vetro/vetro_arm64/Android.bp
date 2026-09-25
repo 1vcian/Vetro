@@ -3,8 +3,18 @@
 soong_namespace {
 }
 
+// Codice e configurazione di Vetro: PolyForm Noncommercial 1.0.0
+// (LICENSE.md del repository, ADR 0004). Soong non ha un tipo SPDX per
+// questa licenza: legacy_notice con il testo accanto.
 package {
-    default_applicable_licenses: ["Android-Apache-2.0"],
+    default_applicable_licenses: ["device_vetro_license"],
+}
+
+license {
+    name: "device_vetro_license",
+    visibility: [":__subpackages__"],
+    license_kinds: ["legacy_notice"],
+    license_text: ["LICENSE"],
 }
 
 prebuilt_etc {

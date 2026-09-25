@@ -41,3 +41,8 @@ PRODUCT_PACKAGES += \
     privapp-permissions-vetro-microg.xml \
     default-permissions-vetro-microg.xml \
     sysconfig-vetro-microg.xml
+
+# Demone del gestore dei file (ADR 0020): vsock, porta 5200, solo nelle build
+# di sviluppo (vetro-files/vetro-files.rc). Il sorgente arriva da
+# guest/kernel/initramfs con tools/aosp/sync.sh.
+PRODUCT_PACKAGES += vetro-files

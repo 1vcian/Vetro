@@ -12,12 +12,32 @@ license {
     license_kinds: ["SPDX-license-identifier-Apache-2.0"],
 }
 
+// I file XML di configurazione sono di Vetro (PolyForm Noncommercial 1.0.0,
+// ADR 0004).
+license {
+    name: "vendor_vetro_microg_config_license",
+    visibility: [":__subpackages__"],
+    license_kinds: ["legacy_notice"],
+    license_text: ["LICENSE"],
+}
+
 android_app_import {
     name: "VetroGmsCore",
     apk: "prebuilt/com.google.android.gms.apk",
+    // targetSdkVersion 29 e firma v1: la build scomprime dex e librerie JNI
+    // (priv-app) e toglie il blocco v2, e le app di sistema si verificano
+    // senza la protezione contro la rimozione di v2 (skipVerify per la
+    // partizione di sistema in InstallPackageHelper): la firma v1 basta.
     presigned: true,
     privileged: true,
     product_specific: true,
+    // <uses-library> del manifest (aapt2 dump badging), controllati da Soong.
+    uses_libs: ["com.android.location.provider"],
+    optional_uses_libs: [
+        "org.apache.http.legacy",
+        "androidx.window.extensions",
+        "androidx.window.sidecar",
+    ],
     required: [
         "privapp-permissions-vetro-microg.xml",
         "default-permissions-vetro-microg.xml",
@@ -36,6 +56,7 @@ android_app_import {
 prebuilt_etc {
     name: "privapp-permissions-vetro-microg.xml",
     src: "privapp-permissions-vetro-microg.xml",
+    licenses: ["vendor_vetro_microg_config_license"],
     sub_dir: "permissions",
     product_specific: true,
 }
@@ -43,6 +64,7 @@ prebuilt_etc {
 prebuilt_etc {
     name: "default-permissions-vetro-microg.xml",
     src: "default-permissions-vetro-microg.xml",
+    licenses: ["vendor_vetro_microg_config_license"],
     sub_dir: "default-permissions",
     product_specific: true,
 }
@@ -50,6 +72,7 @@ prebuilt_etc {
 prebuilt_etc {
     name: "sysconfig-vetro-microg.xml",
     src: "sysconfig-vetro-microg.xml",
+    licenses: ["vendor_vetro_microg_config_license"],
     sub_dir: "sysconfig",
     product_specific: true,
 }

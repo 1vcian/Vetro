@@ -60,13 +60,14 @@ BOARD_BOOTCONFIG += \
     androidboot.serialconsole=1
 
 # Grafica: SwiftShader (Vulkan "pastel") con ANGLE sopra per GLES,
-# gralloc minigbm e HWC ranchu in modalità client sul DRM di virtio-gpu 2D.
+# gralloc minigbm e HWC ranchu (composizione nel guest) sul DRM di
+# virtio-gpu 2D: gli stessi valori di --gpu_mode=guest_swiftshader di
+# Cuttlefish sotto QEMU (host/libs/vm_manager/qemu_manager.cpp).
 # cpuvulkan.version = VK_API_VERSION_1_2 = (1 << 22) | (2 << 12).
 BOARD_BOOTCONFIG += \
     androidboot.cpuvulkan.version=4202496 \
     androidboot.hardware.gralloc=minigbm \
     androidboot.hardware.hwcomposer=ranchu \
-    androidboot.hardware.hwcomposer.mode=client \
     androidboot.hardware.hwcomposer.display_finder_mode=drm \
     androidboot.hardware.hwcomposer.display_framebuffer_format=rgba \
     androidboot.hardware.egl=angle \
@@ -102,7 +103,8 @@ BOARD_BOOTCONFIG += \
 # primo avvio, vedi ADR 0021).
 BOARD_BOOTCONFIG += androidboot.selinux=permissive
 
-# Partizione super più piccola di Cuttlefish (7 GiB): il disco del browser
-# arriva via HTTP Range, ma meno spazio vuoto vuol dire meno metadati.
-BOARD_SUPER_PARTITION_SIZE := 6442450944  # 6 GiB
-BOARD_GOOGLE_SYSTEM_DYNAMIC_PARTITIONS_SIZE := 4966055936  # 4,625 GiB
+# Policy SELinux nostra (demone vetro-files, ADR 0020/0021).
+BOARD_VENDOR_SEPOLICY_DIRS += device/vetro/vetro_arm64/sepolicy
+
+# Dimensioni di super e userdata: quelle di Cuttlefish (super 7 GiB, userdata
+# 8 GiB f2fs). Le immagini sono sparse: lo spazio vuoto non si trasferisce.

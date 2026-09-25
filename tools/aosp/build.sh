@@ -4,7 +4,7 @@
 #                                (nohup + setsid: sopravvive alla chiusura di ssh)
 #   tools/aosp/build.sh status   stato (RUNNING/OK/FAIL) e ultime righe del log
 #   tools/aosp/build.sh wait     aspetta la fine, poi esce 0 se OK
-# La build è incrementale: dopo un arresto della VM (Spot) basta `start`.
+# La build è incrementale: dopo un arresto della VM basta `start`.
 set -eu
 . "$(cd "$(dirname "$0")" && pwd)/common.sh"
 env="VETRO_AOSP_TREE=$VETRO_AOSP_TREE VETRO_AOSP_WORK=$VETRO_AOSP_WORK VETRO_AOSP_LUNCH=$VETRO_AOSP_LUNCH"

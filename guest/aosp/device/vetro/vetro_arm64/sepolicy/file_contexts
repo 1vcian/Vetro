@@ -1,0 +1,8 @@
+# Contesti dei file della scheda Vetro arm64 (ADR 0021).
+
+/vendor/bin/vetro-files  u:object_r:vetro_files_exec:s0
+
+# sysfs dei dispositivi virtio-mmio della virt (0x0a000000 + k*0x200): gli
+# stessi tipi che Cuttlefish dà ai percorsi virtio-pci (shared/sepolicy/vendor).
+/sys/devices/platform/a00[0-3][02468ace]00\.virtio_mmio/virtio[0-9]+/net(/.*)?  u:object_r:sysfs_net:s0
+/sys/devices/platform/a00[0-3][02468ace]00\.virtio_mmio/virtio[0-9]+/block(/.*)?  u:object_r:sysfs_devices_block:s0
