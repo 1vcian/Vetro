@@ -5,3 +5,4 @@ dist/
 *.snap
 .DS_Store
 /plan.docx
+.claude/worktrees/
