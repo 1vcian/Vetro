@@ -85,6 +85,10 @@ docker run --rm --platform linux/arm64 \
   fi
   echo "==> compilo Image con $(nproc) processi"
   make -s -C "$src" O="$obj" -j"$(nproc)" Image
+  # Header UAPI per i kselftest (tools/guest-kernel/kselftest.sh): si
+  # installano qui, perché i programmi di supporto del kernel in $obj sono
+  # compilati con musl e non girano nel container Debian dei kselftest.
+  make -s -C "$src" O="$obj" headers
   cp "$obj/arch/arm64/boot/Image" "$obj/.config" "$obj/System.map" "$out/"
   mv "$out/.config" "$out/config"
 

@@ -22,7 +22,8 @@ docker run --rm --platform linux/arm64 -v "$VOLUME:/build" -e KVER="$KVER" -e TA
   vetro-kselftest:latest sh -euc '
   src=/build/linux-$KVER; obj=/build/obj-$KVER
   rm -rf /build/ks-obj /build/ks-install
-  make -s -C "$src" O="$obj" ARCH=arm64 headers >/dev/null
+  # Header UAPI già installati da build.sh (dentro Alpine).
+  [ -f "$obj/usr/include/linux/types.h" ] || { echo "manca $obj/usr/include: esegui build.sh"; exit 1; }
   echo "==> kselftest: $TARGETS"
   make -s -C "$src/tools/testing/selftests" TARGETS="$TARGETS" ARCH=arm64 \
     CC="gcc -static -Wl,--allow-multiple-definition" KHDR_INCLUDES="-isystem $obj/usr/include" \
