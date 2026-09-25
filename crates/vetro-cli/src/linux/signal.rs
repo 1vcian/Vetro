@@ -200,7 +200,7 @@ impl Kernel {
                 && now >= d
             {
                 let iv = self.tasks[t].sig.alarm_interval;
-                self.tasks[t].sig.alarm = if iv > 0 { Some(d + iv) } else { None };
+                self.tasks[t].sig.alarm = if iv > 0 { Some(d.saturating_add(iv)) } else { None };
                 let tgid = self.tasks[t].tgid;
                 self.send_to_process(tgid, sig::SIGALRM, 0, 0x80);
             }
@@ -490,12 +490,9 @@ impl Kernel {
             return Ok(Ok(s as i64));
         }
         if self.tasks[t].deadline.is_none() && a[2] != 0 {
-            let sec = read_u64(&mut mm.borrow_mut().mem, a[2])? as i64;
-            let ns = read_u64(&mut mm.borrow_mut().mem, a[2] + 8)? as i64;
-            if sec < 0 || !(0..1_000_000_000).contains(&ns) {
-                return Err(EINVAL);
-            }
-            self.tasks[t].deadline = Some(self.now() + sec as u64 * 1_000_000_000 + ns as u64);
+            let sec = read_u64(&mut mm.borrow_mut().mem, a[2])?;
+            let ns = read_u64(&mut mm.borrow_mut().mem, a[2] + 8)?;
+            self.tasks[t].deadline = Some(self.now().saturating_add(timespec_ns(sec, ns)?));
         }
         if let Some(d) = self.tasks[t].deadline
             && self.now() >= d

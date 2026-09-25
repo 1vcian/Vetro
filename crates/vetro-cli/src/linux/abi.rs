@@ -17,6 +17,7 @@ pub const ENOMEM: i64 = 12;
 pub const EACCES: i64 = 13;
 pub const EFAULT: i64 = 14;
 pub const EEXIST: i64 = 17;
+pub const EXDEV: i64 = 18;
 pub const ENOTDIR: i64 = 20;
 pub const EISDIR: i64 = 21;
 pub const EINVAL: i64 = 22;
@@ -54,6 +55,26 @@ pub const O_TMPFILE: u64 = 0o20000000;
 
 /// Errore di una syscall: il valore da restituire è `-errno`.
 pub type SysResult = Result<i64, i64>;
+
+/// Nanosecondi di una `struct timespec` del guest: EINVAL se `tv_sec < 0` o
+/// `tv_nsec` fuori da [0, 1e9), come Linux; i valori enormi saturano (una
+/// scadenza così lontana non arriva mai) invece di traboccare.
+pub fn timespec_ns(sec: u64, nsec: u64) -> Result<u64, i64> {
+    let (s, n) = (sec as i64, nsec as i64);
+    if s < 0 || !(0..1_000_000_000).contains(&n) {
+        return Err(EINVAL);
+    }
+    Ok((s as u64).saturating_mul(1_000_000_000).saturating_add(n as u64))
+}
+
+/// Come [`timespec_ns`] per una `struct timeval` (microsecondi).
+pub fn timeval_ns(sec: u64, usec: u64) -> Result<u64, i64> {
+    let (s, u) = (sec as i64, usec as i64);
+    if s < 0 || !(0..1_000_000).contains(&u) {
+        return Err(EINVAL);
+    }
+    Ok((s as u64).saturating_mul(1_000_000_000).saturating_add(u as u64 * 1000))
+}
 
 /// Converte un errore di I/O dell'host nell'errno Linux corrispondente.
 pub fn host_errno(e: &std::io::Error) -> i64 {

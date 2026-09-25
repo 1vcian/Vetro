@@ -95,6 +95,9 @@ struct Region {
     may_write: bool,
     /// MAP_GROWSDOWN: un accesso appena sotto la estende (VM_GROWSDOWN).
     grows_down: bool,
+    /// Tutte le pagine già presenti (contenuto da un file, o MAP_POPULATE):
+    /// solo per /proc/<pid>/pagemap.
+    populated: bool,
 }
 
 impl Region {
@@ -115,6 +118,7 @@ impl Region {
             perm,
             may_write: true,
             grows_down: false,
+            populated: true,
         }
     }
 
@@ -126,6 +130,7 @@ impl Region {
             perm,
             may_write: true,
             grows_down: false,
+            populated: false,
         }
     }
 
@@ -213,6 +218,7 @@ impl Region {
             perm: self.perm,
             may_write: self.may_write,
             grows_down: self.grows_down,
+            populated: self.populated,
         };
         self.len = k;
         r
@@ -301,7 +307,14 @@ impl UserMemory {
         self.unmap(base, base + len as u64);
         self.regions.insert(
             base,
-            Region { backing: Backing::Shared(buf, off), len, perm, may_write, grows_down: false },
+            Region {
+                backing: Backing::Shared(buf, off),
+                len,
+                perm,
+                may_write,
+                grows_down: false,
+                populated: true,
+            },
         );
     }
 
@@ -359,9 +372,34 @@ impl UserMemory {
                 perm,
                 may_write,
                 grows_down: true,
+                populated: false,
             },
         );
         true
+    }
+
+    /// Come [`remap`](Self::remap), ma il vecchio intervallo resta mappato
+    /// (MREMAP_DONTUNMAP): le regioni private restano con gli stessi permessi
+    /// e senza pagine (si leggono a zero), quelle condivise restano sulla
+    /// stessa memoria.
+    pub fn remap_dontunmap(&mut self, old: u64, len: u64, dst: u64) {
+        self.split_at(old);
+        self.split_at(old + len);
+        let left: Vec<(u64, Region)> = self
+            .regions
+            .range(old..old + len)
+            .map(|(&b, r)| {
+                let (backing, populated) = match &r.backing {
+                    Backing::Shared(buf, base) => (Backing::Shared(buf.clone(), *base), true),
+                    Backing::Pages { .. } => (Backing::Pages { pages: BTreeMap::new(), base: 0 }, false),
+                };
+                (b, Region { backing, populated, ..*r })
+            })
+            .collect();
+        self.remap(old, len, dst);
+        for (b, r) in left {
+            self.regions.insert(b, r);
+        }
     }
 
     /// Allunga di `extra` byte la regione che finisce a `end`: una condivisa
@@ -375,8 +413,14 @@ impl UserMemory {
             Backing::Shared(buf, base) => Backing::Shared(buf.clone(), base + r.len),
             Backing::Pages { .. } => Backing::Pages { pages: BTreeMap::new(), base: 0 },
         };
-        let tail =
-            Region { backing, len: extra, perm: r.perm, may_write: r.may_write, grows_down: r.grows_down };
+        let tail = Region {
+            backing,
+            len: extra,
+            perm: r.perm,
+            may_write: r.may_write,
+            grows_down: r.grows_down,
+            populated: false,
+        };
         self.unmap(end, end + extra as u64);
         self.regions.insert(end, tail);
     }
@@ -488,6 +532,29 @@ impl UserMemory {
     /// Intervalli mappati, per /proc/self/maps e il debug.
     pub fn ranges(&self) -> impl Iterator<Item = (u64, u64, Perm)> + '_ {
         self.regions.iter().map(|(&b, r)| (b, b + r.len as u64, r.perm))
+    }
+
+    /// Vero se la pagina di `addr` ha memoria (per /proc/<pid>/pagemap): le
+    /// pagine private esistono solo dopo la prima scrittura o se hanno un
+    /// contenuto iniziale (file, MAP_POPULATE); quelle condivise sempre.
+    pub fn page_present(&self, addr: u64) -> bool {
+        let Some((b, _)) = self.find(addr) else { return false };
+        let r = &self.regions[&b];
+        match &r.backing {
+            Backing::Pages { pages, base } => {
+                r.populated || pages.contains_key(&((base + (addr - b) as usize) / PAGE))
+            }
+            Backing::Shared(..) => true,
+        }
+    }
+
+    /// Alloca le pagine di `[start, end)` (MAP_POPULATE).
+    pub fn populate(&mut self, start: u64, end: u64) {
+        for (&b, r) in self.regions.range_mut(..end) {
+            if b + r.len as u64 > start {
+                r.populated = true;
+            }
+        }
     }
 
     /// Vero se `addr` cade in una pagina di una mappatura condivisa che

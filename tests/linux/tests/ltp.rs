@@ -173,9 +173,12 @@ fn run_native(bin: &Path, name: &str) -> Esito {
     let wd = workdir(&format!("{name}.native"));
     let nofile: u64 = std::env::var("VETRO_ORACLE_NOFILE").ok().and_then(|n| n.parse().ok()).unwrap_or(1024);
     let mut cmd = Command::new(bin);
-    // SAFETY: tra fork ed exec solo setrlimit, che è async-signal-safe.
+    // SAFETY: tra fork ed exec solo setpgid e setrlimit, async-signal-safe.
     unsafe {
         std::os::unix::process::CommandExt::pre_exec(&mut cmd, move || {
+            // Un gruppo di processi a sé: allo scadere si uccidono anche i
+            // figli del test, che altrimenti terrebbero aperti stdout/stderr.
+            libc::setpgid(0, 0);
             let mut r = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
             libc::getrlimit(libc::RLIMIT_NOFILE, &mut r);
             r.rlim_cur = nofile as libc::rlim_t;
@@ -212,7 +215,8 @@ fn run_native(bin: &Path, name: &str) -> Esito {
             break s;
         }
         if std::time::Instant::now() > deadline {
-            let _ = child.kill();
+            // SAFETY: kill di un gruppo di processi che abbiamo creato noi.
+            unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
             break child.wait().unwrap();
         }
         std::thread::sleep(Duration::from_millis(50));

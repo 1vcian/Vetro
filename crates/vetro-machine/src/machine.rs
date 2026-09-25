@@ -209,10 +209,9 @@ impl Machine {
     /// scadenza del timer; senza scadenze la macchina è inattiva.
     fn wait_for_interrupt(&mut self) -> Option<Stop> {
         self.sync_irqs();
+        // Come una CPU vera, la WFI finisce solo con un interrupt: dati in
+        // arrivo sulla UART senza il suo interrupt abilitato non la svegliano.
         if self.board.borrow().virt.irq_line() {
-            return None;
-        }
-        if self.board.borrow().virt.uart().pending_input() > 0 {
             return None;
         }
         match self.timer_deadline {
@@ -234,6 +233,25 @@ impl Machine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// WFI con byte in arrivo sulla UART ma senza il suo interrupt: nessun
+    /// risveglio, e senza scadenze del timer la macchina è inattiva (prima
+    /// girava a vuoto un'istruzione alla volta).
+    #[test]
+    fn wfi_non_si_sveglia_senza_interrupt() {
+        let mut m = Machine::new(&MachineConfig { ram_size: 1 << 20, ..MachineConfig::default() });
+        let code = [0xd503_207fu32, 0x1400_0000]; // wfi; b .
+        {
+            let mut b = m.board.borrow_mut();
+            for (i, w) in code.iter().enumerate() {
+                assert!(b.ram.write(map::RAM_BASE + 4 * i as u64, &w.to_le_bytes()));
+            }
+        }
+        m.cpu.pc = map::RAM_BASE;
+        m.console_input(b"x");
+        assert_eq!(m.run(1_000_000), Stop::Idle);
+        assert!(m.steps < 10, "si ferma subito, non esaurisce il quanto");
+    }
 
     #[test]
     fn orologio_a_62_5_mhz() {

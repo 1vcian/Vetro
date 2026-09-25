@@ -109,6 +109,8 @@ pub enum Kind {
     Path {
         path: PathBuf,
         dir: bool,
+        /// Aperto con O_NOFOLLOW: se è un link, fstat descrive il link.
+        nofollow: bool,
     },
     /// /proc/<pid>/pagemap: 8 byte per pagina virtuale, letti dallo spazio
     /// d'indirizzamento del processo.
@@ -255,8 +257,12 @@ impl OpenFile {
                 let mm = mm.borrow();
                 let mut out = Vec::with_capacity(len.min(1 << 20));
                 for i in 0..(len / 8).min(1 << 17) as u64 {
-                    let va = (*pos / 8 + i) * 4096;
-                    let present = mm.mem.is_mapped(va, va + 1);
+                    // Oltre TASK_SIZE (48 bit) il file finisce.
+                    let Some(va) = (*pos / 8).checked_add(i).and_then(|p| p.checked_mul(4096)) else { break };
+                    if va >= 1 << 48 {
+                        break;
+                    }
+                    let present = mm.mem.page_present(va);
                     out.extend_from_slice(&(if present { 1u64 << 63 } else { 0 }).to_le_bytes());
                 }
                 *pos += out.len() as u64;
@@ -391,6 +397,9 @@ impl OpenFile {
             Kind::Host { file, .. } => {
                 file.metadata().map(|m| Stat::from_host(&m)).map_err(|e| host_errno(&e))
             }
+            Kind::Path { path, nofollow: true, .. } => {
+                std::fs::symlink_metadata(path).map(|m| Stat::from_host(&m)).map_err(|e| host_errno(&e))
+            }
             Kind::Dir { path, .. } | Kind::Path { path, .. } => {
                 std::fs::metadata(path).map(|m| Stat::from_host(&m)).map_err(|e| host_errno(&e))
             }
@@ -515,8 +524,8 @@ pub struct Fd {
 #[derive(Clone, Default)]
 pub struct FdTable {
     fds: Vec<Option<Fd>>,
-    /// RLIMIT_NOFILE corrente del processo; 0 = quello di default.
-    pub limit: usize,
+    /// RLIMIT_NOFILE corrente del processo; `None` = quello di default.
+    pub limit: Option<usize>,
 }
 
 /// Limite di descrittori per processo (RLIMIT_NOFILE).
@@ -524,7 +533,7 @@ pub const NOFILE: usize = 1024;
 
 impl FdTable {
     fn max(&self) -> usize {
-        if self.limit == 0 { NOFILE } else { self.limit }
+        self.limit.unwrap_or(NOFILE)
     }
 
     pub fn with_console(c: &Rc<RefCell<Console>>) -> Self {
@@ -728,7 +737,7 @@ pub fn open(guest: &str, flags: u64, mode: u32, umask: u32) -> Result<Rc<RefCell
         if flags & O_DIRECTORY != 0 && !m.is_dir() {
             return Err(ENOTDIR);
         }
-        let kind = Kind::Path { path: host, dir: m.is_dir() };
+        let kind = Kind::Path { path: host, dir: m.is_dir(), nofollow: flags & O_NOFOLLOW != 0 };
         return Ok(OpenFile::new(kind, O_PATH, guest.into()));
     }
     match &meta {

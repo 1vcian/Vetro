@@ -52,7 +52,7 @@ impl Kernel {
             self.flush_shared_one(k);
         }
         let res = if self.uses_opath_fd(t, nr, &a) { Err(EBADF) } else { self.dispatch(t, nr, a) };
-        if matches!(nr, 46 | 64 | 66 | 68 | 71) {
+        if matches!(nr, 46 | 64 | 66 | 68 | 70 | 71 | 287) {
             for &k in &keys {
                 self.reload_shared_one(k);
             }
@@ -97,7 +97,7 @@ impl Kernel {
             return Vec::new();
         }
         let fds: &[u64] = match nr {
-            46 | 63..=68 | 82 | 83 => &a[..1],
+            46 | 63..=70 | 82 | 83 | 286 | 287 => &a[..1],
             71 => &a[..2],
             _ => return Vec::new(),
         };
@@ -119,8 +119,9 @@ impl Kernel {
     fn uses_opath_fd(&self, t: usize, nr: u64, a: &[u64; 6]) -> bool {
         let fds: &[u64] = match nr {
             // fsetxattr, fgetxattr, flistxattr, fremovexattr, ioctl, ftruncate,
-            // fchmod, fchown, getdents64, lseek, read..pwrite64, fsync, fdatasync
-            7 | 8 | 10 | 13 | 16 | 29 | 46 | 52 | 55 | 61 | 62 | 63..=68 | 82 | 83 => &a[..1],
+            // fchmod, fchown, getdents64, lseek, read..pwritev, fsync, fdatasync,
+            // preadv2, pwritev2
+            7 | 10 | 13 | 16 | 29 | 46 | 52 | 55 | 61 | 62 | 63..=70 | 82 | 83 | 286 | 287 => &a[..1],
             71 => &a[..2], // sendfile
             222 if a[3] & super::mm::MAP_ANONYMOUS == 0 => &a[4..5],
             _ => return false,
@@ -187,6 +188,19 @@ impl Kernel {
         Ok(fs::join(&f.guest_path, path))
     }
 
+    /// Percorso senza seguire l'ultimo componente (unlink, rename, mkdir,
+    /// lstat...): il secondo valore dice se è un link magico
+    /// `/proc/<pid>/fd/N`, che Linux tratta come un link di procfs.
+    fn path_arg_nofollow(&self, t: usize, dirfd: u64, p: u64) -> Result<(String, bool), i64> {
+        let raw = read_cstr(&mut self.mem(t).borrow_mut().mem, p)?;
+        if raw.is_empty() {
+            return Err(ENOENT);
+        }
+        let path = self.at_path_raw(t, dirfd, &raw)?;
+        let link = self.proc_fd_target(t, &path).is_some();
+        Ok((path, link))
+    }
+
     fn path_arg(&self, t: usize, dirfd: u64, p: u64) -> Result<String, i64> {
         let raw = read_cstr(&mut self.mem(t).borrow_mut().mem, p)?;
         if raw.is_empty() {
@@ -209,6 +223,7 @@ impl Kernel {
             65 => self.sys_readv(t, a[0] as i64, a[1], a[2] as usize),
             66 => self.sys_writev(t, a[0] as i64, a[1], a[2] as usize),
             67 | 68 => self.sys_pio(t, nr == 68, a[0] as i64, a[1], a[2] as usize, a[3] as i64),
+            69 | 70 | 286 | 287 => self.sys_piov(t, nr, a),
             62 => {
                 ret(self.tasks[t].files.borrow().get(a[0] as i64)?.borrow_mut().lseek(a[1] as i64, a[2])?)
             }
@@ -268,7 +283,10 @@ impl Kernel {
                 ret(0)
             }
             34 => {
-                let p = self.path_arg(t, a[0], a[1])?;
+                let (p, link) = self.path_arg_nofollow(t, a[0], a[1])?;
+                if link {
+                    return Err(EEXIST);
+                }
                 use std::os::unix::fs::DirBuilderExt;
                 let want = a[2] as u32 & !self.tasks[t].umask & 0o7777;
                 std::fs::DirBuilder::new().mode(want).create(&p).map_err(|e| host_errno(&e))?;
@@ -276,7 +294,11 @@ impl Kernel {
                 ret(0)
             }
             35 => {
-                let p = self.path_arg(t, a[0], a[1])?;
+                let (p, link) = self.path_arg_nofollow(t, a[0], a[1])?;
+                // Le voci di /proc/<pid>/fd non si tolgono.
+                if link {
+                    return Err(EPERM);
+                }
                 if a[2] & AT_REMOVEDIR != 0 {
                     std::fs::remove_dir(&p).map_err(|e| host_errno(&e))?;
                 } else {
@@ -290,7 +312,10 @@ impl Kernel {
             }
             36 => {
                 let target = read_cstr(&mut self.mem(t).borrow_mut().mem, a[0])?;
-                let link = self.path_arg(t, a[1], a[2])?;
+                let (link, magic) = self.path_arg_nofollow(t, a[1], a[2])?;
+                if magic {
+                    return Err(EEXIST);
+                }
                 std::os::unix::fs::symlink(String::from_utf8_lossy(&target).as_ref(), &link)
                     .map_err(|e| host_errno(&e))?;
                 ret(0)
@@ -301,8 +326,15 @@ impl Kernel {
                 if a[4] & !(0x400 | 0x1000) != 0 {
                     return Err(EINVAL);
                 }
-                let old = self.path_arg(t, a[0], a[1])?;
-                let new = self.path_arg(t, a[2], a[3])?;
+                let old = if a[4] & 0x400 != 0 {
+                    self.path_arg(t, a[0], a[1])?
+                } else {
+                    self.path_arg_nofollow(t, a[0], a[1])?.0
+                };
+                let (new, magic) = self.path_arg_nofollow(t, a[2], a[3])?;
+                if magic {
+                    return Err(EEXIST);
+                }
                 let c = |p: &str| std::ffi::CString::new(p).map_err(|_| EINVAL);
                 let (co, cn) = (c(&old)?, c(&new)?);
                 let follow = if a[4] & 0x400 != 0 { libc::AT_SYMLINK_FOLLOW } else { 0 };
@@ -315,8 +347,12 @@ impl Kernel {
                 ret(0)
             }
             38 | 276 => {
-                let old = self.path_arg(t, a[0], a[1])?;
-                let new = self.path_arg(t, a[2], a[3])?;
+                let (old, l1) = self.path_arg_nofollow(t, a[0], a[1])?;
+                let (new, l2) = self.path_arg_nofollow(t, a[2], a[3])?;
+                // procfs è un altro file system.
+                if l1 || l2 {
+                    return Err(EXDEV);
+                }
                 if nr == 276 && a[4] & 1 != 0 && std::fs::symlink_metadata(&new).is_ok() {
                     return Err(EEXIST); // RENAME_NOREPLACE
                 }
@@ -340,7 +376,10 @@ impl Kernel {
             88 => self.sys_utimensat(t, a[0], a[1], a[2], a[3]),
             33 => {
                 // mknodat: FIFO e file regolari; i dispositivi solo con privilegi.
-                let p = self.path_arg(t, a[0], a[1])?;
+                let (p, link) = self.path_arg_nofollow(t, a[0], a[1])?;
+                if link {
+                    return Err(EEXIST);
+                }
                 let mode = (a[2] as u32 & !self.tasks[t].umask) as libc::mode_t;
                 let cpath = std::ffi::CString::new(p.clone()).map_err(|_| EINVAL)?;
                 // SAFETY: percorso C valido.
@@ -574,13 +613,11 @@ impl Kernel {
             }
             167 => self.sys_prctl(t, a),
             92 => {
-                // personality(0xffffffff) legge soltanto.
+                // personality(0xffffffff) legge soltanto. È del thread
+                // (current->personality), non del processo.
                 let old = self.tasks[t].personality;
                 if a[0] as u32 != u32::MAX {
-                    let tgid = self.tasks[t].tgid;
-                    for x in self.tasks.iter_mut().filter(|x| x.tgid == tgid) {
-                        x.personality = a[0] as u32;
-                    }
+                    self.tasks[t].personality = a[0] as u32;
                 }
                 ret(old as i64)
             }
@@ -684,17 +721,14 @@ impl Kernel {
                 let (ts, abs) = if nr == 101 { (a[0], false) } else { (a[2], a[1] & 1 != 0) };
                 if self.tasks[t].deadline.is_none() {
                     let mm = self.mem(t);
-                    let s = read_u64(&mut mm.borrow_mut().mem, ts)? as i64;
-                    let n = read_u64(&mut mm.borrow_mut().mem, ts + 8)? as i64;
-                    if s < 0 || !(0..1_000_000_000).contains(&n) {
-                        return Err(EINVAL);
-                    }
-                    let d = s as u64 * 1_000_000_000 + n as u64;
+                    let s = read_u64(&mut mm.borrow_mut().mem, ts)?;
+                    let n = read_u64(&mut mm.borrow_mut().mem, ts + 8)?;
+                    let d = timespec_ns(s, n)?;
                     let realtime = nr == 115 && a[0] == 0;
                     let until = if abs {
                         if realtime { d.saturating_sub(self.realtime() - self.now()) } else { d }
                     } else {
-                        self.now() + d
+                        self.now().saturating_add(d)
                     };
                     self.tasks[t].deadline = Some(until);
                 }
@@ -717,18 +751,9 @@ impl Kernel {
             // --- sistema ---
             160 => {
                 let mut b = vec![0u8; 65 * 6];
-                // UNAME26: "2.6.(60 + minore)" seguito dal resto della versione.
-                let uname26 = if self.tasks[t].personality & 0x002_0000 != 0 {
-                    let r = &self.cfg.release;
-                    let minor_start = r.find('.').map_or(r.len(), |i| i + 1);
-                    let minor_end = r[minor_start..]
-                        .find(|c: char| !c.is_ascii_digit())
-                        .map_or(r.len(), |i| minor_start + i);
-                    let minor: u32 = r[minor_start..minor_end].parse().unwrap_or(0);
-                    Some(format!("2.6.{}{}", minor + 60, &r[minor_end..]))
-                } else {
-                    None
-                };
+                // UNAME26: la versione come la riscrive override_release.
+                let uname26 =
+                    (self.tasks[t].personality & 0x002_0000 != 0).then(|| uname26(&self.cfg.release));
                 let release = uname26.as_deref().unwrap_or(&self.cfg.release);
                 for (i, s) in ["Linux", "vetro", release, "#1 SMP", "aarch64", "(none)"].iter().enumerate() {
                     let n = s.len().min(64);
@@ -769,6 +794,11 @@ impl Kernel {
     }
 
     fn sys_openat(&mut self, t: usize, dirfd: u64, p: u64, flags: u64, mode: u32) -> R {
+        // O_NOFOLLOW su un link di /proc/<pid>/fd: ELOOP (con O_PATH si apre il
+        // link stesso, che qui si tratta come il file).
+        if flags & O_NOFOLLOW != 0 && flags & O_PATH == 0 && self.path_arg_nofollow(t, dirfd, p)?.1 {
+            return Err(40);
+        }
         let path = self.path_arg(t, dirfd, p)?;
         if let Some(entries) = self.proc_dir(t, &path) {
             if flags & O_ACCMODE != 0 {
@@ -981,34 +1011,115 @@ impl Kernel {
     }
 
     fn sys_pio(&mut self, t: usize, write: bool, fd: i64, buf: u64, len: usize, off: i64) -> R {
+        if write {
+            let data = read_bytes(&mut self.mem(t).borrow_mut().mem, buf, len)?;
+            ret(self.pwrite_at(t, fd, &data, off)? as i64)
+        } else {
+            let data = self.pread_at(t, fd, len, off)?;
+            write_bytes(&mut self.mem(t).borrow_mut().mem, buf, &data)?;
+            ret(data.len() as i64)
+        }
+    }
+
+    /// Il file di un pread/pwrite: solo file dell'host (una directory dà
+    /// EISDIR, una pipe ESPIPE), con il modo d'apertura giusto.
+    fn positional_file(&self, t: usize, fd: i64, write: bool) -> Result<Rc<RefCell<OpenFile>>, i64> {
+        let f = self.tasks[t].files.borrow().get(fd)?;
+        {
+            let fb = f.borrow();
+            if write && !fb.writable() || !write && !fb.readable() {
+                return Err(EBADF);
+            }
+            match &fb.kind {
+                Kind::Host { .. } => {}
+                Kind::Dir { .. } => return Err(EISDIR),
+                _ => return Err(ESPIPE),
+            }
+        }
+        Ok(f)
+    }
+
+    fn pwrite_at(&self, t: usize, fd: i64, data: &[u8], off: i64) -> Result<usize, i64> {
         use std::os::unix::fs::FileExt;
         if off < 0 {
             return Err(EINVAL);
         }
-        let f = self.tasks[t].files.borrow().get(fd)?;
-        let f = f.borrow();
-        if write && !f.writable() || !write && !f.readable() {
-            return Err(EBADF);
-        }
-        let file = match &f.kind {
-            Kind::Host { file, .. } => file,
-            Kind::Dir { .. } => return Err(EISDIR),
-            _ => return Err(ESPIPE),
-        };
-        if write {
-            let data = read_bytes(&mut self.mem(t).borrow_mut().mem, buf, len)?;
-            // Con O_APPEND Linux scrive in fondo, qualunque sia l'offset.
-            let off = if f.flags & O_APPEND != 0 {
-                file.metadata().map_err(|e| host_errno(&e))?.len()
-            } else {
-                off as u64
-            };
-            ret(file.write_at(&data, off).map_err(|e| host_errno(&e))? as i64)
+        let f = self.positional_file(t, fd, true)?;
+        let fb = f.borrow();
+        let Kind::Host { file, .. } = &fb.kind else { unreachable!() };
+        // Con O_APPEND Linux scrive in fondo, qualunque sia l'offset.
+        let off = if fb.flags & O_APPEND != 0 {
+            file.metadata().map_err(|e| host_errno(&e))?.len()
         } else {
-            let mut data = vec![0u8; len.min(1 << 24)];
-            let n = file.read_at(&mut data, off as u64).map_err(|e| host_errno(&e))?;
-            write_bytes(&mut self.mem(t).borrow_mut().mem, buf, &data[..n])?;
-            ret(n as i64)
+            off as u64
+        };
+        file.write_at(data, off).map_err(|e| host_errno(&e))
+    }
+
+    fn pread_at(&self, t: usize, fd: i64, len: usize, off: i64) -> Result<Vec<u8>, i64> {
+        use std::os::unix::fs::FileExt;
+        if off < 0 {
+            return Err(EINVAL);
+        }
+        // I file generati di /proc (e pagemap) si leggono anche a un offset,
+        // senza spostare la posizione del descrittore.
+        {
+            let f = self.tasks[t].files.borrow().get(fd)?;
+            let mut fb = f.borrow_mut();
+            if matches!(fb.kind, Kind::Mem { .. } | Kind::Pagemap { .. }) {
+                let saved = fb.lseek(0, 1)?;
+                fb.lseek(off, 0)?;
+                let io = fb.read(len.min(1 << 24), &mut |_| Vec::new());
+                fb.lseek(saved, 0)?;
+                return match io {
+                    Io::Done(d) => Ok(d),
+                    Io::Err(e) => Err(e),
+                    _ => Err(EIO),
+                };
+            }
+        }
+        let f = self.positional_file(t, fd, false)?;
+        let fb = f.borrow();
+        let Kind::Host { file, .. } = &fb.kind else { unreachable!() };
+        let mut data = vec![0u8; len.min(1 << 24)];
+        let n = file.read_at(&mut data, off as u64).map_err(|e| host_errno(&e))?;
+        data.truncate(n);
+        Ok(data)
+    }
+
+    /// preadv/pwritev (69/70) e preadv2/pwritev2 (286/287): come readv/writev
+    /// a un offset. Con le varianti 2 un offset di -1 vuol dire la posizione
+    /// corrente; i flag RWF_* non sono supportati (EOPNOTSUPP).
+    fn sys_piov(&mut self, t: usize, nr: u64, a: [u64; 6]) -> R {
+        let (fd, iov, cnt, off) = (a[0] as i64, a[1], a[2] as usize, a[3] as i64);
+        let write = matches!(nr, 70 | 287);
+        let v2 = nr >= 286;
+        if v2 && a[5] != 0 {
+            return Err(95);
+        }
+        if v2 && off == -1 {
+            return if write { self.sys_writev(t, fd, iov, cnt) } else { self.sys_readv(t, fd, iov, cnt) };
+        }
+        let vecs = self.iovecs(t, iov, cnt)?;
+        if write {
+            let mut data = Vec::new();
+            for (b, l) in vecs {
+                data.extend(read_bytes(&mut self.mem(t).borrow_mut().mem, b, l)?);
+            }
+            ret(self.pwrite_at(t, fd, &data, off)? as i64)
+        } else {
+            let total: usize = vecs.iter().map(|v| v.1).fold(0usize, usize::saturating_add);
+            let data = self.pread_at(t, fd, total, off)?;
+            let mut done = 0;
+            for (b, l) in vecs {
+                if done >= data.len() {
+                    break;
+                }
+                let n = l.min(data.len() - done);
+                write_bytes(&mut self.mem(t).borrow_mut().mem, b, &data[done..done + n])?;
+                done += n;
+            }
+            ret(data.len() as i64)
         }
     }
 
@@ -1083,7 +1194,7 @@ impl Kernel {
             if timeout != 0 && self.tasks[t].deadline.is_none() {
                 let s = read_u64(&mut mm.borrow_mut().mem, timeout)?;
                 let ns = read_u64(&mut mm.borrow_mut().mem, timeout + 8)?;
-                self.tasks[t].deadline = Some(self.now() + s * 1_000_000_000 + ns);
+                self.tasks[t].deadline = Some(self.now().saturating_add(timespec_ns(s, ns)?));
             }
             let until = self.tasks[t].deadline;
             if until.is_none_or(|u| self.now() < u) {
@@ -1134,7 +1245,12 @@ impl Kernel {
             8 => {
                 let who = arg as i32;
                 drop(files);
-                if who != 0 && !self.id_exists(if who < 0 { 2 } else { 1 }, who.unsigned_abs() as i32) {
+                // -INT_MIN non è un gruppo (f_setown: EINVAL).
+                if who == i32::MIN {
+                    return Err(EINVAL);
+                }
+                // find_vpid trova qualunque id (anche il tid di un thread).
+                if who != 0 && !self.id_exists(if who < 0 { 2 } else { 0 }, who.unsigned_abs() as i32) {
                     return Err(ESRCH);
                 }
                 f.borrow_mut().owner = if who < 0 { (2, -who) } else { (1, who) };
@@ -1246,7 +1362,7 @@ impl Kernel {
             for x in self.tasks.iter_mut().filter(|x| x.tgid == tgid) {
                 x.rlimits[res] = l;
                 if res == 7 {
-                    x.files.borrow_mut().limit = l.0.min(1 << 20) as usize;
+                    x.files.borrow_mut().limit = Some(l.0.min(1 << 20) as usize);
                 }
             }
         }
@@ -1370,6 +1486,17 @@ impl Kernel {
                 return std::fs::metadata(cwd).map(|m| Stat::from_host(&m)).map_err(|e| host_errno(&e));
             }
             return self.tasks[t].files.borrow().get(dirfd as i64)?.borrow().stat();
+        }
+        let unresolved = self.at_path_raw(t, dirfd, &raw)?;
+        if flags & AT_SYMLINK_NOFOLLOW != 0 && self.proc_fd_target(t, &unresolved).is_some() {
+            // I link di /proc/<pid>/fd: lrwx------, 64 byte.
+            return Ok(Stat {
+                mode: S_IFLNK | 0o700,
+                nlink: 1,
+                size: 64,
+                blksize: 1024,
+                ..Default::default()
+            });
         }
         let path = self.at_path(t, dirfd, &raw)?;
         if self.proc_dir(t, &path).is_some() {
@@ -1599,12 +1726,9 @@ impl Kernel {
             if clockid > 1 {
                 return Err(EINVAL);
             }
-            let s = read_u64(&mut mm.borrow_mut().mem, timeout)? as i64;
-            let n = read_u64(&mut mm.borrow_mut().mem, timeout + 8)? as i64;
-            if s < 0 || !(0..1_000_000_000).contains(&n) {
-                return Err(EINVAL);
-            }
-            let d = s as u64 * 1_000_000_000 + n as u64;
+            let s = read_u64(&mut mm.borrow_mut().mem, timeout)?;
+            let n = read_u64(&mut mm.borrow_mut().mem, timeout + 8)?;
+            let d = timespec_ns(s, n)?;
             // Scadenza assoluta sull'orologio indicato.
             let until = if clockid == 0 { d.saturating_sub(self.realtime() - self.now()) } else { d };
             self.tasks[t].deadline = Some(until);
@@ -1668,10 +1792,10 @@ impl Kernel {
                 if a[3] != 0 && self.tasks[t].deadline.is_none() {
                     let s = read_u64(&mut mm.borrow_mut().mem, a[3])?;
                     let n = read_u64(&mut mm.borrow_mut().mem, a[3] + 8)?;
-                    let d = s * 1_000_000_000 + n;
+                    let d = timespec_ns(s, n)?;
                     // FUTEX_WAIT: relativo; WAIT_BITSET: assoluto (monotono o realtime)
                     let until = if op == FUTEX_WAIT {
-                        self.now() + d
+                        self.now().saturating_add(d)
                     } else if a[1] & 256 != 0 {
                         d.saturating_sub(self.realtime() - self.now())
                     } else {
@@ -1758,7 +1882,8 @@ impl Kernel {
             }
         };
         if set {
-            if pid != 0 && pid != self.tasks[t].tgid {
+            // Solo il thread chiamante (task_pid_vnr(current), cioè il tid).
+            if pid != 0 && pid != self.tasks[t].tid {
                 return Err(EPERM);
             }
             let d = read_bytes(&mut self.mem(t).borrow_mut().mem, data, 12 * words)?;
@@ -1914,11 +2039,14 @@ impl Kernel {
             let iu = read_u64(&mut m.mem, new + 8)?;
             let vs = read_u64(&mut m.mem, new + 16)?;
             let vu = read_u64(&mut m.mem, new + 24)?;
-            let value = vs * 1_000_000_000 + vu * 1000;
+            let value = timeval_ns(vs, vu)?;
+            let interval = timeval_ns(is, iu)?;
+            drop(m);
             let s = &mut self.tasks[leader].sig;
-            s.alarm_interval = is * 1_000_000_000 + iu * 1000;
-            s.alarm = if value == 0 { None } else { Some(now + value) };
-            self.next_alarm = self.next_alarm.min(now + value);
+            s.alarm_interval = interval;
+            let at = now.saturating_add(value);
+            s.alarm = if value == 0 { None } else { Some(at) };
+            self.next_alarm = self.next_alarm.min(at);
         }
         let _ = bit;
         ret(0)
@@ -1944,5 +2072,42 @@ fn host_caps() -> ([u32; 2], [u32; 2], [u32; 2]) {
         (all, all, [0, 0])
     } else {
         ([0, 0], [0, 0], [0, 0])
+    }
+}
+
+/// La versione del kernel con UNAME26 (override_release di Linux): "2.6.",
+/// il numero minore più 60, e ciò che segue i primi tre numeri. "6.18.53" →
+/// "2.6.78", "6.12.5-linuxkit" → "2.6.72-linuxkit".
+fn uname26(release: &str) -> String {
+    let minor: u32 = release
+        .split('.')
+        .nth(1)
+        .and_then(|m| m.chars().take_while(char::is_ascii_digit).collect::<String>().parse().ok())
+        .unwrap_or(0);
+    let mut dots = 0;
+    let mut rest = release.len();
+    for (i, c) in release.char_indices() {
+        if c == '.' {
+            dots += 1;
+            if dots >= 3 {
+                rest = i;
+                break;
+            }
+        } else if !c.is_ascii_digit() {
+            rest = i;
+            break;
+        }
+    }
+    format!("2.6.{}{}", minor + 60, &release[rest..])
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn uname26_come_override_release() {
+        assert_eq!(super::uname26("6.18.53"), "2.6.78");
+        assert_eq!(super::uname26("6.12.5-linuxkit"), "2.6.72-linuxkit");
+        assert_eq!(super::uname26("6.6.0-vetro"), "2.6.66-vetro");
+        assert_eq!(super::uname26("6.8.0.1-x"), "2.6.68.1-x");
     }
 }

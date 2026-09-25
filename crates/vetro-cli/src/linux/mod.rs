@@ -508,7 +508,13 @@ impl Kernel {
             State::Zombie { .. } | State::Dead => return false,
             State::Blocked(w) => {
                 let w = w.clone();
-                if self.wait_satisfied(i, &w) {
+                // Retry si "soddisfa" sempre (la syscall ricontrolla da sé): un
+                // segnale deliverable la interrompe prima, come la F_SETLKW di
+                // Linux (EINTR, o riavvio con SA_RESTART).
+                if matches!(w, Wait::Retry) && self.signal_wakes(i) {
+                    self.tasks[i].sig.interrupted = Some(w);
+                    true
+                } else if self.wait_satisfied(i, &w) {
                     true
                 } else if self.signal_wakes(i) {
                     self.tasks[i].sig.interrupted = Some(w);

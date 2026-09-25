@@ -22,6 +22,7 @@ pub const MAP_PRIVATE: u64 = 0x02;
 pub const MAP_FIXED: u64 = 0x10;
 pub const MAP_ANONYMOUS: u64 = 0x20;
 pub const MAP_GROWSDOWN: u64 = 0x100;
+pub const MAP_POPULATE: u64 = 0x8000;
 
 /// Memoria di una MAP_SHARED: buffer, offset e se può diventare scrivibile.
 pub type SharedMap = (Rc<RefCell<Vec<u8>>>, usize, bool);
@@ -32,6 +33,11 @@ pub struct Mm {
     pub mem: UserMemory,
     pub brk_start: u64,
     pub brk: u64,
+}
+
+/// Come [`page_up`], ma `None` se l'arrotondamento trabocca.
+fn checked_page_up(v: u64) -> Option<u64> {
+    v.checked_add(PAGE - 1).map(|x| x & !(PAGE - 1))
 }
 
 fn page_up(x: u64) -> u64 {
@@ -130,6 +136,9 @@ impl Mm {
         if flags & MAP_GROWSDOWN != 0 {
             self.mem.set_grows_down(base);
         }
+        if flags & MAP_POPULATE != 0 {
+            self.mem.populate(base, base + size);
+        }
         Ok(base as i64)
     }
 
@@ -180,33 +189,42 @@ impl Mm {
         const MREMAP_MAYMOVE: u64 = 1;
         const MREMAP_FIXED: u64 = 2;
         const MREMAP_DONTUNMAP: u64 = 4;
+        /// TASK_SIZE con VA a 48 bit.
+        const TASK_SIZE: u64 = 1 << 48;
+        let dontunmap = flags & MREMAP_DONTUNMAP != 0;
+        // Controlli di sys_mremap, nello stesso ordine.
         if flags & !(MREMAP_MAYMOVE | MREMAP_FIXED | MREMAP_DONTUNMAP) != 0
-            || flags & MREMAP_FIXED != 0 && flags & MREMAP_MAYMOVE == 0
             || old & (PAGE - 1) != 0
-            || new_len == 0
+            || flags & (MREMAP_FIXED | MREMAP_DONTUNMAP) != 0 && flags & MREMAP_MAYMOVE == 0
+            || dontunmap && old_len != new_len
         {
             return Err(EINVAL);
         }
-        let (old_size, new_size) = (page_up(old_len), page_up(new_len));
-        if flags & MREMAP_FIXED != 0
-            && (new_addr & (PAGE - 1) != 0
-                || new_addr < old + old_size && old < new_addr + new_size
-                || new_addr + new_size > MMAP_TOP)
-        {
+        let (Some(old_size), Some(new_size)) = (checked_page_up(old_len), checked_page_up(new_len)) else {
+            return Err(EINVAL);
+        };
+        if new_size == 0 {
             return Err(EINVAL);
         }
-        if new_size == 0 || new_size > old_size && !self.fits(new_size - old_size) {
+        let old_end = old.checked_add(old_size).filter(|&e| e <= TASK_SIZE).ok_or(EINVAL)?;
+        if flags & MREMAP_FIXED != 0 {
+            let new_end = new_addr.checked_add(new_size).filter(|&e| e <= TASK_SIZE).ok_or(EINVAL)?;
+            if new_addr & (PAGE - 1) != 0 || new_addr < old_end && old < new_end {
+                return Err(EINVAL);
+            }
+        }
+        if new_size > old_size && !self.fits(new_size - old_size) {
             return Err(ENOMEM);
         }
-        if !self.mem.is_mapped(old, old + old_size) {
+        if !self.mem.is_mapped(old, old_end) {
             return Err(EFAULT);
         }
-        if flags & MREMAP_FIXED == 0 {
+        if flags & MREMAP_FIXED == 0 && !dontunmap {
             if new_size <= old_size {
-                self.mem.unmap(old + new_size, old + old_size);
+                self.mem.unmap(old + new_size, old_end);
                 return Ok(old as i64);
             }
-            let tail = old + old_size;
+            let tail = old_end;
             if !self.mem.ranges().any(|(s, e, _)| s < old + new_size && e > tail)
                 && old + new_size <= MMAP_TOP
             {
@@ -224,8 +242,14 @@ impl Mm {
         };
         // Le pagine si spostano con la loro memoria (anche condivisa).
         let keep = old_size.min(new_size);
+        if dontunmap {
+            // Il vecchio intervallo resta mappato: vuoto se privato, sulla
+            // stessa memoria se condiviso (Linux >= 5.13).
+            self.mem.remap_dontunmap(old, keep, dst);
+            return Ok(dst as i64);
+        }
         self.mem.remap(old, keep, dst);
-        self.mem.unmap(old, old + old_size);
+        self.mem.unmap(old, old_end);
         self.mem.extend(dst + keep, (new_size - keep) as usize);
         Ok(dst as i64)
     }

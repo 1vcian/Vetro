@@ -1,7 +1,7 @@
 //! `vetro`: runner nativo headless.
 //!
 //! ```text
-//! vetro run [--strace] [--host-clock] [--sysroot=DIR] <elf> [argomenti...]
+//! vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] <elf> [argomenti...]
 //! vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB]
 //! ```
 //!
@@ -25,23 +25,25 @@ fn main() -> ExitCode {
 }
 
 fn usage() -> ExitCode {
-    eprintln!("uso: vetro run [--strace] [--host-clock] [--sysroot=DIR] <elf> [argomenti...]");
+    eprintln!("uso: vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] <elf> [argomenti...]");
     eprintln!("     vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB]");
     ExitCode::from(2)
 }
 
 fn run(args: &[String]) -> ExitCode {
-    let mut cfg = Config {
-        echo: true,
-        cpus: std::thread::available_parallelism().map_or(1, |n| n.get()),
-        ..Config::default()
-    };
+    // Le CPU viste dal guest sono fisse (una, deterministico) salvo --cpus=N:
+    // non dipendono dalla macchina che esegue.
+    let mut cfg = Config { echo: true, ..Config::default() };
     let mut i = 0;
     while i < args.len() && args[i].starts_with("--") {
         match args[i].as_str() {
             "--strace" => cfg.strace = true,
             "--host-clock" => cfg.clock = ClockMode::Host,
             a if a.starts_with("--sysroot=") => cfg.sysroot = Some(a["--sysroot=".len()..].to_string()),
+            a if a.starts_with("--cpus=") => match a["--cpus=".len()..].parse::<usize>() {
+                Ok(n @ 1..=64) => cfg.cpus = n,
+                _ => return usage(),
+            },
             _ => return usage(),
         }
         i += 1;

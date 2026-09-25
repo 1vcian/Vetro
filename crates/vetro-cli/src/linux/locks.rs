@@ -132,6 +132,37 @@ impl LockTable {
     }
 }
 
+/// L'"inode" su cui stanno i lock di un file aperto. Per i file dell'host è
+/// (dispositivo, inode). Per gli oggetti del kernel emulato è l'oggetto
+/// condiviso: la pipe, di cui entrambi i capi hanno lo stesso inode come in
+/// Linux, o la console. Non la singola descrizione, il cui indirizzo si
+/// riusa dopo la chiusura.
+fn lock_key(kind: &Kind) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    Some(match kind {
+        Kind::Host { file, .. } => {
+            let m = file.metadata().ok()?;
+            (m.dev(), m.ino())
+        }
+        Kind::PipeR(p) | Kind::PipeW(p) | Kind::PipeRW(p) => (u64::MAX, std::rc::Rc::as_ptr(p) as u64),
+        Kind::Console(c, _) => (u64::MAX - 1, std::rc::Rc::as_ptr(c) as u64),
+        Kind::Null => (u64::MAX - 2, 1),
+        Kind::Zero => (u64::MAX - 2, 2),
+        Kind::Random => (u64::MAX - 2, 3),
+        Kind::Dir { path, .. } => (u64::MAX - 3, path_hash(path)),
+        Kind::Mem { .. } | Kind::Pagemap { .. } | Kind::Socket | Kind::Path { .. } => return None,
+    })
+}
+
+fn path_hash(p: &std::path::Path) -> u64 {
+    // FNV-1a: deterministico (niente RandomState).
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in p.as_os_str().as_encoded_bytes() {
+        h = (h ^ u64::from(*b)).wrapping_mul(0x100_0000_01b3);
+    }
+    h
+}
+
 /// Esito di F_SETLKW quando deve aspettare.
 pub enum LockResult {
     Done(i64),
@@ -142,7 +173,6 @@ impl Kernel {
     /// fcntl per i lock: `cmd` è F_GETLK (5), F_SETLK (6), F_SETLKW (7) o le
     /// varianti OFD F_OFD_GETLK (36), F_OFD_SETLK (37), F_OFD_SETLKW (38).
     pub(super) fn fcntl_lock(&mut self, t: usize, fd: i64, cmd: u64, arg: u64) -> Result<LockResult, i64> {
-        use std::os::unix::fs::MetadataExt;
         let f = self.tasks[t].files.borrow().get(fd)?;
         let mm = self.tasks[t].mm.clone();
         let raw = read_bytes(&mut mm.borrow_mut().mem, arg, 32)?;
@@ -150,15 +180,13 @@ impl Kernel {
             let mut fb = f.borrow_mut();
             let (readable, writable) = (fb.readable(), fb.writable());
             let pos = fb.lseek(0, 1).unwrap_or(0) as u64;
-            // Sui file dell'host la chiave è l'inode; il resto (pipe, console)
-            // è un oggetto del kernel emulato, identificato dalla descrizione.
-            let (key, size) = match &fb.kind {
-                Kind::Host { file, .. } => {
-                    let m = file.metadata().map_err(|e| host_errno(&e))?;
-                    ((m.dev(), m.ino()), m.len())
-                }
-                Kind::Path { .. } => return Err(EBADF),
-                _ => ((u64::MAX, std::rc::Rc::as_ptr(&f) as u64), 0),
+            if matches!(fb.kind, Kind::Path { .. }) {
+                return Err(EBADF);
+            }
+            let key = lock_key(&fb.kind).ok_or(EBADF)?;
+            let size = match &fb.kind {
+                Kind::Host { file, .. } => file.metadata().map_err(|e| host_errno(&e))?.len(),
+                _ => 0,
             };
             (key, size, readable, writable, pos)
         };
@@ -223,6 +251,7 @@ impl Kernel {
                     if cmd != 7 {
                         return Err(EAGAIN);
                     }
+                    self.prune_waiting(t);
                     if !ofd && self.locks.deadlock(owner, l.owner) {
                         self.locks.waiting.remove(&owner);
                         return Err(EDEADLK);
@@ -237,6 +266,22 @@ impl Kernel {
         }
     }
 
+    /// Toglie le attese registrate da F_SETLKW che non esistono più: un'attesa
+    /// interrotta da un segnale (EINTR) o finita senza tornare qui non deve
+    /// far vedere un ciclo che non c'è. Resta solo chi ha un thread fermo in
+    /// fcntl (Wait::Retry sulla syscall 25).
+    fn prune_waiting(&mut self, me: usize) {
+        let tasks = &self.tasks;
+        self.locks.waiting.retain(|&owner, _| {
+            tasks.iter().enumerate().any(|(i, x)| {
+                i != me
+                    && x.tgid == owner
+                    && matches!(x.state, super::State::Blocked(super::Wait::Retry))
+                    && x.cpu.x[8] == 25
+            })
+        });
+    }
+
     /// Alla chiusura di un descrittore: Linux rilascia tutti i lock POSIX del
     /// processo su quel file.
     pub(super) fn release_locks_on_close(
@@ -244,12 +289,9 @@ impl Kernel {
         t: usize,
         file: &std::cell::RefCell<super::fs::OpenFile>,
     ) {
-        use std::os::unix::fs::MetadataExt;
-        if let Kind::Host { file, .. } = &file.borrow().kind
-            && let Ok(m) = file.metadata()
-        {
+        if let Some(key) = lock_key(&file.borrow().kind) {
             let owner = self.tasks[t].tgid;
-            self.locks.release(owner, Some((m.dev(), m.ino())));
+            self.locks.release(owner, Some(key));
         }
     }
 }
