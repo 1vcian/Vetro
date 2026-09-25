@@ -74,7 +74,7 @@ run(async () => {
     const exited = proc.exitCode !== null ? Promise.resolve() : new Promise((ok) => proc.once('exit', ok));
     proc.kill();
     await exited;
-    rmSync(profile, { recursive: true, force: true });
+    rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
     await srv.close();
   }
 });
