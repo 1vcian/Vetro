@@ -8,6 +8,7 @@
 //! Lo stato e una lettura senza byte pronti non toccano la macchina.
 
 use vetro_machine::vetro_net::{CloseReason, HostConnState};
+use vetro_machine::{HostNetOp, Input, Reply};
 
 use crate::Vm;
 
@@ -45,6 +46,17 @@ impl Vm {
     fn net_readable(&self, conn: u64) -> usize {
         self.m.net_view(|s| s.host_conn(conn).map_or(0, |i| i.readable)).unwrap_or(0)
     }
+
+    /// La connessione esiste (senza toccare la macchina).
+    fn net_known(&self, conn: u64) -> bool {
+        self.m.net_view(|s| s.host_conn(conn).is_some()).unwrap_or(false)
+    }
+
+    /// Un'operazione sulle connessioni dell'host: ingresso della macchina,
+    /// registrato per il replay (M10, ADR 0019).
+    fn host(&mut self, op: HostNetOp) -> Reply {
+        self.m.input(Input::HostNet(op))
+    }
 }
 
 /// Apre una connessione TCP verso `guest_port` del guest (10.0.2.15, dal
@@ -58,7 +70,10 @@ pub unsafe extern "C" fn vetro_net_connect(vm: *mut Vm, guest_port: u32) -> u64 
     if port == 0 {
         return 0;
     }
-    vm.m.net(|s| s.host_connect(port)).flatten().unwrap_or(0)
+    match vm.host(HostNetOp::Connect(port)) {
+        Reply::HostConn(Some(id)) => id,
+        _ => 0,
+    }
 }
 
 /// Mette in coda `len` byte per il guest; restituisce quanti ne ha presi
@@ -71,7 +86,10 @@ pub unsafe extern "C" fn vetro_net_send(vm: *mut Vm, conn: u64, src: *const u8, 
         return 0;
     }
     let data = unsafe { core::slice::from_raw_parts(src, len) };
-    vm.m.net(|s| s.host_send(conn, data)).unwrap_or(0)
+    match vm.host(HostNetOp::Send(conn, data.to_vec())) {
+        Reply::Accepted(n) => n as usize,
+        _ => 0,
+    }
 }
 
 /// Copia e consuma al più `cap` byte arrivati dal guest; 0 = niente (la
@@ -84,7 +102,13 @@ pub unsafe extern "C" fn vetro_net_recv(vm: *mut Vm, conn: u64, dst: *mut u8, ca
         return 0;
     }
     let buf = unsafe { core::slice::from_raw_parts_mut(dst, cap) };
-    vm.m.net(|s| s.host_recv(conn, buf)).unwrap_or(0)
+    match vm.host(HostNetOp::Recv(conn, cap as u64)) {
+        Reply::Data(d) => {
+            buf[..d.len()].copy_from_slice(&d);
+            d.len()
+        }
+        _ => 0,
+    }
 }
 
 /// Chiude il verso JS→guest (FIN dopo i byte in coda). 1 = fatto.
@@ -92,7 +116,10 @@ pub unsafe extern "C" fn vetro_net_recv(vm: *mut Vm, conn: u64, dst: *mut u8, ca
 pub unsafe extern "C" fn vetro_net_shutdown(vm: *mut Vm, conn: u64) -> u32 {
     // SAFETY: `vm` viene da `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
-    vm.m.net(|s| s.host_conn(conn).map(|_| s.host_shutdown(conn)).is_some()).unwrap_or(false) as u32
+    if !vm.net_known(conn) {
+        return 0;
+    }
+    (vm.host(HostNetOp::Shutdown(conn)) == Reply::Done) as u32
 }
 
 /// Interrompe la connessione (RST al guest). 1 = fatto.
@@ -100,7 +127,10 @@ pub unsafe extern "C" fn vetro_net_shutdown(vm: *mut Vm, conn: u64) -> u32 {
 pub unsafe extern "C" fn vetro_net_abort(vm: *mut Vm, conn: u64) -> u32 {
     // SAFETY: `vm` viene da `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
-    vm.m.net(|s| s.host_conn(conn).map(|_| s.host_abort(conn)).is_some()).unwrap_or(false) as u32
+    if !vm.net_known(conn) {
+        return 0;
+    }
+    (vm.host(HostNetOp::Abort(conn)) == Reply::Done) as u32
 }
 
 /// Dimentica la connessione (se è ancora viva, prima la interrompe). Da
@@ -109,7 +139,10 @@ pub unsafe extern "C" fn vetro_net_abort(vm: *mut Vm, conn: u64) -> u32 {
 pub unsafe extern "C" fn vetro_net_release(vm: *mut Vm, conn: u64) -> u32 {
     // SAFETY: `vm` viene da `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
-    vm.m.net(|s| s.host_conn(conn).map(|_| s.host_release(conn)).is_some()).unwrap_or(false) as u32
+    if !vm.net_known(conn) {
+        return 0;
+    }
+    (vm.host(HostNetOp::Release(conn)) == Reply::Done) as u32
 }
 
 /// Stato della connessione (codici di [`state`]); in `out` (al più `cap`

@@ -9,8 +9,15 @@
 //!
 //! Le connessioni dall'host verso i servizi del guest (inoltro di porte,
 //! `Stack::host_connect`: `vetro boot --hostfwd`, `vetro_net_*` nel browser)
-//! passano da `Machine::net`: sono ingressi dell'host, e il `poll` forzato
-//! prima della prossima istruzione li porta al guest.
+//! passano da `Machine::input` con `Input::HostNet` (ADR 0019): sono
+//! ingressi dell'host, registrati per il replay, e il `poll` forzato prima
+//! della prossima istruzione li porta al guest.
+//!
+//! L'host può anche consegnare al guest frame Ethernet suoi
+//! (`Input::NetFrame`): passano davanti a quelli dello stack e sono anch'essi
+//! un ingresso registrato.
+
+use std::collections::VecDeque;
 
 use vetro_net::{NetConfig, Sinkhole, SinkholeConfig, Stack, VirtualTime};
 use vetro_platform::map;
@@ -66,6 +73,9 @@ pub struct NetLink {
     /// Solo osservazione: non cambia l'esecuzione e non entra negli
     /// snapshot.
     pub(crate) tap: Option<Vec<TappedFrame>>,
+    /// Frame dell'host per il guest (`Input::NetFrame`), consegnati prima di
+    /// quelli dello stack.
+    pub(crate) host_rx: VecDeque<Vec<u8>>,
 }
 
 impl NetLink {
@@ -74,6 +84,7 @@ impl NetLink {
             stack: Stack::new(setup.config.clone(), Sinkhole::new(setup.sinkhole.clone())),
             now: VirtualTime(0),
             tap: None,
+            host_rx: VecDeque::new(),
         }
     }
 
@@ -99,21 +110,23 @@ impl NetBackend for NetLink {
         self.stack.receive(self.now, frame);
     }
     fn recv(&mut self) -> Option<Vec<u8>> {
-        let frame = self.stack.pop_frame()?;
+        let frame = self.host_rx.pop_front().or_else(|| self.stack.pop_frame())?;
         if let Some(tap) = &mut self.tap {
             tap.push(TappedFrame { at: self.now, dir: FrameDir::ToGuest, data: frame.clone() });
         }
         Some(frame)
     }
-    /// L'istante corrente e tutto lo stack (connessioni, timer, sinkhole,
-    /// registro degli eventi): la rete è dentro la macchina, niente da
-    /// ricollegare.
+    /// L'istante corrente, i frame dell'host in coda e tutto lo stack
+    /// (connessioni, timer, sinkhole, registro degli eventi): la rete è
+    /// dentro la macchina, niente da ricollegare.
     fn save_state(&self, w: &mut vetro_snapshot::Writer) {
         w.u64(self.now.0);
+        w.seq(&self.host_rx, |w, f| w.bytes(f));
         w.section(b"NETS", |w| w.put(&self.stack));
     }
     fn restore_state(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
         self.now = VirtualTime(r.u64()?);
+        self.host_rx = r.seq(8, |r| r.vec())?.into();
         let mut s = r.section(b"NETS")?;
         s.get(&mut self.stack)?;
         s.finish()

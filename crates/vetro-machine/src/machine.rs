@@ -17,13 +17,16 @@ use crate::boot::{self, BootError, BootPlan, RamConfig};
 use crate::net::{self, NetLink, NetSetup, TappedFrame};
 use crate::psci::{self, Call};
 
+mod record;
 mod snapshot;
+
+pub use record::RecordOptions;
 
 /// Bit di indirizzo fisico della Cortex-A53 (ID_AA64MMFR0.PARange = 40 bit).
 const PA_BITS: u32 = 40;
 
 /// Configurazione della macchina.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MachineConfig {
     /// RAM da `0x4000_0000`.
     pub ram_size: u64,
@@ -149,6 +152,13 @@ pub struct Machine {
     /// della configurazione negli snapshot).
     cfg: MachineConfig,
     devices: Devices,
+    /// Uscita della console tolta dalla UART e non ancora data all'host, con
+    /// il conto dei byte (M10).
+    console: record::ConsoleTap,
+    /// Registrazione o replay in corso (M10, ADR 0019).
+    rr: record::Rr,
+    /// Esito dell'ultimo replay (anche finito).
+    replay_status: Option<crate::record::ReplayStatus>,
 }
 
 /// CNTPCT dopo `steps` istruzioni: 62,5 MHz su 100 MHz nominali.
@@ -217,6 +227,9 @@ impl Machine {
             wfi_pending: false,
             cfg: cfg.clone(),
             devices: devices.clone(),
+            console: record::ConsoleTap::default(),
+            rr: record::Rr::Off,
+            replay_status: None,
         }
     }
 
@@ -224,6 +237,9 @@ impl Machine {
     /// dell'esecuzione non cambia: stesse istruzioni, stessi interrupt negli
     /// stessi punti, stessa uscita (vedi `vetro_jit::sys`).
     pub fn set_jit(&mut self, jit: Option<Box<dyn SysJitDyn>>) {
+        if jit.is_some() {
+            self.rr.note_jit();
+        }
         self.jit = jit;
         self.interp = Next::Jit;
     }
@@ -240,10 +256,53 @@ impl Machine {
 
     /// Agisce sul dispositivo virtio dello slot `slot`, di tipo `T`. Il
     /// dispositivo viene servito prima della prossima istruzione (eventi,
-    /// dati, cambi di configurazione dell'host arrivano al guest). È il
-    /// punto d'ingresso dell'host verso i dispositivi: va registrato per il
-    /// replay (M10).
+    /// dati, cambi di configurazione dell'host arrivano al guest).
+    ///
+    /// Una chiusura non si può registrare: durante una registrazione (M10,
+    /// ADR 0019) l'accesso finisce nel log come evento opaco, e il replay si
+    /// ferma lì. Gli ingressi passano da [`Machine::input`]; le letture da
+    /// [`Machine::device_view`]; i dati di un disco atteso da
+    /// [`Machine::host_link`].
     pub fn device<T: VirtioDevice, R>(
+        &mut self,
+        slot: Option<u32>,
+        f: impl FnOnce(&mut T) -> R,
+    ) -> Option<R> {
+        self.note_opaque(slot);
+        self.device_raw(slot, f)
+    }
+
+    /// Come [`Machine::device`], per i collegamenti esterni di un
+    /// dispositivo che non sono ingressi del guest: i dati di un disco che
+    /// la macchina aspetta ([`Stop::Blocked`], ADR 0014; il tempo del guest
+    /// è fermo, e in replay il disco deve dare gli stessi dati). Non si
+    /// registra.
+    pub fn host_link<T: VirtioDevice, R>(
+        &mut self,
+        slot: Option<u32>,
+        f: impl FnOnce(&mut T) -> R,
+    ) -> Option<R> {
+        self.device_raw(slot, f)
+    }
+
+    /// Il dispositivo virtio dello slot `slot` in sola lettura, senza
+    /// effetti sulla macchina.
+    pub fn device_view<T: VirtioDevice, R>(&self, slot: Option<u32>, f: impl FnOnce(&T) -> R) -> Option<R> {
+        let b = self.board.borrow();
+        Some(f(b.virt.virtio(slot?)?.device_as::<T>()?))
+    }
+
+    /// La GPU in sola lettura (immagine, cursore, risorse).
+    pub fn gpu_view<R>(&self, f: impl FnOnce(&VirtioGpu) -> R) -> Option<R> {
+        self.device_view(self.slots.gpu, f)
+    }
+
+    /// virtio-vsock in sola lettura (stato delle connessioni, byte pronti).
+    pub fn vsock_view<R>(&self, f: impl FnOnce(&VirtioVsock) -> R) -> Option<R> {
+        self.device_view(self.slots.vsock, f)
+    }
+
+    fn device_raw<T: VirtioDevice, R>(
         &mut self,
         slot: Option<u32>,
         f: impl FnOnce(&mut T) -> R,
@@ -274,10 +333,25 @@ impl Machine {
     /// eventi, connessioni e byte registrati, statistiche. Dopo l'accesso lo
     /// stack viene interrogato (`poll`) prima della prossima istruzione, così
     /// ciò che l'host cambia nell'upstream arriva al guest.
+    ///
+    /// Come [`Machine::device`], durante una registrazione è un accesso
+    /// opaco: le connessioni dell'host passano da [`Machine::input`] con
+    /// [`Input::HostNet`](crate::record::Input::HostNet).
     pub fn net<R>(&mut self, f: impl FnOnce(&mut Stack<Sinkhole>) -> R) -> Option<R> {
-        let r = self.device(self.slots.net, |d: &mut VirtioNet| {
-            d.backend_as_mut::<NetLink>().map(|l| f(&mut l.stack))
-        })??;
+        self.note_opaque(self.slots.net);
+        self.net_raw(f)
+    }
+
+    fn net_raw<R>(&mut self, f: impl FnOnce(&mut Stack<Sinkhole>) -> R) -> Option<R> {
+        self.net_input_link(|l| f(&mut l.stack))
+    }
+
+    /// Il collegamento di rete (stack e frame dell'host) come ingresso: il
+    /// dispositivo si serve e lo stack si interroga (`poll`) prima della
+    /// prossima istruzione.
+    fn net_input_link<R>(&mut self, f: impl FnOnce(&mut NetLink) -> R) -> Option<R> {
+        let r =
+            self.device_raw(self.slots.net, |d: &mut VirtioNet| d.backend_as_mut::<NetLink>().map(f))??;
         self.net_deadline = Some(0);
         self.timer_deadline = Some(0);
         Some(r)
@@ -363,16 +437,23 @@ impl Machine {
         self.load_linux(&boot.kernel, boot.initrd(), &boot.cmdline)
     }
 
-    /// Accoda byte sulla console (PL011) come se arrivassero dalla tastiera.
+    /// Accoda byte sulla console (PL011) come se arrivassero dalla tastiera:
+    /// [`Machine::input`] con [`Input::Console`](crate::record::Input::Console).
     pub fn console_input(&mut self, bytes: &[u8]) {
-        let mut b = self.board.borrow_mut();
-        b.virt.uart_mut().push_input(bytes);
-        b.irq_dirty = true;
+        self.input(crate::record::Input::Console(bytes.to_vec()));
+    }
+
+    /// Pilota una linea d'ingresso del GPIO PL061 (la 3 è il tasto di
+    /// spegnimento): [`Machine::input`] con
+    /// [`Input::Gpio`](crate::record::Input::Gpio).
+    pub fn gpio_input(&mut self, line: u32, level: bool) {
+        self.input(crate::record::Input::Gpio { line, level });
     }
 
     /// Consuma l'uscita della console.
     pub fn console_output(&mut self) -> Vec<u8> {
-        self.board.borrow_mut().virt.uart_mut().take_output()
+        self.drain_console();
+        core::mem::take(&mut self.console.buf)
     }
 
     /// Una richiesta di virtio-blk aspetta dati dall'host ([`Stop::Blocked`]).
@@ -460,8 +541,23 @@ impl Machine {
         Some(limit)
     }
 
-    /// Esegue al più `budget` istruzioni.
+    /// Esegue al più `budget` istruzioni. Durante un replay (M10) le
+    /// istruzioni si fermano a ogni evento del log per applicarlo, e alla
+    /// fine della registrazione ([`Machine::replay_status`]).
     pub fn run(&mut self, budget: u64) -> Stop {
+        if self.rr.replaying() {
+            return self.run_replay(budget);
+        }
+        let stop = self.run_quantum(budget);
+        if self.rr.recording() {
+            self.after_quantum();
+        }
+        stop
+    }
+
+    /// Un quanto di al più `budget` istruzioni, senza registrazione né
+    /// replay.
+    fn run_quantum(&mut self, budget: u64) -> Stop {
         let end = self.steps.saturating_add(budget);
         self.sync_irqs();
         if self.blocked() {

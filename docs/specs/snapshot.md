@@ -19,7 +19,9 @@ Nessuna dipendenza; compila per wasm32. Lo usano `vetro-cpu`, `vetro-mmu`,
 | `encode_file(config_hash, payload)` / `decode_file(bytes) -> (Header, payload)` | intestazione: `"VETROSNP"`, u32 `FORMAT_VERSION`, u64 hash della configurazione, u64 lunghezza, u64 `hash64` del contenuto. `decode_file` controlla magia, versione (prima di tutto il resto), lunghezza e somma |
 | `Error` | `BadMagic`, `Version { found, expected }`, `Config { found, expected }`, `Checksum`, `Truncated`, `Section { expected, found }`, `Trailing { section, bytes }`, `Invalid(String)`; `Display` in italiano con il motivo |
 
-`FORMAT_VERSION` oggi vale **2** (2: connessioni aperte dall'host, inoltro di porte).
+`FORMAT_VERSION` oggi vale **3** (2: connessioni aperte dall'host, inoltro di porte; 3: frame dell'host in coda nel `NetLink`, ADR 0019).
+
+`encode_container(magic, version, config_hash, payload)` / `decode_container(magic, version, bytes)`: la stessa intestazione con un'altra magia e un'altra versione (il log di registrazione di M10, `docs/specs/replay.md`); `encode_file`/`decode_file` ne sono il caso `"VETROSNP"`/`FORMAT_VERSION`.
 
 ## `vetro-machine`
 

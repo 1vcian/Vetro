@@ -159,13 +159,13 @@ impl Machine {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::super::Stop;
     use super::super::tests::{DATA, Gate, USED, blk_machine};
     use super::*;
     use vetro_platform::virtio::VirtioBlk;
 
-    const R: u64 = map::RAM_BASE;
+    pub(in crate::machine) const R: u64 = map::RAM_BASE;
 
     /// Sonda bare-metal (codifiche da `tools/a64asm.sh`): vettori, GICv3,
     /// timer virtuale ogni 2000 tick con un interrupt che scrive `.` sulla
@@ -173,7 +173,7 @@ mod tests {
     /// ogni istruzione in più o in meno la cambia per sempre), un ciclo che
     /// incrementa una parola con LDXR/STXR (il monitor esclusivo è spesso armato) e ogni 4096 giri una
     /// SVC (che scrive `s`) e una WFI (che salta alla scadenza del timer).
-    const MAIN: [u32; 35] = [
+    pub(in crate::machine) const MAIN: [u32; 35] = [
         0xd2a80000, // mov x0, #0x40000000
         0x91200001, // add x1, x0, #0x800
         0xd518c001, // msr VBAR_EL1, x1
@@ -211,14 +211,14 @@ mod tests {
         0x17fffff7, // b loop
     ];
     /// Eccezione sincrona a EL1 con SP_EL1 (VBAR + 0x200): la SVC.
-    const SVC: [u32; 4] = [
+    pub(in crate::machine) const SVC: [u32; 4] = [
         0x52800e6d, // mov w13, #0x73
         0xb900012d, // str w13, [x9]
         0x91000694, // add x20, x20, #0x1
         0xd69f03e0, // eret
     ];
     /// IRQ a EL1 con SP_EL1 (VBAR + 0x280): il timer.
-    const IRQ: [u32; 12] = [
+    pub(in crate::machine) const IRQ: [u32; 12] = [
         0xd538cc0e, // mrs x14, ICC_IAR1_EL1
         0xd280fa0f, // mov x15, #0x7d0
         0xd51be30f, // msr CNTV_TVAL_EL0, x15
@@ -232,9 +232,9 @@ mod tests {
         0xd518cc2e, // msr ICC_EOIR1_EL1, x14
         0xd69f03e0, // eret
     ];
-    const IRQ_AT: u64 = R + 0x800 + 0x280;
+    pub(in crate::machine) const IRQ_AT: u64 = R + 0x800 + 0x280;
 
-    fn cfg() -> MachineConfig {
+    pub(in crate::machine) fn cfg() -> MachineConfig {
         MachineConfig { ram_size: 1 << 20, ..MachineConfig::default() }
     }
 

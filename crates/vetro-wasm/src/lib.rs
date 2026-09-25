@@ -34,7 +34,7 @@ pub mod net;
 use std::alloc::Layout;
 
 use vetro_machine::vetro_snapshot::overlay::{self, Overlay, Patches};
-use vetro_machine::{Devices, Machine, MachineConfig, NetSetup, Pointer, Stop};
+use vetro_machine::{Devices, Input, Machine, MachineConfig, NetSetup, Pointer, Reply, Stop};
 use vetro_platform::virtio::input::InputEvent;
 use vetro_platform::virtio::{
     BlockBackend, CowBackend, GpuConfig, MemBackend, VirtioBlk, VirtioBlkConfig, VirtioGpu,
@@ -240,7 +240,7 @@ impl Vm {
             b.backend_as_mut::<HostDisk>().map(f)
         };
         if self.m.blocked() {
-            self.m.device::<VirtioBlk, _>(Some(slot), pick).flatten()
+            self.m.host_link::<VirtioBlk, _>(Some(slot), pick).flatten()
         } else {
             let mut b = self.m.board.borrow_mut();
             pick(b.virt.virtio_mut(slot)?.device_as_mut::<VirtioBlk>()?)
@@ -741,7 +741,7 @@ pub unsafe extern "C" fn vetro_display_take_dirty(vm: *const Vm, scanout: u32, o
 pub unsafe extern "C" fn vetro_display_resize(vm: *mut Vm, scanout: u32, width: u32, height: u32) -> u32 {
     // SAFETY: `vm` viene da `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
-    vm.m.gpu(|g| g.set_display(scanout, width, height)).is_some() as u32
+    (vm.m.input(Input::Display { scanout, width, height }) != Reply::NoDevice) as u32
 }
 
 /// Stato del cursore dello scanout in `out` (6 valori): risorsa (0 =
@@ -798,12 +798,12 @@ pub unsafe extern "C" fn vetro_input_events(
         .iter()
         .map(|e| InputEvent { ty: e[0] as u16, code: e[1] as u16, value: e[2] })
         .collect();
-    let r = match device {
-        input_dev::KEYBOARD => vm.m.keyboard(|k| k.inject(&ev)),
-        input_dev::POINTER => vm.m.pointer(|p| p.inject(&ev)),
-        _ => None,
+    let input = match device {
+        input_dev::KEYBOARD => Input::Keyboard(ev),
+        input_dev::POINTER => Input::Pointer(ev),
+        _ => return 0,
     };
-    r.is_some() as u32
+    (vm.m.input(input) != Reply::NoDevice) as u32
 }
 
 /// Un tasto della tastiera (codice Linux `KEY_*`) premuto o rilasciato, con
@@ -812,7 +812,7 @@ pub unsafe extern "C" fn vetro_input_events(
 pub unsafe extern "C" fn vetro_input_key(vm: *mut Vm, code: u32, down: u32) -> u32 {
     // SAFETY: `vm` viene da `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
-    vm.m.keyboard(|k| k.key(code as u16, down != 0)).is_some() as u32
+    (vm.m.input(Input::Keyboard(Input::key_events(code as u16, down != 0))) != Reply::NoDevice) as u32
 }
 
 /// Posizione assoluta del tablet (0..=32767 per asse), con SYN_REPORT.
@@ -820,7 +820,7 @@ pub unsafe extern "C" fn vetro_input_key(vm: *mut Vm, code: u32, down: u32) -> u
 pub unsafe extern "C" fn vetro_input_abs(vm: *mut Vm, x: u32, y: u32) -> u32 {
     // SAFETY: `vm` viene da `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
-    vm.m.pointer(|p| p.move_abs(x, y)).is_some() as u32
+    (vm.m.input(Input::Pointer(Input::move_abs_events(x, y))) != Reply::NoDevice) as u32
 }
 
 /// Pulsante del puntatore (`BTN_LEFT` = 0x110, ...), con SYN_REPORT.
@@ -828,7 +828,7 @@ pub unsafe extern "C" fn vetro_input_abs(vm: *mut Vm, x: u32, y: u32) -> u32 {
 pub unsafe extern "C" fn vetro_input_button(vm: *mut Vm, code: u32, down: u32) -> u32 {
     // SAFETY: `vm` viene da `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
-    vm.m.pointer(|p| p.key(code as u16, down != 0)).is_some() as u32
+    (vm.m.input(Input::Pointer(Input::key_events(code as u16, down != 0))) != Reply::NoDevice) as u32
 }
 
 /// Contatto `slot` del touchscreen: `down` != 0 lo mette o lo sposta in
@@ -837,7 +837,8 @@ pub unsafe extern "C" fn vetro_input_button(vm: *mut Vm, code: u32, down: u32) -
 pub unsafe extern "C" fn vetro_input_touch(vm: *mut Vm, slot: u32, x: u32, y: u32, down: u32) -> u32 {
     // SAFETY: `vm` viene da `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
-    vm.m.pointer(|p| p.touch(slot, (down != 0).then_some((x, y)))).is_some() as u32
+    let ev = Input::touch_events(slot, (down != 0).then_some((x, y)));
+    (vm.m.input(Input::Pointer(ev)) != Reply::NoDevice) as u32
 }
 
 /// LED della tastiera accesi dal guest (bit `LED_*`).
@@ -857,7 +858,7 @@ pub unsafe extern "C" fn vetro_input_leds(vm: *mut Vm) -> u32 {
 pub unsafe extern "C" fn vetro_gpio_input(vm: *mut Vm, line: u32, level: u32) {
     // SAFETY: `vm` viene da `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
-    vm.m.board.borrow_mut().gpio_input(line, level != 0);
+    vm.m.gpio_input(line, level != 0);
 }
 
 /// Linea del GPIO del tasto di accensione.

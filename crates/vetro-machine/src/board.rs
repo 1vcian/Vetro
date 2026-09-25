@@ -229,8 +229,9 @@ impl Board {
     /// Pilota la linea d'ingresso `line` del GPIO PL061: la 3
     /// (`vetro_platform::pl061::POWER_KEY_LINE`) è il tasto di spegnimento
     /// (`gpio-keys`, KEY_POWER). L'interrupt arriva al guest prima della
-    /// prossima istruzione. È un ingresso dell'host: va registrato per il
-    /// replay (M10).
+    /// prossima istruzione. È un ingresso dell'host: l'host passa da
+    /// `Machine::gpio_input` (o `Machine::input`), che lo registra per il
+    /// replay (M10, ADR 0019); chiamato qui direttamente sfugge al log.
     pub fn gpio_input(&mut self, line: u32, level: bool) {
         self.virt.gpio_mut().set_input(line, level);
         self.irq_cache = None;

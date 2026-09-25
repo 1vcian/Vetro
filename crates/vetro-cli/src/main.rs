@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]
-//! vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--restore=FILE]
+//! vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=ISTRUZIONE [--dump=VA:BYTE]]]
 //! ```
 //!
 //! `boot` avvia la macchina virt (M3) con la console PL011 su stdin/stdout.
@@ -55,6 +55,20 @@
 //! file) devono essere quelli della macchina salvata, altrimenti lo snapshot
 //! si rifiuta. I file dei dischi sono collegamenti: il loro contenuto non
 //! entra nello snapshot, le scritture del guest (copy-on-write) sì.
+//!
+//! Record & replay (M10, ADR 0019): `--record=FILE` registra ogni ingresso
+//! dell'host (console da stdin, connessioni di `--hostfwd`) con il numero
+//! d'istruzione, più uno snapshot ogni `--keyframes=N` istruzioni (default
+//! 100 milioni, 0 = nessuno), e scrive il log all'uscita (spegnimento,
+//! reset, `--guest-secs`, stdin chiuso). `--replay=FILE` rifà la sessione
+//! registrata: stessi dispositivi e dischi, RAM, ora e seme dal log; parte
+//! da `--kernel` (stessi `--initrd`/`--append`) o da `--restore`, come la
+//! registrazione, oppure, senza nessuno dei due, dal primo keyframe del log.
+//! Stdin non conta; alla fine confronta console, istruzioni, CPU, RAM e
+//! dispositivi con la registrazione e dice se il replay è identico (codice
+//! 0) o dove diverge (codice 1). `--goto=N` va all'istruzione N (dal
+//! keyframe più vicino) e stampa i registri; `--dump=VA:BYTE` aggiunge i
+//! byte della memoria virtuale a quell'indirizzo (tabelle correnti).
 
 use std::process::ExitCode;
 use vetro_cli::linux::{ClockMode, Config, Exit};
@@ -78,7 +92,7 @@ fn usage() -> ExitCode {
         "uso: vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]"
     );
     eprintln!(
-        "     vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--restore=FILE]"
+        "     vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=ISTRUZIONE [--dump=VA:BYTE]]]"
     );
     ExitCode::from(2)
 }
@@ -186,6 +200,8 @@ fn boot(args: &[String]) -> ExitCode {
     let (mut jit, mut threshold) = (false, vetro_jit::SysJitConfig::default().hot_threshold);
     let mut save_at: Vec<(u64, String)> = Vec::new();
     let mut restore = None;
+    let (mut record, mut replay, mut goto, mut dump) = (None, None, None, None);
+    let mut keyframes = 100_000_000u64;
     let mut capture = vetro_cli::netcap::NetCapture::default();
     for a in &join_values(&vetro_cli::netcap::join_values(args)) {
         match a.as_str() {
@@ -240,6 +256,22 @@ fn boot(args: &[String]) -> ExitCode {
             Some(("--restore", v)) => restore = Some(v.to_string()),
             Some(("--pcap", v)) => capture.pcap = Some(v.into()),
             Some(("--har", v)) => capture.har = Some(v.into()),
+            Some(("--record", v)) => record = Some(v.to_string()),
+            Some(("--replay", v)) => replay = Some(v.to_string()),
+            Some(("--keyframes", v)) => match v.parse::<u64>() {
+                Ok(n) => keyframes = n,
+                Err(_) => return usage(),
+            },
+            Some(("--goto", v)) => match v.parse::<u64>() {
+                Ok(n) => goto = Some(n),
+                Err(_) => return usage(),
+            },
+            Some(("--dump", v)) => {
+                match v.split_once(':').map(|(a, n)| (parse_addr(a), n.parse::<usize>())) {
+                    Some((Some(a), Ok(n))) => dump = Some((a, n)),
+                    _ => return usage(),
+                }
+            }
             Some(("--hostfwd", v)) => match vetro_cli::hostfwd::parse_rule(v) {
                 Ok(r) => forwards.push(r),
                 Err(e) => {
@@ -266,11 +298,23 @@ fn boot(args: &[String]) -> ExitCode {
         }
     }
     let android = boot_img.is_some();
-    if (kernel.is_none() && !android && restore.is_none())
+    if (kernel.is_none() && !android && restore.is_none() && replay.is_none())
         || (android && (kernel.is_some() || initrd.is_some()))
         || (!android && (vendor_boot.is_some() || init_boot.is_some() || recovery || android_dump.is_some()))
     {
         return usage();
+    }
+    if (goto.is_some() && replay.is_none()) || (dump.is_some() && goto.is_none()) {
+        eprintln!("vetro: --goto richiede --replay, --dump richiede --goto");
+        return ExitCode::from(2);
+    }
+    if record.is_some() && replay.is_some() {
+        eprintln!("vetro: --record e --replay insieme non hanno senso");
+        return ExitCode::from(2);
+    }
+    if replay.is_some() && !forwards.is_empty() {
+        eprintln!("vetro: in replay la rete dell'host viene dal log: niente --hostfwd");
+        return ExitCode::from(2);
     }
     // I salvataggi in ordine di istruzioni, il primo in fondo.
     save_at.sort_by_key(|s| std::cmp::Reverse(s.0));
@@ -340,6 +384,21 @@ fn boot(args: &[String]) -> ExitCode {
         }
     };
     let append = append.unwrap_or_else(|| "console=ttyAMA0".to_string());
+    let log = match replay.as_deref().map(read).transpose() {
+        Ok(None) => None,
+        Ok(Some(b)) => match vetro_machine::Log::decode(&b) {
+            Ok(l) => Some(l),
+            Err(e) => {
+                eprintln!("vetro: {}: {e}", replay.as_deref().unwrap_or_default());
+                return ExitCode::from(2);
+            }
+        },
+        Err(c) => return c,
+    };
+    if let Some(l) = &log {
+        // RAM, ora e seme della macchina registrata.
+        cfg = l.config.clone();
+    }
     match net {
         Some(true) if devices.net.is_none() => devices.net = Some(NetSetup::default()),
         Some(false) => devices.net = None,
@@ -433,11 +492,61 @@ fn boot(args: &[String]) -> ExitCode {
         eprintln!("vetro: --pcap, --har e --net-requests richiedono la rete (--net)");
         return ExitCode::from(2);
     }
+    if let Some(l) = &log {
+        let path = replay.as_deref().unwrap_or_default();
+        if let Some(n) = goto {
+            return match m.goto(l, n) {
+                Ok(_) => {
+                    print!("{}", m.registers_text());
+                    if let Some((va, len)) = dump {
+                        let mut buf = vec![0u8; len];
+                        match m.read_virt(va, &mut buf) {
+                            Ok(()) => print!("{}", hex_dump(va, &buf)),
+                            Err(at) => {
+                                eprintln!("vetro: {at:#x} non è mappato");
+                                return ExitCode::from(1);
+                            }
+                        }
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(d) => {
+                    eprintln!("vetro: {path}: {d}");
+                    ExitCode::from(1)
+                }
+            };
+        }
+        // Senza kernel né snapshot si parte dal keyframe iniziale del log.
+        let start = if image.is_none() && snapshot.is_none() && android.is_none() {
+            m.replay_from(l, l.start.steps)
+        } else {
+            m.start_replay(l)
+        };
+        if let Err(d) = start {
+            eprintln!("vetro: {path}: {d}");
+            return ExitCode::from(1);
+        }
+        eprintln!(
+            "vetro: replay di {path}: {} eventi, da {} a {} istruzioni",
+            l.events.len(),
+            m.steps,
+            l.end.steps
+        );
+    }
+    if record.is_some() {
+        m.start_recording(vetro_machine::RecordOptions { keyframe_every: keyframes });
+    }
     // stdin in un thread, i socket di --hostfwd nei loro: tutto arriva su
     // un canale e passa alla macchina tra un quanto e l'altro.
     let (tx, rx) = std::sync::mpsc::channel::<Input>();
     let stdin_tx = tx.clone();
+    // In replay gli ingressi vengono dal log: stdin non si legge.
+    let replaying = log.is_some();
     std::thread::spawn(move || {
+        if replaying {
+            let _ = stdin_tx.send(Input::ConsoleClosed);
+            return;
+        }
         let mut buf = [0u8; 256];
         let mut stdin = std::io::stdin();
         while let Ok(n) = stdin.read(&mut buf) {
@@ -525,6 +634,19 @@ fn boot(args: &[String]) -> ExitCode {
             let _ = out.write_all(&o);
             let _ = out.flush();
         }
+        match m.replay_status() {
+            Some(vetro_machine::ReplayStatus::Finished) if log.is_some() => {
+                report(&m);
+                eprintln!("vetro: replay identico alla registrazione ({} istruzioni)", m.steps);
+                break ExitCode::SUCCESS;
+            }
+            Some(vetro_machine::ReplayStatus::Diverged(d)) if log.is_some() => {
+                report(&m);
+                eprintln!("vetro: replay diverso dalla registrazione: {d}");
+                break ExitCode::from(1);
+            }
+            _ => {}
+        }
         while save_at.last().is_some_and(|s| m.steps >= s.0) {
             let (_, path) = save_at.pop().expect("controllato sopra");
             let snap = m.save();
@@ -591,6 +713,23 @@ fn boot(args: &[String]) -> ExitCode {
             }
         }
     }
+    if let Some(path) = &record
+        && let Some(l) = m.stop_recording()
+    {
+        let bytes = l.encode();
+        if let Err(e) = std::fs::write(path, &bytes) {
+            eprintln!("vetro: {path}: {e}");
+            return ExitCode::from(2);
+        }
+        eprintln!(
+            "vetro: registrazione in {path}: {} eventi, {} keyframe, {} istruzioni, {} byte ({} senza keyframe)",
+            l.events.len(),
+            l.keyframes.len(),
+            l.end.steps,
+            bytes.len(),
+            l.events_len()
+        );
+    }
     code
 }
 
@@ -612,6 +751,11 @@ const BOOT_VALUE_OPTIONS: &[&str] = &[
     "--vendor-boot",
     "--init-boot",
     "--android-dump",
+    "--record",
+    "--keyframes",
+    "--replay",
+    "--goto",
+    "--dump",
 ];
 
 fn join_values(args: &[String]) -> Vec<String> {
@@ -637,4 +781,24 @@ fn dump_android(dir: &std::path::Path, a: &vetro_machine::android::AndroidBoot) 
     std::fs::write(dir.join("cmdline"), format!("{}\n", a.cmdline))?;
     eprintln!("vetro: Image, initrd e cmdline in {}", dir.display());
     Ok(())
+}
+
+/// Un indirizzo in esadecimale (`0x...`) o in decimale.
+fn parse_addr(s: &str) -> Option<u64> {
+    match s.strip_prefix("0x") {
+        Some(h) => u64::from_str_radix(h, 16).ok(),
+        None => s.parse().ok(),
+    }
+}
+
+/// Byte in righe da 16: indirizzo, esadecimale, ASCII.
+fn hex_dump(va: u64, bytes: &[u8]) -> String {
+    let mut t = String::new();
+    for (i, row) in bytes.chunks(16).enumerate() {
+        let hex: Vec<String> = row.iter().map(|b| format!("{b:02x}")).collect();
+        let ascii: String =
+            row.iter().map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' }).collect();
+        t.push_str(&format!("{:016x}  {:<47}  {ascii}\n", va + 16 * i as u64, hex.join(" ")));
+    }
+    t
 }

@@ -129,7 +129,11 @@ La RAM non passa dal bus MMIO: la gestisce la memoria della CPU/MMU.
   31, 30, 29, 28 come i `-device` di QEMU. `Machine::slots()`,
   `Machine::gpu/keyboard/pointer/vsock(|d| ...)` e `Machine::device::<T>(slot, f)`
   danno all'host il dispositivo e lo segnano da servire prima della
-  prossima istruzione. `Devices` sta fuori da `MachineConfig` perché
+  prossima istruzione. Da M10 gli ingressi dell'host passano da
+  `Machine::input` (ADR 0019, `docs/specs/replay.md`): le chiusure durante
+  una registrazione sono eventi opachi; le letture usano
+  `Machine::device_view`/`gpu_view`/`vsock_view`, i dati di un disco atteso
+  `Machine::host_link`. `Devices` sta fuori da `MachineConfig` perché
   `vetro-wasm` costruisce `MachineConfig` elencando i campi.
 - `FdtBuilder`: `begin_node`, `end_node`, `prop_u32`, `prop_u64`,
   `prop_u32_list`, `prop_u64_list`, `prop_str`, `prop_strs`, `prop_bytes`,
@@ -169,8 +173,9 @@ La RAM non passa dal bus MMIO: la gestisce la memoria della CPU/MMU.
   (fronte: IBE o IEV sul cambio di un ingresso; livello: RIS si riaccende
   finché attivo; IC azzera); linea = RIS & IE. Accessi fino a 4 byte (Linux
   usa `readb`/`writeb`); niente registri Luminary. L'host preme il tasto con
-  `Board::gpio_input(3, true/false)` di `vetro-machine`, che segna le linee
-  da aggiornare prima della prossima istruzione.
+  `Machine::gpio_input(3, true/false)` di `vetro-machine` (cioè
+  `Machine::input(Input::Gpio { .. })`, registrato per il replay), che segna
+  le linee da aggiornare prima della prossima istruzione.
 - **Timer**: ISTATUS = ENABLE && contatore >= CVAL (senza segno), 0 con
   ENABLE spento; TVAL a 32 bit con segno (come QEMU). CNTFRQ di default
   62,5 MHz.

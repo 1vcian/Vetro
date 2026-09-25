@@ -117,9 +117,9 @@ client TCP verso il guest; nessun socket vero nel core, tutto sincrono.
   DHCP): prima, i segmenti andrebbero in broadcast e Linux li scarterebbe.
 - Determinismo: stesse chiamate agli stessi istanti → stessi frame e
   registro. Le chiamate dell'host sono **ingressi**: in `vetro-machine`
-  passano da `Machine::net` (che forza un `poll` prima della prossima
-  istruzione) e per il replay di M10 andranno registrate con il numero di
-  istruzione, come i byte della console.
+  passano da `Machine::input` con `Input::HostNet` (che forza un `poll`
+  prima della prossima istruzione) e si registrano con il numero di
+  istruzione, come i byte della console (M10, ADR 0019).
 
 Piattaforme:
 - nativo: `vetro boot --hostfwd=tcp:[ADDR]:PORTA-[10.0.2.15]:PORTA_GUEST`
@@ -188,10 +188,12 @@ tempo virtuale in secondi (`[     1.500000] tcp 3 syn 10.0.2.15:40000 ->
   insieme a quella del timer: limita i blocchi del JIT e fa da sveglia per
   la WFI (il guest inattivo salta direttamente lì). Stesse istruzioni con e
   senza JIT.
-- Accesso dell'host: `Machine::net(|stack| …)` (mutabile; forza un `poll`
-  prima della prossima istruzione, da registrare per il replay come ogni
-  ingresso) e `Machine::net_view(|stack| …)` (sola lettura, non cambia
-  l'esecuzione: registro, statistiche, `upstream().tcp_connections()`).
+- Accesso dell'host: `Machine::input(Input::HostNet(..))` e
+  `Input::NetFrame` (ingressi registrati, ADR 0019),
+  `Machine::net(|stack| …)` (mutabile, forza un `poll`; durante una
+  registrazione è un evento opaco che ferma il replay) e
+  `Machine::net_view(|stack| …)` (sola lettura, non cambia l'esecuzione:
+  registro, statistiche, `upstream().tcp_connections()`).
 - CLI: `vetro boot` ha la rete di default; `--no-net` la toglie, `--net` la
   rimette anche con `--no-devices`, `--net-events` stampa il registro su
   stderr (`vetro-net: …`).

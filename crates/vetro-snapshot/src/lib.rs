@@ -31,7 +31,12 @@ pub const MAGIC: [u8; 8] = *b"VETROSNP";
 /// Versione del formato. Cambia a ogni modifica di ciò che si scrive (campi
 /// nuovi, ordine, codifiche): uno snapshot di un'altra versione si rifiuta
 /// con [`Error::Version`], senza tentare conversioni.
-pub const FORMAT_VERSION: u32 = 2;
+///
+/// - 1: M6 (ADR 0015).
+/// - 2: M5, inoltro di porte (connessioni dell'host nello stack di rete).
+/// - 3: M10, i frame dell'host verso il guest in coda nel collegamento di
+///   rete di `vetro-machine` (`NetLink`, ADR 0019).
+pub const FORMAT_VERSION: u32 = 3;
 
 /// Byte dell'intestazione: magia, versione, hash della configurazione,
 /// lunghezza del contenuto, somma di controllo del contenuto.
@@ -382,9 +387,17 @@ pub fn hash64(data: &[u8]) -> u64 {
 
 /// Snapshot completo: intestazione e `payload` (le sezioni).
 pub fn encode_file(config_hash: u64, payload: &[u8]) -> Vec<u8> {
+    encode_container(&MAGIC, FORMAT_VERSION, config_hash, payload)
+}
+
+/// Un file con l'intestazione degli snapshot ma un'altra magia e un'altra
+/// versione (es. il log di registrazione di M10, `b"VETROREC"`): magia, u32
+/// versione, u64 hash della configurazione, u64 lunghezza, u64 [`hash64`]
+/// del contenuto, contenuto.
+pub fn encode_container(magic: &[u8; 8], version: u32, config_hash: u64, payload: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(HEADER_LEN + payload.len());
-    out.extend_from_slice(&MAGIC);
-    out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+    out.extend_from_slice(magic);
+    out.extend_from_slice(&version.to_le_bytes());
     out.extend_from_slice(&config_hash.to_le_bytes());
     out.extend_from_slice(&(payload.len() as u64).to_le_bytes());
     out.extend_from_slice(&hash64(payload).to_le_bytes());
@@ -403,15 +416,21 @@ pub struct Header {
 /// controllo; restituisce il contenuto. La configurazione la controlla chi
 /// chiama (confronto di `config_hash`).
 pub fn decode_file(bytes: &[u8]) -> Result<(Header, &[u8])> {
-    if bytes.len() < 8 || bytes[..8] != MAGIC {
+    decode_container(&MAGIC, FORMAT_VERSION, bytes)
+}
+
+/// Come [`decode_file`] per un file di [`encode_container`] con magia
+/// `magic` e versione `version`.
+pub fn decode_container<'a>(magic: &[u8; 8], version: u32, bytes: &'a [u8]) -> Result<(Header, &'a [u8])> {
+    if bytes.len() < 8 || bytes[..8] != *magic {
         return Err(Error::BadMagic);
     }
     // La versione prima di tutto il resto: un formato diverso può avere
     // un'intestazione diversa.
     let mut r = Reader::new(&bytes[8..]);
-    let version = r.u32()?;
-    if version != FORMAT_VERSION {
-        return Err(Error::Version { found: version, expected: FORMAT_VERSION });
+    let found = r.u32()?;
+    if found != version {
+        return Err(Error::Version { found, expected: version });
     }
     let config_hash = r.u64()?;
     let len = r.u64()?;
@@ -423,7 +442,7 @@ pub fn decode_file(bytes: &[u8]) -> Result<(Header, &[u8])> {
     if hash64(payload) != sum {
         return Err(Error::Checksum);
     }
-    Ok((Header { version, config_hash }, payload))
+    Ok((Header { version: found, config_hash }, payload))
 }
 
 // ---- Dati grandi a blocchi --------------------------------------------------
@@ -588,6 +607,24 @@ mod tests {
         assert_eq!(decode_file(&bad).unwrap_err(), Error::Checksum);
         assert_eq!(decode_file(&f[..f.len() - 1]).unwrap_err(), Error::Truncated);
         assert_eq!(decode_file(b"ELF\x7f....").unwrap_err(), Error::BadMagic);
+    }
+
+    /// Un contenitore con un'altra magia e un'altra versione: stessa
+    /// intestazione, e uno snapshot non si scambia per un contenitore (né
+    /// viceversa).
+    #[test]
+    fn contenitore_con_altra_magia() {
+        let f = encode_container(b"VETROREC", 7, 9, b"eventi");
+        let (h, p) = decode_container(b"VETROREC", 7, &f).unwrap();
+        assert_eq!(h, Header { version: 7, config_hash: 9 });
+        assert_eq!(p, b"eventi");
+        assert_eq!(
+            decode_container(b"VETROREC", 8, &f).unwrap_err(),
+            Error::Version { found: 7, expected: 8 }
+        );
+        assert_eq!(decode_file(&f).unwrap_err(), Error::BadMagic);
+        assert_eq!(decode_container(b"VETROREC", 7, &encode_file(9, b"x")).unwrap_err(), Error::BadMagic);
+        assert_eq!(&encode_file(3, b"abc")[..], &encode_container(&MAGIC, FORMAT_VERSION, 3, b"abc")[..]);
     }
 
     const HASH_VETRO: u64 = 0x2e59_3998_1c8e_031d;

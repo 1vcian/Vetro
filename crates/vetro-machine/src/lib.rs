@@ -16,6 +16,11 @@
 //! - [`net`]: virtio-net collegato allo stack di `vetro-net` (gateway come la
 //!   rete user di QEMU, sinkhole), nel tempo virtuale della macchina.
 //!
+//! - [`record`]: record & replay (M10, ADR 0019): ogni ingresso dell'host
+//!   passa da [`Machine::input`] e si registra con il numero d'istruzione;
+//!   il replay lo riapplica alla stessa istruzione, e [`Machine::goto`]
+//!   riporta la macchina a un'istruzione qualsiasi della registrazione.
+//!
 //! Col JIT ([`Machine::set_jit`], ADR 0012 e 0013) i blocchi tradotti si
 //! alternano all'interprete fra un evento della piattaforma e l'altro: stesso
 //! numero di istruzioni, interrupt negli stessi punti.
@@ -31,10 +36,12 @@ pub mod boot;
 mod machine;
 pub mod net;
 mod psci;
+pub mod record;
 
 pub use board::Board;
-pub use machine::{Devices, Machine, MachineConfig, Pointer, Slots, Stop};
+pub use machine::{Devices, Machine, MachineConfig, Pointer, RecordOptions, Slots, Stop};
 pub use net::{FrameDir, NetLink, NetSetup, TappedFrame};
+pub use record::{Digest, Divergence, HostNetOp, Input, Log, ReplayStatus, Reply, VsockOp};
 pub use vetro_jit::{SysJitDyn, SysJitStats};
 pub use vetro_net;
 pub use vetro_snapshot;

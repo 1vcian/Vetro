@@ -7,13 +7,15 @@
 //! socket e uno ci scrive. Tutto arriva al ciclo principale su un canale
 //! ([`Input`], insieme alla console), e il ciclo lo passa allo stack di
 //! rete (`Stack::host_connect`, `host_send`, `host_recv`, …) **tra un quanto
-//! di istruzioni e l'altro**, con `Machine::net`: è lì che gli ingressi
-//! dell'host entrano nella macchina. Per il replay di M10 andranno
-//! registrati con il numero di istruzione (`Machine::steps`) e la
-//! connessione, come i byte della console; il momento in cui arrivano dal
-//! socket dipende dall'host, quindi senza registrazione due esecuzioni con
-//! `--hostfwd` non sono ripetibili (senza connessioni, invece, `--hostfwd`
-//! non tocca la macchina).
+//! di istruzioni e l'altro**, con `Machine::input` e
+//! `Input::HostNet` (M10, ADR 0019): è lì che gli ingressi dell'host entrano
+//! nella macchina, e con `vetro boot --record` si registrano con il numero
+//! d'istruzione, come i byte della console. Il momento in cui arrivano dal
+//! socket dipende dall'host: senza registrazione due esecuzioni con
+//! `--hostfwd` non sono ripetibili, con la registrazione il replay le rifà
+//! identiche (senza connessioni `--hostfwd` non tocca la macchina). Solo le
+//! letture che trovano byte pronti diventano ingressi (`net_view` guarda
+//! prima), così il log non si riempie di letture vuote.
 
 use std::collections::VecDeque;
 use std::io::{Read, Write};
@@ -23,8 +25,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
-use vetro_machine::Machine;
 use vetro_machine::vetro_net::{CloseReason, ConnId, HostConnState};
+use vetro_machine::{HostNetOp, Machine, Reply};
+
+/// Un'operazione sulle connessioni dell'host, come ingresso della macchina.
+fn host(m: &mut Machine, op: HostNetOp) -> Reply {
+    m.input(vetro_machine::Input::HostNet(op))
+}
 
 /// Byte letti da un socket e non ancora presi dallo stack oltre i quali il
 /// thread di lettura si ferma (contropressione verso il client).
@@ -165,7 +172,7 @@ impl HostFwd {
 
     fn accept(&mut self, m: &mut Machine, rule: usize, stream: TcpStream) {
         let port = self.rules[rule].guest_port;
-        let Some(Some(id)) = m.net(|s| s.host_connect(port)) else {
+        let Reply::HostConn(Some(id)) = host(m, HostNetOp::Connect(port)) else {
             // Senza rete (o senza porte effimere) si chiude subito.
             return;
         };
@@ -218,57 +225,71 @@ impl HostFwd {
         if !busy {
             return;
         }
-        m.net(|s| {
-            self.bridges.retain_mut(|b| {
-                if b.client_broken {
-                    s.host_release(b.id);
-                    let _ = b.writer.send(WriterMsg::Abort);
-                    return false;
-                }
-                if !b.pending.is_empty() {
-                    let (a, _) = b.pending.as_slices();
-                    let n = s.host_send(b.id, a);
-                    b.pending.drain(..n);
-                    b.read_ahead.fetch_sub(n, Ordering::AcqRel);
-                }
-                if b.client_eof && b.pending.is_empty() && !b.shut_to_guest {
-                    s.host_shutdown(b.id);
-                    b.shut_to_guest = true;
-                }
-                let mut buf = vec![0u8; 64 * 1024];
-                while b.write_behind.load(Ordering::Acquire) < WRITE_BEHIND {
-                    let n = s.host_recv(b.id, &mut buf);
-                    if n == 0 {
-                        break;
-                    }
-                    b.write_behind.fetch_add(n, Ordering::AcqRel);
-                    let _ = b.writer.send(WriterMsg::Data(buf[..n].to_vec()));
-                }
-                let Some(info) = s.host_conn(b.id) else {
-                    let _ = b.writer.send(WriterMsg::Abort);
-                    return false;
-                };
-                if info.guest_eof && !b.shut_to_client {
-                    let _ = b.writer.send(WriterMsg::Shutdown);
-                    b.shut_to_client = true;
-                }
-                match info.state {
-                    HostConnState::Closed(reason) if info.readable == 0 => {
-                        // Come slirp: chiusura ordinata anche se il guest
-                        // non ha il servizio (il client vede la fine del
-                        // flusso); RST se la connessione è stata interrotta.
-                        let msg = match reason {
-                            CloseReason::Normal | CloseReason::Refused => WriterMsg::Shutdown,
-                            _ => WriterMsg::Abort,
-                        };
-                        let _ = b.writer.send(msg);
-                        s.host_release(b.id);
-                        false
-                    }
-                    _ => true,
-                }
-            });
-        });
+        let mut keep = Vec::with_capacity(self.bridges.len());
+        for mut b in core::mem::take(&mut self.bridges) {
+            if exchange(m, &mut b) {
+                keep.push(b);
+            }
+        }
+        self.bridges = keep;
+    }
+}
+
+/// Scambi di un client con lo stack; falso quando la connessione è finita.
+fn exchange(m: &mut Machine, b: &mut Bridge) -> bool {
+    if b.client_broken {
+        host(m, HostNetOp::Release(b.id));
+        let _ = b.writer.send(WriterMsg::Abort);
+        return false;
+    }
+    let info = |m: &Machine| m.net_view(|s| s.host_conn(b.id)).flatten();
+    if !b.pending.is_empty() {
+        let room = info(m).map_or(0, |i| i.writable);
+        let (a, _) = b.pending.as_slices();
+        let offer = &a[..a.len().min(room)];
+        if !offer.is_empty() {
+            let n = match host(m, HostNetOp::Send(b.id, offer.to_vec())) {
+                Reply::Accepted(n) => n as usize,
+                _ => 0,
+            };
+            b.pending.drain(..n);
+            b.read_ahead.fetch_sub(n, Ordering::AcqRel);
+        }
+    }
+    if b.client_eof && b.pending.is_empty() && !b.shut_to_guest {
+        host(m, HostNetOp::Shutdown(b.id));
+        b.shut_to_guest = true;
+    }
+    while b.write_behind.load(Ordering::Acquire) < WRITE_BEHIND && info(m).is_some_and(|i| i.readable > 0) {
+        let Reply::Data(d) = host(m, HostNetOp::Recv(b.id, 64 * 1024)) else { break };
+        if d.is_empty() {
+            break;
+        }
+        b.write_behind.fetch_add(d.len(), Ordering::AcqRel);
+        let _ = b.writer.send(WriterMsg::Data(d));
+    }
+    let Some(info) = info(m) else {
+        let _ = b.writer.send(WriterMsg::Abort);
+        return false;
+    };
+    if info.guest_eof && !b.shut_to_client {
+        let _ = b.writer.send(WriterMsg::Shutdown);
+        b.shut_to_client = true;
+    }
+    match info.state {
+        HostConnState::Closed(reason) if info.readable == 0 => {
+            // Come slirp: chiusura ordinata anche se il guest non ha il
+            // servizio (il client vede la fine del flusso); RST se la
+            // connessione è stata interrotta.
+            let msg = match reason {
+                CloseReason::Normal | CloseReason::Refused => WriterMsg::Shutdown,
+                _ => WriterMsg::Abort,
+            };
+            let _ = b.writer.send(msg);
+            host(m, HostNetOp::Release(b.id));
+            false
+        }
+        _ => true,
     }
 }
 
