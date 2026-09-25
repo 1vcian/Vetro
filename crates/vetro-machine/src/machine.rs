@@ -356,6 +356,13 @@ impl Machine {
         Ok(plan)
     }
 
+    /// Carica kernel, initrd e riga di comando preparati dal bootloader
+    /// Android ([`crate::android`]): come [`Machine::load_linux`] con i pezzi
+    /// ricavati da `boot.img`, `vendor_boot.img` e `init_boot.img`.
+    pub fn load_android(&mut self, boot: &crate::android::AndroidBoot) -> Result<BootPlan, BootError> {
+        self.load_linux(&boot.kernel, boot.initrd(), &boot.cmdline)
+    }
+
     /// Accoda byte sulla console (PL011) come se arrivassero dalla tastiera.
     pub fn console_input(&mut self, bytes: &[u8]) {
         let mut b = self.board.borrow_mut();

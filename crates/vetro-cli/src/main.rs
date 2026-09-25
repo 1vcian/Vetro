@@ -2,10 +2,23 @@
 //!
 //! ```text
 //! vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]
-//! vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--restore=FILE]
+//! vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--restore=FILE]
 //! ```
 //!
 //! `boot` avvia la macchina virt (M3) con la console PL011 su stdin/stdout.
+//! Le opzioni con un valore si scrivono `--opzione=valore` o `--opzione
+//! valore`.
+//!
+//! Immagini Android (M5, `docs/specs/android-boot.md`): invece di `--kernel`
+//! e `--initrd`, `--boot-img` (header v0–v4) con `--vendor-boot` (v3/v4) e
+//! `--init-boot` facoltativi. Il bootloader di Vetro
+//! (`vetro_machine::android`) decomprime il kernel (gzip, LZ4), concatena i
+//! ramdisk del vendor (senza quelli di recovery, salvo `--recovery`) e il
+//! ramdisk generico, compone la riga di comando (boot, vendor, poi `--append`)
+//! e, con `vendor_boot` v4, mette gli `androidboot.*` di `--append` nel
+//! blocco bootconfig in coda all'initrd. `--android-dump=DIR` scrive in DIR
+//! `Image`, `initrd` e `cmdline` come li riceve il kernel: gli stessi file
+//! vanno a `qemu-system-aarch64 -kernel -initrd -append`.
 //! I dispositivi di default (GPU, tastiera, tablet) occupano gli slot
 //! virtio-mmio 31, 30, 29, e la rete (virtio-net con lo stack di `vetro-net`
 //! e il sinkhole: DHCP 10.0.2.15, gateway 10.0.2.2, DNS finto 10.0.2.3) il
@@ -65,7 +78,7 @@ fn usage() -> ExitCode {
         "uso: vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]"
     );
     eprintln!(
-        "     vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--restore=FILE]"
+        "     vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--restore=FILE]"
     );
     ExitCode::from(2)
 }
@@ -159,7 +172,9 @@ fn boot(args: &[String]) -> ExitCode {
     use vetro_cli::hostfwd::{HostFwd, Input};
     use vetro_machine::{Devices, Machine, MachineConfig, NetSetup, Stop};
     use vetro_platform::virtio::{CowBackend, VirtioBlk, VirtioBlkConfig};
-    let (mut kernel, mut initrd, mut append) = (None, None, "console=ttyAMA0".to_string());
+    let (mut kernel, mut initrd, mut append) = (None, None, None);
+    let (mut boot_img, mut vendor_boot, mut init_boot) = (None, None, None);
+    let (mut recovery, mut android_dump) = (false, None::<String>);
     let mut cfg = MachineConfig::default();
     let mut devices = Devices::default();
     // (immagine, overlay).
@@ -172,8 +187,12 @@ fn boot(args: &[String]) -> ExitCode {
     let mut save_at: Vec<(u64, String)> = Vec::new();
     let mut restore = None;
     let mut capture = vetro_cli::netcap::NetCapture::default();
-    for a in &vetro_cli::netcap::join_values(args) {
+    for a in &join_values(&vetro_cli::netcap::join_values(args)) {
         match a.as_str() {
+            "--recovery" => {
+                recovery = true;
+                continue;
+            }
             "--net-requests" => {
                 capture.requests = true;
                 continue;
@@ -234,7 +253,11 @@ fn boot(args: &[String]) -> ExitCode {
             },
             Some(("--kernel", v)) => kernel = Some(v.to_string()),
             Some(("--initrd", v)) => initrd = Some(v.to_string()),
-            Some(("--append", v)) => append = v.to_string(),
+            Some(("--append", v)) => append = Some(v.to_string()),
+            Some(("--boot-img", v)) => boot_img = Some(v.to_string()),
+            Some(("--vendor-boot", v)) => vendor_boot = Some(v.to_string()),
+            Some(("--init-boot", v)) => init_boot = Some(v.to_string()),
+            Some(("--android-dump", v)) => android_dump = Some(v.to_string()),
             Some(("--mem", v)) => match v.parse::<u64>() {
                 Ok(m) => cfg.ram_size = m << 20,
                 Err(_) => return usage(),
@@ -242,7 +265,11 @@ fn boot(args: &[String]) -> ExitCode {
             _ => return usage(),
         }
     }
-    if kernel.is_none() && restore.is_none() {
+    let android = boot_img.is_some();
+    if (kernel.is_none() && !android && restore.is_none())
+        || (android && (kernel.is_some() || initrd.is_some()))
+        || (!android && (vendor_boot.is_some() || init_boot.is_some() || recovery || android_dump.is_some()))
+    {
         return usage();
     }
     // I salvataggi in ordine di istruzioni, il primo in fondo.
@@ -265,6 +292,54 @@ fn boot(args: &[String]) -> ExitCode {
         Ok(s) => s,
         Err(c) => return c,
     };
+    // Immagini Android: il bootloader prepara kernel, initrd e riga di comando.
+    let android = match boot_img.as_deref().filter(|_| restore.is_none()) {
+        None => None,
+        Some(path) => {
+            let mut files = Vec::new();
+            for p in [Some(path), vendor_boot.as_deref(), init_boot.as_deref()] {
+                files.push(match p.map(read).transpose() {
+                    Ok(f) => f,
+                    Err(c) => return c,
+                });
+            }
+            let opts =
+                vetro_machine::android::BootOptions { params: append.clone().unwrap_or_default(), recovery };
+            let boot = files[0].as_deref().unwrap_or_default();
+            match vetro_machine::android::AndroidBoot::from_images(
+                boot,
+                files[1].as_deref(),
+                files[2].as_deref(),
+                &opts,
+            ) {
+                Ok(a) => {
+                    eprintln!(
+                        "vetro: kernel {} ({} byte), ramdisk: {}{}",
+                        a.kernel_format,
+                        a.kernel.len(),
+                        if a.ramdisks.is_empty() { "nessuno".to_string() } else { a.ramdisks.join(", ") },
+                        if a.bootconfig.is_empty() {
+                            String::new()
+                        } else {
+                            format!(", bootconfig {} byte", a.bootconfig.len())
+                        }
+                    );
+                    if let Some(dir) = &android_dump
+                        && let Err(e) = dump_android(std::path::Path::new(dir), &a)
+                    {
+                        eprintln!("vetro: {dir}: {e}");
+                        return ExitCode::from(2);
+                    }
+                    Some(a)
+                }
+                Err(e) => {
+                    eprintln!("vetro: {e}");
+                    return ExitCode::from(2);
+                }
+            }
+        }
+    };
+    let append = append.unwrap_or_else(|| "console=ttyAMA0".to_string());
     match net {
         Some(true) if devices.net.is_none() => devices.net = Some(NetSetup::default()),
         Some(false) => devices.net = None,
@@ -339,6 +414,11 @@ fn boot(args: &[String]) -> ExitCode {
         eprintln!("vetro: ripristinato {path} a {} istruzioni", m.steps);
         for (_, f) in overlays.iter_mut() {
             f.after_restore();
+        }
+    } else if let Some(a) = &android {
+        if let Err(e) = m.load_android(a) {
+            eprintln!("vetro: {}: {e}", boot_img.as_deref().unwrap_or_default());
+            return ExitCode::from(2);
         }
     } else if let Some(image) = &image
         && let Err(e) = m.load_linux(image, initrd.as_deref(), &append)
@@ -512,4 +592,49 @@ fn boot(args: &[String]) -> ExitCode {
         }
     }
     code
+}
+
+/// Opzioni di `boot` che vogliono un valore: `--opzione valore` diventa
+/// `--opzione=valore`.
+const BOOT_VALUE_OPTIONS: &[&str] = &[
+    "--kernel",
+    "--initrd",
+    "--append",
+    "--mem",
+    "--disk",
+    "--hostfwd",
+    "--guest-secs",
+    "--jit-threshold",
+    "--save-at",
+    "--restore",
+    "--overlay",
+    "--boot-img",
+    "--vendor-boot",
+    "--init-boot",
+    "--android-dump",
+];
+
+fn join_values(args: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match it.as_slice().first() {
+            Some(v) if BOOT_VALUE_OPTIONS.contains(&a.as_str()) => {
+                out.push(format!("{a}={v}"));
+                it.next();
+            }
+            _ => out.push(a.clone()),
+        }
+    }
+    out
+}
+
+/// `Image`, `initrd` e `cmdline` come li riceve il kernel.
+fn dump_android(dir: &std::path::Path, a: &vetro_machine::android::AndroidBoot) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    std::fs::write(dir.join("Image"), &a.kernel)?;
+    std::fs::write(dir.join("initrd"), &a.initrd)?;
+    std::fs::write(dir.join("cmdline"), format!("{}\n", a.cmdline))?;
+    eprintln!("vetro: Image, initrd e cmdline in {}", dir.display());
+    Ok(())
 }

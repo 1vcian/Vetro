@@ -5,6 +5,9 @@
 //!
 //! - [`boot`]: dove vanno kernel, initramfs e device tree, e come parte la
 //!   CPU (come `hw/arm/boot.c` di QEMU).
+//! - [`android`]: il lavoro del bootloader Android (`boot.img`,
+//!   `vendor_boot.img`, `init_boot.img`, bootconfig) davanti a [`boot`]
+//!   ([`Machine::load_android`]).
 //! - [`Machine`]: costruzione, caricamento di un kernel Linux, esecuzione a
 //!   quanti ([`Machine::run`]), console PL011, dispositivi virtio di M5
 //!   ([`Devices`]: GPU, tastiera, tablet o touchscreen, rete, vsock) con
@@ -22,6 +25,7 @@
 //! passo del livello user mode, ADR 0010). Una WFI senza interrupt pronti
 //! salta direttamente alla prossima scadenza del timer.
 
+pub mod android;
 mod board;
 pub mod boot;
 mod machine;

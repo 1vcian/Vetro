@@ -61,7 +61,7 @@ CPU: All CPU(s) started at EL1
 CPU features: detected: 32-bit EL0 Support
 CPU features: detected: CRC32 instructions
 alternatives: applying system-wide alternatives
-Memory: 1015184K/1048576K available (4288K kernel code, 676K rwdata, 936K rodata, 896K init, 251K bss, 30244K reserved, 0K cma-reserved)
+Memory: 1015184K/1048576K available (4288K kernel code, 676K rwdata, 940K rodata, 896K init, 251K bss, 30244K reserved, 0K cma-reserved)
 devtmpfs: initialized
 posixtimers hash table entries: 512 (order: 1, 8192 bytes, linear)
 futex hash table entries: 256 (16384 bytes on 1 NUMA nodes, total 16 KiB, linear).
@@ -88,12 +88,12 @@ Unpacking initramfs...
 workingset: timestamp_bits=62 max_order=18 bucket_order=0
 input: QEMU Virtio Tablet as /devices/platform/a003a00.virtio_mmio/virtio1/input/input0
 input: QEMU Virtio Keyboard as /devices/platform/a003c00.virtio_mmio/virtio2/input/input1
+Freeing initrd memory: 736K
 [drm] features: -virgl +edid -resource_blob -host_visible
 [drm] features: -context_init
 [drm] number of scanouts: 1
 [drm] number of cap sets: 0
 [drm] Initialized virtio_gpu 0.1.0 for a003e00.virtio_mmio on minor 0
-Freeing initrd memory: 736K
 rtc-pl031 9010000.pl031: registered as rtc0
 NET: Registered PF_PACKET protocol family
 NET: Registered PF_VSOCK protocol family
