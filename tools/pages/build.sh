@@ -37,6 +37,9 @@ APORTS_SHA256=f3969b717e36d97febb6f3694d0de12a94383fc45c150c5cb31b7a75df18e502
 # Il contenuto è comunque verificato con sha256.
 MIRROR=${VETRO_SOURCES_MIRROR:-https://pub-06e88fdd7f374fffb06844d60083f2ae.r2.dev/sources}
 
+# sha256 portabile: sha256sum (Linux) o shasum (macOS).
+sha256() { if command -v sha256sum >/dev/null; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
+
 for f in Image initramfs.cpio.gz VERSIONS sources/README sources/defconfig; do
   [ -f "$guest/$f" ] || { echo "manca $guest/$f: esegui tools/guest-kernel/build.sh" >&2; exit 1; }
 done
@@ -65,7 +68,7 @@ for f in "$guest"/sources/*; do
   case $f in *.tar.xz|*/README|*/defconfig|*/VERSIONS) ;; *) cp -R "$f" "$src/" ;; esac
 done
 (cd "$src" && split -b 60m "$kernel_tar" "$(basename "$kernel_tar")." \
-  && shasum -a 256 "$kernel_tar" | sed "s|  .*/|  |" > "$(basename "$kernel_tar").sha256")
+  && sha256 "$kernel_tar" | sed "s|  .*/|  |" > "$(basename "$kernel_tar").sha256")
 # fetch FILE SHA256 URL_ORIGINE: dalla cache, poi dal mirror, poi dall'origine.
 fetch() {
   local file=$1 sum=$2 origin=$3 url
@@ -74,7 +77,7 @@ fetch() {
       curl -sSfL --retry 3 -o "$file.tmp" "$url" || { echo "   (non scaricato da $url)"; continue; }
       mv "$file.tmp" "$file"
     fi
-    [ -f "$file" ] && echo "$sum  $file" | shasum -a 256 -c - >/dev/null 2>&1 && return 0
+    [ -f "$file" ] && echo "$sum  $file" | sha256 -c - >/dev/null 2>&1 && return 0
     rm -f "$file"
   done
   echo "impossibile ottenere $(basename "$file") con sha256 $sum" >&2
@@ -88,7 +91,7 @@ cp "$bb" "$src/"
 ap=$cache/aports-$APORTS_COMMIT-main-busybox.tar.gz
 fetch "$ap" "$APORTS_SHA256" \
   "https://gitlab.alpinelinux.org/alpine/aports/-/archive/$APORTS_COMMIT/aports-$APORTS_COMMIT.tar.gz?path=main/busybox"
-tar xzf "$ap" -O "aports-$APORTS_COMMIT-main-busybox/main/busybox/APKBUILD" | grep -qx "pkgrel=$APORTS_PKGREL"
+tar xzf "$ap" -O "aports-$APORTS_COMMIT-main-busybox/main/busybox/APKBUILD" | grep -x "pkgrel=$APORTS_PKGREL" >/dev/null
 cp "$ap" "$src/"
 cat >> "$src/README" <<EOF
 

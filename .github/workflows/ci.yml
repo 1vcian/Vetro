@@ -159,11 +159,21 @@ jobs:
         with:
           node-version: 22
       - name: Sito
-        run: tools/pages/build.sh
+        run: |
+          set -o pipefail
+          tools/pages/build.sh 2>&1 | tee pages-build.log
       - name: Sito nel browser
-        run: node tests/web/pages.mjs
+        run: |
+          set -o pipefail
+          node tests/web/pages.mjs 2>&1 | tee pages-test.log
         env:
           VETRO_REQUIRE_BROWSER: "1"
+      - if: failure()
+        run: |
+          for f in pages-build.log pages-test.log; do
+            [ -s "$f" ] || continue
+            echo "::error title=$f::$(grep -vE '^\s*$' "$f" | tail -n 60 | awk '{gsub(/%/, "%25"); gsub(/\r/, ""); printf "%s%%0A", $0}')"
+          done
       - if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@v3
         with:
