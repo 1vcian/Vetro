@@ -2,7 +2,8 @@
 // Il sito di GitHub Pages (tools/pages/build.sh) come lo serve Pages: sotto
 // un sottopercorso (/Vetro/) e senza intestazioni COOP/COEP. In Chrome
 // headless la pagina d'ingresso porta all'app, l'app avvia il kernel guest
-// fino alla shell e la console risponde; i sorgenti GPL ci sono e il tarball
+// fino alla shell e la console risponde, l'ispettore di rete vede una
+// richiesta del guest; i sorgenti GPL ci sono e il tarball
 // del kernel ricomposto dai pezzi ha lo sha256 dichiarato.
 //
 //   node tests/web/pages.mjs [target/pages]
@@ -61,7 +62,13 @@ run(async () => {
     at = await page.until('Linux 6.18', at);
     const state = await page.state();
     check(state.boot?.mode === 'cold', `atteso un avvio da zero: ${JSON.stringify(state.boot)}`);
-    console.log(`sito sotto /Vetro/ senza COOP/COEP: shell in ${(ms / 1000).toFixed(2)} s, la console risponde`);
+    // L'ispettore di rete del sito (ABI 8): una richiesta del guest compare.
+    await page.type('udhcpc -i eth0 -n -q >/dev/null && wget -q -O /dev/null http://pages.vetro.test/prova; echo RETE-$((1+1))');
+    at = await page.until('RETE-2', at);
+    const req = await page.waitFor('richiesta nell\'ispettore', async () =>
+      (await page.eval('window.vetroAnalysis.state().requests'))?.requests.find((r) => r.host === 'pages.vetro.test'), 30_000);
+    check(req.method === 'GET' && req.path === '/prova' && req.status === 200, `ispettore: ${JSON.stringify(req)}`);
+    console.log(`sito sotto /Vetro/ senza COOP/COEP: shell in ${(ms / 1000).toFixed(2)} s, la console risponde, l'ispettore vede la rete`);
   } finally {
     cdp.close();
     const exited = proc.exitCode !== null ? Promise.resolve() : new Promise((ok) => proc.once('exit', ok));

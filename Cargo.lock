@@ -994,6 +994,7 @@ version = "0.0.0"
 name = "vetro-wasm"
 version = "0.0.0"
 dependencies = [
+ "vetro-analysis",
  "vetro-jit",
  "vetro-machine",
  "vetro-platform",

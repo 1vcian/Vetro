@@ -20,7 +20,7 @@ memoria lineare (due macchine da 1 GiB) arrivano negativi.
 
 ## Export
 
-Versione: `vetro_abi_version() -> u32`, oggi **7**. Cambia a ogni modifica
+Versione: `vetro_abi_version() -> u32`, oggi **8**. Cambia a ogni modifica
 incompatibile delle firme o dei codici qui sotto; il caricatore JS
 (`web/node/vetro.mjs`) la controlla.
 
@@ -39,6 +39,13 @@ incompatibile delle firme o dei codici qui sotto; il caricatore JS
   completo.
 - 7 (M8): virtio-vsock (bit `VSOCK` di `vetro_machine_new_with`) e gestore
   dei file (`vetro_files_*`, ADR 0020, `docs/specs/files.md`).
+- 8 (M7, M10): ispettore di rete, timeline input→effetti, record & replay
+  (`vetro_result_*`, `vetro_capture_*`, `vetro_inspect_*`,
+  `vetro_timeline_*`, `vetro_record_*`, `vetro_rr_status`, `vetro_log_*`,
+  `vetro_replay_start`, `vetro_registers_text`, `vetro_read_virt`,
+  `vetro_translate`, `vetro_read_phys`; ADR 0023). Gli ingressi di
+  tastiera, puntatore, console, GPIO e risoluzione si annotano nella
+  timeline (l'esecuzione non cambia).
 
 ### Memoria
 
@@ -245,6 +252,85 @@ per il replay); `status`, `take` e `ptr` no. In JS: `Machine.files(port)`
 → `GuestFiles` (Promise per operazione, `onEvent`, `status()`, `pump()`,
 `close()`), costanti `FILES_OP`, `FILES_STATUS`, `INOTIFY`.
 
+### Buffer dei risultati (ABI 8)
+
+Le funzioni che producono byte (JSON, HAR, pcapng, log, keyframe, registri)
+li mettono nel buffer dei risultati della macchina e ne restituiscono la
+lunghezza (0 = niente).
+
+| Export | Firma | Significato |
+|---|---|---|
+| `vetro_result_ptr` | `(vm) -> *const u8` | i byte dell'ultimo risultato (nullo se vuoto), validi fino al prossimo risultato |
+| `vetro_result_clear` | `(vm)` | libera il buffer |
+
+### Ispettore di rete e timeline (ABI 8, ADR 0023)
+
+La cattura dei frame di virtio-net (`Machine::net_tap`, ADR 0016) si
+raccoglie nella macchina di vetro-wasm a ogni `vetro_run` (al più 64 MiB);
+lista e dettaglio sono il JSON di `vetro_analysis::net::view`, la timeline
+quello di `Timeline::to_json` (`docs/specs/analysis.md`). Niente di questo
+cambia l'esecuzione.
+
+| Export | Firma | Significato |
+|---|---|---|
+| `vetro_capture_set` | `(vm, on: u32) -> u32` | accende (1) o spegne la cattura; 1 fatto, 0 senza rete |
+| `vetro_capture_clear` | `(vm)` | svuota frame e analisi |
+| `vetro_capture_stats` | `(vm, out: *mut u64, cap) -> usize` | accesa, frame, byte, frame scartati oltre il limite |
+| `vetro_inspect_requests` | `(vm) -> usize` | la lista in JSON (`requests_json`) |
+| `vetro_inspect_request` | `(vm, index: u32) -> usize` | il dettaglio della richiesta `index` in JSON (`exchange_json`); 0 se non c'è |
+| `vetro_inspect_har` | `(vm, epoch_us: u64) -> usize` | l'HAR 1.2 (`epoch_us`: µs Unix del tempo 0 del guest) |
+| `vetro_inspect_pcapng` | `(vm, epoch_us: u64) -> usize` | il pcapng dei frame |
+| `vetro_timeline_input` | `(vm, kind: u32, weak: u32, text, len)` | annota un ingresso dell'utente che la macchina non riconosce da sé (comando del gestore dei file: `kind` 4) all'istruzione corrente |
+| `vetro_timeline_effect` | `(vm, kind: u32, text, len) -> u32` | annota un effetto (file cambiato: `kind` 3) all'istruzione corrente; 0 se il tipo non esiste |
+| `vetro_timeline_json` | `(vm, window_us: u64) -> usize` | la timeline in JSON con gli effetti di rete della cattura; finestra di attribuzione `window_us` (0 = 3 s) |
+| `vetro_timeline_version` | `(vm) -> u64` | cambia quando cambiano ingressi, effetti o frame: se è uguale, niente da ridisegnare |
+| `vetro_timeline_clear` | `(vm)` | svuota la timeline |
+
+Tipi: ingressi `InputKind` (0 tasto, 1 puntatore, 2 tocco, 3 console, 4
+file, 5 accensione, 6 schermo, 7 altro), effetti `EffectKind` (0 http, 1
+dns, 2 tls, 3 file, 4 console). Gli ingressi che passano da
+`vetro_console_write`, `vetro_input_*`, `vetro_gpio_input` e
+`vetro_display_resize` si annotano da soli (`analysis::Describer`: tasti e
+pulsanti premuti, tocchi nuovi, righe della console, tasto di accensione,
+risoluzione; non movimenti, rilasci, risposte del terminale); l'uscita della
+console si annota quando `vetro_console_read` la legge.
+
+### Record & replay (ABI 8, ADR 0019 e 0023, `docs/specs/replay.md`)
+
+| Export | Firma | Significato |
+|---|---|---|
+| `vetro_record_start` | `(vm, keyframe_every: u64)` | registra da qui, keyframe ogni tante istruzioni (il primo subito; 0 = nessuno) |
+| `vetro_record_stop` | `(vm) -> u32` | finisce; il log resta nella macchina. 1 fatto, 0 non si registrava |
+| `vetro_rr_status` | `(vm, out: *mut u64, cap) -> u32` | 0 fermo, 1 registrazione, 2 replay, 3 replay finito identico, 4 replay diverso (motivo nel messaggio). In `out`: eventi registrati o prossimo evento, eventi del log, keyframe, istruzione di partenza e di fine, 1 se c'è un log |
+| `vetro_log_encode` | `(vm) -> usize` | il file del log con i keyframe presenti |
+| `vetro_log_load` | `(vm, data, len) -> u32` | carica un file di log; 0 fatto, 1 non valido (motivo nel messaggio) |
+| `vetro_log_info` | `(vm, out: *mut u64, cap) -> usize` | partenza, fine, eventi, keyframe, intervallo, JIT, 1 se della stessa configurazione, byte degli eventi; 0 senza log |
+| `vetro_log_events` | `(vm) -> usize` | gli eventi in JSON: `[{i, step, kind, label, weak, user}]` |
+| `vetro_log_keyframe` | `(vm, index, out: *mut u64, cap) -> usize` | istruzione, byte e hash della console, dimensione, 1 se presente |
+| `vetro_log_keyframe_take` | `(vm, index) -> usize` | sposta i byte del keyframe nel buffer dei risultati (nel log resta la posizione) |
+| `vetro_log_keyframe_put` | `(vm, index, data, len) -> u32` | li rimette; 1 fatto, 0 indice o lunghezza sbagliati |
+| `vetro_log_keyframe_for` | `(vm, step: u64) -> i32` | il keyframe da cui parte il replay verso `step`, -1 nessuno |
+| `vetro_replay_start` | `(vm, step: u64) -> u32` | replay dall'ultimo keyframe non oltre `step` (0 = dall'inizio). Codici: 0 fatto, 1 nessun log, 2 keyframe non presente, 3 rifiutato (motivo nel messaggio). Cattura e timeline ripartono (timeline con gli ingressi del log), il client del gestore dei file si chiude |
+| `vetro_registers_text` | `(vm) -> usize` | i registri (`Machine::registers_text`) |
+| `vetro_read_virt` | `(vm, va: u64, dst, len, fault: *mut u64) -> u32` | memoria virtuale (tabelle correnti, solo RAM); 1 fatto, 0 con il primo indirizzo illeggibile in `fault` |
+| `vetro_translate` | `(vm, va: u64) -> u64` | indirizzo fisico, `u64::MAX` se non mappato |
+| `vetro_read_phys` | `(vm, pa: u64, dst, len) -> u32` | RAM all'indirizzo fisico; 0 fuori dalla RAM |
+
+Durante il replay `vetro_run` si ferma agli eventi del log e alla fine
+confronta l'impronta; gli ingressi del JS si ignorano. Per saltare a
+un'istruzione: `vetro_replay_start(step)`, poi `vetro_run` con budget
+`min(quanto, step - istruzioni)` finché non ci si arriva (i dischi si
+servono come sempre).
+
+In JS: `Machine.capture`, `captureStats`, `inspectRequests`,
+`inspectRequest`, `inspectHar`, `inspectPcapng`, `timelineInput`,
+`timelineEffect`, `timeline`, `timelineVersion`, `recordStart`,
+`recordStop`, `rrStatus`, `logEncode`, `logLoad`, `logInfo`, `logEvents`,
+`logKeyframe`, `logKeyframeTake`, `logKeyframePut`, `logKeyframeFor`,
+`replayStart`, `registersText`, `readVirt`, `translate`, `readPhys`;
+costanti `TIMELINE_INPUT`, `TIMELINE_EFFECT`, `RR_STATE`, `REPLAY_START`;
+`Recording` (`web/node/recording.mjs`) per i keyframe in un archivio.
+
 ### Ponte JIT
 
 | Export | Firma | Significato |
@@ -408,6 +494,26 @@ persistenti), `files=/a,/b` (radici del gestore dei file) e `nofiles=1`
   (`window.vetroFiles.setRoots`), aggiornato dagli eventi di inotify, con i
   visualizzatori (testo, JSON, XML/SharedPreferences, esadecimale,
   immagini, SQLite con `sqlite.mjs`) e il salvataggio nel guest.
+- Analisi (M7, M10, ADR 0023; `analysis.mjs`): sotto lo schermo tre
+  pannelli. **Rete**: lista delle richieste (metodo, host, percorso, stato,
+  dimensioni, tipo, durata, cascata), filtri (testo, metodo, stato, tipo di
+  corpo), dettaglio con tempi per fase, intestazioni e corpi decodificati
+  (JSON, form, multipart, protobuf senza schema, testo, esadecimale),
+  esportazione HAR e pcapng (Blob + `<a download>`). **Timeline**: ingressi
+  nel tempo del guest con i loro effetti (http, dns, tls, file, console),
+  asse del tempo, finestra di attribuzione, filtri, clic su una richiesta →
+  dettaglio, "vai qui" → replay fino a quell'istruzione. **Registrazione**:
+  registra/ferma (keyframe ogni N M istruzioni), rigioca (verdetto "replay
+  identico" o la differenza), scarica e carica il log, vai all'istruzione,
+  continua, registri e dump esadecimale di un indirizzo virtuale, ingressi
+  registrati. `window.vetroAnalysis.state()` per i test. Il Worker manda
+  lista e timeline al più ogni 0,7 s se sono cambiate; con la rete la
+  cattura è accesa dall'avvio; i comandi del gestore dei file (salva, crea,
+  cancella, rinomina) sono ingressi della timeline e gli eventi di inotify
+  (creato, scritto, spostato, cancellato) effetti. Registrazioni in OPFS
+  (`vetro-recordings/`, anche "Cancella dati salvati" le toglie); durante un
+  replay gli ingressi della pagina si scartano, il gestore dei file è
+  chiuso, niente tempo reale né snapshot in cache.
 - Ingressi: tastiera sul canvas con `KeyboardEvent.code` → codice Linux
   (`keymap.mjs`; le ripetizioni del browser si scartano, l'autorepeat lo fa
   il guest con EV_REP; al blur si rilasciano i tasti premuti); mouse con
@@ -489,7 +595,24 @@ persistenti), `files=/a,/b` (radici del gestore dei file) e `nofiles=1`
   file, file aperto, modificato e salvato, riletto dal guest con `cat`,
   ricollegamento dopo il ripristino). Senza Chrome
   (`VETRO_CHROME`) stampa SKIP; `VETRO_REQUIRE_BROWSER=1` lo rende un
-  errore.
+  errore;
+- `tests/web/inspector.mjs` (M7, ABI 8): kernel M3 con la rete, POST JSON e
+  POST form di wget al sinkhole; lista, dettaglio con corpi decodificati,
+  HAR, pcapng; richieste e DNS attribuiti alla riga del comando, un
+  carattere singolo che non causa rete; due esecuzioni uguali (log, HAR,
+  pcapng, timeline);
+- `tests/web/replay.mjs` (M10, ABI 8): registrazione con keyframe ogni 10 M
+  istruzioni, log da file, keyframe in un archivio in memoria (`Recording`),
+  replay identico con JIT e interprete (console byte per byte, ispettore e
+  timeline uguali), salto a un'istruzione con gli stessi registri e la
+  stessa memoria a VBAR_EL1, log ricomposto uguale al file, keyframe
+  alterato rifiutato;
+- `tests/web/browser-analysis.mjs` (Chrome, come `browser.mjs`): wget
+  nell'ispettore con il JSON decodificato e legato al comando nella
+  timeline, scrittura di un file legata al suo comando, download veri di
+  log, HAR e pcapng, "Rigioca" identico, "vai qui" dalla timeline con
+  registri e dump di memoria, "Continua" identico, log ricaricato con "Carica
+  log" e rigiocato.
 
 ## Node
 

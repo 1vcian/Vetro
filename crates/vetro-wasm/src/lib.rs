@@ -17,6 +17,12 @@
 //!   (inoltro di porte, [`net`]);
 //! - gestore dei file (ABI 7, ADR 0020): il client del demone
 //!   `vetro-files` del guest su virtio-vsock ([`files`]);
+//! - ispettore di rete e timeline input→effetti (ABI 8, ADR 0023):
+//!   cattura, lista e dettaglio delle richieste in JSON, HAR, pcapng,
+//!   ingressi dell'utente ed effetti ([`analysis`]);
+//! - record & replay (ABI 8, ADR 0019 e 0023): registrazione, log con i
+//!   keyframe spostabili in OPFS, replay, lettura di registri e memoria
+//!   ([`replay`]);
 //! - snapshot della macchina (ABI 4, ADR 0015) e overlay copy-on-write
 //!   persistente dei dischi (ABI 6, ADR 0017): le scritture del guest diventano
 //!   scritture su un file che il JS tiene in OPFS;
@@ -28,11 +34,13 @@
 
 #![allow(clippy::missing_safety_doc)]
 
+pub mod analysis;
 pub mod disk;
 pub mod display;
 pub mod files;
 pub mod jit;
 pub mod net;
+pub mod replay;
 
 use std::alloc::Layout;
 
@@ -58,7 +66,11 @@ use display::WebDisplay;
 /// ADR 0017).
 /// 7: virtio-vsock (bit `VSOCK`) e gestore dei file (`vetro_files_*`,
 /// ADR 0020).
-pub const ABI_VERSION: u32 = 7;
+/// 8: ispettore di rete, timeline, record & replay (`vetro_capture_*`,
+/// `vetro_inspect_*`, `vetro_timeline_*`, `vetro_record_*`, `vetro_log_*`,
+/// `vetro_replay_*`, `vetro_rr_status`, lettura dello stato, buffer dei
+/// risultati; ADR 0023).
+pub const ABI_VERSION: u32 = 8;
 
 /// Allineamento dei buffer di [`vetro_alloc`] (basta per `JitState`).
 const ALLOC_ALIGN: usize = 16;
@@ -135,6 +147,27 @@ pub struct Vm {
     files_queue: std::collections::VecDeque<Vec<u8>>,
     /// L'ultimo messaggio preso (`vetro_files_take`).
     files_msg: Vec<u8>,
+    /// Ultimo risultato (JSON, HAR, pcapng, log, keyframe, registri) per
+    /// `vetro_result_ptr`.
+    result: Vec<u8>,
+    /// Cattura di rete (ABI 8): accesa, frame, byte, scartati, generazione.
+    capture_on: bool,
+    capture: vetro_analysis::net::Capture,
+    capture_bytes: usize,
+    capture_dropped: u64,
+    capture_gen: u64,
+    /// Analisi dell'ultima cattura, col numero di frame che copriva.
+    analysis: Option<(usize, vetro_analysis::net::NetworkAnalysis)>,
+    /// Timeline input→effetti e descrittore degli ingressi.
+    timeline: vetro_analysis::timeline::Timeline,
+    describer: analysis::Describer,
+    /// Log registrato o caricato, e dimensione dei suoi keyframe (anche di
+    /// quelli spostati fuori).
+    log: Option<vetro_machine::Log>,
+    kf_sizes: Vec<u64>,
+    /// Un replay è partito da `vetro_replay_start` (e non è arrivata una
+    /// registrazione nuova).
+    replay_active: bool,
 }
 
 /// L'overlay persistente di un disco dal lato di Rust: dove sta ogni
@@ -208,6 +241,18 @@ impl Vm {
             files: None,
             files_queue: std::collections::VecDeque::new(),
             files_msg: Vec::new(),
+            result: Vec::new(),
+            capture_on: false,
+            capture: Default::default(),
+            capture_bytes: 0,
+            capture_dropped: 0,
+            capture_gen: 0,
+            analysis: None,
+            timeline: Default::default(),
+            describer: Default::default(),
+            log: None,
+            kf_sizes: Vec::new(),
+            replay_active: false,
         };
         // Senza `Machine::gpu`: cambiare backend non deve far servire la GPU.
         vm.with_gpu(|g| g.set_backend(Box::new(WebDisplay::default())));
@@ -391,7 +436,9 @@ impl Vm {
     }
 
     pub fn run(&mut self, budget: u64) -> u32 {
-        match self.m.run(budget) {
+        let stop = self.m.run(budget);
+        self.collect_capture();
+        match stop {
             Stop::Budget => stop::BUDGET,
             Stop::PowerOff => stop::POWER_OFF,
             Stop::Reset => stop::RESET,
@@ -418,13 +465,9 @@ impl Vm {
     /// l'immagine ripristinata; l'uscita della console non letta si scarta.
     pub fn restore_state(&mut self, bytes: &[u8]) -> Result<(), vetro_machine::vetro_snapshot::Error> {
         self.m.load_state(bytes)?;
-        self.out.clear();
-        self.out_pos = 0;
         // I cluster ripristinati sono quelli dello snapshot: il file
         // dell'overlay si confronta per intero alla prossima `take`.
-        for o in self.overlays.iter_mut().flatten() {
-            o.full_sync = true;
-        }
+        self.after_state_change();
         Ok(())
     }
 
@@ -435,12 +478,27 @@ impl Vm {
             self.out.clear();
             self.out_pos = 0;
         }
-        self.out.extend(self.m.console_output());
+        let new = self.m.console_output();
+        if !new.is_empty() {
+            let at = vetro_analysis::timeline::step_us(self.m.steps);
+            self.timeline.push_console(at, &new);
+            self.out.extend(new);
+        }
         let n = dst.len().min(self.out.len() - self.out_pos);
         dst[..n].copy_from_slice(&self.out[self.out_pos..self.out_pos + n]);
         self.out_pos += n;
         n
     }
+}
+
+/// Scrive al più `cap` valori di `v` in `out`; restituisce quanti.
+unsafe fn write_u64s(out: *mut u64, cap: usize, v: &[u64]) -> usize {
+    let n = v.len().min(cap);
+    if n > 0 && !out.is_null() {
+        // SAFETY: `out` vale per `cap` valori (contratto dell'API).
+        unsafe { core::slice::from_raw_parts_mut(out, n) }.copy_from_slice(&v[..n]);
+    }
+    n
 }
 
 /// `&[u8]` da puntatore e lunghezza passati da JS (nullo o vuoto = vuoto).
@@ -615,7 +673,7 @@ pub unsafe extern "C" fn vetro_console_read(vm: *mut Vm, dst: *mut u8, cap: usiz
 pub unsafe extern "C" fn vetro_console_write(vm: *mut Vm, src: *const u8, len: usize) {
     // SAFETY: `vm` viene da `vetro_machine_new`, `src` vale per `len` byte.
     let vm = unsafe { &mut *vm };
-    vm.m.console_input(unsafe { bytes(src, len) });
+    vm.user_input(Input::Console(unsafe { bytes(src, len) }.to_vec()));
 }
 
 /// Ultimo messaggio (UTF-8): errore di caricamento o istruzione non
@@ -757,7 +815,7 @@ pub unsafe extern "C" fn vetro_display_take_dirty(vm: *const Vm, scanout: u32, o
 pub unsafe extern "C" fn vetro_display_resize(vm: *mut Vm, scanout: u32, width: u32, height: u32) -> u32 {
     // SAFETY: `vm` viene da `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
-    (vm.m.input(Input::Display { scanout, width, height }) != Reply::NoDevice) as u32
+    (vm.user_input(Input::Display { scanout, width, height }) != Reply::NoDevice) as u32
 }
 
 /// Stato del cursore dello scanout in `out` (6 valori): risorsa (0 =
@@ -819,7 +877,7 @@ pub unsafe extern "C" fn vetro_input_events(
         input_dev::POINTER => Input::Pointer(ev),
         _ => return 0,
     };
-    (vm.m.input(input) != Reply::NoDevice) as u32
+    (vm.user_input(input) != Reply::NoDevice) as u32
 }
 
 /// Un tasto della tastiera (codice Linux `KEY_*`) premuto o rilasciato, con
@@ -828,7 +886,7 @@ pub unsafe extern "C" fn vetro_input_events(
 pub unsafe extern "C" fn vetro_input_key(vm: *mut Vm, code: u32, down: u32) -> u32 {
     // SAFETY: `vm` viene da `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
-    (vm.m.input(Input::Keyboard(Input::key_events(code as u16, down != 0))) != Reply::NoDevice) as u32
+    (vm.user_input(Input::Keyboard(Input::key_events(code as u16, down != 0))) != Reply::NoDevice) as u32
 }
 
 /// Posizione assoluta del tablet (0..=32767 per asse), con SYN_REPORT.
@@ -836,7 +894,7 @@ pub unsafe extern "C" fn vetro_input_key(vm: *mut Vm, code: u32, down: u32) -> u
 pub unsafe extern "C" fn vetro_input_abs(vm: *mut Vm, x: u32, y: u32) -> u32 {
     // SAFETY: `vm` viene da `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
-    (vm.m.input(Input::Pointer(Input::move_abs_events(x, y))) != Reply::NoDevice) as u32
+    (vm.user_input(Input::Pointer(Input::move_abs_events(x, y))) != Reply::NoDevice) as u32
 }
 
 /// Pulsante del puntatore (`BTN_LEFT` = 0x110, ...), con SYN_REPORT.
@@ -844,7 +902,7 @@ pub unsafe extern "C" fn vetro_input_abs(vm: *mut Vm, x: u32, y: u32) -> u32 {
 pub unsafe extern "C" fn vetro_input_button(vm: *mut Vm, code: u32, down: u32) -> u32 {
     // SAFETY: `vm` viene da `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
-    (vm.m.input(Input::Pointer(Input::key_events(code as u16, down != 0))) != Reply::NoDevice) as u32
+    (vm.user_input(Input::Pointer(Input::key_events(code as u16, down != 0))) != Reply::NoDevice) as u32
 }
 
 /// Contatto `slot` del touchscreen: `down` != 0 lo mette o lo sposta in
@@ -854,7 +912,7 @@ pub unsafe extern "C" fn vetro_input_touch(vm: *mut Vm, slot: u32, x: u32, y: u3
     // SAFETY: `vm` viene da `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
     let ev = Input::touch_events(slot, (down != 0).then_some((x, y)));
-    (vm.m.input(Input::Pointer(ev)) != Reply::NoDevice) as u32
+    (vm.user_input(Input::Pointer(ev)) != Reply::NoDevice) as u32
 }
 
 /// LED della tastiera accesi dal guest (bit `LED_*`).
@@ -874,7 +932,7 @@ pub unsafe extern "C" fn vetro_input_leds(vm: *mut Vm) -> u32 {
 pub unsafe extern "C" fn vetro_gpio_input(vm: *mut Vm, line: u32, level: u32) {
     // SAFETY: `vm` viene da `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
-    vm.m.gpio_input(line, level != 0);
+    vm.user_input(Input::Gpio { line, level: level != 0 });
 }
 
 /// Linea del GPIO del tasto di accensione.

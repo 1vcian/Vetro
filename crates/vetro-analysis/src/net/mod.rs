@@ -13,6 +13,7 @@
 //!   senza schema);
 //! - [`inspector`]: il modello dell'ispettore di rete (richieste con
 //!   timing) e l'esportazione [`har`] 1.2.
+//! - [`view`]: lista e dettaglio dell'ispettore in JSON per l'app web.
 //!
 //! Tutto è deterministico (niente orologio dell'host, tabelle ordinate) e
 //! senza dipendenze: compila in `wasm32-unknown-unknown`.
@@ -28,6 +29,7 @@ pub mod inspector;
 pub mod json;
 pub mod packet;
 pub mod pcapng;
+pub mod view;
 
 pub use capture::{Capture, Direction, Frame};
 pub use inspector::{HttpExchange, NetworkAnalysis, RequestRow, Timings};

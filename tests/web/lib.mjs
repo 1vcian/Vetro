@@ -15,6 +15,9 @@ export const SHELL_PROMPT = '# \x1b[6n';
 export const PHASE_BUDGET = 6_000_000_000n;
 export const QUANTUM = 1_000_000n;
 
+/** Il POST JSON di `wget` verso il sinkhole dei test dell'ispettore e del replay. */
+export const POST_JSON = `wget -q -O /dev/null --header 'Content-Type: application/json' --post-data '{"vetro":42,"nome":"prova"}' http://api.vetro.test/v1/eventi`;
+
 export class Fail extends Error {}
 
 export const normalize = (s) => s.replaceAll('\r\n', '\n').replaceAll('\r', '\n');

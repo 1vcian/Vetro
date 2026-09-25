@@ -4,7 +4,7 @@
 
 import { JitEngine } from './jit-engine.mjs';
 
-export const ABI_VERSION = 7;
+export const ABI_VERSION = 8;
 /** Codici di vetro_run. */
 export const STOP = ['Budget', 'PowerOff', 'Reset', 'Idle', 'Unimplemented', 'Blocked'];
 
@@ -23,6 +23,14 @@ export const OVERLAY = ['Loaded', 'New', 'Mismatch', 'Corrupt', 'NoDisk'];
 export const NET_REASON = [null, 'Normal', 'GuestReset', 'RemoteReset', 'Refused', 'Timeout'];
 /** Operazioni di vetro_files_request (gestore dei file, ABI 7). */
 export const FILES_OP = { STAT: 1, LIST: 2, READ: 3, WRITE: 4, MKDIR: 5, CREATE: 6, DELETE: 7, RENAME: 8, WATCH: 9, UNWATCH: 10 };
+/** Tipi degli ingressi della timeline (vetro_timeline_input, InputKind di vetro-analysis). */
+export const TIMELINE_INPUT = { KEY: 0, POINTER: 1, TOUCH: 2, CONSOLE: 3, FILES: 4, POWER: 5, DISPLAY: 6, OTHER: 7 };
+/** Tipi degli effetti della timeline (vetro_timeline_effect, EffectKind). */
+export const TIMELINE_EFFECT = { HTTP: 0, DNS: 1, TLS: 2, FILE: 3, CONSOLE: 4 };
+/** Stati di vetro_rr_status. */
+export const RR_STATE = ['Idle', 'Recording', 'Replaying', 'Finished', 'Diverged'];
+/** Codici di vetro_replay_start (0 = riuscito). */
+export const REPLAY_START = [null, 'NoLog', 'KeyframeMissing', 'Refused'];
 /** Stati di vetro_files_status. */
 export const FILES_STATUS = ['None', 'Connecting', 'Ready'];
 /** Bit degli eventi di inotify (GuestFiles.onEvent). */
@@ -374,6 +382,218 @@ export class Machine {
     if (!n) return null;
     const v = new BigUint64Array(this.#x.memory.buffer, p, names.length);
     return Object.fromEntries(names.map((k, i) => [k, Number(v[i])]));
+  }
+
+  // ---- Ispettore di rete e timeline (ABI 8, ADR 0023) ---------------------
+
+  /** L'ultimo risultato di Rust (buffer dei risultati), copiato; poi liberato. */
+  #result(n) {
+    const x = this.#x;
+    if (!n) return new Uint8Array();
+    const ptr = x.vetro_result_ptr(this.#vm) >>> 0;
+    const out = new Uint8Array(x.memory.buffer, ptr, n >>> 0).slice();
+    x.vetro_result_clear(this.#vm);
+    return out;
+  }
+
+  #json(n) {
+    return n ? JSON.parse(utf8.decode(this.#result(n))) : null;
+  }
+
+  #u64s(fn, names, ...args) {
+    const x = this.#x;
+    const p = this.#scratch(8 * names.length);
+    const n = fn(this.#vm, ...args, p, names.length);
+    const v = new BigUint64Array(x.memory.buffer, p, names.length);
+    return n ? Object.fromEntries(names.map((k, i) => [k, Number(v[i])])) : null;
+  }
+
+  /** Accende o spegne la cattura dei frame di virtio-net; false senza rete. */
+  capture(on = true) {
+    return this.#x.vetro_capture_set(this.#vm, on ? 1 : 0) === 1;
+  }
+
+  captureClear() {
+    this.#x.vetro_capture_clear(this.#vm);
+  }
+
+  /** { on, frames, bytes, dropped }. */
+  captureStats() {
+    const s = this.#u64s(this.#x.vetro_capture_stats, ['on', 'frames', 'bytes', 'dropped']);
+    return { ...s, on: s.on === 1 };
+  }
+
+  /** La lista dell'ispettore: { frames, requests: [...], dns: [...], tls: [...] } (docs/specs/analysis.md). */
+  inspectRequests() {
+    return this.#json(this.#x.vetro_inspect_requests(this.#vm));
+  }
+
+  /** Il dettaglio della richiesta `index` ({ row, request, response }), o null. */
+  inspectRequest(index) {
+    return this.#json(this.#x.vetro_inspect_request(this.#vm, index));
+  }
+
+  /** L'HAR 1.2 della cattura (stringa); epochUs: µs Unix del tempo 0 del guest. */
+  inspectHar(epochUs = 0) {
+    return utf8.decode(this.#result(this.#x.vetro_inspect_har(this.#vm, BigInt(epochUs))));
+  }
+
+  /** Il pcapng della cattura (Uint8Array). */
+  inspectPcapng(epochUs = 0) {
+    return this.#result(this.#x.vetro_inspect_pcapng(this.#vm, BigInt(epochUs)));
+  }
+
+  /** Annota un ingresso dell'utente (kind in TIMELINE_INPUT) all'istruzione corrente. */
+  timelineInput(kind, label, weak = false) {
+    const x = this.#x;
+    const [p, n] = copyIn(x, toUtf8.encode(label));
+    x.vetro_timeline_input(this.#vm, kind, weak ? 1 : 0, p, n);
+    if (n) x.vetro_free(p, n);
+  }
+
+  /** Annota un effetto (kind in TIMELINE_EFFECT) all'istruzione corrente. */
+  timelineEffect(kind, label) {
+    const x = this.#x;
+    const [p, n] = copyIn(x, toUtf8.encode(label));
+    const ok = x.vetro_timeline_effect(this.#vm, kind, p, n) === 1;
+    if (n) x.vetro_free(p, n);
+    return ok;
+  }
+
+  /** La timeline { windowUs, inputs, effects, ... } con finestra `windowUs` (0 = 3 s). */
+  timeline(windowUs = 0) {
+    return this.#json(this.#x.vetro_timeline_json(this.#vm, BigInt(windowUs)));
+  }
+
+  /** Cambia quando la timeline cambia (BigInt). */
+  timelineVersion() {
+    return this.#x.vetro_timeline_version(this.#vm);
+  }
+
+  timelineClear() {
+    this.#x.vetro_timeline_clear(this.#vm);
+  }
+
+  // ---- Record & replay (ABI 8, ADR 0019 e 0023) ------------------------------
+
+  /** Registra da qui, con un keyframe ogni `keyframeEvery` istruzioni (il primo subito). */
+  recordStart(keyframeEvery = 200_000_000) {
+    this.#x.vetro_record_start(this.#vm, BigInt(keyframeEvery));
+  }
+
+  /** Finisce la registrazione (il log resta nella macchina); false se non si registrava. */
+  recordStop() {
+    return this.#x.vetro_record_stop(this.#vm) === 1;
+  }
+
+  /** { state (RR_STATE), progress, events, keyframes, startSteps, endSteps, hasLog, message }. */
+  rrStatus() {
+    const x = this.#x;
+    const names = ['progress', 'events', 'keyframes', 'startSteps', 'endSteps', 'hasLog'];
+    const p = this.#scratch(8 * names.length);
+    const code = x.vetro_rr_status(this.#vm, p, names.length);
+    const v = new BigUint64Array(x.memory.buffer, p, names.length);
+    const out = Object.fromEntries(names.map((k, i) => [k, Number(v[i])]));
+    out.hasLog = out.hasLog === 1;
+    out.state = RR_STATE[code];
+    out.message = out.state === 'Diverged' ? this.#message() : '';
+    return out;
+  }
+
+  /** Il file del log con i keyframe presenti (Uint8Array, vuoto senza log). */
+  logEncode() {
+    return this.#result(this.#x.vetro_log_encode(this.#vm));
+  }
+
+  /** Carica un file di log (al posto del log che c'era); lancia se non è valido. */
+  logLoad(bytes) {
+    const x = this.#x;
+    const [p, n] = copyIn(x, bytes);
+    const r = x.vetro_log_load(this.#vm, p, n);
+    if (n) x.vetro_free(p, n);
+    if (r !== 0) throw new Error(`log non valido: ${this.#message()}`);
+  }
+
+  /** { startSteps, endSteps, events, keyframes, keyframeEvery, jit, sameMachine, eventsBytes }, o null. */
+  logInfo() {
+    const s = this.#u64s(this.#x.vetro_log_info, ['startSteps', 'endSteps', 'events', 'keyframes', 'keyframeEvery', 'jit', 'sameMachine', 'eventsBytes']);
+    return s && { ...s, jit: s.jit === 1, sameMachine: s.sameMachine === 1 };
+  }
+
+  /** { step, consoleLen, consoleHash, size, present } del keyframe `index`, o null. */
+  logKeyframe(index) {
+    const s = this.#u64s(this.#x.vetro_log_keyframe, ['step', 'consoleLen', 'consoleHash', 'size', 'present'], index);
+    return s && { ...s, present: s.present === 1 };
+  }
+
+  /** Sposta fuori i byte del keyframe `index` (Uint8Array; vuota se già fuori). */
+  logKeyframeTake(index) {
+    return this.#result(this.#x.vetro_log_keyframe_take(this.#vm, index));
+  }
+
+  /** Rimette i byte del keyframe `index`; lancia se rifiutati. */
+  logKeyframePut(index, bytes) {
+    const x = this.#x;
+    const [p, n] = copyIn(x, bytes);
+    const r = x.vetro_log_keyframe_put(this.#vm, index, p, n);
+    if (n) x.vetro_free(p, n);
+    if (r !== 1) throw new Error(`keyframe ${index} rifiutato (${n} byte)`);
+  }
+
+  /** Indice del keyframe da cui parte il replay verso l'istruzione `step`, -1 se nessuno. */
+  logKeyframeFor(step) {
+    return this.#x.vetro_log_keyframe_for(this.#vm, BigInt(step));
+  }
+
+  /** Gli eventi del log: [{ i, step, kind, label, weak, user }]. */
+  logEvents() {
+    return this.#json(this.#x.vetro_log_events(this.#vm)) ?? [];
+  }
+
+  /**
+   * Replay del log dall'ultimo keyframe non oltre `step` (che dev'essere
+   * presente). Lancia un Error con `code` ('NoLog', 'KeyframeMissing',
+   * 'Refused') e il motivo.
+   */
+  replayStart(step = 0) {
+    const r = this.#x.vetro_replay_start(this.#vm, BigInt(step));
+    if (r !== 0) {
+      const code = REPLAY_START[r] ?? String(r);
+      throw Object.assign(new Error(`replay: ${code}: ${this.#message()}`), { code });
+    }
+  }
+
+  /** I registri al punto raggiunto (testo di Machine::registers_text). */
+  registersText() {
+    return utf8.decode(this.#result(this.#x.vetro_registers_text(this.#vm)));
+  }
+
+  /** `len` byte all'indirizzo virtuale `va` (BigInt o Number): { bytes } o { fault } (BigInt). */
+  readVirt(va, len) {
+    const x = this.#x;
+    const p = len ? x.vetro_alloc(len) >>> 0 : 0;
+    const f = x.vetro_alloc(8) >>> 0;
+    const ok = x.vetro_read_virt(this.#vm, BigInt(va), p, len, f) === 1;
+    const out = ok ? { bytes: new Uint8Array(x.memory.buffer, p, len).slice() } : { fault: new BigUint64Array(x.memory.buffer, f, 1)[0] };
+    if (len) x.vetro_free(p, len);
+    x.vetro_free(f, 8);
+    return out;
+  }
+
+  /** Indirizzo fisico di `va` (BigInt), o null se non è mappato. */
+  translate(va) {
+    const pa = this.#x.vetro_translate(this.#vm, BigInt(va));
+    return pa === 0xffffffffffffffffn ? null : pa;
+  }
+
+  /** `len` byte di RAM all'indirizzo fisico `pa`, o null fuori dalla RAM. */
+  readPhys(pa, len) {
+    const x = this.#x;
+    const p = x.vetro_alloc(Math.max(len, 1)) >>> 0;
+    const ok = x.vetro_read_phys(this.#vm, BigInt(pa), p, len) === 1;
+    const out = ok ? new Uint8Array(x.memory.buffer, p, len).slice() : null;
+    x.vetro_free(p, Math.max(len, 1));
+    return out;
   }
 
   #message() {

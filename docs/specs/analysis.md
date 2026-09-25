@@ -2,9 +2,9 @@
 
 ## Perimetro
 Motore di analisi dall'esterno del guest. Oggi: decodifica delle syscall
-per `vetro run --strace` (M2, modulo `syscall`) e analisi di rete (M7,
-modulo `net`, ADR 0016). Hook TLS, Binder, ART e scripting arrivano con
-M7–M9.
+per `vetro run --strace` (M2, modulo `syscall`), analisi di rete (M7,
+modulo `net`, ADR 0016) e timeline input→effetti (M7, modulo `timeline`,
+ADR 0023). Hook TLS, Binder, ART e scripting arrivano con M7–M9.
 
 ## Dipendenze ammesse
 Nessuna (né a runtime né in sviluppo). Compila in `wasm32-unknown-unknown`.
@@ -49,6 +49,50 @@ restituiscono `None`/`Err` o segnano i messaggi incompleti).
   `total_us()`), `first_on_connection`. `tls_sni(&[u8])`.
 - `har`: `to_har(&NetworkAnalysis, &HarOptions { epoch_us }) -> String`
   (anche `NetworkAnalysis::to_har`), `iso8601`, `base64`.
+- `view` (ADR 0023): l'ispettore in JSON per l'app web. `requests_json(&a)`:
+  `{"frames", "requests": [riga], "dns": [{name, type, queryUs, answerUs,
+  rcode, addrs}], "tls": [{flow, server, sni, startedUs}]}`; riga = `{i, flow,
+  method, url, host, path, status, reason, mime, reqBytes, respBytes,
+  reqWire, respWire, reqKind, respKind, complete, client, server,
+  resolvedName, timings: {startedUs, blockedUs, dnsUs, connectUs, sendUs,
+  waitUs, receiveUs, totalUs}}` (`null` per ciò che manca).
+  `exchange_json(&x)`: `{row, request: {method, target, version, complete,
+  headers: [[k, v]], body}, response: {status, reason, version, complete,
+  interim, headers, body} | null}`; body = `{wire, raw, size, encoding,
+  decodeError, chunked, contentType, kind, text, textTruncated, base64,
+  truncated}` più `json` (il valore), `fields` ([[k, v]] del form), `parts`
+  (multipart: `{name, filename, contentType, size, kind, text, ...}`),
+  `note` (binario). `text` è `Decoded::to_text` (al più 512 KiB), `base64`
+  i primi 256 KiB del corpo decodificato; `split_url`.
+
+## `timeline`: interfaccia pubblica (ADR 0023)
+- Tempo: µs di tempo del guest, `step_us(istruzioni) = istruzioni / 100`
+  (lo stesso dei frame catturati).
+- `InputKind` (`Key`, `Pointer`, `Touch`, `Console`, `Files`, `Power`,
+  `Display`, `Other`; `name`, `code`/`from_code` = posizione in `ALL`),
+  `UserInput { step, at_us, kind, label, weak, seq }` (`UserInput::new`).
+- `EffectKind` (`Http`, `Dns`, `Tls`, `File`, `Console`), `Effect { at_us,
+  kind, label, detail, bytes, seq }` (`Effect::new`: `seq = u64::MAX`, dopo
+  gli ingressi dello stesso istante).
+- `cause(inputs, at_us, seq, window_us, strong_only) -> Option<usize>`.
+- `Timeline`: `push_input`, `push_effect` (in ordine di tempo, `seq` di
+  arrivo), `push_console(at_us, bytes)` (si unisce all'ultimo effetto della
+  console se nel frattempo non è arrivato altro), `attributed(extra,
+  window_us)`, `to_json(extra, window_us)` = `{windowUs, dropped, version,
+  inputs: [{i, step, atUs, kind, label, weak, effects}], effects: [{atUs,
+  kind, label, ref, bytes, cause}]}`, `clear`, `version`, limiti
+  `MAX_INPUTS`/`MAX_EFFECTS` (i più vecchi si scartano, `dropped`).
+- `network_effects(&NetworkAnalysis)`: richieste HTTP (a
+  `timings.started_us`, `detail` = indice nell'ispettore), domande DNS,
+  flussi TLS.
+- `LineEditor` (righe battute alla console: DEL/BS, ^U, ^C, CR/LF, escape
+  ignorati), `printable(bytes)`, `key_name(code)`, `is_enter(code)`.
+
+**Regola di attribuzione (euristica):** l'effetto è dell'ultimo ingresso
+che lo precede (istante minore, o uguale e arrivato prima) entro la
+finestra (default 3 s); per rete e file solo gli ingressi di comando
+(`weak == false`: Invio, clic, tocco, comando del gestore, accensione), per
+la console qualunque ingresso. Senza ingresso nella finestra: senza causa.
 
 ## Semantica
 - Tempi visti dal guest, al confine di virtio-net. Fasi: `dns` = domanda →
@@ -72,7 +116,10 @@ restituiscono `None`/`Err` o segnano i messaggi incompleti).
   cambiano l'esecuzione e non entrano negli snapshot.
 - `vetro-cli`: `vetro boot --pcap FILE --har FILE --net-requests`
   (`vetro_cli::netcap`).
-- vetro-wasm: da fare (le funzioni compilano già per wasm32).
+- vetro-wasm (ABI 8, ADR 0023): cattura nella `Vm` a ogni `vetro_run`,
+  `vetro_capture_*`, `vetro_inspect_*` (lista, dettaglio, HAR, pcapng),
+  `vetro_timeline_*`; ingressi descritti da `analysis::Describer`
+  (`docs/specs/wasm.md`).
 
 ## Test
 - `cargo test -p vetro-analysis`: parser con input costruiti (Ethernet/IP,
@@ -94,3 +141,7 @@ restituiscono `None`/`Err` o segnano i messaggi incompleti).
   identici.
 - `cargo test --release -p vetro-cli --test boot_pcap_har`: le opzioni di
   `vetro boot`.
+- `timeline` e `view`: test unitari in `cargo test -p vetro-analysis`;
+  dall'API in `cargo test -p vetro-wasm` e `tests/web/inspector.mjs`
+  (kernel M3: wget al sinkhole, corpi decodificati, attribuzione al
+  comando, due esecuzioni uguali); nell'app `tests/web/browser-analysis.mjs`.

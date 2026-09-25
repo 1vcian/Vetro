@@ -116,8 +116,25 @@ istruzioni, 0 = nessuno), `--replay=FILE` (config dal log; partenza da
 `--dump=VA:BYTE`. Codici: 0 replay identico, 1 diverso, 2 errore d'uso o
 di file.
 
+## Nel browser (ADR 0023)
+
+vetro-wasm (ABI 8, `docs/specs/wasm.md`): `vetro_record_start/stop`,
+`vetro_rr_status`, `vetro_log_encode/load/info/events`, keyframe spostabili
+fuori dalla macchina (`vetro_log_keyframe`, `_take`, `_put`, `_for`),
+`vetro_replay_start(step)` dal keyframe più vicino (il salto a
+un'istruzione: poi `vetro_run` con il quanto limitato fino a lì),
+`vetro_registers_text`, `vetro_read_virt`, `vetro_translate`,
+`vetro_read_phys`. In JS `Recording` (`web/node/recording.mjs`) tiene i
+keyframe in un `SnapshotStore` (OPFS `vetro-recordings/` nel Worker: `kf-<i>`
+e `log` senza i byte dei keyframe) e ricompone il file completo per il
+download. L'app: pannello "Registrazione" (registra, rigioca, scarica,
+carica, vai all'istruzione, continua, registri, dump di memoria) e "vai qui"
+sugli ingressi della timeline.
+
 ## Test
 
 `vetro-machine` `record::tests` e `machine::record::tests`;
 `tests/boot/tests/replay.rs` (kernel guest, `VETRO_REQUIRE_GUEST_KERNEL=1`,
-release); `crates/vetro-cli/tests/boot_replay.rs`.
+release); `crates/vetro-cli/tests/boot_replay.rs`; nel browser
+`cargo test -p vetro-wasm` (`replay::tests`), `tests/web/replay.mjs` e
+`tests/web/browser-analysis.mjs`.

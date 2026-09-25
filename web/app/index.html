@@ -104,6 +104,96 @@
     <section id="console-box">
       <pre id="console" tabindex="0" title="Console seriale: clic e scrivi"></pre>
     </section>
+    <section id="analysis-box">
+      <nav id="tabs" role="tablist">
+        <button type="button" role="tab" data-tab="net" aria-selected="true">Rete <span id="tab-count-net"></span></button>
+        <button type="button" role="tab" data-tab="timeline" aria-selected="false">Timeline</button>
+        <button type="button" role="tab" data-tab="replay" aria-selected="false">Registrazione</button>
+      </nav>
+      <div id="tab-net" class="tab" role="tabpanel">
+        <div class="toolbar">
+          <input id="net-filter" placeholder="filtra: metodo, host, percorso, stato, tipo" spellcheck="false">
+          <select id="net-method" title="Metodo"><option value="">tutti i metodi</option></select>
+          <select id="net-status" title="Stato della risposta">
+            <option value="">tutti gli stati</option>
+            <option value="2">2xx</option>
+            <option value="3">3xx</option>
+            <option value="4">4xx</option>
+            <option value="5">5xx</option>
+            <option value="none">senza risposta</option>
+          </select>
+          <select id="net-kind" title="Tipo del corpo (richiesta o risposta)">
+            <option value="">tutti i corpi</option>
+            <option value="json">JSON</option>
+            <option value="form">form</option>
+            <option value="multipart">multipart</option>
+            <option value="protobuf">protobuf</option>
+            <option value="testo">testo</option>
+            <option value="binario">binario</option>
+          </select>
+          <button id="net-har" type="button" title="Scarica la cattura come HAR 1.2">Esporta HAR</button>
+          <button id="net-pcap" type="button" title="Scarica i frame di virtio-net come pcapng (Wireshark)">Esporta pcapng</button>
+          <button id="net-clear" type="button" class="quiet" title="Svuota la cattura">Svuota</button>
+          <span id="net-info" class="dim"></span>
+        </div>
+        <div class="split">
+          <div class="table-wrap">
+            <table id="net-table">
+              <thead><tr><th>#</th><th>inizio</th><th>metodo</th><th>host</th><th>percorso</th><th>stato</th><th>richiesta</th><th>risposta</th><th>tipo</th><th>durata</th><th class="wf">cascata</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div id="net-detail"></div>
+        </div>
+      </div>
+      <div id="tab-timeline" class="tab" role="tabpanel" hidden>
+        <div class="toolbar">
+          <label title="Un effetto è attribuito all'ultimo ingresso di comando entro questa finestra di tempo del guest (euristica, ADR 0023)">finestra <input id="tl-window" type="number" value="3000" min="1" step="100"> ms</label>
+          <label><input id="tl-http" type="checkbox" checked> http</label>
+          <label><input id="tl-dns" type="checkbox" checked> dns</label>
+          <label><input id="tl-tls" type="checkbox" checked> tls</label>
+          <label><input id="tl-file" type="checkbox" checked> file</label>
+          <label><input id="tl-console" type="checkbox" checked> console</label>
+          <label title="Mostra anche i singoli caratteri battuti (non causano effetti di rete o sui file)"><input id="tl-weak" type="checkbox"> caratteri singoli</label>
+          <button id="tl-clear" type="button" class="quiet">Svuota</button>
+          <span id="tl-info" class="dim"></span>
+        </div>
+        <svg id="tl-track" width="100%" height="72" role="img" aria-label="Asse del tempo del guest"></svg>
+        <div id="tl-list"></div>
+      </div>
+      <div id="tab-replay" class="tab" role="tabpanel" hidden>
+        <div class="toolbar">
+          <button id="rr-record" type="button" title="Registra gli ingressi da ora (con keyframe per il salto a un'istruzione)">Registra</button>
+          <label title="Istruzioni fra due keyframe (snapshot completi, in OPFS)">keyframe ogni <input id="rr-kf" type="number" value="200" min="1"> M istruzioni</label>
+          <button id="rr-replay" type="button" disabled title="Rifà la registrazione dal primo keyframe e confronta lo stato alla fine">Rigioca</button>
+          <button id="rr-download" type="button" disabled title="Scarica il log con i keyframe">Scarica log</button>
+          <label class="file-button" title="Carica un log scaricato prima (stessa macchina)">Carica log <input id="rr-load" type="file" accept=".vrec"></label>
+        </div>
+        <div class="toolbar">
+          <label>Vai all'istruzione <input id="rr-step" type="number" min="0" spellcheck="false"></label>
+          <button id="rr-goto" type="button" disabled>Vai</button>
+          <button id="rr-continue" type="button" disabled title="Continua il replay fino alla fine">Continua</button>
+          <span id="rr-status" class="dim"></span>
+        </div>
+        <div class="rr-cols">
+          <div>
+            <h4>Registri</h4>
+            <pre id="rr-regs" class="mono-box">(fermati a un'istruzione per vederli)</pre>
+          </div>
+          <div>
+            <h4>Memoria</h4>
+            <div class="toolbar">
+              <label>indirizzo virtuale <input id="rr-va" placeholder="0xffff…" spellcheck="false"></label>
+              <label>byte <input id="rr-len" type="number" value="256" min="1" max="65536"></label>
+              <button id="rr-read" type="button">Leggi</button>
+            </div>
+            <pre id="rr-mem" class="mono-box"></pre>
+          </div>
+        </div>
+        <h4>Ingressi registrati <span id="rr-events-count" class="dim"></span></h4>
+        <div id="rr-events"></div>
+      </div>
+    </section>
   </main>
 </body>
 </html>

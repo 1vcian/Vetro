@@ -4,7 +4,8 @@
 // (web/node/disk.mjs), mappa dei tasti (web/app/keymap.mjs), terminale
 // (web/app/terminal.mjs), persistenza (web/node/persist.mjs), lettore
 // SQLite e visualizzatori del gestore dei file (web/app/sqlite.mjs,
-// web/app/files.mjs, M8).
+// web/app/files.mjs, M8), formati dei pannelli di analisi
+// (web/app/analysis.mjs, M7/M10).
 //
 //   node tests/web/unit.mjs
 
@@ -17,6 +18,7 @@ import { keyToBytes, Terminal } from '../../web/app/terminal.mjs';
 import { fromBase64, MemFile, readAll, SnapshotStore, snapshotKey, staleReason, toBase64 } from '../../web/node/persist.mjs';
 import { formatValue, isSqlite, parseCreateTable, SqliteDb, varint } from '../../web/app/sqlite.mjs';
 import { asText, detectView, hexDump, imageType, modeString, parseHex, sizeString } from '../../web/app/files.mjs';
+import { duration, fromB64, guestTime, hexdump } from '../../web/app/analysis.mjs';
 import { check, root, run } from './lib.mjs';
 
 const eq = (a, b, what) => check(JSON.stringify(a) === JSON.stringify(b), `${what}: ${JSON.stringify(a)} invece di ${JSON.stringify(b)}`);
@@ -288,6 +290,19 @@ test('gestore dei file: visualizzatori', () => {
     detectView('img', new Uint8Array([0xff, 0xd8, 0xff, 0xe0])),
     detectView('app.db', sqlite),
   ], ['json', 'json', 'xml', 'xml', 'text', 'hex', 'image', 'sqlite'], 'riconoscimento');
+});
+
+test('pannelli di analisi: tempi, durate, dump', () => {
+  eq(guestTime(1_234_567), '1.234 s', 'tempo del guest');
+  eq(guestTime(5), '0.000 s', 'tempo piccolo');
+  eq([duration(null), duration(999), duration(1500), duration(25_000), duration(3_200_000)], ['–', '999 µs', '1.50 ms', '25.0 ms', '3.20 s'], 'durate');
+  eq([...fromB64('AAH/')], [0, 1, 255], 'base64');
+  const d = hexdump(new Uint8Array([0x41, 0x00, 0x7f, 0x42, ...new Array(14).fill(0x2e)]), 0xffff800080010800n);
+  eq(d.split('\n'), [
+    'ffff800080010800  41 00 7f 42 2e 2e 2e 2e 2e 2e 2e 2e 2e 2e 2e 2e  A..B............',
+    'ffff800080010810  2e 2e                                            ..',
+  ], 'dump esadecimale');
+  eq(hexdump(new Uint8Array(40), 0n, 16).split('\n').at(-1), '… altri 24 byte', 'dump tagliato');
 });
 
 run(async () => {

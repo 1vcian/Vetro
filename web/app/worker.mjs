@@ -22,6 +22,25 @@
 // `files-event`, `files-status`). Dopo il ripristino di uno snapshot il
 // client è nuovo: le connessioni rimaste nello snapshot si chiudono.
 //
+// Ispettore di rete e timeline (M7, ADR 0023): con la rete la cattura è
+// accesa dall'avvio; ogni ~0,7 s, se qualcosa è cambiato, il Worker manda
+// alla pagina la lista delle richieste e la timeline (`analysis`); dettaglio,
+// HAR e pcapng a richiesta (`inspect`). Gli ingressi dell'utente li annota
+// vetro-wasm; qui si annotano i comandi del gestore dei file (non le letture
+// del pannello) e, come effetti, i file cambiati visti dalle osservazioni.
+//
+// Record & replay (M10, ADR 0019 e 0023): i comandi della pagina (`rr`) si
+// eseguono fra una fetta e l'altra. Alla fine di una registrazione (o dopo
+// aver caricato un log) i keyframe vanno in OPFS (`vetro-recordings/`,
+// `Recording` di web/node/recording.mjs) e il log resta lì per la sessione
+// successiva. Un replay (anche il salto a un'istruzione) riparte dal
+// keyframe più vicino: durante il replay gli ingressi della pagina si
+// scartano, il gestore dei file è chiuso, niente tempo reale né snapshot in
+// cache; al punto chiesto la macchina si ferma (`paused`: registri e
+// memoria si leggono con `inspect`), alla fine del replay il verdetto
+// (`replay-ended`: `Finished` = replay identico, `Diverged`) e la macchina
+// continua libera.
+//
 // Persistenza (M6, ADR 0017):
 // - le scritture del guest sui dischi vanno nell'overlay copy-on-write, che
 //   si salva in OPFS (`vetro-overlays/`) fra una fetta e l'altra (al più
@@ -40,7 +59,8 @@
 //   sessione successiva lo snapshot si ripristina invece di avviare il
 //   kernel, se gli overlay sono ancora a quella generazione.
 
-import { DEV, INPUT, instantiate, Machine } from '../node/vetro.mjs';
+import { DEV, INOTIFY, INPUT, instantiate, Machine, TIMELINE_EFFECT, TIMELINE_INPUT } from '../node/vetro.mjs';
+import { Recording } from '../node/recording.mjs';
 import { BlobSource, DiskFeeder, MemoryCache, OpfsCache, RangeSource } from '../node/disk.mjs';
 import { DiskOverlay, fromBase64, opfsFile, sha256Hex, SnapshotStore, snapshotKey, staleReason, toBase64 } from '../node/persist.mjs';
 
@@ -76,6 +96,22 @@ let consoleTailLen = 0;
 /** Client del gestore dei file (GuestFiles) e ultimo stato mandato alla pagina. */
 let files = null;
 let filesKey = '';
+/** Cartella osservata per ogni wd (per gli effetti sui file della timeline). */
+const watchPaths = new Map();
+/** 'live', 'replay' (rifà il log), 'paused' (fermo al punto chiesto). */
+let mode = 'live';
+/** Istruzione a cui fermarsi durante il replay (BigInt) o null. */
+let target = null;
+/** Comandi di registrazione e replay, eseguiti fra una fetta e l'altra. */
+const control = [];
+let recording = null;
+/** Finestra di attribuzione della timeline (µs, 0 = quella di vetro-analysis). */
+let windowUs = 0;
+let lastAnalysis = -1n;
+let lastAnalysisAt = 0;
+let ignoredNotice = false;
+/** Riferimento del tempo reale (si azzera quando il tempo del guest salta). */
+const clock = { t0: 0, g0: 0n, paused: 0 };
 
 const post = (msg, transfer = []) => postMessage(msg, transfer);
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
@@ -250,10 +286,17 @@ async function start(c) {
     post({ type: 'cold', times });
   }
   if (c.jit) m.setJit(16, 16);
-  if (c.files) {
-    files = m.files();
-    files.onEvent = (event) => post({ type: 'files-event', event });
+  if (c.files) openFiles();
+  if (c.net) m.capture(true);
+  try {
+    recording = new Recording(m, c.opfs ? await SnapshotStore.opfs('vetro-recordings') : SnapshotStore.memory());
+    const info = await recording.restore();
+    if (info && !info.sameMachine) status('registrazione salvata di una macchina configurata diversamente: non si può rigiocare qui');
+  } catch (e) {
+    status(`archivio delle registrazioni non disponibile (${e.message ?? e}): in memoria`);
+    recording = new Recording(m, SnapshotStore.memory());
   }
+  postRr();
   post({ type: 'started', pointer: c.pointer, restored: !!restored });
   running = true;
   loop().catch((e) => {
@@ -263,6 +306,12 @@ async function start(c) {
 }
 
 function apply(msg) {
+  if (mode !== 'live') {
+    // Durante il replay gli ingressi vengono dal log.
+    if (!ignoredNotice) status('replay in corso: gli ingressi della pagina non arrivano al guest');
+    ignoredNotice = true;
+    return;
+  }
   inputLog.push([Number(m.steps), msg]);
   switch (msg.type) {
     case 'serial':
@@ -308,14 +357,51 @@ const FILE_OPS = {
   create: (a) => files.create(a.path, a.mode ?? 0o644),
   delete: (a) => files.delete(a.path, { recursive: !!a.recursive }),
   rename: (a) => files.rename(a.path, a.to),
-  watch: (a) => files.watch(a.path),
+  watch: (a) => files.watch(a.path).then((wd) => {
+    watchPaths.set(wd, a.path);
+    return wd;
+  }),
   unwatch: (a) => files.unwatch(a.wd),
 };
+
+/** I comandi del gestore dei file che sono azioni dell'utente (timeline). */
+const FILE_COMMANDS = {
+  write: (a) => `salva ${a.path}`,
+  mkdir: (a) => `nuova cartella ${a.path}`,
+  create: (a) => `nuovo file ${a.path}`,
+  delete: (a) => `cancella ${a.path}`,
+  rename: (a) => `rinomina ${a.path} → ${a.to}`,
+};
+
+/** Gli eventi di inotify che cambiano file, con il nome nella timeline. */
+const FILE_CHANGES = [
+  [INOTIFY.CREATE, 'creato'], [INOTIFY.CLOSE_WRITE, 'scritto'], [INOTIFY.MOVED_TO, 'spostato qui'],
+  [INOTIFY.MOVED_FROM, 'spostato via'], [INOTIFY.DELETE, 'cancellato'],
+];
+
+function fileEffect(e) {
+  const change = FILE_CHANGES.find(([bit]) => e.mask & bit);
+  if (!change || e.name.startsWith('.vetro-tmp.')) return;
+  const dir = watchPaths.get(e.wd) ?? `wd ${e.wd}`;
+  const path = e.name ? `${dir.replace(/\/$/, '')}/${e.name}` : dir;
+  m.timelineEffect(TIMELINE_EFFECT.FILE, `${change[1]}${e.mask & INOTIFY.ISDIR ? ' (cartella)' : ''} ${path}`);
+}
+
+function openFiles() {
+  files = m.files();
+  watchPaths.clear();
+  files.onEvent = (event) => {
+    fileEffect(event);
+    post({ type: 'files-event', event });
+  };
+}
 
 function filesRequest(msg) {
   const reply = (r) => post({ type: 'files-reply', id: msg.id, ...r }, r.result?.data ? [r.result.data.buffer] : []);
   const op = FILE_OPS[msg.op];
   if (!files || !op) return reply({ ok: false, error: files ? `operazione ${msg.op} sconosciuta` : 'gestore dei file spento' });
+  const label = FILE_COMMANDS[msg.op]?.(msg.args);
+  if (label) m.timelineInput(TIMELINE_INPUT.FILES, label);
   op(msg.args).then((result) => reply({ ok: true, result }), (e) => reply({ ok: false, error: e.message, code: e.code }));
 }
 
@@ -372,12 +458,118 @@ function flush() {
   return active;
 }
 
+/** Azzera il riferimento del tempo reale (all'inizio e quando il tempo del guest salta). */
+function resetClock() {
+  clock.t0 = performance.now();
+  clock.g0 = m.guestNs;
+  clock.paused = 0;
+}
+
+/** Stato di registrazione e replay per la pagina. */
+function postRr(extra = {}) {
+  if (!m) return;
+  post({ type: 'rr', status: m.rrStatus(), info: m.logInfo(), meta: recording?.meta ?? null, mode, steps: Number(m.steps),
+    target: target === null ? null : Number(target), ...extra });
+}
+
+/** Lista dell'ispettore e timeline, se sono cambiate (al più ogni 700 ms, o subito con `force`). */
+function postAnalysis(force = false) {
+  const now = performance.now();
+  if (!force && now - lastAnalysisAt < 700) return;
+  lastAnalysisAt = now;
+  const v = m.timelineVersion();
+  if (!force && v === lastAnalysis) return;
+  lastAnalysis = v;
+  post({ type: 'analysis', requests: m.inspectRequests(), timeline: m.timeline(windowUs), capture: m.captureStats() });
+}
+
+/** Al punto chiesto del replay: ferma e manda registri e stato. */
+function pause() {
+  mode = 'paused';
+  target = null;
+  status(`replay fermo all'istruzione ${m.steps}: registri e memoria nel pannello Registrazione`);
+  post({ type: 'paused', steps: Number(m.steps), registers: m.registersText() });
+  postAnalysis(true);
+  postRr();
+}
+
+/** Fine del replay (identico o no): la macchina continua libera. */
+function replayEnded(st) {
+  mode = 'live';
+  target = null;
+  ignoredNotice = false;
+  resetClock();
+  if (cfg.files) openFiles();
+  post({ type: 'replay-ended', status: st, steps: Number(m.steps) });
+  postAnalysis(true);
+  postRr();
+}
+
+async function startReplay(step, stopAt) {
+  if (m.rrStatus().state === 'Recording') {
+    m.recordStop();
+    await recording.store();
+  }
+  await recording.ensureKeyframe(step);
+  try {
+    m.replayStart(step);
+  } finally {
+    recording.dropKeyframes();
+  }
+  // Il client del gestore dei file l'ha già tolto vetro-wasm (le sue
+  // operazioni sono nel log): qui si rifiutano le richieste in corso.
+  files?.close();
+  files = null;
+  filesKey = '';
+  post({ type: 'files-status', status: { state: 'None', pending: 0, generation: 0, maxChunk: 0, selinux: false } });
+  mode = 'replay';
+  target = stopAt ? BigInt(step) : null;
+  lastUpdates = -1;
+  resetClock();
+  post({ type: 'replay-started', from: Number(m.steps), target: stopAt ? Number(step) : null });
+  if (target !== null && m.steps >= target) pause();
+}
+
+/** Un comando di registrazione o replay. */
+async function rr(cmd) {
+  try {
+    switch (cmd.op) {
+      case 'record-start':
+        if (mode !== 'live') throw new Error('prima finisci il replay');
+        m.recordStart(cmd.keyframeEvery);
+        status(`registrazione in corso (keyframe ogni ${cmd.keyframeEvery / 1e6} M istruzioni)`);
+        break;
+      case 'record-stop': {
+        if (!m.recordStop()) throw new Error('nessuna registrazione in corso');
+        const meta = await recording.store();
+        status(`registrazione finita: ${meta.events} ingressi, ${meta.keyframes} keyframe salvati`);
+        break;
+      }
+      case 'load-log': {
+        const meta = await recording.load(new Uint8Array(cmd.bytes));
+        status(`log caricato: ${meta.events} ingressi, ${meta.keyframes} keyframe`);
+        break;
+      }
+      case 'replay':
+        await startReplay(cmd.step ?? 0, !!cmd.pause);
+        break;
+      case 'continue':
+        if (mode === 'paused') {
+          mode = 'replay';
+          target = cmd.step !== undefined ? BigInt(cmd.step) : null;
+        }
+        break;
+    }
+  } catch (e) {
+    status(`${cmd.op}: ${e.message ?? e}`);
+    post({ type: 'rr-error', op: cmd.op, message: String(e.message ?? e) });
+  }
+  postRr();
+}
+
 async function loop() {
-  const t0 = performance.now();
-  // Tempo del guest all'inizio (dopo un ripristino non è zero).
-  const g0 = m.guestNs;
-  const guestMs = () => Number(m.guestNs - g0) / 1e6;
-  let paused = 0;
+  resetClock();
+  const guestMs = () => Number(m.guestNs - clock.g0) / 1e6;
   let lastStats = 0;
   let lastPersist = performance.now();
   // Ultima attività del guest (tempo del guest) e riposo già usato.
@@ -388,25 +580,48 @@ async function loop() {
     rested = false;
   };
   let steps0 = m.steps;
-  let wall0 = t0;
+  let wall0 = performance.now();
   for (;;) {
+    while (control.length) await rr(control.shift());
+    if (mode === 'paused') {
+      while (inbox.length) apply(inbox.shift());
+      if (!control.length) await new Promise((ok) => (wake = ok));
+      wake = null;
+      continue;
+    }
     if (inbox.length) activity();
     while (inbox.length) apply(inbox.shift());
     pumpFiles();
     const slice = performance.now();
+    const realtime = cfg.realtime && mode === 'live';
     let stop;
     for (;;) {
-      stop = m.run(QUANTUM);
+      const budget = target === null ? QUANTUM : Math.min(QUANTUM, Number(target - m.steps));
+      stop = budget > 0 ? m.run(budget) : 'Budget';
       if (stop === 'Blocked') {
         activity();
         const w = performance.now();
         await feeder.serve();
-        paused += performance.now() - w;
+        clock.paused += performance.now() - w;
         continue;
       }
+      if (mode === 'replay') {
+        const st = m.rrStatus();
+        if (st.state !== 'Replaying') {
+          flush();
+          replayEnded(st);
+          break;
+        }
+        if (target !== null && m.steps >= target) {
+          flush();
+          pause();
+          break;
+        }
+      }
       if (stop !== 'Budget' || performance.now() - slice > SLICE_MS) break;
-      if (cfg.realtime && guestMs() > performance.now() - t0 - paused + 20) break;
+      if (realtime && guestMs() > performance.now() - clock.t0 - clock.paused + 20) break;
     }
+    if (mode === 'paused') continue;
     if (flush()) activity();
     pumpFiles();
     const now = performance.now();
@@ -421,10 +636,15 @@ async function loop() {
       rested = true;
       if (persistOverlays()) activity();
     }
-    if (store && (saveRequested || (rest && (!lastSnapshot || String(generations()) !== String(lastSnapshot.generations))))) {
+    if (store && mode === 'live' && (saveRequested || (rest && (!lastSnapshot || String(generations()) !== String(lastSnapshot.generations))))) {
       const why = saveRequested ? 'richiesta' : lastSnapshot ? 'dischi cambiati' : 'avvio finito';
       saveRequested = false;
       await saveSnapshot(why).catch((e) => status(`snapshot non salvato: ${e.message ?? e}`));
+    }
+    // Dopo un replay il contatore può tornare indietro.
+    if (m.steps < steps0) {
+      steps0 = m.steps;
+      wall0 = now;
     }
     if (now - lastStats > 500) {
       const mips = Number(m.steps - steps0) / ((now - wall0) * 1000);
@@ -438,13 +658,15 @@ async function loop() {
         jit: m.jitStats(),
         inputs: inputLog.length,
       });
+      if (mode !== 'live' || m.rrStatus().state === 'Recording') postRr();
       lastStats = now;
       steps0 = m.steps;
       wall0 = now;
     }
-    if (stop === 'Idle') {
+    postAnalysis();
+    if (stop === 'Idle' && mode === 'live') {
       status('il guest aspetta un ingresso');
-      if (!inbox.length && !saveRequested) await new Promise((ok) => (wake = ok));
+      if (!inbox.length && !saveRequested && !control.length) await new Promise((ok) => (wake = ok));
       wake = null;
       continue;
     }
@@ -454,8 +676,54 @@ async function loop() {
       return;
     }
     // Tempo reale: il guest non corre davanti all'orologio.
-    const ahead = cfg.realtime ? guestMs() - (performance.now() - t0 - paused) : 0;
+    const ahead = realtime ? guestMs() - (performance.now() - clock.t0 - clock.paused) : 0;
     await sleep(Math.max(0, Math.min(ahead, 50)));
+  }
+}
+
+const enc = new TextEncoder();
+
+/** Letture della pagina: dettaglio, esportazioni, registri, memoria, finestra della timeline. */
+async function inspect(msg) {
+  switch (msg.op) {
+    case 'request':
+      return { result: m.inspectRequest(msg.index) };
+    case 'har': {
+      const bytes = enc.encode(m.inspectHar(msg.epochUs ?? 0));
+      return { result: bytes, transfer: [bytes.buffer] };
+    }
+    case 'pcapng': {
+      const bytes = m.inspectPcapng(msg.epochUs ?? 0);
+      return { result: bytes, transfer: [bytes.buffer] };
+    }
+    case 'log': {
+      const bytes = await recording.encodeFull();
+      return { result: bytes, transfer: [bytes.buffer] };
+    }
+    case 'events':
+      return { result: m.logEvents() };
+    case 'registers':
+      return { result: { steps: Number(m.steps), text: m.registersText() } };
+    case 'memory': {
+      const va = BigInt(msg.va);
+      const r = m.readVirt(va, msg.length);
+      if (!r.bytes) return { result: { va: msg.va, fault: `0x${r.fault.toString(16)}` } };
+      return { result: { va: msg.va, bytes: r.bytes, pa: m.translate(va)?.toString(16) ?? null } };
+    }
+    case 'window':
+      windowUs = msg.us;
+      postAnalysis(true);
+      return { result: true };
+    case 'capture-clear':
+      m.captureClear();
+      postAnalysis(true);
+      return { result: true };
+    case 'timeline-clear':
+      m.timelineClear();
+      postAnalysis(true);
+      return { result: true };
+    default:
+      throw new Error(`lettura ${msg.op} sconosciuta`);
   }
 }
 
@@ -467,6 +735,19 @@ onmessage = (e) => {
     return;
   }
   if (!m) return;
+  if (msg.type === 'rr') {
+    control.push(msg);
+    wake?.();
+    return;
+  }
+  if (msg.type === 'inspect') {
+    // Letture che non toccano il guest: subito, fra una fetta e l'altra.
+    inspect(msg).then(
+      ({ result, transfer = [] }) => post({ type: 'inspect-reply', id: msg.id, ok: true, result }, transfer),
+      (err) => post({ type: 'inspect-reply', id: msg.id, ok: false, error: String(err.message ?? err) }),
+    );
+    return;
+  }
   if (msg.type === 'save') {
     // Non è un ingresso del guest: si salva fra due fette.
     if (store) saveRequested = true;

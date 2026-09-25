@@ -11,6 +11,7 @@ publish.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+vetro-analysis = { path = "../vetro-analysis" }
 vetro-machine = { path = "../vetro-machine" }
 vetro-jit = { path = "../vetro-jit" }
 vetro-platform = { path = "../vetro-platform" }

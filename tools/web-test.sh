@@ -26,12 +26,25 @@
 #      letture, scritture che conservano modo e proprietario lette dal guest,
 #      evento di inotify entro 1 s di tempo del guest, 1,2 MB a pezzi; due
 #      esecuzioni uguali;
-#   9. l'app in Chrome headless (tests/web/browser.mjs), se Chrome c'è
+#   9. ispettore di rete e timeline via API (tests/web/inspector.mjs, M7,
+#      ADR 0023): POST JSON e form di wget al sinkhole, lista, dettaglio con
+#      corpi decodificati, HAR, pcapng, richieste e DNS attribuiti al
+#      comando; due esecuzioni uguali;
+#  10. record & replay via API (tests/web/replay.mjs, M10): registrazione con
+#      keyframe, log da file, keyframe nell'archivio (Recording), replay
+#      identico con JIT e interprete (console, ispettore e timeline uguali),
+#      salto a un'istruzione con gli stessi registri e la stessa memoria;
+#  11. l'app in Chrome headless (tests/web/browser.mjs), se Chrome c'è
 #      (VETRO_CHROME; altrimenti SKIP, che non è un test passato;
 #      VETRO_REQUIRE_BROWSER=1 lo rende un errore): anche snapshot e dischi
 #      persistenti in OPFS, il secondo avvio dallo snapshot (tempo misurato)
 #      e il pannello del gestore dei file (albero dal vivo, un file modificato
-#      e salvato nel pannello, riletto dal guest con cat).
+#      e salvato nel pannello, riletto dal guest con cat);
+#  12. ispettore, timeline e record & replay nell'app in Chrome
+#      (tests/web/browser-analysis.mjs): wget verso il sinkhole nell'ispettore
+#      con il corpo JSON decodificato e legato al comando nella timeline,
+#      download di log, HAR e pcapng, replay identico, salto a un'istruzione
+#      con registri e memoria, log ricaricato e rigiocato.
 #
 #   tools/web-test.sh [--no-jit]
 #
@@ -83,5 +96,14 @@ node tests/web/snapshot.mjs "$@"
 echo "==> gestore dei file via API (M8)"
 node tests/web/files.mjs "$@"
 
+echo "==> ispettore di rete e timeline via API (M7)"
+node tests/web/inspector.mjs "$@"
+
+echo "==> record & replay via API (M10)"
+node tests/web/replay.mjs "$@"
+
 echo "==> app in Chrome headless"
 node tests/web/browser.mjs
+
+echo "==> ispettore, timeline e record & replay nell'app in Chrome"
+node tests/web/browser-analysis.mjs

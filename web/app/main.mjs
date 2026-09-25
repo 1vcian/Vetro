@@ -13,6 +13,10 @@
 // l'albero delle radici (`window.vetroFiles.setRoots([...])`: oggi a mano,
 // con Android le imposterà il rilevamento dell'app in primo piano).
 //
+// Analisi (M7, M10, ADR 0023): sotto lo schermo i pannelli dell'ispettore
+// di rete, della timeline input→effetti e della registrazione/replay
+// (analysis.mjs); `window.vetroAnalysis` per i test.
+//
 // Persistenza (M6, ADR 0017): il Worker salva in OPFS lo snapshot della
 // macchina e l'overlay dei dischi; al secondo avvio riparte dallo snapshot.
 // Lo stato si legge anche da `window.vetroState` (per i test nel browser).
@@ -21,6 +25,7 @@ import { absAxis, BUTTONS, evdevCode } from './keymap.mjs';
 import { keyToBytes, Terminal } from './terminal.mjs';
 import { Canvas2DRenderer, WebGpuRenderer } from './display.mjs';
 import { FilePanel } from './files.mjs';
+import { AnalysisPanels } from './analysis.mjs';
 
 const $ = (id) => document.getElementById(id);
 const form = $('setup');
@@ -79,6 +84,8 @@ const setStatus = (t) => {
   statusEl.textContent = t;
   statusEl.title = t;
 };
+
+const panels = new AnalysisPanels({ post: (msg, transfer = []) => worker?.postMessage(msg, transfer), setStatus });
 
 // ---- Console ---------------------------------------------------------------
 
@@ -293,7 +300,19 @@ async function start() {
   worker = new Worker(new URL('./worker.mjs', import.meta.url), { type: 'module' });
   worker.onmessage = (e) => {
     const msg = e.data;
+    if (panels.onMessage(msg) && msg.type !== 'replay-started' && msg.type !== 'replay-ended') return;
     switch (msg.type) {
+      case 'replay-started':
+        // Una riga nel terminale (solo nella pagina, il guest non la vede).
+        replaying = true;
+        term.feed(new TextEncoder().encode(`\r\n\x1b[7m[vetro: replay dall'istruzione ${msg.from}${msg.target !== null ? `, fermo a ${msg.target}` : ''}]\x1b[0m\r\n`));
+        replaying = false;
+        renderConsole();
+        setStatus(`replay dall'istruzione ${msg.from}`);
+        break;
+      case 'replay-ended':
+        setStatus(msg.status.state === 'Finished' ? `replay identico (${msg.steps} istruzioni): la macchina continua libera` : `replay diverso: ${msg.status.message}`);
+        break;
       case 'console':
         term.feed(msg.bytes);
         if (!consoleDirty) {
@@ -373,12 +392,12 @@ $('save').addEventListener('click', () => send({ type: 'save' }));
 $('forget').addEventListener('click', async () => {
   try {
     const root = await navigator.storage.getDirectory();
-    for (const name of ['vetro-snapshots', 'vetro-overlays', 'vetro-disks']) {
+    for (const name of ['vetro-snapshots', 'vetro-overlays', 'vetro-disks', 'vetro-recordings']) {
       await root.removeEntry(name, { recursive: true }).catch((e) => {
         if (e.name !== 'NotFoundError') throw e;
       });
     }
-    setStatus('dati salvati cancellati (snapshot, dischi persistenti, cache dei blocchi)');
+    setStatus('dati salvati cancellati (snapshot, dischi persistenti, cache dei blocchi, registrazioni)');
   } catch (e) {
     setStatus(`cancellazione non riuscita: ${e.message ?? e}`);
   }
