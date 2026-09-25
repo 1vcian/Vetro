@@ -90,6 +90,7 @@ impl Kernel {
             clear_child_tid: if flags & CLONE_CHILD_CLEARTID != 0 { ctid } else { 0 },
             exit_signal: if thread { 0 } else { (flags & 0xff) as i32 },
             futex_woken: false,
+            futex_index: 0,
             vfork_parent: if flags & CLONE_VFORK != 0 { Some(parent.tid) } else { None },
             fault: None,
             comm: parent.comm.clone(),
@@ -97,6 +98,8 @@ impl Kernel {
             umask: parent.umask,
             deadline: None,
             oom_score_adj: parent.oom_score_adj,
+            rlimits: parent.rlimits,
+            personality: parent.personality,
         };
         if flags & CLONE_PARENT_SETTID != 0 {
             write_u32(&mut self.tasks[t].mm.borrow_mut().mem, ptid, tid as u32)?;
@@ -211,6 +214,14 @@ impl Kernel {
         status_ptr: u64,
         options: u64,
     ) -> Result<Option<i64>, i64> {
+        // WNOHANG, WUNTRACED, WCONTINUED, __WNOTHREAD, __WALL, __WCLONE.
+        if options & !(1 | 2 | 8 | 0x2000_0000 | 0x4000_0000 | 0x8000_0000) != 0 {
+            return Err(EINVAL);
+        }
+        // -INT_MIN non è un gruppo valido.
+        if pid == i32::MIN {
+            return Err(ESRCH);
+        }
         let me = self.tasks[t].tgid;
         if let Some((cpid, status)) = self.reap(me, pid) {
             if status_ptr != 0 {
@@ -323,11 +334,17 @@ impl Kernel {
             if woken >= n {
                 break;
             }
-            if let State::Blocked(Wait::Futex { key: k, .. }) = task.state
-                && k == key
-                && !task.futex_woken
-            {
+            if task.futex_woken {
+                continue;
+            }
+            let hit = match &task.state {
+                State::Blocked(Wait::Futex { key: k, .. }) => (*k == key).then_some(0),
+                State::Blocked(Wait::FutexV { keys, .. }) => keys.iter().position(|k| *k == key),
+                _ => None,
+            };
+            if let Some(i) = hit {
                 task.futex_woken = true;
+                task.futex_index = i;
                 woken += 1;
             }
         }

@@ -8,7 +8,59 @@ use super::{Kernel, State};
 /// Memoria totale dichiarata al guest, in kB.
 const MEM_KB: u64 = 4 * 1024 * 1024;
 
+/// File di ogni /proc/<pid>.
+const PID_FILES: &[&str] = &["cmdline", "comm", "maps", "oom_score_adj", "stat", "status"];
+
 impl Kernel {
+    /// Voci della directory `path` sotto /proc, se è una di quelle emulate:
+    /// /proc, /proc/<pid>, /proc/<pid>/fd, /proc/<pid>/task e task/<tid>.
+    pub(super) fn proc_dir(&self, t: usize, path: &str) -> Option<Vec<super::fs::DirEnt>> {
+        use super::fs::DirEnt;
+        let rest = path.strip_prefix("/proc").map(|r| r.trim_matches('/'))?;
+        let ent = |name: String, dtype: u8| DirEnt { ino: 1, dtype, name: name.into_bytes() };
+        let dots = || vec![ent(".".into(), 4), ent("..".into(), 4)];
+        let parts: Vec<&str> = rest.split('/').filter(|p| !p.is_empty()).collect();
+        if parts.is_empty() {
+            let mut v = dots();
+            v.push(ent("self".into(), 10));
+            v.push(ent("thread-self".into(), 10));
+            for x in self.tasks.iter().filter(|x| x.tid == x.tgid && x.state != State::Dead) {
+                v.push(ent(x.tid.to_string(), 4));
+            }
+            return Some(v);
+        }
+        let pid = match parts[0] {
+            "self" => self.tasks[t].tgid,
+            "thread-self" => self.tasks[t].tid,
+            p => p.parse().ok()?,
+        };
+        // task/<tid> è una directory di processo per quel thread.
+        let (pid, sub) = match parts.get(1..) {
+            Some(["task", tid, more @ ..]) => (tid.parse().ok()?, more.to_vec()),
+            Some(more) => (pid, more.to_vec()),
+            None => (pid, vec![]),
+        };
+        let i = self.tasks.iter().position(|x| x.tid == pid && x.state != State::Dead)?;
+        let task = &self.tasks[i];
+        let mut v = dots();
+        match sub.as_slice() {
+            [] => {
+                v.push(ent("fd".into(), 4));
+                v.push(ent("task".into(), 4));
+                v.extend(PID_FILES.iter().map(|f| ent(f.to_string(), 8)));
+            }
+            ["fd"] => v.extend(task.files.borrow().open_fds().into_iter().map(|fd| ent(fd.to_string(), 10))),
+            ["task"] => v.extend(
+                self.tasks
+                    .iter()
+                    .filter(|x| x.tgid == task.tgid && x.state != State::Dead)
+                    .map(|x| ent(x.tid.to_string(), 4)),
+            ),
+            _ => return None,
+        }
+        Some(v)
+    }
+
     /// Contenuto del file `path` sotto /proc, se è uno di quelli emulati.
     /// `None` = non è un percorso di /proc; `Some(Err)` = /proc ma assente.
     pub(super) fn proc_content(&self, t: usize, path: &str) -> Option<Result<Vec<u8>, i64>> {
@@ -64,16 +116,24 @@ impl Kernel {
             "sys/kernel/tainted" => return text("0\n".into()),
             "sys/kernel/pid_max" => return text("4194304\n".into()),
             "sys/kernel/threads-max" => return text("31000\n".into()),
-            "sys/kernel/osrelease" => return text("6.6.0-vetro\n".into()),
+            "sys/kernel/osrelease" => return text(format!("{}\n", self.cfg.release)),
             "sys/kernel/ostype" => return text("Linux\n".into()),
             "sys/kernel/hostname" => return text("vetro\n".into()),
             "sys/kernel/random/boot_id" => return text("00000000-0000-4000-8000-000000000000\n".into()),
             "sys/vm/overcommit_memory" => return text("0\n".into()),
             "sys/vm/max_map_count" => return text("65530\n".into()),
             "sys/fs/pipe-max-size" => return text("1048576\n".into()),
+            "sys/fs/pipe-user-pages-soft" => return text("16384\n".into()),
+            "sys/fs/pipe-user-pages-hard" => return text("0\n".into()),
             _ => {}
         }
         let (who, file) = rest.split_once('/').unwrap_or((rest, ""));
+        // /proc/<pid>/task/<tid>/<file> = /proc/<tid>/<file>
+        if let Some(tf) = file.strip_prefix("task/")
+            && let Some((tid, f)) = tf.split_once('/')
+        {
+            return self.proc_content(t, &format!("/proc/{tid}/{f}"));
+        }
         let task = &self.tasks[t];
         let pid = match who {
             "self" => task.tgid,
@@ -121,12 +181,13 @@ impl Kernel {
             }
             "maps" => {
                 let mut s = String::new();
-                for (a, b, p) in task.mm.borrow().mem.ranges() {
+                for (a, b, p, shared) in task.mm.borrow().mem.maps() {
                     let perms = format!(
-                        "{}{}{}p",
+                        "{}{}{}{}",
                         if p.read { 'r' } else { '-' },
                         if p.write { 'w' } else { '-' },
-                        if p.exec { 'x' } else { '-' }
+                        if p.exec { 'x' } else { '-' },
+                        if shared { 's' } else { 'p' }
                     );
                     s += &format!("{a:08x}-{b:08x} {perms} 00000000 00:00 0\n");
                 }

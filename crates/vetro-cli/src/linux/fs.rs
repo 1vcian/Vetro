@@ -34,9 +34,42 @@ pub struct Pipe {
     buf: VecDeque<u8>,
     readers: usize,
     writers: usize,
+    /// Capi di lettura con O_ASYNC: a ogni scrittura il loro proprietario
+    /// riceve il segnale di I/O.
+    pub async_readers: Vec<std::rc::Weak<RefCell<OpenFile>>>,
+    /// Capacità scelta con F_SETPIPE_SZ; 0 = quella di default.
+    size: usize,
 }
 
 impl Pipe {
+    /// Byte in attesa di essere letti (FIONREAD).
+    pub fn pending(&self) -> usize {
+        self.buf.len()
+    }
+
+    /// Capacità in byte (F_GETPIPE_SZ).
+    pub fn capacity(&self) -> usize {
+        if self.size == 0 { PIPE_CAP } else { self.size }
+    }
+
+    /// F_SETPIPE_SZ, come pipe_set_size: potenza di due di pagine, al più
+    /// /proc/sys/fs/pipe-max-size senza privilegi, non sotto i dati presenti.
+    pub fn set_capacity(&mut self, arg: u64, privileged: bool) -> Result<usize, i64> {
+        const PIPE_MAX_SIZE: usize = 1 << 20;
+        if arg > 1 << 31 {
+            return Err(EINVAL);
+        }
+        let size = (arg as usize).div_ceil(4096).max(1).next_power_of_two() * 4096;
+        if size > PIPE_MAX_SIZE && !privileged {
+            return Err(EPERM);
+        }
+        if self.buf.len() > size {
+            return Err(16); // EBUSY
+        }
+        self.size = size;
+        Ok(size)
+    }
+
     pub fn readers(&self) -> usize {
         self.readers
     }
@@ -71,6 +104,18 @@ pub enum Kind {
     Random,
     /// Socket non connesso (AF_UNIX/AF_INET): la rete arriva con M7.
     Socket,
+    /// Aperto con O_PATH: solo un riferimento al percorso (fstat, fchdir,
+    /// dirfd delle *at); l'I/O fallisce con EBADF.
+    Path {
+        path: PathBuf,
+        dir: bool,
+    },
+    /// /proc/<pid>/pagemap: 8 byte per pagina virtuale, letti dallo spazio
+    /// d'indirizzamento del processo.
+    Pagemap {
+        mm: Rc<RefCell<super::mm::Mm>>,
+        pos: u64,
+    },
     /// File generato in memoria (procfs).
     Mem {
         data: Vec<u8>,
@@ -84,6 +129,17 @@ pub struct OpenFile {
     pub flags: u64,
     /// Percorso del guest, per fchdir e /proc/self/fd.
     pub guest_path: String,
+    /// Destinatario dei segnali di I/O (F_SETOWN_EX): (tipo F_OWNER_*, id).
+    pub owner: (i32, i32),
+    /// Segnale di I/O (F_SETSIG); 0 = SIGIO.
+    pub sigio: i32,
+    /// Lease (F_SETLEASE): F_RDLCK, F_WRLCK o F_UNLCK.
+    pub lease: i16,
+    /// Creato da questa open (F_CREATED_QUERY).
+    pub created: bool,
+    /// Proprietario dei lock OFD (F_OFD_SETLK) di questa descrizione; 0 =
+    /// ancora nessuno.
+    pub ofd_owner: i32,
 }
 
 impl Drop for OpenFile {
@@ -124,7 +180,16 @@ impl OpenFile {
             }
             _ => {}
         }
-        Rc::new(RefCell::new(OpenFile { kind, flags, guest_path }))
+        Rc::new(RefCell::new(OpenFile {
+            kind,
+            flags,
+            guest_path,
+            owner: (0, 0),
+            sigio: 0,
+            lease: 2,
+            created: false,
+            ofd_owner: 0,
+        }))
     }
 
     pub fn readable(&self) -> bool {
@@ -158,6 +223,7 @@ impl OpenFile {
                 }
             }
             Kind::Dir { .. } => Io::Err(EISDIR),
+            Kind::Path { .. } => Io::Err(EBADF),
             Kind::PipeR(p) | Kind::PipeRW(p) => {
                 let mut p = p.borrow_mut();
                 if p.buf.is_empty() {
@@ -178,6 +244,22 @@ impl OpenFile {
                 let n = len.min(data.len().saturating_sub(*pos));
                 let out = data[*pos..*pos + n].to_vec();
                 *pos += n;
+                Io::Done(out)
+            }
+            Kind::Pagemap { mm, pos } => {
+                // Solo voci intere; bit 63 = pagina presente (il PFN resta a 0,
+                // come per chi non ha CAP_SYS_ADMIN).
+                if !pos.is_multiple_of(8) || !len.is_multiple_of(8) {
+                    return Io::Err(EINVAL);
+                }
+                let mm = mm.borrow();
+                let mut out = Vec::with_capacity(len.min(1 << 20));
+                for i in 0..(len / 8).min(1 << 17) as u64 {
+                    let va = (*pos / 8 + i) * 4096;
+                    let present = mm.mem.is_mapped(va, va + 1);
+                    out.extend_from_slice(&(if present { 1u64 << 63 } else { 0 }).to_le_bytes());
+                }
+                *pos += out.len() as u64;
                 Io::Done(out)
             }
         }
@@ -220,13 +302,13 @@ impl OpenFile {
                     Err(e) => Io::Err(host_errno(&e)),
                 }
             }
-            Kind::Dir { .. } => Io::Err(EBADF),
+            Kind::Dir { .. } | Kind::Path { .. } => Io::Err(EBADF),
             Kind::PipeW(p) | Kind::PipeRW(p) => {
                 let mut p = p.borrow_mut();
                 if p.readers == 0 {
                     return Io::BrokenPipe;
                 }
-                let room = PIPE_CAP - p.buf.len();
+                let room = p.capacity().saturating_sub(p.buf.len());
                 if room == 0 {
                     return if nonblock { Io::Err(EAGAIN) } else { Io::Block };
                 }
@@ -240,7 +322,7 @@ impl OpenFile {
             // /proc/<pid>/oom_score_adj si può scrivere (e non ha effetto);
             // il resto del /proc virtuale è in sola lettura.
             Kind::Mem { .. } if self.guest_path.ends_with("/oom_score_adj") => Io::Written(data.len()),
-            Kind::Mem { .. } => Io::Err(EACCES),
+            Kind::Mem { .. } | Kind::Pagemap { .. } => Io::Err(EACCES),
         }
     }
 
@@ -278,6 +360,19 @@ impl OpenFile {
                 Ok(n)
             }
             Kind::Null | Kind::Zero | Kind::Random => Ok(0),
+            Kind::Path { .. } => Err(EBADF),
+            Kind::Pagemap { pos, .. } => {
+                let n = match whence {
+                    0 => off,
+                    1 => *pos as i64 + off,
+                    _ => return Err(EINVAL),
+                };
+                if n < 0 {
+                    return Err(EINVAL);
+                }
+                *pos = n as u64;
+                Ok(n)
+            }
             _ => Err(ESPIPE),
         }
     }
@@ -287,7 +382,7 @@ impl OpenFile {
             Kind::Host { file, .. } => {
                 file.metadata().map(|m| Stat::from_host(&m)).map_err(|e| host_errno(&e))
             }
-            Kind::Dir { path, .. } => {
+            Kind::Dir { path, .. } | Kind::Path { path, .. } => {
                 std::fs::metadata(path).map(|m| Stat::from_host(&m)).map_err(|e| host_errno(&e))
             }
             Kind::PipeR(_) | Kind::PipeW(_) | Kind::PipeRW(_) => {
@@ -307,6 +402,9 @@ impl OpenFile {
                 nlink: 1,
                 ..Default::default()
             }),
+            Kind::Pagemap { .. } => {
+                Ok(Stat { mode: S_IFREG | 0o400, blksize: 1024, nlink: 1, ..Default::default() })
+            }
         }
     }
 
@@ -348,11 +446,11 @@ impl OpenFile {
             }
             Kind::PipeW(p) => {
                 let p = p.borrow();
-                p.buf.len() < PIPE_CAP || p.readers == 0
+                p.buf.len() < p.capacity() || p.readers == 0
             }
             Kind::PipeRW(p) => {
                 let p = p.borrow();
-                !p.buf.is_empty() || p.buf.len() < PIPE_CAP
+                !p.buf.is_empty() || p.buf.len() < p.capacity()
             }
             _ => false,
         }
@@ -408,12 +506,18 @@ pub struct Fd {
 #[derive(Clone, Default)]
 pub struct FdTable {
     fds: Vec<Option<Fd>>,
+    /// RLIMIT_NOFILE corrente del processo; 0 = quello di default.
+    pub limit: usize,
 }
 
 /// Limite di descrittori per processo (RLIMIT_NOFILE).
 pub const NOFILE: usize = 1024;
 
 impl FdTable {
+    fn max(&self) -> usize {
+        if self.limit == 0 { NOFILE } else { self.limit }
+    }
+
     pub fn with_console(c: &Rc<RefCell<Console>>) -> Self {
         let mut t = FdTable::default();
         for (fd, flags) in [(0u8, 0), (1, O_WRONLY), (2, O_WRONLY)] {
@@ -443,7 +547,7 @@ impl FdTable {
         while i < self.fds.len() && self.fds[i].is_some() {
             i += 1;
         }
-        if i >= NOFILE {
+        if i >= self.max() {
             return Err(EMFILE);
         }
         if i >= self.fds.len() {
@@ -455,7 +559,7 @@ impl FdTable {
 
     /// Installa `file` esattamente in `fd`, chiudendo ciò che c'era (dup3).
     pub fn install_at(&mut self, fd: usize, file: Rc<RefCell<OpenFile>>, cloexec: bool) -> SysResult {
-        if fd >= NOFILE {
+        if fd >= self.max() {
             return Err(EBADF);
         }
         if fd >= self.fds.len() {
@@ -483,6 +587,11 @@ impl FdTable {
 
     pub fn any_pipe_ready(&self) -> bool {
         self.fds.iter().flatten().any(|f| f.file.borrow().is_pipe_ready())
+    }
+
+    /// I file aperti della tabella.
+    pub fn files(&self) -> impl Iterator<Item = &Rc<RefCell<OpenFile>>> {
+        self.fds.iter().flatten().map(|f| &f.file)
     }
 
     /// Descrittori aperti (per /proc/self/fd).
@@ -527,6 +636,18 @@ pub fn join(base: &str, path: &[u8]) -> String {
     if full.ends_with('/') && s != "/" { s + "/" } else { s }
 }
 
+/// Dopo una creazione: i permessi devono dipendere solo dalla umask del
+/// guest, non da quella del processo host (che li avrebbe già ridotti).
+pub fn fix_mode(host: &std::path::Path, want: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(m) = std::fs::symlink_metadata(host)
+        && m.permissions().mode() & 0o777 != want & 0o777
+    {
+        let keep = m.permissions().mode() & 0o7000;
+        let _ = std::fs::set_permissions(host, std::fs::Permissions::from_mode(keep | (want & 0o777)));
+    }
+}
+
 /// Apertura di un percorso del guest.
 pub fn open(guest: &str, flags: u64, mode: u32, umask: u32) -> Result<Rc<RefCell<OpenFile>>, i64> {
     use std::os::unix::fs::OpenOptionsExt;
@@ -543,6 +664,16 @@ pub fn open(guest: &str, flags: u64, mode: u32, umask: u32) -> Result<Rc<RefCell
     let host = PathBuf::from(guest.trim_end_matches('/').to_string() + if guest == "/" { "/" } else { "" });
     let meta =
         if flags & O_NOFOLLOW != 0 { std::fs::symlink_metadata(&host) } else { std::fs::metadata(&host) };
+    if flags & O_PATH != 0 {
+        // Nessun permesso richiesto sul file: basta che esista.
+        // Con O_NOFOLLOW il riferimento è al link stesso.
+        let m = meta.map_err(|e| host_errno(&e))?;
+        if flags & O_DIRECTORY != 0 && !m.is_dir() {
+            return Err(ENOTDIR);
+        }
+        let kind = Kind::Path { path: host, dir: m.is_dir() };
+        return Ok(OpenFile::new(kind, O_PATH, guest.into()));
+    }
     match &meta {
         Ok(m) if m.is_dir() => {
             if flags & O_ACCMODE != 0 {
@@ -570,20 +701,23 @@ pub fn open(guest: &str, flags: u64, mode: u32, umask: u32) -> Result<Rc<RefCell
         _ => o.read(true).write(true),
     };
     if flags & O_CREAT != 0 {
-        if flags & O_EXCL != 0 {
-            o.create_new(true);
-        } else {
-            o.create(true);
-        }
+        // Non con create(): std la rifiuta senza accesso in scrittura, Linux no.
+        o.custom_flags(libc::O_CREAT | if flags & O_EXCL != 0 { libc::O_EXCL } else { 0 });
         o.mode(mode & !umask & 0o7777);
     }
     if flags & O_TRUNC != 0 && flags & O_ACCMODE != 0 {
         o.truncate(true);
     }
     let file = o.open(&host).map_err(|e| host_errno(&e))?;
+    let created = flags & O_CREAT != 0 && meta.is_err();
+    if created {
+        fix_mode(&host, mode & !umask & 0o7777);
+    }
     if flags & O_TRUNC != 0 && flags & O_ACCMODE == 0 {
         // O_TRUNC con O_RDONLY: Linux tronca comunque (comportamento non
         // specificato da POSIX); servirebbe la scrittura, lo ignoriamo.
     }
-    Ok(OpenFile::new(Kind::Host { file, path: host }, status, guest.into()))
+    let f = OpenFile::new(Kind::Host { file, path: host }, status, guest.into());
+    f.borrow_mut().created = created;
+    Ok(f)
 }

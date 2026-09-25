@@ -90,6 +90,11 @@ struct Region {
     backing: Backing,
     len: usize,
     perm: Perm,
+    /// Falso per le MAP_SHARED di file aperti in sola lettura: mprotect
+    /// non può aggiungere la scrittura (VM_MAYWRITE di Linux).
+    may_write: bool,
+    /// MAP_GROWSDOWN: un accesso appena sotto la estende (VM_GROWSDOWN).
+    grows_down: bool,
 }
 
 impl Region {
@@ -104,12 +109,24 @@ impl Region {
                 pages.insert(i, p);
             }
         }
-        Region { len: data.len(), backing: Backing::Pages { pages, base: 0 }, perm }
+        Region {
+            len: data.len(),
+            backing: Backing::Pages { pages, base: 0 },
+            perm,
+            may_write: true,
+            grows_down: false,
+        }
     }
 
     /// Regione privata tutta a zero, senza allocare nulla.
     fn zeroed(len: usize, perm: Perm) -> Region {
-        Region { len, backing: Backing::Pages { pages: BTreeMap::new(), base: 0 }, perm }
+        Region {
+            len,
+            backing: Backing::Pages { pages: BTreeMap::new(), base: 0 },
+            perm,
+            may_write: true,
+            grows_down: false,
+        }
     }
 
     fn read(&self, off: usize, out: &mut [u8]) {
@@ -161,6 +178,18 @@ impl Region {
         }
     }
 
+    /// Vero se il byte `off` della regione sta in una pagina che inizia oltre
+    /// la fine del buffer condiviso.
+    fn past_end(&self, off: u64) -> bool {
+        match &self.backing {
+            Backing::Shared(buf, base) => {
+                let page = (*base as u64 + off) & !(PAGE as u64 - 1);
+                page >= buf.borrow().len() as u64
+            }
+            Backing::Pages { .. } => false,
+        }
+    }
+
     /// Divide la regione a `k` byte dall'inizio; restituisce la coda.
     fn split_off(&mut self, k: usize) -> Region {
         let tail = match &mut self.backing {
@@ -178,7 +207,13 @@ impl Region {
             }
             Backing::Shared(b, base) => Backing::Shared(b.clone(), *base + k),
         };
-        let r = Region { backing: tail, len: self.len - k, perm: self.perm };
+        let r = Region {
+            backing: tail,
+            len: self.len - k,
+            perm: self.perm,
+            may_write: self.may_write,
+            grows_down: self.grows_down,
+        };
         self.len = k;
         r
     }
@@ -249,13 +284,101 @@ impl UserMemory {
     }
 
     /// Mappa `len` byte del buffer condiviso `buf` da `off` in poi a `base`,
-    /// sostituendo ciò che c'era (MAP_SHARED).
-    pub fn map_shared(&mut self, base: u64, buf: Rc<RefCell<Vec<u8>>>, off: usize, len: usize, perm: Perm) {
+    /// sostituendo ciò che c'era (MAP_SHARED). Con `may_write` falso la
+    /// regione non potrà mai diventare scrivibile.
+    pub fn map_shared(
+        &mut self,
+        base: u64,
+        buf: Rc<RefCell<Vec<u8>>>,
+        off: usize,
+        len: usize,
+        perm: Perm,
+        may_write: bool,
+    ) {
         if len == 0 {
             return;
         }
         self.unmap(base, base + len as u64);
-        self.regions.insert(base, Region { backing: Backing::Shared(buf, off), len, perm });
+        self.regions.insert(
+            base,
+            Region { backing: Backing::Shared(buf, off), len, perm, may_write, grows_down: false },
+        );
+    }
+
+    /// Vero se nessuna regione in `[start, end)` vieta la scrittura.
+    pub fn may_write(&self, start: u64, end: u64) -> bool {
+        let first = self.regions.range(..=start).next_back().map_or(start, |(&b, _)| b);
+        self.regions.range(first..end).all(|(&b, r)| b + r.len as u64 <= start || r.may_write)
+    }
+
+    /// Sposta le regioni di `[old, old+len)` a `dst` con il loro contenuto e
+    /// la loro memoria (anche condivisa), sostituendo ciò che c'era (mremap).
+    pub fn remap(&mut self, old: u64, len: u64, dst: u64) {
+        self.split_at(old);
+        self.split_at(old + len);
+        let keys: Vec<u64> = self.regions.range(old..old + len).map(|(&k, _)| k).collect();
+        let moved: Vec<(u64, Region)> =
+            keys.into_iter().map(|k| (k - old, self.regions.remove(&k).unwrap())).collect();
+        self.unmap(dst, dst + len);
+        for (d, r) in moved {
+            self.regions.insert(dst + d, r);
+        }
+    }
+
+    /// Segna come MAP_GROWSDOWN la regione che inizia a `base`.
+    pub fn set_grows_down(&mut self, base: u64) {
+        if let Some(r) = self.regions.get_mut(&base) {
+            r.grows_down = true;
+        }
+    }
+
+    /// Fault a `addr` non mappato: se appena sopra c'è una regione
+    /// MAP_GROWSDOWN la estende fino alla pagina di `addr`, purché resti
+    /// almeno `gap` byte dalla mappatura precedente (stack_guard_gap).
+    /// Vero se l'ha estesa.
+    pub fn grow_down(&mut self, addr: u64, gap: u64) -> bool {
+        let page = addr & !(PAGE as u64 - 1);
+        let Some((&b, r)) = self.regions.range(page + 1..).next() else { return false };
+        if !r.grows_down || addr >= b {
+            return false;
+        }
+        let (perm, may_write) = (r.perm, r.may_write);
+        if let Some((&pb, p)) = self.regions.range(..=page).next_back() {
+            let pend = pb + p.len as u64;
+            let accessible = p.perm.read || p.perm.write || p.perm.exec;
+            if pend > page || accessible && !p.grows_down && page - pend < gap {
+                return false;
+            }
+        }
+        let len = (b - page) as usize;
+        self.regions.insert(
+            page,
+            Region {
+                backing: Backing::Pages { pages: BTreeMap::new(), base: 0 },
+                len,
+                perm,
+                may_write,
+                grows_down: true,
+            },
+        );
+        true
+    }
+
+    /// Allunga di `extra` byte la regione che finisce a `end`: una condivisa
+    /// continua nello stesso buffer, una privata con pagine a zero.
+    pub fn extend(&mut self, end: u64, extra: usize) {
+        let Some((&b, r)) = self.regions.range(..end).next_back() else { return };
+        if b + r.len as u64 != end || extra == 0 {
+            return;
+        }
+        let backing = match &r.backing {
+            Backing::Shared(buf, base) => Backing::Shared(buf.clone(), base + r.len),
+            Backing::Pages { .. } => Backing::Pages { pages: BTreeMap::new(), base: 0 },
+        };
+        let tail =
+            Region { backing, len: extra, perm: r.perm, may_write: r.may_write, grows_down: r.grows_down };
+        self.unmap(end, end + extra as u64);
+        self.regions.insert(end, tail);
     }
 
     /// Divide la regione che contiene `at` (se c'è) in modo che `at` sia un
@@ -354,9 +477,26 @@ impl UserMemory {
         (end >= bottom.saturating_add(len)).then(|| end - len)
     }
 
+    /// Come [`ranges`](Self::ranges) con in più se la memoria è condivisa
+    /// (la `s` di /proc/self/maps).
+    pub fn maps(&self) -> impl Iterator<Item = (u64, u64, Perm, bool)> + '_ {
+        self.regions
+            .iter()
+            .map(|(&b, r)| (b, b + r.len as u64, r.perm, matches!(r.backing, Backing::Shared(..))))
+    }
+
     /// Intervalli mappati, per /proc/self/maps e il debug.
     pub fn ranges(&self) -> impl Iterator<Item = (u64, u64, Perm)> + '_ {
         self.regions.iter().map(|(&b, r)| (b, b + r.len as u64, r.perm))
+    }
+
+    /// Vero se `addr` cade in una pagina di una mappatura condivisa che
+    /// inizia oltre la fine del file (o dell'oggetto): Linux dà SIGBUS.
+    pub fn beyond_eof(&self, addr: u64) -> bool {
+        match self.find(addr) {
+            Some((b, _)) => self.regions[&b].past_end(addr - b),
+            None => false,
+        }
     }
 
     /// Regione che contiene tutto `[addr, addr+len)`, con il permesso `a`.
@@ -365,7 +505,8 @@ impl UserMemory {
         match self.find(addr) {
             Some((b, rlen)) => {
                 let off = (addr - b) as usize;
-                if !self.regions[&b].perm.allows(a) {
+                let r = &self.regions[&b];
+                if !r.perm.allows(a) || r.past_end(off as u64 + len.max(1) as u64 - 1) {
                     return Err(MemFault { addr, access: a });
                 }
                 if off + len <= rlen as usize { Ok(Some((b, off))) } else { Ok(None) }
@@ -379,7 +520,7 @@ impl UserMemory {
         for k in 0..len {
             let p = addr.wrapping_add(k as u64);
             match self.find(p) {
-                Some((b, _)) if self.regions[&b].perm.allows(a) => {}
+                Some((b, _)) if self.regions[&b].perm.allows(a) && !self.regions[&b].past_end(p - b) => {}
                 _ => return Err(MemFault { addr: p, access: a }),
             }
         }
@@ -508,10 +649,30 @@ mod tests {
     }
 
     #[test]
+    fn remap_keeps_backing_and_extend_follows_it() {
+        let mut m = UserMemory::new();
+        let buf = Rc::new(RefCell::new(vec![0u8; 0x3000]));
+        m.map_shared(0x40000, buf.clone(), 0, 0x1000, Perm { read: false, write: true, exec: false }, false);
+        m.poke(0x40010, &[5]).unwrap();
+        m.remap(0x40000, 0x1000, 0x80000);
+        assert!(!m.is_mapped(0x40000, 0x41000));
+        m.extend(0x81000, 0x1000);
+        // La memoria spostata e l'estensione restano quelle del buffer.
+        m.poke(0x81004, &[9]).unwrap();
+        assert_eq!(buf.borrow()[0x10], 5);
+        assert_eq!(buf.borrow()[0x1004], 9);
+        assert!(!m.may_write(0x80000, 0x82000));
+        m.map_zeroed(0x90000, 0x1000, Perm::RW);
+        assert!(m.may_write(0x90000, 0x91000));
+        m.extend(0x91000, 0x1000);
+        assert!(m.is_mapped(0x90000, 0x92000));
+    }
+
+    #[test]
     fn shared_survives_clone_and_split() {
         let mut a = UserMemory::new();
         let buf = Rc::new(RefCell::new(vec![0u8; 0x2000]));
-        a.map_shared(0x40000, buf.clone(), 0, 0x2000, Perm::RW);
+        a.map_shared(0x40000, buf.clone(), 0, 0x2000, Perm::RW, true);
         let mut b = a.clone(); // come un fork
         b.write(0x41000, &[42]).unwrap();
         let mut x = [0u8; 1];

@@ -163,7 +163,10 @@ impl Kernel {
         self.tasks[t].sig.mask &= !bit(s);
         let code = match s {
             sig::SIGSEGV => 1, // SEGV_MAPERR
-            sig::SIGBUS => 1,  // BUS_ADRALN
+            // BUS_ADRERR per l'accesso oltre la fine di un file mappato,
+            // BUS_ADRALN per l'allineamento.
+            sig::SIGBUS if matches!(self.tasks[t].fault, Some((_, Exception::DataAbort { .. }))) => 2,
+            sig::SIGBUS => 1,
             sig::SIGILL => 1,  // ILL_ILLOPC
             sig::SIGTRAP => 1, // TRAP_BRKPT
             _ => 0,
@@ -188,6 +191,10 @@ impl Kernel {
 
     pub fn check_alarms(&mut self) {
         let now = self.now();
+        if now < self.next_alarm {
+            return;
+        }
+        let mut next = u64::MAX;
         for t in 0..self.tasks.len() {
             if let Some(d) = self.tasks[t].sig.alarm
                 && now >= d
@@ -197,7 +204,11 @@ impl Kernel {
                 let tgid = self.tasks[t].tgid;
                 self.send_to_process(tgid, sig::SIGALRM, 0, 0x80);
             }
+            if let Some(d) = self.tasks[t].sig.alarm {
+                next = next.min(d);
+            }
         }
+        self.next_alarm = next;
     }
 
     /// Consegna il primo segnale non bloccato. Vero se ne ha consegnato uno.
@@ -220,11 +231,13 @@ impl Kernel {
                     self.tasks[t].sig.interrupted = None;
                     return false;
                 }
-                _ => {
+                d => {
                     // Il bit "core dumped" (0x80) si accende solo se il core
-                    // viene scritto davvero: con RLIMIT_CORE = 0 mai.
+                    // verrebbe scritto: binfmt_elf vuole RLIMIT_CORE di almeno
+                    // una pagina (min_coredump).
+                    let core = d == Default_::Core && self.tasks[t].rlimits[4].0 >= 4096;
                     let tgid = self.tasks[t].tgid;
-                    self.kill_process(tgid, s);
+                    self.kill_process(tgid, s | if core { 0x80 } else { 0 });
                     return true;
                 }
             }
@@ -236,10 +249,32 @@ impl Kernel {
         // Una syscall bloccata (pc sull'SVC) viene riavviata con SA_RESTART,
         // altrimenti restituisce EINTR.
         if let Some(w) = self.tasks[t].sig.interrupted.take() {
-            let restart = act.flags & SA_RESTART != 0 && !matches!(w, Wait::Signal | Wait::Sleep { .. });
+            let restart = act.flags & SA_RESTART != 0
+                && !matches!(w, Wait::Signal | Wait::Sleep { .. } | Wait::SigWait { .. });
             if !restart {
+                // nanosleep/clock_nanosleep relativi: il tempo che restava.
+                if let Wait::Sleep { until } = w {
+                    let (nr, x) = (self.tasks[t].cpu.x[8], self.tasks[t].cpu.x);
+                    let rem = match nr {
+                        101 => x[1],
+                        115 if x[1] & 1 == 0 => x[3],
+                        _ => 0,
+                    };
+                    let mut err = EINTR;
+                    if rem != 0 {
+                        let left = until.saturating_sub(self.now());
+                        let mut b = (left / 1_000_000_000).to_le_bytes().to_vec();
+                        b.extend_from_slice(&(left % 1_000_000_000).to_le_bytes());
+                        let mm = self.tasks[t].mm.clone();
+                        if write_bytes(&mut mm.borrow_mut().mem, rem, &b).is_err() {
+                            err = EFAULT;
+                        }
+                    }
+                    self.tasks[t].cpu.x[0] = (-err) as u64;
+                } else {
+                    self.tasks[t].cpu.x[0] = (-EINTR) as u64;
+                }
                 let cpu = &mut self.tasks[t].cpu;
-                cpu.x[0] = (-EINTR) as u64;
                 cpu.pc += 4;
                 self.tasks[t].deadline = None;
                 self.tasks[t].futex_woken = false;
@@ -429,6 +464,46 @@ impl Kernel {
             write_u64(&mut mm.mem, oset, old)?;
         }
         Ok(0)
+    }
+
+    /// rt_sigtimedwait(set, info, timeout, sigsetsize): il segnale preso, o
+    /// l'attesa in cui bloccarsi.
+    pub fn sys_sigtimedwait(&mut self, t: usize, a: [u64; 6]) -> Result<Result<i64, Wait>, i64> {
+        if a[3] != 8 {
+            return Err(EINVAL);
+        }
+        let mm = self.tasks[t].mm.clone();
+        let set = read_u64(&mut mm.borrow_mut().mem, a[0])? & !UNBLOCKABLE;
+        let ready = self.tasks[t].sig.pending & set;
+        if ready != 0 {
+            let s = ready.trailing_zeros() as i32 + 1;
+            self.tasks[t].sig.pending &= !bit(s);
+            self.tasks[t].deadline = None;
+            if a[1] != 0 {
+                let info = self.tasks[t].sig.info[s as usize];
+                let mut b = [0u8; SIGINFO_SIZE as usize];
+                b[0..4].copy_from_slice(&s.to_le_bytes());
+                b[8..12].copy_from_slice(&info.1.to_le_bytes());
+                b[16..20].copy_from_slice(&info.0.to_le_bytes());
+                write_bytes(&mut mm.borrow_mut().mem, a[1], &b)?;
+            }
+            return Ok(Ok(s as i64));
+        }
+        if self.tasks[t].deadline.is_none() && a[2] != 0 {
+            let sec = read_u64(&mut mm.borrow_mut().mem, a[2])? as i64;
+            let ns = read_u64(&mut mm.borrow_mut().mem, a[2] + 8)? as i64;
+            if sec < 0 || !(0..1_000_000_000).contains(&ns) {
+                return Err(EINVAL);
+            }
+            self.tasks[t].deadline = Some(self.now() + sec as u64 * 1_000_000_000 + ns as u64);
+        }
+        if let Some(d) = self.tasks[t].deadline
+            && self.now() >= d
+        {
+            self.tasks[t].deadline = None;
+            return Err(EAGAIN);
+        }
+        Ok(Err(Wait::SigWait { set, until: self.tasks[t].deadline }))
     }
 
     /// Il task è in attesa di un segnale (pause, sigsuspend).

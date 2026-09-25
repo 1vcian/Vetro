@@ -93,7 +93,7 @@ impl Kernel {
             } else {
                 addr
             };
-            m.mem.map_shared(base, buf, 0, len as usize, perm);
+            m.mem.map_shared(base, buf, 0, len as usize, perm, true);
             base
         };
         self.ipc.attached.push((mm, base, id as usize));

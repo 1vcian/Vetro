@@ -58,6 +58,9 @@ pub const TABLE: &[(u64, &str, &[Arg])] = &[
     (80, "fstat", &[Int, Ptr]),
     (82, "fsync", &[Int]),
     (88, "utimensat", &[DirFd, Str, Ptr, Hex]),
+    (90, "capget", &[Ptr, Ptr]),
+    (91, "capset", &[Ptr, Ptr]),
+    (92, "personality", &[Hex]),
     (93, "exit", &[Int]),
     (94, "exit_group", &[Int]),
     (96, "set_tid_address", &[Ptr]),
@@ -115,6 +118,7 @@ pub const TABLE: &[(u64, &str, &[Arg])] = &[
     (291, "statx", &[DirFd, Str, Hex, Hex, Ptr]),
     (435, "clone3", &[Ptr, Int]),
     (439, "faccessat2", &[DirFd, Str, Hex, Hex]),
+    (449, "futex_waitv", &[Ptr, Int, Hex, Ptr, Int]),
 ];
 
 pub fn lookup(nr: u64) -> Option<(&'static str, &'static [Arg])> {

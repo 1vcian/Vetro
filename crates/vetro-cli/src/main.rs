@@ -25,7 +25,11 @@ fn usage() -> ExitCode {
 }
 
 fn run(args: &[String]) -> ExitCode {
-    let mut cfg = Config { echo: true, ..Config::default() };
+    let mut cfg = Config {
+        echo: true,
+        cpus: std::thread::available_parallelism().map_or(1, |n| n.get()),
+        ..Config::default()
+    };
     let mut i = 0;
     while i < args.len() && args[i].starts_with("--") {
         match args[i].as_str() {

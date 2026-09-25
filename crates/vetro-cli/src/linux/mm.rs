@@ -3,7 +3,7 @@
 use super::abi::*;
 use std::cell::RefCell;
 use std::rc::Rc;
-use vetro_cpu::{Memory, Perm, UserMemory};
+use vetro_cpu::{Perm, UserMemory};
 
 pub const PAGE: u64 = 0x1000;
 pub const STACK_TOP: u64 = 0x0000_7fff_ffff_0000;
@@ -21,6 +21,10 @@ pub const MAP_SHARED: u64 = 0x01;
 pub const MAP_PRIVATE: u64 = 0x02;
 pub const MAP_FIXED: u64 = 0x10;
 pub const MAP_ANONYMOUS: u64 = 0x20;
+pub const MAP_GROWSDOWN: u64 = 0x100;
+
+/// Memoria di una MAP_SHARED: buffer, offset e se può diventare scrivibile.
+pub type SharedMap = (Rc<RefCell<Vec<u8>>>, usize, bool);
 pub const MAP_FIXED_NOREPLACE: u64 = 0x100000;
 
 #[derive(Clone)]
@@ -73,7 +77,7 @@ impl Mm {
         prot: u64,
         flags: u64,
         data: Option<Vec<u8>>,
-        shared: Option<(Rc<RefCell<Vec<u8>>>, usize)>,
+        shared: Option<SharedMap>,
     ) -> SysResult {
         if len == 0 || addr & (PAGE - 1) != 0 && flags & (MAP_FIXED | MAP_FIXED_NOREPLACE) != 0 {
             return Err(EINVAL);
@@ -83,6 +87,13 @@ impl Mm {
         }
         let size = page_up(len);
         if size == 0 || !self.fits(size) {
+            return Err(ENOMEM);
+        }
+        // TASK_SIZE con VA a 48 bit: oltre non si mappa.
+        const TASK_SIZE: u64 = 1 << 48;
+        if flags & (MAP_FIXED | MAP_FIXED_NOREPLACE) != 0
+            && addr.checked_add(size).is_none_or(|e| e > TASK_SIZE)
+        {
             return Err(ENOMEM);
         }
         let base = if flags & MAP_FIXED != 0 {
@@ -103,8 +114,8 @@ impl Mm {
                 self.mem.find_free(size, MMAP_BOTTOM, MMAP_TOP).ok_or(ENOMEM)?
             }
         };
-        if let Some((buf, off)) = shared {
-            self.mem.map_shared(base, buf, off, size as usize, Perm::from_prot(prot as u32));
+        if let Some((buf, off, may_write)) = shared {
+            self.mem.map_shared(base, buf, off, size as usize, Perm::from_prot(prot as u32), may_write);
             return Ok(base as i64);
         }
         match data {
@@ -115,6 +126,9 @@ impl Mm {
                 bytes[..n].copy_from_slice(&d[..n]);
                 self.mem.map_fixed(base, bytes, Perm::from_prot(prot as u32));
             }
+        }
+        if flags & MAP_GROWSDOWN != 0 {
+            self.mem.set_grows_down(base);
         }
         Ok(base as i64)
     }
@@ -134,7 +148,14 @@ impl Mm {
         if len == 0 {
             return Ok(0);
         }
-        self.mem.protect(addr, addr + page_up(len), Perm::from_prot(prot as u32)).map_err(|_| ENOMEM)?;
+        let (end, perm) = (addr + page_up(len), Perm::from_prot(prot as u32));
+        if !self.mem.is_mapped(addr, end) {
+            return Err(ENOMEM);
+        }
+        if perm.write && !self.mem.may_write(addr, end) {
+            return Err(EACCES);
+        }
+        self.mem.protect(addr, end, perm).map_err(|_| ENOMEM)?;
         Ok(0)
     }
 
@@ -158,17 +179,28 @@ impl Mm {
     pub fn mremap(&mut self, old: u64, old_len: u64, new_len: u64, flags: u64, new_addr: u64) -> SysResult {
         const MREMAP_MAYMOVE: u64 = 1;
         const MREMAP_FIXED: u64 = 2;
-        if old & (PAGE - 1) != 0 || new_len == 0 {
+        const MREMAP_DONTUNMAP: u64 = 4;
+        if flags & !(MREMAP_MAYMOVE | MREMAP_FIXED | MREMAP_DONTUNMAP) != 0
+            || flags & MREMAP_FIXED != 0 && flags & MREMAP_MAYMOVE == 0
+            || old & (PAGE - 1) != 0
+            || new_len == 0
+        {
             return Err(EINVAL);
         }
         let (old_size, new_size) = (page_up(old_len), page_up(new_len));
+        if flags & MREMAP_FIXED != 0
+            && (new_addr & (PAGE - 1) != 0
+                || new_addr < old + old_size && old < new_addr + new_size
+                || new_addr + new_size > MMAP_TOP)
+        {
+            return Err(EINVAL);
+        }
         if new_size == 0 || new_size > old_size && !self.fits(new_size - old_size) {
             return Err(ENOMEM);
         }
         if !self.mem.is_mapped(old, old + old_size) {
             return Err(EFAULT);
         }
-        let perm = self.mem.perm_at(old).unwrap_or(Perm::RW);
         if flags & MREMAP_FIXED == 0 {
             if new_size <= old_size {
                 self.mem.unmap(old + new_size, old + old_size);
@@ -178,24 +210,23 @@ impl Mm {
             if !self.mem.ranges().any(|(s, e, _)| s < old + new_size && e > tail)
                 && old + new_size <= MMAP_TOP
             {
-                self.mem.map_zeroed(tail, (new_size - old_size) as usize, perm);
+                self.mem.extend(tail, (new_size - old_size) as usize);
                 return Ok(old as i64);
             }
             if flags & MREMAP_MAYMOVE == 0 {
                 return Err(ENOMEM);
             }
         }
-        let mut data = vec![0u8; old_size.min(new_size) as usize];
-        self.mem.read(old, &mut data).map_err(|_| EFAULT)?;
         let dst = if flags & MREMAP_FIXED != 0 {
             new_addr
         } else {
             self.mem.find_free(new_size, MMAP_BOTTOM, MMAP_TOP).ok_or(ENOMEM)?
         };
+        // Le pagine si spostano con la loro memoria (anche condivisa).
+        let keep = old_size.min(new_size);
+        self.mem.remap(old, keep, dst);
         self.mem.unmap(old, old + old_size);
-        let mut bytes = vec![0u8; new_size as usize];
-        bytes[..data.len()].copy_from_slice(&data);
-        self.mem.map_fixed(dst, bytes, perm);
+        self.mem.extend(dst + keep, (new_size - keep) as usize);
         Ok(dst as i64)
     }
 }

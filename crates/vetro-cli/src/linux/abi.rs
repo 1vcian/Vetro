@@ -12,6 +12,7 @@ pub const ENOEXEC: i64 = 8;
 pub const EBADF: i64 = 9;
 pub const ECHILD: i64 = 10;
 pub const EAGAIN: i64 = 11;
+pub const EDEADLK: i64 = 35;
 pub const ENOMEM: i64 = 12;
 pub const EACCES: i64 = 13;
 pub const EFAULT: i64 = 14;
@@ -43,9 +44,11 @@ pub const O_EXCL: u64 = 0o200;
 pub const O_TRUNC: u64 = 0o1000;
 pub const O_APPEND: u64 = 0o2000;
 pub const O_NONBLOCK: u64 = 0o4000;
+pub const O_ASYNC: u64 = 0o20000;
 pub const O_DIRECTORY: u64 = 0o40000;
 pub const O_NOFOLLOW: u64 = 0o100000;
 pub const O_CLOEXEC: u64 = 0o2000000;
+pub const O_PATH: u64 = 0o10000000;
 
 /// Errore di una syscall: il valore da restituire è `-errno`.
 pub type SysResult = Result<i64, i64>;

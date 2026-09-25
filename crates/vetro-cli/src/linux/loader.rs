@@ -6,7 +6,11 @@ use vetro_cpu::{Perm, UserMemory};
 
 /// Pagina del trampolino di ritorno dai gestori di segnale (il `sigtramp`
 /// del vDSO di Linux arm64): usato quando sa_restorer non è impostato.
-pub const SIGTRAMP: u64 = 0x0000_7fff_fff0_0000;
+/// Sta sopra lo stack, sotto il limite dei 48 bit.
+pub const SIGTRAMP: u64 = 0x0000_7fff_ffff_e000;
+
+/// `mov x8, #139` (rt_sigreturn); `svc #0`.
+const SIGTRAMP_CODE: [u32; 2] = [0xd280_1168, 0xd400_0001];
 
 pub struct Image {
     pub mm: Mm,
@@ -29,6 +33,11 @@ pub fn load(
     let loaded = elf::load(image, &mut mem)?;
     mem.map(STACK_TOP - STACK_SIZE, vec![0; STACK_SIZE as usize], Perm::RW)
         .map_err(|e| LoadError::Overlap(e.base))?;
+    let mut tramp = vec![0; PAGE as usize];
+    for (i, w) in SIGTRAMP_CODE.iter().enumerate() {
+        tramp[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+    }
+    mem.map(SIGTRAMP, tramp, Perm::RX).map_err(|e| LoadError::Overlap(e.base))?;
     let brk = loaded.end.next_multiple_of(PAGE);
     let mut mm = Mm::new(mem, brk);
     let sp = setup_stack(&mut mm.mem, argv, envp, execfn, random, &loaded);

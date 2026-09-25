@@ -24,6 +24,12 @@ pub struct Lock {
 #[derive(Default)]
 pub struct LockTable {
     files: std::collections::HashMap<(u64, u64), Vec<Lock>>,
+    /// Chi è fermo in F_SETLKW, e su quale richiesta (per trovare i cicli).
+    waiting: std::collections::HashMap<Pid, ((u64, u64), u64, u64, i16)>,
+    /// Proprietari OFD (id negativi) e la loro descrizione di file: quando
+    /// l'ultimo riferimento sparisce i lock si rilasciano.
+    ofd: std::collections::HashMap<Pid, std::rc::Weak<std::cell::RefCell<super::fs::OpenFile>>>,
+    next_ofd: Pid,
 }
 
 impl LockTable {
@@ -67,11 +73,57 @@ impl LockTable {
             }
             merged.push(l);
         }
+        // Come la lista di Linux: per proprietario, in ordine di inizio
+        // (F_GETLK restituisce il primo conflitto).
+        merged.sort_by_key(|l| (l.owner, l.start));
         *list = merged;
+    }
+
+    /// Vero se aspettare `blocker` chiuderebbe un ciclo di attese che torna a
+    /// `owner` (posix_locks_deadlock, con lo stesso limite di passi).
+    fn deadlock(&self, owner: Pid, mut blocker: Pid) -> bool {
+        for _ in 0..10 {
+            if blocker == owner {
+                return true;
+            }
+            let Some(&(key, start, end, kind)) = self.waiting.get(&blocker) else { return false };
+            match self.conflict(key, blocker, start, end, kind) {
+                Some(l) => blocker = l.owner,
+                None => return false,
+            }
+        }
+        false
+    }
+
+    /// Toglie i lock delle descrizioni OFD ormai chiuse.
+    fn purge_ofd(&mut self) {
+        let dead: Vec<Pid> =
+            self.ofd.iter().filter(|(_, w)| w.strong_count() == 0).map(|(&o, _)| o).collect();
+        for o in dead {
+            self.ofd.remove(&o);
+            self.release(o, None);
+        }
+    }
+
+    /// Il proprietario OFD di una descrizione di file (assegnato alla prima volta).
+    fn ofd_owner(&mut self, f: &std::rc::Rc<std::cell::RefCell<super::fs::OpenFile>>) -> Pid {
+        let id = f.borrow().ofd_owner;
+        if id != 0 {
+            return id;
+        }
+        self.next_ofd -= 1;
+        let id = self.next_ofd.min(-2);
+        self.next_ofd = id;
+        f.borrow_mut().ofd_owner = id;
+        self.ofd.insert(id, std::rc::Rc::downgrade(f));
+        id
     }
 
     /// Rilascia tutti i lock di `owner` (su un file o ovunque).
     pub fn release(&mut self, owner: Pid, key: Option<(u64, u64)>) {
+        if key.is_none() {
+            self.waiting.remove(&owner);
+        }
         for (k, list) in self.files.iter_mut() {
             if key.is_none_or(|x| x == *k) {
                 list.retain(|l| l.owner != owner);
@@ -87,20 +139,35 @@ pub enum LockResult {
 }
 
 impl Kernel {
-    /// fcntl per i lock: `cmd` è F_GETLK (5), F_SETLK (6) o F_SETLKW (7).
+    /// fcntl per i lock: `cmd` è F_GETLK (5), F_SETLK (6), F_SETLKW (7) o le
+    /// varianti OFD F_OFD_GETLK (36), F_OFD_SETLK (37), F_OFD_SETLKW (38).
     pub(super) fn fcntl_lock(&mut self, t: usize, fd: i64, cmd: u64, arg: u64) -> Result<LockResult, i64> {
         use std::os::unix::fs::MetadataExt;
         let f = self.tasks[t].files.borrow().get(fd)?;
-        let (key, size, readable, writable, pos) = {
-            let mut f = f.borrow_mut();
-            let (readable, writable) = (f.readable(), f.writable());
-            let pos = f.lseek(0, 1).unwrap_or(0) as u64;
-            let Kind::Host { file, .. } = &f.kind else { return Err(EINVAL) };
-            let m = file.metadata().map_err(|e| host_errno(&e))?;
-            ((m.dev(), m.ino()), m.len(), readable, writable, pos)
-        };
         let mm = self.tasks[t].mm.clone();
         let raw = read_bytes(&mut mm.borrow_mut().mem, arg, 32)?;
+        let (key, size, readable, writable, pos) = {
+            let mut fb = f.borrow_mut();
+            let (readable, writable) = (fb.readable(), fb.writable());
+            let pos = fb.lseek(0, 1).unwrap_or(0) as u64;
+            // Sui file dell'host la chiave è l'inode; il resto (pipe, console)
+            // è un oggetto del kernel emulato, identificato dalla descrizione.
+            let (key, size) = match &fb.kind {
+                Kind::Host { file, .. } => {
+                    let m = file.metadata().map_err(|e| host_errno(&e))?;
+                    ((m.dev(), m.ino()), m.len())
+                }
+                Kind::Path { .. } => return Err(EBADF),
+                _ => ((u64::MAX, std::rc::Rc::as_ptr(&f) as u64), 0),
+            };
+            (key, size, readable, writable, pos)
+        };
+        let ofd = matches!(cmd, 36..=38);
+        let cmd = if ofd { cmd - 31 } else { cmd };
+        if ofd && i32::from_le_bytes(raw[24..28].try_into().unwrap()) != 0 {
+            return Err(EINVAL); // l_pid deve essere 0
+        }
+        self.locks.purge_ofd();
         let kind = i16::from_le_bytes([raw[0], raw[1]]);
         let whence = i16::from_le_bytes([raw[2], raw[3]]);
         let l_start = i64::from_le_bytes(raw[8..16].try_into().unwrap());
@@ -123,7 +190,7 @@ impl Kernel {
         if !matches!(kind, F_RDLCK | F_WRLCK | F_UNLCK) {
             return Err(EINVAL);
         }
-        let owner = self.tasks[t].tgid;
+        let owner = if ofd { self.locks.ofd_owner(&f) } else { self.tasks[t].tgid };
         match cmd {
             5 => {
                 if kind == F_UNLCK {
@@ -137,7 +204,9 @@ impl Kernel {
                         out[8..16].copy_from_slice(&(l.start as i64).to_le_bytes());
                         let len = if l.end == u64::MAX { 0 } else { (l.end - l.start) as i64 };
                         out[16..24].copy_from_slice(&len.to_le_bytes());
-                        out[24..28].copy_from_slice(&l.owner.to_le_bytes());
+                        // I lock OFD non hanno un processo: l_pid = -1.
+                        let pid = if l.owner < 0 { -1 } else { l.owner };
+                        out[24..28].copy_from_slice(&pid.to_le_bytes());
                     }
                     None => out[0..2].copy_from_slice(&F_UNLCK.to_le_bytes()),
                 }
@@ -148,9 +217,20 @@ impl Kernel {
                 if kind == F_RDLCK && !readable || kind == F_WRLCK && !writable {
                     return Err(EBADF);
                 }
-                if kind != F_UNLCK && self.locks.conflict(key, owner, start, end, kind).is_some() {
-                    return if cmd == 7 { Ok(LockResult::Wait) } else { Err(EAGAIN) };
+                if kind != F_UNLCK
+                    && let Some(l) = self.locks.conflict(key, owner, start, end, kind)
+                {
+                    if cmd != 7 {
+                        return Err(EAGAIN);
+                    }
+                    if !ofd && self.locks.deadlock(owner, l.owner) {
+                        self.locks.waiting.remove(&owner);
+                        return Err(EDEADLK);
+                    }
+                    self.locks.waiting.insert(owner, (key, start, end, kind));
+                    return Ok(LockResult::Wait);
                 }
+                self.locks.waiting.remove(&owner);
                 self.locks.apply(key, owner, start, end, kind);
                 Ok(LockResult::Done(0))
             }
@@ -191,5 +271,19 @@ mod tests {
         assert_eq!(t.files[&k], vec![Lock { owner: 10, start: 0, end: 100, kind: F_WRLCK }]);
         t.release(10, None);
         assert!(t.files[&k].is_empty());
+    }
+
+    #[test]
+    fn deadlock_cycle() {
+        let mut t = LockTable::default();
+        let k = (1, 2);
+        t.apply(k, 2, 9, 15, F_WRLCK);
+        t.apply(k, 3, 17, 23, F_WRLCK);
+        // 2 aspetta il lock di 3: nessun ciclo.
+        assert!(!t.deadlock(2, 3));
+        t.waiting.insert(2, (k, 17, 23, F_WRLCK));
+        // 3 che aspetta 2 chiuderebbe il ciclo.
+        assert!(t.deadlock(3, 2));
+        assert!(!t.deadlock(4, 2));
     }
 }

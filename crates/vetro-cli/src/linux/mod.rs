@@ -34,6 +34,36 @@ use signal::{SigHand, SigState};
 
 pub type Pid = i32;
 
+pub const RLIM_NLIMITS: usize = 16;
+const INF: u64 = u64::MAX;
+/// Limiti iniziali, quelli tipici di Linux; RLIMIT_CORE a 0: niente core.
+pub const DEFAULT_RLIMITS: [(u64, u64); RLIM_NLIMITS] = [
+    (INF, INF),         // CPU
+    (INF, INF),         // FSIZE
+    (INF, INF),         // DATA
+    (8 << 20, INF),     // STACK
+    (0, INF),           // CORE
+    (INF, INF),         // RSS
+    (INF, INF),         // NPROC
+    (1024, 4096),       // NOFILE
+    (8 << 20, 8 << 20), // MEMLOCK
+    (INF, INF),         // AS
+    (INF, INF),         // LOCKS
+    (31_805, 31_805),   // SIGPENDING
+    (819_200, 819_200), // MSGQUEUE
+    (0, 0),             // NICE
+    (0, 0),             // RTPRIO
+    (INF, INF),         // RTTIME
+];
+
+/// Tempo virtuale per istruzione: una CPU nominale da 100 MHz, vicina alla
+/// velocità reale dell'interprete (così sleep e alarm costano poco).
+pub const NS_PER_STEP: u64 = 10;
+
+/// Tempo virtuale di una syscall: su un kernel vero costa circa un
+/// microsecondo, e un ciclo di sole syscall deve comunque far passare il tempo.
+pub const NS_PER_SYSCALL: u64 = 1000;
+
 /// Identità di un futex: (spazio, offset). Per la memoria condivisa lo spazio
 /// è il buffer condiviso (come la pagina fisica per Linux), altrimenti lo
 /// spazio d'indirizzamento del processo e l'offset è l'indirizzo virtuale.
@@ -63,6 +93,7 @@ pub mod sig {
     pub const SIGCONT: i32 = 18;
     pub const SIGSTOP: i32 = 19;
     pub const SIGTSTP: i32 = 20;
+    pub const SIGIO: i32 = 29;
     pub const SIGSYS: i32 = 31;
 }
 
@@ -89,6 +120,11 @@ pub struct Config {
     pub cwd: String,
     /// Come `qemu -L`: i percorsi assoluti si cercano prima qui.
     pub sysroot: Option<String>,
+    /// CPU visibili al guest (sched_getaffinity). QEMU user mode mostra
+    /// quelle dell'host; il default fisso tiene l'esecuzione riproducibile.
+    pub cpus: usize,
+    /// Versione del kernel in uname (QEMU user mode riporta quella dell'host).
+    pub release: String,
 }
 
 impl Default for Config {
@@ -103,6 +139,8 @@ impl Default for Config {
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_else(|_| "/".into()),
             sysroot: None,
+            cpus: 1,
+            release: "6.6.0-vetro".into(),
         }
     }
 }
@@ -151,6 +189,11 @@ pub enum Wait {
     Signal,
     /// ppoll/pselect: una pipe pronta o la scadenza.
     Poll { until: Option<u64> },
+    /// futex_waitv: la prima sveglia su una delle chiavi, o la scadenza.
+    FutexV { keys: Vec<FutexKey>, until: Option<u64> },
+    /// rt_sigtimedwait: un segnale di `set` in attesa (anche se bloccato) o
+    /// la scadenza.
+    SigWait { set: u64, until: Option<u64> },
     /// Condizione da ricontrollare a ogni giro (F_SETLKW): la syscall si
     /// riesegue finché non riesce.
     Retry,
@@ -186,6 +229,8 @@ pub struct Task {
     pub exit_signal: i32,
     /// Svegliato da FUTEX_WAKE: il prossimo FUTEX_WAIT rieseguito restituisce 0.
     pub futex_woken: bool,
+    /// Per futex_waitv: l'indice della chiave che ha svegliato il task.
+    pub futex_index: usize,
     /// Per vfork: il genitore da sbloccare a exec/exit.
     pub vfork_parent: Option<Pid>,
     /// Segnale sincrono (fault) generato dall'ultima istruzione.
@@ -199,6 +244,10 @@ pub struct Task {
     pub deadline: Option<u64>,
     /// /proc/<pid>/oom_score_adj.
     pub oom_score_adj: i32,
+    /// Limiti di risorse (getrlimit/setrlimit): (corrente, massimo).
+    pub rlimits: [(u64, u64); RLIM_NLIMITS],
+    /// personality(2): dominio di esecuzione e flag (UNAME26, ...).
+    pub personality: u32,
 }
 
 pub struct Kernel {
@@ -209,6 +258,9 @@ pub struct Kernel {
     init: Pid,
     /// Tempo monotono virtuale in ns.
     clock_ns: u64,
+    /// Limite inferiore della prossima scadenza di un alarm/itimer (MAX =
+    /// nessuna): evita di scorrere i task a ogni istruzione.
+    pub(super) next_alarm: u64,
     steps: u64,
     run_queue: VecDeque<usize>,
     rng: u64,
@@ -242,6 +294,7 @@ impl Kernel {
             next_pid: 100,
             init: 0,
             clock_ns: 0,
+            next_alarm: u64::MAX,
             steps: 0,
             run_queue: VecDeque::new(),
             rng: 0x5eed_0000_0000_0001,
@@ -298,6 +351,7 @@ impl Kernel {
             clear_child_tid: 0,
             exit_signal: sig::SIGCHLD,
             futex_woken: false,
+            futex_index: 0,
             vfork_parent: None,
             fault: None,
             comm: comm_of(exe),
@@ -305,6 +359,8 @@ impl Kernel {
             umask: 0o022,
             deadline: None,
             oom_score_adj: 0,
+            rlimits: DEFAULT_RLIMITS,
+            personality: 0,
         };
         self.tasks.push(task);
         if self.init == 0 {
@@ -322,6 +378,29 @@ impl Kernel {
     }
 
     /// Riscrive sui file il contenuto delle mappature condivise.
+    /// Scrive nel file il contenuto della sua MAP_SHARED (se c'è), prima che
+    /// un descrittore lo legga o lo scriva.
+    pub fn flush_shared_one(&self, key: (u64, u64)) {
+        use std::os::unix::fs::FileExt;
+        if let Some((path, buf)) = self.shared_files.get(&key)
+            && let Ok(f) = std::fs::OpenOptions::new().write(true).open(path)
+        {
+            let len = f.metadata().map(|m| m.len() as usize).unwrap_or(0);
+            let b = buf.borrow();
+            let _ = f.write_at(&b[..len.min(b.len())], 0);
+        }
+    }
+
+    /// Ricarica la MAP_SHARED dal file dopo una scrittura o un ftruncate da
+    /// descrittore: le mappature vedono il nuovo contenuto e la nuova fine.
+    pub fn reload_shared_one(&self, key: (u64, u64)) {
+        if let Some((path, buf)) = self.shared_files.get(&key)
+            && let Ok(content) = std::fs::read(path)
+        {
+            *buf.borrow_mut() = content;
+        }
+    }
+
     pub fn flush_shared(&self) {
         use std::os::unix::fs::FileExt;
         for (path, buf) in self.shared_files.values() {
@@ -387,10 +466,13 @@ impl Kernel {
                 match self.next_deadline() {
                     Some(d) if self.cfg.clock == ClockMode::Virtual => {
                         self.clock_ns = self.clock_ns.max(d);
+                        // Un alarm scaduto sveglia chi aspetta un segnale.
+                        self.check_alarms();
                         continue;
                     }
                     Some(_) => {
                         std::thread::sleep(std::time::Duration::from_millis(1));
+                        self.check_alarms();
                         continue;
                     }
                     None => return Exit::Deadlock,
@@ -449,12 +531,17 @@ impl Kernel {
             }
             Wait::Pipe => self.tasks[i].files.borrow().any_pipe_ready(),
             Wait::Sleep { until } => self.now() >= *until,
-            Wait::Futex { until, .. } => self.tasks[i].futex_woken || until.is_some_and(|u| self.now() >= u),
+            Wait::Futex { until, .. } | Wait::FutexV { until, .. } => {
+                self.tasks[i].futex_woken || until.is_some_and(|u| self.now() >= u)
+            }
             Wait::Vfork { child } => self.find(*child).is_none_or(|c| self.tasks[c].vfork_parent.is_none()),
             Wait::Signal => false,
             Wait::Retry => true,
             Wait::Poll { until } => {
                 self.tasks[i].files.borrow().any_pipe_ready() || until.is_some_and(|u| self.now() >= u)
+            }
+            Wait::SigWait { set, until } => {
+                self.tasks[i].sig.pending & set != 0 || until.is_some_and(|u| self.now() >= u)
             }
         }
     }
@@ -466,6 +553,8 @@ impl Kernel {
                 State::Blocked(Wait::Sleep { until }) => Some(*until),
                 State::Blocked(Wait::Futex { until: Some(u), .. }) => Some(*u),
                 State::Blocked(Wait::Poll { until: Some(u) }) => Some(*u),
+                State::Blocked(Wait::SigWait { until: Some(u), .. }) => Some(*u),
+                State::Blocked(Wait::FutexV { until: Some(u), .. }) => Some(*u),
                 _ => None,
             };
             let d = match (d, t.sig.alarm) {
@@ -502,11 +591,14 @@ impl Kernel {
             n += 1;
             self.steps += 1;
             if self.cfg.clock == ClockMode::Virtual {
-                self.clock_ns += 1;
+                self.clock_ns += NS_PER_STEP;
             }
             match res {
                 Ok(()) => {}
                 Err(Exception::Svc(_)) => {
+                    if self.cfg.clock == ClockMode::Virtual {
+                        self.clock_ns += NS_PER_SYSCALL;
+                    }
                     if let Some(e) = self.syscall(t) {
                         return Some(e);
                     }
@@ -518,8 +610,15 @@ impl Kernel {
                     let pc = self.tasks[t].cpu.pc;
                     return Some(Exit::Unimplemented { raw, what, pc });
                 }
+                // Accesso appena sotto una regione MAP_GROWSDOWN: si estende e
+                // l'istruzione si riesegue (stack_guard_gap = 256 pagine).
+                Err(Exception::DataAbort { addr, .. })
+                    if self.tasks[t].mm.borrow_mut().mem.grow_down(addr, 256 * 4096) => {}
                 Err(e) => {
+                    let beyond = matches!(e, Exception::DataAbort { addr, .. }
+                        if self.tasks[t].mm.borrow().mem.beyond_eof(addr));
                     let signo = match e {
+                        _ if beyond => sig::SIGBUS,
                         Exception::Undefined(_) => sig::SIGILL,
                         Exception::Breakpoint(_) => sig::SIGTRAP,
                         Exception::Alignment { .. } | Exception::PcAlignment { .. } => sig::SIGBUS,

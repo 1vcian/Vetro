@@ -28,7 +28,21 @@ fn root() -> PathBuf {
 }
 
 fn skip_list() -> Vec<String> {
-    let text = std::fs::read_to_string(root().join("tools/ltp/skip.txt")).unwrap_or_default();
+    list("tools/ltp/skip.txt")
+}
+
+/// Test su cui QEMU user mode si discosta da Linux (tools/ltp/qemu-divergent.txt):
+/// l'oracolo è l'esecuzione nativa su un host Linux aarch64.
+fn divergent_list() -> Vec<String> {
+    list("tools/ltp/qemu-divergent.txt")
+}
+
+fn native_oracle() -> bool {
+    cfg!(all(target_os = "linux", target_arch = "aarch64"))
+}
+
+fn list(file: &str) -> Vec<String> {
+    let text = std::fs::read_to_string(root().join(file)).unwrap_or_default();
     text.lines()
         .filter_map(|l| l.split('#').next())
         .map(str::trim)
@@ -53,7 +67,38 @@ fn env_for(wd: &Path) -> Vec<(String, String)> {
     ]
 }
 
-fn run_vetro(bin: &Path, name: &str) -> Esito {
+/// Quello che l'oracolo mostra al guest e che Vetro deve imitare: versione
+/// del kernel (uname -r) e CPU disponibili, chiesti a QEMU con BusyBox.
+#[derive(Clone)]
+struct Host {
+    release: String,
+    cpus: usize,
+}
+
+fn oracle_host(q: &Path) -> Host {
+    let fallback = Host { release: "6.6.0-vetro".into(), cpus: 1 };
+    let bb = root().join("target/guest-bins/busybox");
+    if !bb.is_file() {
+        return fallback;
+    }
+    let args: Vec<String> = ["sh", "-c", "uname -r; nproc"].map(String::from).to_vec();
+    let wd = workdir("oracle-host");
+    match qemu::run_program_with(q, &[], &bb, &args, &[], &wd, &[], Duration::from_secs(60)) {
+        Ok(o) => {
+            let out = String::from_utf8_lossy(&o.stdout).into_owned();
+            let mut l = out.lines();
+            let release = l.next().map(str::trim).filter(|r| !r.is_empty()).map(String::from);
+            let cpus = l.next().and_then(|n| n.trim().parse().ok());
+            match (release, cpus) {
+                (Some(release), Some(cpus)) => Host { release, cpus },
+                _ => fallback,
+            }
+        }
+        Err(_) => fallback,
+    }
+}
+
+fn run_vetro(bin: &Path, name: &str, host: &Host) -> Esito {
     let wd = workdir(&format!("{name}.vetro"));
     let env: Vec<String> = env_for(&wd).into_iter().map(|(k, v)| format!("{k}={v}")).collect();
     let envp: Vec<&str> = env.iter().map(String::as_str).collect();
@@ -61,6 +106,8 @@ fn run_vetro(bin: &Path, name: &str) -> Esito {
         cwd: wd.to_string_lossy().into_owned(),
         sysroot: Some(root().join("tools/rootfs").to_string_lossy().into_owned()),
         max_steps: 3_000_000_000,
+        cpus: host.cpus,
+        release: host.release.clone(),
         ..Config::default()
     };
     let image = std::fs::read(bin).unwrap();
@@ -76,11 +123,11 @@ fn run_vetro(bin: &Path, name: &str) -> Esito {
 
 /// Esegue su Vetro in un thread a parte: un panic o un blocco (per esempio
 /// un'attesa sull'host) diventano l'esito del caso, non della corsa.
-fn run_vetro_limited(bin: &Path, name: &str) -> Esito {
+fn run_vetro_limited(bin: &Path, name: &str, host: &Host) -> Esito {
     let (tx, rx) = std::sync::mpsc::channel();
-    let (bin, name2) = (bin.to_path_buf(), name.to_string());
+    let (bin, name2, host) = (bin.to_path_buf(), name.to_string(), host.clone());
     std::thread::spawn(move || {
-        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_vetro(&bin, &name2)));
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_vetro(&bin, &name2, &host)));
         let _ = tx.send(r);
     });
     let vuoto = |s: &str| Esito { status: s.into(), pass: 0, fail: 0, brok: 0, conf: 0 };
@@ -107,6 +154,55 @@ fn run_qemu(q: &Path, bin: &Path, name: &str) -> Esito {
         }
         Err(e) => Esito { status: format!("errore {e}"), pass: 0, fail: 0, brok: 0, conf: 0 },
     }
+}
+
+/// Esegue il binario direttamente sull'host (solo Linux aarch64).
+fn run_native(bin: &Path, name: &str) -> Esito {
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{Command, Stdio};
+    let wd = workdir(&format!("{name}.native"));
+    let mut child = match Command::new(bin)
+        .env_clear()
+        .envs(env_for(&wd))
+        .current_dir(&wd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => return Esito { status: format!("errore {e}"), pass: 0, fail: 0, brok: 0, conf: 0 },
+    };
+    let (mut out, mut err) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
+    let t_out = std::thread::spawn(move || {
+        let mut v = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut out, &mut v);
+        v
+    });
+    let t_err = std::thread::spawn(move || {
+        let mut v = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut err, &mut v);
+        v
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(300);
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break s;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            break child.wait().unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let text = String::from_utf8_lossy(&t_out.join().unwrap()).into_owned()
+        + &String::from_utf8_lossy(&t_err.join().unwrap());
+    let st = match (status.signal(), status.code()) {
+        (Some(s), _) => format!("segnale {s}"),
+        (None, Some(c)) => format!("exit {c}"),
+        _ => "?".into(),
+    };
+    conta(&text, st)
 }
 
 #[test]
@@ -141,12 +237,22 @@ fn ltp_matches_qemu() {
                 .join(",")
         })
     });
+    let host = oracle_host(&q);
+    eprintln!("oracolo: kernel {}, {} CPU", host.release, host.cpus);
     let skip = skip_list();
+    let divergent = divergent_list();
+    if !native_oracle() && !divergent.is_empty() {
+        eprintln!(
+            "SKIP {} test di tools/ltp/qemu-divergent.txt: servono un host Linux aarch64 (oracolo nativo)",
+            divergent.len()
+        );
+    }
     let mut names: Vec<String> = std::fs::read_dir(&dir)
         .unwrap()
         .flatten()
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .filter(|n| !skip.contains(n))
+        .filter(|n| native_oracle() || !divergent.contains(n))
         .filter(|n| only.as_ref().is_none_or(|o| o.split(',').any(|x| x == n)))
         .collect();
     names.sort();
@@ -161,8 +267,12 @@ fn ltp_matches_qemu() {
                     let bin = dir.join(&name);
                     // Un panic nel kernel emulato è un fallimento di questo
                     // caso, non di tutta la corsa.
-                    let ours = run_vetro_limited(&bin, &name);
-                    let theirs = run_qemu(&q, &bin, &name);
+                    let ours = run_vetro_limited(&bin, &name, &host);
+                    let theirs = if divergent.contains(&name) {
+                        run_native(&bin, &name)
+                    } else {
+                        run_qemu(&q, &bin, &name)
+                    };
                     results.lock().unwrap().insert(name, (ours, theirs));
                 }
             });
@@ -176,7 +286,8 @@ fn ltp_matches_qemu() {
         if ours == theirs {
             ok_pass += ours.pass;
         } else {
-            diff.push(format!("  {name}: vetro={ours:?}\n  {:>w$}  qemu ={theirs:?}", "", w = name.len()));
+            let who = if divergent.contains(name) { "nativo" } else { "qemu  " };
+            diff.push(format!("  {name}: vetro ={ours:?}\n  {:>w$}  {who}={theirs:?}", "", w = name.len()));
         }
     }
     eprintln!(
