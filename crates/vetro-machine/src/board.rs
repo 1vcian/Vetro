@@ -100,6 +100,17 @@ impl Board {
         self.irq_dirty = true;
     }
 
+    /// Pilota la linea d'ingresso `line` del GPIO PL061: la 3
+    /// (`vetro_platform::pl061::POWER_KEY_LINE`) è il tasto di spegnimento
+    /// (`gpio-keys`, KEY_POWER). L'interrupt arriva al guest prima della
+    /// prossima istruzione. È un ingresso dell'host: va registrato per il
+    /// replay (M10).
+    pub fn gpio_input(&mut self, line: u32, level: bool) {
+        self.virt.gpio_mut().set_input(line, level);
+        self.irq_cache = None;
+        self.irq_dirty = true;
+    }
+
     fn mmio_touched(&mut self, pa: u64) {
         self.irq_cache = None;
         self.irq_dirty = true;
@@ -279,5 +290,32 @@ mod tests {
         phys.write(map::GICR_BASE + GICR_SGI_BASE + GICR_ISENABLER0, &1u32.to_le_bytes()).unwrap();
         phys.write(map::GICR_BASE + GICR_SGI_BASE + GICR_ISPENDR0, &1u32.to_le_bytes()).unwrap();
         assert!(env.irq_line(), "SGI 0 abilitato e reso pendente via MMIO");
+    }
+
+    /// Il tasto di spegnimento premuto dall'host: `gpio_input` segna le linee
+    /// da aggiornare (il ciclo di `Machine::run` chiama `update_irqs` prima
+    /// della prossima istruzione) e l'INTID 39 arriva alla CPU.
+    #[test]
+    fn tasto_di_spegnimento_dall_host() {
+        use vetro_platform::pl061;
+        let b = board_with_vtimer_enabled();
+        let intid = map::SPI_BASE + map::GPIO_SPI;
+        {
+            let mut bb = b.borrow_mut();
+            let bus = &mut bb.virt.bus;
+            bus.write(map::GICD_BASE + GICD_IGROUPR + 4, 4, 0xFFFF_FFFF);
+            bus.write(map::GICD_BASE + GICD_ISENABLER + 4, 4, 1 << (intid % 32));
+            let m = 1u64 << pl061::POWER_KEY_LINE;
+            bus.write(map::GPIO_BASE + pl061::IBE, 1, m);
+            bus.write(map::GPIO_BASE + pl061::IE, 1, m);
+            bb.update_irqs();
+        }
+        let mut env = Env(&b);
+        assert!(!env.irq_line());
+        b.borrow_mut().gpio_input(pl061::POWER_KEY_LINE, true);
+        assert!(b.borrow().irq_dirty, "le linee vanno riportate al GIC");
+        b.borrow_mut().update_irqs();
+        assert!(env.irq_line());
+        assert_eq!(env.read_sysreg(EnvReg::IccIar1El1), u64::from(intid));
     }
 }

@@ -4,7 +4,8 @@
 Dispositivi della piattaforma `virt` per M3 (modalità sistema): bus MMIO,
 GICv3, timer generico, UART PL011, RTC PL031, trasporto virtio-mmio con
 virtio-blk, virtio-net e virtio-console, device tree. Per M5: virtio-gpu 2D,
-virtio-input (tastiera, tablet, touchscreen) e virtio-vsock. La mappa ricalca `qemu-system-aarch64 -M virt`, così kernel e
+virtio-input (tastiera, tablet, touchscreen), virtio-vsock e GPIO PL061
+con il tasto di spegnimento (`gpio-keys`, visto dal GKI di Android). La mappa ricalca `qemu-system-aarch64 -M virt`, così kernel e
 device tree si confrontano con QEMU senza adattamenti. Una sola CPU.
 
 ## Mappa della memoria (`map.rs`)
@@ -14,6 +15,7 @@ device tree si confrontano con QEMU senza adattamenti. Una sola CPU.
 | GICR (redistributore, CPU 0: frame RD + SGI) | `0x080A_0000` | `0x2_0000` | — |
 | UART PL011 | `0x0900_0000` | `0x1000` | SPI 1 (33), livello |
 | RTC PL031 | `0x0901_0000` | `0x1000` | SPI 2 (34), livello |
+| GPIO PL061 | `0x0903_0000` | `0x1000` | SPI 7 (39), livello |
 | virtio-mmio, 32 slot | `0x0A00_0000` + k·`0x200` | `0x200` | SPI 16+k (48+k), fronte |
 | RAM | `0x4000_0000` | configurabile | — |
 
@@ -34,6 +36,8 @@ La RAM non passa dal bus MMIO: la gestisce la memoria della CPU/MMU.
   `pending_input()`, `irq_level()`.
 - `Pl031`: `new(now_secs)`, `set_time(now_secs)`, `count()`,
   `seconds_to_alarm()`, `irq_level()`.
+- `Pl061`: `new()`, `set_input(linea, livello)` (ingressi pilotati
+  dall'host), `outputs()`, `irq_level()`; `pl061::POWER_KEY_LINE` = 3.
 - `GenericTimer` (`cntfrq`, `cntvoff`, canali `phys` e `virt`):
   `cntp_ctl/cval/tval`, `cntv_ctl/cval/tval` e relativi `set_*`, tutti col
   valore di CNTPCT passato dall'esterno; `irq_lines(cntpct)` restituisce
@@ -47,8 +51,9 @@ La RAM non passa dal bus MMIO: la gestisce la memoria della CPU/MMU.
   `read_iar1`, `write_eoir1`, `write_dir`, `read_hppir1`, `read/write_pmr`,
   `read/write_ctlr`, `read/write_igrpen1`, `read/write_sre`,
   `read/write_bpr1`, `read_rpr`, `read/write_ap1r0`, `write_sgi1r`.
-- `Virt`: bus già montato + `timer`; `gic_mut()`, `uart_mut()`, `rtc_mut()`;
-  `update_irqs(cntpct)` porta al GIC le linee di timer, UART, RTC e dei 32
+- `Virt`: bus già montato + `timer`; `gic_mut()`, `uart_mut()`, `rtc_mut()`,
+  `gpio_mut()`; `update_irqs(cntpct)` porta al GIC le linee di timer, UART,
+  RTC, GPIO e dei 32
   slot virtio; `irq_line()`. Virtio: `attach_virtio(slot, Box<dyn VirtioDevice>)`,
   `attach_virtio_next(dev) -> slot` (slot libero più alto, come QEMU: il primo
   dispositivo va nello slot 31), `virtio(slot)` / `virtio_mut(slot)` ->
@@ -129,7 +134,8 @@ La RAM non passa dal bus MMIO: la gestisce la memoria della CPU/MMU.
 - `virt_dtb(&VirtDtbConfig) -> Vec<u8>`: memoria, cpus (`enable-method =
   "psci"`), psci (`arm,psci-1.0`, metodo `hvc` di default), timer
   (`arm,armv8-timer`), GIC (`arm,gic-v3`), clock fisso 24 MHz, PL011, PL031,
-  32 virtio-mmio, `chosen` con `bootargs`, `stdout-path = "/pl011@9000000"`
+  PL061 (phandle 3) con `gpio-keys/poweroff` (linea 3, KEY_POWER, come
+  QEMU), 32 virtio-mmio, `chosen` con `bootargs`, `stdout-path = "/pl011@9000000"`
   e initrd opzionale.
 
 ## Scelte e limiti
@@ -153,6 +159,14 @@ La RAM non passa dal bus MMIO: la gestisce la memoria della CPU/MMU.
 - **PL031**: CR legge sempre 1; qualunque scrittura in ICR azzera
   l'interrupt; l'allarme scatta quando DR raggiunge MR avanzando o subito
   se MR = DR dopo una scrittura di MR o LR (come QEMU).
+- **PL061** (come `hw/gpio/pl061.c` nella virt di QEMU): 8 linee, quelle
+  non pilotate valgono 0 (`pulldowns = 0xff`); DATA con maschera nei bit
+  9:2 dell'offset, scrive solo le uscite; interrupt come `pl061_update`
+  (fronte: IBE o IEV sul cambio di un ingresso; livello: RIS si riaccende
+  finché attivo; IC azzera); linea = RIS & IE. Accessi fino a 4 byte (Linux
+  usa `readb`/`writeb`); niente registri Luminary. L'host preme il tasto con
+  `Board::gpio_input(3, true/false)` di `vetro-machine`, che segna le linee
+  da aggiornare prima della prossima istruzione.
 - **Timer**: ISTATUS = ENABLE && contatore >= CVAL (senza segno), 0 con
   ENABLE spento; TVAL a 32 bit con segno (come QEMU). CNTFRQ di default
   62,5 MHz.
@@ -260,7 +274,7 @@ La RAM non passa dal bus MMIO: la gestisce la memoria della CPU/MMU.
   di una regione non raggiunge nessun dispositivo.
 
 ## Test
-`cargo test -p vetro-platform`: test unitari per modulo (bus, PL011, PL031,
+`cargo test -p vetro-platform`: test unitari per modulo (bus, PL011, PL031, PL061,
 timer, GIC, virtio, FDT con parser minimo del DTB, piattaforma montata).
 GPU, input e vsock hanno test con il driver di prova (comandi ed errori,
 formati, backing a pezzi, fence, cursore, ridimensionamento, reset; profili

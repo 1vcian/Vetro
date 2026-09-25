@@ -6,6 +6,7 @@
 
 /// Il caricatore del kernel sta in `vetro-machine` (serve anche al browser).
 pub use vetro_machine::boot;
+pub mod disk;
 pub mod elf;
 pub mod linux;
 

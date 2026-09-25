@@ -15,6 +15,9 @@ pub const UART_SIZE: u64 = 0x1000;
 /// RTC PL031.
 pub const RTC_BASE: u64 = 0x0901_0000;
 pub const RTC_SIZE: u64 = 0x1000;
+/// GPIO PL061 (linea 3: tasto di spegnimento, `gpio-keys`).
+pub const GPIO_BASE: u64 = 0x0903_0000;
+pub const GPIO_SIZE: u64 = 0x1000;
 /// Trasporti virtio-mmio: 32 slot da 0x200 byte.
 pub const VIRTIO_BASE: u64 = 0x0A00_0000;
 pub const VIRTIO_SLOT_SIZE: u64 = 0x200;
@@ -28,6 +31,8 @@ pub const SPI_BASE: u32 = 32;
 pub const UART_SPI: u32 = 1;
 /// SPI dell'RTC (INTID 34).
 pub const RTC_SPI: u32 = 2;
+/// SPI del GPIO (INTID 39).
+pub const GPIO_SPI: u32 = 7;
 /// SPI del primo slot virtio-mmio (INTID 48); lo slot `k` usa `16 + k`.
 pub const VIRTIO_SPI_BASE: u32 = 16;
 

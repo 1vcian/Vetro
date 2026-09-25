@@ -1,4 +1,4 @@
-//! La piattaforma virt montata: bus con GIC, UART, RTC e 32 slot
+//! La piattaforma virt montata: bus con GIC, UART, RTC, GPIO e 32 slot
 //! virtio-mmio, più il timer generico della CPU 0 e il cablaggio delle
 //! linee IRQ.
 //!
@@ -18,6 +18,7 @@ use crate::gic::{self, Gic};
 use crate::map;
 use crate::pl011::Pl011;
 use crate::pl031::Pl031;
+use crate::pl061::Pl061;
 use crate::timer::GenericTimer;
 use crate::virtio::{GuestRam, VirtioDevice, VirtioMmio};
 
@@ -38,6 +39,7 @@ pub struct Virt {
     gic: DeviceId,
     uart: DeviceId,
     rtc: DeviceId,
+    gpio: DeviceId,
     /// Trasporto dello slot `k` (base `VIRTIO_BASE + k * VIRTIO_SLOT_SIZE`).
     virtio: [DeviceId; map::VIRTIO_SLOTS as usize],
 }
@@ -49,11 +51,12 @@ impl Virt {
         let gic = bus.map(map::GICD_BASE, gic::MMIO_SIZE, "gicv3", Box::new(Gic::new())).unwrap();
         let uart = bus.map(map::UART_BASE, map::UART_SIZE, "pl011", Box::new(Pl011::new())).unwrap();
         let rtc = bus.map(map::RTC_BASE, map::RTC_SIZE, "pl031", Box::new(Pl031::new(now_secs))).unwrap();
+        let gpio = bus.map(map::GPIO_BASE, map::GPIO_SIZE, "pl061", Box::new(Pl061::new())).unwrap();
         let virtio = core::array::from_fn(|k| {
             let base = map::VIRTIO_BASE + k as u64 * map::VIRTIO_SLOT_SIZE;
             bus.map(base, map::VIRTIO_SLOT_SIZE, "virtio-mmio", Box::new(VirtioMmio::empty())).unwrap()
         });
-        Self { bus, timer: GenericTimer::default(), gic, uart, rtc, virtio }
+        Self { bus, timer: GenericTimer::default(), gic, uart, rtc, gpio, virtio }
     }
 
     /// Trasporto virtio-mmio dello slot `slot`.
@@ -119,13 +122,22 @@ impl Virt {
     pub fn rtc_mut(&mut self) -> &mut Pl031 {
         self.bus.device_mut(self.rtc).unwrap()
     }
+    pub fn gpio(&self) -> &Pl061 {
+        self.bus.device(self.gpio).unwrap()
+    }
+    /// Il GPIO: l'host preme e rilascia il tasto di spegnimento con
+    /// `set_input(pl061::POWER_KEY_LINE, ..)`, poi chiama `update_irqs`.
+    pub fn gpio_mut(&mut self) -> &mut Pl061 {
+        self.bus.device_mut(self.gpio).unwrap()
+    }
 
     /// Porta al GIC il livello di tutte le linee: timer (PPI 27 e 30),
-    /// UART (SPI 1), RTC (SPI 2) e virtio (SPI 16 + slot).
+    /// UART (SPI 1), RTC (SPI 2), GPIO (SPI 7) e virtio (SPI 16 + slot).
     pub fn update_irqs(&mut self, cntpct: u64) {
         let timer = self.timer.irq_lines(cntpct);
         let uart = self.uart().irq_level();
         let rtc = self.rtc().irq_level();
+        let gpio = self.gpio().irq_level();
         let virtio: [bool; map::VIRTIO_SLOTS as usize] =
             core::array::from_fn(|k| self.virtio(k as u32).is_some_and(VirtioMmio::irq_level));
         let gic = self.gic_mut();
@@ -134,6 +146,7 @@ impl Virt {
         }
         gic.set_spi_level(map::UART_SPI, uart);
         gic.set_spi_level(map::RTC_SPI, rtc);
+        gic.set_spi_level(map::GPIO_SPI, gpio);
         for (k, level) in virtio.into_iter().enumerate() {
             gic.set_spi_level(map::VIRTIO_SPI_BASE + k as u32, level);
         }
@@ -149,7 +162,7 @@ impl Virt {
 mod tests {
     use super::*;
     use crate::gic::*;
-    use crate::{pl011, pl031, timer, virtio};
+    use crate::{pl011, pl031, pl061, timer, virtio};
 
     const GICR: u64 = map::GICR_BASE;
 
@@ -171,6 +184,7 @@ mod tests {
         assert_eq!(v.bus.read(GICR + GICR_PIDR2, 4), Some(0x3B));
         assert_eq!(v.bus.read(map::UART_BASE + 0xFE0, 4), Some(0x11));
         assert_eq!(v.bus.read(map::RTC_BASE + 0xFE0, 4), Some(0x31));
+        assert_eq!(v.bus.read(map::GPIO_BASE + 0xFE0, 1), Some(0x61));
         for k in [0, 31] {
             let base = map::VIRTIO_BASE + k * map::VIRTIO_SLOT_SIZE;
             assert_eq!(v.bus.read(base + virtio::MAGIC_VALUE, 4), Some(u64::from(virtio::MAGIC)));
@@ -238,6 +252,33 @@ mod tests {
         v.update_irqs(0);
         assert_eq!(v.gic_mut().read_hppir1(), u64::from(intid));
         assert_eq!(v.bus.read(map::RTC_BASE + pl031::DR, 4), Some(106));
+    }
+
+    /// Tasto di spegnimento (linea 3 del PL061) programmato come fa Linux
+    /// per gpio-keys (entrambi i fronti): pressione e rilascio arrivano
+    /// all'INTID 39.
+    #[test]
+    fn tasto_di_spegnimento_sullo_spi_7() {
+        let mut v = Virt::new(0);
+        init_gic(&mut v);
+        let intid = map::SPI_BASE + map::GPIO_SPI;
+        v.bus.write(map::GICD_BASE + GICD_ISENABLER + 4, 4, 1 << (intid % 32));
+        let m = 1u64 << pl061::POWER_KEY_LINE;
+        v.bus.write(map::GPIO_BASE + pl061::IBE, 1, m);
+        v.bus.write(map::GPIO_BASE + pl061::IE, 1, m);
+        v.update_irqs(0);
+        assert!(!v.irq_line());
+        for pressed in [true, false] {
+            v.gpio_mut().set_input(pl061::POWER_KEY_LINE, pressed);
+            v.update_irqs(0);
+            assert_eq!(v.gic_mut().read_iar1(), u64::from(intid));
+            let data = v.bus.read(map::GPIO_BASE + (m << 2), 1);
+            assert_eq!(data, Some(if pressed { m } else { 0 }));
+            v.bus.write(map::GPIO_BASE + pl061::IC, 1, m);
+            v.update_irqs(0);
+            v.gic_mut().write_eoir1(u64::from(intid));
+            assert!(!v.irq_line());
+        }
     }
 
     // ---- virtio -------------------------------------------------------------

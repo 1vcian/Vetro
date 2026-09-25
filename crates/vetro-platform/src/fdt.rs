@@ -298,8 +298,12 @@ impl Default for VirtDtbConfig {
 
 /// Phandle del GIC nel device tree della piattaforma.
 pub const PHANDLE_GIC: u32 = 1;
-/// Phandle del clock fisso della PL011/PL031.
+/// Phandle del clock fisso della PL011/PL031/PL061.
 pub const PHANDLE_CLK: u32 = 2;
+/// Phandle del GPIO PL061 (usato da `gpio-keys`).
+pub const PHANDLE_GPIO: u32 = 3;
+/// KEY_POWER di Linux (`linux,code` del tasto di spegnimento).
+const KEY_POWER: u32 = 116;
 
 const GIC_SPI: u32 = 0;
 const GIC_PPI: u32 = 1;
@@ -398,6 +402,25 @@ pub fn virt_dtb(cfg: &VirtDtbConfig) -> Vec<u8> {
         .prop_u32("clocks", PHANDLE_CLK)
         .prop_str("clock-names", "apb_pclk")
         .end_node();
+
+    // GPIO e tasto di spegnimento come QEMU virt (create_gpio_devices).
+    b.begin_node(&format!("pl061@{:x}", map::GPIO_BASE))
+        .prop_strs("compatible", &["arm,pl061", "arm,primecell"]);
+    reg(&mut b, map::GPIO_BASE, map::GPIO_SIZE);
+    b.prop_u32_list("interrupts", &[GIC_SPI, map::GPIO_SPI, IRQ_LEVEL_HIGH])
+        .prop_u32("#gpio-cells", 2)
+        .prop_empty("gpio-controller")
+        .prop_u32("clocks", PHANDLE_CLK)
+        .prop_str("clock-names", "apb_pclk")
+        .prop_u32("phandle", PHANDLE_GPIO)
+        .end_node();
+    b.begin_node("gpio-keys").prop_str("compatible", "gpio-keys");
+    b.begin_node("poweroff")
+        .prop_str("label", "GPIO Key Poweroff")
+        .prop_u32("linux,code", KEY_POWER)
+        .prop_u32_list("gpios", &[PHANDLE_GPIO, crate::pl061::POWER_KEY_LINE, 0])
+        .end_node();
+    b.end_node();
 
     for k in 0..map::VIRTIO_SLOTS {
         let base = map::VIRTIO_BASE + k * map::VIRTIO_SLOT_SIZE;
@@ -573,6 +596,23 @@ mod tests {
         let rtc = &t["/pl031@9010000"];
         assert_eq!(strs(&rtc["compatible"]), ["arm,pl031", "arm,primecell"]);
         assert_eq!(cells(&rtc["interrupts"]), [0, 2, 4]);
+
+        // GPIO e tasto di spegnimento: gli stessi valori del DTB di QEMU 10.0
+        // (`-M virt,dumpdtb=`), a parte il numero del phandle.
+        let gpio = &t["/pl061@9030000"];
+        assert_eq!(strs(&gpio["compatible"]), ["arm,pl061", "arm,primecell"]);
+        assert_eq!(cells(&gpio["reg"]), [0, 0x0903_0000, 0, 0x1000]);
+        assert_eq!(cells(&gpio["interrupts"]), [0, 7, 4]);
+        assert_eq!(cells(&gpio["#gpio-cells"]), [2]);
+        assert!(gpio["gpio-controller"].is_empty());
+        assert_eq!(cells(&gpio["clocks"]), [PHANDLE_CLK]);
+        assert_eq!(strs(&gpio["clock-names"]), ["apb_pclk"]);
+        assert_eq!(cells(&gpio["phandle"]), [PHANDLE_GPIO]);
+        assert_eq!(strs(&t["/gpio-keys"]["compatible"]), ["gpio-keys"]);
+        let key = &t["/gpio-keys/poweroff"];
+        assert_eq!(cells(&key["gpios"]), [PHANDLE_GPIO, 3, 0]);
+        assert_eq!(cells(&key["linux,code"]), [0x74]);
+        assert_eq!(strs(&key["label"]), ["GPIO Key Poweroff"]);
 
         let v0 = &t["/virtio_mmio@a000000"];
         assert_eq!(cells(&v0["interrupts"]), [0, 16, 1]);

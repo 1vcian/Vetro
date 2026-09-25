@@ -885,11 +885,13 @@ version = "0.0.0"
 dependencies = [
  "libc",
  "vetro-analysis",
+ "vetro-boot-tests",
  "vetro-cpu",
  "vetro-diff",
  "vetro-jit",
  "vetro-jit-native",
  "vetro-machine",
+ "vetro-platform",
 ]
 
 [[package]]

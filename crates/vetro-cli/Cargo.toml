@@ -20,6 +20,7 @@ workspace = true
 vetro-cpu = { path = "../vetro-cpu" }
 vetro-analysis = { path = "../vetro-analysis" }
 vetro-machine = { path = "../vetro-machine" }
+vetro-platform = { path = "../vetro-platform" }
 vetro-jit = { path = "../vetro-jit" }
 # Motore del JIT per `vetro run --jit` (wasmtime): il runner nativo non va
 # nel browser.
@@ -30,3 +31,4 @@ libc = "0.2"
 
 [dev-dependencies]
 vetro-diff = { path = "../../tests/diff" }
+vetro-boot-tests = { path = "../../tests/boot" }

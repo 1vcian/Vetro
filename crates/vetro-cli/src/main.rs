@@ -2,10 +2,16 @@
 //!
 //! ```text
 //! vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]
-//! vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB]
+//! vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB] [--no-devices] [--disk=FILE]... [--guest-secs=N] [--stats]
 //! ```
 //!
 //! `boot` avvia la macchina virt (M3) con la console PL011 su stdin/stdout.
+//! I dispositivi di default (GPU, tastiera, tablet) occupano gli slot
+//! virtio-mmio 31, 30, 29; `--no-devices` li toglie. Ogni `--disk` aggiunge
+//! un virtio-blk nello slot libero più alto, nell'ordine della riga di comando
+//! (come i `-device virtio-blk-device` di QEMU): il file resta intatto, le
+//! scritture del guest restano in memoria (`snapshot=on`). `--guest-secs`
+//! ferma la macchina dopo N secondi di tempo del guest.
 //! `--jit` esegue col JIT verso WASM (M4, wasmtime); `--stats` stampa su
 //! stderr istruzioni, tempo e MIPS (e i contatori del JIT).
 
@@ -30,7 +36,9 @@ fn usage() -> ExitCode {
     eprintln!(
         "uso: vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]"
     );
-    eprintln!("     vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB]");
+    eprintln!(
+        "     vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB] [--no-devices] [--disk=FILE]... [--guest-secs=N] [--stats]"
+    );
     ExitCode::from(2)
 }
 
@@ -119,11 +127,32 @@ fn run(args: &[String]) -> ExitCode {
 
 fn boot(args: &[String]) -> ExitCode {
     use std::io::{Read, Write};
-    use vetro_machine::{Machine, MachineConfig, Stop};
+    use vetro_machine::{Devices, Machine, MachineConfig, Stop};
+    use vetro_platform::virtio::{VirtioBlk, VirtioBlkConfig};
     let (mut kernel, mut initrd, mut append) = (None, None, "console=ttyAMA0".to_string());
     let mut cfg = MachineConfig::default();
+    let mut devices = Devices::default();
+    let mut disks = Vec::new();
+    let mut guest_ns = u64::MAX;
+    let mut stats = false;
     for a in args {
+        match a.as_str() {
+            "--no-devices" => {
+                devices = Devices::none();
+                continue;
+            }
+            "--stats" => {
+                stats = true;
+                continue;
+            }
+            _ => {}
+        }
         match a.split_once('=') {
+            Some(("--disk", v)) => disks.push(v.to_string()),
+            Some(("--guest-secs", v)) => match v.parse::<u64>() {
+                Ok(s) => guest_ns = s.saturating_mul(1_000_000_000),
+                Err(_) => return usage(),
+            },
             Some(("--kernel", v)) => kernel = Some(v.to_string()),
             Some(("--initrd", v)) => initrd = Some(v.to_string()),
             Some(("--append", v)) => append = v.to_string(),
@@ -149,7 +178,21 @@ fn boot(args: &[String]) -> ExitCode {
         Ok(i) => i,
         Err(c) => return c,
     };
-    let mut m = Machine::new(&cfg);
+    let mut m = Machine::with_devices(&cfg, &devices);
+    for d in &disks {
+        let backend = match vetro_cli::disk::cow_disk(std::path::Path::new(d)) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("vetro: {d}: {e}");
+                return ExitCode::from(2);
+            }
+        };
+        let blk = VirtioBlk::new(Box::new(backend), VirtioBlkConfig::default());
+        if m.board.borrow_mut().virt.attach_virtio_next(Box::new(blk)).is_err() {
+            eprintln!("vetro: troppi dispositivi virtio");
+            return ExitCode::from(2);
+        }
+    }
     if let Err(e) = m.load_linux(&image, initrd.as_deref(), &append) {
         eprintln!("vetro: {kernel}: {e}");
         return ExitCode::from(2);
@@ -166,7 +209,24 @@ fn boot(args: &[String]) -> ExitCode {
         }
     });
     let mut out = std::io::stdout();
+    let t0 = std::time::Instant::now();
+    let report = |m: &Machine| {
+        if stats {
+            let s = t0.elapsed().as_secs_f64();
+            eprintln!(
+                "vetro: {} istruzioni ({:.3} s di guest) in {s:.3} s = {:.1} MIPS",
+                m.steps,
+                m.guest_ns() as f64 / 1e9,
+                m.steps as f64 / s / 1e6
+            );
+        }
+    };
     loop {
+        if m.guest_ns() >= guest_ns {
+            report(&m);
+            eprintln!("vetro: raggiunto il limite di tempo del guest");
+            return ExitCode::from(124);
+        }
         let stop = m.run(2_000_000);
         let o = m.console_output();
         if !o.is_empty() {
@@ -185,12 +245,17 @@ fn boot(args: &[String]) -> ExitCode {
                     return ExitCode::from(3);
                 }
             },
-            Stop::PowerOff => return ExitCode::SUCCESS,
+            Stop::PowerOff => {
+                report(&m);
+                return ExitCode::SUCCESS;
+            }
             Stop::Reset => {
+                report(&m);
                 eprintln!("vetro: il guest ha chiesto un reset");
                 return ExitCode::SUCCESS;
             }
             Stop::Unimplemented { pc, raw, what } => {
+                report(&m);
                 eprintln!("vetro: {raw:#010x} non ancora implementata ({what}) a pc={pc:#x}");
                 return ExitCode::from(125);
             }
