@@ -160,8 +160,8 @@ fn session(image: &[u8], initrd: &[u8], record: bool) -> Outcome2 {
     let list = s.fc.list("/tmp/f");
     let Outcome::List(entries) = s.ok(list) else { panic!() };
     assert!(matches!(s.fc.state(), LinkState::Ready(h) if h.max_chunk >= 256 << 10));
-    let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
-    assert_eq!(names, ["a.txt", "grande", "link"]);
+    let names: Vec<&[u8]> = entries.iter().map(|e| e.name.as_slice()).collect();
+    assert_eq!(names, [&b"a.txt"[..], b"grande", b"link"]);
     let a = &entries[0].stat;
     assert_eq!((a.kind, a.mode, a.uid, a.gid, a.size, a.nlink), (Kind::File, 0o100640, 1234, 5678, 5, 1));
     // Senza SELinux nel guest tmpfs tiene security.selinux come un xattr
@@ -170,7 +170,7 @@ fn session(image: &[u8], initrd: &[u8], record: bool) -> Outcome2 {
     assert_eq!(entries[1].stat.selinux, "");
     let big = seq(200_000);
     assert_eq!(entries[1].stat.size, big.len() as u64);
-    assert_eq!((entries[2].stat.kind, entries[2].stat.link.as_str()), (Kind::Symlink, "a.txt"));
+    assert_eq!((entries[2].stat.kind, entries[2].stat.link.as_slice()), (Kind::Symlink, &b"a.txt"[..]));
     let r = s.fc.read_file("/tmp/f/a.txt");
     assert_eq!(s.ok(r), Outcome::Data { size: 5, data: b"ciao\n".to_vec() });
     let r = s.fc.read_file("/tmp/f/grande");
@@ -193,7 +193,7 @@ fn session(image: &[u8], initrd: &[u8], record: bool) -> Outcome2 {
     let limit = s.m.steps + PHASE_BUDGET;
     let seen_at = loop {
         if let Some((t, _)) =
-            s.events.iter().find(|(_, e)| e.wd == wd && e.name == "g.txt" && e.mask & mask::CLOSE_WRITE != 0)
+            s.events.iter().find(|(_, e)| e.wd == wd && e.name == b"g.txt" && e.mask & mask::CLOSE_WRITE != 0)
         {
             break *t;
         }
@@ -203,7 +203,7 @@ fn session(image: &[u8], initrd: &[u8], record: bool) -> Outcome2 {
     let ms = (seen_at - t0) as f64 / 1e6;
     eprintln!("evento della scrittura del guest dopo {ms:.1} ms di tempo del guest");
     assert!(seen_at - t0 < 1_000_000_000, "evento dopo {ms} ms (più di 1 s)");
-    assert!(s.events.iter().any(|(_, e)| e.name == "g.txt" && e.mask & mask::CREATE != 0));
+    assert!(s.events.iter().any(|(_, e)| e.name == b"g.txt" && e.mask & mask::CREATE != 0));
     s.until(SHELL_PROMPT, 0);
 
     // ---- Scritture -------------------------------------------------------
@@ -270,8 +270,8 @@ fn session(image: &[u8], initrd: &[u8], record: bool) -> Outcome2 {
     assert_eq!(out, "a.txt\ncopia\ng.txt\ngrande\nlink");
     // Eventi delle scritture dell'host: il rename al posto del file vero,
     // mai i file temporanei.
-    assert!(s.events.iter().any(|(_, e)| e.name == "a.txt" && e.mask & mask::MOVED_TO != 0));
-    assert!(s.events.iter().all(|(_, e)| !e.name.starts_with(".vetro-tmp.")), "{:?}", s.events);
+    assert!(s.events.iter().any(|(_, e)| e.name == b"a.txt" && e.mask & mask::MOVED_TO != 0));
+    assert!(s.events.iter().all(|(_, e)| !e.name.starts_with(b".vetro-tmp.")), "{:?}", s.events);
     let u = s.fc.unwatch(wd);
     assert_eq!(s.ok(u), Outcome::Done);
     assert_eq!(s.fc.generation(), 1, "una sola connessione");

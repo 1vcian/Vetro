@@ -9,7 +9,13 @@
 # reali, 0 e 1, testo, BLOB), 600 righe (pagine interne), un testo da
 # 5000 byte (pagine di overflow), una tabella WITHOUT ROWID con chiave
 # composta, una tabella senza alias del rowid e con nomi fra virgolette.
+#
+# Poi wal.sqlite e wal.sqlite-wal (ADR 0021): un database in WAL copiato con
+# la connessione ancora aperta, quindi con transazioni solo nel -wal (una
+# riga cambiata, una aggiunta, una tolta, una tabella nuova che fa crescere
+# il file) e in coda un frame rovinato, che non conta.
 import os
+import shutil
 import sqlite3
 
 out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prova.sqlite")
@@ -40,3 +46,37 @@ db.executemany(
 db.commit()
 db.close()
 print(out, os.path.getsize(out), "byte")
+
+wal = os.path.join(os.path.dirname(out), "wal.sqlite")
+for f in (wal, wal + "-wal", wal + "-shm"):
+    if os.path.exists(f):
+        os.remove(f)
+db = sqlite3.connect(wal, isolation_level=None)
+db.execute("PRAGMA page_size = 1024")
+db.execute("PRAGMA journal_mode = WAL")
+db.execute("PRAGMA wal_autocheckpoint = 0")
+db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)")
+db.executemany("INSERT INTO t VALUES (?, ?)", [(i, f"base-{i}") for i in range(1, 6)])
+db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+db.execute("UPDATE t SET v = 'dal-wal' WHERE id = 2")
+db.execute("INSERT INTO t VALUES (6, 'nuova')")
+db.execute("DELETE FROM t WHERE id = 5")
+db.execute("CREATE TABLE altra (x)")
+db.executemany("INSERT INTO altra VALUES (?)", [("A" * 900,) for _ in range(4)])
+# Copia con la connessione aperta: alla chiusura SQLite farebbe il
+# checkpoint e toglierebbe il -wal.
+shutil.copyfile(wal, wal + ".copia")
+shutil.copyfile(wal + "-wal", wal + "-wal.copia")
+db.close()
+os.replace(wal + ".copia", wal)
+os.replace(wal + "-wal.copia", wal + "-wal")
+if os.path.exists(wal + "-shm"):
+    os.remove(wal + "-shm")
+with open(wal + "-wal", "r+b") as f:
+    data = f.read()
+    frame = bytearray(data[32 : 32 + 24 + 1024])
+    # Un frame di "commit" in coda con i salt giusti e checksum che non
+    # tornano (una scrittura interrotta): il lettore deve ignorarlo.
+    frame[4:8] = (99).to_bytes(4, "big")
+    f.write(frame)
+print(wal, os.path.getsize(wal), "byte +", os.path.getsize(wal + "-wal"), "byte di WAL")

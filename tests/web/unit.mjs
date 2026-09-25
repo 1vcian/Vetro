@@ -3,9 +3,10 @@
 // server con Range (tools/web-serve.mjs), sorgenti e DiskFeeder
 // (web/node/disk.mjs), mappa dei tasti (web/app/keymap.mjs), terminale
 // (web/app/terminal.mjs), persistenza (web/node/persist.mjs), lettore
-// SQLite e visualizzatori del gestore dei file (web/app/sqlite.mjs,
-// web/app/files.mjs, M8), formati dei pannelli di analisi
-// (web/app/analysis.mjs, M7/M10).
+// SQLite (anche con il WAL) e visualizzatori del gestore dei file
+// (web/app/sqlite.mjs, web/app/files.mjs, M8), SQL e SharedPreferences
+// del pannello, nomi non UTF-8 e argomenti SQL di vetro.mjs (ADR 0021),
+// formati dei pannelli di analisi (web/app/analysis.mjs, M7/M10).
 //
 //   node tests/web/unit.mjs
 
@@ -16,8 +17,12 @@ import { parseRange, serve } from '../../tools/web-serve.mjs';
 import { absAxis, BUTTONS, evdevCode } from '../../web/app/keymap.mjs';
 import { keyToBytes, Terminal } from '../../web/app/terminal.mjs';
 import { fromBase64, MemFile, readAll, SnapshotStore, snapshotKey, staleReason, toBase64 } from '../../web/node/persist.mjs';
-import { formatValue, isSqlite, parseCreateTable, SqliteDb, varint } from '../../web/app/sqlite.mjs';
-import { asText, detectView, hexDump, imageType, modeString, parseHex, sizeString } from '../../web/app/files.mjs';
+import { deleteRowSql, formatValue, insertRowSql, isSqlite, parseCreateTable, SqliteDb, updateCellSql, varint, walPages } from '../../web/app/sqlite.mjs';
+import {
+  asText, checkPrefValue, detectView, displayName, hexDump, imageType, javaFloatString, modeString, parseHex, parsePrefs, parseXml,
+  prefsToXml, sizeString,
+} from '../../web/app/files.mjs';
+import { encodeSqlArgs, pathBytes, pathString, sqlValue } from '../../web/node/vetro.mjs';
 import { duration, fromB64, guestTime, hexdump } from '../../web/app/analysis.mjs';
 import { check, root, run } from './lib.mjs';
 
@@ -256,6 +261,124 @@ test('SQLite: database vero (tests/web/testdata/prova.sqlite)', () => {
     err = e.message;
   }
   eq(err, 'non è un database SQLite 3', 'file che non è SQLite');
+});
+
+test('SQLite: WAL (tests/web/testdata/wal.sqlite e -wal)', () => {
+  const bytes = new Uint8Array(readFileSync(join(root, 'tests/web/testdata/wal.sqlite')));
+  const wal = new Uint8Array(readFileSync(join(root, 'tests/web/testdata/wal.sqlite-wal')));
+  // Senza WAL: com'era all'ultimo checkpoint.
+  const old = new SqliteDb(bytes);
+  eq(old.rows('t').rows, [[1, 'base-1'], [2, 'base-2'], [3, 'base-3'], [4, 'base-4'], [5, 'base-5']], 'senza WAL');
+  eq(old.tables().map((t) => t.name), ['t'], 'tabelle senza WAL');
+  const db = new SqliteDb(bytes, wal);
+  check(db.walFrames > 0 && db.pageCount > old.pageCount, `WAL applicato: ${db.walFrames} frame, ${db.pageCount} pagine`);
+  const t = db.rows('t');
+  eq(t.rows, [[1, 'base-1'], [2, 'dal-wal'], [3, 'base-3'], [4, 'base-4'], [6, 'nuova']], 'righe con il WAL (come sqlite3)');
+  eq(t.rowids, [1, 2, 3, 4, 6], 'rowid');
+  eq(t.types[0], ['integer', 'text'], 'tipi');
+  eq(db.tables().map((x) => x.name), ['t', 'altra'], 'tabella creata nel WAL');
+  eq(db.rows('altra').rows.map((r) => r[1].length), [900, 900, 900, 900], 'righe della tabella nuova');
+  // Il frame rovinato in coda non conta; un WAL tagliato a metà del primo
+  // frame non vale; un WAL di un'altra dimensione di pagina si ignora.
+  const w = walPages(wal, 1024);
+  check((wal.length - 32) / (24 + 1024) === w.frames + 1, `frame validi ${w.frames} su ${(wal.length - 32) / 1048}`);
+  eq(walPages(wal.subarray(0, 32 + 600), 1024), null, 'frame tagliato');
+  eq(walPages(wal, 4096), null, 'altra pagina');
+  const bad = wal.slice();
+  bad[40] ^= 1;
+  eq(walPages(bad, 1024), null, 'salt rovinato nel primo frame');
+});
+
+test('SQLite: SQL delle modifiche del pannello', () => {
+  const db = new SqliteDb(new Uint8Array(readFileSync(join(root, 'tests/web/testdata/prova.sqlite'))));
+  const v = db.rows('valori');
+  eq(v.types[1], ['integer', 'text', 'integer', 'real', 'blob'], 'tipi di una riga');
+  const u = updateCellSql(v, 1, 3, { type: 'real', value: 2 });
+  eq(u.sql, 'UPDATE "valori" SET "x" = ?1 WHERE rowid = ?2', 'UPDATE con alias');
+  eq(u.params[1], 2, 'rowid');
+  const m = db.rows('molte righe');
+  eq(updateCellSql(m, 0, 2, 'z').sql, 'UPDATE "molte righe" SET "valore" = ?1 WHERE rowid = ?2', 'senza alias: colonna spostata dal rowid');
+  let err = null;
+  try {
+    updateCellSql(m, 0, 0, 1);
+  } catch (e) {
+    err = e.message;
+  }
+  check(err?.includes('rowid'), 'il rowid senza alias non si cambia');
+  const pr = db.rows('prefs');
+  const d = deleteRowSql(pr, 0);
+  eq([d.sql, d.params], ['DELETE FROM "prefs" WHERE "utente" IS ?1 AND "chiave" IS ?2', ['anna', 'lingua']], 'WITHOUT ROWID: chiave');
+  eq(deleteRowSql(v, 0), { sql: 'DELETE FROM "valori" WHERE rowid = ?1', params: [1] }, 'DELETE');
+  eq(insertRowSql(v.table, { nome: 'n', x: 1.5 }), { sql: 'INSERT INTO "valori" ("nome", "x") VALUES (?1, ?2)', params: ['n', 1.5] }, 'INSERT');
+  eq(insertRowSql({ name: 'a"b' }, {}).sql, 'INSERT INTO "a""b" DEFAULT VALUES', 'INSERT vuoto e virgolette');
+});
+
+test('SharedPreferences: XML di Android', () => {
+  // Un file come lo scrive Android (FastXmlSerializer), con tutti i tipi.
+  const xml = "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n" +
+    '    <string name="nome">Vetro &amp; &lt;co&gt; &quot;x&quot; &#10;riga</string>\n' +
+    '    <int name="avvii" value="3" />\n' +
+    '    <long name="ultimo" value="-9223372036854775808" />\n' +
+    '    <float name="scala" value="1.5" />\n' +
+    '    <boolean name="primo" value="true" />\n' +
+    '    <set name="etichette">\n        <string>a</string>\n        <string>b c</string>\n    </set>\n' +
+    '    <set name="vuoto" />\n' +
+    '    <null name="niente" />\n' +
+    '    <string name="vuota"></string>\n' +
+    '</map>\n';
+  const p = parsePrefs(xml);
+  eq(p.map((e) => e.type), ['string', 'int', 'long', 'float', 'boolean', 'set', 'set', 'null', 'string'], 'tipi');
+  eq(p[0].value, 'Vetro & <co> "x" \nriga', 'entità');
+  eq(p[5].value, ['a', 'b c'], 'set');
+  eq(prefsToXml(p), xml, 'riletto e riscritto: stessi byte');
+  eq(prefsToXml([]), "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map />\n", 'mappa vuota');
+  eq(prefsToXml([{ type: 'string', name: 't', value: 'fine\n' }]).split('\n')[2], '    <string name="t">fine&#10;    </string>', 'testo che finisce con \\n (come FastXmlSerializer)');
+  eq(parsePrefs('<a/>'), null, 'radice diversa da map');
+  eq(parsePrefs('<map><int-array name="x" num="0" /></map>'), null, 'tipo non gestito');
+  eq(parsePrefs('<!-- c --><map>\n<string name="a"><![CDATA[<x>]]></string></map>')[0].value, '<x>', 'commento e CDATA');
+  for (const bad of ['<map>', '<map><int name="a" value="1"></map>', '<map a=1/>', '<map>&nope;</map>', '<map/><x/>']) {
+    let e = null;
+    try {
+      parseXml(bad);
+    } catch (x) {
+      e = x.message;
+    }
+    check(e?.startsWith('XML non valido'), `XML rotto accettato: ${bad}`);
+  }
+  eq(['7', '+7', '-2147483648'].map((x) => checkPrefValue('int', x)), ['7', '7', '-2147483648'], 'int');
+  eq(checkPrefValue('long', '9223372036854775807'), '9223372036854775807', 'long');
+  eq(['1', '1.5f', '0.1', '1e10', '-0', '1e-5', '3.4028235e38', 'NaN'].map((x) => checkPrefValue('float', x)),
+    ['1.0', '1.5', '0.1', '1.0E10', '-0.0', '1.0E-5', '3.4028235E38', 'NaN'], 'float come Float.toString');
+  eq([javaFloatString(100), javaFloatString(1234567), javaFloatString(0.001), javaFloatString(1 / 3)], ['100.0', '1234567.0', '0.001', '0.33333334'], 'Float.toString');
+  for (const [t, x] of [['int', '2147483648'], ['int', '1.0'], ['long', '9223372036854775808'], ['float', 'abc'], ['boolean', 'True']]) {
+    let e = null;
+    try {
+      checkPrefValue(t, x);
+    } catch (y) {
+      e = y;
+    }
+    check(e !== null, `${t} ${x} accettato`);
+  }
+});
+
+test('nomi non UTF-8 e argomenti SQL (vetro.mjs)', () => {
+  const raw = new Uint8Array([0x2f, 0x61, 0xff, 0x62, 0xc3, 0xa0, 0xc3, 0xed, 0xb2, 0x80]);
+  const s = pathString(raw);
+  eq(s, '/a\udcffbà\udcc3\udced\udcb2\udc80', 'surrogateescape');
+  eq([...pathBytes(s)], [...raw], 'andata e ritorno');
+  eq(displayName(s), '/a\\xffbà\\xc3\\xed\\xb2\\x80', 'mostrato con \\xNN');
+  eq([...pathBytes('😀/à')], [...new TextEncoder().encode('😀/à')], 'UTF-8 con coppie di surrogati');
+  eq(displayName('😀'), '😀', 'coppia di surrogati intatta');
+  eq(JSON.parse('"a\\udcff"'), 'a\udcff', 'JSON di vetro-wasm');
+  // Stessi byte di proto::encode_sql_args (test Rust sql_e_nomi / wasm).
+  eq([...encodeSqlArgs('S', [1n, 'x'])], [1, 0, 0, 0, 83, 2, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 3, 1, 0, 0, 0, 120], 'formato');
+  const all = encodeSqlArgs('', [null, 2, 2.5, true, new Uint8Array([7]), { type: 'real', value: 3 }, { type: 'integer', value: -1n }]);
+  eq([...all.subarray(4, 6)], [7, 0], 'numero di parametri');
+  eq([all[6], all[7], all[16], all[25], all[34]], [0, 1, 2, 1, 4], 'tipi dedotti');
+  check(sqlValue(['i', '9223372036854775807']) === 9223372036854775807n, 'intero grande');
+  eq([sqlValue(['i', '-3']), sqlValue(['f', '1.0']), sqlValue(['f', 'inf']), sqlValue(['t', 'x']), sqlValue(null)], [-3, 1, null, 'x', null], 'valori');
+  eq(sqlValue(['f', '-inf']), -Infinity, 'meno infinito');
+  eq([...sqlValue(['b', '00ab'])], [0, 0xab], 'BLOB');
 });
 
 test('gestore dei file: visualizzatori', () => {

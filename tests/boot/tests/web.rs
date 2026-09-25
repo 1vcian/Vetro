@@ -132,7 +132,8 @@ fn disk_session(image: &[u8], initrd: &[u8]) -> u64 {
     );
     let at = s.command(&cmd, at);
     let text = s.tail();
-    assert!(text.contains(&format!("\n{WRITTEN}\n")), "byte scritti non riletti:\n{text}");
+    // Il messaggio del kernel su drop_caches può arrivare subito dopo il testo.
+    assert!(text.contains(&format!("\n{WRITTEN}")), "byte scritti non riletti:\n{text}");
     let _ = at;
     s.poweroff();
     s.save("disk")

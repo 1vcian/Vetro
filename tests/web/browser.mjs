@@ -11,7 +11,11 @@
 //   3. gestore dei file (M8): con le radici impostate dal test il pannello
 //      mostra l'albero, si aggiorna da solo quando un processo del guest
 //      crea un file, apre un file, lo modifica e lo salva nel guest, che lo
-//      rilegge con cat (modo conservato);
+//      rilegge con cat (modo conservato); una cella di un database SQLite
+//      in WAL tenuto aperto dal guest cambiata dal pannello (anteprima della
+//      query, SQL eseguito nel guest, tabella riletta dal -wal, valore
+//      riletto con sqlite3) e un valore delle SharedPreferences cambiato
+//      nella tabella (ADR 0021);
 //   3b. il primo avvio salva lo snapshot in OPFS al prompt; il guest scrive
 //      sul disco (dd + sync) e lo snapshot si risalva insieme all'overlay
 //      (M6, ADR 0016);
@@ -143,6 +147,60 @@ run(async () => {
     at = await page.until('modo-640', at);
     at = await page.until('# ', at);
     console.log('gestore dei file: albero aggiornato dal vivo, file modificato nel pannello e riletto dal guest con cat (modo 640 conservato)');
+
+    // Modifica di una cella SQLite dal pannello (ADR 0021): database in WAL
+    // tenuto aperto da un processo del guest; anteprima della query, SQL
+    // eseguito nel guest, tabella riletta con il -wal, valore riletto dal
+    // guest con sqlite3.
+    await page.type(`sqlite3 -batch -list /tmp/web/app.db "PRAGMA journal_mode=WAL; CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT); INSERT INTO t VALUES (1, 'prima'), (2, 'altra');"`);
+    at = await page.until('wal', at);
+    at = await page.until('# ', at);
+    await page.type("(echo 'SELECT 1 FROM t;'; sleep 100000) | sqlite3 /tmp/web/app.db >/dev/null &");
+    at = await page.until('# ', at);
+    await page.waitFor('app.db nell\'albero', async () => (await files('.shown')).includes('/tmp/web/app.db-shm'), 30_000);
+    await page.eval(`document.querySelector('[data-path="/tmp/web/app.db"]').click()`);
+    const cell = (r, c) => `document.querySelector('#files-content td[data-r="${r}"][data-c="${c}"]')`;
+    await page.waitFor('tabella SQLite', async () => (await page.eval(`${cell(0, 1)}?.textContent`)) === 'prima', 30_000);
+    await page.eval(`${cell(0, 1)}.click()`);
+    await page.eval(`(() => {
+      const v = document.querySelector('#files-content .fsql-value');
+      v.value = 'dal pannello';
+      document.querySelector('#files-content .fsql-preview').click();
+    })()`);
+    const query = await page.eval("document.querySelector('#files-content .fsql-query')?.value");
+    check(query === 'UPDATE "t" SET "v" = ?1 WHERE rowid = ?2', `anteprima della query: ${query}`);
+    const params = await page.eval("document.querySelector('#files-content .fsql-params')?.textContent");
+    check(params === "?1 = 'dal pannello'   ?2 = 1", `parametri dell'anteprima: ${params}`);
+    await page.eval("document.querySelector('#files-content .fsql-run').click()");
+    await page.waitFor('SQL eseguito nel guest', async () => (await files('.message')).startsWith('eseguito nel guest: 1 righe cambiate'), 30_000)
+      .catch(async (e) => {
+        throw new Fail(`${e.message}: ${await files('.message')}`);
+      });
+    await page.waitFor('cella riletta con il WAL', async () => (await page.eval(`${cell(0, 1)}?.textContent`)) === 'dal pannello', 30_000);
+    const walNote = await page.eval("document.querySelector('#files-content .fsql .fnote')?.textContent");
+    check(/WAL: \d+ frame applicati/.test(walNote), `la tabella non viene dal WAL: ${walNote}`);
+    await page.type("sqlite3 -batch -list /tmp/web/app.db 'SELECT v FROM t WHERE id = 1'");
+    at = await page.until('dal pannello', at);
+    at = await page.until('# ', at);
+    console.log('gestore dei file: cella SQLite modificata dal pannello (anteprima, SQL nel guest su un database in WAL aperto), tabella riletta dal -wal, valore riletto dal guest con sqlite3');
+
+    // SharedPreferences: un valore cambiato nella tabella, XML riscritto come Android e salvato.
+    await page.type(`printf '%s\\n' "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>" '<map>' '    <int name="avvii" value="3" />' '</map>' > /tmp/web/prefs.xml`);
+    at = await page.until('# ', at);
+    await page.waitFor('prefs.xml nell\'albero', async () => (await files('.shown')).includes('/tmp/web/prefs.xml'), 30_000);
+    await page.eval(`document.querySelector('[data-path="/tmp/web/prefs.xml"]').click()`);
+    await page.waitFor('tabella delle SharedPreferences', async () => (await page.eval("document.querySelector('#files-content .fpref-value')?.value")) === '3', 30_000);
+    await page.eval(`(() => {
+      const v = document.querySelector('#files-content .fpref-value');
+      v.value = '42';
+      v.dispatchEvent(new Event('change'));
+      document.getElementById('files-save').click();
+    })()`);
+    await page.waitFor('SharedPreferences salvate', async () => (await files('.message')).startsWith('salvato nel guest'), 30_000);
+    await page.type("grep -c 'value=\"42\"' /tmp/web/prefs.xml | sed 's/^/conteggio-/'");
+    at = await page.until('conteggio-1', at);
+    at = await page.until('# ', at);
+    console.log('gestore dei file: SharedPreferences cambiate nella tabella, XML riscritto e riletto dal guest');
     await page.type(`printf ${TEXT} | dd of=/dev/vda bs=1 seek=${WRITE_AT} conv=notrunc 2>/dev/null; sync`);
     at = await page.until('# ', at);
     const snap2 = await page.waitFor('snapshot dopo la scrittura', async () => (await page.state()).snapshots.find((x) => x.why === 'dischi cambiati'), 60_000);

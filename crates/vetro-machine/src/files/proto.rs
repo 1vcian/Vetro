@@ -3,8 +3,10 @@
 //! demone e dei loro corpi. Nessuna macchina qui: solo byte.
 //!
 //! Tutto in little endian. Un frame è `u32 lunghezza` (byte che seguono),
-//! `u8 tipo`, `u32 id`, corpo. Stringhe: `u16 lunghezza` e byte (UTF-8 per
-//! l'host); blocchi di byte: `u32 lunghezza` e byte.
+//! `u8 tipo`, `u32 id`, corpo. Stringhe: `u16 lunghezza` e byte; blocchi di
+//! byte: `u32 lunghezza` e byte. Percorsi, nomi e destinazioni dei
+//! collegamenti sono byte del file system del guest (`Vec<u8>`), anche non
+//! UTF-8 (ADR 0021): [`display_name`] li mostra.
 
 use core::fmt;
 
@@ -12,8 +14,11 @@ use core::fmt;
 pub const PORT: u32 = 5200;
 /// "VTRF" in little endian, nel saluto del demone.
 pub const MAGIC: u32 = u32::from_le_bytes(*b"VTRF");
-/// Versione del protocollo parlata da questo client.
-pub const VERSION: u16 = 1;
+/// Versione del protocollo parlata da questo client (2: richiesta SQL,
+/// ADR 0021).
+pub const VERSION: u16 = 2;
+/// Versione più vecchia accettata (senza SQL: il demone risponde `ENOSYS`).
+pub const MIN_VERSION: u16 = 1;
 /// Frame più lungo accettato dal demone (una lista enorme è un errore di
 /// protocollo, non un'allocazione senza limiti).
 pub const MAX_FRAME: usize = 64 << 20;
@@ -36,6 +41,7 @@ pub mod ty {
     pub const RENAME: u8 = 11;
     pub const WATCH: u8 = 12;
     pub const UNWATCH: u8 = 13;
+    pub const SQL: u8 = 14;
     pub const HELLO: u8 = 0x80;
     pub const REPLY: u8 = 0x81;
     pub const EVENT: u8 = 0x82;
@@ -126,7 +132,7 @@ pub struct Stat {
     pub mtime_ns: u32,
     pub nlink: u32,
     /// Destinazione di un collegamento simbolico (vuota altrimenti).
-    pub link: String,
+    pub link: Vec<u8>,
     /// Contesto SELinux (xattr `security.selinux`), vuoto se non c'è.
     pub selinux: String,
 }
@@ -134,7 +140,7 @@ pub struct Stat {
 /// Una voce di una cartella.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
-    pub name: String,
+    pub name: Vec<u8>,
     pub stat: Stat,
 }
 
@@ -147,7 +153,7 @@ pub struct Event {
     pub mask: u32,
     pub cookie: u32,
     /// Nome dentro la cartella osservata (vuoto per la cartella stessa).
-    pub name: String,
+    pub name: Vec<u8>,
 }
 
 /// Il saluto del demone, primo frame di ogni connessione.
@@ -173,17 +179,50 @@ pub enum Frame {
     Event(Event),
 }
 
+/// Un valore di SQLite (parametro legato o colonna di una riga).
+#[derive(Clone, Debug, PartialEq)]
+pub enum SqlValue {
+    Null,
+    Int(i64),
+    Real(f64),
+    Text(String),
+    Blob(Vec<u8>),
+}
+
+/// Codici dei valori nel protocollo.
+mod vty {
+    pub const NULL: u8 = 0;
+    pub const INT: u8 = 1;
+    pub const REAL: u8 = 2;
+    pub const TEXT: u8 = 3;
+    pub const BLOB: u8 = 4;
+}
+
+/// L'esito di una richiesta SQL riuscita.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct SqlResult {
+    /// Righe cambiate direttamente dalle istruzioni (non dai trigger).
+    pub changes: u64,
+    /// `sqlite3_last_insert_rowid` alla fine.
+    pub last_rowid: i64,
+    /// Righe oltre il limite del demone (10000 o 16 MiB) non restituite.
+    pub truncated: bool,
+    /// Colonne e righe dell'ultima istruzione che ne restituisce.
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<SqlValue>>,
+}
+
 /// Una richiesta dell'host.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Request {
     Stat {
-        path: String,
+        path: Vec<u8>,
     },
     List {
-        path: String,
+        path: Vec<u8>,
     },
     Read {
-        path: String,
+        path: Vec<u8>,
         offset: u64,
         len: u32,
     },
@@ -192,7 +231,7 @@ pub enum Request {
     /// file c'è già.
     WOpen {
         handle: u32,
-        path: String,
+        path: Vec<u8>,
         mode: u32,
         excl: bool,
     },
@@ -209,26 +248,37 @@ pub enum Request {
         handle: u32,
     },
     Mkdir {
-        path: String,
+        path: Vec<u8>,
         mode: u32,
     },
     Create {
-        path: String,
+        path: Vec<u8>,
         mode: u32,
     },
     Delete {
-        path: String,
+        path: Vec<u8>,
         recursive: bool,
     },
     Rename {
-        from: String,
-        to: String,
+        from: Vec<u8>,
+        to: Vec<u8>,
     },
     Watch {
-        path: String,
+        path: Vec<u8>,
     },
     Unwatch {
         wd: u32,
+    },
+    /// Istruzioni SQL sul database `path`, nel guest con SQLite (ADR 0021):
+    /// in una transazione (tranne `readonly`), parametri `?N` legati per
+    /// posizione; con `expect` un numero diverso di righe cambiate annulla
+    /// tutto.
+    Sql {
+        path: Vec<u8>,
+        sql: String,
+        params: Vec<SqlValue>,
+        expect: Option<u32>,
+        readonly: bool,
     },
 }
 
@@ -259,10 +309,31 @@ impl W {
     fn u64(&mut self, v: u64) {
         self.0.extend_from_slice(&v.to_le_bytes());
     }
-    fn str(&mut self, s: &str) {
-        let b = &s.as_bytes()[..s.len().min(0xffff)];
+    fn str(&mut self, s: &[u8]) {
+        let b = &s[..s.len().min(0xffff)];
         self.u16(b.len() as u16);
         self.0.extend_from_slice(b);
+    }
+    fn value(&mut self, v: &SqlValue) {
+        match v {
+            SqlValue::Null => self.u8(vty::NULL),
+            SqlValue::Int(i) => {
+                self.u8(vty::INT);
+                self.u64(*i as u64);
+            }
+            SqlValue::Real(f) => {
+                self.u8(vty::REAL);
+                self.u64(f.to_bits());
+            }
+            SqlValue::Text(t) => {
+                self.u8(vty::TEXT);
+                self.bytes(t.as_bytes());
+            }
+            SqlValue::Blob(b) => {
+                self.u8(vty::BLOB);
+                self.bytes(b);
+            }
+        }
     }
     fn bytes(&mut self, b: &[u8]) {
         self.u32(b.len() as u32);
@@ -298,6 +369,7 @@ impl Request {
             Request::Rename { .. } => ty::RENAME,
             Request::Watch { .. } => ty::WATCH,
             Request::Unwatch { .. } => ty::UNWATCH,
+            Request::Sql { .. } => ty::SQL,
         }
     }
 
@@ -335,6 +407,16 @@ impl Request {
                 w.str(to);
             }
             Request::Unwatch { wd } => w.u32(*wd),
+            Request::Sql { path, sql, params, expect, readonly } => {
+                w.str(path);
+                w.u8(u8::from(*readonly));
+                w.u32(expect.unwrap_or(u32::MAX));
+                w.bytes(sql.as_bytes());
+                w.u16(params.len().min(0xffff) as u16);
+                for v in params.iter().take(0xffff) {
+                    w.value(v);
+                }
+            }
         })
     }
 
@@ -345,21 +427,30 @@ impl Request {
         let t = r.u8()?;
         let id = r.u32()?;
         let req = match t {
-            ty::STAT => Request::Stat { path: r.str()? },
-            ty::LIST => Request::List { path: r.str()? },
-            ty::WATCH => Request::Watch { path: r.str()? },
-            ty::READ => Request::Read { path: r.str()?, offset: r.u64()?, len: r.u32()? },
+            ty::STAT => Request::Stat { path: r.name()? },
+            ty::LIST => Request::List { path: r.name()? },
+            ty::WATCH => Request::Watch { path: r.name()? },
+            ty::READ => Request::Read { path: r.name()?, offset: r.u64()?, len: r.u32()? },
             ty::WOPEN => {
-                Request::WOpen { handle: r.u32()?, path: r.str()?, mode: r.u32()?, excl: r.u8()? & 1 != 0 }
+                Request::WOpen { handle: r.u32()?, path: r.name()?, mode: r.u32()?, excl: r.u8()? & 1 != 0 }
             }
             ty::WDATA => Request::WData { handle: r.u32()?, offset: r.u64()?, data: r.bytes()?.to_vec() },
             ty::WCOMMIT => Request::WCommit { handle: r.u32()? },
             ty::WABORT => Request::WAbort { handle: r.u32()? },
-            ty::MKDIR => Request::Mkdir { path: r.str()?, mode: r.u32()? },
-            ty::CREATE => Request::Create { path: r.str()?, mode: r.u32()? },
-            ty::DELETE => Request::Delete { path: r.str()?, recursive: r.u8()? & 1 != 0 },
-            ty::RENAME => Request::Rename { from: r.str()?, to: r.str()? },
+            ty::MKDIR => Request::Mkdir { path: r.name()?, mode: r.u32()? },
+            ty::CREATE => Request::Create { path: r.name()?, mode: r.u32()? },
+            ty::DELETE => Request::Delete { path: r.name()?, recursive: r.u8()? & 1 != 0 },
+            ty::RENAME => Request::Rename { from: r.name()?, to: r.name()? },
             ty::UNWATCH => Request::Unwatch { wd: r.u32()? },
+            ty::SQL => {
+                let path = r.name()?;
+                let readonly = r.u8()? & 1 != 0;
+                let expect = Some(r.u32()?).filter(|&e| e != u32::MAX);
+                let sql = String::from_utf8_lossy(r.bytes()?).into_owned();
+                let n = r.u16()?;
+                let params = (0..n).map(|_| r.value()).collect::<Result<_, _>>()?;
+                Request::Sql { path, sql, params, expect, readonly }
+            }
             t => return Err(ProtoError(format!("richiesta di tipo {t}"))),
         };
         r.end()?;
@@ -413,6 +504,37 @@ pub fn encode_list(entries: &[Entry]) -> Vec<u8> {
     w.0
 }
 
+/// Corpo della risposta a una richiesta SQL riuscita (per i demoni finti
+/// dei test).
+pub fn encode_sql_ok(res: &SqlResult) -> Vec<u8> {
+    let mut w = W(Vec::new());
+    w.u32(0);
+    w.str(b"");
+    w.u64(res.changes);
+    w.u64(res.last_rowid as u64);
+    w.u8(u8::from(res.truncated));
+    w.u16(res.columns.len() as u16);
+    for c in &res.columns {
+        w.str(c.as_bytes());
+    }
+    w.u32(res.rows.len() as u32);
+    for r in &res.rows {
+        for v in r {
+            w.value(v);
+        }
+    }
+    w.0
+}
+
+/// Corpo della risposta a una richiesta SQL fallita in SQLite (per i
+/// demoni finti dei test).
+pub fn encode_sql_err(code: u32, message: &str) -> Vec<u8> {
+    let mut w = W(Vec::new());
+    w.u32(code);
+    w.str(message.as_bytes());
+    w.0
+}
+
 /// Corpo di una lettura (per i demoni finti dei test).
 pub fn encode_read(size: u64, data: &[u8]) -> Vec<u8> {
     let mut w = W(Vec::new());
@@ -431,7 +553,7 @@ fn put_stat(w: &mut W, s: &Stat) {
     w.u32(s.mtime_ns);
     w.u32(s.nlink);
     w.str(&s.link);
-    w.str(&s.selinux);
+    w.str(s.selinux.as_bytes());
 }
 
 // ---- Lettura -----------------------------------------------------------------
@@ -473,6 +595,21 @@ impl<'a> R<'a> {
         let n = self.u16()? as usize;
         Ok(String::from_utf8_lossy(self.take(n)?).into_owned())
     }
+    /// Una stringa come byte (percorsi e nomi del guest).
+    fn name(&mut self) -> Result<Vec<u8>, ProtoError> {
+        let n = self.u16()? as usize;
+        Ok(self.take(n)?.to_vec())
+    }
+    fn value(&mut self) -> Result<SqlValue, ProtoError> {
+        Ok(match self.u8()? {
+            vty::NULL => SqlValue::Null,
+            vty::INT => SqlValue::Int(self.u64()? as i64),
+            vty::REAL => SqlValue::Real(f64::from_bits(self.u64()?)),
+            vty::TEXT => SqlValue::Text(String::from_utf8_lossy(self.bytes()?).into_owned()),
+            vty::BLOB => SqlValue::Blob(self.bytes()?.to_vec()),
+            t => return Err(ProtoError(format!("valore SQL di tipo {t}"))),
+        })
+    }
     fn bytes(&mut self) -> Result<&'a [u8], ProtoError> {
         let n = self.u32()? as usize;
         self.take(n)
@@ -493,7 +630,7 @@ impl<'a> R<'a> {
             mtime_s: self.u64()? as i64,
             mtime_ns: self.u32()?,
             nlink: self.u32()?,
-            link: self.str()?,
+            link: self.name()?,
             selinux: self.str()?,
         })
     }
@@ -518,7 +655,7 @@ pub fn parse_list(body: &[u8]) -> Result<Vec<Entry>, ProtoError> {
     }
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
-        out.push(Entry { name: r.str()?, stat: r.stat()? });
+        out.push(Entry { name: r.name()?, stat: r.stat()? });
     }
     r.end()?;
     Ok(out)
@@ -531,6 +668,69 @@ pub fn parse_read(body: &[u8]) -> Result<(u64, Vec<u8>), ProtoError> {
     let data = r.bytes()?.to_vec();
     r.end()?;
     Ok((size, data))
+}
+
+/// Il corpo di una risposta a SQL: l'esito, o il codice di SQLite e il suo
+/// messaggio se SQLite ha rifiutato (niente è cambiato).
+pub fn parse_sql(body: &[u8]) -> Result<Result<SqlResult, (u32, String)>, ProtoError> {
+    let mut r = R::new(body);
+    let code = r.u32()?;
+    let message = r.str()?;
+    if code != 0 {
+        r.end()?;
+        return Ok(Err((code, message)));
+    }
+    let changes = r.u64()?;
+    let last_rowid = r.u64()? as i64;
+    let truncated = r.u8()? != 0;
+    let ncols = r.u16()? as usize;
+    let columns = (0..ncols).map(|_| r.str()).collect::<Result<Vec<_>, _>>()?;
+    let nrows = r.u32()? as usize;
+    // Un valore occupa almeno un byte: un conteggio impossibile è un errore.
+    if ncols > 0 && nrows > body.len() / ncols {
+        return Err(ProtoError(format!("{nrows} righe di {ncols} colonne in {} byte", body.len())));
+    }
+    let mut rows = Vec::with_capacity(if ncols > 0 { nrows } else { 0 });
+    for _ in 0..nrows {
+        rows.push((0..ncols).map(|_| r.value()).collect::<Result<Vec<_>, _>>()?);
+    }
+    r.end()?;
+    Ok(Ok(SqlResult { changes, last_rowid, truncated, columns, rows }))
+}
+
+/// SQL e parametri nel formato del protocollo (`bytes` SQL, `u16` numero
+/// di parametri, valori): il formato con cui il JS li passa a vetro-wasm.
+pub fn encode_sql_args(sql: &str, params: &[SqlValue]) -> Vec<u8> {
+    let mut w = W(Vec::new());
+    w.bytes(sql.as_bytes());
+    w.u16(params.len().min(0xffff) as u16);
+    for v in params.iter().take(0xffff) {
+        w.value(v);
+    }
+    w.0
+}
+
+/// L'inverso di [`encode_sql_args`].
+pub fn decode_sql_args(b: &[u8]) -> Result<(String, Vec<SqlValue>), ProtoError> {
+    let mut r = R::new(b);
+    let sql = core::str::from_utf8(r.bytes()?).map_err(|_| ProtoError("SQL non UTF-8".into()))?.to_string();
+    let n = r.u16()?;
+    let params = (0..n).map(|_| r.value()).collect::<Result<_, _>>()?;
+    r.end()?;
+    Ok((sql, params))
+}
+
+/// Un nome o un percorso del guest da mostrare: UTF-8 com'è, ogni byte che
+/// non fa parte di UTF-8 valido come `\xNN`.
+pub fn display_name(b: &[u8]) -> String {
+    let mut out = String::new();
+    for chunk in b.utf8_chunks() {
+        out.push_str(chunk.valid());
+        for x in chunk.invalid() {
+            out.push_str(&format!("\\x{x:02x}"));
+        }
+    }
+    out
 }
 
 /// Il corpo di una risposta a WATCH: l'id dell'osservazione.
@@ -604,7 +804,7 @@ impl Decoder {
                 Ok(Frame::Reply { id, status, body: frame[r.at..].to_vec() })
             }
             ty::EVENT => {
-                let e = Event { wd: r.u32()?, mask: r.u32()?, cookie: r.u32()?, name: r.str()? };
+                let e = Event { wd: r.u32()?, mask: r.u32()?, cookie: r.u32()?, name: r.name()? };
                 r.end()?;
                 Ok(Frame::Event(e))
             }
@@ -658,7 +858,7 @@ mod tests {
             mtime_s: -3,
             mtime_ns: 999_999_999,
             nlink: 1,
-            link: String::new(),
+            link: Vec::new(),
             selinux: "u:object_r:app_data_file:s0:c57,c256,c512,c768".into(),
         }
     }
@@ -680,6 +880,27 @@ mod tests {
             Request::Rename { from: "/tmp/a".into(), to: "/tmp/b".into() },
             Request::Watch { path: "/tmp".into() },
             Request::Unwatch { wd: 3 },
+            Request::Rename { from: b"/tmp/\xff".to_vec(), to: b"/tmp/\xfe\x80".to_vec() },
+            Request::Sql {
+                path: "/data/data/org.example/databases/a.db".into(),
+                sql: "UPDATE t SET a = ?1, b = ?2, c = ?3, d = ?4 WHERE rowid = ?5".into(),
+                params: vec![
+                    SqlValue::Null,
+                    SqlValue::Real(1.5),
+                    SqlValue::Text("è".into()),
+                    SqlValue::Blob(vec![0, 255]),
+                    SqlValue::Int(-2),
+                ],
+                expect: Some(1),
+                readonly: false,
+            },
+            Request::Sql {
+                path: "/a".into(),
+                sql: String::new(),
+                params: vec![],
+                expect: None,
+                readonly: true,
+            },
         ];
         for (i, r) in reqs.iter().enumerate() {
             let f = r.encode(i as u32 + 100);
@@ -691,6 +912,20 @@ mod tests {
         assert_eq!(
             Request::Read { path: "/a".into(), offset: 2, len: 3 }.encode(9),
             [21, 0, 0, 0, 3, 9, 0, 0, 0, 2, 0, b'/', b'a', 2, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0]
+        );
+        assert_eq!(
+            Request::Sql {
+                path: "/d".into(),
+                sql: "S".into(),
+                params: vec![SqlValue::Int(1), SqlValue::Text("x".into())],
+                expect: None,
+                readonly: true
+            }
+            .encode(4),
+            [
+                36, 0, 0, 0, 14, 4, 0, 0, 0, 2, 0, b'/', b'd', 1, 255, 255, 255, 255, 1, 0, 0, 0, b'S', 2, 0,
+                1, 1, 0, 0, 0, 0, 0, 0, 0, 3, 1, 0, 0, 0, b'x'
+            ]
         );
     }
 
@@ -746,5 +981,41 @@ mod tests {
         assert!(parse_read(&encode_read(1, b"x")[..11]).is_err(), "corpo corto");
         assert!(parse_watch(&[1, 0, 0, 0, 0]).is_err(), "byte in più");
         assert_eq!(errno_name(2), "ENOENT");
+        assert!(parse_sql(&encode_sql_err(1, "x")[..6]).is_err(), "messaggio corto");
+        let mut ok = encode_sql_ok(&SqlResult {
+            columns: vec!["a".into()],
+            rows: vec![vec![SqlValue::Int(1)]],
+            ..SqlResult::default()
+        });
+        let n = ok.len();
+        ok[n - 9] = 9;
+        assert!(parse_sql(&ok).is_err(), "tipo di valore sconosciuto");
+    }
+
+    /// Risposte SQL andata e ritorno, e nomi mostrati con `\xNN`.
+    #[test]
+    fn sql_e_nomi() {
+        let res = SqlResult {
+            changes: 3,
+            last_rowid: -1,
+            truncated: true,
+            columns: vec!["id".into(), "è".into()],
+            rows: vec![
+                vec![SqlValue::Int(i64::MAX), SqlValue::Real(f64::INFINITY)],
+                vec![SqlValue::Text(String::new()), SqlValue::Blob(vec![])],
+            ],
+        };
+        assert_eq!(parse_sql(&encode_sql_ok(&res)).unwrap(), Ok(res));
+        assert_eq!(
+            parse_sql(&encode_sql_err(5, "database is locked")).unwrap(),
+            Err((5, "database is locked".into()))
+        );
+        assert_eq!(display_name(b"a\xffb\xe2\x82"), "a\\xffb\\xe2\\x82");
+        assert_eq!(display_name("città".as_bytes()), "città");
+        let params = vec![SqlValue::Null, SqlValue::Int(7), SqlValue::Blob(vec![9])];
+        let args = encode_sql_args("SELECT ?1", &params);
+        assert_eq!(decode_sql_args(&args).unwrap(), ("SELECT ?1".to_string(), params));
+        assert!(decode_sql_args(&args[..args.len() - 1]).is_err());
+        assert!(decode_sql_args(&[1, 0, 0, 0, 0xff, 0, 0]).is_err(), "SQL non UTF-8");
     }
 }

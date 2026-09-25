@@ -10,7 +10,7 @@
 use std::collections::VecDeque;
 use std::io::Write;
 
-use vetro_machine::files::proto::{Entry, Kind, Stat};
+use vetro_machine::files::proto::{Entry, Kind, Stat, display_name};
 use vetro_machine::files::{FilesError, Outcome};
 use vetro_machine::{FilesClient, Machine};
 
@@ -66,9 +66,10 @@ pub fn mode_string(s: &Stat) -> String {
 /// destinazione e contesto SELinux se ci sono.
 pub fn ls_line(e: &Entry) -> String {
     let s = &e.stat;
-    let mut line = format!("{} {} {} {} {} {}", mode_string(s), s.uid, s.gid, s.size, s.mtime_s, e.name);
+    let name = display_name(&e.name);
+    let mut line = format!("{} {} {} {} {} {name}", mode_string(s), s.uid, s.gid, s.size, s.mtime_s);
     if !s.link.is_empty() {
-        line.push_str(&format!(" -> {}", s.link));
+        line.push_str(&format!(" -> {}", display_name(&s.link)));
     }
     if !s.selinux.is_empty() {
         line.push_str(&format!(" [{}]", s.selinux));
@@ -157,7 +158,11 @@ mod tests {
             ls_line(&Entry { name: "link".into(), stat: s.clone() }),
             "lrwxrwxrwx 0 0 5 1790000000 link -> a.txt [u:object_r:shell_data_file:s0]"
         );
-        let f = Stat { kind: Kind::File, mode: 0o100640, link: String::new(), selinux: String::new(), ..s };
+        let f = Stat { kind: Kind::File, mode: 0o100640, link: Vec::new(), selinux: String::new(), ..s };
+        assert_eq!(
+            ls_line(&Entry { name: b"n\xff".to_vec(), stat: f.clone() }),
+            "-rw-r----- 0 0 5 1790000000 n\\xff"
+        );
         assert_eq!(mode_string(&f), "-rw-r-----");
         assert!(parse_put("relativo:x").is_err());
         assert!(parse_put("/tmp/x").is_err());

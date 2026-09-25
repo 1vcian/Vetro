@@ -4,7 +4,8 @@
 #   initramfs.cpio.gz   BusyBox statica + /init + autotest + vetro-dev
 #   vetro-dev           prova dei dispositivi di M5 (nell'initramfs)
 #   vetro-files         demone del gestore dei file di M8 (nell'initramfs,
-#                       ADR 0020)
+#                       ADR 0020) con SQLite linkato (ADR 0021); è anche
+#                       /bin/sqlite3 (multi-chiamata, shell ufficiale)
 #   config, System.map  configurazione completa e simboli (per il debug)
 #   sources/            sorgenti esatti usati (GPL-2.0, vedi CLAUDE.md)
 #   VERSIONS            versioni di kernel, compilatore e BusyBox
@@ -24,6 +25,12 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 KVER=6.18.53
 KSHA256=4d6fba95c2244b08a7b4144a4d38b9be4fb31abb5e7682ae40bb5cb11374cfe0
 KURL="https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KVER.tar.xz"
+# SQLite per vetro-files (ADR 0021): amalgamation ufficiale, dominio pubblico.
+# sha256 calcolato da noi; il SHA3-256 pubblicato da sqlite.org è
+# 628a44cfe82c66aed1ccbbe85a562d2e33ebe64b3288981ed76285612227934e.
+SQLITE=sqlite-amalgamation-3530400
+SQLITE_SHA256=1e71ddf93849c6a6ecf58b827c0692073d2dd7ee40196158068f7b29f422e87d
+SQLITE_URL="https://www.sqlite.org/2026/$SQLITE.zip"
 IMAGE="${VETRO_GUEST_KERNEL_IMAGE:-vetro-guest-kernel:latest}"
 VOLUME="${VETRO_GUEST_KERNEL_VOLUME:-vetro-guest-kernel-build}"
 OUT="$ROOT/target/guest-kernel"
@@ -42,17 +49,26 @@ if [ ! -f "$tarball" ]; then
   mv "$tarball.part" "$tarball"
 fi
 
+sqlite_zip="$OUT/sources/$SQLITE.zip"
+if [ ! -f "$sqlite_zip" ]; then
+  echo "==> scarico $SQLITE"
+  curl -fL --retry 3 -o "$sqlite_zip.part" "$SQLITE_URL"
+  mv "$sqlite_zip.part" "$sqlite_zip"
+fi
+
 docker build -q -t "$IMAGE" -f "$ROOT/tools/guest-kernel/Dockerfile" "$ROOT/tools/guest-kernel" >/dev/null
 docker volume create "$VOLUME" >/dev/null
 
 docker run --rm --platform linux/arm64 \
   -v "$ROOT:/src" -v "$VOLUME:/build" -w /src \
   -e KVER="$KVER" -e KSHA256="$KSHA256" \
+  -e SQLITE="$SQLITE" -e SQLITE_SHA256="$SQLITE_SHA256" \
   -e UPDATE_CONFIG="${VETRO_KERNEL_UPDATE_CONFIG:-0}" \
   "$IMAGE" sh -euc '
   out=/src/target/guest-kernel
   tarball=$out/sources/linux-$KVER.tar.xz
   echo "$KSHA256  $tarball" | sha256sum -c -
+  echo "$SQLITE_SHA256  $out/sources/$SQLITE.zip" | sha256sum -c -
   src=/build/linux-$KVER
   obj=/build/obj-$KVER
   if [ "$(cat "$src/.vetro-sha256" 2>/dev/null)" != "$KSHA256" ]; then
@@ -96,9 +112,20 @@ docker run --rm --platform linux/arm64 \
   # kernel (Alpine non li ha); -idirafter lascia la precedenza a quelli di musl.
   gcc -static -O2 -Wall -Werror -idirafter "$obj/usr/include" \
     -o "$out/vetro-dev" /src/guest/kernel/initramfs/vetro-dev.c
-  # Demone del gestore dei file di M8 (ADR 0020), statico come vetro-dev.
-  gcc -static -O2 -Wall -Wextra -Werror -idirafter "$obj/usr/include" \
-    -o "$out/vetro-files" /src/guest/kernel/initramfs/vetro-files.c
+  # Demone del gestore dei file di M8 (ADR 0020), statico come vetro-dev,
+  # con SQLite (ADR 0021) e la sua shell (argv[0] sqlite3). Il motore senza
+  # thread né estensioni caricabili; i sorgenti di SQLite senza -Werror
+  # (non sono nostri).
+  sq=/build/$SQLITE
+  rm -rf "$sq"
+  unzip -q -d /build "$out/sources/$SQLITE.zip"
+  sqdefs="-DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DQS=0 -DSQLITE_DEFAULT_MEMSTATUS=0"
+  gcc -c -O2 -w $sqdefs -o /build/sqlite3.o "$sq/sqlite3.c"
+  gcc -c -O2 -w $sqdefs -Dmain=sqlite3_shell_main -o /build/shell.o "$sq/shell.c"
+  gcc -c -O2 -Wall -Wextra -Werror -DVETRO_SQLITE_SHELL -I"$sq" -idirafter "$obj/usr/include" \
+    -o /build/vetro-files.o /src/guest/kernel/initramfs/vetro-files.c
+  gcc -static -o "$out/vetro-files" /build/vetro-files.o /build/shell.o /build/sqlite3.o -lm
+  strip "$out/vetro-files"
   cp "$obj/arch/arm64/boot/Image" "$obj/.config" "$obj/System.map" "$out/"
   mv "$out/.config" "$out/config"
 
@@ -120,6 +147,7 @@ docker run --rm --platform linux/arm64 \
     gcc --version | head -n1
     ld --version | head -n1
     grep -E "^busybox-static-" /src/target/guest-bins/VERSIONS || true
+    echo "$SQLITE sha256 $SQLITE_SHA256 (https://www.sqlite.org/, dominio pubblico)"
   } > "$out/VERSIONS"
   cp "$out/VERSIONS" "$out/sources/VERSIONS"
   {

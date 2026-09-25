@@ -24,7 +24,9 @@
 #      un'altra base scartato; tempi e dimensioni in V8;
 #   8. gestore dei file via API (tests/web/files.mjs, M8, ADR 0020): list,
 #      letture, scritture che conservano modo e proprietario lette dal guest,
-#      evento di inotify entro 1 s di tempo del guest, 1,2 MB a pezzi; due
+#      evento di inotify entro 1 s di tempo del guest, 1,2 MB a pezzi; SQL
+#      nel guest su un database in WAL aperto, visto dal lettore nel -wal,
+#      SharedPreferences riscritte, nome non UTF-8 (ADR 0021); due
 #      esecuzioni uguali;
 #   9. ispettore di rete e timeline via API (tests/web/inspector.mjs, M7,
 #      ADR 0023): POST JSON e form di wget al sinkhole, lista, dettaglio con
@@ -39,7 +41,8 @@
 #      VETRO_REQUIRE_BROWSER=1 lo rende un errore): anche snapshot e dischi
 #      persistenti in OPFS, il secondo avvio dallo snapshot (tempo misurato)
 #      e il pannello del gestore dei file (albero dal vivo, un file modificato
-#      e salvato nel pannello, riletto dal guest con cat);
+#      e salvato nel pannello, riletto dal guest con cat; una cella SQLite e
+#      una preferenza cambiate dal pannello e rilette dal guest).
 #  12. ispettore, timeline e record & replay nell'app in Chrome
 #      (tests/web/browser-analysis.mjs): wget verso il sinkhole nell'ispettore
 #      con il corpo JSON decodificato e legato al comando nella timeline,

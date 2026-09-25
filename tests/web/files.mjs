@@ -9,11 +9,18 @@
 //     entro 1 s di tempo del guest;
 //   - file grande (1,2 MB) scritto e riletto a pezzi, confrontato dal guest
 //     con `cmp`;
+//   - modifica (ADR 0021): righe di un database in WAL tenuto aperto da un
+//     processo del guest cambiate con SQL nel guest (GuestFiles.sql), viste
+//     dal lettore della pagina nel -wal e rilette dal guest con sqlite3;
+//     SharedPreferences riscritte come Android e rilette dal guest; un nome
+//     non UTF-8 elencato e riaperto (surrogateescape);
 //   - istruzioni e log uguali in due esecuzioni (anche col JIT).
 //
 //   node tests/web/files.mjs [--no-jit]
 
 import { DEV, INOTIFY } from '../../web/node/vetro.mjs';
+import { checkPrefValue, parsePrefs, prefsToXml } from '../../web/app/files.mjs';
+import { SqliteDb } from '../../web/app/sqlite.mjs';
 import { check, guestKernel, loadVetro, run, Session, SHELL_PROMPT } from './lib.mjs';
 
 const jit = !process.argv.includes('--no-jit');
@@ -102,6 +109,52 @@ async function session(x, kernel) {
   check(back.data.length === big.length && Buffer.from(back.data).equals(Buffer.from(big)), `file grande riletto: ${back.data.length} byte`);
   check(events.some((e) => e.name === 'a.txt' && e.mask & INOTIFY.MOVED_TO), 'evento della scrittura del JS');
   check(events.every((e) => !e.name.startsWith('.vetro-tmp.')), 'eventi dei file temporanei');
+  // ---- Modifica (ADR 0021) ------------------------------------------------
+  // Un database in WAL tenuto aperto da un processo del guest: riga cambiata
+  // con SQL nel guest, il lettore della pagina la vede nel -wal, sqlite3 del
+  // guest la rilegge.
+  const db = '/tmp/w/app.db';
+  out = await command(`sqlite3 -batch -list ${db} "PRAGMA journal_mode=WAL; CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT); INSERT INTO t VALUES (1, 'uno'), (2, 'due');"`);
+  check(out === 'wal', `database in WAL: ${out}`);
+  const holderFrom = s.log.length;
+  s.m.consoleWrite(`(echo 'SELECT 1 FROM t;'; sleep 100000) | sqlite3 ${db} >/dev/null &\n`);
+  await s.until(SHELL_PROMPT, holderFrom);
+  const openLimit = s.m.steps + 6_000_000_000n;
+  while (!(await command('ls /tmp/w')).includes('app.db-shm')) check(s.m.steps < openLimit, 'il database non si apre');
+  const upd = await wait(files.sql(db, 'UPDATE t SET v = ?1 WHERE rowid = ?2', ['cambiata dal JS', 2], { expect: 1 }));
+  check(upd.changes === 1 && upd.columns.length === 0, `UPDATE: ${JSON.stringify(upd, (k, v) => (typeof v === 'bigint' ? `${v}` : v))}`);
+  const ins = await wait(files.sql(db, 'INSERT INTO t (v) VALUES (?1)', [{ type: 'text', value: 'tre' }], { expect: 1 }));
+  check(ins.lastRowid === 3n, `INSERT: rowid ${ins.lastRowid}`);
+  const refused = await wait(files.sql(db, 'DELETE FROM t', [], { expect: 1 })).then(() => null, (e) => e);
+  check(refused?.code === 'SQLITE' && refused.sqlite === 19, `DELETE di 3 righe con expect 1: ${refused}`);
+  const sel = await wait(files.sql(db, 'SELECT id, v, 1.5, x\'ff\', NULL FROM t ORDER BY id', [], { readonly: true }));
+  check(JSON.stringify(sel.rows.map((r) => r.slice(0, 3))) === '[[1,"uno",1.5],[2,"cambiata dal JS",1.5],[3,"tre",1.5]]' && sel.rows[0][3][0] === 0xff && sel.rows[0][4] === null,
+    `SELECT: ${JSON.stringify(sel.rows.map((r) => r.map(String)))}`);
+  out = await command(`sqlite3 -batch -list ${db} 'SELECT group_concat(v) FROM t'`);
+  check(out === 'uno,cambiata dal JS,tre', `il guest rilegge: ${out}`);
+  const mainFile = await wait(files.read(db));
+  const walFile = await wait(files.read(`${db}-wal`));
+  const view = new SqliteDb(mainFile.data, walFile.data).rows('t');
+  const stale = new SqliteDb(mainFile.data).rows('t').rows.length;
+  check(JSON.stringify(view.rows) === '[[1,"uno"],[2,"cambiata dal JS"],[3,"tre"]]' && stale < 3,
+    `lettore con il WAL: ${JSON.stringify(view.rows)} (senza WAL ${stale} righe)`);
+  // SharedPreferences: lette, cambiate e riscritte dal JS come Android, rilette dal guest.
+  const prefsPath = '/tmp/w/prefs.xml';
+  await command(`printf '%s\\n' "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>" '<map>' '    <int name="avvii" value="3" />' '    <string name="nome">x &amp; y</string>' '</map>' > ${prefsPath} && chown 12:34 ${prefsPath} && chmod 660 ${prefsPath}`);
+  const prefs = parsePrefs(dec.decode((await wait(files.read(prefsPath))).data));
+  check(prefs?.length === 2 && prefs[1].value === 'x & y', `SharedPreferences lette: ${JSON.stringify(prefs)}`);
+  prefs[0].value = checkPrefValue('int', '42');
+  prefs.push({ type: 'boolean', name: 'nuovo', value: 'true' }, { type: 'set', name: 's', value: ['a', 'b'] });
+  const pw = await wait(files.writeFile(prefsPath, enc.encode(prefsToXml(prefs)), 0o600));
+  check(pw.mode === 0o100660 && pw.uid === 12, `SharedPreferences: modo e proprietario ${JSON.stringify(pw)}`);
+  out = await command(`grep -c 'value="42"' ${prefsPath}; grep -c '<string>b</string>' ${prefsPath}; tail -n 1 ${prefsPath}`);
+  check(out === '1\n1\n</map>', `SharedPreferences rilette dal guest: ${JSON.stringify(out)}`);
+  // Nome non UTF-8: elencato in surrogateescape, riaperto con gli stessi byte.
+  await command("printf 'np' > \"/tmp/w/$(printf 'n\\377')\"");
+  const odd = (await wait(files.list('/tmp/w'))).find((e) => e.name.startsWith('n'));
+  check(odd?.name === 'n\udcff', `nome non UTF-8: ${JSON.stringify(odd?.name)}`);
+  const oddData = await wait(files.read(`/tmp/w/${odd.name}`));
+  check(dec.decode(oddData.data) === 'np', 'file dal nome non UTF-8 riletto');
   await wait(files.delete('/tmp/w', { recursive: true }));
   out = await command('ls /tmp');
   check(!out.split('\n').includes('w'), `cartella non cancellata: ${out}`);
@@ -116,5 +169,6 @@ run(async () => {
   const b = await session(exports, kernel);
   check(a.steps === b.steps && a.log === b.log, `esecuzioni diverse: ${a.steps} e ${b.steps} istruzioni`);
   console.log(`gestore dei file: list, lettura, scrittura che conserva modo e proprietario, evento dopo ${a.ms.toFixed(1)} ms ` +
-    `di tempo del guest, 1,2 MB a pezzi; ${a.steps} istruzioni in due esecuzioni uguali${jit ? ' (JIT)' : ''}`);
+    `di tempo del guest, 1,2 MB a pezzi, SQL nel guest su un database in WAL aperto (visto nel -wal), SharedPreferences ` +
+    `riscritte, nome non UTF-8; ${a.steps} istruzioni in due esecuzioni uguali${jit ? ' (JIT)' : ''}`);
 });

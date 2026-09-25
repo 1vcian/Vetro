@@ -116,7 +116,8 @@ run(async () => {
     console.log(`D: ${JSON.stringify(feederD.stats)}; HTTP ${JSON.stringify(srcD.stats)}`);
 
     check(A.first.includes(`${before}  /dev/vda`), `md5sum del guest diverso dal file (${before}):\n${A.first}`);
-    check(A.second.includes(`\n${WRITTEN}\n`), `byte scritti non riletti:\n${A.second}`);
+    // Il messaggio del kernel su drop_caches può arrivare subito dopo il testo.
+    check(A.second.includes(`\n${WRITTEN}`), `byte scritti non riletti:\n${A.second}`);
     check(A.second.includes(`${after}  /dev/vda`), `md5sum dopo la scrittura diverso (${after}):\n${A.second}`);
     check(A.s.blocked === 0, 'il disco locale non deve mai fermare la macchina');
     check(B.s.blocked > 0 && feederB.stats.fromSource > 0, 'il disco HTTP doveva scaricare blocchi');

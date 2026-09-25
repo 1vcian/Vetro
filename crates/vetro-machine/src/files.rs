@@ -12,13 +12,15 @@
 //! stesso copione.
 //!
 //! Le operazioni ([`FilesClient::list`], [`FilesClient::read`],
-//! [`FilesClient::write_file`], ...) restituiscono un id; la
+//! [`FilesClient::write_file`], [`FilesClient::sql`], ...) restituiscono un
+//! id; la
 //! [`Completion`] con quell'id esce da [`FilesClient::take_completion`]. Una
 //! lettura lunga diventa più richieste READ da [`proto::CHUNK`] byte una
 //! dopo l'altra; una scrittura diventa WOPEN, i WDATA e WCOMMIT mandati
 //! insieme (il demone li serve in ordine: il file vero cambia solo al
 //! WCOMMIT, con un rename atomico). Gli eventi di inotify escono da
-//! [`FilesClient::take_event`].
+//! [`FilesClient::take_event`]. I percorsi sono byte del file system del
+//! guest (`impl AsRef<[u8]>`: anche `&str`), non per forza UTF-8 (ADR 0021).
 //!
 //! Connessione: il client si collega alla porta [`proto::PORT`] del guest;
 //! se nessuno ascolta (demone non ancora partito) riprova ogni
@@ -44,7 +46,7 @@ use core::fmt;
 use vetro_platform::virtio::{VsockConn, VsockState};
 
 use crate::{Input, Machine, ReplayStatus, Reply, VsockOp};
-use proto::{Decoder, Entry, Event, Frame, Hello, Request, Stat};
+use proto::{Decoder, Entry, Event, Frame, Hello, Request, SqlResult, SqlValue, Stat};
 
 /// Attesa fra due tentativi di collegamento (tempo del guest): 100 ms.
 pub const RETRY_NS: u64 = 100_000_000;
@@ -59,7 +61,7 @@ pub fn app_roots(package: &str) -> Vec<String> {
 }
 
 /// Esito di un'operazione.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Outcome {
     Stat(Stat),
     List(Vec<Entry>),
@@ -72,6 +74,8 @@ pub enum Outcome {
     Written(Stat),
     /// Osservazione aperta: il suo id (lo stesso degli [`Event::wd`]).
     Watch(u32),
+    /// SQL eseguito e confermato nel guest (ADR 0021).
+    Sql(SqlResult),
     Done,
 }
 
@@ -84,6 +88,9 @@ pub enum FilesError {
     Protocol(String),
     /// La connessione è caduta prima della risposta.
     Disconnected,
+    /// SQLite ha rifiutato (codice primario e messaggio): la transazione è
+    /// annullata, il database non è cambiato.
+    Sql { code: u32, message: String },
 }
 
 impl fmt::Display for FilesError {
@@ -92,12 +99,13 @@ impl fmt::Display for FilesError {
             FilesError::Errno(e) => write!(f, "{} ({e})", proto::errno_name(*e)),
             FilesError::Protocol(m) => write!(f, "protocollo: {m}"),
             FilesError::Disconnected => f.write_str("connessione con vetro-files caduta"),
+            FilesError::Sql { code, message } => write!(f, "SQLite {code}: {message}"),
         }
     }
 }
 
 /// Un'operazione finita.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Completion {
     pub op: u32,
     pub result: Result<Outcome, FilesError>,
@@ -122,14 +130,14 @@ enum Work {
     /// Una richiesta, una risposta.
     Simple(Request),
     Read {
-        path: String,
+        path: Vec<u8>,
         offset: u64,
         left: u64,
         size: Option<u64>,
         data: Vec<u8>,
     },
     Write {
-        path: String,
+        path: Vec<u8>,
         data: Vec<u8>,
         mode: u32,
         excl: bool,
@@ -237,29 +245,35 @@ impl FilesClient {
         id
     }
 
-    pub fn stat(&mut self, path: &str) -> u32 {
-        self.push(Work::Simple(Request::Stat { path: path.into() }))
+    pub fn stat(&mut self, path: impl AsRef<[u8]>) -> u32 {
+        self.push(Work::Simple(Request::Stat { path: path.as_ref().to_vec() }))
     }
 
-    pub fn list(&mut self, path: &str) -> u32 {
-        self.push(Work::Simple(Request::List { path: path.into() }))
+    pub fn list(&mut self, path: impl AsRef<[u8]>) -> u32 {
+        self.push(Work::Simple(Request::List { path: path.as_ref().to_vec() }))
     }
 
     /// Legge `len` byte da `offset` (`u64::MAX` = fino alla fine), a pezzi.
-    pub fn read(&mut self, path: &str, offset: u64, len: u64) -> u32 {
-        self.push(Work::Read { path: path.into(), offset, left: len, size: None, data: Vec::new() })
+    pub fn read(&mut self, path: impl AsRef<[u8]>, offset: u64, len: u64) -> u32 {
+        self.push(Work::Read {
+            path: path.as_ref().to_vec(),
+            offset,
+            left: len,
+            size: None,
+            data: Vec::new(),
+        })
     }
 
     /// Il file intero.
-    pub fn read_file(&mut self, path: &str) -> u32 {
+    pub fn read_file(&mut self, path: impl AsRef<[u8]>) -> u32 {
         self.read(path, 0, u64::MAX)
     }
 
     /// Sostituisce (o crea, con permessi `mode`) il file con `data`, in modo
     /// atomico: un file che c'è già tiene proprietario, modo e xattr.
-    pub fn write_file(&mut self, path: &str, data: &[u8], mode: u32) -> u32 {
+    pub fn write_file(&mut self, path: impl AsRef<[u8]>, data: &[u8], mode: u32) -> u32 {
         self.push(Work::Write {
-            path: path.into(),
+            path: path.as_ref().to_vec(),
             data: data.to_vec(),
             mode,
             excl: false,
@@ -269,30 +283,52 @@ impl FilesClient {
     }
 
     /// Crea un file vuoto (fallisce se c'è già).
-    pub fn create(&mut self, path: &str, mode: u32) -> u32 {
-        self.push(Work::Simple(Request::Create { path: path.into(), mode }))
+    pub fn create(&mut self, path: impl AsRef<[u8]>, mode: u32) -> u32 {
+        self.push(Work::Simple(Request::Create { path: path.as_ref().to_vec(), mode }))
     }
 
-    pub fn mkdir(&mut self, path: &str, mode: u32) -> u32 {
-        self.push(Work::Simple(Request::Mkdir { path: path.into(), mode }))
+    pub fn mkdir(&mut self, path: impl AsRef<[u8]>, mode: u32) -> u32 {
+        self.push(Work::Simple(Request::Mkdir { path: path.as_ref().to_vec(), mode }))
     }
 
     /// Cancella un file o una cartella (vuota, o tutto con `recursive`).
-    pub fn delete(&mut self, path: &str, recursive: bool) -> u32 {
-        self.push(Work::Simple(Request::Delete { path: path.into(), recursive }))
+    pub fn delete(&mut self, path: impl AsRef<[u8]>, recursive: bool) -> u32 {
+        self.push(Work::Simple(Request::Delete { path: path.as_ref().to_vec(), recursive }))
     }
 
-    pub fn rename(&mut self, from: &str, to: &str) -> u32 {
-        self.push(Work::Simple(Request::Rename { from: from.into(), to: to.into() }))
+    pub fn rename(&mut self, from: impl AsRef<[u8]>, to: impl AsRef<[u8]>) -> u32 {
+        self.push(Work::Simple(Request::Rename { from: from.as_ref().to_vec(), to: to.as_ref().to_vec() }))
     }
 
     /// Osserva una cartella (o un file) con inotify.
-    pub fn watch(&mut self, path: &str) -> u32 {
-        self.push(Work::Simple(Request::Watch { path: path.into() }))
+    pub fn watch(&mut self, path: impl AsRef<[u8]>) -> u32 {
+        self.push(Work::Simple(Request::Watch { path: path.as_ref().to_vec() }))
     }
 
     pub fn unwatch(&mut self, wd: u32) -> u32 {
         self.push(Work::Simple(Request::Unwatch { wd }))
+    }
+
+    /// Esegue `sql` sul database SQLite `path` nel guest, con il motore vero
+    /// e come il proprietario del file (ADR 0021): tutte le istruzioni in
+    /// una transazione (tranne `readonly`), `params` legati a `?1`, `?2`, ...;
+    /// con `expect` un numero diverso di righe cambiate annulla tutto
+    /// ([`FilesError::Sql`]). L'esito è [`Outcome::Sql`].
+    pub fn sql(
+        &mut self,
+        path: impl AsRef<[u8]>,
+        sql: &str,
+        params: Vec<SqlValue>,
+        expect: Option<u32>,
+        readonly: bool,
+    ) -> u32 {
+        self.push(Work::Simple(Request::Sql {
+            path: path.as_ref().to_vec(),
+            sql: sql.to_string(),
+            params,
+            expect,
+            readonly,
+        }))
     }
 
     /// La prossima operazione finita.
@@ -367,8 +403,13 @@ impl FilesClient {
                     if self.is_ready() {
                         return Err("secondo saluto".into());
                     }
-                    if h.version != proto::VERSION {
-                        return Err(format!("versione {} del demone, attesa {}", h.version, proto::VERSION));
+                    if !(proto::MIN_VERSION..=proto::VERSION).contains(&h.version) {
+                        return Err(format!(
+                            "versione {} del demone, attese da {} a {}",
+                            h.version,
+                            proto::MIN_VERSION,
+                            proto::VERSION
+                        ));
                     }
                     self.link = LinkState::Ready(h);
                     self.generation += 1;
@@ -421,12 +462,16 @@ impl FilesClient {
         match &mut op.work {
             Work::Simple(req) => Ok(Some(match err {
                 Some(e) => Err(e),
-                None => Ok(match req {
-                    Request::Stat { .. } => Outcome::Stat(proto::parse_stat(body).map_err(|e| e.0)?),
-                    Request::List { .. } => Outcome::List(proto::parse_list(body).map_err(|e| e.0)?),
-                    Request::Watch { .. } => Outcome::Watch(proto::parse_watch(body).map_err(|e| e.0)?),
-                    _ => Outcome::Done,
-                }),
+                None => match req {
+                    Request::Stat { .. } => Ok(Outcome::Stat(proto::parse_stat(body).map_err(|e| e.0)?)),
+                    Request::List { .. } => Ok(Outcome::List(proto::parse_list(body).map_err(|e| e.0)?)),
+                    Request::Watch { .. } => Ok(Outcome::Watch(proto::parse_watch(body).map_err(|e| e.0)?)),
+                    Request::Sql { .. } => match proto::parse_sql(body).map_err(|e| e.0)? {
+                        Ok(r) => Ok(Outcome::Sql(r)),
+                        Err((code, message)) => Err(FilesError::Sql { code, message }),
+                    },
+                    _ => Ok(Outcome::Done),
+                },
             })),
             Work::Read { path, offset, left, size, data } => {
                 if let Some(e) = err {
@@ -558,8 +603,8 @@ mod tests {
 
     /// Un file system finto: percorso → contenuto.
     struct Fake {
-        files: BTreeMap<String, Vec<u8>>,
-        handles: BTreeMap<u32, (String, Vec<u8>)>,
+        files: BTreeMap<Vec<u8>, Vec<u8>>,
+        handles: BTreeMap<u32, (Vec<u8>, Vec<u8>)>,
         max_chunk: u32,
         reads: usize,
     }
@@ -579,7 +624,7 @@ mod tests {
                 mtime_s: 0,
                 mtime_ns: 0,
                 nlink: 1,
-                link: String::new(),
+                link: Vec::new(),
                 selinux: String::new(),
             }
         }
@@ -631,6 +676,36 @@ mod tests {
                         Some(f) => (0, encode_stat(&Self::stat(f.len()))),
                     },
                     Request::Watch { .. } => (0, 7u32.to_le_bytes().to_vec()),
+                    // Un database finto: una tabella `t(v)` di interi.
+                    Request::Sql { path, sql, params, expect, readonly } => match self.files.get_mut(&path) {
+                        None => (2, vec![]),
+                        Some(_) if sql.starts_with("SELECT") => (
+                            0,
+                            encode_sql_ok(&SqlResult {
+                                columns: vec!["a".into(), "b".into(), "c".into()],
+                                rows: vec![
+                                    params.clone(),
+                                    vec![SqlValue::Null, SqlValue::Blob(vec![1]), SqlValue::Int(0)],
+                                ],
+                                ..SqlResult::default()
+                            }),
+                        ),
+                        Some(_) if readonly => (0, encode_sql_err(8, "attempt to write a readonly database")),
+                        Some(_) if expect.is_some_and(|e| e != 1) => {
+                            (0, encode_sql_err(19, "1 righe cambiate, attese 2: annullato"))
+                        }
+                        Some(db) => {
+                            db.push(params.len() as u8);
+                            (
+                                0,
+                                encode_sql_ok(&SqlResult {
+                                    changes: 1,
+                                    last_rowid: -5,
+                                    ..SqlResult::default()
+                                }),
+                            )
+                        }
+                    },
                     _ => (38, vec![]),
                 };
                 out.extend(encode_reply(id, status, &body));
@@ -677,7 +752,7 @@ mod tests {
         assert_eq!(c.generation(), 1);
         exchange(&mut c, &mut d);
         assert_eq!(all(&mut c), [Completion { op: w, result: Ok(Outcome::Written(Fake::stat(4321))) }]);
-        assert_eq!(d.files["/tmp/big"], big);
+        assert_eq!(d.files[b"/tmp/big".as_slice()], big);
 
         let r = c.read_file("/tmp/big");
         let part = c.read("/tmp/big", 999, 1002);
@@ -732,8 +807,14 @@ mod tests {
     #[test]
     fn eventi_ed_errori() {
         let mut c = connecting();
-        let mut bad = encode_hello(&Hello { version: 2, flags: 0, max_chunk: 1 });
+        let mut bad = encode_hello(&Hello { version: VERSION + 1, flags: 0, max_chunk: 1 });
         assert!(c.on_bytes(&bad).is_err(), "versione diversa");
+        let mut c = connecting();
+        bad = encode_hello(&Hello { version: 0, flags: 0, max_chunk: 1 });
+        assert!(c.on_bytes(&bad).is_err(), "versione 0");
+        let mut c = connecting();
+        c.on_bytes(&encode_hello(&Hello { version: MIN_VERSION, flags: 0, max_chunk: 1 << 20 })).unwrap();
+        assert!(c.is_ready(), "un demone di versione 1 va bene (senza SQL)");
         let mut c = connecting();
         c.on_bytes(&hello(1 << 20)).unwrap();
         assert!(c.on_bytes(&hello(1 << 20)).is_err(), "secondo saluto");
@@ -767,6 +848,66 @@ mod tests {
             c.take_completion(),
             Some(Completion { op: later, result: Ok(Outcome::Stat(Fake::stat(1))) })
         );
+    }
+
+    /// SQL: parametri e righe andata e ritorno, errori di SQLite come
+    /// `FilesError::Sql`, database che non c'è come errno.
+    #[test]
+    fn sql() {
+        let mut d = Fake::new(1 << 20);
+        d.files.insert(b"/db".to_vec(), Vec::new());
+        let mut c = connecting();
+        c.on_bytes(&hello(1 << 20)).unwrap();
+        let params = vec![SqlValue::Int(i64::MIN), SqlValue::Real(-0.5), SqlValue::Text("à".into())];
+        let q = c.sql("/db", "SELECT ?1, ?2, ?3", params.clone(), None, true);
+        let u = c.sql("/db", "UPDATE t SET v = ?1 WHERE rowid = ?2", params[..2].to_vec(), Some(1), false);
+        let wrong = c.sql("/db", "UPDATE t SET v = 0", vec![], Some(2), false);
+        let ro = c.sql("/db", "DELETE FROM t", vec![], None, true);
+        let missing = c.sql("/manca", "SELECT 1", vec![], None, true);
+        exchange(&mut c, &mut d);
+        let done = all(&mut c);
+        let get = |op| done.iter().find(|x| x.op == op).unwrap().result.clone();
+        assert_eq!(
+            get(q),
+            Ok(Outcome::Sql(SqlResult {
+                columns: vec!["a".into(), "b".into(), "c".into()],
+                rows: vec![params, vec![SqlValue::Null, SqlValue::Blob(vec![1]), SqlValue::Int(0)]],
+                ..SqlResult::default()
+            }))
+        );
+        assert_eq!(
+            get(u),
+            Ok(Outcome::Sql(SqlResult { changes: 1, last_rowid: -5, ..SqlResult::default() }))
+        );
+        assert_eq!(
+            get(wrong),
+            Err(FilesError::Sql { code: 19, message: "1 righe cambiate, attese 2: annullato".into() })
+        );
+        assert!(matches!(get(ro), Err(FilesError::Sql { code: 8, .. })));
+        assert_eq!(get(missing), Err(FilesError::Errno(2)));
+        assert_eq!(d.files[b"/db".as_slice()], [2], "solo l'UPDATE riuscito");
+        assert_eq!(get(wrong).unwrap_err().to_string(), "SQLite 19: 1 righe cambiate, attese 2: annullato");
+    }
+
+    /// Nomi non UTF-8: i byte arrivano e ripartono uguali.
+    #[test]
+    fn nomi_non_utf8() {
+        let mut d = Fake::new(1 << 20);
+        let name = b"/tmp/a\xffb\xc3".to_vec();
+        d.files.insert(name.clone(), b"x".to_vec());
+        let mut c = connecting();
+        c.on_bytes(&hello(1 << 20)).unwrap();
+        let r = c.read_file(&name);
+        let lossy = c.read_file(String::from_utf8_lossy(&name).as_bytes());
+        exchange(&mut c, &mut d);
+        let done = all(&mut c);
+        assert_eq!(done[0].result, Ok(Outcome::Data { size: 1, data: b"x".to_vec() }));
+        assert_eq!((done[0].op, done[1].op), (r, lossy));
+        assert_eq!(done[1].result, Err(FilesError::Errno(2)), "con U+FFFD non si riapre");
+        let ev = Event { wd: 1, mask: 0, cookie: 0, name: b"\xfe".to_vec() };
+        c.on_bytes(&encode_event(&ev)).unwrap();
+        assert_eq!(c.take_event(), Some(ev));
+        assert_eq!(display_name(&name), "/tmp/a\\xffb\\xc3");
     }
 
     #[test]

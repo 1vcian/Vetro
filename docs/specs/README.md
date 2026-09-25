@@ -13,4 +13,5 @@ Spec presenti: `cpu.md`, `mmu.md`, `platform.md`, `net.md`, `jit.md`,
 `android-boot.md` (M5: boot.img, vendor_boot, init_boot e bootconfig, ADR 0018),
 `replay.md` (M10: ingressi dell'host, registrazione, replay e salto, ADR 0019),
 `files.md` (M8: gestore dei file, demone `vetro-files` su vsock, protocollo e
-client, ADR 0020).
+client, ADR 0020; SQL nel guest, WAL, SharedPreferences e nomi non UTF-8,
+ADR 0021).

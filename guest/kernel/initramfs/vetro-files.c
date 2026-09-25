@@ -13,7 +13,10 @@
  *   cartella, poi rename: proprietario, modo e xattr del file che si
  *   sostituisce si conservano; i file nuovi prendono proprietario e
  *   contesto SELinux della cartella), create, mkdir, delete (anche
- *   ricorsivo), rename, watch con inotify (eventi dal vivo).
+ *   ricorsivo), rename, watch con inotify (eventi dal vivo);
+ *   SQL su un database SQLite (ADR 0021) con il motore SQLite vero, linkato
+ *   staticamente, in un processo figlio con uid e gid del proprietario del
+ *   database: lock, journal e WAL come quelli dell'app.
  *
  * Un solo processo, un ciclo poll(): fino a MAX_CLIENTS connessioni, ognuna
  * con il suo inotify e un buffer d'uscita (scritture non bloccanti: un host
@@ -25,6 +28,10 @@
  * POSIX e header UAPI di Linux.
  *
  *   vetro-files [-p PORTA]
+ *
+ * Programma multi-chiamata come BusyBox: con -DVETRO_SQLITE_SHELL e
+ * argv[0] "sqlite3" parte la shell ufficiale di SQLite (shell.c dello stesso
+ * sorgente), così nell'initramfs c'è una sola copia del motore.
  */
 #define _GNU_SOURCE
 #include <dirent.h>
@@ -39,15 +46,18 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/inotify.h>
+#include <grp.h>
+#include <sys/wait.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/xattr.h>
 #include <unistd.h>
 #include <linux/vm_sockets.h>
+#include "sqlite3.h"
 
 #define DEFAULT_PORT 5200
 #define MAGIC 0x46525456u /* "VTRF" in little endian */
-#define VERSION 1
+#define VERSION 2
 /* Byte al più per READ e WDATA. */
 #define MAX_CHUNK (1u << 20)
 /* Lunghezza al più di una richiesta (WDATA più il resto). */
@@ -73,6 +83,7 @@ enum {
 	T_RENAME = 11,
 	T_WATCH = 12,
 	T_UNWATCH = 13,
+	T_SQL = 14,
 	T_HELLO = 0x80,
 	T_REPLY = 0x81,
 	T_EVENT = 0x82,
@@ -640,6 +651,370 @@ static int do_delete(const char *path, uint8_t flags)
 	return rmdir(path) ? errno : 0;
 }
 
+/* ---- SQL (ADR 0021) --------------------------------------------------------- */
+
+/* Tipi dei valori nel protocollo. */
+enum { V_NULL, V_INT, V_REAL, V_TEXT, V_BLOB };
+
+#define SQL_READONLY 1
+#define SQL_ANY_CHANGES 0xffffffffu
+/* Righe e byte al più restituiti. */
+#define SQL_MAX_ROWS 10000u
+#define SQL_MAX_BYTES (16u << 20)
+#define SQL_BUSY_MS 2000
+
+struct sqlreq {
+	uint8_t flags;
+	uint32_t expect;
+	const uint8_t *sql;
+	uint32_t sql_len;
+	uint16_t nparams;
+	const uint8_t *params; /* valori codificati, già controllati */
+	size_t params_len;
+};
+
+/* Salta (e controlla) un valore codificato. */
+static void skip_value(struct rd *r)
+{
+	uint8_t t = get_u8(r);
+	switch (t) {
+	case V_NULL:
+		break;
+	case V_INT:
+	case V_REAL:
+		take(r, 8);
+		break;
+	case V_TEXT:
+	case V_BLOB:
+		take(r, get_u32(r));
+		break;
+	default:
+		r->bad = 1;
+	}
+}
+
+/* Lega il parametro `i` (da 1) al valore letto da `r`. */
+static int bind_value(sqlite3_stmt *st, int i, struct rd *r)
+{
+	uint8_t t = get_u8(r);
+	switch (t) {
+	case V_INT:
+		return sqlite3_bind_int64(st, i, (sqlite3_int64)get_u64(r));
+	case V_REAL: {
+		uint64_t bits = get_u64(r);
+		double d;
+		memcpy(&d, &bits, sizeof(d));
+		return sqlite3_bind_double(st, i, d);
+	}
+	case V_TEXT: {
+		uint32_t n = get_u32(r);
+		const uint8_t *s = take(r, n);
+		return sqlite3_bind_text64(st, i, s ? (const char *)s : "", n, SQLITE_TRANSIENT, SQLITE_UTF8);
+	}
+	case V_BLOB: {
+		uint32_t n = get_u32(r);
+		const uint8_t *b = take(r, n);
+		return n ? sqlite3_bind_blob64(st, i, b, n, SQLITE_TRANSIENT) : sqlite3_bind_zeroblob(st, i, 0);
+	}
+	default:
+		return sqlite3_bind_null(st, i);
+	}
+}
+
+/* Lega i parametri 1..n dell'istruzione (quelli che mancano restano NULL). */
+static int bind_all(sqlite3_stmt *st, const struct sqlreq *q)
+{
+	struct rd r = {q->params, q->params_len, 0, 0};
+	int n = sqlite3_bind_parameter_count(st);
+	for (int i = 1; i <= n && i <= (int)q->nparams; i++) {
+		int rc = bind_value(st, i, &r);
+		if (rc != SQLITE_OK)
+			return rc;
+	}
+	return SQLITE_OK;
+}
+
+static void put_value(struct buf *o, sqlite3_stmt *st, int c)
+{
+	switch (sqlite3_column_type(st, c)) {
+	case SQLITE_INTEGER:
+		put_u8(o, V_INT);
+		put_u64(o, (uint64_t)sqlite3_column_int64(st, c));
+		break;
+	case SQLITE_FLOAT: {
+		double d = sqlite3_column_double(st, c);
+		uint64_t bits;
+		memcpy(&bits, &d, sizeof(bits));
+		put_u8(o, V_REAL);
+		put_u64(o, bits);
+		break;
+	}
+	case SQLITE_TEXT: {
+		const unsigned char *s = sqlite3_column_text(st, c);
+		uint32_t n = (uint32_t)sqlite3_column_bytes(st, c);
+		put_u8(o, V_TEXT);
+		put_u32(o, n);
+		put(o, s, n);
+		break;
+	}
+	case SQLITE_BLOB: {
+		const void *b = sqlite3_column_blob(st, c);
+		uint32_t n = (uint32_t)sqlite3_column_bytes(st, c);
+		put_u8(o, V_BLOB);
+		put_u32(o, n);
+		if (n)
+			put(o, b, n);
+		break;
+	}
+	default:
+		put_u8(o, V_NULL);
+	}
+}
+
+struct sqlres {
+	struct buf cols, rows;
+	uint16_t ncols;
+	uint32_t nrows;
+	int truncated;
+	uint64_t changes;
+	char *msg;
+};
+
+static void set_msg(struct sqlres *res, const char *m)
+{
+	if (!res->msg)
+		res->msg = strdup(m);
+}
+
+/*
+ * Esegue le istruzioni di `q` sul database aperto: tutte in una transazione
+ * (tranne in sola lettura); righe e colonne dell'ultima istruzione che ne
+ * restituisce. Restituisce il codice di SQLite.
+ */
+static int sql_run(sqlite3 *db, const struct sqlreq *q, struct sqlres *res)
+{
+	int ro = q->flags & SQL_READONLY;
+	int rc = ro ? SQLITE_OK : sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL);
+	if (rc != SQLITE_OK)
+		set_msg(res, sqlite3_errmsg(db));
+	const char *tail = (const char *)q->sql;
+	const char *end = tail + q->sql_len;
+	while (rc == SQLITE_OK && tail < end) {
+		sqlite3_stmt *st = NULL;
+		const char *next = NULL;
+		rc = sqlite3_prepare_v2(db, tail, (int)(end - tail), &st, &next);
+		if (rc != SQLITE_OK) {
+			set_msg(res, sqlite3_errmsg(db));
+			break;
+		}
+		tail = next;
+		if (!st)
+			continue; /* spazi o commenti */
+		rc = bind_all(st, q);
+		int n = sqlite3_column_count(st);
+		if (rc == SQLITE_OK && n > 0) {
+			/* Un'istruzione con colonne: le sue righe sostituiscono le altre. */
+			res->cols.len = res->rows.len = 0;
+			res->nrows = 0;
+			res->truncated = 0;
+			res->ncols = (uint16_t)(n > 0xffff ? 0xffff : n);
+			for (int c = 0; c < res->ncols; c++) {
+				const char *name = sqlite3_column_name(st, c);
+				put_cstr(&res->cols, name ? name : "");
+			}
+		}
+		sqlite3_int64 before = sqlite3_total_changes64(db);
+		while (rc == SQLITE_OK) {
+			int s = sqlite3_step(st);
+			if (s == SQLITE_DONE)
+				break;
+			if (s != SQLITE_ROW) {
+				rc = s;
+				break;
+			}
+			if (res->nrows >= SQL_MAX_ROWS || res->rows.len >= SQL_MAX_BYTES) {
+				res->truncated = 1;
+				continue;
+			}
+			for (int c = 0; c < res->ncols; c++)
+				put_value(&res->rows, st, c);
+			res->nrows++;
+		}
+		/* Righe cambiate dall'istruzione stessa (non dai trigger). */
+		if (rc == SQLITE_OK && sqlite3_total_changes64(db) != before)
+			res->changes += (uint64_t)sqlite3_changes64(db);
+		if (rc != SQLITE_OK)
+			set_msg(res, sqlite3_errmsg(db));
+		sqlite3_finalize(st);
+	}
+	if (rc == SQLITE_OK && q->expect != SQL_ANY_CHANGES && res->changes != q->expect) {
+		rc = SQLITE_CONSTRAINT;
+		char m[128];
+		snprintf(m, sizeof(m), "%llu righe cambiate, attese %u: annullato", (unsigned long long)res->changes,
+			 q->expect);
+		set_msg(res, m);
+	}
+	if (!ro) {
+		if (rc == SQLITE_OK) {
+			rc = sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+			if (rc != SQLITE_OK)
+				set_msg(res, sqlite3_errmsg(db));
+		}
+		if (rc != SQLITE_OK && !sqlite3_get_autocommit(db))
+			sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+	}
+	return rc;
+}
+
+/*
+ * Il figlio: diventa il proprietario del database, lo apre, esegue e scrive
+ * nel pipe `u32 errno`, poi (se 0) il corpo della risposta SQL.
+ */
+static void sql_child(int out, const char *path, const struct stat *st, const struct sqlreq *q)
+{
+	struct buf o = {0};
+	uint32_t e = 0;
+	if (geteuid() == 0 && (setgroups(0, NULL) || setresgid(st->st_gid, st->st_gid, st->st_gid) ||
+			       setresuid(st->st_uid, st->st_uid, st->st_uid)))
+		e = (uint32_t)errno;
+	put_u32(&o, e);
+	if (!e) {
+		sqlite3 *db = NULL;
+		int flags = (q->flags & SQL_READONLY ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE);
+		int rc = sqlite3_open_v2(path, &db, flags, NULL);
+		struct sqlres res = {0};
+		if (rc == SQLITE_OK) {
+			sqlite3_busy_timeout(db, SQL_BUSY_MS);
+			rc = sql_run(db, q, &res);
+		} else {
+			set_msg(&res, db ? sqlite3_errmsg(db) : sqlite3_errstr(rc));
+		}
+		put_u32(&o, (uint32_t)rc);
+		put_cstr(&o, rc == SQLITE_OK || !res.msg ? "" : res.msg);
+		if (rc == SQLITE_OK) {
+			put_u64(&o, res.changes);
+			put_u64(&o, (uint64_t)sqlite3_last_insert_rowid(db));
+			put_u8(&o, (uint8_t)res.truncated);
+			put_u16(&o, res.ncols);
+			if (res.cols.len)
+				put(&o, res.cols.p, res.cols.len);
+			put_u32(&o, res.nrows);
+			if (res.rows.len)
+				put(&o, res.rows.p, res.rows.len);
+		}
+		sqlite3_close_v2(db);
+	}
+	for (size_t done = 0; done < o.len;) {
+		ssize_t w = write(out, o.p + done, o.len - done);
+		if (w < 0 && errno == EINTR)
+			continue;
+		if (w <= 0)
+			_exit(1);
+		done += (size_t)w;
+	}
+	_exit(0);
+}
+
+/*
+ * I file che SQLite tiene accanto al database (-wal, -shm, -journal)
+ * prendono proprietario e contesto SELinux del database, se diversi.
+ */
+static void sql_fix_sidecars(const char *path, const struct stat *st)
+{
+	static const char *const suffix[] = {"-wal", "-shm", "-journal"};
+	char ctx[256];
+	ssize_t cn = lgetxattr(path, SELINUX_XATTR, ctx, sizeof(ctx));
+	for (size_t i = 0; i < sizeof(suffix) / sizeof(suffix[0]); i++) {
+		size_t len = strlen(path) + 16;
+		char *side = malloc(len);
+		snprintf(side, len, "%s%s", path, suffix[i]);
+		struct stat ss;
+		if (lstat(side, &ss) == 0 && S_ISREG(ss.st_mode)) {
+			if ((ss.st_uid != st->st_uid || ss.st_gid != st->st_gid) && lchown(side, st->st_uid, st->st_gid))
+				fprintf(stderr, "vetro-files: chown %s: %s\n", side, strerror(errno));
+			char have[256];
+			ssize_t hn = lgetxattr(side, SELINUX_XATTR, have, sizeof(have));
+			if (cn > 0 && (hn != cn || memcmp(have, ctx, (size_t)cn)) &&
+			    lsetxattr(side, SELINUX_XATTR, ctx, (size_t)cn, 0))
+				fprintf(stderr, "vetro-files: contesto di %s: %s\n", side, strerror(errno));
+		}
+		free(side);
+	}
+}
+
+static int do_sql(struct buf *o, const char *path, const struct sqlreq *q)
+{
+	struct stat st;
+	if (stat(path, &st))
+		return errno;
+	if (S_ISDIR(st.st_mode))
+		return EISDIR;
+	if (!S_ISREG(st.st_mode))
+		return EINVAL;
+	int p[2];
+	if (pipe2(p, O_CLOEXEC))
+		return errno;
+	pid_t pid = fork();
+	if (pid < 0) {
+		int e = errno;
+		close(p[0]);
+		close(p[1]);
+		return e;
+	}
+	if (pid == 0) {
+		close(p[0]);
+		sql_child(p[1], path, &st, q);
+	}
+	close(p[1]);
+	/* Il figlio scrive tutto ed esce: si legge fino alla fine, poi si aspetta. */
+	size_t start = o->len;
+	uint8_t tmp[65536];
+	for (;;) {
+		ssize_t n = read(p[0], tmp, sizeof(tmp));
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n <= 0)
+			break;
+		put(o, tmp, (size_t)n);
+	}
+	close(p[0]);
+	int status = 0;
+	while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
+		;
+	if (!(q->flags & SQL_READONLY))
+		sql_fix_sidecars(path, &st);
+	size_t got = o->len - start;
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0 || got < 4) {
+		o->len = start;
+		return EIO;
+	}
+	uint32_t e = (uint32_t)o->p[start] | (uint32_t)o->p[start + 1] << 8 | (uint32_t)o->p[start + 2] << 16 |
+		     (uint32_t)o->p[start + 3] << 24;
+	/* Il corpo è quello dopo l'errno del figlio. */
+	memmove(o->p + start, o->p + start + 4, got - 4);
+	o->len -= 4;
+	if (e) {
+		o->len = start;
+		return (int)e;
+	}
+	return 0;
+}
+
+/* Legge il resto di una richiesta SQL (dopo il percorso). */
+static void get_sqlreq(struct rd *r, struct sqlreq *q)
+{
+	q->flags = get_u8(r);
+	q->expect = get_u32(r);
+	q->sql_len = get_u32(r);
+	q->sql = take(r, q->sql_len);
+	q->nparams = get_u16(r);
+	size_t at = r->pos;
+	for (unsigned i = 0; i < q->nparams && !r->bad; i++)
+		skip_value(r);
+	q->params = r->p + at;
+	q->params_len = r->pos - at;
+}
+
 /* ---- connessioni ---------------------------------------------------------- */
 
 static void reply_hello(struct client *c)
@@ -763,6 +1138,14 @@ static void handle_request(struct client *c, const uint8_t *p, size_t len)
 			e = inotify_rm_watch(c->ino, (int)wd) ? errno : 0;
 		break;
 	}
+	case T_SQL: {
+		path = get_path(&r);
+		struct sqlreq q;
+		get_sqlreq(&r, &q);
+		if (!r.bad)
+			e = do_sql(o, path, &q);
+		break;
+	}
 	default:
 		e = ENOSYS;
 		break;
@@ -856,8 +1239,18 @@ static int serve_events(struct client *c)
 	return 0;
 }
 
+#ifdef VETRO_SQLITE_SHELL
+/* main di shell.c, compilato con -Dmain=sqlite3_shell_main. */
+int sqlite3_shell_main(int argc, char **argv);
+#endif
+
 int main(int argc, char **argv)
 {
+#ifdef VETRO_SQLITE_SHELL
+	const char *me = strrchr(argv[0], '/');
+	if (!strcmp(me ? me + 1 : argv[0], "sqlite3"))
+		return sqlite3_shell_main(argc, argv);
+#endif
 	unsigned port = DEFAULT_PORT;
 	if (argc == 3 && !strcmp(argv[1], "-p"))
 		port = (unsigned)strtoul(argv[2], NULL, 10);
