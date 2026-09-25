@@ -180,8 +180,11 @@ pub fn normalize(log: &str) -> String {
 }
 
 /// Opzioni di `qemu-system-aarch64` per la stessa macchina di Vetro: virt
-/// con GICv3 senza ITS (Vetro non ha LPI), Cortex-A53, 1 GiB.
-pub const QEMU_MACHINE: [&str; 6] = ["-M", "virt,gic-version=3,its=off", "-cpu", "cortex-a53", "-m", "1G"];
+/// con GICv3 senza ITS (Vetro non ha LPI), Cortex-A53, 1 GiB, senza la
+/// scheda di rete PCI che QEMU aggiunge da sé (Vetro non ha PCI, e la sua ROM
+/// `efi-virtio.rom` non c'è sui runner senza ipxe-qemu).
+pub const QEMU_MACHINE: [&str; 8] =
+    ["-M", "virt,gic-version=3,its=off", "-cpu", "cortex-a53", "-m", "1G", "-nic", "none"];
 
 /// Differenze note tra l'avvio sotto QEMU e sotto Vetro, con il motivo.
 /// Una riga che contiene uno di questi testi si ignora nel confronto.
