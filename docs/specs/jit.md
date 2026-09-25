@@ -16,7 +16,7 @@ Esporta `b<N>: (state: i32) -> i32` per ogni blocco `N`. Il risultato:
 | 0 `NEXT` | blocco finito, `pc` è la prossima istruzione |
 | 1 `FAULT` | un accesso è fallito: `pc` e `steps` sono quelli dell'istruzione che ha fatto fault, i registri come dopo le istruzioni precedenti; il dettaglio (indirizzo, tipo) lo tiene l'host |
 | 2 `STOP` | fermati dopo l'istruzione corrente (scrittura su codice sorvegliato): `pc` è la successiva |
-| 3 `SVC` | il blocco finisce con SVC/HVC/BRK: `pc` punta all'istruzione (l'host la esegue con l'interprete) |
+| 3 `SVC` | il blocco finisce con SVC: `pc` punta all'istruzione (l'host la esegue con l'interprete). BRK e HVC chiudono il blocco *prima* di sé con `NEXT` |
 
 ## `JitState`
 Struttura `#[repr(C)]` in `vetro_jit::state`, a un indirizzo allineato a 16
@@ -50,6 +50,9 @@ pub trait Engine {
     fn run(&mut self, m: &Self::Module, index: u32, state: u32, host: &mut dyn Host) -> u32;
     /// La memoria condivisa (dove sta `JitState`).
     fn memory(&mut self) -> &mut [u8];
+    /// Libera tutti i moduli (wasmtime tiene al più 10000 istanze per store):
+    /// il driver lo chiama quando `compile` fallisce, poi riprova. Default vuoto.
+    fn reset(&mut self) {}
 }
 
 pub trait Host {
@@ -69,3 +72,17 @@ Si traducono prima le istruzioni intere più frequenti:
 
 Tutto il resto finisce il blocco e va all'interprete. La copertura cresce
 solo con test di parità.
+
+## Note dall'implementazione (M4, modalità utente)
+- **Memoria importata.** `env.mem` si dichiara secondo `JitConfig.memory`: nel
+  browser con i thread serve una memoria condivisa (`shared`).
+- **LDTR/STTR.** In modalità sistema servono accessi non privilegiati: l'ABI
+  di `ld`/`st` avrà un flag. Fino ad allora quelle istruzioni restano
+  all'interprete.
+- **Sorveglianza del codice.** In modalità utente sta in `UserMemory`:
+  - `space_id` distingue gli spazi d'indirizzamento;
+  - `watch_code(page)` segna le pagine tradotte;
+  - `take_code_dirty()` restituisce quelle scritte da store, `poke`, mmap,
+    munmap, mprotect, mremap e dalla crescita dello stack.
+
+  Dettagli in `crates/vetro-jit/src/driver.rs`.

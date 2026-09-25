@@ -54,6 +54,13 @@ jobs:
       - run: cargo test --release -p vetro-linux-tests
         env:
           VETRO_LTP_FULL: "1"
+      # M4: gli stessi test col JIT (soglia 0: ogni blocco si traduce subito).
+      - name: Test Linux col JIT
+        run: cargo test --release -p vetro-linux-tests
+        env:
+          VETRO_LTP_FULL: "1"
+          VETRO_JIT: "1"
+          VETRO_JIT_THRESHOLD: "0"
 
   # Il lint TypeScript (tsc --noEmit) si aggiunge quando nasce web/ (M5).
 
