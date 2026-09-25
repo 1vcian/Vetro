@@ -1,10 +1,17 @@
 [package]
 name = "vetro-wasm"
-description = "Binding verso il browser."
+description = "Binding verso il browser: la macchina di vetro-machine dietro un'API C per WebAssembly (docs/specs/wasm.md)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+
+[lib]
+# cdylib: il modulo .wasm caricato da JS; rlib: i test nativi dell'API.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+vetro-machine = { path = "../vetro-machine" }
 
 [lints]
 workspace = true

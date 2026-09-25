@@ -91,9 +91,19 @@ jobs:
         run: |
           set -o pipefail
           cargo test --release -p vetro-boot-tests -- --nocapture --test-threads=1 2>&1 | tee boot-test.log
+      # M4: la stessa macchina compilata a wasm32, in Node (V8). Stesse
+      # istruzioni e stesso log dell'interprete nativo; stampa i due tempi.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Avvio in WebAssembly (Node) e tempi
+        run: |
+          set -o pipefail
+          tools/wasm-boot.sh 2>&1 | tee wasm-boot.log
+          grep -A2 '^==> tempi' wasm-boot.log | sed 's/^/::notice title=tempi di avvio::/'
       - if: failure()
         run: |
-          for f in boot-build.log boot-test.log; do
+          for f in boot-build.log boot-test.log wasm-boot.log; do
             [ -s "$f" ] || continue
             echo "::error title=$f::$(grep -vE '^\s*$' "$f" | tail -n 60 | awk '{gsub(/%/, "%25"); gsub(/\r/, ""); printf "%s%%0A", $0}')"
           done
