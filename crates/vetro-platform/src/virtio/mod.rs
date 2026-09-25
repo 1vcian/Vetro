@@ -1,5 +1,5 @@
 //! Virtio (spec OASIS virtio v1.2): trasporto virtio-mmio versione 2,
-//! virtqueue split e i dispositivi blk, net e console.
+//! virtqueue split e i dispositivi blk, net, console, gpu, input e vsock.
 //!
 //! Struttura:
 //! - [`VirtioMmio`] (`mmio.rs`) è il trasporto: registri, negoziazione delle
@@ -8,8 +8,11 @@
 //! - [`Virtqueue`] (`queue.rs`) è la coda split: descrittori, catene,
 //!   tabelle indirette, ring available e used, EVENT_IDX.
 //! - I dispositivi implementano [`VirtioDevice`]: [`VirtioBlk`],
-//!   [`VirtioNet`], [`VirtioConsole`]. L'I/O verso l'esterno passa solo da
-//!   trait ([`BlockBackend`], [`NetBackend`], [`ConsoleBackend`]).
+//!   [`VirtioNet`], [`VirtioConsole`], [`VirtioGpu`], [`VirtioInput`],
+//!   [`VirtioVsock`]. L'I/O verso l'esterno passa da trait
+//!   ([`BlockBackend`], [`NetBackend`], [`ConsoleBackend`],
+//!   [`DisplayBackend`]) o dall'API host del dispositivo (eventi di input,
+//!   connessioni vsock).
 //!
 //! La RAM del guest non passa dal bus MMIO: una scrittura in QueueNotify
 //! segna solo la coda. Il lavoro vero si fa in [`VirtioMmio::service`], che
@@ -18,9 +21,13 @@
 
 pub mod blk;
 pub mod console;
+pub mod edid;
+pub mod gpu;
+pub mod input;
 pub mod mmio;
 pub mod net;
 pub mod queue;
+pub mod vsock;
 
 #[cfg(test)]
 pub(crate) mod testdrv;
@@ -29,9 +36,12 @@ pub use blk::{
     BLK_SECTOR_SIZE, BlockBackend, BlockError, CowBackend, MemBackend, VirtioBlk, VirtioBlkConfig,
 };
 pub use console::{BufferConsole, ConsoleBackend, VirtioConsole};
+pub use gpu::{DisplayBackend, Frame, GpuConfig, MemDisplay, PixelFormat, Rect, VirtioGpu};
+pub use input::{AbsInfo, InputConfig, InputEvent, VirtioInput};
 pub use mmio::VirtioMmio;
 pub use net::{NetBackend, QueueNet, VirtioNet};
 pub use queue::{Buf, DescChain, QueueError, Virtqueue};
+pub use vsock::{VirtioVsock, VsockConn, VsockError, VsockState};
 
 use core::any::Any;
 use core::fmt;
@@ -104,6 +114,9 @@ pub const F_VERSION_1: u64 = 1 << 32;
 pub const ID_NET: u32 = 1;
 pub const ID_BLOCK: u32 = 2;
 pub const ID_CONSOLE: u32 = 3;
+pub const ID_GPU: u32 = 16;
+pub const ID_INPUT: u32 = 18;
+pub const ID_VSOCK: u32 = 19;
 
 // ---- Memoria del guest -----------------------------------------------------
 

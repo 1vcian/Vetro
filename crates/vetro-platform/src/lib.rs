@@ -1,5 +1,6 @@
 //! Piattaforma virt di Vetro: bus MMIO, GICv3, timer generico, UART PL011,
-//! RTC PL031, virtio-mmio (blk, net, console) e generatore del device tree.
+//! RTC PL031, virtio-mmio (blk, net, console, gpu, input, vsock) e generatore
+//! del device tree.
 //!
 //! Preparazione di M3: la mappa della memoria ricalca la macchina `virt` di
 //! QEMU, così lo stesso kernel e lo stesso device tree girano su entrambi.

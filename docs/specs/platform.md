@@ -3,7 +3,8 @@
 ## Perimetro
 Dispositivi della piattaforma `virt` per M3 (modalità sistema): bus MMIO,
 GICv3, timer generico, UART PL011, RTC PL031, trasporto virtio-mmio con
-virtio-blk, virtio-net e virtio-console, device tree. La mappa ricalca `qemu-system-aarch64 -M virt`, così kernel e
+virtio-blk, virtio-net e virtio-console, device tree. Per M5: virtio-gpu 2D,
+virtio-input (tastiera, tablet, touchscreen) e virtio-vsock. La mappa ricalca `qemu-system-aarch64 -M virt`, così kernel e
 device tree si confrontano con QEMU senza adattamenti. Una sola CPU.
 
 ## Mappa della memoria (`map.rs`)
@@ -80,8 +81,47 @@ La RAM non passa dal bus MMIO: la gestisce la memoria della CPU/MMU.
   - `VirtioConsole::new(Box<dyn ConsoleBackend>)`;
     `trait ConsoleBackend: Any { write(&[u8]); read(&mut [u8]) -> usize }`;
     `BufferConsole` in memoria.
+  - `VirtioGpu::new(Box<dyn DisplayBackend>, GpuConfig)` (`gpu.rs`):
+    `GpuConfig { scanouts, width, height, edid, monitor: EdidInfo, max_hostmem }`,
+    default 1 scanout 1280x800 con EDID e 256 MiB (come QEMU);
+    `set_display(scanout, w, h)` (ridimensionamento chiesto dall'host),
+    `frame(scanout) -> Option<Frame>`, `cursor(scanout)`, `set_backend`,
+    `resource_count`, `hostmem`, `backend_as[_mut]::<T>()`.
+    `trait DisplayBackend: Any { update(scanout, &Frame, dirty: Rect); disable(scanout); cursor(scanout, &Cursor) }`;
+    `Frame { width, height, stride, format: PixelFormat, data }` con
+    `rgba(x, y)`; `PixelFormat` (gli 8 formati 2D, `to_rgba`); `MemDisplay`
+    (in memoria, RGBA, `pixel(scanout, x, y)`).
+  - `edid::generate(&EdidInfo, size) -> Vec<u8>` (`edid.rs`): l'EDID del
+    monitor virtuale, byte per byte quello di QEMU; `EdidInfo` (produttore,
+    nome, seriale, dimensioni, modo preferito, limiti, refresh).
+  - `VirtioInput::new(InputConfig)` (`input.rs`): `inject(&[InputEvent])`,
+    `key(code, down)`, `move_abs(x, y)`, `touch(slot, Option<(x, y)>)`,
+    `pending`, `dropped`, `leds`, `take_status`, `config`.
+    `InputConfig::keyboard()`, `tablet()`, `multitouch()` (i profili di
+    QEMU) o costruito con `new(nome)`, `serial`, `devids`, `props`,
+    `events(tipo, codici, min_len)`, `abs(asse, AbsInfo)`.
+    `InputEvent { ty, code, value }`; costanti `EV_*`, `BTN_*`, `ABS_*`, `LED_*`.
+  - `VirtioVsock::new(guest_cid)` (`vsock.rs`), l'host (CID 2) dentro il
+    dispositivo: `listen(port)`, `unlisten`, `accept(port) -> Option<VsockConn>`,
+    `connect(guest_port) -> VsockConn`, `send(c, &[u8])`, `recv(c, max)`,
+    `available`, `unsent`, `eof`, `shutdown_send`, `close`, `reset`,
+    `release`, `state(c) -> Option<VsockState>`, `connections`,
+    `transport_reset`, `guest_cid`, `dropped`.
+    `VsockConn { host_port, guest_port }`; `VsockState::{Connecting,
+    Connected, Closing, Closed}`; `VsockError::{NotFound, Closed, PortInUse}`.
   - I dispositivi si raggiungono con `virtio_mut(slot)?.device_as_mut::<T>()`
     e i backend con `backend_as_mut::<T>()`.
+- `vetro-machine` monta i dispositivi di M5: `Devices { gpu: Option<GpuConfig>,
+  keyboard, pointer: Option<Pointer>, vsock_cid: Option<u64> }` con
+  `Machine::with_devices(&MachineConfig, &Devices)` (`Machine::new` usa
+  `Devices::default()`: GPU 1280x800, tastiera, tablet, niente vsock;
+  `Devices::none()` è la macchina di M3). Ordine di montaggio fisso
+  (GPU, tastiera, puntatore, vsock), ciascuno nello slot libero più alto:
+  31, 30, 29, 28 come i `-device` di QEMU. `Machine::slots()`,
+  `Machine::gpu/keyboard/pointer/vsock(|d| ...)` e `Machine::device::<T>(slot, f)`
+  danno all'host il dispositivo e lo segnano da servire prima della
+  prossima istruzione. `Devices` sta fuori da `MachineConfig` perché
+  `vetro-wasm` costruisce `MachineConfig` elencando i campi.
 - `FdtBuilder`: `begin_node`, `end_node`, `prop_u32`, `prop_u64`,
   `prop_u32_list`, `prop_u64_list`, `prop_str`, `prop_strs`, `prop_bytes`,
   `prop_empty`, `reserve_memory`, `boot_cpuid`, `finish() -> Result<Vec<u8>, FdtError>`.
@@ -151,11 +191,66 @@ La RAM non passa dal bus MMIO: la gestisce la memoria della CPU/MMU.
   scarta. TX oltre 64 KiB + header: errore della coda.
 - **virtio-console**: una porta, senza MULTIPORT (code 0 rx e 1 tx),
   EMERG_WRITE offerta; max_nr_ports = 1.
+- **virtio-gpu** (§5.7, come QEMU 10.0 `virtio-gpu-device` senza virgl):
+  code 64 (controllo) e 16 (cursore); feature EDID; config events_read,
+  events_clear (scrittura che azzera), num_scanouts, num_capsets = 0.
+  Comandi GET_DISPLAY_INFO, GET_EDID, RESOURCE_CREATE_2D/UNREF,
+  SET_SCANOUT, RESOURCE_FLUSH, TRANSFER_TO_HOST_2D,
+  RESOURCE_ATTACH/DETACH_BACKING, UPDATE/MOVE_CURSOR; errori e controlli
+  di QEMU (id 0 o doppio, formato, `max_hostmem`, rettangoli fuori dalla
+  risorsa, scanout sotto 16x16, backing mancante o doppio, più di 16384
+  voci, voci fuori RAM; capset, 3D e UUID ERR_UNSPEC; blob
+  ERR_INVALID_PARAMETER). Fence: flag, fence_id e ctx_id riportati, già
+  segnalato (esecuzione sincrona). Risorse nella memoria dell'host (stride
+  = larghezza x 4, come pixman); TRANSFER come QEMU (un colpo se copre
+  tutta la larghezza, altrimenti riga per riga da offset + stride x riga;
+  ciò che il backing non copre resta invariato). SET_SCANOUT manda subito
+  l'immagine intera al backend, FLUSH solo l'intersezione con ogni scanout
+  che mostra la risorsa, UNREF e SET_SCANOUT 0 lo spengono. Cursore:
+  immagine copiata solo da risorse 64x64. `set_display` = evento DISPLAY
+  con interrupt di configurazione. Differenze da QEMU, solo su input che
+  Linux non manda: comando più corto della sua struttura →
+  ERR_INVALID_PARAMETER (QEMU risponde OK senza eseguire o blocca la coda).
+  Risoluzione di default 1280x800, quella di QEMU, perché il test di avvio
+  confronta i modi con QEMU; Android sceglierà la sua con `GpuConfig`
+  (es. 1080x1920 verticale) e `set_display`.
+- **EDID**: generatore equivalente a hw/display/edid-generate.c di QEMU
+  (produttore RHT, "QEMU Monitor", modi standard/stabiliti/CTA, descrittore
+  dettagliato con tempi proporzionali e 75 Hz, DisplayID oltre 4096 punti);
+  verificato byte per byte con l'EDID letto dal guest sotto QEMU. Nome,
+  produttore e seriale si cambiano con `EdidInfo` (profili dispositivo, M10).
+- **virtio-input** (§5.8): code 64 (eventi, stato), nessuna feature;
+  configurazione a finestra select/subsel (voce assente: tutto 0, come
+  QEMU). Profili identici a `virtio-keyboard-device` (159 tasti, EV_REP,
+  LED num/caps/scroll), `virtio-tablet-device` (ABS_X/Y 0..32767, pulsanti,
+  rotella) e `virtio-multitouch-device` (MT slot 0..10, INPUT_PROP_DIRECT) di
+  QEMU 10.0 e 8.2, verificati con EVIOCG* e /proc/bus/input/devices nel
+  guest. Eventi prima di DRIVER_OK scartati (come QEMU); poi consegnati a
+  rapporti interi (fino a SYN_REPORT) solo con buffer per tutto il
+  rapporto: QEMU scarta il rapporto, Vetro lo tiene (al più 4096 eventi,
+  poi scarta rapporti interi e conta). Coda di stato: EV_LED aggiorna
+  `leds`, lunghezza used 0 (QEMU mette i byte letti).
+- **virtio-vsock** (§5.10): code 128 (rx, tx, eventi), feature STREAM,
+  config guest_cid (default 3). L'host è il dispositivo stesso (CID 2):
+  REQUEST verso porta in ascolto → RESPONSE e coda di accept, altrimenti
+  RST; pacchetti senza connessione o non stream → RST; CID sbagliati o
+  lunghezze invalide scartati. Credito come Linux: l'host non supera
+  `buf_alloc - (tx_cnt - fwd_cnt)` del guest, annuncia 256 KiB, manda
+  CREDIT_UPDATE quando consuma e il guest vede meno di 64 KiB liberi o su
+  CREDIT_REQUEST. SHUTDOWN completo del guest → RST; chiusura dell'host:
+  SHUTDOWN dopo gli ultimi dati (anche se chiesta prima della RESPONSE).
+  Pacchetti fino a 64 KiB e al buffer rx del guest. Ordine deterministico:
+  pacchetti di controllo in ordine di nascita, poi dati per (porta host,
+  porta guest); porte locali da 49152 in sequenza. TRANSPORT_RESET su
+  richiesta (snapshot, M6). Non confrontato con QEMU: `vhost-vsock-device`
+  vuole `/dev/vhost-vsock`, assente in Docker Desktop e nei runner.
 
 ## Invarianti
 - Nessuna dipendenza da `std::fs`, `std::process`, thread, né crate
   esterni: compila in `wasm32-unknown-unknown`. I dispositivi virtio
-  parlano con l'esterno solo tramite i trait dei backend e `GuestRam`.
+  parlano con l'esterno solo tramite i trait dei backend, `GuestRam` e
+  l'API host dei dispositivi (input, vsock, `set_display`), che il motore
+  chiama dall'unico punto registrabile.
 - **Determinismo**: nessun dispositivo legge l'orologio dell'host; il tempo
   (CNTPCT, secondi dell'RTC) e l'input della UART entrano solo come
   argomenti, dall'unico punto registrabile del motore; lo stesso vale per i
@@ -167,6 +262,22 @@ La RAM non passa dal bus MMIO: la gestisce la memoria della CPU/MMU.
 ## Test
 `cargo test -p vetro-platform`: test unitari per modulo (bus, PL011, PL031,
 timer, GIC, virtio, FDT con parser minimo del DTB, piattaforma montata).
+GPU, input e vsock hanno test con il driver di prova (comandi ed errori,
+formati, backing a pezzi, fence, cursore, ridimensionamento, reset; profili
+di input contro i valori letti sotto QEMU, rapporti interi, coda piena,
+LED; handshake, rifiuti, credito, chiusure, reset del trasporto,
+determinismo); l'EDID è confrontato con i 256 byte letti sotto QEMU.
+Con il kernel guest (`cargo test --release -p vetro-boot-tests`):
+- `vetro.rs`: l'avvio con GPU, tastiera e tablet dà lo stesso log di QEMU
+  con gli stessi `-device` (`QEMU_MACHINE`), compreso l'autotest che esegue
+  `vetro-dev drm` (modi, dumb buffer, modeset, DIRTYFB, cursore), l'EDID da
+  sysfs, `/proc/bus/input/devices` e le capacità evdev;
+- `devices.rs` (solo Vetro, con vsock): l'host confronta ogni pixel dello
+  scanout con il motivo disegnato dal guest e il cursore, inietta tasti e
+  movimenti letti dal guest con evdev, vede il LED acceso dal guest, e
+  scambia dati vsock nei due versi (300 KB verso il guest, oltre il suo
+  credito; 200 KB di eco); due esecuzioni danno lo stesso log e le stesse
+  istruzioni.
 I test virtio usano un driver di prova (`virtio/testdrv.rs`) che fa ciò che
 fa Linux su una RAM finta: negoziazione, setup delle code, catene dirette e
 indirette, notifiche, used ring con aggiornamento di used_event,
