@@ -1,4 +1,4 @@
-# Demone del gestore dei file di Vetro (ADR 0020, 0021): vsock, porta 5200.
+# Demone del gestore dei file di Vetro (ADR 0020, 0022): vsock, porta 5200.
 # Solo nelle build di sviluppo (root, dominio SELinux permissivo). oneshot:
 # se esce (per esempio senza virtio-vsock) init non lo riavvia a ciclo, così
 # il log resta confrontabile con quello di QEMU.

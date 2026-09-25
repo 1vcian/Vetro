@@ -45,7 +45,7 @@
          return result;
      }
  
-+    // Vetro (docs/adr/0021): spoofing della firma limitato a microG, sul
++    // Vetro (docs/adr/0022): spoofing della firma limitato a microG, sul
 +    // modello della variante "restricted" di LineageOS/microG. La firma
 +    // dichiarata dall'app nel meta-data "fake-signature" si mostra al posto di
 +    // quella vera solo se tutte queste condizioni valgono:
@@ -114,7 +114,7 @@
              packageInfo.packageName = packageInfo.applicationInfo.packageName =
                      resolveExternalPackageName(p);
  
-+            // Vetro: spoofing della firma limitato a microG (ADR 0021).
++            // Vetro: spoofing della firma limitato a microG (ADR 0022).
 +            maybeSpoofMicrogSignature(p, packageInfo, flags, userId);
 +
              if (Flags.provideInfoOfApkInApex()) {

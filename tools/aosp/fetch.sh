@@ -16,7 +16,7 @@ mkdir -p "$out/out"
 vm_rsync -a --delete --partial "$VETRO_AOSP_HOST:$VETRO_AOSP_WORK/out/" "$out/out/"
 (cd "$out/out" && shasum -a 256 -c --quiet SHA256SUMS)
 # ART deve generare codice per la CPU di Vetro (Cortex-A53, ARMv8.0 + CRC32 +
-# crypto): con varianti più nuove il JIT userebbe LSE e FP16 (ADR 0005, 0021).
+# crypto): con varianti più nuove il JIT userebbe LSE e FP16 (ADR 0005, 0022).
 variants="$(grep -h '^dalvik.vm.isa.arm64.variant=' "$out"/out/props/*.prop | sort -u)"
 grep -h -E '^dalvik\.vm\.isa\.arm64\.(variant|features)=' "$out"/out/props/*.prop | sort -u
 if [ "$variants" != "dalvik.vm.isa.arm64.variant=cortex-a53" ]; then

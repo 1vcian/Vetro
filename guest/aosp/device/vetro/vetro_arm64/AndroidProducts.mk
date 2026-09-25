@@ -1,5 +1,5 @@
 #
-# Prodotti di Vetro (docs/adr/0021-immagine-aosp-di-vetro.md).
+# Prodotti di Vetro (docs/adr/0022-immagine-aosp-di-vetro.md).
 #
 
 PRODUCT_MAKEFILES := \

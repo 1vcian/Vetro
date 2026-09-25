@@ -23,7 +23,7 @@ PRODUCT_VENDOR_PROPERTIES += \
 # adbd su TCP 5555 senza autorizzazione: SOLO nella build di sviluppo
 # userdebug (Cuttlefish fa lo stesso: shared/device.mk mette già
 # persist.adb.tcp.port=5555 e ro.adb.secure=0). Una build per utenti deve
-# togliere ro.adb.secure=0 e usare le chiavi adb (ADR 0021).
+# togliere ro.adb.secure=0 e usare le chiavi adb (ADR 0022).
 PRODUCT_SYSTEM_EXT_PROPERTIES += \
     ro.adb.secure=0
 

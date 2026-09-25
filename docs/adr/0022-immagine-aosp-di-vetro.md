@@ -1,4 +1,4 @@
-# ADR 0021 — L'immagine AOSP 15 di Vetro: device vetro_arm64 derivato da Cuttlefish
+# ADR 0022 — L'immagine AOSP 15 di Vetro: device vetro_arm64 derivato da Cuttlefish
 
 - Stato: accettata (M5, 2026-09-26). Usa ADR 0005 (ISA), 0008 e 0018
   (avvio diretto e bootloader Android), 0020 (gestore dei file), 0004

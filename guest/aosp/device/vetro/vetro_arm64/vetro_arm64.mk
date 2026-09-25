@@ -2,7 +2,7 @@
 # Prodotto Vetro arm64 (telefono, solo 64 bit). Parte da
 # device/google/cuttlefish/vsoc_arm64_only/phone/aosp_cf.mk (AOSP 15) e ne
 # cambia solo ciò che la macchina di Vetro richiede: vedi
-# docs/adr/0021-immagine-aosp-di-vetro.md e docs/specs/guest-image.md.
+# docs/adr/0022-immagine-aosp-di-vetro.md e docs/specs/guest-image.md.
 #
 
 #

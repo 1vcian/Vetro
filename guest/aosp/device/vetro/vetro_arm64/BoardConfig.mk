@@ -2,7 +2,7 @@
 # Vetro arm64: scheda derivata da Cuttlefish arm64 solo 64 bit
 # (device/google/cuttlefish/vsoc_arm64_only), adattata alla macchina virt
 # di Vetro e di QEMU (virtio-mmio, niente PCI, niente host Cuttlefish).
-# Scelte e motivi: docs/adr/0021-immagine-aosp-di-vetro.md.
+# Scelte e motivi: docs/adr/0022-immagine-aosp-di-vetro.md.
 #
 
 include device/google/cuttlefish/vsoc_arm64_only/BoardConfig.mk
@@ -100,10 +100,10 @@ BOARD_BOOTCONFIG += \
 # SELinux permissivo finché la sepolicy non copre i percorsi virtio-mmio
 # (build di sviluppo userdebug; obiettivo: enforcing con una sepolicy nostra
 # in device/vetro/vetro_arm64/sepolicy, scritta dai rifiuti registrati nel
-# primo avvio, vedi ADR 0021).
+# primo avvio, vedi ADR 0022).
 BOARD_BOOTCONFIG += androidboot.selinux=permissive
 
-# Policy SELinux nostra (demone vetro-files, ADR 0020/0021).
+# Policy SELinux nostra (demone vetro-files, ADR 0020/0022).
 BOARD_VENDOR_SEPOLICY_DIRS += device/vetro/vetro_arm64/sepolicy
 
 # Dimensioni di super e userdata: quelle di Cuttlefish (super 7 GiB, userdata

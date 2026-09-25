@@ -48,14 +48,13 @@ data_mib=$(mib "$tmp/userdata.raw")
 total=$(( 1 + 1 + 1 + 64 + super_mib + data_mib + 1 ))
 rm -f disk.img
 truncate -s "${total}M" disk.img
-sgdisk -q -Z disk.img >/dev/null 2>&1 || true
-sgdisk -q -a 2048 \
+sgdisk -a 2048 \
   -n 1:1M:+1M -c 1:misc \
   -n 2:0:+1M -c 2:frp \
   -n 3:0:+64M -c 3:metadata \
   -n 4:0:+${super_mib}M -c 4:super \
   -n 5:0:+${data_mib}M -c 5:userdata \
-  disk.img
+  disk.img >/dev/null
 # Scrive ogni partizione al suo inizio (settori da 512 byte), saltando gli zeri.
 put() {
   start=$(sgdisk -i "$1" disk.img | sed -n 's/^First sector: \([0-9]*\).*/\1/p')

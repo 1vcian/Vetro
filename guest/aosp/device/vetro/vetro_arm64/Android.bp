@@ -1,4 +1,4 @@
-// Moduli della scheda Vetro arm64 (docs/adr/0021-immagine-aosp-di-vetro.md).
+// Moduli della scheda Vetro arm64 (docs/adr/0022-immagine-aosp-di-vetro.md).
 
 soong_namespace {
 }

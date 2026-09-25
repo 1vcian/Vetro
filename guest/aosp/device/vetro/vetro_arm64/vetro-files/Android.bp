@@ -1,4 +1,4 @@
-// Demone del gestore dei file di Vetro (ADR 0020, 0021). Il sorgente è
+// Demone del gestore dei file di Vetro (ADR 0020, 0022). Il sorgente è
 // guest/kernel/initramfs/vetro-files.c del repository di Vetro: lo copia qui
 // tools/aosp/sync.sh (non si duplica in guest/aosp).
 

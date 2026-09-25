@@ -1,4 +1,4 @@
-# Contesti dei file della scheda Vetro arm64 (ADR 0021).
+# Contesti dei file della scheda Vetro arm64 (ADR 0022).
 
 /vendor/bin/vetro-files  u:object_r:vetro_files_exec:s0
 

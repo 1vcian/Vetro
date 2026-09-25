@@ -1,5 +1,5 @@
 # Demone del gestore dei file di Vetro (guest/kernel/initramfs/vetro-files.c,
-# ADR 0020 e 0021): ascolta su virtio-vsock (porta 5200) e legge e scrive i
+# ADR 0020 e 0022): ascolta su virtio-vsock (porta 5200) e legge e scrive i
 # file del guest per conto dell'host, come root.
 type vetro_files, domain;
 type vetro_files_exec, exec_type, vendor_file_type, file_type;
