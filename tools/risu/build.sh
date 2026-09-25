@@ -28,18 +28,23 @@ docker run --rm --platform linux/arm64 -v "$OUT:/out" -w /out/src vetro-guest-bi
 '
 
 # 2. Immagini con risugen: solo istruzioni della Cortex-A53 (ARMv8.0 con
-#    CRC32, AES, SHA1, SHA256), niente estensioni successive.
+#    CRC32, AES, SHA1, SHA256), niente estensioni successive. risugen non ha
+#    un'opzione per il seme: lo si fissa con srand prima di eseguirlo, così le
+#    immagini (e quindi il test) sono le stesse a ogni giro.
 EXCLUDE="A64_V8[1-9],LDAPR.*,LDAPUR.*,STLUR,SHA512.*,RAX1,SM3.*,SM4.*,EOR3,BCAX,XAR"
 docker build -q -t vetro-oracle:latest "$ROOT/tools/oracle" >/dev/null
 docker run --rm -v "$OUT:/out" -w /out/src vetro-oracle:latest sh -euc "
-  gen() { ./risugen --numinsns $N \$2 --not-pattern '$EXCLUDE' aarch64.risu /out/\$1.bin >/dev/null; }
-  gen int '--group DataProcessingImmediate'
-  gen intreg '--group DataProcessingRegister'
-  gen load '--group Load'
-  gen store '--group Store'
-  gen fp '--group DataProcessingScalarFP'
-  gen simd '--group DataProcessingAdvSIMD'
-  gen misto ''
+  gen() {
+    perl -e 'srand(shift @ARGV); do \"./risugen\"; die \$@ if \$@;' \$2 --numinsns $N \$3 \\
+      --not-pattern '$EXCLUDE' aarch64.risu /out/\$1.bin >/dev/null
+  }
+  gen int 1 '--group DataProcessingImmediate'
+  gen intreg 2 '--group DataProcessingRegister'
+  gen load 3 '--group Load'
+  gen store 4 '--group Store'
+  gen fp 5 '--group DataProcessingScalarFP'
+  gen simd 6 '--group DataProcessingAdvSIMD'
+  gen misto 7 ''
   # 3. Tracce di riferimento: QEMU come maestro.
   for img in /out/*.bin; do
     qemu-aarch64 -cpu cortex-a53 /out/risu --master -t \${img%.bin}.trace \$img >/dev/null
