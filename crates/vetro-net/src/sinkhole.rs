@@ -36,7 +36,7 @@ impl TcpReply {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SinkholeConfig {
     /// Risposta per le porte non elencate in `tcp_by_port`.
     pub tcp_default: TcpReply,

@@ -99,6 +99,12 @@ impl VirtioNet {
         self.backend.as_mut()
     }
 
+    /// Accesso tipizzato al backend, in sola lettura.
+    pub fn backend_as<T: NetBackend>(&self) -> Option<&T> {
+        let b: &dyn Any = self.backend.as_ref();
+        b.downcast_ref()
+    }
+
     /// Accesso tipizzato al backend.
     pub fn backend_as_mut<T: NetBackend>(&mut self) -> Option<&mut T> {
         let b: &mut dyn Any = self.backend.as_mut();

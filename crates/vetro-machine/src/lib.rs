@@ -7,9 +7,11 @@
 //!   CPU (come `hw/arm/boot.c` di QEMU).
 //! - [`Machine`]: costruzione, caricamento di un kernel Linux, esecuzione a
 //!   quanti ([`Machine::run`]), console PL011, dispositivi virtio di M5
-//!   ([`Devices`]: GPU, tastiera, tablet o touchscreen, vsock) con l'accesso
-//!   dell'host ([`Machine::gpu`], [`Machine::keyboard`], [`Machine::pointer`],
-//!   [`Machine::vsock`]).
+//!   ([`Devices`]: GPU, tastiera, tablet o touchscreen, rete, vsock) con
+//!   l'accesso dell'host ([`Machine::gpu`], [`Machine::keyboard`],
+//!   [`Machine::pointer`], [`Machine::net`], [`Machine::vsock`]).
+//! - [`net`]: virtio-net collegato allo stack di `vetro-net` (gateway come la
+//!   rete user di QEMU, sinkhole), nel tempo virtuale della macchina.
 //!
 //! Col JIT ([`Machine::set_jit`], ADR 0012 e 0013) i blocchi tradotti si
 //! alternano all'interprete fra un evento della piattaforma e l'altro: stesso
@@ -23,8 +25,11 @@
 mod board;
 pub mod boot;
 mod machine;
+pub mod net;
 mod psci;
 
 pub use board::Board;
 pub use machine::{Devices, Machine, MachineConfig, Pointer, Slots, Stop};
+pub use net::{NetLink, NetSetup};
 pub use vetro_jit::{SysJitDyn, SysJitStats};
+pub use vetro_net;

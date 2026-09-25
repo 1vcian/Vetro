@@ -44,6 +44,17 @@ check "input: tastiera e tablet" test -c /dev/input/event0 -a -c /dev/input/even
 cat /proc/bus/input/devices
 check "input: capacità di evdev" vetro-dev input
 check "vsock: /dev/vsock" test -c /dev/vsock
+# Rete (virtio-net): DHCP e ping al gateway, con lo stesso esito sotto la
+# rete user di QEMU (-netdev user) e sotto lo stack di Vetro (vetro-net).
+# Solo valori che non dipendono dai tempi: niente contatori né millisecondi
+# (i messaggi di udhcpc, che contano i tentativi, vanno in /tmp).
+check "rete: eth0" test -d /sys/class/net/eth0
+echo "eth0: $(cat /sys/class/net/eth0/address)"
+check "rete: DHCP" sh -c 'udhcpc -i eth0 -n -q -t 5 -T 2 2>/tmp/udhcpc.err'
+route -n
+cat /etc/resolv.conf
+check "rete: ping al gateway" sh -c 'ping -c 2 -W 5 10.0.2.2 >/dev/null'
+check "rete: ping al DNS" sh -c 'ping -c 1 -W 5 10.0.2.3 >/dev/null'
 if [ $fail = 0 ]; then
   echo "VETRO-AUTOTEST-FINE: ok"
 else

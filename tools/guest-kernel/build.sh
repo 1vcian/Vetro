@@ -106,7 +106,7 @@ docker run --rm --platform linux/arm64 \
   cp /src/guest/kernel/config/vetro.config /src/guest/kernel/config/defconfig \
      /src/guest/kernel/initramfs/files.list /src/guest/kernel/initramfs/init \
      /src/guest/kernel/initramfs/autotest.sh /src/guest/kernel/initramfs/kselftest.sh \
-     /src/guest/kernel/initramfs/vetro-dev.c \
+     /src/guest/kernel/initramfs/vetro-dev.c /src/guest/kernel/initramfs/udhcpc.script \
      /src/tools/guest-kernel/build.sh \
      /src/tools/guest-kernel/Dockerfile "$out/sources/"
   {
