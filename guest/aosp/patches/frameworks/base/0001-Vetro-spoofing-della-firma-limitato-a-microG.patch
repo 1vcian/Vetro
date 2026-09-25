@@ -1,0 +1,122 @@
+--- a/core/res/AndroidManifest.xml
++++ b/core/res/AndroidManifest.xml
+@@ -6053,6 +6053,12 @@
+     <permission android:name="android.permission.INSTALL_PACKAGES"
+       android:protectionLevel="signature|privileged" />
+ 
++    <!-- @hide Vetro: allows microG, and only microG (see ComputerEngine),
++         to report the signature declared in its "fake-signature" meta-data.
++         <p>Not for use by third-party applications. -->
++    <permission android:name="android.permission.FAKE_PACKAGE_SIGNATURE"
++        android:protectionLevel="signature|privileged" />
++
+     <!-- @SystemApi Allows an application to install self updates. This is a limited version
+          of {@link android.Manifest.permission#INSTALL_PACKAGES}.
+         <p>Not for use by third-party applications.
+--- a/services/core/java/com/android/server/pm/ComputerEngine.java
++++ b/services/core/java/com/android/server/pm/ComputerEngine.java
+@@ -103,6 +103,7 @@
+ import android.content.pm.VersionedPackage;
+ import android.os.Binder;
+ import android.os.Build;
++import android.os.Bundle;
+ import android.os.IBinder;
+ import android.os.ParcelableException;
+ import android.os.PatternMatcher;
+@@ -133,6 +134,7 @@
+ import com.android.internal.pm.pkg.component.ParsedMainComponent;
+ import com.android.internal.pm.pkg.component.ParsedProvider;
+ import com.android.internal.pm.pkg.component.ParsedService;
++import com.android.internal.util.HexDump;
+ import com.android.internal.util.ArrayUtils;
+ import com.android.internal.util.CollectionUtils;
+ import com.android.internal.util.IndentingPrintWriter;
+@@ -169,6 +171,9 @@
+ import java.io.IOException;
+ import java.io.PrintWriter;
+ import java.nio.charset.StandardCharsets;
++import java.security.MessageDigest;
++import java.security.NoSuchAlgorithmException;
++import java.security.cert.CertificateException;
+ import java.util.ArrayList;
+ import java.util.Arrays;
+ import java.util.Collection;
+@@ -1483,6 +1488,68 @@
+         return result;
+     }
+ 
++    // Vetro (docs/adr/0021): spoofing della firma limitato a microG, sul
++    // modello della variante "restricted" di LineageOS/microG. La firma
++    // dichiarata dall'app nel meta-data "fake-signature" si mostra al posto di
++    // quella vera solo se tutte queste condizioni valgono:
++    //  - il pacchetto è GmsCore o il Companion di microG;
++    //  - è firmato con il certificato ufficiale di microG (NOGAPPS Project);
++    //  - chiede FAKE_PACKAGE_SIGNATURE e l'ha ottenuto (signature|privileged:
++    //    solo un'app in priv-app con l'allowlist della build).
++    private static final String VETRO_FAKE_SIGNATURE_PERMISSION =
++            "android.permission.FAKE_PACKAGE_SIGNATURE";
++    private static final String VETRO_MICROG_CERT_SHA256 =
++            "9bd06727e62796c0130eb6dab39b73157451582cbd138e86c468acc395d14165";
++    private static final Set<String> VETRO_MICROG_PACKAGES =
++            Set.of("com.google.android.gms", "com.android.vending");
++
++    private void maybeSpoofMicrogSignature(AndroidPackage p, PackageInfo pi,
++            @PackageManager.PackageInfoFlagsBits long flags, int userId) {
++        if ((flags & (PackageManager.GET_SIGNATURES
++                | PackageManager.GET_SIGNING_CERTIFICATES)) == 0) {
++            return;
++        }
++        if (!VETRO_MICROG_PACKAGES.contains(p.getPackageName())
++                || !p.getRequestedPermissions().contains(VETRO_FAKE_SIGNATURE_PERMISSION)) {
++            return;
++        }
++        final Bundle meta = p.getMetaData();
++        final String fake = meta == null ? null : meta.getString("fake-signature");
++        if (fake == null || fake.isEmpty()) {
++            return;
++        }
++        final Signature[] real = p.getSigningDetails().getSignatures();
++        if (real == null || real.length != 1) {
++            return;
++        }
++        try {
++            final byte[] digest = MessageDigest.getInstance("SHA-256")
++                    .digest(real[0].toByteArray());
++            if (!VETRO_MICROG_CERT_SHA256.equals(HexDump.toHexString(digest, false))) {
++                return;
++            }
++        } catch (NoSuchAlgorithmException e) {
++            return;
++        }
++        if (mPermissionManager.checkPermission(p.getPackageName(),
++                VETRO_FAKE_SIGNATURE_PERMISSION, VirtualDeviceManager.PERSISTENT_DEVICE_ID_DEFAULT,
++                userId) != PERMISSION_GRANTED) {
++            return;
++        }
++        try {
++            final Signature[] spoofed = { new Signature(fake) };
++            if ((flags & PackageManager.GET_SIGNATURES) != 0) {
++                pi.signatures = spoofed;
++            }
++            if ((flags & PackageManager.GET_SIGNING_CERTIFICATES) != 0) {
++                pi.signingInfo = new SigningInfo(new SigningDetails(spoofed,
++                        SigningDetails.SignatureSchemeVersion.SIGNING_BLOCK_V3));
++            }
++        } catch (IllegalArgumentException | CertificateException e) {
++            Slog.w(TAG, "microG: firma finta non valida per " + p.getPackageName(), e);
++        }
++    }
++
+     public final PackageInfo generatePackageInfo(PackageStateInternal ps,
+             @PackageManager.PackageInfoFlagsBits long flags, int userId) {
+         if (!mUserManager.exists(userId)) return null;
+@@ -1531,6 +1598,9 @@
+             packageInfo.packageName = packageInfo.applicationInfo.packageName =
+                     resolveExternalPackageName(p);
+ 
++            // Vetro: spoofing della firma limitato a microG (ADR 0021).
++            maybeSpoofMicrogSignature(p, packageInfo, flags, userId);
++
+             if (Flags.provideInfoOfApkInApex()) {
+                 final String apexModuleName =  ps.getApexModuleName();
+                 if (apexModuleName != null) {

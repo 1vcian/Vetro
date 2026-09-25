@@ -1,0 +1,22 @@
+// Moduli della scheda Vetro arm64 (docs/adr/0021-immagine-aosp-di-vetro.md).
+
+soong_namespace {
+}
+
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+prebuilt_etc {
+    name: "fstab.vetro",
+    src: "fstab.vetro",
+    vendor: true,
+}
+
+prebuilt_etc {
+    // Come fstab.cf.*.vendor_ramdisk di Cuttlefish (shared/config/Android.bp).
+    name: "fstab.vetro.vendor_ramdisk",
+    srcs: ["fstab.vetro"],
+    dsts: ["fstab.vetro"],
+    vendor_ramdisk: true,
+}

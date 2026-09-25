@@ -1,0 +1,55 @@
+// microG per Vetro: GmsCore e Companion (Apache 2.0), release ufficiali
+// scaricate da tools/aosp/sync.sh con sha256 fissato (microg.lock) in
+// prebuilt/, che non si committa. Vedi docs/adr/0021-immagine-aosp-di-vetro.md.
+
+package {
+    default_applicable_licenses: ["vendor_vetro_microg_license"],
+}
+
+license {
+    name: "vendor_vetro_microg_license",
+    visibility: [":__subpackages__"],
+    license_kinds: ["SPDX-license-identifier-Apache-2.0"],
+}
+
+android_app_import {
+    name: "VetroGmsCore",
+    apk: "prebuilt/com.google.android.gms.apk",
+    presigned: true,
+    privileged: true,
+    product_specific: true,
+    required: [
+        "privapp-permissions-vetro-microg.xml",
+        "default-permissions-vetro-microg.xml",
+        "sysconfig-vetro-microg.xml",
+    ],
+}
+
+android_app_import {
+    name: "VetroGmsCompanion",
+    apk: "prebuilt/com.android.vending.apk",
+    presigned: true,
+    privileged: true,
+    product_specific: true,
+}
+
+prebuilt_etc {
+    name: "privapp-permissions-vetro-microg.xml",
+    src: "privapp-permissions-vetro-microg.xml",
+    sub_dir: "permissions",
+    product_specific: true,
+}
+
+prebuilt_etc {
+    name: "default-permissions-vetro-microg.xml",
+    src: "default-permissions-vetro-microg.xml",
+    sub_dir: "default-permissions",
+    product_specific: true,
+}
+
+prebuilt_etc {
+    name: "sysconfig-vetro-microg.xml",
+    src: "sysconfig-vetro-microg.xml",
+    sub_dir: "sysconfig",
+    product_specific: true,
+}
