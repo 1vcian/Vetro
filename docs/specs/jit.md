@@ -6,8 +6,8 @@ Un modulo contiene uno o più blocchi. Importa:
 | Import | Tipo | Significato |
 |---|---|---|
 | `env.mem` | memoria | la memoria lineare che contiene `JitState` (condivisa con l'host) |
-| `env.ld` | `(state: i32, va: i64, size: i32) -> i64` | lettura di 1/2/4/8 byte, estesa a zero; in caso di fault scrive `exit = FAULT` e restituisce 0 |
-| `env.st` | `(state: i32, va: i64, size: i32, value: i64) -> i32` | scrittura; restituisce 0, oppure 1 se il blocco deve fermarsi (fault, o scrittura su una pagina con blocchi) |
+| `env.ld` | `(state: i32, va: i64, size: i32) -> i64` | lettura di 1/2/4/8 byte, estesa a zero; in caso di fault scrive 1 in `exit_detail` e restituisce 0: il blocco controlla `exit_detail` dopo ogni `ld` |
+| `env.st` | `(state: i32, va: i64, size: i32, value: i64) -> i32` | scrittura; restituisce 0, oppure 1 se il blocco deve fermarsi: `exit_detail` = 1 per un fault, 2 per una scrittura su una pagina con blocchi (STOP) |
 
 Esporta `b<N>: (state: i32) -> i32` per ogni blocco `N`. Il risultato:
 
@@ -20,7 +20,7 @@ Esporta `b<N>: (state: i32) -> i32` per ogni blocco `N`. Il risultato:
 
 ## `JitState`
 Struttura `#[repr(C)]` in `vetro_jit::state`, a un indirizzo allineato a 16
-byte scelto dall'host:
+byte scelto dall'host (`state` è l'indirizzo assoluto nella memoria `env.mem`):
 
 | Offset | Campo | Tipo |
 |---|---|---|
@@ -29,7 +29,7 @@ byte scelto dall'host:
 | 256 | `pc` | u64 |
 | 264 | `steps` | u64: istruzioni eseguite, aggiornato come nell'interprete |
 | 272 | `nzcv` | u32, bit 31:28 come `Cpu::nzcv` |
-| 276 | `exit_detail` | u32, riservato all'host |
+| 276 | `exit_detail` | u32: 0 all'ingresso del blocco (lo azzera l'host), 1 fault, 2 STOP |
 | 280 | `el` | u32, livello di eccezione (0 in modalità utente) |
 | 284 | — | riempimento fino a 288 |
 
