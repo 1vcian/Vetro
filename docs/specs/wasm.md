@@ -20,7 +20,7 @@ memoria lineare (due macchine da 1 GiB) arrivano negativi.
 
 ## Export
 
-Versione: `vetro_abi_version() -> u32`, oggi **5**. Cambia a ogni modifica
+Versione: `vetro_abi_version() -> u32`, oggi **6**. Cambia a ogni modifica
 incompatibile delle firme o dei codici qui sotto; il caricatore JS
 (`web/node/vetro.mjs`) la controlla.
 
@@ -34,6 +34,9 @@ incompatibile delle firme o dei codici qui sotto; il caricatore JS
 - 4 (M6): snapshot della macchina (`vetro_snapshot_*`, ADR 0015).
 - 5 (M5): connessioni TCP dal JS verso i servizi del guest (`vetro_net_*`,
   inoltro di porte come `hostfwd` di QEMU; la base di adb nel browser).
+- 6 (M6): overlay copy-on-write persistente dei dischi (`vetro_overlay_*`,
+  ADR 0017); `vetro_snapshot_restore` segna gli overlay per il confronto
+  completo.
 
 ### Memoria
 
@@ -157,6 +160,27 @@ attiva il JIT se si vuole (il risultato non cambia), poi
 | livello copy-on-write dei dischi (le scritture del guest) | i dati dei dischi (`HostDisk`, HTTP Range, OPFS): dopo il ripristino i blocchi si chiedono di nuovo con `BLOCKED` come all'avvio; la dimensione si controlla |
 | (niente altro: anche il contenuto di `vetro_disk_add_mem` è una base in sola lettura sotto il copy-on-write) | il contenuto dei dischi in memoria (`vetro_disk_add_mem`), controllato con un hash; l'uscita della console già consegnata al JS; gli ingressi non ancora dati |
 
+Se i dischi hanno un overlay persistente (sotto), `vetro_overlay_open` va
+chiamata **prima** di `vetro_snapshot_restore`; dopo il ripristino la
+prossima `vetro_overlay_take` confronta tutti i cluster con il file e scrive
+solo quelli diversi.
+
+### Overlay persistente dei dischi (ABI 6, ADR 0017)
+
+Le scritture del guest su un disco con copy-on-write (`vetro_disk_add` o
+`vetro_disk_add_mem` senza `READ_ONLY`) si conservano in un file tenuto dal
+JS (OPFS), nel formato di `vetro_snapshot::overlay` (lo stesso di `vetro
+boot --overlay`, `docs/specs/snapshot.md`). Rust decide che cosa scrivere e
+dove; il JS legge il file all'apertura e applica le scritture.
+
+| Export | Firma | Significato |
+|---|---|---|
+| `vetro_overlay_open` | `(vm, disk: u32, identity: *const u8, identity_len: usize, data: *const u8, data_len: usize) -> u32` | apre l'overlay del disco dal contenuto del file (`data_len` 0 se non c'è) per l'immagine base `identity` (UTF-8: URL, dimensione, ETag); i cluster letti entrano nel copy-on-write. Prima di `vetro_run` e di `vetro_snapshot_restore`. Codici: 0 `LOADED`, 1 `NEW` (file vuoto), 2 `MISMATCH` (overlay di un'altra base o dimensione: scartato), 3 `CORRUPT` (illeggibile: scartato), 4 `NO_DISK` (disco sconosciuto o in sola lettura); motivo nel messaggio. Con 2 e 3 la prossima `take` tronca il file |
+| `vetro_overlay_take` | `(vm, disk) -> usize` | prepara le scritture che portano il file allo stato del copy-on-write (i cluster scritti dal guest dall'ultima volta, o tutti dopo un ripristino) e ne restituisce la lunghezza; 0 = niente da scrivere. Codifica: u64 lunghezza a cui troncare prima (`u64::MAX` = no), u32 numero di scritture, poi per ognuna u64 offset, u32 lunghezza, byte (LE). In ordine: l'intestazione (offset 0) è l'ultima, da scrivere dopo un flush dei dati. Fra due `vetro_run` qualsiasi: non tocca il guest |
+| `vetro_overlay_ptr` | `(vm) -> *const u8` | i byte dell'ultima `take` (nullo se vuota), validi fino alla prossima `take`, a `vetro_overlay_clear` o a `vetro_machine_free` |
+| `vetro_overlay_clear` | `(vm)` | libera il buffer |
+| `vetro_overlay_info` | `(vm, disk, out: *mut u64, cap: usize) -> usize` | generazione (cresce a ogni `take` che scrive qualcosa), cluster nel file, slot nel file, slot rovinati trovati all'apertura, lunghezza del file; 0 = disco senza overlay |
+
 ### Rete: connessioni verso il guest (ABI 5)
 
 Il JS apre connessioni TCP verso una porta del guest (10.0.2.15), che le
@@ -277,6 +301,32 @@ Senza API di Node (gira nel Worker dell'app e nei test):
   in una richiesta fino a 8 MiB. Un errore della sorgente dopo i tentativi
   diventa `vetro_disk_fail`.
 
+## Persistenza in JavaScript (`web/node/persist.mjs`, M6, ADR 0017)
+
+Senza API di Node. I file hanno l'interfaccia di `FileSystemSyncAccessHandle`
+(`getSize`, `read`, `write`, `truncate`, `flush`, `close`): quelli di OPFS
+nel Worker (`opfsFile(cartella, nome)`), `MemFile` nei test.
+
+- `DiskOverlay.open(machine, disk, file, identity)`: legge il file e chiama
+  `vetro_overlay_open` (`opened.code`: `Loaded`, `New`, `Mismatch`,
+  `Corrupt`); `persist()` applica le scritture di `vetro_overlay_take`
+  (troncamento, dati, flush, intestazione, flush) e dice se ha scritto;
+  `generation`, `info`.
+- `SnapshotStore.opfs()` / `.memory()`: `save(chiave, metadati, byte)`
+  scrive `<chiave>.snap` e poi `<chiave>.json` (con `size`), `load(chiave)`
+  restituisce `{ meta, bytes }` solo se i metadati ci sono e la lunghezza
+  torna; `remove`.
+- `snapshotKey(parti)`: SHA-256 (32 cifre esadecimali) del JSON a chiavi
+  ordinate; `sha256Hex`; `staleReason(meta, overlays)`: null se ogni overlay
+  è alla generazione salvata nei metadati, altrimenti il motivo;
+  `toBase64`/`fromBase64` per la coda della console nei metadati.
+
+La classe `Machine` di `vetro.mjs` ha `snapshotVersion`, `snapshotSave()`
+(copia dei byte), `snapshotRestore(bytes)` (lancia un `Error` con `code`
+`BadMagic`/`Version`/`Config`/`Corrupt`), `overlayOpen(disk, identity,
+bytes)`, `overlayTake(disk)` (`{ truncate, writes: [{ at, bytes }] }` o null),
+`overlayInfo(disk)`.
+
 ## L'app web (`web/app`)
 
 HTML, CSS e moduli ES serviti così come sono: nessun bundler, nessuna
@@ -299,16 +349,25 @@ thread, niente `SharedArrayBuffer`), ma la pagina è già
 server che ospita l'app dovrà mandarle, e ogni risorsa di un'altra origine
 (es. un disco su una CDN) dovrà avere CORS o `Cross-Origin-Resource-Policy:
 cross-origin`. Parametri dell'URL:
-`?kernel=URL&initrd=URL&disk=URL&cmdline=...&pointer=multitouch&webgpu=1&autostart=1`.
+`?kernel=URL&initrd=URL&disk=URL&cmdline=...&pointer=multitouch&webgpu=1&autostart=1`,
+più `snapshot=0` (niente cache degli snapshot) e `persist=0` (dischi non
+persistenti).
 
 - `main.mjs` (thread della pagina): sceglie kernel, initramfs e disco (URL
   o file locale), opzioni (RAM, risoluzione, tablet o touchscreen, blocchi
-  da 64 KiB o 1 MiB, JIT, tempo reale, cache OPFS, WebGPU), avvia il
+  da 64 KiB o 1 MiB, JIT, tempo reale, cache OPFS, dischi persistenti,
+  snapshot in cache, WebGPU), avvia il
   Worker; disegna i rettangoli cambiati dello scanout (`display.mjs`:
   Canvas2D con `putImageData`, o WebGPU con `writeTexture` e un triangolo
   a pieno schermo, se scelto e disponibile), il cursore in un secondo
   canvas sopra, la console (`terminal.mjs`: CR/LF/BS/TAB, CSI K/J/C/D/G/H,
-  risposta a `ESC[6n`, UTF-8), la barra di stato.
+  risposta a `ESC[6n`, UTF-8), la barra di stato. Pulsanti "Salva stato"
+  (snapshot subito) e, prima dell'avvio, "Cancella dati salvati"
+  (cartelle OPFS `vetro-snapshots`, `vetro-overlays`, `vetro-disks`). Dopo
+  un ripristino rimostra la coda della console dello snapshot senza
+  rispondere alle richieste del terminale. `window.vetroState` (`boot`:
+  `{ mode: 'cold' | 'snapshot', ms, times }`, `snapshots`, `disks`) per i
+  test.
 - Ingressi: tastiera sul canvas con `KeyboardEvent.code` → codice Linux
   (`keymap.mjs`; le ripetizioni del browser si scartano, l'autorepeat lo fa
   il guest con EV_REP; al blur si rilasciano i tasti premuti); mouse con
@@ -326,6 +385,18 @@ cross-origin`. Parametri dell'URL:
   `Blocked` aspetta `DiskFeeder.serve()`; su `Idle` aspetta un messaggio.
   Con "tempo reale" il tempo del guest non corre davanti all'orologio vero
   (il tempo passato ad aspettare i dischi non conta).
+- Persistenza nel Worker (ADR 0017): per ogni disco scrivibile un overlay
+  in `vetro-overlays/<sha256(identità)>.cow`, salvato fra una fetta e
+  l'altra (al più ogni secondo, e a ogni arresto); lo snapshot in
+  `vetro-snapshots/`, con chiave da versione del formato, hash di kernel e
+  initramfs, riga di comando, RAM, risoluzione, dispositivi, identità e
+  dimensione dei dischi. All'avvio, se c'è uno snapshot per la chiave e gli
+  overlay sono alla generazione dei suoi metadati, si ripristina invece di
+  caricare il kernel (messaggio `restored` con i tempi); altrimenti si
+  avvia da zero (`cold`). Lo snapshot si salva (dopo gli overlay, messaggio
+  `snapshot`) la prima volta che il guest è a riposo, di nuovo a riposo se
+  gli overlay sono cambiati, e a richiesta. A riposo: `Idle`, o 1,5 s di
+  tempo del guest senza console, scanout, ingressi né dischi.
 
 ## Test web
 
@@ -340,7 +411,8 @@ cross-origin`. Parametri dell'URL:
   stesso log byte per byte (JIT in V8, disco via HTTP);
 - `tests/web/unit.mjs`: server (Range, suffissi, 416, HEAD, COOP/COEP,
   percorsi fuori radice), `RangeSource`, `BlobSource`, `DiskFeeder` (cache,
-  blocchi contigui, lettura anticipata, errori), mappa dei tasti, terminale;
+  blocchi contigui, lettura anticipata, errori), mappa dei tasti, terminale,
+  `MemFile`, `SnapshotStore`, `snapshotKey`, `staleReason`;
 - `tests/web/boot-disk.mjs`: il kernel M3 legge e scrive un disco raw di
   prova (`md5sum /dev/vda`, 13 byte scritti, cache svuotata, riletti,
   `md5sum`): disco locale, via HTTP con cache vuota, dalla cache piena
@@ -352,10 +424,22 @@ cross-origin`. Parametri dell'URL:
   controllo di `tests/boot/tests/devices.rs`), rettangolo cambiato,
   cursore, spegnimento dello scanout; tastiera e tablet via API letti dal
   guest con evdev; LED; due esecuzioni identiche;
+- `tests/web/snapshot.mjs` (M6): kernel M3 con disco via HTTP e overlay su
+  `MemFile`; snapshot a 40 M istruzioni e al prompt, poi scrittura (dd +
+  sync, 75 cluster), rilettura a cache svuotata, `md5sum`, spegnimento;
+  ripristino su macchine nuove col JIT e con l'interprete (e da metà avvio):
+  seguito del log byte per byte, istruzioni finali e file dell'overlay
+  uguali all'esecuzione senza tagli; avvio da zero con l'overlay (la
+  scrittura c'è); base cambiata (overlay scartato). Stampa tempi e
+  dimensioni di salvataggio e ripristino in V8;
 - `tests/web/browser.mjs`: l'app in Chrome headless pilotato col protocollo
   DevTools (WebSocket di Node 22): avvio col disco via HTTP, `md5sum` e
   motivo del guest sul canvas pixel per pixel con cursore visibile, tasto
-  vero dal canvas al guest, riavvio con i blocchi da OPFS. Senza Chrome
+  vero dal canvas al guest; snapshot salvato al riposo dopo l'avvio,
+  scrittura sul disco e snapshot risalvato; seconda sessione con
+  `snapshot=0` (avvio da zero, scrittura ritrovata dall'overlay in OPFS,
+  blocchi dalla cache OPFS); terza sessione ripristinata dallo snapshot
+  (tempo misurato, console che risponde, scrittura presente). Senza Chrome
   (`VETRO_CHROME`) stampa SKIP; `VETRO_REQUIRE_BROWSER=1` lo rende un
   errore.
 

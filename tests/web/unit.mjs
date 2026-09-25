@@ -2,7 +2,7 @@
 // Test unitari dei pezzi JS dell'app web (senza kernel né browser):
 // server con Range (tools/web-serve.mjs), sorgenti e DiskFeeder
 // (web/node/disk.mjs), mappa dei tasti (web/app/keymap.mjs), terminale
-// (web/app/terminal.mjs).
+// (web/app/terminal.mjs), persistenza (web/node/persist.mjs).
 //
 //   node tests/web/unit.mjs
 
@@ -12,6 +12,7 @@ import { BlobSource, DiskFeeder, MemoryCache, RangeSource } from '../../web/node
 import { parseRange, serve } from '../../tools/web-serve.mjs';
 import { absAxis, BUTTONS, evdevCode } from '../../web/app/keymap.mjs';
 import { keyToBytes, Terminal } from '../../web/app/terminal.mjs';
+import { fromBase64, MemFile, readAll, SnapshotStore, snapshotKey, staleReason, toBase64 } from '../../web/node/persist.mjs';
 import { check, root, run } from './lib.mjs';
 
 const eq = (a, b, what) => check(JSON.stringify(a) === JSON.stringify(b), `${what}: ${JSON.stringify(a)} invece di ${JSON.stringify(b)}`);
@@ -176,6 +177,35 @@ test('terminale', () => {
   const k = (key, o = {}) => keyToBytes({ key, ctrlKey: false, altKey: false, metaKey: false, ...o });
   eq([k('a'), k('Enter'), k('Backspace'), k('ArrowUp'), k('c', { ctrlKey: true }), k('Shift'), k('v', { metaKey: true })],
     ['a', '\r', '\x7f', '\x1b[A', '\x03', null, null], 'tasti');
+});
+
+test('persistenza: MemFile, cache degli snapshot, chiavi', async () => {
+  const f = new MemFile();
+  f.write(new Uint8Array([1, 2, 3]), { at: 5000 });
+  eq(f.getSize(), 5003, 'scrittura oltre la fine');
+  eq([...readAll(f).subarray(4998)], [0, 0, 1, 2, 3], 'buco a zero');
+  f.truncate(4999);
+  f.truncate(5001);
+  eq([...readAll(f).subarray(4998)], [0, 0, 0], 'troncato e riallungato a zero');
+  const buf = new Uint8Array(4);
+  eq(f.read(buf, { at: 4999 }), 2, 'lettura corta alla fine');
+
+  const store = SnapshotStore.memory();
+  eq(await store.load('k'), null, 'chiave assente');
+  await store.save('k', { generations: [3, null], console: toBase64(new Uint8Array([0, 255, 10])) }, new Uint8Array([9, 8, 7]));
+  const r = await store.load('k');
+  eq([...r.bytes], [9, 8, 7], 'byte riletti');
+  eq(r.meta.size, 3, 'dimensione nei metadati');
+  eq([...fromBase64(r.meta.console)], [0, 255, 10], 'console in base64');
+  eq(staleReason(r.meta, [{ generation: 3 }, null]), null, 'stessa generazione: vale');
+  check(staleReason(r.meta, [{ generation: 4 }, null])?.includes('generazione 4'), 'disco andato avanti: non vale');
+  await store.remove('k');
+  eq(await store.load('k'), null, 'tolto');
+
+  const a = await snapshotKey({ v: 2, disks: [{ id: 'x', size: 1 }], ram: 1024 });
+  const b = await snapshotKey({ ram: 1024, disks: [{ size: 1, id: 'x' }], v: 2 });
+  const c = await snapshotKey({ ram: 1024, disks: [{ size: 1, id: 'x' }], v: 3 });
+  eq(a === b && a !== c && a.length === 32, true, 'chiave stabile rispetto all\'ordine, diversa per un valore');
 });
 
 run(async () => {

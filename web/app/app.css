@@ -135,9 +135,18 @@ main {
   flex-wrap: wrap;
 }
 
-#stats {
+#stats,
+#snapinfo {
   color: var(--dim);
   font: 12px ui-monospace, monospace;
+}
+
+#forget {
+  background: transparent;
+  color: var(--dim);
+  border: 1px solid var(--dim);
+  margin-left: 8px;
+  font-weight: 400;
 }
 
 #console-box {

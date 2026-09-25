@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]
-//! vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--restore=FILE]
+//! vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--restore=FILE]
 //! ```
 //!
 //! `boot` avvia la macchina virt (M3) con la console PL011 su stdin/stdout.
@@ -23,7 +23,11 @@
 //! dell'ispettore di rete (M7, ADR 0016). Ogni `--disk` aggiunge
 //! un virtio-blk nello slot libero più alto, nell'ordine della riga di comando
 //! (come i `-device virtio-blk-device` di QEMU): il file resta intatto, le
-//! scritture del guest restano in memoria (`snapshot=on`). `--guest-secs`
+//! scritture del guest restano in memoria (`snapshot=on`). `--overlay=FILE`
+//! dopo un `--disk` le conserva in FILE (creato se manca; formato di
+//! `vetro_snapshot::overlay`, lo stesso del browser, ADR 0017) e al
+//! prossimo avvio le riapplica; un overlay fatto su un'altra immagine base
+//! (nome, dimensione, data di modifica) si scarta con un avviso. `--guest-secs`
 //! ferma la macchina dopo N secondi di tempo del guest.
 //! `--jit` esegue col JIT verso WASM (M4, wasmtime; in `boot` il JIT della
 //! modalità sistema, ADR 0013, con `--jit-threshold=N` ingressi prima di
@@ -61,7 +65,7 @@ fn usage() -> ExitCode {
         "uso: vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]"
     );
     eprintln!(
-        "     vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--restore=FILE]"
+        "     vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--restore=FILE]"
     );
     ExitCode::from(2)
 }
@@ -151,13 +155,15 @@ fn run(args: &[String]) -> ExitCode {
 
 fn boot(args: &[String]) -> ExitCode {
     use std::io::{Read, Write};
+    use vetro_cli::disk::{FileBackend, FileOverlay};
     use vetro_cli::hostfwd::{HostFwd, Input};
     use vetro_machine::{Devices, Machine, MachineConfig, NetSetup, Stop};
-    use vetro_platform::virtio::{VirtioBlk, VirtioBlkConfig};
+    use vetro_platform::virtio::{CowBackend, VirtioBlk, VirtioBlkConfig};
     let (mut kernel, mut initrd, mut append) = (None, None, "console=ttyAMA0".to_string());
     let mut cfg = MachineConfig::default();
     let mut devices = Devices::default();
-    let mut disks = Vec::new();
+    // (immagine, overlay).
+    let mut disks: Vec<(String, Option<String>)> = Vec::new();
     let mut guest_ns = u64::MAX;
     let mut stats = false;
     let (mut net, mut net_events) = (None, false);
@@ -203,7 +209,11 @@ fn boot(args: &[String]) -> ExitCode {
                 Ok(n) => threshold = n,
                 Err(_) => return usage(),
             },
-            Some(("--disk", v)) => disks.push(v.to_string()),
+            Some(("--disk", v)) => disks.push((v.to_string(), None)),
+            Some(("--overlay", v)) => match disks.last_mut() {
+                Some((_, o @ None)) => *o = Some(v.to_string()),
+                _ => return usage(),
+            },
             Some(("--save-at", v)) => match v.split_once(':').map(|(n, f)| (n.parse::<u64>(), f)) {
                 Some((Ok(n), f)) if !f.is_empty() => save_at.push((n, f.to_string())),
                 _ => return usage(),
@@ -265,20 +275,61 @@ fn boot(args: &[String]) -> ExitCode {
         return ExitCode::from(2);
     }
     let mut m = Machine::with_devices(&cfg, &devices);
-    for d in &disks {
-        let backend = match vetro_cli::disk::cow_disk(std::path::Path::new(d)) {
+    // Overlay persistenti: (slot del disco, overlay).
+    let mut overlays: Vec<(u32, FileOverlay)> = Vec::new();
+    for (d, ov) in &disks {
+        let path = std::path::Path::new(d);
+        let mut backend = match vetro_cli::disk::cow_disk(path) {
             Ok(b) => b,
             Err(e) => {
                 eprintln!("vetro: {d}: {e}");
                 return ExitCode::from(2);
             }
         };
+        let overlay = match ov {
+            None => None,
+            Some(o) => match vetro_cli::disk::base_identity(path)
+                .and_then(|id| FileOverlay::open(std::path::Path::new(o), &id, &mut backend))
+            {
+                Ok((f, discarded)) => {
+                    if let Some(why) = discarded {
+                        eprintln!("vetro: {o}: {why}");
+                    }
+                    Some(f)
+                }
+                Err(e) => {
+                    eprintln!("vetro: {o}: {e}");
+                    return ExitCode::from(2);
+                }
+            },
+        };
         let blk = VirtioBlk::new(Box::new(backend), VirtioBlkConfig::default());
-        if m.board.borrow_mut().virt.attach_virtio_next(Box::new(blk)).is_err() {
+        let Ok(slot) = m.board.borrow_mut().virt.attach_virtio_next(Box::new(blk)) else {
             eprintln!("vetro: troppi dispositivi virtio");
             return ExitCode::from(2);
+        };
+        if let Some(f) = overlay {
+            overlays.push((slot, f));
         }
     }
+    // Scrive negli overlay i cluster cambiati (fra un quanto e l'altro, e
+    // prima di uscire). Letture dell'host: il guest non se ne accorge.
+    let persist = |m: &Machine, overlays: &mut Vec<(u32, FileOverlay)>| -> Result<(), ExitCode> {
+        for (slot, f) in overlays.iter_mut() {
+            let mut b = m.board.borrow_mut();
+            let cow = b
+                .virt
+                .virtio_mut(*slot)
+                .and_then(|t| t.device_as_mut::<VirtioBlk>())
+                .and_then(|blk| blk.backend_as_mut::<CowBackend<FileBackend>>())
+                .expect("disco con overlay");
+            if let Err(e) = f.persist(cow) {
+                eprintln!("vetro: overlay del disco nello slot {slot}: {e}");
+                return Err(ExitCode::from(2));
+            }
+        }
+        Ok(())
+    };
     if let Some(snap) = &snapshot {
         let path = restore.as_deref().unwrap_or_default();
         if let Err(e) = m.load_state(snap) {
@@ -286,6 +337,9 @@ fn boot(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
         eprintln!("vetro: ripristinato {path} a {} istruzioni", m.steps);
+        for (_, f) in overlays.iter_mut() {
+            f.after_restore();
+        }
     } else if let Some(image) = &image
         && let Err(e) = m.load_linux(image, initrd.as_deref(), &append)
     {
@@ -371,6 +425,9 @@ fn boot(args: &[String]) -> ExitCode {
         });
     };
     let code = loop {
+        if let Err(c) = persist(&m, &mut overlays) {
+            break c;
+        }
         if m.guest_ns() >= guest_ns {
             report(&m);
             eprintln!("vetro: raggiunto il limite di tempo del guest");
@@ -419,10 +476,16 @@ fn boot(args: &[String]) -> ExitCode {
             }
             Stop::PowerOff => {
                 report(&m);
+                if let Err(c) = persist(&m, &mut overlays) {
+                    break c;
+                }
                 break ExitCode::SUCCESS;
             }
             Stop::Reset => {
                 report(&m);
+                if let Err(c) = persist(&m, &mut overlays) {
+                    return c;
+                }
                 eprintln!("vetro: il guest ha chiesto un reset");
                 break ExitCode::SUCCESS;
             }

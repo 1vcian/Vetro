@@ -8,8 +8,15 @@
 //      motivo del guest pixel per pixel e il cursore dev'essere visibile;
 //   2. col canvas a fuoco un tasto vero (KeyA) arriva al guest da
 //      virtio-input (`vetro-dev input-read`);
-//   3. ricaricata la pagina (stesso profilo), il disco si legge da OPFS:
-//      nessuna lettura Range oltre la prima (dimensione).
+//   3. il primo avvio salva lo snapshot in OPFS al prompt; il guest scrive
+//      sul disco (dd + sync) e lo snapshot si risalva insieme all'overlay
+//      (M6, ADR 0016);
+//   4. seconda sessione senza snapshot (`snapshot=0`, stesso profilo):
+//      avvio da zero, la scrittura della prima sessione c'è (overlay in
+//      OPFS), e i blocchi del disco vengono dalla cache OPFS: nessuna lettura
+//      Range oltre la prima (dimensione);
+//   5. terza sessione: riparte dallo snapshot invece di avviare il kernel
+//      (tempo misurato), la console risponde, la scrittura c'è.
 //
 // Chrome: VETRO_CHROME, altrimenti i percorsi soliti. Senza Chrome il test
 // dice SKIP (non è un test passato) ed esce con 0, o con 1 se
@@ -35,6 +42,8 @@ const CANDIDATES = [
 ].filter(Boolean);
 
 const SIZE = 2 * 1024 * 1024 + 4096;
+const WRITE_AT = 1048576;
+const TEXT = 'VETRO-OPFS-42';
 
 class Cdp {
   #ws;
@@ -101,6 +110,10 @@ class Page {
       }
       await new Promise((ok) => setTimeout(ok, 200));
     }
+  }
+
+  state() {
+    return this.eval('window.vetroState');
   }
 
   async until(needle, after = 0) {
@@ -189,6 +202,11 @@ run(async () => {
   const file = join(dir, 'browser-disk.img');
   writeFileSync(file, disk);
   const md5 = createHash('md5').update(disk).digest('hex');
+  const modified = disk.slice();
+  modified.set(new TextEncoder().encode(TEXT), WRITE_AT);
+  const md5After = createHash('md5').update(modified).digest('hex');
+  // Rilettura a cache del guest svuotata: i byte vengono dal disco.
+  const READ = `echo 3 > /proc/sys/vm/drop_caches; echo L-$(dd if=/dev/vda bs=1 skip=${WRITE_AT} count=${TEXT.length} 2>/dev/null)-F; md5sum /dev/vda`;
   const ranges = [];
   const srv = await serve({
     mounts: [['/disks/test.img', file], ...appMounts()],
@@ -199,8 +217,16 @@ run(async () => {
   try {
     const q = new URLSearchParams({ disk: '/disks/test.img', cmdline: 'console=ttyAMA0 vetro.noautotest', autostart: '1' });
     const url = `${srv.url}/app/?${q}`;
+    let t0 = Date.now();
     let { page, targetId } = await openPage(cdp, url);
     let at = await page.until('# ');
+    const coldMs = Date.now() - t0;
+    const boot1 = (await page.state()).boot;
+    check(boot1?.mode === 'cold', `primo avvio: atteso da zero, ${JSON.stringify(boot1)}`);
+    const snap1 = await page.waitFor('primo snapshot', async () => (await page.state()).snapshots[0], 60_000);
+    check(snap1.why === 'avvio finito', `primo snapshot: ${JSON.stringify(snap1)}`);
+    console.log(`primo avvio (da zero): prompt in ${(coldMs / 1000).toFixed(2)} s; snapshot al prompt ${(snap1.size / 2 ** 20).toFixed(1)} MiB, ` +
+      `salvato in ${snap1.saveMs.toFixed(0)} ms + scrittura OPFS ${snap1.writeMs.toFixed(0)} ms`);
     await page.type('md5sum /dev/vda');
     at = await page.until(`${md5}  /dev/vda`, at);
     await page.type('vetro-dev drm-hold');
@@ -220,25 +246,59 @@ run(async () => {
     await page.key('a', 'KeyA', 'a');
     at = await page.until('vetro-dev: evento 1 30 0', at);
     console.log('tastiera: KeyA dal canvas arrivato al guest come KEY_A (virtio-input)');
+    at = await page.until('# ', at);
+    await page.type(`printf ${TEXT} | dd of=/dev/vda bs=1 seek=${WRITE_AT} conv=notrunc 2>/dev/null; sync`);
+    at = await page.until('# ', at);
+    const snap2 = await page.waitFor('snapshot dopo la scrittura', async () => (await page.state()).snapshots.find((x) => x.why === 'dischi cambiati'), 60_000);
+    check(snap2.generations[0] > snap1.generations[0], `generazione dell'overlay non cresciuta: ${JSON.stringify([snap1, snap2])}`);
+    console.log(`scrittura sul disco: snapshot risalvato con l'overlay alla generazione ${snap2.generations[0]}`);
     const first = ranges.length;
     await cdp.send('Target.closeTarget', { targetId });
 
-    // Riavvio: i blocchi del disco vengono da OPFS.
-    ({ page, targetId } = await openPage(cdp, url));
+    // Seconda sessione senza snapshot: avvio da zero, disco da OPFS.
+    ({ page, targetId } = await openPage(cdp, `${url}&snapshot=0`));
     at = await page.until('# ');
-    await page.type('md5sum /dev/vda');
-    await page.until(`${md5}  /dev/vda`, at);
+    check((await page.state()).boot?.mode === 'cold', 'con snapshot=0 si avvia da zero');
+    await page.type(READ);
+    at = await page.until(`${md5After}  /dev/vda`, at);
+    const text2 = await page.consoleText();
+    check(text2.includes(`L-${TEXT}-F`), `scrittura della prima sessione persa:\n${text2.split('\n').slice(-8).join('\n')}`);
     const second = ranges.length - first;
     const status = await page.eval("document.getElementById('status').textContent");
     check(first > 1, `primo avvio: ${first} richieste al disco, attese letture Range`);
     check(second === 1, `riavvio: ${second} richieste al disco (attesa 1, la dimensione): OPFS non usato? stato: ${status}`);
-    console.log(`OPFS: primo avvio ${first} richieste Range, riavvio ${second} (solo la dimensione)`);
+    console.log(`seconda sessione (da zero): la scrittura della prima c'è (overlay in OPFS, md5 ${md5After}); ` +
+      `richieste Range: primo avvio ${first}, riavvio ${second} (solo la dimensione)`);
+    await cdp.send('Target.closeTarget', { targetId });
+
+    // Terza sessione: dallo snapshot.
+    const before3 = ranges.length;
+    t0 = Date.now();
+    ({ page, targetId } = await openPage(cdp, url));
+    const boot3 = await page.waitFor('ripristino dallo snapshot', async () => (await page.state())?.boot, 60_000);
+    const restoredMs = Date.now() - t0;
+    check(boot3.mode === 'snapshot', `terza sessione: attesa dallo snapshot, ${JSON.stringify(boot3)}`);
+    at = (await page.consoleText()).length;
+    check((await page.consoleText()).includes('# '), 'la console dello snapshot non è stata rimostrata');
+    await page.type(READ);
+    at = await page.until(`${md5After}  /dev/vda`, at);
+    const answeredMs = Date.now() - t0;
+    check((await page.consoleText()).slice(-400).includes(`L-${TEXT}-F`), 'dopo il ripristino la scrittura non c\'è');
+    const t = boot3.times;
+    console.log(`terza sessione (snapshot): pronta in ${(restoredMs / 1000).toFixed(2)} s dall'apertura della pagina ` +
+      `(nel Worker: wasm ${t.wasm.toFixed(0)} ms, kernel e initramfs ${t.files.toFixed(0)} ms, chiave ${t.key.toFixed(0)} ms, ` +
+      `lettura OPFS ${t.read.toFixed(0)} ms, ripristino ${t.restore.toFixed(0)} ms; snapshot ${(boot3.size / 2 ** 20).toFixed(1)} MiB), ` +
+      `primo comando eseguito a ${(answeredMs / 1000).toFixed(2)} s; primo avvio da zero ${(coldMs / 1000).toFixed(2)} s; ` +
+      `richieste Range ${ranges.length - before3}`);
     console.log('app nel browser: ok');
   } finally {
     cdp.close();
+    // Il profilo si cancella dopo l'uscita di Chrome (che può ancora
+    // scrivere i file di OPFS mentre chiude).
+    const exited = proc.exitCode !== null ? Promise.resolve() : new Promise((ok) => proc.once('exit', ok));
     proc.kill();
     await srv.close();
-    await new Promise((ok) => setTimeout(ok, 300));
-    rmSync(profile, { recursive: true, force: true });
+    await Promise.race([exited, new Promise((ok) => setTimeout(ok, 5000))]);
+    rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   }
 });

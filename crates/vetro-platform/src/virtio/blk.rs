@@ -19,7 +19,7 @@
 //!   idempotenti, quindi ripeterle è sicuro.
 
 use core::any::Any;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
 
@@ -169,16 +169,23 @@ impl BlockBackend for MemBackend {
 /// [`CowBackend::CLUSTER`] byte in memoria, le letture preferiscono i
 /// cluster scritti. Una scrittura parziale di un cluster lo copia prima
 /// dalla base.
+///
+/// Per l'overlay persistente (M6, ADR 0017) tiene anche l'insieme dei
+/// cluster scritti dall'ultima [`take_dirty`](Self::take_dirty): chi
+/// conserva i cluster su file (CLI, OPFS nel browser) scrive solo quelli.
+/// È contabilità dell'host, non stato del guest: non entra negli snapshot,
+/// e dopo un ripristino si svuota (chi persiste confronta tutti i cluster).
 pub struct CowBackend<B: BlockBackend> {
     base: B,
     clusters: BTreeMap<u64, Box<[u8]>>,
+    dirty: BTreeSet<u64>,
 }
 
 impl<B: BlockBackend> CowBackend<B> {
     pub const CLUSTER: u64 = 4096;
 
     pub fn new(base: B) -> Self {
-        Self { base, clusters: BTreeMap::new() }
+        Self { base, clusters: BTreeMap::new(), dirty: BTreeSet::new() }
     }
 
     pub fn base(&self) -> &B {
@@ -192,6 +199,34 @@ impl<B: BlockBackend> CowBackend<B> {
     /// Numero di cluster scritti.
     pub fn dirty_clusters(&self) -> usize {
         self.clusters.len()
+    }
+
+    /// I cluster scritti dal guest dall'ultima chiamata, in ordine.
+    pub fn take_dirty(&mut self) -> Vec<u64> {
+        core::mem::take(&mut self.dirty).into_iter().collect()
+    }
+
+    /// I dati del cluster `c`, se è stato scritto.
+    pub fn cluster(&self, c: u64) -> Option<&[u8]> {
+        self.clusters.get(&c).map(|d| &d[..])
+    }
+
+    /// Tutti i cluster scritti, in ordine di indice.
+    pub fn clusters(&self) -> impl Iterator<Item = (u64, &[u8])> {
+        self.clusters.iter().map(|(&c, d)| (c, &d[..]))
+    }
+
+    /// Mette il cluster `c` con i dati di un overlay salvato (lunghi come il
+    /// cluster nel disco). Non conta come scrittura del guest.
+    pub fn load_cluster(&mut self, c: u64, data: &[u8]) -> Result<(), BlockError> {
+        if c >= self.size().div_ceil(Self::CLUSTER) {
+            return Err(BlockError::OutOfRange);
+        }
+        if data.len() != self.cluster_len(c) {
+            return Err(BlockError::Io);
+        }
+        self.clusters.insert(c, data.into());
+        Ok(())
     }
 
     /// Dimensione del cluster `c` (l'ultimo può essere più corto).
@@ -249,6 +284,7 @@ impl<B: BlockBackend> BlockBackend for CowBackend<B> {
             }
             let cl = self.clusters.get_mut(&c).expect("cluster appena inserito");
             cl[off..off + (b - a)].copy_from_slice(&data[a..b]);
+            self.dirty.insert(c);
             Ok(())
         })
     }
@@ -273,6 +309,7 @@ impl<B: BlockBackend> BlockBackend for CowBackend<B> {
         r.expect_u64("dimensione del disco", self.base.size())?;
         let clusters = self.size().div_ceil(Self::CLUSTER);
         self.clusters.clear();
+        self.dirty.clear();
         let n = r.len_of(16)?;
         for _ in 0..n {
             let c = r.u64()?;

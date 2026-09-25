@@ -46,11 +46,22 @@ export class Session {
   log = '';
   blocked = 0;
 
-  constructor(exports, kernel, { cmdline = 'console=ttyAMA0 vetro.noautotest', jit = true, machine = {}, setup = () => {} } = {}) {
+  /**
+   * `restore`: byte di uno snapshot da ripristinare invece di caricare il
+   * kernel (dopo `setup`, che aggiunge gli stessi dischi); `onQuantum`: si
+   * chiama a ogni confine di quanto (dopo aver letto la console).
+   */
+  constructor(exports, kernel, { cmdline = 'console=ttyAMA0 vetro.noautotest', jit = true, machine = {}, setup = () => {}, restore = null, onQuantum = null } = {}) {
     this.m = new Machine(exports, machine);
     this.feeder = null;
+    this.onQuantum = onQuantum;
     setup(this);
-    this.m.loadLinux(kernel.image, kernel.initrd, cmdline);
+    if (restore) {
+      const t0 = performance.now();
+      this.m.snapshotRestore(restore);
+      this.restoreMs = performance.now() - t0;
+    }
+    else this.m.loadLinux(kernel.image, kernel.initrd, cmdline);
     if (jit) this.m.setJit(16, 16);
   }
 
@@ -65,7 +76,10 @@ export class Session {
     for (;;) {
       const stop = this.m.run(target - this.m.steps);
       this.#pull();
-      if (stop !== 'Blocked') return stop;
+      if (stop !== 'Blocked') {
+        this.onQuantum?.(this);
+        return stop;
+      }
       this.blocked++;
       if (!this.feeder || (await this.feeder.serve()) === 0) throw new Fail('disco in attesa senza blocchi da chiedere');
     }
