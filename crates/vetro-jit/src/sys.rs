@@ -168,6 +168,8 @@ pub struct SysJitStats {
     /// Nuove epoche del concatenamento e svuotamenti della TLB software.
     pub epochs: u64,
     pub tlb_flushes: u64,
+    /// Voci scritte nella TLB software.
+    pub tlb_fills: u64,
     /// Azzeramenti del motore.
     pub resets: u64,
 }
@@ -420,6 +422,7 @@ impl<M> SysHost<'_, M> {
             + ((va >> 12) & (area::TLB_ENTRIES as u64 - 1)) as usize * 16;
         mem[e..e + 8].copy_from_slice(&vpage.to_le_bytes());
         mem[e + 8..e + 16].copy_from_slice(&host.wrapping_sub(vpage).to_le_bytes());
+        self.cache.stats.tlb_fills += 1;
     }
 }
 

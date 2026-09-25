@@ -17,3 +17,4 @@ wasmtime = { version = "49", default-features = false, features = ["cranelift", 
 
 [dev-dependencies]
 vetro-cpu = { path = "../vetro-cpu" }
+vetro-mmu = { path = "../vetro-mmu" }

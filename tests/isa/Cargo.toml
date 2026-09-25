@@ -15,3 +15,6 @@ vetro-diff = { path = "../diff" }
 [dev-dependencies]
 vetro-cpu = { path = "../../crates/vetro-cpu" }
 vetro-mmu = { path = "../../crates/vetro-mmu" }
+# La sonda di sistema anche col JIT della modalità sistema (ADR 0013).
+vetro-jit = { path = "../../crates/vetro-jit" }
+vetro-jit-native = { path = "../../crates/vetro-jit-native" }

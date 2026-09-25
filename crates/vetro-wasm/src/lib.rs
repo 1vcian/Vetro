@@ -260,6 +260,7 @@ pub unsafe extern "C" fn vetro_jit_stats(vm: *const Vm, out: *mut u64, cap: usiz
         s.stops,
         s.epochs,
         s.tlb_flushes,
+        s.tlb_fills,
         s.resets,
     ];
     let n = v.len().min(cap);

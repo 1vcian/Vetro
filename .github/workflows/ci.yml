@@ -98,19 +98,31 @@ jobs:
         run: |
           set -o pipefail
           cargo test --release -p vetro-boot-tests -- --nocapture --test-threads=1 2>&1 | tee boot-test.log
-      # M4: la stessa macchina compilata a wasm32, in Node (V8). Stesse
-      # istruzioni e stesso log dell'interprete nativo; stampa i due tempi.
+      # M4 (ADR 0013): lo stesso avvio col JIT della modalità sistema
+      # (wasmtime) deve dare le stesse istruzioni e lo stesso log, byte per
+      # byte, dell'interprete (il test esegue entrambi e li confronta).
+      - name: Avvio sotto Vetro col JIT
+        run: |
+          set -o pipefail
+          cargo test --release -p vetro-boot-tests --test vetro -- --nocapture 2>&1 | tee boot-jit.log
+          grep -E '^(interprete|JIT \(soglia)' boot-jit.log | sed 's/^/::notice title=JIT nativo::/'
+        env:
+          VETRO_JIT: "1"
+      # M4: la stessa macchina compilata a wasm32, in Node (V8), con
+      # l'interprete e col JIT. Stesse istruzioni e stesso log
+      # dell'interprete nativo; il passo fallisce se il JIT in V8 è più lento
+      # dell'interprete nativo misurato qui (soglia di M4, ADR 0012).
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Avvio in WebAssembly (Node) e tempi
+      - name: Avvio in WebAssembly (Node), col JIT, e tempi
         run: |
           set -o pipefail
-          tools/wasm-boot.sh 2>&1 | tee wasm-boot.log
-          grep -A2 '^==> tempi' wasm-boot.log | sed 's/^/::notice title=tempi di avvio::/'
+          tools/wasm-boot.sh --jit 2>&1 | tee wasm-boot.log
+          grep -A4 '^==> tempi' wasm-boot.log | sed 's/^/::notice title=tempi di avvio::/'
       - if: failure()
         run: |
-          for f in boot-build.log boot-test.log wasm-boot.log; do
+          for f in boot-build.log boot-test.log boot-jit.log wasm-boot.log; do
             [ -s "$f" ] || continue
             echo "::error title=$f::$(grep -vE '^\s*$' "$f" | tail -n 60 | awk '{gsub(/%/, "%25"); gsub(/\r/, ""); printf "%s%%0A", $0}')"
           done

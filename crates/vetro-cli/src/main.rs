@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]
-//! vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB] [--no-devices] [--disk=FILE]... [--guest-secs=N] [--stats]
+//! vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB] [--no-devices] [--disk=FILE]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats]
 //! ```
 //!
 //! `boot` avvia la macchina virt (M3) con la console PL011 su stdin/stdout.
@@ -12,8 +12,10 @@
 //! (come i `-device virtio-blk-device` di QEMU): il file resta intatto, le
 //! scritture del guest restano in memoria (`snapshot=on`). `--guest-secs`
 //! ferma la macchina dopo N secondi di tempo del guest.
-//! `--jit` esegue col JIT verso WASM (M4, wasmtime); `--stats` stampa su
-//! stderr istruzioni, tempo e MIPS (e i contatori del JIT).
+//! `--jit` esegue col JIT verso WASM (M4, wasmtime; in `boot` il JIT della
+//! modalità sistema, ADR 0013, con `--jit-threshold=N` ingressi prima di
+//! tradurre un blocco); `--stats` stampa su stderr istruzioni, tempo e MIPS
+//! (e i contatori del JIT).
 
 use std::process::ExitCode;
 use vetro_cli::linux::{ClockMode, Config, Exit};
@@ -37,7 +39,7 @@ fn usage() -> ExitCode {
         "uso: vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]"
     );
     eprintln!(
-        "     vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB] [--no-devices] [--disk=FILE]... [--guest-secs=N] [--stats]"
+        "     vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB] [--no-devices] [--disk=FILE]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats]"
     );
     ExitCode::from(2)
 }
@@ -135,10 +137,15 @@ fn boot(args: &[String]) -> ExitCode {
     let mut disks = Vec::new();
     let mut guest_ns = u64::MAX;
     let mut stats = false;
+    let (mut jit, mut threshold) = (false, vetro_jit::SysJitConfig::default().hot_threshold);
     for a in args {
         match a.as_str() {
             "--no-devices" => {
                 devices = Devices::none();
+                continue;
+            }
+            "--jit" => {
+                jit = true;
                 continue;
             }
             "--stats" => {
@@ -148,6 +155,10 @@ fn boot(args: &[String]) -> ExitCode {
             _ => {}
         }
         match a.split_once('=') {
+            Some(("--jit-threshold", v)) => match v.parse::<u32>() {
+                Ok(n) => threshold = n,
+                Err(_) => return usage(),
+            },
             Some(("--disk", v)) => disks.push(v.to_string()),
             Some(("--guest-secs", v)) => match v.parse::<u64>() {
                 Ok(s) => guest_ns = s.saturating_mul(1_000_000_000),
@@ -197,6 +208,9 @@ fn boot(args: &[String]) -> ExitCode {
         eprintln!("vetro: {kernel}: {e}");
         return ExitCode::from(2);
     }
+    if jit {
+        m.set_jit(Some(vetro_jit_native::system_jit(threshold)));
+    }
     // stdin in un thread: i byte arrivano alla PL011 tra un quanto e l'altro.
     let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
     std::thread::spawn(move || {
@@ -219,6 +233,9 @@ fn boot(args: &[String]) -> ExitCode {
                 m.guest_ns() as f64 / 1e9,
                 m.steps as f64 / s / 1e6
             );
+            if let Some(j) = m.jit_stats() {
+                eprintln!("vetro: jit {j:?}");
+            }
         }
     };
     loop {

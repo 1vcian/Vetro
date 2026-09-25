@@ -913,6 +913,8 @@ version = "0.0.0"
 dependencies = [
  "vetro-cpu",
  "vetro-diff",
+ "vetro-jit",
+ "vetro-jit-native",
  "vetro-mmu",
 ]
 
@@ -931,6 +933,7 @@ version = "0.0.0"
 dependencies = [
  "vetro-cpu",
  "vetro-jit",
+ "vetro-mmu",
  "wasmtime",
 ]
 

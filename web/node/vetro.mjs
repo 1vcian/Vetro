@@ -125,7 +125,7 @@ export class Machine {
   jitStats() {
     const x = this.#x;
     const names = ['jitSteps', 'runs', 'resolves', 'calls', 'blocks', 'modules', 'reused', 'invalidatedPages', 'faults',
-      'svcs', 'stops', 'epochs', 'tlbFlushes', 'resets'];
+      'svcs', 'stops', 'epochs', 'tlbFlushes', 'tlbFills', 'resets'];
     const p = x.vetro_alloc(8 * names.length);
     const n = x.vetro_jit_stats(this.#vm, p, names.length);
     const v = new BigUint64Array(x.memory.buffer, p, names.length);

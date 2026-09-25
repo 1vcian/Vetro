@@ -7,7 +7,9 @@
 //! `guest/kernel/kselftest/expected-failures.txt`, che falliscono anche sotto
 //! QEMU per l'ambiente del guest (python, bash, opzioni del kernel), ciascuno
 //! con il motivo: per quelli Vetro deve fallire allo stesso modo. Solo in release e con
-//! `VETRO_KSELFTEST=1`.
+//! `VETRO_KSELFTEST=1`. Con `VETRO_JIT=1` (`VETRO_JIT_THRESHOLD=N`) Vetro
+//! gira anche col JIT della modalità sistema, che deve dare lo stesso log
+//! byte per byte e le stesse istruzioni dell'interprete.
 
 use std::process::Command;
 use std::time::Duration;
@@ -75,27 +77,23 @@ fn kselftest_come_sotto_qemu() {
     assert_eq!(theirs.len(), expected, "QEMU non ha eseguito tutti i test");
 
     // Vetro.
-    let mut m = Machine::new(&MachineConfig::default());
-    m.load_linux(&std::fs::read(&image).unwrap(), Some(&std::fs::read(&initrd).unwrap()), CMDLINE)
-        .expect("caricamento del kernel");
-    let mut vlog = Vec::new();
-    let stop = loop {
-        let s = m.run(10_000_000);
-        vlog.extend(m.console_output());
-        if s != Stop::Budget || m.steps >= BUDGET {
-            break s;
-        }
-    };
-    let vlog = String::from_utf8_lossy(&vlog).into_owned();
+    let (image, initrd) = (std::fs::read(&image).unwrap(), std::fs::read(&initrd).unwrap());
+    let (vlog, steps) = run_vetro(&image, &initrd, None);
     std::fs::write(dir.join("vetro-kselftest.log"), normalize(&vlog)).unwrap();
-    assert_eq!(stop, Stop::PowerOff, "Vetro non ha finito i kselftest; coda:\n{}", tail(&vlog));
     let ours = results(&vlog);
+    if let Some(t) = jit_threshold() {
+        let (jlog, jsteps) = run_vetro(&image, &initrd, Some(t));
+        std::fs::write(dir.join("vetro-kselftest-jit.log"), normalize(&jlog)).unwrap();
+        assert_eq!(jsteps, steps, "istruzioni diverse col JIT");
+        assert!(jlog == vlog, "log dei kselftest diverso col JIT (vetro-kselftest-jit.log)");
+        eprintln!("kselftest col JIT (soglia {t}): stesso log, {jsteps} istruzioni");
+    }
 
     let passed = theirs.iter().filter(|r| !r.ends_with("# FAIL")).count();
     eprintln!(
         "kselftest: {} test, {passed} ok o SKIP sotto QEMU; {} istruzioni su Vetro",
         theirs.len(),
-        m.steps
+        steps
     );
     // La selezione è verde: fuori dall'elenco documentato nessun fallimento.
     let allowed: Vec<String> =
@@ -123,6 +121,38 @@ fn kselftest_come_sotto_qemu() {
         .map(|(a, b)| format!("  qemu : {a}\n  vetro: {b}"))
         .collect();
     assert!(diff.is_empty() && ours.len() == theirs.len(), "esiti diversi da QEMU:\n{}", diff.join("\n"));
+}
+
+fn jit_threshold() -> Option<u32> {
+    if !std::env::var("VETRO_JIT").is_ok_and(|v| v == "1") {
+        return None;
+    }
+    Some(std::env::var("VETRO_JIT_THRESHOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(16))
+}
+
+/// Tutta la selezione sotto Vetro (col JIT se `jit`): log e istruzioni.
+fn run_vetro(image: &[u8], initrd: &[u8], jit: Option<u32>) -> (String, u64) {
+    let mut m = Machine::new(&MachineConfig::default());
+    m.load_linux(image, Some(initrd), CMDLINE).expect("caricamento del kernel");
+    if let Some(t) = jit {
+        m.set_jit(Some(vetro_jit_native::system_jit(t)));
+    }
+    let mut vlog = Vec::new();
+    let stop = loop {
+        let s = m.run(10_000_000);
+        vlog.extend(m.console_output());
+        if s != Stop::Budget || m.steps >= BUDGET {
+            break s;
+        }
+    };
+    let vlog = String::from_utf8_lossy(&vlog).into_owned();
+    assert_eq!(
+        stop,
+        Stop::PowerOff,
+        "Vetro non ha finito i kselftest (JIT: {jit:?}); coda:\n{}",
+        tail(&vlog)
+    );
+    (vlog, m.steps)
 }
 
 fn tail(log: &str) -> String {
