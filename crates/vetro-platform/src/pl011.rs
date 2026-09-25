@@ -259,6 +259,45 @@ impl MmioDevice for Pl011 {
     }
 }
 
+// ---- Snapshot (M6, ADR 0015) -------------------------------------------------
+
+/// Registri, FIFO di ricezione, ingresso dell'host non ancora nella FIFO e
+/// uscita non ancora letta dall'host.
+impl vetro_snapshot::Snapshot for Pl011 {
+    fn save(&self, w: &mut vetro_snapshot::Writer) {
+        w.seq(&self.input, |w, &b| w.u8(b));
+        w.seq(&self.rx_fifo, |w, &v| w.u16(v));
+        w.bytes(&self.output);
+        for v in [
+            self.rsr, self.ilpr, self.ibrd, self.fbrd, self.lcr_h, self.cr, self.ifls, self.imsc, self.ris,
+            self.dmacr,
+        ] {
+            w.u32(v);
+        }
+    }
+
+    fn restore(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
+        self.input = r.seq(1, |r| r.u8())?.into();
+        self.rx_fifo = r.seq(2, |r| r.u16())?.into();
+        self.output = r.vec()?;
+        for v in [
+            &mut self.rsr,
+            &mut self.ilpr,
+            &mut self.ibrd,
+            &mut self.fbrd,
+            &mut self.lcr_h,
+            &mut self.cr,
+            &mut self.ifls,
+            &mut self.imsc,
+            &mut self.ris,
+            &mut self.dmacr,
+        ] {
+            *v = r.u32()?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

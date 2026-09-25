@@ -33,3 +33,4 @@ pub use machine::{Devices, Machine, MachineConfig, Pointer, Slots, Stop};
 pub use net::{NetLink, NetSetup};
 pub use vetro_jit::{SysJitDyn, SysJitStats};
 pub use vetro_net;
+pub use vetro_snapshot;

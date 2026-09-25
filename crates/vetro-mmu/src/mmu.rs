@@ -288,3 +288,35 @@ impl Mmu {
         self.last_fault = Some(f);
     }
 }
+
+// ---- Snapshot (M6, ADR 0015) -------------------------------------------------
+
+/// Registri di traduzione e TLB. La cache delle traduzioni recenti non si
+/// salva: è una scorciatoia che non cambia nulla di osservabile (vedi
+/// [`Recent`]) e al ripristino riparte vuota. L'ultimo fault serve solo alla
+/// diagnosi di [`VirtMemory`](crate::VirtMemory) (modalità utente) e riparte
+/// vuoto.
+impl vetro_snapshot::Snapshot for Mmu {
+    fn save(&self, w: &mut vetro_snapshot::Writer) {
+        w.u64(u64::from(self.pa_bits));
+        let r = &self.regs;
+        for v in [r.sctlr, r.tcr, r.ttbr0, r.ttbr1, r.mair] {
+            w.u64(v);
+        }
+        w.put(&self.tlb);
+    }
+
+    fn restore(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
+        r.expect_u64("PARange della MMU", u64::from(self.pa_bits))?;
+        let g = &mut self.regs;
+        for v in [&mut g.sctlr, &mut g.tcr, &mut g.ttbr0, &mut g.ttbr1, &mut g.mair] {
+            *v = r.u64()?;
+        }
+        r.get(&mut self.tlb)?;
+        self.last_fault = None;
+        self.recent.fill(EMPTY);
+        self.recent_regs = MmuRegs::default();
+        self.recent_epoch += 1;
+        Ok(())
+    }
+}

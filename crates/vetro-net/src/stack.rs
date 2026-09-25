@@ -9,6 +9,8 @@ use crate::upstream::Upstream;
 use crate::wire::{self, Mac, TCP_ACK, TCP_FIN, TCP_RST, TCP_SYN, TcpOut};
 use crate::{ConnId, Flow, VirtualTime, dhcp, dns};
 
+pub(crate) mod snapshot;
+
 /// Configurazione della rete virtuale. I valori predefiniti sono quelli
 /// della rete "user" di QEMU.
 #[derive(Clone, Debug, PartialEq, Eq)]

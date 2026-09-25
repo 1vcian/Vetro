@@ -13,6 +13,8 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use crate::upstream::{TcpRead, TcpStatus, Upstream};
 use crate::{ConnId, Flow, VirtualTime, dns};
 
+mod snapshot;
+
 /// Risposta configurata per le connessioni TCP verso una porta.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TcpReply {

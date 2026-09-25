@@ -130,6 +130,39 @@ impl Ram {
     }
 }
 
+// ---- Snapshot (M6, ADR 0015) -------------------------------------------------
+
+/// I byte della RAM a pagine da 4 KiB: le pagine a zero non occupano nulla,
+/// le altre sono compresse (`vetro_snapshot::compress`). La sorveglianza
+/// delle pagine di codice non è stato del guest: al ripristino ogni pagina
+/// sorvegliata risulta scritta, così il JIT scarta i blocchi tradotti dalla
+/// RAM di prima.
+impl vetro_snapshot::Snapshot for Ram {
+    fn save(&self, w: &mut vetro_snapshot::Writer) {
+        vetro_snapshot::compress(w, &self.bytes);
+    }
+
+    fn restore(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
+        const PAGE: usize = vetro_snapshot::BLOCK;
+        let len = self.bytes.len();
+        let pages = len.div_ceil(PAGE);
+        let mut present = vec![0u64; pages.div_ceil(64)];
+        vetro_snapshot::decompress_into(r, &mut self.bytes, |i| present[i / 64] |= 1 << (i % 64))?;
+        // Le pagine assenti devono essere a zero. Si scrivono solo quelle
+        // che non lo sono già: una RAM appena allocata resta non toccata.
+        for i in 0..pages {
+            if present[i / 64] & 1 << (i % 64) == 0 {
+                let p = &mut self.bytes[i * PAGE..((i + 1) * PAGE).min(len)];
+                if !vetro_snapshot::is_zero(p) {
+                    p.fill(0);
+                }
+            }
+        }
+        self.touch(0, len);
+        Ok(())
+    }
+}
+
 impl GuestRam for Ram {
     fn read(&self, addr: u64, buf: &mut [u8]) -> Result<(), RamError> {
         if Ram::read(self, addr, buf) { Ok(()) } else { Err(RamError { addr, len: buf.len() }) }

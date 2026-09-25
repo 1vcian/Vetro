@@ -41,7 +41,8 @@ use display::WebDisplay;
 /// `vetro_jit.reset` e tabella `env.tbl` dei blocchi).
 /// 3: dispositivi (`vetro_machine_new_with`, display, input, GPIO, dischi)
 /// e codice d'arresto `BLOCKED`.
-pub const ABI_VERSION: u32 = 3;
+/// 4: snapshot della macchina (`vetro_snapshot_*`, ADR 0015).
+pub const ABI_VERSION: u32 = 4;
 
 /// Allineamento dei buffer di [`vetro_alloc`] (basta per `JitState`).
 const ALLOC_ALIGN: usize = 16;
@@ -104,6 +105,8 @@ pub struct Vm {
     /// Slot virtio dei dischi, nell'ordine di aggiunta (l'indice è quello
     /// dell'API).
     disks: Vec<u32>,
+    /// Ultimo snapshot di `vetro_snapshot_save`, finché JS non lo copia.
+    snapshot: Vec<u8>,
 }
 
 impl Vm {
@@ -120,6 +123,7 @@ impl Vm {
             message: String::new(),
             unimpl: (0, 0),
             disks: Vec::new(),
+            snapshot: Vec::new(),
         };
         // Senza `Machine::gpu`: cambiare backend non deve far servire la GPU.
         vm.with_gpu(|g| g.set_backend(Box::new(WebDisplay::default())));
@@ -241,6 +245,24 @@ impl Vm {
             }
             Stop::Blocked => stop::BLOCKED,
         }
+    }
+
+    /// Snapshot della macchina (M6, ADR 0015). L'uscita della console già
+    /// tolta alla UART e non ancora letta da JS non ne fa parte: si salva
+    /// dopo aver letto la console.
+    pub fn save_state(&self) -> Vec<u8> {
+        self.m.save()
+    }
+
+    /// Ripristina uno snapshot su questa macchina, che dev'essere
+    /// configurata come quella salvata (stessi dispositivi e dischi, già
+    /// aggiunti con gli stessi parametri). Il display riceve subito
+    /// l'immagine ripristinata; l'uscita della console non letta si scarta.
+    pub fn restore_state(&mut self, bytes: &[u8]) -> Result<(), vetro_machine::vetro_snapshot::Error> {
+        self.m.load_state(bytes)?;
+        self.out.clear();
+        self.out_pos = 0;
+        Ok(())
     }
 
     /// Copia in `dst` al più `dst.len()` byte dell'uscita della console, che
@@ -843,6 +865,82 @@ pub unsafe extern "C" fn vetro_disk_stats(vm: *mut Vm, disk: u32, out: *mut u64,
     n
 }
 
+// ---- Snapshot (ABI 4, ADR 0015) ---------------------------------------------
+
+/// Versione del formato degli snapshot (`vetro_snapshot::FORMAT_VERSION`):
+/// il JS la usa nelle chiavi della cache, così uno snapshot di un'altra
+/// versione non si prova nemmeno a ripristinare.
+#[unsafe(no_mangle)]
+pub extern "C" fn vetro_snapshot_version() -> u32 {
+    vetro_machine::vetro_snapshot::FORMAT_VERSION
+}
+
+/// Salva la macchina in un buffer interno e ne restituisce la lunghezza;
+/// i byte si leggono da [`vetro_snapshot_ptr`] (validi fino al prossimo
+/// salvataggio, a [`vetro_snapshot_clear`] o alla distruzione della
+/// macchina). Leggere prima la console: l'uscita già letta dalla UART e
+/// non ancora consegnata al JS non entra nello snapshot.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_snapshot_save(vm: *mut Vm) -> usize {
+    // SAFETY: `vm` viene da `vetro_machine_new`.
+    let vm = unsafe { &mut *vm };
+    vm.snapshot = vm.save_state();
+    vm.snapshot.len()
+}
+
+/// I byte dell'ultimo [`vetro_snapshot_save`] (nullo se non ce n'è).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_snapshot_ptr(vm: *const Vm) -> *const u8 {
+    // SAFETY: `vm` viene da `vetro_machine_new`.
+    let vm = unsafe { &*vm };
+    if vm.snapshot.is_empty() { core::ptr::null() } else { vm.snapshot.as_ptr() }
+}
+
+/// Libera il buffer dell'ultimo salvataggio.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_snapshot_clear(vm: *mut Vm) {
+    // SAFETY: `vm` viene da `vetro_machine_new`.
+    unsafe { &mut *vm }.snapshot = Vec::new();
+}
+
+/// Codici di [`vetro_snapshot_restore`].
+pub mod restore {
+    pub const OK: u32 = 0;
+    /// Non è uno snapshot di Vetro.
+    pub const BAD_MAGIC: u32 = 1;
+    /// Formato di un'altra versione (`vetro_snapshot_version`).
+    pub const VERSION: u32 = 2;
+    /// Macchina configurata diversamente (RAM, dispositivi, dischi, seme).
+    pub const CONFIG: u32 = 3;
+    /// Snapshot rovinato o incoerente: la macchina va scartata.
+    pub const CORRUPT: u32 = 4;
+}
+
+/// Ripristina lo snapshot di `len` byte in `data` su questa macchina,
+/// configurata come quella salvata (stessi dispositivi di
+/// `vetro_machine_new_with`, stessi dischi aggiunti nello stesso ordine con
+/// gli stessi parametri, prima di chiamarla). Il buffer si può liberare
+/// subito dopo. Con un codice diverso da 0 il motivo è nel messaggio; con
+/// `BAD_MAGIC`, `VERSION` e `CONFIG` la macchina non è cambiata.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_snapshot_restore(vm: *mut Vm, data: *const u8, len: usize) -> u32 {
+    use vetro_machine::vetro_snapshot::Error;
+    // SAFETY: `vm` viene da `vetro_machine_new`, `data` vale per `len` byte.
+    let vm = unsafe { &mut *vm };
+    match vm.restore_state(unsafe { bytes(data, len) }) {
+        Ok(()) => restore::OK,
+        Err(e) => {
+            vm.message = e.to_string();
+            match e {
+                Error::BadMagic => restore::BAD_MAGIC,
+                Error::Version { .. } => restore::VERSION,
+                Error::Config { .. } => restore::CONFIG,
+                _ => restore::CORRUPT,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -966,5 +1064,76 @@ mod tests {
         assert_eq!(unsafe { vetro_steps(vm) }, 1000);
         assert_eq!(unsafe { vetro_guest_ns(vm) }, 10_000);
         unsafe { vetro_machine_free(vm) };
+    }
+
+    fn message(vm: *const Vm) -> String {
+        unsafe { String::from_utf8_lossy(bytes(vetro_message_ptr(vm), vetro_message_len(vm))).into_owned() }
+    }
+
+    /// Snapshot dall'API C (ABI 4): salvato in un buffer, copiato dal JS,
+    /// ripristinato su una macchina nuova con gli stessi dispositivi e lo
+    /// stesso disco (le scritture del guest nel copy-on-write comprese);
+    /// le due proseguono uguali. Formato di un'altra versione, altra
+    /// configurazione e byte a caso si rifiutano con il loro codice e un
+    /// messaggio, senza toccare la macchina.
+    #[test]
+    fn snapshot_dall_api() {
+        let disk: Vec<u8> = (0..8192u32).map(|i| (i * 13) as u8).collect();
+        let new = || {
+            let vm = vetro_machine_new_with(64 << 20, 0, 0, dev::DEFAULT, 320, 200);
+            assert_eq!(unsafe { vetro_disk_add_mem(vm, disk.as_ptr(), disk.len(), 0) }, 0);
+            vm
+        };
+        let a = new();
+        unsafe {
+            assert_eq!(vetro_run(a, 1000), stop::BUDGET);
+            // Una scrittura nel livello copy-on-write, come la farebbe il guest.
+            let slot = (&*a).disks[0];
+            (&mut *a)
+                .m
+                .device::<VirtioBlk, _>(Some(slot), |b| b.backend_mut().write_sectors(3, &[0xab; 512]))
+                .unwrap()
+                .unwrap();
+            let n = vetro_snapshot_save(a);
+            assert!(n > vetro_machine::vetro_snapshot::HEADER_LEN);
+            let snap = bytes(vetro_snapshot_ptr(a), n).to_vec();
+            vetro_snapshot_clear(a);
+            assert!(vetro_snapshot_ptr(a).is_null());
+
+            let b = new();
+            assert_eq!(vetro_snapshot_restore(b, snap.as_ptr(), snap.len()), restore::OK);
+            assert_eq!(vetro_steps(b), 1000);
+            assert_eq!(vetro_disk_stats(b, 0, [0u64; 8].as_mut_ptr(), 8), 8);
+            let mut st = [0u64; 8];
+            vetro_disk_stats(b, 0, st.as_mut_ptr(), 8);
+            assert_eq!(st[7], 1, "il cluster scritto torna col ripristino");
+            for vm in [a, b] {
+                assert_eq!(vetro_run(vm, 5000), stop::BUDGET);
+            }
+            assert!((&*a).save_state() == (&*b).save_state());
+
+            let mut other = snap.clone();
+            other[8] ^= 0x7f;
+            let c = new();
+            let before = (&*c).save_state();
+            assert_eq!(vetro_snapshot_restore(c, other.as_ptr(), other.len()), restore::VERSION);
+            assert!(message(c).contains("versione"), "{}", message(c));
+            assert_eq!(vetro_snapshot_restore(c, b"altro".as_ptr(), 5), restore::BAD_MAGIC);
+            assert!((&*c).save_state() == before, "rifiutati senza toccare la macchina");
+            let d = vetro_machine_new_with(64 << 20, 0, 0, dev::DEFAULT, 320, 200);
+            assert_eq!(
+                vetro_snapshot_restore(d, snap.as_ptr(), snap.len()),
+                restore::CONFIG,
+                "senza il disco"
+            );
+            let mut bad = snap.clone();
+            let last = bad.len() - 1;
+            bad[last] ^= 1;
+            assert_eq!(vetro_snapshot_restore(c, bad.as_ptr(), bad.len()), restore::CORRUPT);
+            assert_eq!(vetro_snapshot_version(), vetro_machine::vetro_snapshot::FORMAT_VERSION);
+            for vm in [a, b, c, d] {
+                vetro_machine_free(vm);
+            }
+        }
     }
 }

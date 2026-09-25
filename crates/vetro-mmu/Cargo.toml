@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 vetro-cpu = { path = "../vetro-cpu" }
+vetro-snapshot = { path = "../vetro-snapshot" }
 
 [lints]
 workspace = true

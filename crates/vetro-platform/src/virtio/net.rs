@@ -43,6 +43,13 @@ pub trait NetBackend: Any {
     /// Prossimo frame per il guest, se c'è. Chiamato solo quando il guest
     /// ha buffer di ricezione liberi.
     fn recv(&mut self) -> Option<Vec<u8>>;
+    /// Stato del backend negli snapshot (M6, ADR 0015): di norma nessuno (un
+    /// collegamento verso l'esterno che l'host ricrea). Lo stack di rete
+    /// della macchina e le code in memoria salvano il loro.
+    fn save_state(&self, _w: &mut vetro_snapshot::Writer) {}
+    fn restore_state(&mut self, _r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
+        Ok(())
+    }
 }
 
 /// Backend in memoria: `rx` verso il guest, `tx` dal guest.
@@ -58,6 +65,15 @@ impl NetBackend for QueueNet {
     }
     fn recv(&mut self) -> Option<Vec<u8>> {
         self.rx.pop_front()
+    }
+    fn save_state(&self, w: &mut vetro_snapshot::Writer) {
+        w.seq(&self.rx, |w, f| w.bytes(f));
+        w.seq(&self.tx, |w, f| w.bytes(f));
+    }
+    fn restore_state(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
+        self.rx = r.seq(8, |r| r.vec())?.into();
+        self.tx = r.seq(8, |r| r.vec())?;
+        Ok(())
     }
 }
 
@@ -236,6 +252,32 @@ impl VirtioDevice for VirtioNet {
         let (queues, ram) = (&mut *ctx.queues, &mut *ctx.ram);
         self.transmit(&mut queues[TXQ], ram)?;
         self.receive(&mut queues[RXQ], ram)
+    }
+
+    /// Link, MRG_RXBUF negoziato, frame in attesa di buffer, contatore e
+    /// stato del backend. MAC e offerta di MRG_RXBUF sono configurazione.
+    fn save_state(&self, w: &mut vetro_snapshot::Writer) {
+        w.raw(&self.mac);
+        w.u64(u64::from(self.offer_mrg));
+        w.bool(self.link_up);
+        w.bool(self.link_changed);
+        w.bool(self.mrg);
+        w.opt(self.pending_rx.as_deref(), vetro_snapshot::Writer::bytes);
+        w.u64(self.rx_dropped);
+        self.backend.save_state(w);
+    }
+
+    fn restore_state(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
+        if r.raw(6)? != self.mac {
+            return Err(vetro_snapshot::Error::invalid("MAC di virtio-net diverso"));
+        }
+        r.expect_u64("offerta di MRG_RXBUF", u64::from(self.offer_mrg))?;
+        self.link_up = r.bool()?;
+        self.link_changed = r.bool()?;
+        self.mrg = r.bool()?;
+        self.pending_rx = r.opt(|r| r.vec())?;
+        self.rx_dropped = r.u64()?;
+        self.backend.restore_state(r)
     }
 }
 

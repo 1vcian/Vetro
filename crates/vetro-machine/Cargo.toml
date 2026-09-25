@@ -12,6 +12,7 @@ vetro-mmu = { path = "../vetro-mmu" }
 vetro-platform = { path = "../vetro-platform" }
 vetro-jit = { path = "../vetro-jit" }
 vetro-net = { path = "../vetro-net" }
+vetro-snapshot = { path = "../vetro-snapshot" }
 
 [lints]
 workspace = true

@@ -33,6 +33,12 @@ pub trait ConsoleBackend: Any {
     fn write(&mut self, data: &[u8]);
     /// Riempie `buf` con i byte in arrivo per il guest; 0 se non ce ne sono.
     fn read(&mut self, buf: &mut [u8]) -> usize;
+    /// Stato del backend negli snapshot (M6, ADR 0015): di norma nessuno (un
+    /// collegamento che l'host ricrea).
+    fn save_state(&self, _w: &mut vetro_snapshot::Writer) {}
+    fn restore_state(&mut self, _r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
+        Ok(())
+    }
 }
 
 /// Backend in memoria: `input` verso il guest, `output` dal guest.
@@ -52,6 +58,15 @@ impl ConsoleBackend for BufferConsole {
             *b = c;
         }
         n
+    }
+    fn save_state(&self, w: &mut vetro_snapshot::Writer) {
+        w.seq(&self.input, |w, &b| w.u8(b));
+        w.bytes(&self.output);
+    }
+    fn restore_state(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
+        self.input = r.seq(1, |r| r.u8())?.into();
+        self.output = r.vec()?;
+        Ok(())
     }
 }
 
@@ -136,6 +151,15 @@ impl VirtioDevice for VirtioConsole {
             rx.push_used(ram, c.head, n as u32)?;
         }
         Ok(())
+    }
+
+    /// Il dispositivo non ha stato proprio: solo quello del backend.
+    fn save_state(&self, w: &mut vetro_snapshot::Writer) {
+        self.backend.save_state(w);
+    }
+
+    fn restore_state(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
+        self.backend.restore_state(r)
     }
 }
 

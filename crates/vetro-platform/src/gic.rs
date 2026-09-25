@@ -598,6 +598,61 @@ impl MmioDevice for Gic {
     }
 }
 
+// ---- Snapshot (M6, ADR 0015) -------------------------------------------------
+
+impl vetro_snapshot::Snapshot for Gic {
+    fn save(&self, w: &mut vetro_snapshot::Writer) {
+        w.len_of(self.irqs.len());
+        for i in &self.irqs {
+            let flags = u8::from(i.enabled)
+                | u8::from(i.pending) << 1
+                | u8::from(i.level) << 2
+                | u8::from(i.active) << 3
+                | u8::from(i.group1) << 4
+                | u8::from(i.edge) << 5;
+            w.u8(flags);
+            w.u8(i.priority);
+            w.u64(i.router);
+        }
+        w.u32(self.gicd_ctlr);
+        w.bool(self.processor_sleep);
+        w.u8(self.pmr);
+        w.u8(self.bpr1);
+        w.bool(self.igrpen1);
+        w.bool(self.eoimode);
+        w.seq(&self.active_prio, |w, &(intid, prio)| {
+            w.u32(intid);
+            w.u8(prio);
+        });
+    }
+
+    fn restore(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
+        r.expect_u64("INTID del GIC", self.irqs.len() as u64)?;
+        for i in &mut self.irqs {
+            let f = r.u8()?;
+            if f >> 6 != 0 {
+                return Err(vetro_snapshot::Error::invalid(format!("stato di un interrupt {f:#x}")));
+            }
+            i.enabled = f & 1 != 0;
+            i.pending = f & 2 != 0;
+            i.level = f & 4 != 0;
+            i.active = f & 8 != 0;
+            i.group1 = f & 16 != 0;
+            i.edge = f & 32 != 0;
+            i.priority = r.u8()?;
+            i.router = r.u64()?;
+        }
+        self.gicd_ctlr = r.u32()?;
+        self.processor_sleep = r.bool()?;
+        self.pmr = r.u8()?;
+        self.bpr1 = r.u8()?;
+        self.igrpen1 = r.bool()?;
+        self.eoimode = r.bool()?;
+        self.active_prio = r.seq(5, |r| Ok((r.u32()?, r.u8()?)))?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

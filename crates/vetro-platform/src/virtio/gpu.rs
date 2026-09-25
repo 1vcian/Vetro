@@ -808,6 +808,105 @@ impl VirtioDevice for VirtioGpu {
         }
         Ok(())
     }
+
+    /// Risorse (pixel compressi a blocchi, backing, scanout che le mostrano),
+    /// scanout (risoluzione chiesta, risorsa e rettangolo, cursore), eventi.
+    /// Il backend del display è un collegamento: non si salva, e al
+    /// ripristino riceve di nuovo l'immagine e il cursore di ogni scanout.
+    fn save_state(&self, w: &mut vetro_snapshot::Writer) {
+        w.len_of(self.scanouts.len());
+        w.seq(&self.resources, |w, (&id, r)| {
+            w.u32(id);
+            w.u32(r.width);
+            w.u32(r.height);
+            w.u32(r.format as u32);
+            vetro_snapshot::compress(w, &r.data);
+            w.opt(r.backing.as_ref(), |w, b| {
+                w.seq(b, |w, &(addr, len)| {
+                    w.u64(addr);
+                    w.u32(len);
+                })
+            });
+            w.u32(r.scanouts);
+        });
+        w.u64(self.hostmem);
+        for s in &self.scanouts {
+            w.u32(s.req_width);
+            w.u32(s.req_height);
+            w.u32(s.resource_id);
+            for v in [s.rect.x, s.rect.y, s.rect.width, s.rect.height] {
+                w.u32(v);
+            }
+            let c = &s.cursor;
+            for v in [c.resource_id, c.x, c.y, c.hot_x, c.hot_y] {
+                w.u32(v);
+            }
+            w.bytes(&c.image);
+        }
+        w.u32(self.events_read);
+        w.bool(self.display_changed);
+    }
+
+    fn restore_state(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
+        use vetro_snapshot::Error;
+        r.expect_u64("scanout della GPU", self.scanouts.len() as u64)?;
+        let n = r.len_of(20)?;
+        let mut resources = BTreeMap::new();
+        for _ in 0..n {
+            let id = r.u32()?;
+            let (width, height) = (r.u32()?, r.u32()?);
+            let format =
+                PixelFormat::from_virtio(r.u32()?).ok_or_else(|| Error::invalid("formato di risorsa"))?;
+            let data = vetro_snapshot::decompress(r)?;
+            if id == 0 || data.len() as u64 != u64::from(width) * 4 * u64::from(height) {
+                return Err(Error::invalid(format!("risorsa {id} della GPU")));
+            }
+            let backing = r.opt(|r| r.seq(12, |r| Ok((r.u64()?, r.u32()?))))?;
+            let scanouts = r.u32()?;
+            resources.insert(id, Resource { width, height, format, data, backing, scanouts });
+        }
+        self.resources = resources;
+        self.hostmem = r.u64()?;
+        for s in &mut self.scanouts {
+            s.req_width = r.u32()?;
+            s.req_height = r.u32()?;
+            s.resource_id = r.u32()?;
+            s.rect = Rect::new(r.u32()?, r.u32()?, r.u32()?, r.u32()?);
+            if s.resource_id != 0 {
+                let ok = self
+                    .resources
+                    .get(&s.resource_id)
+                    .is_some_and(|res| s.rect.within(res.width, res.height));
+                if !ok {
+                    return Err(Error::invalid(format!("scanout sulla risorsa {}", s.resource_id)));
+                }
+            }
+            s.cursor = Cursor {
+                resource_id: r.u32()?,
+                x: r.u32()?,
+                y: r.u32()?,
+                hot_x: r.u32()?,
+                hot_y: r.u32()?,
+                image: r.vec()?,
+            };
+        }
+        self.events_read = r.u32()?;
+        self.display_changed = r.bool()?;
+        // Il display collegato mostra lo stato ripristinato.
+        for (i, s) in self.scanouts.iter().enumerate() {
+            match self.resources.get(&s.resource_id) {
+                Some(res) => {
+                    let full = Rect::new(0, 0, s.rect.width, s.rect.height);
+                    self.backend.update(i as u32, &Self::frame_of(res, s.rect), full);
+                }
+                None => self.backend.disable(i as u32),
+            }
+            if s.cursor != Cursor::default() {
+                self.backend.cursor(i as u32, &s.cursor);
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -192,3 +192,70 @@ impl Tlb {
         }
     }
 }
+
+// ---- Snapshot (M6, ADR 0015) -------------------------------------------------
+
+/// Le voci del TLB entrano nello snapshot: sono stato osservabile (un guest
+/// che cambia le tabelle senza TLBI vede ancora la traduzione vecchia, e
+/// una voce assente dopo il ripristino cambierebbe il risultato). Le
+/// generazioni degli slot no: servono solo alla cache delle traduzioni
+/// recenti della MMU, che al ripristino riparte vuota. `flushes` nemmeno:
+/// al ripristino cresce, così chi tiene copie delle traduzioni (la TLB
+/// software del JIT) le scarta.
+impl vetro_snapshot::Snapshot for Tlb {
+    fn save(&self, w: &mut vetro_snapshot::Writer) {
+        let valid = self.entries.iter().enumerate().filter_map(|(i, e)| e.map(|e| (i, e)));
+        w.u32(self.len() as u32);
+        for (slot, e) in valid {
+            w.u32(slot as u32);
+            w.u64(e.va_base);
+            w.u64(e.size);
+            w.u64(e.pa_base);
+            w.u16(e.asid);
+            w.bool(e.global);
+            w.u8(e.level);
+            w.u8(e.perms.ap);
+            w.bool(e.perms.uxn);
+            w.bool(e.perms.pxn);
+            w.u8(e.attr_index);
+            w.u8(e.sh);
+        }
+    }
+
+    fn restore(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
+        use vetro_snapshot::Error;
+        let n = r.u32()? as usize;
+        if n > ENTRIES {
+            return Err(Error::invalid(format!("{n} voci nel TLB")));
+        }
+        self.entries.fill(None);
+        let mut last = None;
+        for _ in 0..n {
+            let slot = r.u32()? as usize;
+            if slot >= ENTRIES || last.is_some_and(|l| slot <= l) {
+                return Err(Error::invalid(format!("slot del TLB {slot}")));
+            }
+            last = Some(slot);
+            let e = TlbEntry {
+                va_base: r.u64()?,
+                size: r.u64()?,
+                pa_base: r.u64()?,
+                asid: r.u16()?,
+                global: r.bool()?,
+                level: r.u8()?,
+                perms: Perms { ap: r.u8()?, uxn: r.bool()?, pxn: r.bool()? },
+                attr_index: r.u8()?,
+                sh: r.u8()?,
+            };
+            if !e.size.is_power_of_two() || e.va_base & (e.size - 1) != 0 || e.attr_index > 7 {
+                return Err(Error::invalid(format!("voce del TLB {e:?}")));
+            }
+            self.entries[slot] = Some(e);
+        }
+        for g in self.gens.iter_mut() {
+            *g += 1;
+        }
+        self.flushes += 1;
+        Ok(())
+    }
+}

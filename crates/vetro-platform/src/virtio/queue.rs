@@ -395,6 +395,69 @@ impl Virtqueue {
     }
 }
 
+// ---- Snapshot (M6, ADR 0015) -------------------------------------------------
+
+/// Indirizzi, dimensione, indici e feature negoziate della coda. La
+/// dimensione massima è configurazione del dispositivo: si controlla.
+impl vetro_snapshot::Snapshot for Virtqueue {
+    fn save(&self, w: &mut vetro_snapshot::Writer) {
+        w.u16(self.max_size);
+        w.u16(self.size);
+        w.bool(self.ready);
+        w.u64(self.desc);
+        w.u64(self.driver);
+        w.u64(self.device);
+        w.u16(self.last_avail);
+        w.u16(self.used_idx);
+        w.u16(self.signalled_used);
+        w.bool(self.event_idx);
+        w.bool(self.indirect);
+    }
+
+    fn restore(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
+        let max = r.u16()?;
+        if max != self.max_size {
+            return Err(vetro_snapshot::Error::invalid(format!(
+                "coda da {max} nello snapshot, {} nel dispositivo",
+                self.max_size
+            )));
+        }
+        self.size = r.u16()?;
+        self.ready = r.bool()?;
+        self.desc = r.u64()?;
+        self.driver = r.u64()?;
+        self.device = r.u64()?;
+        self.last_avail = r.u16()?;
+        self.used_idx = r.u16()?;
+        self.signalled_used = r.u16()?;
+        self.event_idx = r.bool()?;
+        self.indirect = r.bool()?;
+        Ok(())
+    }
+}
+
+impl DescChain {
+    /// Una catena estratta e non ancora restituita (richiesta in volo) per
+    /// gli snapshot: la testa e i buffer, già validati all'estrazione.
+    pub fn save(&self, w: &mut vetro_snapshot::Writer) {
+        w.u16(self.head);
+        for bufs in [&self.readable, &self.writable] {
+            w.seq(bufs, |w, b| {
+                w.u64(b.addr);
+                w.u32(b.len);
+            });
+        }
+    }
+
+    pub fn restore(r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<Self> {
+        let head = r.u16()?;
+        let buf = |r: &mut vetro_snapshot::Reader<'_>| Ok(Buf { addr: r.u64()?, len: r.u32()? });
+        let readable = r.seq(12, buf)?;
+        let writable = r.seq(12, buf)?;
+        Ok(DescChain { head, readable, writable })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

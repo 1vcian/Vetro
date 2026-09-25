@@ -249,6 +249,13 @@ pub trait VirtioDevice: Any {
     fn reset(&mut self) {}
     /// Consuma le code e i dati dei backend. Chiamato solo con DRIVER_OK.
     fn service(&mut self, ctx: &mut ServiceCtx<'_>) -> Result<(), QueueError>;
+    /// Stato del dispositivo per gli snapshot (M6, ADR 0015): tutto ciò che
+    /// non è configurazione fissata alla costruzione, richieste in volo e
+    /// stato dei backend compresi. Le code le salva il trasporto.
+    fn save_state(&self, w: &mut vetro_snapshot::Writer);
+    /// Riporta nello stato salvato un dispositivo costruito con la stessa
+    /// configurazione (e con i suoi backend esterni già collegati).
+    fn restore_state(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()>;
 }
 
 /// Legge `data.len()` byte dalla struttura di configurazione `cfg` a

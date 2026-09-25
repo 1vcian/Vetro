@@ -20,6 +20,8 @@ use crate::upstream::{TcpRead, TcpStatus, Upstream};
 use crate::wire::{TCP_ACK, TCP_FIN, TCP_PSH, TCP_RST, TCP_SYN, TcpHeader};
 use crate::{ConnId, Flow, VirtualTime};
 
+mod snapshot;
+
 /// Buffer di ricezione (dati del guest non ancora presi dall'upstream):
 /// coincide con la finestra massima annunciata, senza scaling.
 pub(crate) const RX_CAPACITY: usize = 65_535;

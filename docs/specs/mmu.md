@@ -125,3 +125,11 @@ fault a ogni livello, AF, address size, abort esterni, permessi EL0/EL1 con
 attributi delle tabelle e WXN, codifiche ESR/FAR/PAR, ASID/nG, TLB e ogni
 TLBI, adattatore `Memory`.
 Il confronto con `qemu-system-aarch64` arriverà con l'avvio del kernel (M3).
+
+## Snapshot (M6, ADR 0015)
+
+`Mmu` e `Tlb` implementano `vetro_snapshot::Snapshot`: registri di
+traduzione e voci del TLB (stato osservabile). Al ripristino la cache delle
+traduzioni recenti riparte vuota, le generazioni degli slot crescono e
+`Tlb::flushes` cresce (il JIT scarta la sua TLB software). PARange si
+controlla.

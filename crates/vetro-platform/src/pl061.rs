@@ -137,6 +137,31 @@ impl MmioDevice for Pl061 {
     }
 }
 
+// ---- Snapshot (M6, ADR 0015) -------------------------------------------------
+
+impl vetro_snapshot::Snapshot for Pl061 {
+    fn save(&self, w: &mut vetro_snapshot::Writer) {
+        w.raw(&[
+            self.data,
+            self.old_in,
+            self.dir,
+            self.is,
+            self.ibe,
+            self.iev,
+            self.ie,
+            self.ris,
+            self.afsel,
+        ]);
+    }
+
+    fn restore(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
+        let b = r.raw(9)?;
+        [self.data, self.old_in, self.dir, self.is, self.ibe, self.iev, self.ie, self.ris, self.afsel] =
+            b.try_into().expect("9 byte");
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

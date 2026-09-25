@@ -899,6 +899,9 @@ dependencies = [
 [[package]]
 name = "vetro-cpu"
 version = "0.0.0"
+dependencies = [
+ "vetro-snapshot",
+]
 
 [[package]]
 name = "vetro-diff"
@@ -956,6 +959,7 @@ dependencies = [
  "vetro-mmu",
  "vetro-net",
  "vetro-platform",
+ "vetro-snapshot",
 ]
 
 [[package]]
@@ -963,6 +967,7 @@ name = "vetro-mmu"
 version = "0.0.0"
 dependencies = [
  "vetro-cpu",
+ "vetro-snapshot",
 ]
 
 [[package]]
@@ -970,11 +975,15 @@ name = "vetro-net"
 version = "0.0.0"
 dependencies = [
  "smoltcp",
+ "vetro-snapshot",
 ]
 
 [[package]]
 name = "vetro-platform"
 version = "0.0.0"
+dependencies = [
+ "vetro-snapshot",
+]
 
 [[package]]
 name = "vetro-snapshot"

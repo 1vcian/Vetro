@@ -1139,3 +1139,46 @@ fn contatore_delle_invalidazioni() {
     assert_eq!(e.pa(0x1000), 0xa000);
     assert_eq!(e.mmu.tlb().flushes(), n + 2, "un walk non è un'invalidazione");
 }
+
+// --- Snapshot (M6, ADR 0015) ---
+
+/// Il TLB è stato osservabile: una tabella cambiata senza TLBI dà ancora la
+/// traduzione vecchia, anche dopo salvataggio e ripristino in una MMU
+/// nuova (con un TLB vuoto il walk vedrebbe quella nuova). Registri e voci
+/// tornano uguali; `flushes` cresce, così il JIT scarta le sue copie.
+#[test]
+fn tlb_nello_snapshot() {
+    use vetro_snapshot::{Reader, Snapshot, Writer};
+    let mut e = Env::new();
+    let root = e.root0;
+    e.mmu.regs.ttbr0 = root | 3 << 48;
+    let a = e.map(0x1000, 0xa000, 3, NORMAL | NG);
+    e.map(0x4000_0000, 0x8000_0000, 1, NORMAL);
+    assert_eq!(e.pa(0x1000), 0xa000);
+    assert_eq!(e.pa(0x4001_2345), 0x8001_2345);
+    e.wr(a, 0xb000 | NORMAL | NG | PAGE);
+    assert_eq!(e.pa(0x1000), 0xa000, "voce vecchia nel TLB");
+
+    let mut w = Writer::new();
+    e.mmu.save(&mut w);
+    let bytes = w.into_bytes();
+    let mut fresh = Mmu::new(40);
+    let flushes = fresh.tlb().flushes();
+    let mut r = Reader::new(&bytes);
+    fresh.restore(&mut r).unwrap();
+    r.finish().unwrap();
+    assert!(fresh.tlb().flushes() > flushes);
+    assert_eq!(fresh.regs, e.mmu.regs);
+    assert_eq!(fresh.tlb().len(), 2);
+    let mut w2 = Writer::new();
+    fresh.save(&mut w2);
+    assert_eq!(w2.into_bytes(), bytes, "stessi byte dopo il ripristino");
+    e.mmu = fresh;
+    assert_eq!(e.pa(0x1000), 0xa000, "la voce vecchia sopravvive al ripristino");
+    assert_eq!(e.pa(0x4007_0000), 0x8007_0000, "il blocco da 1 GiB pure");
+    e.mmu.tlbi(TlbiOp::Vae1, tlbi_xt(0x1000, 3));
+    assert_eq!(e.pa(0x1000), 0xb000);
+
+    // Una MMU con un altro PARange non accetta lo snapshot.
+    assert!(Mmu::new(48).restore(&mut Reader::new(&bytes)).is_err());
+}

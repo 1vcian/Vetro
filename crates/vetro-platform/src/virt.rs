@@ -158,6 +158,51 @@ impl Virt {
     }
 }
 
+// ---- Snapshot (M6, ADR 0015) -------------------------------------------------
+
+/// Tutti i dispositivi della piattaforma, ciascuno nella sua sezione: timer,
+/// GIC, UART, RTC, GPIO e i 32 slot virtio (uno slot vuoto salva solo il
+/// suo DeviceID 0). Il bus non ha stato: le regioni le fissa `Virt::new`.
+impl vetro_snapshot::Snapshot for Virt {
+    fn save(&self, w: &mut vetro_snapshot::Writer) {
+        w.section(b"TIMR", |w| w.put(&self.timer));
+        w.section(b"GIC3", |w| w.put(self.gic()));
+        w.section(b"UART", |w| w.put(self.uart()));
+        w.section(b"RTC ", |w| w.put(self.rtc()));
+        w.section(b"GPIO", |w| w.put(self.gpio()));
+        for k in 0..map::VIRTIO_SLOTS as u32 {
+            w.section(b"VIO ", |w| {
+                w.u64(u64::from(k));
+                w.put(self.virtio(k).expect("32 slot"));
+            });
+        }
+    }
+
+    fn restore(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
+        fn part<S: vetro_snapshot::Snapshot + ?Sized>(
+            r: &mut vetro_snapshot::Reader<'_>,
+            tag: &[u8; 4],
+            s: &mut S,
+        ) -> vetro_snapshot::Result<()> {
+            let mut sec = r.section(tag)?;
+            sec.get(s)?;
+            sec.finish()
+        }
+        part(r, b"TIMR", &mut self.timer)?;
+        part(r, b"GIC3", self.gic_mut())?;
+        part(r, b"UART", self.uart_mut())?;
+        part(r, b"RTC ", self.rtc_mut())?;
+        part(r, b"GPIO", self.gpio_mut())?;
+        for k in 0..map::VIRTIO_SLOTS as u32 {
+            let mut sec = r.section(b"VIO ")?;
+            sec.expect_u64("slot virtio", u64::from(k))?;
+            sec.get(self.virtio_mut(k).expect("32 slot"))?;
+            sec.finish()?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

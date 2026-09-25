@@ -160,6 +160,29 @@ impl GenericTimer {
     }
 }
 
+// ---- Snapshot (M6, ADR 0015) -------------------------------------------------
+
+impl vetro_snapshot::Snapshot for GenericTimer {
+    fn save(&self, w: &mut vetro_snapshot::Writer) {
+        w.u32(self.cntfrq);
+        w.u64(self.cntvoff);
+        for c in [&self.phys, &self.virt] {
+            w.u64(c.ctl);
+            w.u64(c.cval);
+        }
+    }
+
+    fn restore(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
+        self.cntfrq = r.u32()?;
+        self.cntvoff = r.u64()?;
+        for c in [&mut self.phys, &mut self.virt] {
+            c.write_ctl(r.u64()?);
+            c.cval = r.u64()?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

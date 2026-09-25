@@ -20,7 +20,7 @@ memoria lineare (due macchine da 1 GiB) arrivano negativi.
 
 ## Export
 
-Versione: `vetro_abi_version() -> u32`, oggi **3**. Cambia a ogni modifica
+Versione: `vetro_abi_version() -> u32`, oggi **4**. Cambia a ogni modifica
 incompatibile delle firme o dei codici qui sotto; il caricatore JS
 (`web/node/vetro.mjs`) la controlla.
 
@@ -31,6 +31,7 @@ incompatibile delle firme o dei codici qui sotto; il caricatore JS
   d'arresto 5 `Blocked`. `vetro_machine_new` resta, con i dispositivi di
   default; la GPU di vetro-wasm mostra su `WebDisplay` (RGBA) invece di
   `MemDisplay` (al guest non cambia niente: stesse istruzioni).
+- 4 (M6): snapshot della macchina (`vetro_snapshot_*`, ADR 0015).
 
 ### Memoria
 
@@ -128,6 +129,31 @@ Il giro con un disco via rete:
    identico. Per confrontare esecuzioni, chi chiama continua il quanto fino
    al suo confine prima di guardare la console o dare ingressi
    (`tests/web/lib.mjs`, `Session.quantum`).
+
+### Snapshot (ABI 4, ADR 0015, `docs/specs/snapshot.md`)
+
+| Export | Firma | Significato |
+|---|---|---|
+| `vetro_snapshot_version` | `() -> u32` | versione del formato degli snapshot (oggi 1): da mettere nella chiave della cache, così uno snapshot di un'altra versione non si prova nemmeno |
+| `vetro_snapshot_save` | `(vm) -> usize` | salva la macchina intera in un buffer interno e ne restituisce la lunghezza. Prima leggere la console: l'uscita già tolta alla UART e non consegnata al JS non entra |
+| `vetro_snapshot_ptr` | `(vm) -> *const u8` | i byte dell'ultimo salvataggio (nullo se non ce n'è), validi fino al prossimo salvataggio, a `vetro_snapshot_clear` o a `vetro_machine_free` |
+| `vetro_snapshot_clear` | `(vm)` | libera il buffer |
+| `vetro_snapshot_restore` | `(vm, data: *const u8, len: usize) -> u32` | ripristina; il buffer si può liberare subito dopo. Codici: 0 `OK`, 1 `BAD_MAGIC` (non è uno snapshot), 2 `VERSION` (altro formato), 3 `CONFIG` (macchina configurata diversamente), 4 `CORRUPT` (rovinato o incoerente: la macchina va scartata); motivo nel messaggio. Con 1, 2 e 3 la macchina non cambia |
+
+Per ripristinare si costruisce la macchina con gli stessi parametri di
+`vetro_machine_new_with` (RAM, ora, seme, dispositivi, risoluzione), si
+aggiungono gli stessi dischi nello stesso ordine e con gli stessi parametri
+(`vetro_disk_add` / `vetro_disk_add_mem`: dimensione, blocco, flag), si
+attiva il JIT se si vuole (il risultato non cambia), poi
+`vetro_snapshot_restore`. Che cosa è **stato** (nello snapshot) e che cosa
+è **collegamento** (lo ricrea il JS):
+
+| Nello snapshot | Collegamento |
+|---|---|
+| CPU, MMU (TLB compreso), RAM, orologio, timer, GIC, UART (FIFO, uscita non letta dalla UART), RTC, GPIO | il modulo WASM e il motore JIT (blocchi rifatti da capo) |
+| trasporti e code virtio, richieste in volo, stato di GPU (risorse e pixel), input, rete (stack e sinkhole), vsock | `WebDisplay`: riceve subito immagine e cursore ripristinati (`vetro_display_updates` cambia) |
+| livello copy-on-write dei dischi (le scritture del guest) | i dati dei dischi (`HostDisk`, HTTP Range, OPFS): dopo il ripristino i blocchi si chiedono di nuovo con `BLOCKED` come all'avvio; la dimensione si controlla |
+| (niente altro: anche il contenuto di `vetro_disk_add_mem` è una base in sola lettura sotto il copy-on-write) | il contenuto dei dischi in memoria (`vetro_disk_add_mem`), controllato con un hash; l'uscita della console già consegnata al JS; gli ingressi non ancora dati |
 
 ### Ponte JIT
 

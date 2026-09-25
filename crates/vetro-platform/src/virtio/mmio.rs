@@ -319,6 +319,108 @@ impl MmioDevice for VirtioMmio {
     }
 }
 
+// ---- Snapshot (M6, ADR 0015) -------------------------------------------------
+
+fn save_queue_error(w: &mut vetro_snapshot::Writer, e: &QueueError) {
+    match *e {
+        QueueError::Ram(RamError { addr, len }) => {
+            w.u8(0);
+            w.u64(addr);
+            w.len_of(len);
+        }
+        QueueError::AvailIdx { last, avail } => {
+            w.u8(1);
+            w.u16(last);
+            w.u16(avail);
+        }
+        QueueError::HeadOutOfRange(h) => {
+            w.u8(2);
+            w.u16(h);
+        }
+        QueueError::NextOutOfRange(n) => {
+            w.u8(3);
+            w.u16(n);
+        }
+        QueueError::ChainLoop => w.u8(4),
+        QueueError::ReadableAfterWritable => w.u8(5),
+        QueueError::IndirectNotNegotiated => w.u8(6),
+        QueueError::IndirectLen(l) => {
+            w.u8(7);
+            w.u32(l);
+        }
+        QueueError::IndirectMisplaced => w.u8(8),
+        QueueError::Malformed(m) => {
+            w.u8(9);
+            w.str(m);
+        }
+    }
+}
+
+fn restore_queue_error(r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<QueueError> {
+    Ok(match r.u8()? {
+        0 => QueueError::Ram(RamError { addr: r.u64()?, len: r.u64()? as usize }),
+        1 => QueueError::AvailIdx { last: r.u16()?, avail: r.u16()? },
+        2 => QueueError::HeadOutOfRange(r.u16()?),
+        3 => QueueError::NextOutOfRange(r.u16()?),
+        4 => QueueError::ChainLoop,
+        5 => QueueError::ReadableAfterWritable,
+        6 => QueueError::IndirectNotNegotiated,
+        7 => QueueError::IndirectLen(r.u32()?),
+        8 => QueueError::IndirectMisplaced,
+        // Il messaggio è un `&'static str`: si conserva (una volta per
+        // ripristino di un dispositivo guasto, raro e piccolo).
+        9 => QueueError::Malformed(Box::leak(r.string()?.into_boxed_str())),
+        v => return Err(vetro_snapshot::Error::invalid(format!("errore di coda {v}"))),
+    })
+}
+
+/// Stato del trasporto (selettori, feature negoziate, stato, interrupt,
+/// generazione della configurazione, ultimo errore), code e stato del
+/// dispositivo. Il tipo del dispositivo e le feature tolte dall'offerta
+/// sono configurazione: si controllano.
+impl vetro_snapshot::Snapshot for VirtioMmio {
+    fn save(&self, w: &mut vetro_snapshot::Writer) {
+        w.u64(u64::from(self.device.as_ref().map_or(0, |d| d.device_id())));
+        w.u64(self.removed);
+        w.u32(self.device_features_sel);
+        w.u32(self.driver_features_sel);
+        w.u64(self.driver_features);
+        w.u32(self.queue_sel);
+        w.u32(self.interrupt_status);
+        w.u32(self.status);
+        w.u32(self.config_generation);
+        w.opt(self.last_error.as_ref(), save_queue_error);
+        w.seq(&self.queues, |w, q| w.put(q));
+        if let Some(d) = &self.device {
+            w.section(b"VDEV", |w| d.save_state(w));
+        }
+    }
+
+    fn restore(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
+        let id = self.device.as_ref().map_or(0, |d| d.device_id());
+        r.expect_u64("DeviceID virtio", u64::from(id))?;
+        r.expect_u64("feature tolte dall'offerta", self.removed)?;
+        self.device_features_sel = r.u32()?;
+        self.driver_features_sel = r.u32()?;
+        self.driver_features = r.u64()?;
+        self.queue_sel = r.u32()?;
+        self.interrupt_status = r.u32()?;
+        self.status = r.u32()?;
+        self.config_generation = r.u32()?;
+        self.last_error = r.opt(restore_queue_error)?;
+        r.expect_u64("numero di code", self.queues.len() as u64)?;
+        for q in &mut self.queues {
+            r.get(q)?;
+        }
+        if let Some(d) = &mut self.device {
+            let mut s = r.section(b"VDEV")?;
+            d.restore_state(&mut s)?;
+            s.finish()?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -357,6 +459,15 @@ mod tests {
             while let Some(c) = q.pop(ram)? {
                 q.push_used(ram, c.head, 7)?;
             }
+            Ok(())
+        }
+        fn save_state(&self, w: &mut vetro_snapshot::Writer) {
+            w.raw(&self.cfg);
+            w.u32(self.reset);
+        }
+        fn restore_state(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
+            self.cfg.copy_from_slice(r.raw(8)?);
+            self.reset = r.u32()?;
             Ok(())
         }
     }

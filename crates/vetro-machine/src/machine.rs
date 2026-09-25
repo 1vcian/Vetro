@@ -17,6 +17,8 @@ use crate::boot::{self, BootError, BootPlan, RamConfig};
 use crate::net::{self, NetLink, NetSetup};
 use crate::psci::{self, Call};
 
+mod snapshot;
+
 /// Bit di indirizzo fisico della Cortex-A53 (ID_AA64MMFR0.PARange = 40 bit).
 const PA_BITS: u32 = 40;
 
@@ -143,6 +145,10 @@ pub struct Machine {
     /// Una WFI interrotta da [`Stop::Blocked`]: la si riprende prima della
     /// prossima istruzione.
     wfi_pending: bool,
+    /// Configurazione e dispositivi con cui è stata costruita (per l'hash
+    /// della configurazione negli snapshot).
+    cfg: MachineConfig,
+    devices: Devices,
 }
 
 /// CNTPCT dopo `steps` istruzioni: 62,5 MHz su 100 MHz nominali.
@@ -209,6 +215,8 @@ impl Machine {
             jit: None,
             interp: Next::Jit,
             wfi_pending: false,
+            cfg: cfg.clone(),
+            devices: devices.clone(),
         }
     }
 
@@ -593,9 +601,9 @@ mod tests {
 
     /// Disco che risponde `NotReady` finché l'host non lo apre (come il
     /// disco via HTTP del browser prima dell'arrivo dei dati).
-    struct Gate {
-        open: bool,
-        disk: MemBackend,
+    pub(super) struct Gate {
+        pub(super) open: bool,
+        pub(super) disk: MemBackend,
     }
 
     impl BlockBackend for Gate {
@@ -617,13 +625,13 @@ mod tests {
     }
 
     const R: u64 = map::RAM_BASE;
-    const DATA: u64 = R + 0x5000;
-    const USED: u64 = R + 0x3000;
+    pub(super) const DATA: u64 = R + 0x5000;
+    pub(super) const USED: u64 = R + 0x3000;
 
     /// Una macchina con un virtio-blk già inizializzato (come farebbe il
     /// driver) e una lettura del settore 1 pubblicata nella coda; il codice
     /// notifica la coda e poi conta in x2 all'infinito.
-    fn blk_machine(open: bool) -> (Machine, u32) {
+    pub(super) fn blk_machine(open: bool) -> (Machine, u32) {
         let cfg = MachineConfig { ram_size: 1 << 20, ..MachineConfig::default() };
         let mut m = Machine::with_devices(&cfg, &Devices::none());
         let disk = MemBackend::from_vec((0..2048u32).map(|i| (i * 7 + i / 512) as u8).collect());

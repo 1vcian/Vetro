@@ -56,6 +56,19 @@ impl NetBackend for NetLink {
     fn recv(&mut self) -> Option<Vec<u8>> {
         self.stack.pop_frame()
     }
+    /// L'istante corrente e tutto lo stack (connessioni, timer, sinkhole,
+    /// registro degli eventi): la rete è dentro la macchina, niente da
+    /// ricollegare.
+    fn save_state(&self, w: &mut vetro_snapshot::Writer) {
+        w.u64(self.now.0);
+        w.section(b"NETS", |w| w.put(&self.stack));
+    }
+    fn restore_state(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
+        self.now = VirtualTime(r.u64()?);
+        let mut s = r.section(b"NETS")?;
+        s.get(&mut self.stack)?;
+        s.finish()
+    }
 }
 
 /// Microsecondi di tempo virtuale a CNTPCT = `cnt` (per difetto).

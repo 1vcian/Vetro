@@ -613,6 +613,95 @@ impl VirtioDevice for VirtioVsock {
         self.transmit_queue(&mut queues[TXQ], ram)?;
         self.receive_queue(&mut queues[RXQ], ram)
     }
+
+    /// Porte in ascolto, connessioni (stato, crediti, contatori, dati in
+    /// transito nei due versi), backlog, pacchetti di controllo in attesa,
+    /// prossima porta dell'host, evento di reset, contatore. Il CID è
+    /// configurazione.
+    fn save_state(&self, w: &mut vetro_snapshot::Writer) {
+        w.u64(self.guest_cid);
+        w.seq(&self.listening, |w, &p| w.u32(p));
+        w.seq(&self.conns, |w, (k, c)| {
+            w.u32(k.host_port);
+            w.u32(k.guest_port);
+            w.u8(match c.state {
+                VsockState::Connecting => 0,
+                VsockState::Connected => 1,
+                VsockState::Closing => 2,
+                VsockState::Closed => 3,
+            });
+            for v in [c.peer_buf_alloc, c.peer_fwd_cnt, c.tx_cnt, c.fwd_cnt, c.last_fwd_sent, c.rx_cnt] {
+                w.u32(v);
+            }
+            w.seq(&c.tx_buf, |w, &b| w.u8(b));
+            w.seq(&c.rx_buf, |w, &b| w.u8(b));
+            w.bool(c.peer_eof);
+            w.u32(c.shutdown_pending);
+            w.bool(c.send_closed);
+            w.bool(c.credit_update);
+        });
+        w.seq(&self.backlog, |w, (&port, q)| {
+            w.u32(port);
+            w.seq(q, |w, k| {
+                w.u32(k.host_port);
+                w.u32(k.guest_port);
+            });
+        });
+        w.seq(&self.control, |w, h| w.raw(&h.to_bytes()));
+        w.u32(self.next_port);
+        w.bool(self.reset_event);
+        w.u64(self.dropped);
+    }
+
+    fn restore_state(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
+        r.expect_u64("CID del guest", self.guest_cid)?;
+        let conn =
+            |r: &mut vetro_snapshot::Reader<'_>| Ok(VsockConn { host_port: r.u32()?, guest_port: r.u32()? });
+        self.listening = r.seq(4, |r| r.u32())?.into_iter().collect();
+        let n = r.len_of(8)?;
+        self.conns.clear();
+        for _ in 0..n {
+            let k = conn(r)?;
+            let state = match r.u8()? {
+                0 => VsockState::Connecting,
+                1 => VsockState::Connected,
+                2 => VsockState::Closing,
+                3 => VsockState::Closed,
+                v => return Err(vetro_snapshot::Error::invalid(format!("stato vsock {v}"))),
+            };
+            let mut c = Conn::new(state);
+            for v in [
+                &mut c.peer_buf_alloc,
+                &mut c.peer_fwd_cnt,
+                &mut c.tx_cnt,
+                &mut c.fwd_cnt,
+                &mut c.last_fwd_sent,
+                &mut c.rx_cnt,
+            ] {
+                *v = r.u32()?;
+            }
+            c.tx_buf = r.seq(1, |r| r.u8())?.into();
+            c.rx_buf = r.seq(1, |r| r.u8())?.into();
+            c.peer_eof = r.bool()?;
+            c.shutdown_pending = r.u32()?;
+            c.send_closed = r.bool()?;
+            c.credit_update = r.bool()?;
+            self.conns.insert(k, c);
+        }
+        let n = r.len_of(12)?;
+        self.backlog.clear();
+        for _ in 0..n {
+            let port = r.u32()?;
+            let q = r.seq(8, conn)?;
+            self.backlog.insert(port, q.into());
+        }
+        self.control =
+            r.seq(HDR_LEN, |r| Ok(Hdr::parse(r.raw(HDR_LEN)?.try_into().expect("44 byte"))))?.into();
+        self.next_port = r.u32()?;
+        self.reset_event = r.bool()?;
+        self.dropped = r.u64()?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

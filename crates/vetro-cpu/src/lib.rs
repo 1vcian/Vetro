@@ -9,6 +9,7 @@ pub mod decode;
 pub(crate) mod exec;
 pub mod mem;
 pub mod simd;
+pub mod snapshot;
 pub mod state;
 pub mod sys;
 pub mod sysreg;

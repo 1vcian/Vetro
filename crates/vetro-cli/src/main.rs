@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]
-//! vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--disk=FILE]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats]
+//! vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--disk=FILE]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--restore=FILE]
 //! ```
 //!
 //! `boot` avvia la macchina virt (M3) con la console PL011 su stdin/stdout.
@@ -21,6 +21,15 @@
 //! modalità sistema, ADR 0013, con `--jit-threshold=N` ingressi prima di
 //! tradurre un blocco); `--stats` stampa su stderr istruzioni, tempo e MIPS
 //! (e i contatori del JIT).
+//!
+//! Snapshot (M6, ADR 0015): `--save-at=N:FILE` salva la macchina intera in
+//! FILE al primo confine fra due quanti con almeno N istruzioni eseguite
+//! (una WFI può saltare oltre N), e continua; si può ripetere. `--restore=FILE`
+//! riparte da uno snapshot invece che dal kernel (`--kernel` non serve):
+//! RAM, dispositivi e opzioni (`--mem`, dispositivi, `--disk` con gli stessi
+//! file) devono essere quelli della macchina salvata, altrimenti lo snapshot
+//! si rifiuta. I file dei dischi sono collegamenti: il loro contenuto non
+//! entra nello snapshot, le scritture del guest (copy-on-write) sì.
 
 use std::process::ExitCode;
 use vetro_cli::linux::{ClockMode, Config, Exit};
@@ -44,7 +53,7 @@ fn usage() -> ExitCode {
         "uso: vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]"
     );
     eprintln!(
-        "     vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--disk=FILE]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats]"
+        "     vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--disk=FILE]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--restore=FILE]"
     );
     ExitCode::from(2)
 }
@@ -144,6 +153,8 @@ fn boot(args: &[String]) -> ExitCode {
     let mut stats = false;
     let (mut net, mut net_events) = (None, false);
     let (mut jit, mut threshold) = (false, vetro_jit::SysJitConfig::default().hot_threshold);
+    let mut save_at: Vec<(u64, String)> = Vec::new();
+    let mut restore = None;
     for a in args {
         match a.as_str() {
             "--no-devices" => {
@@ -178,6 +189,11 @@ fn boot(args: &[String]) -> ExitCode {
                 Err(_) => return usage(),
             },
             Some(("--disk", v)) => disks.push(v.to_string()),
+            Some(("--save-at", v)) => match v.split_once(':').map(|(n, f)| (n.parse::<u64>(), f)) {
+                Some((Ok(n), f)) if !f.is_empty() => save_at.push((n, f.to_string())),
+                _ => return usage(),
+            },
+            Some(("--restore", v)) => restore = Some(v.to_string()),
             Some(("--guest-secs", v)) => match v.parse::<u64>() {
                 Ok(s) => guest_ns = s.saturating_mul(1_000_000_000),
                 Err(_) => return usage(),
@@ -192,19 +208,27 @@ fn boot(args: &[String]) -> ExitCode {
             _ => return usage(),
         }
     }
-    let Some(kernel) = kernel else { return usage() };
+    if kernel.is_none() && restore.is_none() {
+        return usage();
+    }
+    // I salvataggi in ordine di istruzioni, il primo in fondo.
+    save_at.sort_by_key(|s| std::cmp::Reverse(s.0));
     let read = |p: &str| {
         std::fs::read(p).map_err(|e| {
             eprintln!("vetro: {p}: {e}");
             ExitCode::from(2)
         })
     };
-    let image = match read(&kernel) {
+    let image = match kernel.as_deref().filter(|_| restore.is_none()).map(read).transpose() {
         Ok(b) => b,
         Err(c) => return c,
     };
-    let initrd = match initrd.as_deref().map(read).transpose() {
+    let initrd = match initrd.as_deref().filter(|_| restore.is_none()).map(read).transpose() {
         Ok(i) => i,
+        Err(c) => return c,
+    };
+    let snapshot = match restore.as_deref().map(read).transpose() {
+        Ok(s) => s,
         Err(c) => return c,
     };
     match net {
@@ -227,8 +251,17 @@ fn boot(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     }
-    if let Err(e) = m.load_linux(&image, initrd.as_deref(), &append) {
-        eprintln!("vetro: {kernel}: {e}");
+    if let Some(snap) = &snapshot {
+        let path = restore.as_deref().unwrap_or_default();
+        if let Err(e) = m.load_state(snap) {
+            eprintln!("vetro: {path}: {e}");
+            return ExitCode::from(2);
+        }
+        eprintln!("vetro: ripristinato {path} a {} istruzioni", m.steps);
+    } else if let Some(image) = &image
+        && let Err(e) = m.load_linux(image, initrd.as_deref(), &append)
+    {
+        eprintln!("vetro: {}: {e}", kernel.as_deref().unwrap_or_default());
         return ExitCode::from(2);
     }
     if jit {
@@ -281,12 +314,23 @@ fn boot(args: &[String]) -> ExitCode {
             eprintln!("vetro: raggiunto il limite di tempo del guest");
             return ExitCode::from(124);
         }
-        let stop = m.run(2_000_000);
+        // Un quanto non supera il prossimo salvataggio.
+        let budget = save_at.last().map_or(2_000_000, |s| s.0.saturating_sub(m.steps).clamp(1, 2_000_000));
+        let stop = m.run(budget);
         print_net(&m);
         let o = m.console_output();
         if !o.is_empty() {
             let _ = out.write_all(&o);
             let _ = out.flush();
+        }
+        while save_at.last().is_some_and(|s| m.steps >= s.0) {
+            let (_, path) = save_at.pop().expect("controllato sopra");
+            let snap = m.save();
+            if let Err(e) = std::fs::write(&path, &snap) {
+                eprintln!("vetro: {path}: {e}");
+                return ExitCode::from(2);
+            }
+            eprintln!("vetro: snapshot a {} istruzioni in {path} ({} byte)", m.steps, snap.len());
         }
         while let Ok(b) = rx.try_recv() {
             m.console_input(&b);

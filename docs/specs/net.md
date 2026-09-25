@@ -148,3 +148,14 @@ BusyBox nell'initramfs, `udhcpc` con `/usr/share/udhcpc/default.script`):
   istruzioni, stesso registro;
 - `crates/vetro-cli/tests/boot_net.rs`: `vetro boot --no-devices --net
   --net-events`, DHCP e una GET, eventi letti da stderr.
+
+## Snapshot (M6, ADR 0015)
+
+`Stack<U: Upstream + Snapshot>` e `Sinkhole` implementano
+`vetro_snapshot::Snapshot` (file `stack/snapshot.rs`, `tcp/snapshot.rs`,
+`sinkhole/snapshot.rs`, figli dei moduli per vedere i campi privati): MAC
+del guest, frame in uscita, connessioni TCP complete (stato, sequenze,
+finestre, congestione, dati in transito, RTO e timer), flussi UDP, indici,
+`next_id`, `ip_ident`, contatori, registro degli eventi e stato
+dell'upstream. La configurazione non si salva. Chi aggiunge un campo allo
+stato lo aggiunge anche lì e incrementa `vetro_snapshot::FORMAT_VERSION`.

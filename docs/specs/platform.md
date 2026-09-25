@@ -70,21 +70,25 @@ La RAM non passa dal bus MMIO: la gestisce la memoria della CPU/MMU.
     `interrupt_status()`, `last_error()`, `without_features(mask)`.
   - `trait VirtioDevice: Any`: `device_id`, `features` (solo i bit del
     dispositivo), `queue_max_sizes`, `read_config`/`write_config`,
-    `negotiate(features) -> bool`, `reset`, `service(&mut ServiceCtx)`.
+    `negotiate(features) -> bool`, `reset`, `service(&mut ServiceCtx)`,
+    `save_state`/`restore_state` (snapshot, obbligatori: ADR 0015,
+    `docs/specs/snapshot.md`).
     `ServiceCtx` espone code, RAM, feature negoziate e `config_changed()`.
   - `Virtqueue`: `pop` -> `DescChain` (buffer leggibili e scrivibili, con
     `read`/`write`/`read_to_vec` su spazio contiguo), `push_used`,
     `available`, `rewind`.
   - `VirtioBlk::new(Box<dyn BlockBackend>, VirtioBlkConfig)`;
-    `trait BlockBackend: Any { size, read_only, read_sectors, write_sectors, flush }`
+    `trait BlockBackend: Any { size, read_only, read_sectors, write_sectors, flush, save_state, restore_state }`
+    (gli ultimi due vuoti di default: il backend è un collegamento; `MemBackend`
+    e `CowBackend` salvano i dati scritti dal guest)
     (settori da 512, `BlockError::{Io, OutOfRange, ReadOnly, NotReady}`);
     `MemBackend` (in memoria, anche in sola lettura) e `CowBackend<B>`
     (copy-on-write a cluster da 4 KiB sopra una base usata solo in lettura).
   - `VirtioNet::new(Box<dyn NetBackend>, mac)`, `with_mrg_rxbuf`,
-    `set_link_up`, `rx_dropped`; `trait NetBackend: Any { send(&[u8]); recv() -> Option<Vec<u8>> }`
+    `set_link_up`, `rx_dropped`; `trait NetBackend: Any { send(&[u8]); recv() -> Option<Vec<u8>>; save_state; restore_state }`
     con frame ethernet nudi; `QueueNet` in memoria.
   - `VirtioConsole::new(Box<dyn ConsoleBackend>)`;
-    `trait ConsoleBackend: Any { write(&[u8]); read(&mut [u8]) -> usize }`;
+    `trait ConsoleBackend: Any { write(&[u8]); read(&mut [u8]) -> usize; save_state; restore_state }`;
     `BufferConsole` in memoria.
   - `VirtioGpu::new(Box<dyn DisplayBackend>, GpuConfig)` (`gpu.rs`):
     `GpuConfig { scanouts, width, height, edid, monitor: EdidInfo, max_hostmem }`,

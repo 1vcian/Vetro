@@ -479,6 +479,50 @@ impl VirtioDevice for VirtioInput {
         self.status_queue(&mut queues[STATUSQ], ram)?;
         self.deliver(&mut queues[EVENTQ], ram)
     }
+
+    /// Finestra di configurazione scelta, eventi in attesa, LED, eventi di
+    /// stato del guest, contatori. La configurazione (i bit evdev e gli assi
+    /// dichiarati) si controlla con un hash.
+    fn save_state(&self, w: &mut vetro_snapshot::Writer) {
+        w.u64(self.config_hash());
+        w.u8(self.select);
+        w.u8(self.subsel);
+        w.bool(self.active);
+        let ev = |w: &mut vetro_snapshot::Writer, e: &InputEvent| w.raw(&e.to_bytes());
+        w.seq(&self.pending, ev);
+        w.bool(self.discarding);
+        w.u64(self.dropped);
+        w.u32(self.leds);
+        w.seq(&self.status, ev);
+    }
+
+    fn restore_state(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
+        r.expect_u64("configurazione di virtio-input", self.config_hash())?;
+        self.select = r.u8()?;
+        self.subsel = r.u8()?;
+        self.active = r.bool()?;
+        let ev = |r: &mut vetro_snapshot::Reader<'_>| {
+            Ok(InputEvent::from_bytes(r.raw(EVENT_LEN)?.try_into().expect("8 byte")))
+        };
+        self.pending = r.seq(EVENT_LEN, ev)?.into();
+        self.discarding = r.bool()?;
+        self.dropped = r.u64()?;
+        self.leds = r.u32()?;
+        self.status = r.seq(EVENT_LEN, ev)?;
+        Ok(())
+    }
+}
+
+impl VirtioInput {
+    fn config_hash(&self) -> u64 {
+        let mut w = vetro_snapshot::Writer::new();
+        w.seq(&self.config.entries, |w, e| {
+            w.u8(e.select);
+            w.u8(e.subsel);
+            w.bytes(&e.data);
+        });
+        vetro_snapshot::hash64(w.as_bytes())
+    }
 }
 
 #[cfg(test)]

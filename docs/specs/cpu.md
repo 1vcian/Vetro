@@ -191,3 +191,9 @@ CTR_EL0 → `Unimplemented`. LDTR/STTR accedono come LDR/STR.
 - `cargo test -p vetro-mmu --test system`: programma bare-metal con tabelle
   vere (VBAR, MMU, AT, LDTR, SVC da EL0), TLB e TLBI, Instruction Abort,
   Device.
+
+## Snapshot (M6, ADR 0015)
+
+`Cpu`, `SysState` e `SysConfig` implementano `vetro_snapshot::Snapshot`
+(`src/snapshot.rs`): tutti i campi, monitor esclusivo e SError in attesa
+compresi. La CPU non ha stato nascosto.

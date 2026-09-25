@@ -68,6 +68,15 @@ pub trait BlockBackend: Any {
     fn read_sectors(&mut self, sector: u64, buf: &mut [u8]) -> Result<(), BlockError>;
     fn write_sectors(&mut self, sector: u64, data: &[u8]) -> Result<(), BlockError>;
     fn flush(&mut self) -> Result<(), BlockError>;
+    /// Stato del backend negli snapshot (M6, ADR 0015). Di norma nessuno: i
+    /// dati stanno fuori (un file, un'immagine via HTTP) e il backend è un
+    /// collegamento che l'host ricrea prima del ripristino. Chi tiene dati
+    /// propri scritti dal guest (disco in memoria, livello copy-on-write) li
+    /// salva qui.
+    fn save_state(&self, _w: &mut vetro_snapshot::Writer) {}
+    fn restore_state(&mut self, _r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
+        Ok(())
+    }
 }
 
 /// Intervallo di byte di `len` byte dal settore `sector`, se sta in `size`.
@@ -132,6 +141,26 @@ impl BlockBackend for MemBackend {
     }
     fn flush(&mut self) -> Result<(), BlockError> {
         Ok(())
+    }
+    /// Scrivibile: il contenuto intero (il guest può averlo scritto), a
+    /// blocchi compressi. In sola lettura (la base di un copy-on-write) è
+    /// un'immagine che non cambia: solo il suo hash, per controllare che al
+    /// ripristino sia collegata la stessa.
+    fn save_state(&self, w: &mut vetro_snapshot::Writer) {
+        w.u64(u64::from(self.read_only));
+        if self.read_only {
+            w.u64(vetro_snapshot::hash64(&self.data));
+        } else {
+            vetro_snapshot::compress(w, &self.data);
+        }
+    }
+    fn restore_state(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
+        r.expect_u64("sola lettura del disco in memoria", u64::from(self.read_only))?;
+        if self.read_only {
+            return r.expect_u64("hash del disco in memoria", vetro_snapshot::hash64(&self.data));
+        }
+        self.data.fill(0);
+        vetro_snapshot::decompress_into(r, &mut self.data, |_| {})
     }
 }
 
@@ -226,6 +255,35 @@ impl<B: BlockBackend> BlockBackend for CowBackend<B> {
 
     fn flush(&mut self) -> Result<(), BlockError> {
         Ok(())
+    }
+
+    /// I cluster scritti dal guest (in ordine), poi lo stato della base (di
+    /// norma nessuno: la base è un collegamento, controllato solo per
+    /// dimensione).
+    fn save_state(&self, w: &mut vetro_snapshot::Writer) {
+        w.u64(self.base.size());
+        w.seq(&self.clusters, |w, (&c, data)| {
+            w.u64(c);
+            vetro_snapshot::compress(w, data);
+        });
+        self.base.save_state(w);
+    }
+
+    fn restore_state(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
+        r.expect_u64("dimensione del disco", self.base.size())?;
+        let clusters = self.size().div_ceil(Self::CLUSTER);
+        self.clusters.clear();
+        let n = r.len_of(16)?;
+        for _ in 0..n {
+            let c = r.u64()?;
+            if c >= clusters || self.clusters.contains_key(&c) {
+                return Err(vetro_snapshot::Error::invalid(format!("cluster {c} del disco")));
+            }
+            let mut data = vec![0u8; self.cluster_len(c)].into_boxed_slice();
+            vetro_snapshot::decompress_into(r, &mut data, |_| {})?;
+            self.clusters.insert(c, data);
+        }
+        self.base.restore_state(r)
     }
 }
 
@@ -450,6 +508,27 @@ impl VirtioDevice for VirtioBlk {
                 }
             }
         }
+    }
+
+    /// La richiesta in sospeso (se il backend non era pronto) e lo stato del
+    /// backend. La configurazione (capacità, coda, sola lettura) si
+    /// controlla: il disco collegato al ripristino dev'essere lo stesso.
+    fn save_state(&self, w: &mut vetro_snapshot::Writer) {
+        w.u64(self.capacity());
+        w.u64(u64::from(self.is_read_only()));
+        w.bytes(&self.cfg.serial);
+        w.opt(self.pending.as_ref(), |w, c| c.save(w));
+        self.backend.save_state(w);
+    }
+
+    fn restore_state(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
+        r.expect_u64("settori del disco", self.capacity())?;
+        r.expect_u64("sola lettura del disco", u64::from(self.is_read_only()))?;
+        if r.bytes()? != self.cfg.serial.as_slice() {
+            return Err(vetro_snapshot::Error::invalid("identificativo del disco diverso"));
+        }
+        self.pending = r.opt(DescChain::restore)?;
+        self.backend.restore_state(r)
     }
 }
 
