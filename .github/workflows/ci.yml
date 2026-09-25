@@ -74,6 +74,9 @@ jobs:
       VETRO_REQUIRE_SYSTEM_ORACLE: "1"
       # kselftest nel guest sotto QEMU e sotto Vetro (tests/boot/tests/kselftest.rs).
       VETRO_KSELFTEST: "1"
+      # pcapng e HAR riletti da tshark, har-validator e haralyzer in Docker
+      # (tests/boot/tests/analysis.rs, tools/analysis/check.sh, ADR 0016).
+      VETRO_REQUIRE_ANALYSIS_TOOLS: "1"
     steps:
       - uses: actions/checkout@v4
       - name: Toolchain (da rust-toolchain.toml)

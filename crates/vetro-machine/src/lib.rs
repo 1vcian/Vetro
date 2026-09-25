@@ -30,7 +30,7 @@ mod psci;
 
 pub use board::Board;
 pub use machine::{Devices, Machine, MachineConfig, Pointer, Slots, Stop};
-pub use net::{NetLink, NetSetup};
+pub use net::{FrameDir, NetLink, NetSetup, TappedFrame};
 pub use vetro_jit::{SysJitDyn, SysJitStats};
 pub use vetro_net;
 pub use vetro_snapshot;

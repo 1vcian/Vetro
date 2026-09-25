@@ -196,6 +196,10 @@ tempo virtuale in secondi (`[     1.500000] tcp 3 syn 10.0.2.15:40000 ->
   rimette anche con `--no-devices`, `--net-events` stampa il registro su
   stderr (`vetro-net: …`).
 - Il relay (M7) sarà un altro upstream dietro lo stesso `NetLink`.
+- Cattura (M7, ADR 0016): `Machine::net_tap(on)` e `net_tap_take()`
+  copiano i frame Ethernet che passano da `NetLink` nei due versi, con
+  l'istante virtuale; solo osservazione (non cambia l'esecuzione, fuori
+  dagli snapshot). L'analisi è in `vetro-analysis` (`docs/specs/analysis.md`).
 
 ## Invarianti
 - Compila in `wasm32-unknown-unknown`; nessuna dipendenza a runtime; niente

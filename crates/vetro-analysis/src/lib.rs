@@ -1,6 +1,9 @@
 //! Motore di analisi di Vetro.
 //!
 //! M2: decodifica delle syscall Linux arm64 per il tracer (`vetro run
-//! --strace`). Hook, Binder, TLS e ART arrivano con M7–M9.
+//! --strace`). M7: analisi di rete ([`net`]: cattura, pcapng, flussi,
+//! HTTP, decodificatori del corpo, ispettore, HAR; ADR 0016). Hook TLS,
+//! Binder e ART arrivano con M7–M9.
 
+pub mod net;
 pub mod syscall;

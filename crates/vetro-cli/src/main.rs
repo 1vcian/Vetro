@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]
-//! vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--disk=FILE]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--restore=FILE]
+//! vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--restore=FILE]
 //! ```
 //!
 //! `boot` avvia la macchina virt (M3) con la console PL011 su stdin/stdout.
@@ -16,7 +16,11 @@
 //! sintassi di QEMU) apre un socket in ascolto sull'host (127.0.0.1 se
 //! l'indirizzo manca; porta 0 = scelta dal sistema, stampata su stderr) e
 //! inoltra ogni connessione a quella porta del guest, che la vede arrivare
-//! da 10.0.2.2 (vedi `vetro_cli::hostfwd`). Ogni `--disk` aggiunge
+//! da 10.0.2.2 (vedi `vetro_cli::hostfwd`). `--pcap=FILE` (o `--pcap FILE`)
+//! scrive a fine esecuzione i frame Ethernet visti da virtio-net in pcapng,
+//! con il tempo virtuale del guest; `--har=FILE` le richieste HTTP
+//! ricostruite in HAR 1.2; `--net-requests` stampa su stderr la lista
+//! dell'ispettore di rete (M7, ADR 0016). Ogni `--disk` aggiunge
 //! un virtio-blk nello slot libero più alto, nell'ordine della riga di comando
 //! (come i `-device virtio-blk-device` di QEMU): il file resta intatto, le
 //! scritture del guest restano in memoria (`snapshot=on`). `--guest-secs`
@@ -57,7 +61,7 @@ fn usage() -> ExitCode {
         "uso: vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]"
     );
     eprintln!(
-        "     vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--disk=FILE]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--restore=FILE]"
+        "     vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--restore=FILE]"
     );
     ExitCode::from(2)
 }
@@ -161,8 +165,13 @@ fn boot(args: &[String]) -> ExitCode {
     let (mut jit, mut threshold) = (false, vetro_jit::SysJitConfig::default().hot_threshold);
     let mut save_at: Vec<(u64, String)> = Vec::new();
     let mut restore = None;
-    for a in args {
+    let mut capture = vetro_cli::netcap::NetCapture::default();
+    for a in &vetro_cli::netcap::join_values(args) {
         match a.as_str() {
+            "--net-requests" => {
+                capture.requests = true;
+                continue;
+            }
             "--no-devices" => {
                 devices = Devices::none();
                 continue;
@@ -200,6 +209,8 @@ fn boot(args: &[String]) -> ExitCode {
                 _ => return usage(),
             },
             Some(("--restore", v)) => restore = Some(v.to_string()),
+            Some(("--pcap", v)) => capture.pcap = Some(v.into()),
+            Some(("--har", v)) => capture.har = Some(v.into()),
             Some(("--hostfwd", v)) => match vetro_cli::hostfwd::parse_rule(v) {
                 Ok(r) => forwards.push(r),
                 Err(e) => {
@@ -284,6 +295,10 @@ fn boot(args: &[String]) -> ExitCode {
     if jit {
         m.set_jit(Some(vetro_jit_native::system_jit(threshold)));
     }
+    if capture.wanted() && !m.net_tap(true) {
+        eprintln!("vetro: --pcap, --har e --net-requests richiedono la rete (--net)");
+        return ExitCode::from(2);
+    }
     // stdin in un thread, i socket di --hostfwd nei loro: tutto arriva su
     // un canale e passa alla macchina tra un quanto e l'altro.
     let (tx, rx) = std::sync::mpsc::channel::<Input>();
@@ -355,16 +370,19 @@ fn boot(args: &[String]) -> ExitCode {
             net_seen = s.events().len();
         });
     };
-    loop {
+    let code = loop {
         if m.guest_ns() >= guest_ns {
             report(&m);
             eprintln!("vetro: raggiunto il limite di tempo del guest");
-            return ExitCode::from(124);
+            break ExitCode::from(124);
         }
         // Un quanto non supera il prossimo salvataggio.
         let budget = save_at.last().map_or(2_000_000, |s| s.0.saturating_sub(m.steps).clamp(1, 2_000_000));
         let stop = m.run(budget);
         print_net(&m);
+        if capture.wanted() {
+            capture.collect(&mut m);
+        }
         let o = m.console_output();
         if !o.is_empty() {
             let _ = out.write_all(&o);
@@ -395,29 +413,40 @@ fn boot(args: &[String]) -> ExitCode {
                     Ok(i) if waiting => handle(&mut m, i, &mut console_open, &mut fwd),
                     _ => {
                         eprintln!("vetro: il guest aspetta un ingresso e stdin è chiuso");
-                        return ExitCode::from(3);
+                        break ExitCode::from(3);
                     }
                 }
             }
             Stop::PowerOff => {
                 report(&m);
-                return ExitCode::SUCCESS;
+                break ExitCode::SUCCESS;
             }
             Stop::Reset => {
                 report(&m);
                 eprintln!("vetro: il guest ha chiesto un reset");
-                return ExitCode::SUCCESS;
+                break ExitCode::SUCCESS;
             }
             Stop::Blocked => {
                 // I dischi da file sono sempre pronti: non succede.
                 eprintln!("vetro: un disco non ha dati pronti");
-                return ExitCode::from(2);
+                break ExitCode::from(2);
             }
             Stop::Unimplemented { pc, raw, what } => {
                 report(&m);
                 eprintln!("vetro: {raw:#010x} non ancora implementata ({what}) a pc={pc:#x}");
-                return ExitCode::from(125);
+                break ExitCode::from(125);
+            }
+        }
+    };
+    if capture.wanted() {
+        capture.collect(&mut m);
+        match capture.finish() {
+            Ok(lines) => lines.iter().for_each(|l| eprintln!("vetro: {l}")),
+            Err(e) => {
+                eprintln!("vetro: {e}");
+                return ExitCode::from(2);
             }
         }
     }
+    code
 }

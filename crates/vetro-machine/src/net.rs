@@ -37,12 +37,35 @@ impl Default for NetSetup {
     }
 }
 
+/// Verso di un frame visto al confine di virtio-net.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameDir {
+    /// Trasmesso dal guest (va allo stack).
+    FromGuest,
+    /// Consegnato al guest (viene dallo stack).
+    ToGuest,
+}
+
+/// Un frame Ethernet osservato dal punto di cattura di [`NetLink`] (M7,
+/// ADR 0016): istante in tempo virtuale, verso e byte così come passano
+/// per virtio-net (senza intestazione virtio).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TappedFrame {
+    pub at: VirtualTime,
+    pub dir: FrameDir,
+    pub data: Vec<u8>,
+}
+
 /// Backend di virtio-net sopra lo stack: i frame del guest vanno a
 /// [`Stack::receive`], quelli dello stack al guest con [`Stack::pop_frame`].
 pub struct NetLink {
     pub stack: Stack<Sinkhole>,
     /// Istante corrente, fissato dalla macchina prima di ogni servizio.
     pub(crate) now: VirtualTime,
+    /// Punto di cattura: se attivo, copia di ogni frame nei due versi.
+    /// Solo osservazione: non cambia l'esecuzione e non entra negli
+    /// snapshot.
+    pub(crate) tap: Option<Vec<TappedFrame>>,
 }
 
 impl NetLink {
@@ -50,16 +73,37 @@ impl NetLink {
         NetLink {
             stack: Stack::new(setup.config.clone(), Sinkhole::new(setup.sinkhole.clone())),
             now: VirtualTime(0),
+            tap: None,
         }
+    }
+
+    /// Accende o spegne la cattura dei frame (spegnendola si perdono quelli
+    /// non ancora presi).
+    pub fn set_tap(&mut self, on: bool) {
+        if on != self.tap.is_some() {
+            self.tap = on.then(Vec::new);
+        }
+    }
+
+    /// I frame catturati finora, in ordine; la cattura resta com'è.
+    pub fn take_tapped(&mut self) -> Vec<TappedFrame> {
+        self.tap.as_mut().map(std::mem::take).unwrap_or_default()
     }
 }
 
 impl NetBackend for NetLink {
     fn send(&mut self, frame: &[u8]) {
+        if let Some(tap) = &mut self.tap {
+            tap.push(TappedFrame { at: self.now, dir: FrameDir::FromGuest, data: frame.to_vec() });
+        }
         self.stack.receive(self.now, frame);
     }
     fn recv(&mut self) -> Option<Vec<u8>> {
-        self.stack.pop_frame()
+        let frame = self.stack.pop_frame()?;
+        if let Some(tap) = &mut self.tap {
+            tap.push(TappedFrame { at: self.now, dir: FrameDir::ToGuest, data: frame.clone() });
+        }
+        Some(frame)
     }
     /// L'istante corrente e tutto lo stack (connessioni, timer, sinkhole,
     /// registro degli eventi): la rete è dentro la macchina, niente da
@@ -101,5 +145,44 @@ mod tests {
             let c = counter_at(VirtualTime(us));
             assert!(micros(c) >= VirtualTime(us) && (c == 0 || micros(c - 1) < VirtualTime(us)), "{us}");
         }
+    }
+
+    /// Richiesta ARP del guest per il gateway 10.0.2.2.
+    fn arp_request() -> Vec<u8> {
+        let mut f = vec![0xff; 6];
+        f.extend(DEFAULT_GUEST_MAC);
+        f.extend([0x08, 0x06, 0, 1, 0x08, 0, 6, 4, 0, 1]);
+        f.extend(DEFAULT_GUEST_MAC);
+        f.extend([10, 0, 2, 15]);
+        f.extend([0; 6]);
+        f.extend([10, 0, 2, 2]);
+        f
+    }
+
+    #[test]
+    fn cattura_dei_frame_nei_due_versi() {
+        let mut link = NetLink::new(&NetSetup::default());
+        link.now = VirtualTime(5);
+        link.send(&arp_request());
+        assert!(link.take_tapped().is_empty(), "cattura spenta: niente");
+        link.recv().expect("risposta ARP");
+
+        link.set_tap(true);
+        link.now = VirtualTime(1_000);
+        link.send(&arp_request());
+        link.now = VirtualTime(1_250);
+        let reply = link.recv().expect("risposta ARP");
+        assert_eq!(link.recv(), None);
+        let t = link.take_tapped();
+        assert_eq!(t.len(), 2);
+        assert_eq!(
+            (t[0].at, t[0].dir, &t[0].data),
+            (VirtualTime(1_000), FrameDir::FromGuest, &arp_request())
+        );
+        assert_eq!((t[1].at, t[1].dir, &t[1].data), (VirtualTime(1_250), FrameDir::ToGuest, &reply));
+        assert!(link.take_tapped().is_empty(), "già presi");
+        link.set_tap(false);
+        link.send(&arp_request());
+        assert!(link.take_tapped().is_empty());
     }
 }

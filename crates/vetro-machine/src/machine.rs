@@ -14,7 +14,7 @@ use vetro_platform::{VirtDtbConfig, VirtioDevice, map, virt_dtb};
 
 use crate::board::{Board, Env, Phys};
 use crate::boot::{self, BootError, BootPlan, RamConfig};
-use crate::net::{self, NetLink, NetSetup};
+use crate::net::{self, NetLink, NetSetup, TappedFrame};
 use crate::psci::{self, Call};
 
 mod snapshot;
@@ -290,6 +290,27 @@ impl Machine {
         let b = self.board.borrow();
         let d = b.virt.virtio(self.slots.net?)?.device_as::<VirtioNet>()?;
         Some(f(&d.backend_as::<NetLink>()?.stack))
+    }
+
+    /// Accende o spegne la cattura dei frame Ethernet al confine di
+    /// virtio-net (M7, ADR 0016). Solo osservazione: l'esecuzione resta la
+    /// stessa, e la cattura non entra negli snapshot. `false` se la
+    /// macchina non ha la rete.
+    pub fn net_tap(&mut self, on: bool) -> bool {
+        self.net_link(|l| l.set_tap(on)).is_some()
+    }
+
+    /// I frame catturati da [`Machine::net_tap`] dall'ultima chiamata, in
+    /// ordine, con l'istante in tempo virtuale. Non cambia l'esecuzione.
+    pub fn net_tap_take(&mut self) -> Vec<TappedFrame> {
+        self.net_link(NetLink::take_tapped).unwrap_or_default()
+    }
+
+    /// Il backend di virtio-net senza segnare i dispositivi da servire.
+    fn net_link<R>(&mut self, f: impl FnOnce(&mut NetLink) -> R) -> Option<R> {
+        let mut b = self.board.borrow_mut();
+        let d = b.virt.virtio_mut(self.slots.net?)?.device_as_mut::<VirtioNet>()?;
+        Some(f(d.backend_as_mut::<NetLink>()?))
     }
 
     /// virtio-vsock, se c'è.

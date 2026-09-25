@@ -10,6 +10,7 @@ pub mod disk;
 pub mod elf;
 pub mod hostfwd;
 pub mod linux;
+pub mod netcap;
 
 use linux::{Config, Exit, Kernel};
 
