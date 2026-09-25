@@ -33,8 +33,8 @@ Safari mobile; qualsiasi componente cloud obbligatorio.
 | M0 Impalcatura e oracolo | **completata** (CI verde, 2026-09-24) | `VETRO_REQUIRE_ORACLE=1 tools/ci.sh` |
 | M1 Interprete CPU AArch64 | **completata** (CI verde, 2026-09-24) | test per istruzione + 200 programmi casuali uguali a qemu-aarch64 (ADR 0006) |
 | M2 Syscall Linux utente | **completata** (CI verde, 2026-09-25) | 355 test LTP, BusyBox e RISU uguali all'oracolo nel job linux (ADR 0010) |
-| M3 Modalità sistema e kernel | prossima (moduli pronti) | kernel + initramfs fino alla shell, kselftest scelti |
-| M4 JIT verso WASM | — | test M1/M2 col JIT, parità interprete-JIT |
+| M3 Modalità sistema e kernel | **completata** (CI verde, 2026-09-25) | Linux 6.18 fino alla shell con log uguale a QEMU; 95 kselftest con esiti uguali (ADR 0011) |
+| M4 JIT verso WASM | prossima | test M1/M2 col JIT, parità interprete-JIT |
 | M5 Avvio di Android | — | home in Chrome, adb install di un APK |
 | M6 Snapshot e installazione | — | home < 15 s da snapshot, APK trascinato |
 | M7 Rete e timeline | — | 10 app con HTTPS in chiaro e legato all'azione, HAR riapribile |

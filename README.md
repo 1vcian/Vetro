@@ -80,8 +80,8 @@ done only when that command passes in CI.
 | M0 | Scaffolding and oracle | `cargo test` green; a test runs QEMU and reads its output in CI | ✅ done |
 | M1 | AArch64 CPU interpreter | per-instruction suite; ≥200 random programs match `qemu-aarch64` | ✅ done |
 | M2 | Linux user-mode syscalls | LTP subset, static BusyBox runs | ✅ done |
-| M3 | System mode, kernel boot | kernel + initramfs reaches a shell; kselftest subset | 🚧 next |
-| M4 | JIT to WebAssembly | M1/M2 tests pass with JIT; interpreter/JIT parity | — |
+| M3 | System mode, kernel boot | kernel + initramfs reaches a shell; kselftest subset | ✅ done |
+| M4 | JIT to WebAssembly | M1/M2 tests pass with JIT; interpreter/JIT parity | 🚧 next |
 | M5 | Android boots | home screen in Chrome; `adb install` of an APK works | — |
 | M6 | Snapshots and install | home in < 15 s from snapshot; drag-and-drop APK | — |
 | M7 | Network analysis and timeline | HTTPS in clear text, linked to user actions; HAR export | — |
@@ -89,11 +89,10 @@ done only when that command passes in CI.
 | M9 | Code tracing and scripting | ART method hooks, dynamic dex capture, Frida-like API | — |
 | M10 | Record & replay, 1.0 | deterministic replay; all 30 reference apps; 1.0 goals met | — |
 
-**Where we are.** Vetro runs unmodified static Linux arm64 programs in user
-mode. It has the complete ARMv8.0 integer, SIMD/FP and crypto instruction
-set of a Cortex-A53, and an emulated Linux kernel with processes, threads,
-signals, virtual time and `/proc`. Three test suites match `qemu-aarch64`
-in CI:
+**Where we are.** Vetro runs unmodified Linux arm64 programs in user mode.
+It has the complete ARMv8.0 integer, SIMD/FP and crypto instruction set of a
+Cortex-A53, and an emulated Linux kernel with processes, threads, signals,
+virtual time and `/proc`. These all match `qemu-aarch64` in CI:
 - 355 LTP syscall tests;
 - the main BusyBox applets;
 - the RISU instruction tests.
@@ -101,9 +100,15 @@ in CI:
 Tests where QEMU itself deviates from Linux are checked against the real
 kernel on an arm64 host (ADR 0010).
 
-The system-mode pieces for M3 are built and tested separately: EL1, stage-1
-MMU, GICv3, timer, PL011, virtio and user-mode networking. What remains is
-wiring them together to boot the guest kernel.
+It also runs as a complete machine (`vetro-machine`): a CPU at EL0/EL1,
+stage-1 MMU, GICv3, generic timer, PL011, PL031 and virtio-mmio. It boots
+Linux 6.18 to an interactive shell, with a boot log identical to
+`qemu-system-aarch64`. Its 95 in-guest kernel selftests have the same
+outcomes as under QEMU. Everything is deterministic: guest time is the
+instruction count, so a boot is exactly 98,439,742 instructions, about 2 s on
+an M2.
+
+Next is M4, a JIT to WebAssembly.
 
 Detailed plan and progress log (Italian): [`docs/PLAN.md`](docs/PLAN.md),
 [`docs/progress/`](docs/progress/), architecture decisions in
