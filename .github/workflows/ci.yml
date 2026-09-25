@@ -65,6 +65,8 @@ jobs:
     env:
       VETRO_REQUIRE_GUEST_KERNEL: "1"
       VETRO_REQUIRE_SYSTEM_ORACLE: "1"
+      # kselftest nel guest sotto QEMU e sotto Vetro (tests/boot/tests/kselftest.rs).
+      VETRO_KSELFTEST: "1"
     steps:
       - uses: actions/checkout@v4
       - name: Toolchain (da rust-toolchain.toml)
