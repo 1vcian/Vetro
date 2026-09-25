@@ -101,7 +101,8 @@ impl Cpu {
             CntkctlEl1 => s.cntkctl_el1,
             CsselrEl1 => s.csselr_el1,
             // RAZ/WI in QEMU per la Cortex-A53.
-            ActlrEl1 | AmairEl1 | Afsr0El1 | Afsr1El1 | MdccintEl1 => 0,
+            ActlrEl1 | AmairEl1 | Afsr0El1 | Afsr1El1 | MdccintEl1 | ImpDefEl1 => 0,
+            CbarEl1 => s.cfg.cbar,
             IsrEl1 => {
                 let (a, i, f) = (s.serror_pending.is_some(), env.irq_line(), env.fiq_line());
                 u64::from(a) << 8 | u64::from(i) << 7 | u64::from(f) << 6
@@ -173,7 +174,7 @@ impl Cpu {
             TpidrEl1 => s.tpidr_el1 = v,
             CntkctlEl1 => s.cntkctl_el1 = v,
             CsselrEl1 => s.csselr_el1 = v & 0xf,
-            ActlrEl1 | AmairEl1 | Afsr0El1 | Afsr1El1 | MdccintEl1 => {}
+            ActlrEl1 | AmairEl1 | Afsr0El1 | Afsr1El1 | MdccintEl1 | ImpDefEl1 => {}
             MdscrEl1 => s.mdscr_el1 = v,
             OslarEl1 => s.oslk = v & 1 != 0,
             OsdlrEl1 => s.osdlr_el1 = v & 1,
@@ -184,7 +185,7 @@ impl Cpu {
             PmuserenrEl0 => s.pmuserenr_el0 = v & 0xf,
             Env(e) => env.write_sysreg(e, v),
             DczidEl0 | CtrEl0 | CurrentEl | IsrEl1 | RvbarEl1 | MidrEl1 | MpidrEl1 | RevidrEl1 | AidrEl1
-            | ClidrEl1 | CcsidrEl1 | Id(_) | OslsrEl1 | MdrarEl1 => {
+            | ClidrEl1 | CcsidrEl1 | Id(_) | OslsrEl1 | MdrarEl1 | CbarEl1 => {
                 unreachable!("sola lettura, escluso da sysreg_access")
             }
         }

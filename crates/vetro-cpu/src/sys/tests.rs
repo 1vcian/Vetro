@@ -740,11 +740,18 @@ fn registri_con_maschere_di_qemu() {
         m.one(0xd5390006);
         assert_eq!(m.cpu.x[6], want, "CSSELR {sel}");
     }
-    // Registro valido ma non modellato: limite di Vetro, stato invariato.
+    // Registro della A53 non ancora modellato (PMU): limite di Vetro, stato
+    // invariato.
     let mut m = M::new();
-    let ev = m.one(0xd538002c); // mrs x12, S3_0_C0_C0_1
-    assert_eq!(ev, SysEvent::Unimplemented { raw: 0xd538002c, what: "MRS/MSR registro di sistema" });
+    let ev = m.one(0xd53b9c0c); // mrs x12, PMCR_EL0
+    assert_eq!(ev, SysEvent::Unimplemented { raw: 0xd53b9c0c, what: "MRS/MSR registro di sistema" });
     assert_eq!(m.cpu.pc, RAM);
+    // Codifica non allocata o di un'estensione successiva (FPMR): UNDEFINED
+    // come in QEMU (sonda: sysreg_unalloc_id, sysreg_fpmr).
+    for raw in [0xd538002c, 0xd53b4440] {
+        let mut m = M::new();
+        assert!(matches!(m.one(raw), SysEvent::Exception { esr: 0x0200_0000, .. }), "{raw:#x}");
+    }
 }
 
 #[test]

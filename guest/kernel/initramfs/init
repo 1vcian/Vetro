@@ -3,7 +3,9 @@
 # marcatore di avvio, esegue l'autotest e apre una shell sulla console.
 # Parametri dalla riga di comando del kernel:
 #   vetro.noautotest  salta l'autotest;
-#   vetro.poweroff    spegne la macchina (PSCI) dopo l'autotest, senza shell.
+#   vetro.poweroff    spegne la macchina (PSCI) dopo l'autotest, senza shell;
+#   vetro.kselftest   esegue i kselftest (/etc/kselftest.sh, initramfs dei
+#                     kselftest) e spegne la macchina.
 /bin/busybox --install -s
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 mount -t proc proc /proc
@@ -15,6 +17,13 @@ cmdline=$(cat /proc/cmdline)
 case " $cmdline " in
   *" vetro.noautotest "*) ;;
   *) sh /etc/autotest.sh ;;
+esac
+case " $cmdline " in
+  *" vetro.kselftest "*)
+    echo "VETRO-KSELFTEST-INIZIO"
+    sh /etc/kselftest.sh
+    echo "VETRO-KSELFTEST-FINE"
+    poweroff -f ;;
 esac
 case " $cmdline " in
   *" vetro.poweroff "*) poweroff -f ;;

@@ -7,7 +7,7 @@
 # stessa uscita. Serve Docker; la versione di QEMU finisce in probe.qemu.
 set -eu
 d="$(cd "$(dirname "$0")" && pwd -P)"
-IMAGE="${VETRO_QSYS_IMAGE:-vetro-qemu-system:latest}"
+IMAGE="${VETRO_QSYS_IMAGE:-vetro-qemu-probe:latest}"
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   docker build -q -t "$IMAGE" "$d" >&2
 fi

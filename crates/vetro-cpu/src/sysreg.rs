@@ -80,6 +80,13 @@ pub enum SysReg {
     DbgwcrEl1(u8),
     PmuserenrEl0,
 
+    // --- IMPLEMENTATION DEFINED della Cortex-A53 (come QEMU) ---
+    /// L2CTLR, L2ECTLR, L2ACTLR, CPUACTLR, CPUECTLR, CPUMERRSR, L2MERRSR:
+    /// RAZ/WI a EL1.
+    ImpDefEl1,
+    /// CBAR_EL1: base delle periferiche (il distributore del GIC), sola lettura.
+    CbarEl1,
+
     /// Registro gestito dall'ambiente (timer generico, interfaccia CPU del
     /// GIC): la CPU controlla l'accesso e passa lettura e scrittura a
     /// [`CpuEnv`](crate::sys::CpuEnv).
@@ -173,11 +180,19 @@ impl SysReg {
         use SysReg::*;
         match self {
             DczidEl0 | CtrEl0 | CurrentEl | IsrEl1 | RvbarEl1 | MidrEl1 | MpidrEl1 | RevidrEl1 | AidrEl1
-            | ClidrEl1 | CcsidrEl1 | Id(_) | OslsrEl1 | MdrarEl1 => Rw::ReadOnly,
+            | ClidrEl1 | CcsidrEl1 | Id(_) | OslsrEl1 | MdrarEl1 | CbarEl1 => Rw::ReadOnly,
             OslarEl1 => Rw::WriteOnly,
             Env(e) => e.rw(),
             _ => Rw::ReadWrite,
         }
+    }
+
+    /// Codifiche di registri che la Cortex-A53 ha ma Vetro non modella
+    /// ancora: la PMU (PMUv3). Tutto il resto fuori da [`SysReg::lookup`] non
+    /// esiste sulla A53 (estensioni successive o codifiche libere) ed è
+    /// UNDEFINED, come in QEMU.
+    pub fn is_unmodelled_a53(op0: u32, op1: u32, crn: u32, crm: u32, _op2: u32) -> bool {
+        op0 == 3 && matches!((op1, crn, crm), (3, 9, 12..=14) | (0, 9, 14) | (3, 14, 8..=15))
     }
 
     /// Registro dalla codifica di MRS/MSR, se Vetro lo modella.
@@ -244,6 +259,11 @@ impl SysReg {
             (3, 0, 12, 1, 0) => IsrEl1,
 
             (3, 3, 9, 14, 0) => PmuserenrEl0,
+
+            // IMPLEMENTATION DEFINED della Cortex-A53 (QEMU:
+            // cortex_a72_a57_a53_cp_reginfo).
+            (3, 1, 11, 0, 2 | 3) | (3, 1, 15, 0, 0) | (3, 1, 15, 2, 0..=3) => ImpDefEl1,
+            (3, 1, 15, 3, 0) => CbarEl1,
             (3, 3, 13, 0, 2) => TpidrEl0,
             (3, 3, 13, 0, 3) => TpidrroEl0,
 

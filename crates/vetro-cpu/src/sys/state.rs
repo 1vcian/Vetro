@@ -39,11 +39,13 @@ pub struct SysConfig {
     /// Interfaccia CPU del GICv3 a registri di sistema presente: rende
     /// accessibili gli ICC_* e alza i campi GIC di ID_AA64PFR0/ID_PFR1.
     pub gicv3: bool,
+    /// CBAR_EL1: base delle periferiche (su `-M virt` il distributore GIC).
+    pub cbar: u64,
 }
 
 impl Default for SysConfig {
     fn default() -> Self {
-        SysConfig { psci: PsciConduit::Hvc, mpidr: 0x8000_0000, gicv3: true }
+        SysConfig { psci: PsciConduit::Hvc, mpidr: 0x8000_0000, gicv3: true, cbar: 0x0800_0000 }
     }
 }
 

@@ -1,0 +1,6 @@
+# kselftest per il guest di M3: presuppongono glibc, quindi Debian arm64 (con
+# collegamento statico: l'initramfs non ha librerie condivise).
+FROM debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential make rsync libcap-dev libcap-ng-dev libnuma-dev libc6-dev \
+    && rm -rf /var/lib/apt/lists/*

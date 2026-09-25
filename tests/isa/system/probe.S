@@ -278,6 +278,38 @@ _start:
     msr spsel, #0
     mrs x2, sp_el0
     msr spsel, #1
+    // Registri fuori dalla Cortex-A53: estensioni successive e codifiche
+    // non allocate (UNDEFINED); poi i registri IMPLEMENTATION DEFINED della
+    // A53 come li modella QEMU. La PMU manca: Vetro non la modella ancora.
+    T sysreg_fpmr
+    mrs x0, S3_3_C4_C4_2
+    bl puthex
+    T sysreg_zcr_el1
+    mrs x0, S3_0_C1_C2_0
+    bl puthex
+    T sysreg_unalloc_id
+    mrs x0, S3_0_C0_C0_1
+    bl puthex
+    T sysreg_unalloc_c11
+    mrs x0, S3_0_C11_C0_0
+    bl puthex
+    T sysreg_msr_fpmr
+    msr S3_3_C4_C4_2, xzr
+    T sysreg_cpuactlr
+    mrs x0, S3_1_C15_C2_0
+    bl puthex
+    T sysreg_cpuectlr
+    mrs x0, S3_1_C15_C2_1
+    bl puthex
+    T sysreg_l2ctlr
+    mrs x0, S3_1_C11_C0_2
+    bl puthex
+    T sysreg_l2ectlr
+    mrs x0, S3_1_C11_C0_3
+    bl puthex
+    T sysreg_cbar
+    mrs x0, S3_1_C15_C3_0
+    bl puthex
     T eret_illegal
     mov x1, #0x9
     orr x1, x1, #0x3c0

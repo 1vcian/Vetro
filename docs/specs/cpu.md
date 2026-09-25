@@ -111,7 +111,13 @@ DCZID_EL0, CTR_EL0 → `Unimplemented`. LDTR/STTR accedono come LDR/STR.
   SCTLR_EL1 (bit MTE azzerati; scrittura svuota il TLB), TCR_EL1 (svuota
   il TLB), TTBR0/1, MAIR, CONTEXTIDR, CPACR, TPIDR_EL1, PAR, CNTKCTL, ESR,
   FAR, ELR, SPSR: tutti i 64 bit. VBAR_EL1: azzerati solo i bit [4:0].
-  CSSELR: 4 bit. ACTLR, AMAIR, AFSR0/1, MDCCINT: RAZ/WI. Debug: MDSCR,
+  CSSELR: 4 bit. ACTLR, AMAIR, AFSR0/1, MDCCINT: RAZ/WI. IMPLEMENTATION
+  DEFINED della A53 (L2CTLR, L2ECTLR, L2ACTLR, CPUACTLR, CPUECTLR,
+  CPUMERRSR, L2MERRSR): RAZ/WI; CBAR_EL1 = `SysConfig::cbar` (0x0800_0000,
+  il GICD della virt), sola lettura. Codifiche MRS/MSR che la A53 non ha
+  (estensioni successive come FPMR, ZCR, SMCR; codifiche libere) →
+  UNDEFINED, come QEMU; la PMU, che la A53 ha, → `Unimplemented` finché
+  Vetro non la modella. Debug: MDSCR,
   OSLAR/OSLSR (OSLK al reset), OSDLR (1 bit), DBGBVR/BCR 0..5, DBGWVR 0..3
   (bit [1:0] a zero), DBGWCR 0..3, MDRAR = 0: solo memoria, nessuna
   eccezione di debug.

@@ -635,7 +635,11 @@ fn system(w: u32) -> Insn {
         }
         _ => {
             let Some(reg) = SysReg::lookup(op0, op1, crn, crm, op2) else {
-                return Unimplemented("MRS/MSR registro di sistema");
+                return if SysReg::is_unmodelled_a53(op0, op1, crn, crm, op2) {
+                    Unimplemented("MRS/MSR registro di sistema")
+                } else {
+                    Undefined
+                };
             };
             if l {
                 Insn::Mrs { reg, rt }

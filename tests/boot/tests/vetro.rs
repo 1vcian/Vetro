@@ -2,8 +2,10 @@
 //! shell, con lo stesso copione del test sotto QEMU (`qemu.rs`): marcatore di
 //! `/init`, autotest senza errori, un comando scritto sulla console, `poweroff
 //! -f` via PSCI. Il log, senza tempi e senza le differenze note
-//! (`KNOWN_DIFFERENCES`), deve coincidere con quello di QEMU versionato in
-//! `guest/kernel/reference/qemu-boot.log`.
+//! (`KNOWN_DIFFERENCES`), deve coincidere con quello di QEMU sugli stessi
+//! file: `target/guest-kernel/qemu-boot.log`, scritto dal test `qemu` che
+//! cargo esegue prima, se è più recente di kernel e initramfs; altrimenti il
+//! riferimento versionato `guest/kernel/reference/qemu-boot.log`.
 //!
 //! I limiti sono in istruzioni, non in secondi: la macchina è deterministica.
 //! Va eseguito in release (`cargo test --release -p vetro-boot-tests`): in
@@ -102,14 +104,32 @@ fn vetro_boots_guest_kernel_to_shell() {
         r.m.steps
     );
 
-    // Confronto con l'avvio di riferimento sotto QEMU.
-    let reference = std::fs::read_to_string(root.join("guest/kernel/reference/qemu-boot.log"))
-        .expect("guest/kernel/reference/qemu-boot.log (VETRO_BOOT_UPDATE_REFERENCE=1 nel test di QEMU)");
+    // Confronto con l'avvio sotto QEMU degli stessi file, se c'è.
+    let (ref_path, reference) = qemu_reference(&root);
+    eprintln!("confronto con {}", ref_path.display());
     let (ours, theirs) = (comparable_lines(&log), comparable_lines(&reference));
     let diff = line_diff(&theirs, &ours);
     assert!(
         diff.is_empty(),
-        "il log di Vetro differisce da quello di QEMU (- solo QEMU, + solo Vetro):\n{}",
+        "il log di Vetro differisce da {} (- solo QEMU, + solo Vetro):\n{}",
+        ref_path.display(),
         diff.join("\n")
     );
+}
+
+/// Log di QEMU con cui confrontarsi: quello appena scritto dal test `qemu`
+/// sugli stessi file, o il riferimento versionato.
+fn qemu_reference(root: &std::path::Path) -> (std::path::PathBuf, String) {
+    let fresh = root.join("target/guest-kernel/qemu-boot.log");
+    let mtime = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    let inputs = ["Image", "initramfs.cpio.gz"].map(|f| mtime(&root.join("target/guest-kernel").join(f)));
+    if let Some(t) = mtime(&fresh)
+        && inputs.iter().all(|i| i.is_some_and(|i| i <= t))
+    {
+        return (fresh.clone(), std::fs::read_to_string(&fresh).unwrap());
+    }
+    let r = root.join("guest/kernel/reference/qemu-boot.log");
+    let text = std::fs::read_to_string(&r)
+        .expect("guest/kernel/reference/qemu-boot.log (VETRO_BOOT_UPDATE_REFERENCE=1 nel test di QEMU)");
+    (r, text)
 }

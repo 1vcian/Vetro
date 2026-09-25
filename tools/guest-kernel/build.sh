@@ -96,7 +96,8 @@ docker run --rm --platform linux/arm64 \
   echo "==> sorgenti per la GPL"
   cp /src/guest/kernel/config/vetro.config /src/guest/kernel/config/defconfig \
      /src/guest/kernel/initramfs/files.list /src/guest/kernel/initramfs/init \
-     /src/guest/kernel/initramfs/autotest.sh /src/tools/guest-kernel/build.sh \
+     /src/guest/kernel/initramfs/autotest.sh /src/guest/kernel/initramfs/kselftest.sh \
+     /src/tools/guest-kernel/build.sh \
      /src/tools/guest-kernel/Dockerfile "$out/sources/"
   {
     echo "linux $KVER sha256 $KSHA256 (https://cdn.kernel.org/pub/linux/kernel/v6.x/)"

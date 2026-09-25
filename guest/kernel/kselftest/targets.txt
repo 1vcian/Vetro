@@ -1,0 +1,12 @@
+# Gruppi di kselftest del kernel guest eseguiti nel guest (M3). Si compilano
+# staticamente con glibc (tools/guest-kernel/kselftest.sh) e girano sotto QEMU
+# e sotto Vetro: l'esito di ogni test deve coincidere (tests/boot).
+arm64
+exec
+futex
+kcmp
+membarrier
+mincore
+signal
+size
+timers

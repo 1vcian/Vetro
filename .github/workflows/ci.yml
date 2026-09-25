@@ -75,7 +75,18 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: target/guest-kernel
-          key: guest-kernel-${{ hashFiles('guest/kernel/config/**', 'guest/kernel/initramfs/**', 'tools/guest-kernel/**', 'tools/guest-bins/**') }}
-      - name: Kernel guest e initramfs
-        run: test -f target/guest-kernel/Image || tools/guest-kernel/build.sh
-      - run: cargo test --release -p vetro-boot-tests -- --nocapture
+          key: guest-kernel-${{ hashFiles('guest/kernel/config/**', 'guest/kernel/initramfs/**', 'guest/kernel/kselftest/**', 'tools/guest-kernel/**', 'tools/guest-bins/**') }}
+      # kselftest.sh usa i sorgenti estratti da build.sh nel volume Docker:
+      # si costruiscono insieme, e insieme vanno in cache.
+      - name: Kernel guest, initramfs e kselftest
+        run: |
+          test -f target/guest-kernel/initramfs-kselftest.cpio.gz \
+            || { tools/guest-kernel/build.sh && tools/guest-kernel/kselftest.sh; }
+      # I log dei job si leggono solo da autenticati: in caso di errore le
+      # ultime righe diventano annotazioni, visibili dall'API pubblica.
+      - name: Avvio sotto QEMU e sotto Vetro
+        run: |
+          set -o pipefail
+          cargo test --release -p vetro-boot-tests -- --nocapture --test-threads=1 2>&1 | tee boot-test.log
+      - if: failure()
+        run: echo "::error::$(grep -vE '^\s*$' boot-test.log | tail -n 60 | awk '{printf "%s%%0A", $0}')"
