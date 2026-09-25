@@ -266,7 +266,8 @@ impl Kernel {
         if ctid != 0 {
             let mm = self.tasks[t].mm.clone();
             let _ = write_u32(&mut mm.borrow_mut().mem, ctid, 0);
-            self.futex_wake(&mm, ctid, 1);
+            let key = self.futex_key(&mm, ctid, false);
+            self.futex_wake(key, 1);
         }
         self.tasks[t].vfork_parent = None;
         let task = &mut self.tasks[t];
@@ -315,15 +316,14 @@ impl Kernel {
         }
     }
 
-    pub fn futex_wake(&mut self, mm: &Rc<RefCell<super::mm::Mm>>, addr: u64, n: usize) -> usize {
+    pub fn futex_wake(&mut self, key: super::FutexKey, n: usize) -> usize {
         let mut woken = 0;
         for task in self.tasks.iter_mut() {
             if woken >= n {
                 break;
             }
-            if let State::Blocked(Wait::Futex { addr: a, .. }) = task.state
-                && a == addr
-                && Rc::ptr_eq(&task.mm, mm)
+            if let State::Blocked(Wait::Futex { key: k, .. }) = task.state
+                && k == key
                 && !task.futex_woken
             {
                 task.futex_woken = true;

@@ -74,6 +74,23 @@ fn run_vetro(bin: &Path, name: &str) -> Esito {
     conta(&text, status)
 }
 
+/// Esegue su Vetro in un thread a parte: un panic o un blocco (per esempio
+/// un'attesa sull'host) diventano l'esito del caso, non della corsa.
+fn run_vetro_limited(bin: &Path, name: &str) -> Esito {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (bin, name2) = (bin.to_path_buf(), name.to_string());
+    std::thread::spawn(move || {
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_vetro(&bin, &name2)));
+        let _ = tx.send(r);
+    });
+    let vuoto = |s: &str| Esito { status: s.into(), pass: 0, fail: 0, brok: 0, conf: 0 };
+    match rx.recv_timeout(Duration::from_secs(180)) {
+        Ok(Ok(e)) => e,
+        Ok(Err(_)) => vuoto("panic di Vetro"),
+        Err(_) => vuoto("timeout di Vetro (180 s)"),
+    }
+}
+
 fn run_qemu(q: &Path, bin: &Path, name: &str) -> Esito {
     let wd = workdir(&format!("{name}.qemu"));
     let opts = vec!["-L".to_string(), root().join("tools/rootfs").to_string_lossy().into_owned()];
@@ -144,15 +161,7 @@ fn ltp_matches_qemu() {
                     let bin = dir.join(&name);
                     // Un panic nel kernel emulato è un fallimento di questo
                     // caso, non di tutta la corsa.
-                    let ours =
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_vetro(&bin, &name)))
-                            .unwrap_or_else(|_| Esito {
-                                status: "panic di Vetro".into(),
-                                pass: 0,
-                                fail: 0,
-                                brok: 0,
-                                conf: 0,
-                            });
+                    let ours = run_vetro_limited(&bin, &name);
                     let theirs = run_qemu(&q, &bin, &name);
                     results.lock().unwrap().insert(name, (ours, theirs));
                 }

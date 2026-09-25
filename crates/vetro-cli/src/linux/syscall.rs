@@ -26,6 +26,14 @@ fn ret(v: i64) -> R {
     Ok(Sys::Ret(v))
 }
 
+/// Vero se open() con O_CREAT trova già una FIFO (senza O_EXCL).
+fn m_is_fifo_creat(path: &str, flags: u64) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    flags & O_CREAT != 0
+        && flags & O_EXCL == 0
+        && std::fs::metadata(path).is_ok_and(|m| m.file_type().is_fifo())
+}
+
 /// Syscall che i programmi sondano e per cui ENOSYS è una risposta legittima.
 const ENOSYS_OK: &[u64] = &[
     283, // membarrier
@@ -625,9 +633,69 @@ impl Kernel {
         let path = self.path_arg(t, dirfd, p)?;
         let file = match self.proc_file(t, &path) {
             Some(r) => r?,
-            None => fs::open(&path, flags, mode, self.tasks[t].umask)?,
+            None => {
+                use std::os::unix::fs::{FileTypeExt, MetadataExt};
+                match std::fs::metadata(&path) {
+                    Ok(m)
+                        if m.file_type().is_fifo() && flags & O_CREAT == 0
+                            || m_is_fifo_creat(&path, flags) =>
+                    {
+                        let m = std::fs::metadata(&path).map_err(|e| host_errno(&e))?;
+                        match self.open_fifo(t, (m.dev(), m.ino()), flags, &path)? {
+                            Some(f) => f,
+                            None => return Ok(Sys::Block(Wait::Retry)),
+                        }
+                    }
+                    _ => fs::open(&path, flags, mode, self.tasks[t].umask)?,
+                }
+            }
         };
         ret(self.tasks[t].files.borrow_mut().install(file, flags & O_CLOEXEC != 0, 0)?)
+    }
+
+    /// open() di una FIFO: `None` se deve aspettare l'altro capo.
+    fn open_fifo(
+        &mut self,
+        t: usize,
+        key: (u64, u64),
+        flags: u64,
+        path: &str,
+    ) -> Result<Option<Rc<RefCell<OpenFile>>>, i64> {
+        let tid = self.tasks[t].tid;
+        let fifo = self.fifos.entry(key).or_default();
+        let nonblock = flags & O_NONBLOCK != 0;
+        let status = flags & (O_ACCMODE | O_APPEND | O_NONBLOCK);
+        let (readers, writers) = {
+            let p = fifo.pipe.borrow();
+            (p.readers() + fifo.waiting_readers.len(), p.writers() + fifo.waiting_writers.len())
+        };
+        let kind = match flags & O_ACCMODE {
+            0 => {
+                if !nonblock && writers == 0 {
+                    if !fifo.waiting_readers.contains(&tid) {
+                        fifo.waiting_readers.push(tid);
+                    }
+                    return Ok(None);
+                }
+                fifo.waiting_readers.retain(|&x| x != tid);
+                Kind::PipeR(fifo.pipe.clone())
+            }
+            O_WRONLY => {
+                if readers == 0 {
+                    if nonblock {
+                        return Err(6); // ENXIO
+                    }
+                    if !fifo.waiting_writers.contains(&tid) {
+                        fifo.waiting_writers.push(tid);
+                    }
+                    return Ok(None);
+                }
+                fifo.waiting_writers.retain(|&x| x != tid);
+                Kind::PipeW(fifo.pipe.clone())
+            }
+            _ => Kind::PipeRW(fifo.pipe.clone()),
+        };
+        Ok(Some(OpenFile::new(kind, status, path.to_string())))
     }
 
     /// File di /proc/self (e /proc/<pid>) generati: il /proc dell'host
@@ -791,7 +859,7 @@ impl Kernel {
                     Ok(f) => {
                         let f = f.borrow();
                         match &f.kind {
-                            Kind::PipeR(_) | Kind::PipeW(_) => {
+                            Kind::PipeR(_) | Kind::PipeW(_) | Kind::PipeRW(_) => {
                                 if f.is_pipe_ready() {
                                     events & 0x5
                                 } else {
@@ -1026,6 +1094,8 @@ impl Kernel {
         const FUTEX_WAKE_BITSET: u64 = 10;
         let (uaddr, op, val) = (a[0], a[1] & 0x7f, a[2]);
         let mm = self.mem(t);
+        let private = a[1] & 128 != 0; // FUTEX_PRIVATE_FLAG
+        let key = self.futex_key(&mm, uaddr, private);
         match op {
             FUTEX_WAIT | FUTEX_WAIT_BITSET => {
                 if self.tasks[t].futex_woken {
@@ -1055,26 +1125,26 @@ impl Kernel {
                     };
                     self.tasks[t].deadline = Some(until);
                 }
-                Ok(Sys::Block(Wait::Futex { addr: uaddr, until: self.tasks[t].deadline }))
+                Ok(Sys::Block(Wait::Futex { key, until: self.tasks[t].deadline }))
             }
-            FUTEX_WAKE | FUTEX_WAKE_BITSET => ret(self.futex_wake(&mm, uaddr, val as usize) as i64),
+            FUTEX_WAKE | FUTEX_WAKE_BITSET => ret(self.futex_wake(key, val as usize) as i64),
             FUTEX_REQUEUE | FUTEX_CMP_REQUEUE => {
                 if op == FUTEX_CMP_REQUEUE && read_u32(&mut mm.borrow_mut().mem, uaddr)? != a[5] as u32 {
                     return Err(EAGAIN);
                 }
-                let woken = self.futex_wake(&mm, uaddr, val as usize);
+                let woken = self.futex_wake(key, val as usize);
+                let key2 = self.futex_key(&mm, a[4], private);
                 // Sposta gli altri in attesa sul secondo indirizzo.
                 let mut moved = 0;
                 for task in self.tasks.iter_mut() {
                     if moved >= a[3] as usize {
                         break;
                     }
-                    if let State::Blocked(Wait::Futex { addr, until }) = task.state
-                        && addr == uaddr
-                        && Rc::ptr_eq(&task.mm, &mm)
+                    if let State::Blocked(Wait::Futex { key: k, until }) = task.state
+                        && k == key
                         && !task.futex_woken
                     {
-                        task.state = State::Blocked(Wait::Futex { addr: a[4], until });
+                        task.state = State::Blocked(Wait::Futex { key: key2, until });
                         moved += 1;
                     }
                 }
@@ -1094,7 +1164,7 @@ impl Kernel {
                     _ => old ^ arg,
                 };
                 write_u32(&mut mm.borrow_mut().mem, uaddr2, new)?;
-                let mut n = self.futex_wake(&mm, uaddr, val as usize);
+                let mut n = self.futex_wake(key, val as usize);
                 let cond = match (encoded >> 24) & 15 {
                     0 => old == cmparg,
                     1 => old != cmparg,
@@ -1104,7 +1174,8 @@ impl Kernel {
                     _ => old as i32 >= cmparg as i32,
                 };
                 if cond {
-                    n += self.futex_wake(&mm, uaddr2, a[3] as usize);
+                    let key2 = self.futex_key(&mm, uaddr2, private);
+                    n += self.futex_wake(key2, a[3] as usize);
                 }
                 ret(n as i64)
             }

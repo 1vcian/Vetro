@@ -36,6 +36,15 @@ pub struct Pipe {
     writers: usize,
 }
 
+impl Pipe {
+    pub fn readers(&self) -> usize {
+        self.readers
+    }
+    pub fn writers(&self) -> usize {
+        self.writers
+    }
+}
+
 pub struct DirEnt {
     pub ino: u64,
     pub dtype: u8,
@@ -55,6 +64,8 @@ pub enum Kind {
     },
     PipeR(Rc<RefCell<Pipe>>),
     PipeW(Rc<RefCell<Pipe>>),
+    /// FIFO aperta in lettura e scrittura (O_RDWR).
+    PipeRW(Rc<RefCell<Pipe>>),
     Null,
     Zero,
     Random,
@@ -80,6 +91,11 @@ impl Drop for OpenFile {
         match &self.kind {
             Kind::PipeR(p) => p.borrow_mut().readers -= 1,
             Kind::PipeW(p) => p.borrow_mut().writers -= 1,
+            Kind::PipeRW(p) => {
+                let mut p = p.borrow_mut();
+                p.readers -= 1;
+                p.writers -= 1;
+            }
             _ => {}
         }
     }
@@ -101,6 +117,11 @@ impl OpenFile {
         match &kind {
             Kind::PipeR(p) => p.borrow_mut().readers += 1,
             Kind::PipeW(p) => p.borrow_mut().writers += 1,
+            Kind::PipeRW(p) => {
+                let mut p = p.borrow_mut();
+                p.readers += 1;
+                p.writers += 1;
+            }
             _ => {}
         }
         Rc::new(RefCell::new(OpenFile { kind, flags, guest_path }))
@@ -137,7 +158,7 @@ impl OpenFile {
                 }
             }
             Kind::Dir { .. } => Io::Err(EISDIR),
-            Kind::PipeR(p) => {
+            Kind::PipeR(p) | Kind::PipeRW(p) => {
                 let mut p = p.borrow_mut();
                 if p.buf.is_empty() {
                     if p.writers == 0 {
@@ -200,7 +221,7 @@ impl OpenFile {
                 }
             }
             Kind::Dir { .. } => Io::Err(EBADF),
-            Kind::PipeW(p) => {
+            Kind::PipeW(p) | Kind::PipeRW(p) => {
                 let mut p = p.borrow_mut();
                 if p.readers == 0 {
                     return Io::BrokenPipe;
@@ -266,7 +287,7 @@ impl OpenFile {
             Kind::Dir { path, .. } => {
                 std::fs::metadata(path).map(|m| Stat::from_host(&m)).map_err(|e| host_errno(&e))
             }
-            Kind::PipeR(_) | Kind::PipeW(_) => {
+            Kind::PipeR(_) | Kind::PipeW(_) | Kind::PipeRW(_) => {
                 Ok(Stat { mode: S_IFIFO | 0o600, blksize: 4096, nlink: 1, ..Default::default() })
             }
             Kind::Console(..) => {
@@ -325,6 +346,10 @@ impl OpenFile {
             Kind::PipeW(p) => {
                 let p = p.borrow();
                 p.buf.len() < PIPE_CAP || p.readers == 0
+            }
+            Kind::PipeRW(p) => {
+                let p = p.borrow();
+                !p.buf.is_empty() || p.buf.len() < PIPE_CAP
             }
             _ => false,
         }
@@ -461,6 +486,15 @@ impl FdTable {
     pub fn open_fds(&self) -> Vec<usize> {
         self.fds.iter().enumerate().filter(|(_, f)| f.is_some()).map(|(i, _)| i).collect()
     }
+}
+
+/// FIFO del file system: la pipe interna condivisa da tutti gli aperti dello
+/// stesso file, e chi è fermo in open() aspettando l'altro capo.
+#[derive(Default)]
+pub struct Fifo {
+    pub pipe: Rc<RefCell<Pipe>>,
+    pub waiting_readers: Vec<i32>,
+    pub waiting_writers: Vec<i32>,
 }
 
 /// Crea una pipe: (lettura, scrittura).

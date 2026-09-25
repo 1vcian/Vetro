@@ -317,6 +317,19 @@ impl UserMemory {
         (addr < b + len).then_some((b, len))
     }
 
+    /// Identità "fisica" di un indirizzo in una regione condivisa: (buffer,
+    /// offset nel buffer). Serve ai futex condivisi tra processi, che Linux
+    /// riconosce dalla pagina e non dall'indirizzo virtuale.
+    pub fn shared_key(&self, addr: u64) -> Option<(usize, u64)> {
+        let (b, _) = self.find(addr)?;
+        match &self.regions[&b].backing {
+            Backing::Shared(buf, base) => {
+                Some((Rc::as_ptr(buf) as *const u8 as usize, (*base as u64) + (addr - b)))
+            }
+            Backing::Pages { .. } => None,
+        }
+    }
+
     /// Permessi della pagina che contiene `addr`.
     pub fn perm_at(&self, addr: u64) -> Option<Perm> {
         let (b, _) = self.find(addr)?;

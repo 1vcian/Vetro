@@ -34,6 +34,11 @@ use signal::{SigHand, SigState};
 
 pub type Pid = i32;
 
+/// Identità di un futex: (spazio, offset). Per la memoria condivisa lo spazio
+/// è il buffer condiviso (come la pagina fisica per Linux), altrimenti lo
+/// spazio d'indirizzamento del processo e l'offset è l'indirizzo virtuale.
+pub type FutexKey = (usize, u64);
+
 /// File mappato con MAP_SHARED: percorso sull'host e buffer comune.
 pub type SharedFile = (std::path::PathBuf, Rc<RefCell<Vec<u8>>>);
 
@@ -139,7 +144,7 @@ pub enum Wait {
     /// Dormire fino a `until` (ns di tempo monotono).
     Sleep { until: u64 },
     /// FUTEX_WAIT su `addr`, con scadenza facoltativa.
-    Futex { addr: u64, until: Option<u64> },
+    Futex { key: FutexKey, until: Option<u64> },
     /// Il genitore di un vfork aspetta che il figlio esegua exec o esca.
     Vfork { child: Pid },
     /// pause/rt_sigsuspend: solo un segnale sveglia.
@@ -213,6 +218,9 @@ pub struct Kernel {
     locks: locks::LockTable,
     /// IPC System V.
     ipc: ipc::Ipc,
+    /// FIFO del file system, per (dispositivo, inode): aprirle sull'host
+    /// bloccherebbe l'emulatore.
+    fifos: std::collections::HashMap<(u64, u64), fs::Fifo>,
 }
 
 /// Istruzioni per quanto di scheduling.
@@ -238,6 +246,7 @@ impl Kernel {
             shared_files: std::collections::HashMap::new(),
             locks: locks::LockTable::default(),
             ipc: ipc::Ipc::default(),
+            fifos: std::collections::HashMap::new(),
         }
     }
 
@@ -297,6 +306,14 @@ impl Kernel {
             self.init = pid;
         }
         Ok(pid)
+    }
+
+    /// Chiave del futex all'indirizzo `addr` nello spazio `mm`.
+    pub fn futex_key(&self, mm: &Rc<RefCell<Mm>>, addr: u64, private: bool) -> FutexKey {
+        if !private && let Some(k) = mm.borrow().mem.shared_key(addr) {
+            return k;
+        }
+        (Rc::as_ptr(mm) as usize, addr)
     }
 
     /// Riscrive sui file il contenuto delle mappature condivise.
