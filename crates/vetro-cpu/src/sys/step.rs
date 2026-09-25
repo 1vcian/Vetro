@@ -195,7 +195,7 @@ impl Cpu {
     ) -> Option<SysEvent> {
         let el = self.sys.el;
         let sctlr = self.sys.sctlr_el1;
-        if is_fp(&insn) && self.fp_trapped() {
+        if self.fp_trapped() && is_fp(&insn) {
             return Some(self.sync(esr(ec::FP_ACCESS, ISS_FP), None, self.pc));
         }
         let next = self.pc.wrapping_add(4);
