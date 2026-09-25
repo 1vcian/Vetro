@@ -3,7 +3,8 @@
 //! ```text
 //! qemu-system-aarch64 -M virt,gic-version=3,its=off -cpu cortex-a53 -m 1G -nic none \
 //!     -global virtio-mmio.force-legacy=false -device virtio-gpu-device \
-//!     -device virtio-keyboard-device -device virtio-tablet-device -nographic \
+//!     -device virtio-keyboard-device -device virtio-tablet-device \
+//!     -netdev user,id=n -device virtio-net-device,netdev=n -nographic \
 //!     -kernel Image -initrd initramfs.cpio.gz -append "console=ttyAMA0"
 //! ```
 //!

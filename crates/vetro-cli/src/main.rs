@@ -2,12 +2,17 @@
 //!
 //! ```text
 //! vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]
-//! vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB] [--no-devices] [--disk=FILE]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats]
+//! vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--disk=FILE]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats]
 //! ```
 //!
 //! `boot` avvia la macchina virt (M3) con la console PL011 su stdin/stdout.
 //! I dispositivi di default (GPU, tastiera, tablet) occupano gli slot
-//! virtio-mmio 31, 30, 29; `--no-devices` li toglie. Ogni `--disk` aggiunge
+//! virtio-mmio 31, 30, 29, e la rete (virtio-net con lo stack di `vetro-net`
+//! e il sinkhole: DHCP 10.0.2.15, gateway 10.0.2.2, DNS finto 10.0.2.3) il
+//! 28; `--no-devices` li toglie tutti, `--no-net` solo la rete, `--net` la
+//! rimette anche dopo `--no-devices`. `--net-events` stampa su stderr il
+//! registro degli eventi di rete (DHCP, DNS, connessioni, byte, chiusure)
+//! man mano che accadono, in tempo virtuale. Ogni `--disk` aggiunge
 //! un virtio-blk nello slot libero più alto, nell'ordine della riga di comando
 //! (come i `-device virtio-blk-device` di QEMU): il file resta intatto, le
 //! scritture del guest restano in memoria (`snapshot=on`). `--guest-secs`
@@ -39,7 +44,7 @@ fn usage() -> ExitCode {
         "uso: vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]"
     );
     eprintln!(
-        "     vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB] [--no-devices] [--disk=FILE]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats]"
+        "     vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--disk=FILE]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats]"
     );
     ExitCode::from(2)
 }
@@ -129,7 +134,7 @@ fn run(args: &[String]) -> ExitCode {
 
 fn boot(args: &[String]) -> ExitCode {
     use std::io::{Read, Write};
-    use vetro_machine::{Devices, Machine, MachineConfig, Stop};
+    use vetro_machine::{Devices, Machine, MachineConfig, NetSetup, Stop};
     use vetro_platform::virtio::{VirtioBlk, VirtioBlkConfig};
     let (mut kernel, mut initrd, mut append) = (None, None, "console=ttyAMA0".to_string());
     let mut cfg = MachineConfig::default();
@@ -137,6 +142,7 @@ fn boot(args: &[String]) -> ExitCode {
     let mut disks = Vec::new();
     let mut guest_ns = u64::MAX;
     let mut stats = false;
+    let (mut net, mut net_events) = (None, false);
     let (mut jit, mut threshold) = (false, vetro_jit::SysJitConfig::default().hot_threshold);
     for a in args {
         match a.as_str() {
@@ -146,6 +152,18 @@ fn boot(args: &[String]) -> ExitCode {
             }
             "--jit" => {
                 jit = true;
+                continue;
+            }
+            "--net" => {
+                net = Some(true);
+                continue;
+            }
+            "--no-net" => {
+                net = Some(false);
+                continue;
+            }
+            "--net-events" => {
+                net_events = true;
                 continue;
             }
             "--stats" => {
@@ -189,6 +207,11 @@ fn boot(args: &[String]) -> ExitCode {
         Ok(i) => i,
         Err(c) => return c,
     };
+    match net {
+        Some(true) if devices.net.is_none() => devices.net = Some(NetSetup::default()),
+        Some(false) => devices.net = None,
+        _ => {}
+    }
     let mut m = Machine::with_devices(&cfg, &devices);
     for d in &disks {
         let backend = match vetro_cli::disk::cow_disk(std::path::Path::new(d)) {
@@ -238,6 +261,20 @@ fn boot(args: &[String]) -> ExitCode {
             }
         }
     };
+    // Eventi di rete già stampati (il registro si legge senza toccarlo:
+    // l'esecuzione non cambia con --net-events).
+    let mut net_seen = 0usize;
+    let mut print_net = |m: &Machine| {
+        if !net_events {
+            return;
+        }
+        m.net_view(|s| {
+            for e in &s.events()[net_seen..] {
+                eprintln!("vetro-net: {e}");
+            }
+            net_seen = s.events().len();
+        });
+    };
     loop {
         if m.guest_ns() >= guest_ns {
             report(&m);
@@ -245,6 +282,7 @@ fn boot(args: &[String]) -> ExitCode {
             return ExitCode::from(124);
         }
         let stop = m.run(2_000_000);
+        print_net(&m);
         let o = m.console_output();
         if !o.is_empty() {
             let _ = out.write_all(&o);

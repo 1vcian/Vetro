@@ -285,7 +285,11 @@ Con il kernel guest (`cargo test --release -p vetro-boot-tests`):
 - `vetro.rs`: l'avvio con GPU, tastiera e tablet dà lo stesso log di QEMU
   con gli stessi `-device` (`QEMU_MACHINE`), compreso l'autotest che esegue
   `vetro-dev drm` (modi, dumb buffer, modeset, DIRTYFB, cursore), l'EDID da
-  sysfs, `/proc/bus/input/devices` e le capacità evdev;
+  sysfs, `/proc/bus/input/devices` e le capacità evdev, e con virtio-net
+  (in QEMU `-netdev user`) DHCP, rotte, DNS configurato e ping a gateway e
+  DNS;
+- `net.rs` (solo Vetro): la rete del guest con lo stack di `vetro-net` e il
+  sinkhole (vedi `docs/specs/net.md`);
 - `devices.rs` (solo Vetro, con vsock): l'host confronta ogni pixel dello
   scanout con il motivo disegnato dal guest e il cursore, inietta tasti e
   movimenti letti dal guest con evdev, vede il LED acceso dal guest, e

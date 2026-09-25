@@ -6,11 +6,15 @@ use vetro_cpu::sys::{CpuEnv, SysEvent};
 use vetro_cpu::{Cpu, SysConfig};
 use vetro_jit::{Next, SysJitDyn, SysJitStats};
 use vetro_mmu::{Mmu, MmuBus};
-use vetro_platform::virtio::{GpuConfig, InputConfig, MemDisplay, VirtioGpu, VirtioInput, VirtioVsock};
+use vetro_net::{Sinkhole, Stack};
+use vetro_platform::virtio::{
+    GpuConfig, InputConfig, MemDisplay, VirtioGpu, VirtioInput, VirtioNet, VirtioVsock,
+};
 use vetro_platform::{VirtDtbConfig, VirtioDevice, map, virt_dtb};
 
 use crate::board::{Board, Env, Phys};
 use crate::boot::{self, BootError, BootPlan, RamConfig};
+use crate::net::{self, NetLink, NetSetup};
 use crate::psci::{self, Call};
 
 /// Bit di indirizzo fisico della Cortex-A53 (ID_AA64MMFR0.PARange = 40 bit).
@@ -49,15 +53,18 @@ pub enum Pointer {
 ///
 /// Si montano in quest'ordine, ciascuno nello slot libero più alto (come i
 /// `-device` di QEMU in ordine di riga di comando): GPU nello slot 31,
-/// tastiera nel 30, puntatore nel 29, vsock nel successivo libero. Il
-/// default è quello del test di avvio confrontato con QEMU
-/// (`tests/boot/src/lib.rs`, `QEMU_MACHINE`): GPU 1280x800, tastiera e
-/// tablet, senza vsock (QEMU in container non ha vhost-vsock).
+/// tastiera nel 30, puntatore nel 29, rete nel 28, vsock nel successivo
+/// libero. Il default è quello del test di avvio confrontato con QEMU
+/// (`tests/boot/src/lib.rs`, `QEMU_MACHINE`): GPU 1280x800, tastiera,
+/// tablet e virtio-net con il sinkhole (in QEMU `-netdev user`), senza vsock
+/// (QEMU in container non ha vhost-vsock).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Devices {
     pub gpu: Option<GpuConfig>,
     pub keyboard: bool,
     pub pointer: Option<Pointer>,
+    /// virtio-net con lo stack di `vetro-net` e il sinkhole.
+    pub net: Option<NetSetup>,
     /// CID del guest, se c'è virtio-vsock.
     pub vsock_cid: Option<u64>,
 }
@@ -68,6 +75,7 @@ impl Default for Devices {
             gpu: Some(GpuConfig::default()),
             keyboard: true,
             pointer: Some(Pointer::Tablet),
+            net: Some(NetSetup::default()),
             vsock_cid: None,
         }
     }
@@ -76,7 +84,7 @@ impl Default for Devices {
 impl Devices {
     /// Nessun dispositivo virtio (la macchina di M3).
     pub fn none() -> Self {
-        Devices { gpu: None, keyboard: false, pointer: None, vsock_cid: None }
+        Devices { gpu: None, keyboard: false, pointer: None, net: None, vsock_cid: None }
     }
 }
 
@@ -86,6 +94,7 @@ pub struct Slots {
     pub gpu: Option<u32>,
     pub keyboard: Option<u32>,
     pub pointer: Option<u32>,
+    pub net: Option<u32>,
     pub vsock: Option<u32>,
 }
 
@@ -112,8 +121,11 @@ pub struct Machine {
     seed: u64,
     /// Istruzioni eseguite (e passi di tempo saltati nelle WFI): l'orologio.
     pub steps: u64,
-    /// Prossimo CNTPCT a cui il timer cambia livello (cache).
+    /// Prossimo CNTPCT a cui qualcosa cambia da sé: il timer cambia
+    /// livello o scade un timer dello stack di rete (cache).
     timer_deadline: Option<u64>,
+    /// Prossimo CNTPCT a cui chiamare `poll` sullo stack di rete.
+    net_deadline: Option<u64>,
     slots: Slots,
     /// Il JIT, se attivo ([`Machine::set_jit`]).
     jit: Option<Box<dyn SysJitDyn>>,
@@ -168,6 +180,9 @@ impl Machine {
             };
             slots.pointer = attach(Box::new(VirtioInput::new(cfg)));
         }
+        if let Some(n) = &devices.net {
+            slots.net = attach(Box::new(VirtioNet::new(Box::new(NetLink::new(n)), n.mac)));
+        }
         if let Some(cid) = devices.vsock_cid {
             slots.vsock = attach(Box::new(VirtioVsock::new(cid)));
         }
@@ -177,6 +192,7 @@ impl Machine {
             board: RefCell::new(board),
             steps: 0,
             timer_deadline: None,
+            net_deadline: None,
             seed: cfg.seed,
             slots,
             jit: None,
@@ -232,6 +248,28 @@ impl Machine {
     /// Il tablet o il touchscreen, se c'è.
     pub fn pointer<R>(&mut self, f: impl FnOnce(&mut VirtioInput) -> R) -> Option<R> {
         self.device(self.slots.pointer, f)
+    }
+
+    /// Lo stack di rete (con il sinkhole), se c'è virtio-net: registro degli
+    /// eventi, connessioni e byte registrati, statistiche. Dopo l'accesso lo
+    /// stack viene interrogato (`poll`) prima della prossima istruzione, così
+    /// ciò che l'host cambia nell'upstream arriva al guest.
+    pub fn net<R>(&mut self, f: impl FnOnce(&mut Stack<Sinkhole>) -> R) -> Option<R> {
+        let r = self.device(self.slots.net, |d: &mut VirtioNet| {
+            d.backend_as_mut::<NetLink>().map(|l| f(&mut l.stack))
+        })??;
+        self.net_deadline = Some(0);
+        self.timer_deadline = Some(0);
+        Some(r)
+    }
+
+    /// Lo stack di rete in sola lettura (registro, connessioni, byte del
+    /// sinkhole), senza effetti sulla macchina: si può chiamare in qualsiasi
+    /// momento senza cambiare l'esecuzione.
+    pub fn net_view<R>(&self, f: impl FnOnce(&Stack<Sinkhole>) -> R) -> Option<R> {
+        let b = self.board.borrow();
+        let d = b.virt.virtio(self.slots.net?)?.device_as::<VirtioNet>()?;
+        Some(f(&d.backend_as::<NetLink>()?.stack))
     }
 
     /// virtio-vsock, se c'è.
@@ -297,11 +335,48 @@ impl Machine {
     fn sync_irqs(&mut self) {
         let mut b = self.board.borrow_mut();
         b.cntpct = counter(self.steps);
-        if b.virtio_dirty {
+        let net_due = self.net_deadline.is_some_and(|d| b.cntpct >= d);
+        if let Some(slot) = self.slots.net
+            && (net_due || b.virtio_dirty)
+        {
+            let now = net::micros(b.cntpct);
+            let link = b
+                .virt
+                .virtio_mut(slot)
+                .and_then(|t| t.device_as_mut::<VirtioNet>())
+                .and_then(|d| d.backend_as_mut::<NetLink>())
+                .expect("virtio-net con NetLink nello slot della rete");
+            link.now = now;
+            if net_due {
+                link.stack.poll(now);
+                if link.stack.pending_frames() > 0 {
+                    b.virtio_dirty = true;
+                }
+            }
+        }
+        let serviced = b.virtio_dirty;
+        if serviced {
             b.service_virtio();
         }
+        if let Some(slot) = self.slots.net
+            && (net_due || serviced)
+        {
+            let link = b
+                .virt
+                .virtio_mut(slot)
+                .and_then(|t| t.device_as_mut::<VirtioNet>())
+                .and_then(|d| d.backend_as_mut::<NetLink>())
+                .expect("virtio-net con NetLink nello slot della rete");
+            // Mai nel passato: una scadenza già raggiunta si ripete al
+            // prossimo tick del contatore.
+            self.net_deadline = link.stack.next_deadline().map(|t| net::counter_at(t).max(b.cntpct + 1));
+        }
         b.update_irqs();
-        self.timer_deadline = b.virt.timer.next_deadline(b.cntpct);
+        let timer = b.virt.timer.next_deadline(b.cntpct);
+        self.timer_deadline = match (timer, self.net_deadline) {
+            (Some(a), Some(n)) => Some(a.min(n)),
+            (a, n) => a.or(n),
+        };
     }
 
     /// Passi che il JIT può eseguire adesso senza cambiare nulla rispetto
@@ -408,7 +483,8 @@ impl Machine {
     }
 
     /// WFI: se nessun interrupt è pronto il tempo salta alla prossima
-    /// scadenza del timer; senza scadenze la macchina è inattiva.
+    /// scadenza (timer o stack di rete); senza scadenze la macchina è
+    /// inattiva.
     fn wait_for_interrupt(&mut self) -> Option<Stop> {
         self.sync_irqs();
         // Come una CPU vera, la WFI finisce solo con un interrupt: dati in
@@ -462,11 +538,15 @@ mod tests {
     fn dispositivi_negli_slot_di_qemu() {
         let cfg = MachineConfig { ram_size: 1 << 20, ..MachineConfig::default() };
         let m = Machine::new(&cfg);
-        assert_eq!(m.slots(), Slots { gpu: Some(31), keyboard: Some(30), pointer: Some(29), vsock: None });
+        assert_eq!(
+            m.slots(),
+            Slots { gpu: Some(31), keyboard: Some(30), pointer: Some(29), net: Some(28), vsock: None }
+        );
+        assert_eq!(m.net_view(|s| s.config().guest_ip), Some(std::net::Ipv4Addr::new(10, 0, 2, 15)));
         let devices =
             Devices { pointer: Some(Pointer::Multitouch), vsock_cid: Some(5), ..Devices::default() };
         let mut m = Machine::with_devices(&cfg, &devices);
-        assert_eq!(m.slots().vsock, Some(28));
+        assert_eq!(m.slots().vsock, Some(27));
         assert_eq!(m.vsock(|v| v.guest_cid()), Some(5));
         assert_eq!(m.gpu(|g| g.resource_count()), Some(0));
         m.board.borrow_mut().virtio_dirty = false;

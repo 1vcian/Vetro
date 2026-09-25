@@ -1,0 +1,23 @@
+#!/bin/sh
+# Script di udhcpc (BusyBox) dell'initramfs di Vetro: configura l'interfaccia
+# con l'indirizzo ottenuto via DHCP, la rotta predefinita e il DNS.
+# Stampa una riga sola con i valori del lease: con la rete user di QEMU e con
+# lo stack di Vetro (crates/vetro-net) deve essere la stessa.
+case "$1" in
+  deconfig)
+    ifconfig "$interface" 0.0.0.0 up
+    ;;
+  bound|renew)
+    ifconfig "$interface" "$ip" netmask "$subnet" up
+    while route del default dev "$interface" 2>/dev/null; do :; done
+    for r in $router; do
+      route add default gw "$r" dev "$interface"
+    done
+    : > /etc/resolv.conf
+    for d in $dns; do
+      echo "nameserver $d" >> /etc/resolv.conf
+    done
+    echo "udhcpc: $1 $interface $ip/$subnet router $router dns $dns lease $lease"
+    ;;
+esac
+exit 0

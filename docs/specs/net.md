@@ -82,6 +82,36 @@ bytes_to_remote, bytes_to_guest }`, `UdpOpen`, `UdpData`, `UdpClosed`,
 `DnsQuery { txid, name, qtype }`, `DnsAnswer { rcode, addrs }`. Il contenuto
 dei byte non è nel registro: lo tiene l'upstream (il sinkhole lo conserva).
 
+`NetEvent`, `Flow` e `Mac` hanno `Display`: una riga per evento con il
+tempo virtuale in secondi (`[     1.500000] tcp 3 syn 10.0.2.15:40000 ->
+198.18.0.1:80`), usata da `vetro boot --net-events`.
+
+## Collegamento alla macchina (`vetro-machine`, M5)
+- `Devices::net: Option<NetSetup>` (`mac`, `NetConfig`, `SinkholeConfig`);
+  il default ha la rete, montata dopo GPU, tastiera e tablet (slot 28, come
+  il quarto `-device` di QEMU). MAC del guest predefinito
+  `52:54:00:12:34:56`, quello che QEMU dà al primo `virtio-net-device`.
+- Backend di virtio-net: `NetLink` (`send` → `Stack::receive`, `recv` →
+  `Stack::pop_frame`). virtio-net offre solo MAC, STATUS e MRG_RXBUF: niente
+  `VIRTIO_NET_F_CSUM`, quindi il guest calcola tutti i checksum.
+- Tempo: `VirtualTime` = CNTPCT della macchina in microsecondi (per
+  difetto; la scadenza `next_deadline` diventa il primo CNTPCT che la
+  raggiunge). Nessun orologio dell'host. In `Machine::sync_irqs`, prima di
+  servire i dispositivi, lo stack riceve l'istante corrente; alla sua
+  scadenza si chiama `poll` e, se ci sono frame, virtio-net viene servito.
+  La scadenza dello stack entra nella prossima scadenza della macchina
+  insieme a quella del timer: limita i blocchi del JIT e fa da sveglia per
+  la WFI (il guest inattivo salta direttamente lì). Stesse istruzioni con e
+  senza JIT.
+- Accesso dell'host: `Machine::net(|stack| …)` (mutabile; forza un `poll`
+  prima della prossima istruzione, da registrare per il replay come ogni
+  ingresso) e `Machine::net_view(|stack| …)` (sola lettura, non cambia
+  l'esecuzione: registro, statistiche, `upstream().tcp_connections()`).
+- CLI: `vetro boot` ha la rete di default; `--no-net` la toglie, `--net` la
+  rimette anche con `--no-devices`, `--net-events` stampa il registro su
+  stderr (`vetro-net: …`).
+- Il relay (M7) sarà un altro upstream dietro lo stesso `NetLink`.
+
 ## Invarianti
 - Compila in `wasm32-unknown-unknown`; nessuna dipendenza a runtime; niente
   `std::time`, thread, I/O, `HashMap` (le tabelle sono `BTreeMap`, l'ordine
@@ -102,3 +132,19 @@ contropressione dell'upstream, MSS e finestra del guest rispettati, fuori
 ordine e sovrapposizioni, RST (validi e fuori finestra), ACK di sfida,
 chiusure da entrambi i lati con TIME-WAIT, trasferimento contemporaneo nei
 due versi con il 20% di frame persi, determinismo con lo stesso seme.
+
+Con il kernel guest Linux 6.18 (`cargo test --release -p vetro-boot-tests`,
+BusyBox nell'initramfs, `udhcpc` con `/usr/share/udhcpc/default.script`):
+- `vetro.rs` (autotest, confrontato con QEMU `-netdev user`): lease DHCP
+  (10.0.2.15/24, router 10.0.2.2, DNS 10.0.2.3, 86400 s), tabella delle
+  rotte, `resolv.conf`, ping a gateway e DNS: stesso log;
+- `net.rs` (solo Vetro, perché QEMU manda DNS e TCP sulla rete vera):
+  `nslookup` riceve 198.18.0.1; `wget` fa una GET breve, una GET da 300 KB
+  (somma `cksum` uguale a quella dell'host) e una POST da 108 KB (corpo
+  ritrovato byte per byte nel sinkhole); ping al gateway e a un indirizzo
+  finto; l'host verifica DHCP, domande e risposte DNS, connessioni con nome
+  risolto, byte nel registro uguali a quelli del sinkhole, chiusure
+  `Normal`, nessun checksum errato; due esecuzioni danno stesso log, stesse
+  istruzioni, stesso registro;
+- `crates/vetro-cli/tests/boot_net.rs`: `vetro boot --no-devices --net
+  --net-events`, DHCP e una GET, eventi letti da stderr.

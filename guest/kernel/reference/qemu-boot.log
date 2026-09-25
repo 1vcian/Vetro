@@ -61,7 +61,7 @@ CPU: All CPU(s) started at EL1
 CPU features: detected: 32-bit EL0 Support
 CPU features: detected: CRC32 instructions
 alternatives: applying system-wide alternatives
-Memory: 1015252K/1048576K available (4224K kernel code, 676K rwdata, 936K rodata, 896K init, 251K bss, 30176K reserved, 0K cma-reserved)
+Memory: 1015184K/1048576K available (4288K kernel code, 676K rwdata, 936K rodata, 896K init, 251K bss, 30244K reserved, 0K cma-reserved)
 devtmpfs: initialized
 posixtimers hash table entries: 512 (order: 1, 8192 bytes, linear)
 futex hash table entries: 256 (16384 bytes on 1 NUMA nodes, total 16 KiB, linear).
@@ -86,15 +86,16 @@ UDP-Lite hash table entries: 512 (order: 3, 32768 bytes, linear)
 NET: Registered PF_UNIX/PF_LOCAL protocol family
 Unpacking initramfs...
 workingset: timestamp_bits=62 max_order=18 bucket_order=0
-input: QEMU Virtio Tablet as /devices/platform/a003a00.virtio_mmio/virtio0/input/input0
-input: QEMU Virtio Keyboard as /devices/platform/a003c00.virtio_mmio/virtio1/input/input1
+input: QEMU Virtio Tablet as /devices/platform/a003a00.virtio_mmio/virtio1/input/input0
+input: QEMU Virtio Keyboard as /devices/platform/a003c00.virtio_mmio/virtio2/input/input1
 [drm] features: -virgl +edid -resource_blob -host_visible
 [drm] features: -context_init
 [drm] number of scanouts: 1
 [drm] number of cap sets: 0
 [drm] Initialized virtio_gpu 0.1.0 for a003e00.virtio_mmio on minor 0
-Freeing initrd memory: 732K
+Freeing initrd memory: 736K
 rtc-pl031 9010000.pl031: registered as rtc0
+NET: Registered PF_PACKET protocol family
 NET: Registered PF_VSOCK protocol family
 clk: Disabling unused clocks
 Freeing unused kernel memory: 896K
@@ -103,10 +104,10 @@ VETRO-BOOT-OK: /init avviato (6.18.53)
 VETRO-AUTOTEST-INIZIO
 Linux (none) 6.18.53 #1 SMP Thu Sep 24 00:00:00 UTC 2026 aarch64 Linux
 VETRO-AUTOTEST ok: uname -m è aarch64
-rootfs on / type rootfs (rw,size=509200k,nr_inodes=127300)
+rootfs on / type rootfs (rw,size=509164k,nr_inodes=127291)
 proc on /proc type proc (rw,relatime)
 sysfs on /sys type sysfs (rw,relatime)
-devtmpfs on /dev type devtmpfs (rw,relatime,size=509200k,nr_inodes=127300,mode=755)
+devtmpfs on /dev type devtmpfs (rw,relatime,size=509164k,nr_inodes=127291,mode=755)
 tmpfs on /tmp type tmpfs (rw,relatime)
 VETRO-AUTOTEST ok: proc montato
 VETRO-AUTOTEST ok: sysfs montato
@@ -119,8 +120,8 @@ VETRO-AUTOTEST ok: RTC PL031
 VETRO-AUTOTEST ok: echo e pipe
 VETRO-AUTOTEST ok: file su tmpfs
 VETRO-AUTOTEST ok: aritmetica della shell
-  40200000-4072ffff : Kernel code
-  40810000-4090ffff : Kernel data
+  40200000-4073ffff : Kernel code
+  40820000-4091ffff : Kernel data
 initrd-start:  00 00 00 00 48 00 00 00
 VETRO-AUTOTEST ok: DRM: /dev/dri/card0
 vetro-dev: drm driver virtio_gpu 0.1.0
@@ -180,8 +181,8 @@ EDID:
 VETRO-AUTOTEST ok: input: tastiera e tablet
 I: Bus=0006 Vendor=0627 Product=0003 Version=0002
 N: Name="QEMU Virtio Tablet"
-P: Phys=virtio0/input0
-S: Sysfs=/devices/platform/a003a00.virtio_mmio/virtio0/input/input0
+P: Phys=virtio1/input0
+S: Sysfs=/devices/platform/a003a00.virtio_mmio/virtio1/input/input0
 U: Uniq=
 H: Handlers=event0 
 B: PROP=0
@@ -192,8 +193,8 @@ B: ABS=3
 
 I: Bus=0006 Vendor=0627 Product=0001 Version=0001
 N: Name="QEMU Virtio Keyboard"
-P: Phys=virtio1/input0
-S: Sysfs=/devices/platform/a003c00.virtio_mmio/virtio1/input/input1
+P: Phys=virtio2/input0
+S: Sysfs=/devices/platform/a003c00.virtio_mmio/virtio2/input/input1
 U: Uniq=
 H: Handlers=kbd event1 
 B: PROP=0
@@ -202,7 +203,7 @@ B: KEY=400000007 ff803078f800dfff febeffff7bcfffff fffffffffffffffe
 B: LED=7
 
 vetro-dev: /dev/input/event0 nome "QEMU Virtio Tablet"
-vetro-dev:   phys "virtio0/input0"
+vetro-dev:   phys "virtio1/input0"
 vetro-dev:   uniq ""
 vetro-dev:   id bus 0006 vendor 0627 product 0003 version 0002, evdev 10001
 vetro-dev:   prop:
@@ -213,7 +214,7 @@ vetro-dev:   abs: 0 1
 vetro-dev:   abs 0 min 0 max 32767 fuzz 0 flat 0 res 0
 vetro-dev:   abs 1 min 0 max 32767 fuzz 0 flat 0 res 0
 vetro-dev: /dev/input/event1 nome "QEMU Virtio Keyboard"
-vetro-dev:   phys "virtio1/input0"
+vetro-dev:   phys "virtio2/input0"
 vetro-dev:   uniq ""
 vetro-dev:   id bus 0006 vendor 0627 product 0001 version 0001, evdev 10001
 vetro-dev:   prop:
@@ -223,6 +224,17 @@ vetro-dev:   led: 0 1 2
 vetro-dev:   rep ritardo 250 periodo 33
 VETRO-AUTOTEST ok: input: capacità di evdev
 VETRO-AUTOTEST ok: vsock: /dev/vsock
+VETRO-AUTOTEST ok: rete: eth0
+eth0: 52:54:00:12:34:56
+udhcpc: bound eth0 10.0.2.15/255.255.255.0 router 10.0.2.2 dns 10.0.2.3 lease 86400
+VETRO-AUTOTEST ok: rete: DHCP
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+0.0.0.0         10.0.2.2        0.0.0.0         UG    0      0        0 eth0
+10.0.2.0        0.0.0.0         255.255.255.0   U     0      0        0 eth0
+nameserver 10.0.2.3
+VETRO-AUTOTEST ok: rete: ping al gateway
+VETRO-AUTOTEST ok: rete: ping al DNS
 VETRO-AUTOTEST-FINE: ok
 ~ # [6necho VETRO-SHELL-$((6*7))
 VETRO-SHELL-42

@@ -11,7 +11,7 @@ use crate::{ConnId, Flow, VirtualTime, dhcp, dns};
 
 /// Configurazione della rete virtuale. I valori predefiniti sono quelli
 /// della rete "user" di QEMU.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NetConfig {
     /// MAC del gateway (e del DNS virtuale).
     pub gateway_mac: Mac,

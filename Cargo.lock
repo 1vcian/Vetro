@@ -953,6 +953,7 @@ dependencies = [
  "vetro-cpu",
  "vetro-jit",
  "vetro-mmu",
+ "vetro-net",
  "vetro-platform",
 ]
 

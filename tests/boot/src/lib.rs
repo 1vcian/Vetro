@@ -206,14 +206,19 @@ pub fn normalize(log: &str) -> String {
 /// `efi-virtio.rom` non c'è sui runner senza ipxe-qemu).
 ///
 /// I dispositivi virtio sono quelli di `vetro_machine::Devices::default`,
-/// nello stesso ordine (quindi negli stessi slot): GPU, tastiera, tablet.
+/// nello stesso ordine (quindi negli stessi slot): GPU, tastiera, tablet,
+/// rete. La rete è la user di QEMU (slirp), con gli stessi indirizzi del
+/// gateway di `vetro-net` (10.0.2.15/.2/.3) e lo stesso MAC del guest; lo
+/// stesso esito vale solo per DHCP e ping al gateway (l'autotest): DNS e TCP
+/// in QEMU escono sulla rete vera, in Vetro vanno al sinkhole
+/// (`tests/boot/tests/net.rs`).
 /// `force-legacy=false` perché il virtio-mmio di Vetro è la versione 2
 /// (virtio 1.x); QEMU di default presenta la versione 1 legacy, e i driver
 /// di GPU e input (che vogliono VIRTIO_F_VERSION_1) non partirebbero.
 /// Niente vsock: `vhost-vsock-device` vuole `/dev/vhost-vsock` dell'host, che
 /// né Docker Desktop né i runner hanno; virtio-vsock si prova solo sotto
 /// Vetro (`tests/boot/tests/devices.rs`).
-pub const QEMU_MACHINE: [&str; 16] = [
+pub const QEMU_MACHINE: [&str; 20] = [
     "-M",
     "virt,gic-version=3,its=off",
     "-cpu",
@@ -230,6 +235,10 @@ pub const QEMU_MACHINE: [&str; 16] = [
     "virtio-keyboard-device",
     "-device",
     "virtio-tablet-device",
+    "-netdev",
+    "user,id=n",
+    "-device",
+    "virtio-net-device,netdev=n",
 ];
 
 /// Differenze note tra l'avvio sotto QEMU e sotto Vetro, con il motivo.
