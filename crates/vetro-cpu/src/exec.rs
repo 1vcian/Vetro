@@ -414,6 +414,9 @@ impl Cpu {
             Insn::Hvc { .. } | Insn::Smc { .. } | Insn::Eret | Insn::MsrImm { .. } | Insn::Sys { .. } => {
                 return Err(Exception::Undefined(raw));
             }
+            Insn::Mrs { reg, .. } | Insn::Msr { reg, .. } if reg.is_el0_dcc() => {
+                return Err(Exception::Undefined(raw));
+            }
             Insn::Mrs { reg, .. } | Insn::Msr { reg, .. } if !reg.is_el0_legacy() => {
                 return Err(Exception::Unimplemented { raw, what: "MRS/MSR registro di sistema" });
             }

@@ -11,8 +11,7 @@
 // (QEMU non la controlla), SP disallineato con SCTLR_EL1.SA/SA0 (QEMU non
 // lo controlla), accessi disallineati a memoria Device con MMU accesa e DC
 // ZVA su Device (QEMU 10 non dà il fault di allineamento; a MMU spenta sì),
-// registri della piattaforma (CNT*, ICC_*), PMU e registri di debug che
-// Vetro non modella.
+// registri della piattaforma (CNT*, ICC_*) e PMU.
 
     .equ UART, 0x09000000
     .equ PSCI_SYSTEM_OFF, 0x84000008
@@ -64,6 +63,23 @@ _start:
 91: .asciz "W:\name="
     .balign 4
 92:
+.endm
+
+// Lettura di un registro dalla codifica, con titolo.
+.macro SR name, enc
+    T \name
+    mrs x0, \enc
+    bl puthex
+.endm
+
+// Scrittura di \val (in x1) e rilettura, con titolo.
+.macro SW name, enc, val
+    T \name
+    ldr x1, =\val
+    msr \enc, x1
+    isb
+    mrs x0, \enc
+    bl puthex
 .endm
 
 // Titolo di una prova.
@@ -310,6 +326,54 @@ _start:
     T sysreg_cbar
     mrs x0, S3_1_C15_C3_0
     bl puthex
+    // Debug ARMv8.0 (op0 = 2) come QEMU per la Cortex-A53: il canale DCC,
+    // OSECCR, CLAIM, DBGPRCR e DBGAUTHSTATUS; poi codifiche op0 = 2 senza
+    // registro (breakpoint e watchpoint oltre il numero della A53, EL2,
+    // codifiche libere).
+    SR dbg_osdtrrx, S2_0_C0_C0_2
+    SR dbg_osdtrtx, S2_0_C0_C3_2
+    SR dbg_oseccr, S2_0_C0_C6_2
+    SR dbg_mdccsr, S2_3_C0_C1_0
+    SR dbg_dbgdtr, S2_3_C0_C4_0
+    SR dbg_dbgdtrrx, S2_3_C0_C5_0
+    SR dbg_dbgprcr, S2_0_C1_C4_4
+    SR dbg_claimset, S2_0_C7_C8_6
+    SR dbg_claimclr, S2_0_C7_C9_6
+    SR dbg_authstatus, S2_0_C7_C14_6
+    SR dbg_mdccint, S2_0_C0_C2_0
+    SR dbg_vcr32_el2, S2_4_C0_C7_0
+    SR dbg_bvr6, S2_0_C0_C6_4
+    SR dbg_wvr4, S2_0_C0_C4_6
+    SR dbg_unalloc_0_0_0_0, S2_0_C0_C0_0
+    SR dbg_unalloc_0_1_2_4, S2_0_C1_C2_4
+    SR dbg_unalloc_0_7_0_0, S2_0_C7_C0_0
+    SR dbg_unalloc_3_0_0_0, S2_3_C0_C0_0
+    SR dbg_unalloc_1_0_0_0, S2_1_C0_C0_0
+    SW dbgw_osdtrrx, S2_0_C0_C0_2, -1
+    SW dbgw_osdtrtx, S2_0_C0_C3_2, -1
+    SW dbgw_oseccr, S2_0_C0_C6_2, -1
+    SW dbgw_dbgdtr, S2_3_C0_C4_0, -1
+    SW dbgw_dbgdtrtx, S2_3_C0_C5_0, -1
+    SW dbgw_dbgprcr, S2_0_C1_C4_4, -1
+    SW dbgw_mdccsr, S2_3_C0_C1_0, -1
+    SW dbgw_authstatus, S2_0_C7_C14_6, -1
+    SW dbgw_claimset, S2_0_C7_C8_6, -1
+    SR dbgw_claimclr_after_set, S2_0_C7_C9_6
+    SW dbgw_claimclr, S2_0_C7_C9_6, 0xffffffffffffff0f
+    SR dbgw_claimset_after_clr, S2_0_C7_C8_6
+    SW dbgw_claimset2, S2_0_C7_C8_6, 0x0000000000000100
+    SW dbgw_claimclr2, S2_0_C7_C9_6, 0x00000000000000ff
+    // MDSCR_EL1.TDCC non tocca gli accessi da EL1.
+    T dbg_tdcc_el1
+    mov x1, #(1 << 12)
+    msr mdscr_el1, x1
+    isb
+    mrs x0, S2_3_C0_C1_0
+    bl puthex
+    mrs x0, S2_0_C0_C0_2
+    bl puthex
+    msr mdscr_el1, xzr
+    isb
     T eret_illegal
     mov x1, #0x9
     orr x1, x1, #0x3c0
@@ -565,6 +629,12 @@ common:
     and x2, x0, #0xffff
     cmp x2, #2
     b.eq finish
+    // SVC #3 da EL0: accende MDSCR_EL1.TDCC.
+    cmp x2, #3
+    b.ne 7f
+    mrs x2, mdscr_el1
+    orr x2, x2, #(1 << 12)
+    msr mdscr_el1, x2
     b 7f
 5:  cmp x1, #0x16
     b.eq 7f
@@ -638,6 +708,26 @@ el0_code:
     hvc #0
     eret
     ldtr x2, [x20]
+    // DCC da EL0 con MDSCR_EL1.TDCC = 0: il valore letto si vede nel FAR
+    // del load che segue (l'indirizzo 0 è solo di EL1).
+    mrs x2, S2_3_C0_C1_0
+    ldr x3, [x2]
+    mrs x2, S2_3_C0_C4_0
+    ldr x3, [x2]
+    msr S2_3_C0_C5_0, x0
+    mrs x2, S2_3_C0_C5_0
+    ldr x3, [x2]
+    msr S2_3_C0_C4_0, x0
+    mrs x2, S2_0_C0_C0_2
+    mrs x2, S2_0_C7_C8_6
+    // Con MDSCR_EL1.TDCC = 1 gli stessi accessi vanno in trap a EL1.
+    svc #3
+    mrs x2, S2_3_C0_C1_0
+    mrs x2, S2_3_C0_C4_0
+    msr S2_3_C0_C4_0, x0
+    msr S2_3_C0_C5_0, x0
+    mrs x2, S2_3_C0_C5_0
+    mrs x2, S2_0_C0_C0_2
     svc #2
 
     .balign 4096

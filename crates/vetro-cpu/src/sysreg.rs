@@ -4,8 +4,9 @@
 //! Il decoder riconosce qui tutti i registri che Vetro modella, a qualunque
 //! livello di eccezione; chi esegue decide l'accesso (EL0 o EL1, sola lettura
 //! o sola scrittura, trap). In modalità utente valgono solo quelli di M1
-//! (vedi [`SysReg::is_el0_legacy`]); gli altri restano `Unimplemented` come
-//! prima della modalità sistema.
+//! (vedi [`SysReg::is_el0_legacy`]); il canale di debug di EL0 è UNDEFINED
+//! come in QEMU user (vedi [`SysReg::is_el0_dcc`]); gli altri restano
+//! `Unimplemented` come prima della modalità sistema.
 
 /// Registri di sistema modellati.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,6 +79,19 @@ pub enum SysReg {
     /// DBGWVR<n>_EL1, n < 4 sulla Cortex-A53.
     DbgwvrEl1(u8),
     DbgwcrEl1(u8),
+    /// OSDTRRX_EL1, OSDTRTX_EL1, OSECCR_EL1: RAZ/WI a EL1 (QEMU non
+    /// implementa il canale di comunicazione di debug né EDECCR).
+    DbgRazWiEl1,
+    /// MDCCSR_EL0: sola lettura, vale zero; leggibile da EL0 se
+    /// MDSCR_EL1.TDCC = 0, altrimenti trap a EL1.
+    MdccsrEl0,
+    /// DBGDTR_EL0 e DBGDTRRX_EL0/DBGDTRTX_EL0: RAZ/WI, accessibili da EL0
+    /// come MDCCSR_EL0.
+    DbgdtrEl0,
+    /// DBGCLAIMSET_EL1: legge sempre 0xff, la scrittura accende i bit [7:0].
+    DbgclaimsetEl1,
+    /// DBGCLAIMCLR_EL1: legge i bit di CLAIM, la scrittura li spegne.
+    DbgclaimclrEl1,
     PmuserenrEl0,
 
     // --- IMPLEMENTATION DEFINED della Cortex-A53 (come QEMU) ---
@@ -175,12 +189,18 @@ impl SysReg {
         matches!(self, Nzcv | TpidrEl0 | TpidrroEl0 | Fpcr | Fpsr | DczidEl0 | CtrEl0)
     }
 
+    /// Canale di debug di EL0 (MDCCSR_EL0, DBGDTR*_EL0). In modalità utente
+    /// è UNDEFINED (SIGILL): QEMU user, come Linux, accende MDSCR_EL1.TDCC.
+    pub fn is_el0_dcc(self) -> bool {
+        matches!(self, SysReg::MdccsrEl0 | SysReg::DbgdtrEl0)
+    }
+
     /// Direzioni ammesse a EL1 (a EL0 decidono le regole di accesso).
     pub fn rw(self) -> Rw {
         use SysReg::*;
         match self {
             DczidEl0 | CtrEl0 | CurrentEl | IsrEl1 | RvbarEl1 | MidrEl1 | MpidrEl1 | RevidrEl1 | AidrEl1
-            | ClidrEl1 | CcsidrEl1 | Id(_) | OslsrEl1 | MdrarEl1 | CbarEl1 => Rw::ReadOnly,
+            | ClidrEl1 | CcsidrEl1 | Id(_) | OslsrEl1 | MdrarEl1 | CbarEl1 | MdccsrEl0 => Rw::ReadOnly,
             OslarEl1 => Rw::WriteOnly,
             Env(e) => e.rw(),
             _ => Rw::ReadWrite,
@@ -200,7 +220,14 @@ impl SysReg {
         use EnvReg::*;
         use SysReg::*;
         Some(match (op0, op1, crn, crm, op2) {
-            // Debug (op0 = 2). La Cortex-A53 ha 6 breakpoint e 4 watchpoint.
+            // Debug (op0 = 2), come QEMU (debug_cp_reginfo). La Cortex-A53
+            // ha 6 breakpoint e 4 watchpoint; DBGPRCR_EL1, DBGAUTHSTATUS_EL1
+            // e DBGVCR32_EL2 in QEMU non esistono (UNDEFINED).
+            (2, 0, 0, 0 | 3 | 6, 2) => DbgRazWiEl1,
+            (2, 3, 0, 1, 0) => MdccsrEl0,
+            (2, 3, 0, 4 | 5, 0) => DbgdtrEl0,
+            (2, 0, 7, 8, 6) => DbgclaimsetEl1,
+            (2, 0, 7, 9, 6) => DbgclaimclrEl1,
             (2, 0, 0, 2, 0) => MdccintEl1,
             (2, 0, 0, 2, 2) => MdscrEl1,
             (2, 0, 0, n, 4) if n < 6 => DbgbvrEl1(n as u8),

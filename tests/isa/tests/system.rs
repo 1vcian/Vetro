@@ -171,3 +171,19 @@ fn misaligned_branch_target_is_sigbus() {
     .want_signal(SIGBUS)
     .run();
 }
+
+#[test]
+fn debug_comms_channel_at_el0_is_sigill() {
+    // QEMU user, come Linux, accende MDSCR_EL1.TDCC: ogni accesso da EL0 al
+    // canale di debug dà SIGILL.
+    for (name, insn) in [
+        ("mrs_mdccsr_el0_is_sigill", 0xd5330100),   // mrs x0, MDCCSR_EL0
+        ("mrs_dbgdtr_el0_is_sigill", 0xd5330401),   // mrs x1, DBGDTR_EL0
+        ("mrs_dbgdtrrx_el0_is_sigill", 0xd5330502), // mrs x2, DBGDTRRX_EL0
+        ("msr_dbgdtr_el0_is_sigill", 0xd5130403),   // msr DBGDTR_EL0, x3
+        ("msr_dbgdtrtx_el0_is_sigill", 0xd5130503), // msr DBGDTRTX_EL0, x3
+        ("msr_mdccsr_el0_is_sigill", 0xd5130103),   // msr S2_3_C0_C1_0, x3
+    ] {
+        case(name, &[insn]).want_signal(SIGILL).run();
+    }
+}
