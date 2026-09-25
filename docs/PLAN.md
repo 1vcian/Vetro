@@ -38,7 +38,7 @@ Safari mobile; qualsiasi componente cloud obbligatorio.
 | M5 Avvio di Android | **in corso** (dispositivi, GKI fino a zygote) | home in Chrome, adb install di un APK |
 | M6 Snapshot e installazione | **in corso** (save/restore completo della macchina, ADR 0015; dischi persistenti e snapshot in cache nel browser, ADR 0017) | home < 15 s da snapshot, APK trascinato |
 | M7 Rete e timeline | **in corso** (cattura, pcapng, HTTP, decodificatori, HAR sul guest BusyBox, ADR 0016; ispettore di rete e timeline input→effetti nell'app web sul guest Linux, ADR 0023; mancano hook TLS e Android) | 10 app con HTTPS in chiaro e legato all'azione, HAR riapribile |
-| M8 Binder e privacy | **in corso** (base del gestore dei file sul guest Linux: demone su vsock, client, pannello web, ADR 0020) | app di test: ogni accesso rilevato, identificativo esca tracciato, file dell'app visibili e modificabili dal vivo |
+| M8 Binder e privacy | **in corso** (gestore dei file sul guest Linux: demone su vsock, client, pannello web, ADR 0020; modifica di righe SQLite con SQL nel guest, WAL, SharedPreferences in tabella, nomi non UTF-8, ADR 0021) | app di test: ogni accesso rilevato, identificativo esca tracciato, file dell'app visibili e modificabili dal vivo |
 | M9 Tracciamento codice e scripting | — | hook su metodo, dex dinamico salvato, script Frida adattato |
 | M10 Record & replay, 1.0 | **in corso** (nucleo: record & replay e salto a un'istruzione della macchina, ADR 0019; nel browser: registra, log scaricabile e ricaricabile, keyframe in OPFS, replay identico, salto con registri e memoria, ADR 0023) | replay identico, 30 app, criteri 1.0 |
 

@@ -1,4 +1,5 @@
-//! Il gestore dei file (ABI 7, M8, ADR 0020): il client di
+//! Il gestore dei file (ABI 7, M8, ADR 0020; SQL e nomi come byte con
+//! l'ABI 9, ADR 0021): il client di
 //! `vetro_machine::files` verso il demone `vetro-files` del guest, su
 //! virtio-vsock (bit `VSOCK` di `vetro_machine_new_with`).
 //!
@@ -11,12 +12,16 @@
 //! (`{"kind":"event","wd":N,"mask":N,"cookie":N,"name":"..."}`); il formato
 //! è in `docs/specs/wasm.md`.
 //!
+//! Percorsi e nomi sono byte del guest: il JS li passa come byte, e nel
+//! JSON un byte che non fa parte di UTF-8 valido diventa il surrogato
+//! solitario `\udcXX` (*surrogateescape*, ADR 0021).
+//!
 //! Connessione, byte mandati e byte letti passano da `Machine::input`:
 //! sono ingressi, registrati per il replay (ADR 0019). Stato e messaggi
 //! già pronti non toccano la macchina.
 
 use vetro_machine::FilesClient;
-use vetro_machine::files::proto::{self, Stat};
+use vetro_machine::files::proto::{self, SqlResult, SqlValue, Stat};
 use vetro_machine::files::{Completion, FilesError, LinkState, Outcome};
 
 use crate::Vm;
@@ -40,6 +45,10 @@ pub mod op {
     pub const WATCH: u32 = 9;
     /// `x` = id dell'osservazione.
     pub const UNWATCH: u32 = 10;
+    /// SQL sul database `a` (ABI 9, ADR 0021): `b` = SQL e parametri nel
+    /// formato di `proto::encode_sql_args`, `x` = righe cambiate attese
+    /// (`u64::MAX` = qualsiasi), `y` bit 0 = sola lettura.
+    pub const SQL: u32 = 11;
 }
 
 /// Stati di [`vetro_files_status`].
@@ -72,6 +81,70 @@ fn json_str(out: &mut String, s: &str) {
     out.push('"');
 }
 
+/// Byte del guest come stringa JSON: UTF-8 valido com'è, ogni altro byte
+/// come surrogato solitario `\udcXX` (U+DC80 + byte - 0x80).
+fn json_bytes(out: &mut String, b: &[u8]) {
+    out.push('"');
+    for chunk in b.utf8_chunks() {
+        let valid = chunk.valid();
+        let mut tmp = String::new();
+        json_str(&mut tmp, valid);
+        out.push_str(&tmp[1..tmp.len() - 1]);
+        for x in chunk.invalid() {
+            out.push_str(&format!("\\u{:04x}", 0xdc00 + u32::from(*x)));
+        }
+    }
+    out.push('"');
+}
+
+fn json_value(out: &mut String, v: &SqlValue) {
+    match v {
+        SqlValue::Null => out.push_str("null"),
+        SqlValue::Int(i) => out.push_str(&format!("[\"i\",\"{i}\"]")),
+        SqlValue::Real(f) => out.push_str(&format!("[\"f\",\"{f:?}\"]")),
+        SqlValue::Text(t) => {
+            out.push_str("[\"t\",");
+            json_str(out, t);
+            out.push(']');
+        }
+        SqlValue::Blob(b) => {
+            out.push_str("[\"b\",\"");
+            for x in b {
+                out.push_str(&format!("{x:02x}"));
+            }
+            out.push_str("\"]");
+        }
+    }
+}
+
+fn json_sql(out: &mut String, r: &SqlResult) {
+    out.push_str(&format!(
+        "\"type\":\"sql\",\"changes\":{},\"lastRowid\":\"{}\",\"truncated\":{},\"columns\":[",
+        r.changes, r.last_rowid, r.truncated
+    ));
+    for (i, c) in r.columns.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        json_str(out, c);
+    }
+    out.push_str("],\"rows\":[");
+    for (i, row) in r.rows.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push('[');
+        for (k, v) in row.iter().enumerate() {
+            if k > 0 {
+                out.push(',');
+            }
+            json_value(out, v);
+        }
+        out.push(']');
+    }
+    out.push(']');
+}
+
 fn json_stat(out: &mut String, s: &Stat) {
     out.push_str(&format!(
         "{{\"kind\":\"{}\",\"mode\":{},\"uid\":{},\"gid\":{},\"size\":{},\"mtime\":{},\"mtimeNs\":{},\"nlink\":{},\"link\":",
@@ -84,7 +157,7 @@ fn json_stat(out: &mut String, s: &Stat) {
         s.mtime_ns,
         s.nlink
     ));
-    json_str(out, &s.link);
+    json_bytes(out, &s.link);
     out.push_str(",\"selinux\":");
     json_str(out, &s.selinux);
     out.push('}');
@@ -113,6 +186,9 @@ pub fn reply_message(c: &Completion) -> Vec<u8> {
                 }
                 FilesError::Protocol(_) => j.push_str(",\"errno\":null,\"code\":\"PROTOCOL\""),
                 FilesError::Disconnected => j.push_str(",\"errno\":null,\"code\":\"DISCONNECTED\""),
+                FilesError::Sql { code, .. } => {
+                    j.push_str(&format!(",\"errno\":null,\"code\":\"SQLITE\",\"sqlite\":{code}"))
+                }
             }
         }
         Ok(o) => {
@@ -133,7 +209,7 @@ pub fn reply_message(c: &Completion) -> Vec<u8> {
                             j.push(',');
                         }
                         j.push_str("{\"name\":");
-                        json_str(&mut j, &e.name);
+                        json_bytes(&mut j, &e.name);
                         j.push_str(",\"stat\":");
                         json_stat(&mut j, &e.stat);
                         j.push('}');
@@ -145,6 +221,7 @@ pub fn reply_message(c: &Completion) -> Vec<u8> {
                     data = d;
                 }
                 Outcome::Watch(wd) => j.push_str(&format!("\"type\":\"watch\",\"wd\":{wd}")),
+                Outcome::Sql(r) => json_sql(&mut j, r),
                 Outcome::Done => j.push_str("\"type\":\"done\""),
             }
         }
@@ -157,16 +234,9 @@ pub fn reply_message(c: &Completion) -> Vec<u8> {
 pub fn event_message(e: &proto::Event) -> Vec<u8> {
     let mut j =
         format!("{{\"kind\":\"event\",\"wd\":{},\"mask\":{},\"cookie\":{},\"name\":", e.wd, e.mask, e.cookie);
-    json_str(&mut j, &e.name);
+    json_bytes(&mut j, &e.name);
     j.push('}');
     message(&j, &[])
-}
-
-/// Stringa UTF-8 da un buffer del JS.
-unsafe fn text(ptr: *const u8, len: usize) -> Option<String> {
-    // SAFETY: chi chiama garantisce `len` byte validi in `ptr`.
-    let b = unsafe { crate::bytes(ptr, len) };
-    core::str::from_utf8(b).ok().map(str::to_string)
 }
 
 /// Crea il client del gestore dei file verso la porta vsock `port` del
@@ -220,9 +290,10 @@ pub unsafe extern "C" fn vetro_files_status(vm: *const Vm, out: *mut u32, cap: u
     code
 }
 
-/// Chiede un'operazione (codici di [`op`]) sul percorso `a` (UTF-8); `b`,
-/// `x` e `y` come scritto nei codici. Restituisce l'id (> 0) della
-/// risposta, o 0 (nessun client, operazione sconosciuta, testo non UTF-8).
+/// Chiede un'operazione (codici di [`op`]) sul percorso `a` (byte del
+/// guest, anche non UTF-8); `b`, `x` e `y` come scritto nei codici.
+/// Restituisce l'id (> 0) della risposta, o 0 (nessun client, operazione
+/// sconosciuta, percorso vuoto, argomenti SQL rovinati).
 /// Parte al prossimo [`vetro_files_pump`] (subito se il demone è già
 /// collegato, altrimenti al saluto).
 #[unsafe(no_mangle)]
@@ -240,22 +311,30 @@ pub unsafe extern "C" fn vetro_files_request(
     // loro lunghezze.
     let vm = unsafe { &mut *vm };
     let Some(c) = vm.files.as_mut() else { return 0 };
-    let Some(path) = (unsafe { text(a, a_len) }) else { return 0 };
+    let path = unsafe { crate::bytes(a, a_len) }.to_vec();
+    let b = unsafe { crate::bytes(b, b_len) };
+    if path.is_empty() {
+        return 0;
+    }
     let mode = (x & 0o7777) as u32;
     match op {
         op::STAT => c.stat(&path),
         op::LIST => c.list(&path),
         op::READ => c.read(&path, x, y.min(MAX_READ)),
-        op::WRITE => c.write_file(&path, unsafe { crate::bytes(b, b_len) }, mode),
+        op::WRITE => c.write_file(&path, b, mode),
         op::MKDIR => c.mkdir(&path, mode),
         op::CREATE => c.create(&path, mode),
         op::DELETE => c.delete(&path, x & 1 != 0),
-        op::RENAME => match unsafe { text(b, b_len) } {
-            Some(to) => c.rename(&path, &to),
-            None => 0,
-        },
+        op::RENAME if !b.is_empty() => c.rename(&path, b),
         op::WATCH => c.watch(&path),
         op::UNWATCH => c.unwatch(x as u32),
+        op::SQL => match proto::decode_sql_args(b) {
+            Ok((sql, params)) => {
+                let expect = u32::try_from(x).ok().filter(|&e| e != u32::MAX);
+                c.sql(&path, &sql, params, expect, y & 1 != 0)
+            }
+            Err(_) => 0,
+        },
         _ => 0,
     }
 }
@@ -317,16 +396,45 @@ mod tests {
             mtime_s: 4,
             mtime_ns: 5,
             nlink: 1,
-            link: String::new(),
+            link: b"l\xff".to_vec(),
             selinux: "u:\"x\"\n".into(),
         };
         let m = reply_message(&Completion {
             op: 7,
-            result: Ok(Outcome::List(vec![Entry { name: "a\\b".into(), stat: s }])),
+            result: Ok(Outcome::List(vec![Entry { name: b"a\\b\xc3\xa0\xc3".to_vec(), stat: s }])),
         });
         assert_eq!(
             json(&m).0,
-            r#"{"kind":"reply","op":7,"ok":true,"type":"list","entries":[{"name":"a\\b","stat":{"kind":"file","mode":33184,"uid":1,"gid":2,"size":3,"mtime":4,"mtimeNs":5,"nlink":1,"link":"","selinux":"u:\"x\"\n"}}]}"#
+            r#"{"kind":"reply","op":7,"ok":true,"type":"list","entries":[{"name":"a\\bà\udcc3","stat":{"kind":"file","mode":33184,"uid":1,"gid":2,"size":3,"mtime":4,"mtimeNs":5,"nlink":1,"link":"l\udcff","selinux":"u:\"x\"\n"}}]}"#
+        );
+        let m = reply_message(&Completion {
+            op: 3,
+            result: Ok(Outcome::Sql(SqlResult {
+                changes: 1,
+                last_rowid: -9_007_199_254_740_993,
+                truncated: false,
+                columns: vec!["a".into(), "\"b".into()],
+                rows: vec![vec![
+                    SqlValue::Null,
+                    SqlValue::Int(i64::MAX),
+                    SqlValue::Real(1.0),
+                    SqlValue::Real(-2.5e-10),
+                    SqlValue::Text("x\ny".into()),
+                    SqlValue::Blob(vec![0, 0xab]),
+                ]],
+            })),
+        });
+        assert_eq!(
+            json(&m).0,
+            r#"{"kind":"reply","op":3,"ok":true,"type":"sql","changes":1,"lastRowid":"-9007199254740993","truncated":false,"columns":["a","\"b"],"rows":[[null,["i","9223372036854775807"],["f","1.0"],["f","-2.5e-10"],["t","x\ny"],["b","00ab"]]]}"#
+        );
+        let m = reply_message(&Completion {
+            op: 4,
+            result: Err(FilesError::Sql { code: 5, message: "database is locked".into() }),
+        });
+        assert_eq!(
+            json(&m).0,
+            r#"{"kind":"reply","op":4,"ok":false,"error":"SQLite 5: database is locked","errno":null,"code":"SQLITE","sqlite":5}"#
         );
         let m = reply_message(&Completion {
             op: 8,
@@ -343,6 +451,8 @@ mod tests {
         );
         let m = event_message(&Event { wd: 1, mask: 8, cookie: 0, name: "\u{1}".into() });
         assert_eq!(json(&m).0, r#"{"kind":"event","wd":1,"mask":8,"cookie":0,"name":"\u0001"}"#);
+        let m = event_message(&Event { wd: 1, mask: 8, cookie: 0, name: vec![0x80, b'"', 0xff] });
+        assert_eq!(json(&m).0, r#"{"kind":"event","wd":1,"mask":8,"cookie":0,"name":"\udc80\"\udcff"}"#);
     }
 
     /// Senza kernel nessuno ascolta: il client resta in collegamento, le
@@ -360,13 +470,18 @@ mod tests {
             let id = vetro_files_request(vm, op::LIST, b"/".as_ptr(), 1, core::ptr::null(), 0, 0, 0);
             assert!(id > 0);
             assert_eq!(vetro_files_request(vm, 99, b"/".as_ptr(), 1, core::ptr::null(), 0, 0, 0), 0);
-            assert_eq!(
-                vetro_files_request(vm, op::STAT, [0xffu8].as_ptr(), 1, core::ptr::null(), 0, 0, 0),
-                0
-            );
+            // Percorsi non UTF-8: sono byte, si accettano.
+            assert!(vetro_files_request(vm, op::STAT, [0xffu8].as_ptr(), 1, core::ptr::null(), 0, 0, 0) > 0);
+            assert_eq!(vetro_files_request(vm, op::STAT, b"".as_ptr(), 0, core::ptr::null(), 0, 0, 0), 0);
+            let args = proto::encode_sql_args("SELECT ?1", &[SqlValue::Int(1)]);
+            let sql =
+                vetro_files_request(vm, op::SQL, b"/d".as_ptr(), 2, args.as_ptr(), args.len(), u64::MAX, 1);
+            assert!(sql > 0);
+            assert_eq!(vetro_files_request(vm, op::SQL, b"/d".as_ptr(), 2, args.as_ptr(), 3, u64::MAX, 1), 0);
+            assert_eq!(vetro_files_request(vm, op::RENAME, b"/d".as_ptr(), 2, core::ptr::null(), 0, 0, 0), 0);
             assert_eq!(vetro_files_pump(vm), 0);
             assert_eq!(vetro_files_status(vm, st.as_mut_ptr(), 4), status::CONNECTING);
-            assert_eq!(st, [1, 0, 0, 0]);
+            assert_eq!(st, [3, 0, 0, 0]);
             assert_eq!(vetro_files_take(vm), 0);
             assert!(vetro_files_ptr(vm).is_null());
             vetro_files_close(vm);

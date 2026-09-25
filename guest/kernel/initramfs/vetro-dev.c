@@ -21,6 +21,11 @@
  *                                 imposta un xattr (M8: prove del gestore
  *                                 dei file; BusyBox non ha setfattr)
  *   vetro-dev xattr-get FILE NOME stampa il valore di un xattr
+ *   vetro-dev run-as UID GID CMD [ARG...]
+ *                                 esegue CMD con quell'uid e gid, senza
+ *                                 gruppi supplementari (M8: un processo
+ *                                 "dell'app" nelle prove del gestore dei
+ *                                 file; BusyBox non ha setuidgid)
  *
  * Compilato da tools/guest-kernel/build.sh con gli header UAPI del kernel
  * guest (drm/ non c'è negli header di Alpine).
@@ -28,6 +33,7 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
+#include <grp.h>
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -430,6 +436,16 @@ static int xattr_get(const char *path, const char *name)
 	return 0;
 }
 
+/* ---- run-as (M8) ------------------------------------------------- */
+
+static int run_as(unsigned uid, unsigned gid, char **argv)
+{
+	if (setgroups(0, NULL) || setgid(gid) || setuid(uid))
+		return die("run-as");
+	execvp(argv[0], argv);
+	return die(argv[0]);
+}
+
 int main(int argc, char **argv)
 {
 	setvbuf(stdout, NULL, _IOLBF, 0);
@@ -454,8 +470,10 @@ int main(int argc, char **argv)
 		return xattr_set(argv[2], argv[3], argv[4]);
 	if (!strcmp(cmd, "xattr-get") && argc == 4)
 		return xattr_get(argv[2], argv[3]);
+	if (!strcmp(cmd, "run-as") && argc >= 5)
+		return run_as((unsigned)atoi(argv[2]), (unsigned)atoi(argv[3]), argv + 4);
 	fprintf(stderr, "uso: vetro-dev drm|drm-hold|input|input-read DEV N|led DEV CODICE V|"
 			"vsock-cid|vsock-connect PORTA MSG|vsock-listen PORTA|xattr-set FILE NOME VALORE|"
-			"xattr-get FILE NOME\n");
+			"xattr-get FILE NOME|run-as UID GID CMD [ARG...]\n");
 	return 2;
 }

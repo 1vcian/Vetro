@@ -223,7 +223,7 @@ guestEof, unsent }`, nomi in `NET_STATE` e `NET_REASON`). Prova:
 guest, eco di 200 KB dal JS, chiusura, porta senza servizio, stesse
 istruzioni con e senza JIT e in due esecuzioni.
 
-### Gestore dei file (ABI 7, ADR 0020, `docs/specs/files.md`)
+### Gestore dei file (ABI 7, ADR 0020; ABI 9, ADR 0021; `docs/specs/files.md`)
 
 Il client di `vetro_machine::files` verso il demone `vetro-files` del guest
 (porta vsock 5200). Serve il bit `VSOCK`.
@@ -233,7 +233,7 @@ Il client di `vetro_machine::files` verso il demone `vetro-files` del guest
 | `vetro_files_open` | `(vm, port: u32) -> u32` | crea il client (porta 0 = 5200), al posto di quello che c'era; 1 fatto, 0 senza vsock. Dopo `vetro_load_linux` o `vetro_snapshot_restore`: le connessioni al demone rimaste nello snapshot si chiudono al primo `pump` |
 | `vetro_files_close` | `(vm)` | chiude la connessione e toglie il client |
 | `vetro_files_status` | `(vm, out: *mut u32, cap: usize) -> u32` | 0 nessun client, 1 in collegamento (o in attesa di riprovare), 2 collegato. In `out`: operazioni non finite, saluti ricevuti (cresce a ogni ricollegamento: le osservazioni vanno rifatte), pezzo massimo e flag del saluto (bit 0 SELinux). Non tocca la macchina |
-| `vetro_files_request` | `(vm, op: u32, a: *const u8, a_len, b: *const u8, b_len, x: u64, y: u64) -> u32` | chiede un'operazione sul percorso `a` (UTF-8): 1 `STAT`, 2 `LIST`, 3 `READ` (`x` offset, `y` byte, `u64::MAX` = fino alla fine, al più 256 MiB), 4 `WRITE` (`b` contenuto, `x` modo di un file nuovo), 5 `MKDIR` (`x` modo), 6 `CREATE` (`x` modo), 7 `DELETE` (`x` 1 = ricorsivo), 8 `RENAME` (`b` destinazione), 9 `WATCH`, 10 `UNWATCH` (`x` wd). Restituisce l'id (> 0) o 0 |
+| `vetro_files_request` | `(vm, op: u32, a: *const u8, a_len, b: *const u8, b_len, x: u64, y: u64) -> u32` | chiede un'operazione sul percorso `a` (byte del guest, anche non UTF-8, dall'ABI 9; vuoto = rifiutata): 1 `STAT`, 2 `LIST`, 3 `READ` (`x` offset, `y` byte, `u64::MAX` = fino alla fine, al più 256 MiB), 4 `WRITE` (`b` contenuto, `x` modo di un file nuovo), 5 `MKDIR` (`x` modo), 6 `CREATE` (`x` modo), 7 `DELETE` (`x` 1 = ricorsivo), 8 `RENAME` (`b` destinazione, byte), 9 `WATCH`, 10 `UNWATCH` (`x` wd), 11 `SQL` (ABI 9: `b` = `u32` lunghezza e SQL UTF-8, `u16` numero di parametri, parametri nel formato dei valori del protocollo (`proto::encode_sql_args`); `x` righe cambiate attese, `u64::MAX` = qualsiasi; `y` bit 0 sola lettura). Restituisce l'id (> 0) o 0 |
 | `vetro_files_pump` | `(vm) -> u32` | fa avanzare il client (fra un quanto e l'altro) e restituisce i messaggi pronti |
 | `vetro_files_take` | `(vm) -> usize` | prepara il prossimo messaggio e ne dà la lunghezza (0 = nessuno) |
 | `vetro_files_ptr` | `(vm) -> *const u8` | i byte del messaggio, validi fino alla prossima `take` |
@@ -241,16 +241,27 @@ Il client di `vetro_machine::files` verso il demone `vetro-files` del guest
 Messaggio: `u32` lunghezza del JSON, JSON UTF-8, poi i byte di una lettura.
 JSON di una risposta: `{"kind":"reply","op":N,"ok":true,"type":T,...}` con
 `T` = `stat` (`stat`), `list` (`entries: [{name, stat}]`), `data` (`size`,
-`length`: i byte seguono), `written` (`stat`), `watch` (`wd`), `done`; o
+`length`: i byte seguono), `written` (`stat`), `watch` (`wd`), `sql`
+(`changes`, `lastRowid` come stringa decimale, `truncated`, `columns`,
+`rows`: valori `null`, `["i","<intero>"]`, `["f","<reale>"]` (`inf`,
+`-inf`, `NaN` compresi), `["t","<testo>"]`, `["b","<esadecimale>"]`),
+`done`; o
 `{"kind":"reply","op":N,"ok":false,"error":"ENOENT (2)","errno":2,"code":"ENOENT"}`
-(`code` `PROTOCOL` o `DISCONNECTED` con `errno` null). `stat` = `{kind,
+(`code` `PROTOCOL` o `DISCONNECTED` con `errno` null; `SQLITE` con
+`sqlite` = codice di SQLite se SQLite ha rifiutato). `stat` = `{kind,
 mode, uid, gid, size, mtime, mtimeNs, nlink, link, selinux}`. Evento:
-`{"kind":"event","wd":N,"mask":N,"cookie":N,"name":"..."}`.
+`{"kind":"event","wd":N,"mask":N,"cookie":N,"name":"..."}`. Nomi e
+destinazioni dei collegamenti sono byte del guest in *surrogateescape*: un
+byte che non fa parte di UTF-8 valido è `\udcXX` (surrogato solitario
+U+DC80 + byte − 0x80); `pathBytes` di `vetro.mjs` fa l'inverso per i
+percorsi mandati.
 
 Collegarsi, mandare e leggere sono ingressi (`Machine::input`, registrati
 per il replay); `status`, `take` e `ptr` no. In JS: `Machine.files(port)`
-→ `GuestFiles` (Promise per operazione, `onEvent`, `status()`, `pump()`,
-`close()`), costanti `FILES_OP`, `FILES_STATUS`, `INOTIFY`.
+→ `GuestFiles` (Promise per operazione, `sql(percorso, sql, parametri,
+{ expect, readonly })`, `onEvent`, `status()`, `pump()`, `close()`),
+costanti `FILES_OP`, `FILES_STATUS`, `INOTIFY`; `pathBytes`,
+`pathString`, `displayName`, `encodeSqlArgs`, `sqlValue`.
 
 ### Buffer dei risultati (ABI 8)
 

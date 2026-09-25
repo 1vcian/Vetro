@@ -128,6 +128,8 @@ del demone rimaste nello snapshot, che nessuno leggerebbe più.
   (`web/app/sqlite.mjs`, solo lettura, senza WAL); la modifica di una riga
   (uscita di M8) resta da fare: scriverla nel formato del file è rischioso
   con l'app che tiene il database aperto, e andrà fatta con `sqlite3` nel
-  guest o nel demone, con un ADR.
+  guest o nel demone, con un ADR. *Fatto con l'ADR 0021: SQL nel demone con
+  SQLite linkato, come il proprietario del database; lettura del WAL.*
 - Nomi di file non UTF-8 arrivano all'host con i caratteri sostituiti
   (U+FFFD) e non si possono riaprire: limite noto, raro su Android.
+  *Superato dall'ADR 0021: nomi come byte, surrogateescape verso il JS.*

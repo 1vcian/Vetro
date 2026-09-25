@@ -18,6 +18,7 @@ dir /usr/share/udhcpc 0755 0 0
 file /bin/busybox target/guest-bins/busybox 0755 0 0
 file /bin/vetro-dev target/guest-kernel/vetro-dev 0755 0 0
 file /bin/vetro-files target/guest-kernel/vetro-files 0755 0 0
+slink /bin/sqlite3 vetro-files 0777 0 0
 slink /bin/sh busybox 0777 0 0
 file /init guest/kernel/initramfs/init 0755 0 0
 file /etc/autotest.sh guest/kernel/initramfs/autotest.sh 0644 0 0

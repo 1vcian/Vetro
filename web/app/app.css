@@ -680,4 +680,47 @@ a.tl-label {
 
 #rr-status.err {
   color: #ff7b72;
+/* Modifica di SQLite e delle SharedPreferences (ADR 0021). */
+.fsql td[data-r] {
+  cursor: pointer;
+}
+
+.fsql td[data-r]:hover {
+  background: var(--panel);
+}
+
+.fsql-edit {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  align-items: center;
+  margin: 6px 0;
+  padding: 6px;
+  border: 1px solid var(--line);
+}
+
+.fsql-col {
+  flex-basis: 100%;
+}
+
+.fsql-query {
+  flex-basis: 100%;
+  font: 12px/1.35 ui-monospace, monospace;
+}
+
+.fsql-params {
+  flex-basis: 100%;
+  font: 12px ui-monospace, monospace;
+  color: var(--dim);
+  white-space: pre-wrap;
+}
+
+.fprefs input,
+.fprefs select,
+.fprefs textarea {
+  font: 12px ui-monospace, monospace;
+}
+
+.bad {
+  outline: 2px solid #d33;
 }

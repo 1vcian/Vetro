@@ -27,6 +27,7 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 use vetro_boot_tests::*;
+use vetro_machine::files::proto::display_name;
 use vetro_machine::files::{FilesError, Outcome as FilesOutcome};
 use vetro_machine::vetro_net::TcpReply;
 use vetro_machine::vetro_snapshot::{Snapshot, Writer, hash64};
@@ -491,7 +492,8 @@ fn disk_script(image: &[u8], initrd: &[u8], plan: &Plan) -> Outcome {
          echo; md5sum /dev/vda",
         at,
     );
-    assert!(r.text(0).contains("\nVETRO-SCRITTO\n"), "{}", r.tail());
+    // Il messaggio del kernel su drop_caches può arrivare subito dopo il testo.
+    assert!(r.text(0).contains("\nVETRO-SCRITTO"), "{}", r.tail());
     r.mark("after");
     let _ = r.command("dd if=/dev/vda bs=1 skip=1000000 count=13 2>/dev/null; echo", at);
     r.poweroff();
@@ -703,7 +705,7 @@ fn files_wait(
     loop {
         fc.pump(&mut r.m);
         while let Some(e) = fc.take_event() {
-            seen.push(format!("evento {e:?}"));
+            seen.push(format!("evento {} {e:?}", display_name(&e.name)));
         }
         while let Some(c) = fc.take_completion() {
             let brief = match &c.result {
@@ -751,12 +753,12 @@ fn files_script(image: &[u8], initrd: &[u8], plan: &Plan) -> (Outcome, String) {
     r.m.console_input(b"echo dal-guest > /tmp/f/g.txt\n");
     r.mark("files-evento");
     let limit = r.m.steps + PHASE_BUDGET;
-    while !seen.iter().any(|s| s.starts_with("evento") && s.contains("\"g.txt\"") && s.contains("mask: 8,")) {
+    while !seen.iter().any(|s| s.starts_with("evento g.txt ") && s.contains("mask: 8,")) {
         assert!(r.m.steps < limit, "evento non arrivato: {seen:?}");
         assert_eq!(r.quantum(), Stop::Budget);
         fc.pump(&mut r.m);
         while let Some(e) = fc.take_event() {
-            seen.push(format!("evento {e:?}"));
+            seen.push(format!("evento {} {e:?}", display_name(&e.name)));
         }
     }
     let at = r.until(SHELL_PROMPT, at);

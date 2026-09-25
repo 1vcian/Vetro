@@ -61,7 +61,7 @@ CPU: All CPU(s) started at EL1
 CPU features: detected: 32-bit EL0 Support
 CPU features: detected: CRC32 instructions
 alternatives: applying system-wide alternatives
-Memory: 1015184K/1048576K available (4288K kernel code, 676K rwdata, 940K rodata, 896K init, 251K bss, 30244K reserved, 0K cma-reserved)
+Memory: 1014380K/1048576K available (4288K kernel code, 678K rwdata, 944K rodata, 896K init, 249K bss, 31048K reserved, 0K cma-reserved)
 devtmpfs: initialized
 posixtimers hash table entries: 512 (order: 1, 8192 bytes, linear)
 futex hash table entries: 256 (16384 bytes on 1 NUMA nodes, total 16 KiB, linear).
@@ -88,12 +88,12 @@ Unpacking initramfs...
 workingset: timestamp_bits=62 max_order=18 bucket_order=0
 input: QEMU Virtio Tablet as /devices/platform/a003a00.virtio_mmio/virtio1/input/input0
 input: QEMU Virtio Keyboard as /devices/platform/a003c00.virtio_mmio/virtio2/input/input1
-Freeing initrd memory: 736K
 [drm] features: -virgl +edid -resource_blob -host_visible
 [drm] features: -context_init
 [drm] number of scanouts: 1
 [drm] number of cap sets: 0
 [drm] Initialized virtio_gpu 0.1.0 for a003e00.virtio_mmio on minor 0
+Freeing initrd memory: 1540K
 rtc-pl031 9010000.pl031: registered as rtc0
 NET: Registered PF_PACKET protocol family
 NET: Registered PF_VSOCK protocol family
@@ -104,10 +104,10 @@ VETRO-BOOT-OK: /init avviato (6.18.53)
 VETRO-AUTOTEST-INIZIO
 Linux (none) 6.18.53 #1 SMP Thu Sep 24 00:00:00 UTC 2026 aarch64 Linux
 VETRO-AUTOTEST ok: uname -m è aarch64
-rootfs on / type rootfs (rw,size=509164k,nr_inodes=127291)
+rootfs on / type rootfs (rw,size=508764k,nr_inodes=127191)
 proc on /proc type proc (rw,relatime)
 sysfs on /sys type sysfs (rw,relatime)
-devtmpfs on /dev type devtmpfs (rw,relatime,size=509164k,nr_inodes=127291,mode=755)
+devtmpfs on /dev type devtmpfs (rw,relatime,size=508764k,nr_inodes=127191,mode=755)
 tmpfs on /tmp type tmpfs (rw,relatime)
 VETRO-AUTOTEST ok: proc montato
 VETRO-AUTOTEST ok: sysfs montato

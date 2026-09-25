@@ -4,7 +4,7 @@
 
 import { JitEngine } from './jit-engine.mjs';
 
-export const ABI_VERSION = 8;
+export const ABI_VERSION = 9;
 /** Codici di vetro_run. */
 export const STOP = ['Budget', 'PowerOff', 'Reset', 'Idle', 'Unimplemented', 'Blocked'];
 
@@ -21,8 +21,8 @@ export const RESTORE = [null, 'BadMagic', 'Version', 'Config', 'Corrupt'];
 /** Codici di vetro_overlay_open. */
 export const OVERLAY = ['Loaded', 'New', 'Mismatch', 'Corrupt', 'NoDisk'];
 export const NET_REASON = [null, 'Normal', 'GuestReset', 'RemoteReset', 'Refused', 'Timeout'];
-/** Operazioni di vetro_files_request (gestore dei file, ABI 7). */
-export const FILES_OP = { STAT: 1, LIST: 2, READ: 3, WRITE: 4, MKDIR: 5, CREATE: 6, DELETE: 7, RENAME: 8, WATCH: 9, UNWATCH: 10 };
+/** Operazioni di vetro_files_request (gestore dei file, ABI 7; SQL con l'ABI 9). */
+export const FILES_OP = { STAT: 1, LIST: 2, READ: 3, WRITE: 4, MKDIR: 5, CREATE: 6, DELETE: 7, RENAME: 8, WATCH: 9, UNWATCH: 10, SQL: 11 };
 /** Tipi degli ingressi della timeline (vetro_timeline_input, InputKind di vetro-analysis). */
 export const TIMELINE_INPUT = { KEY: 0, POINTER: 1, TOUCH: 2, CONSOLE: 3, FILES: 4, POWER: 5, DISPLAY: 6, OTHER: 7 };
 /** Tipi degli effetti della timeline (vetro_timeline_effect, EffectKind). */
@@ -41,6 +41,144 @@ export const INOTIFY = {
 
 const utf8 = new TextDecoder();
 const toUtf8 = new TextEncoder();
+
+/**
+ * Byte di un percorso del guest da una stringa in *surrogateescape* (ADR
+ * 0021): i surrogati solitari U+DC80..U+DCFF tornano i byte 0x80..0xFF che
+ * non erano UTF-8 valido, il resto è UTF-8.
+ */
+export function pathBytes(path) {
+  if (!/[\udc80-\udcff]/.test(path)) return toUtf8.encode(path);
+  const out = [];
+  let run = '';
+  const flush = () => {
+    for (const b of toUtf8.encode(run)) out.push(b);
+    run = '';
+  };
+  for (let i = 0; i < path.length; i++) {
+    const c = path.charCodeAt(i);
+    const lone = c >= 0xdc80 && c <= 0xdcff && !(i > 0 && path.charCodeAt(i - 1) >= 0xd800 && path.charCodeAt(i - 1) <= 0xdbff);
+    if (lone) {
+      flush();
+      out.push(c - 0xdc00);
+    } else run += path[i];
+  }
+  flush();
+  return new Uint8Array(out);
+}
+
+/** Una stringa in surrogateescape dai byte di un percorso (l'inverso di pathBytes). */
+export function pathString(bytes) {
+  const strict = new TextDecoder('utf-8', { fatal: true });
+  try {
+    return strict.decode(bytes);
+  } catch {
+    // Byte per byte: le sequenze UTF-8 valide restano, gli altri byte diventano surrogati.
+    let s = '';
+    let i = 0;
+    while (i < bytes.length) {
+      const b = bytes[i];
+      const n = b < 0x80 ? 1 : b >= 0xc2 && b <= 0xdf ? 2 : b >= 0xe0 && b <= 0xef ? 3 : b >= 0xf0 && b <= 0xf4 ? 4 : 0;
+      if (n > 0 && i + n <= bytes.length) {
+        try {
+          s += strict.decode(bytes.subarray(i, i + n));
+          i += n;
+          continue;
+        } catch {}
+      }
+      s += String.fromCharCode(0xdc00 + b);
+      i++;
+    }
+    return s;
+  }
+}
+
+/** Un nome con i byte non UTF-8 (surrogati solitari) mostrati come \xNN. */
+export function displayName(s) {
+  return s.replace(/[\udc80-\udcff]/g, (c, i) => {
+    const prev = i > 0 ? s.charCodeAt(i - 1) : 0;
+    return prev >= 0xd800 && prev <= 0xdbff ? c : `\\x${(c.charCodeAt(0) - 0xdc00).toString(16).padStart(2, '0')}`;
+  });
+}
+
+/** Tipi dei valori SQL nel protocollo del gestore dei file (ADR 0021). */
+const SQLV = { NULL: 0, INT: 1, REAL: 2, TEXT: 3, BLOB: 4 };
+
+/**
+ * SQL e parametri nel formato di vetro-wasm (`proto::encode_sql_args`).
+ * Un parametro è null, un bigint o un numero intero (INTEGER), un numero
+ * non intero (REAL), una stringa (TEXT), un Uint8Array (BLOB), un booleano
+ * (0/1), o esplicito: { type: 'integer'|'real'|'text'|'blob'|'null', value }.
+ */
+export function encodeSqlArgs(sql, params = []) {
+  const parts = [];
+  let len = 0;
+  const push = (u8) => {
+    parts.push(u8);
+    len += u8.length;
+  };
+  const u32 = (v) => {
+    const b = new Uint8Array(4);
+    new DataView(b.buffer).setUint32(0, v, true);
+    return b;
+  };
+  const text = toUtf8.encode(sql);
+  push(u32(text.length));
+  push(text);
+  const n = new Uint8Array(2);
+  new DataView(n.buffer).setUint16(0, params.length, true);
+  push(n);
+  for (const p of params) {
+    let type;
+    let value = p;
+    if (p !== null && typeof p === 'object' && !(p instanceof Uint8Array)) {
+      type = p.type;
+      value = p.value;
+    } else if (p === null || p === undefined) type = 'null';
+    else if (typeof p === 'bigint' || typeof p === 'boolean' || (typeof p === 'number' && Number.isInteger(p))) type = 'integer';
+    else if (typeof p === 'number') type = 'real';
+    else if (typeof p === 'string') type = 'text';
+    else if (p instanceof Uint8Array) type = 'blob';
+    else throw new Error(`parametro SQL non valido: ${p}`);
+    if (type === 'null') push(new Uint8Array([SQLV.NULL]));
+    else if (type === 'integer') {
+      const b = new Uint8Array(9);
+      b[0] = SQLV.INT;
+      new DataView(b.buffer).setBigInt64(1, BigInt.asIntN(64, BigInt(typeof value === 'boolean' ? Number(value) : value)), true);
+      push(b);
+    } else if (type === 'real') {
+      const b = new Uint8Array(9);
+      b[0] = SQLV.REAL;
+      new DataView(b.buffer).setFloat64(1, Number(value), true);
+      push(b);
+    } else if (type === 'text' || type === 'blob') {
+      const bytes = type === 'text' ? toUtf8.encode(String(value)) : value;
+      push(new Uint8Array([type === 'text' ? SQLV.TEXT : SQLV.BLOB]));
+      push(u32(bytes.length));
+      push(bytes);
+    } else throw new Error(`tipo di parametro SQL ${type}`);
+  }
+  const out = new Uint8Array(len);
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.length;
+  }
+  return out;
+}
+
+/** Un valore SQL dal JSON di vetro-wasm: null, Number o BigInt, String, Uint8Array. */
+export function sqlValue(v) {
+  if (v === null) return null;
+  const [t, x] = v;
+  if (t === 'i') {
+    const b = BigInt(x);
+    return b >= BigInt(Number.MIN_SAFE_INTEGER) && b <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(b) : b;
+  }
+  if (t === 'f') return Number(x === 'inf' ? Infinity : x === '-inf' ? -Infinity : x);
+  if (t === 't') return x;
+  return new Uint8Array(x.match(/../g)?.map((h) => parseInt(h, 16)) ?? []);
+}
 
 /** Istanzia vetro-wasm dai byte del .wasm: { exports, jit }. */
 export async function instantiate(wasmBytes) {
@@ -812,8 +950,8 @@ export class GuestFiles {
 
   #request(op, path, b = null, x = 0n, y = 0n) {
     const ex = this.#x;
-    const a = copyIn(ex, toUtf8.encode(path));
-    const bb = copyIn(ex, typeof b === 'string' ? toUtf8.encode(b) : b ?? new Uint8Array());
+    const a = copyIn(ex, pathBytes(path));
+    const bb = copyIn(ex, typeof b === 'string' ? pathBytes(b) : b ?? new Uint8Array());
     const id = ex.vetro_files_request(this.#vm, op, ...a, ...bb, BigInt(x), BigInt(y));
     for (const [p, n] of [a, bb]) if (n) ex.vetro_free(p, n);
     if (id === 0) return Promise.reject(new Error(`vetro_files_request(${op}, ${path}): rifiutata`));
@@ -866,6 +1004,25 @@ export class GuestFiles {
     return this.#request(FILES_OP.UNWATCH, '/', null, wd).then(() => undefined);
   }
 
+  /**
+   * SQL sul database SQLite `path`, nel guest con il motore vero e come il
+   * proprietario del file (ADR 0021): istruzioni in una transazione (tranne
+   * `readonly`), `params` legati a ?1, ?2, ... (vedi encodeSqlArgs); con
+   * `expect` un numero diverso di righe cambiate annulla tutto. Restituisce
+   * { changes, lastRowid (BigInt), truncated, columns, rows }; un rifiuto
+   * di SQLite è un errore con code 'SQLITE' e sqlite (il codice).
+   */
+  sql(path, sql, params = [], { expect = null, readonly = false } = {}) {
+    const x = expect === null ? 0xffffffffffffffffn : BigInt(expect);
+    return this.#request(FILES_OP.SQL, path, encodeSqlArgs(sql, params), x, readonly ? 1 : 0).then((r) => ({
+      changes: r.changes,
+      lastRowid: BigInt(r.lastRowid),
+      truncated: r.truncated,
+      columns: r.columns,
+      rows: r.rows.map((row) => row.map(sqlValue)),
+    }));
+  }
+
   /** Fa avanzare il client e consegna risposte ed eventi; restituisce quanti messaggi. */
   pump() {
     const x = this.#x;
@@ -892,6 +1049,7 @@ export class GuestFiles {
         const e = new Error(msg.error);
         e.code = msg.code;
         e.errno = msg.errno;
+        if (msg.sqlite !== undefined) e.sqlite = msg.sqlite;
         p.ko(e);
       }
     }

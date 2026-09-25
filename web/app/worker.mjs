@@ -362,6 +362,8 @@ const FILE_OPS = {
     return wd;
   }),
   unwatch: (a) => files.unwatch(a.wd),
+  // SQL nel guest con il motore vero, come il proprietario del database (ADR 0021).
+  sql: (a) => files.sql(a.path, a.sql, a.params ?? [], { expect: a.expect ?? null, readonly: !!a.readonly }),
 };
 
 /** I comandi del gestore dei file che sono azioni dell'utente (timeline). */
@@ -371,6 +373,7 @@ const FILE_COMMANDS = {
   create: (a) => `nuovo file ${a.path}`,
   delete: (a) => `cancella ${a.path}`,
   rename: (a) => `rinomina ${a.path} → ${a.to}`,
+  sql: (a) => (a.readonly ? null : `SQL su ${a.path}: ${a.sql.length > 80 ? `${a.sql.slice(0, 80)}…` : a.sql}`),
 };
 
 /** Gli eventi di inotify che cambiano file, con il nome nella timeline. */

@@ -70,7 +70,8 @@ use display::WebDisplay;
 /// `vetro_inspect_*`, `vetro_timeline_*`, `vetro_record_*`, `vetro_log_*`,
 /// `vetro_replay_*`, `vetro_rr_status`, lettura dello stato, buffer dei
 /// risultati; ADR 0023).
-pub const ABI_VERSION: u32 = 8;
+/// 9: SQL del gestore dei file e percorsi come byte (ADR 0021).
+pub const ABI_VERSION: u32 = 9;
 
 /// Allineamento dei buffer di [`vetro_alloc`] (basta per `JitState`).
 const ALLOC_ALIGN: usize = 16;
