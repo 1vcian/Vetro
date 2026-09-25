@@ -36,6 +36,7 @@ cargo build --target wasm32-unknown-unknown --workspace --exclude vetro-cli --ex
 VETRO_JIT=1 cargo test --release -p vetro-linux-tests   # gli stessi test col JIT (ADR 0012)
 VETRO_JIT=1 cargo test --release -p vetro-boot-tests --test vetro   # avvio del kernel col JIT di sistema (ADR 0013)
 tools/wasm-boot.sh --jit             # avvio in Node: interprete e JIT in V8, soglia di M4
+tools/pages/build.sh && node tests/web/pages.mjs   # sito di GitHub Pages e sua prova in Chrome
 ```
 
 Oracolo su macOS (QEMU user mode esiste solo su Linux; serve Docker attivo):

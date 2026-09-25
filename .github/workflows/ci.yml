@@ -136,3 +136,55 @@ jobs:
             [ -s "$f" ] || continue
             echo "::error title=$f::$(grep -vE '^\s*$' "$f" | tail -n 60 | awk '{gsub(/%/, "%25"); gsub(/\r/, ""); printf "%s%%0A", $0}')"
           done
+
+  # Il sito di GitHub Pages (tools/pages/build.sh): l'app web col kernel guest
+  # e i sorgenti GPL. Si costruisce e si prova (Chrome, sotto /Vetro/ senza
+  # COOP/COEP, come lo serve Pages) a ogni push; si pubblica solo da main e
+  # solo se tutti gli altri job sono verdi. Il kernel guest è quello messo in
+  # cache dal job boot (stessa chiave).
+  pages:
+    needs: [native, wasm, linux, boot]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain (da rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache/restore@v4
+        with:
+          path: target/guest-kernel
+          key: guest-kernel-${{ hashFiles('guest/kernel/config/**', 'guest/kernel/initramfs/**', 'guest/kernel/kselftest/**', 'tools/guest-kernel/**', 'tools/guest-bins/**') }}
+          fail-on-cache-miss: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Sito
+        run: tools/pages/build.sh
+      - name: Sito nel browser
+        run: node tests/web/pages.mjs
+        env:
+          VETRO_REQUIRE_BROWSER: "1"
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: target/pages
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: pages
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+      - id: deploy
+        uses: actions/deploy-pages@v4

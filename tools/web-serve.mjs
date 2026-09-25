@@ -13,7 +13,8 @@
 //   /disks/                 -> target/web-disks/     (immagini di disco da provare)
 //
 // Come modulo: `serve({ mounts, port, onRequest })` restituisce
-// `{ server, url, close() }` (porta 0 = una libera).
+// `{ server, url, close() }` (porta 0 = una libera). `isolation: false`
+// toglie COOP/COEP, come su GitHub Pages (tests/web/pages.mjs).
 
 import { createServer } from 'node:http';
 import { open, stat } from 'node:fs/promises';
@@ -76,12 +77,12 @@ function locate(mounts, pathname) {
   return null;
 }
 
-export function serve({ mounts, port = 0, host = '127.0.0.1', onRequest = () => {} }) {
+export function serve({ mounts, port = 0, host = '127.0.0.1', onRequest = () => {}, isolation = true }) {
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, 'http://x');
     const range = req.headers.range ?? null;
     let file = locate(mounts, url.pathname);
-    const head = { ...ISOLATION, 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-cache' };
+    const head = { ...(isolation ? ISOLATION : {}), 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-cache' };
     const done = (status, extra = {}, body = '') => {
       onRequest({ method: req.method, path: url.pathname, range, status });
       res.writeHead(status, { ...head, ...extra });

@@ -9,6 +9,10 @@ emulator written in Rust and compiled to WebAssembly. Because all
 observation happens in the emulator, apps have nothing injected into them to
 detect.
 
+**Try it:** [1vcian.github.io/Vetro](https://1vcian.github.io/Vetro/) boots
+the current milestone — a small Linux guest with a BusyBox shell — in your
+browser (Chrome or Edge desktop). Android arrives with milestone M5.
+
 > Vetro is an independent project. It is not affiliated with or endorsed by
 > Google. Android is a trademark of Google LLC.
 
@@ -140,6 +144,11 @@ Linux only):
 
 Without an oracle those tests print `SKIP`; set `VETRO_REQUIRE_ORACLE=1` to
 make a missing oracle a failure (always on in CI).
+
+The GitHub Pages site is built by `tools/pages/build.sh` (web app, WebAssembly
+machine, guest kernel and the exact GPL sources of the kernel and BusyBox)
+and checked in Chrome with `node tests/web/pages.mjs`; CI publishes it from
+`main` when every other job is green.
 
 ## Repository layout
 
