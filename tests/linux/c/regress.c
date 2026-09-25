@@ -1,6 +1,6 @@
 // Regressioni del kernel emulato trovate in revisione (M2/M3): ogni caso
 // stampa il proprio esito; Vetro e QEMU devono stampare lo stesso
-// (tests/linux/tests/busybox.rs, caso "regress").
+// (tests/linux/tests/regress.rs).
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
@@ -72,8 +72,11 @@ static void mremap_cases(void) {
     long pg = 4096;
     char *p = mmap(NULL, pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     p[0] = 7;
+    // Solo se fallisce: l'errno dipende dalla versione di QEMU (8.x ENOMEM,
+    // 10 EINVAL come Linux); il difetto era che riusciva, su un indirizzo
+    // avvolto.
     void *r = mremap(p, pg, 2 * pg, MREMAP_MAYMOVE | MREMAP_FIXED, (void *)0xfffffffffffff000UL);
-    res("mremap FIXED oltre la fine", r == MAP_FAILED ? -1 : 0);
+    printf("mremap FIXED oltre la fine fallisce: %d\n", r == MAP_FAILED);
     r = mremap(p, pg, 2 * pg, MREMAP_DONTUNMAP);
     res("mremap DONTUNMAP senza MAYMOVE", r == MAP_FAILED ? -1 : 0);
     r = mremap(p, pg, 2 * pg, MREMAP_MAYMOVE | MREMAP_DONTUNMAP);

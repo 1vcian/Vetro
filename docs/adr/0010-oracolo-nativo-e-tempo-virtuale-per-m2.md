@@ -64,6 +64,9 @@ problemi che non riguardano la correttezza di Vetro:
   o il nativo per quelli di `qemu-divergent.txt`) nel job linux della CI.
 - Le due liste sono parte del criterio: aggiungere una voce richiede la
   verifica nativo/QEMU e il motivo, e va rivisto a ogni aggiornamento di QEMU.
+- Limite dell'oracolo ripetuto: se l'oracolo è instabile su un test, Vetro
+  può coincidere con un suo esito raro e passare lo stesso. Si accetta per i
+  soli casi di tempi reali; un test che diverge sempre resta un fallimento.
 - Le costanti di tempo sono visibili ai programmi, ad esempio nel numero di
   giri di un ciclo che dura un secondo. Cambiarle cambia le tracce, ma non la
   correttezza.
