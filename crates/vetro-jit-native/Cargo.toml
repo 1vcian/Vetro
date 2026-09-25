@@ -1,0 +1,19 @@
+[package]
+name = "vetro-jit-native"
+description = "Motore del JIT su wasmtime, per i test nativi e `vetro run --jit` (ADR 0012)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+vetro-jit = { path = "../vetro-jit" }
+# L'unica dipendenza esterna del JIT, e solo qui (mai nel core né nel
+# browser, che usa il WebAssembly di JavaScript).
+wasmtime = { version = "49", default-features = false, features = ["cranelift", "runtime", "std"] }
+
+[dev-dependencies]
+vetro-cpu = { path = "../vetro-cpu" }
