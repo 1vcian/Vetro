@@ -60,10 +60,16 @@ fn qemu_boots_guest_kernel_to_shell() {
 
     // Shell interattiva: il risultato dell'espansione distingue l'uscita del
     // comando dall'eco del terminale.
-    let Some(prompt) = con.wait_for("# ", end, limit) else { panic!("{}", report(&con, "nessun prompt")) };
+    // L'ingresso parte solo a prompt completo (SHELL_PROMPT), come sotto Vetro.
+    let Some(prompt) = con.wait_for(SHELL_PROMPT, end, limit) else {
+        panic!("{}", report(&con, "nessun prompt"))
+    };
     con.send("echo VETRO-SHELL-$((6*7))\n");
-    if con.wait_for("VETRO-SHELL-42", prompt, limit).is_none() {
-        panic!("{}", report(&con, "la shell non risponde"));
+    let Some(out) = con.wait_for("VETRO-SHELL-42", prompt, limit) else {
+        panic!("{}", report(&con, "la shell non risponde"))
+    };
+    if con.wait_for(SHELL_PROMPT, out, limit).is_none() {
+        panic!("{}", report(&con, "nessun prompt dopo il comando"));
     }
     con.send("poweroff -f\n");
     let exited = con.finish(Duration::from_secs(30));

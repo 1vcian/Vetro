@@ -82,9 +82,11 @@ fn vetro_boots_guest_kernel_to_shell() {
     let end = r.until("\n", at_end).unwrap_or_else(|e| fail(&r, e));
     let line = String::from_utf8_lossy(&r.log[at_end - AUTOTEST_END.len()..end]).into_owned();
     assert_eq!(line.trim_end(), AUTOTEST_OK, "autotest con errori:\n{}", r.tail());
-    let prompt = r.until("# ", end).unwrap_or_else(|e| fail(&r, e));
+    // Stesso copione del test di QEMU: ingresso solo a prompt completo.
+    let prompt = r.until(SHELL_PROMPT, end).unwrap_or_else(|e| fail(&r, e));
     r.m.console_input(b"echo VETRO-SHELL-$((6*7))\n");
-    r.until("VETRO-SHELL-42", prompt).unwrap_or_else(|e| fail(&r, e));
+    let out = r.until("VETRO-SHELL-42", prompt).unwrap_or_else(|e| fail(&r, e));
+    r.until(SHELL_PROMPT, out).unwrap_or_else(|e| fail(&r, e));
     r.m.console_input(b"poweroff -f\n");
     let limit = r.m.steps + PHASE_BUDGET;
     let stop = loop {

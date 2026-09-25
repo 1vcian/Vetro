@@ -26,6 +26,13 @@ pub const BOOT_MARKER: &str = "VETRO-BOOT-OK";
 pub const AUTOTEST_OK: &str = "VETRO-AUTOTEST-FINE: ok";
 /// Fine dell'autotest in generale (anche con errori).
 pub const AUTOTEST_END: &str = "VETRO-AUTOTEST-FINE";
+/// Il prompt di ash (BusyBox) pronto a leggere: dopo `# ` l'editor di riga
+/// chiede la posizione del cursore (`ESC[6n`), e solo allora il terminale è
+/// in modo raw e l'eco lo fa ash. L'ingresso si manda dopo questa sequenza,
+/// sotto QEMU come sotto Vetro. Mandato prima (qemu-system-aarch64 nativo,
+/// CI), ash trova l'ingresso già in attesa, salta `ESC[6n` e il kernel ne fa
+/// l'eco in modo canonico: il log dipende dai tempi dell'host.
+pub const SHELL_PROMPT: &str = "# \x1b[6n";
 
 pub fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
