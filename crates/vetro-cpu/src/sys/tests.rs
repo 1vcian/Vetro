@@ -755,6 +755,94 @@ fn registri_con_maschere_di_qemu() {
 }
 
 #[test]
+fn registri_di_debug_come_qemu() {
+    // Valori e sindromi dalla sonda di sistema (dbg_*, dbgw_*, el0).
+    let mut m = M::new();
+    m.cpu.x[10] = u64::MAX;
+    m.cpu.x[11] = 0xffff_ffff_ffff_ff0f;
+    let code = [
+        0xd510004a, // msr OSDTRRX_EL1, x10
+        0xd5300040, // mrs x0, OSDTRRX_EL1
+        0xd510034a, // msr OSDTRTX_EL1, x10
+        0xd5300341, // mrs x1, OSDTRTX_EL1
+        0xd510064a, // msr OSECCR_EL1, x10
+        0xd5300642, // mrs x2, OSECCR_EL1
+        0xd5330103, // mrs x3, MDCCSR_EL0
+        0xd513040a, // msr DBGDTR_EL0, x10
+        0xd5330404, // mrs x4, DBGDTR_EL0
+        0xd513050a, // msr DBGDTRTX_EL0, x10
+        0xd5330505, // mrs x5, DBGDTRRX_EL0
+        0xd53078c6, // mrs x6, DBGCLAIMSET_EL1
+        0xd51078ca, // msr DBGCLAIMSET_EL1, x10
+        0xd53079c7, // mrs x7, DBGCLAIMCLR_EL1
+        0xd51079cb, // msr DBGCLAIMCLR_EL1, x11
+        0xd53079c8, // mrs x8, DBGCLAIMCLR_EL1
+        0xd53078c9, // mrs x9, DBGCLAIMSET_EL1
+    ];
+    m.cpu.x[..10].fill(0x55);
+    m.bus.put(RAM, &code);
+    for i in 0..code.len() {
+        assert_eq!(m.step(), SysEvent::Executed, "istruzione {i}");
+    }
+    let x = m.cpu.x;
+    assert_eq!(&x[..6], &[0; 6], "OSDTR*, OSECCR, MDCCSR, DBGDTR*: RAZ/WI");
+    assert_eq!(x[6], 0xff, "DBGCLAIMSET legge sempre 0xff");
+    assert_eq!(x[7], 0xff, "CLAIM accesi dalla scrittura di DBGCLAIMSET");
+    assert_eq!(x[8], 0xf0, "DBGCLAIMCLR spegne i bit scritti");
+    assert_eq!(x[9], 0xff);
+    assert_eq!(m.cpu.sys.dbgclaim, 0xf0);
+    // Assenti in QEMU per la A53 (UNDEFINED), MDCCSR in scrittura compreso.
+    for raw in [
+        0xd513010a, // msr S2_3_C0_C1_0, x10
+        0xd5301480, // mrs x0, DBGPRCR_EL1
+        0xd510148a, // msr DBGPRCR_EL1, x10
+        0xd5307ec0, // mrs x0, DBGAUTHSTATUS_EL1
+        0xd5340700, // mrs x0, DBGVCR32_EL2
+        0xd5300680, // mrs x0, DBGBVR6_EL1
+        0xd53004c0, // mrs x0, DBGWVR4_EL1
+        0xd5300000, // mrs x0, S2_0_C0_C0_0
+    ] {
+        let mut m = M::new();
+        m.expect_sync(raw, 0x0200_0000);
+    }
+    // MDSCR_EL1.TDCC non cambia nulla a EL1.
+    let mut m = M::new();
+    m.cpu.sys.mdscr_el1 = 1 << 12;
+    assert_eq!(m.one(0xd5330103), SysEvent::Executed); // mrs x3, MDCCSR_EL0
+
+    // Da EL0: il canale di debug con TDCC = 0 va, con TDCC = 1 è in trap;
+    // OSDTRRX e CLAIM sono solo di EL1.
+    let el0 = RAM + 0x3000;
+    let dcc: &[(u32, u64)] = &[
+        (0xd5330102, 0x6220_c043), // mrs x2, MDCCSR_EL0
+        (0xd5330402, 0x6220_c049), // mrs x2, DBGDTR_EL0
+        (0xd5130400, 0x6220_c008), // msr DBGDTR_EL0, x0
+        (0xd5130500, 0x6220_c00a), // msr DBGDTRTX_EL0, x0
+        (0xd5330502, 0x6220_c04b), // mrs x2, DBGDTRRX_EL0
+    ];
+    for &(insn, esr) in dcc {
+        let mut m = M::at_el0(el0);
+        m.cpu.x[2] = 0x55;
+        assert_eq!(m.one(insn), SysEvent::Executed, "{insn:#010x}");
+        assert_eq!(m.cpu.x[2], if insn & 1 << 21 != 0 { 0 } else { 0x55 }, "{insn:#010x}");
+        let mut m = M::at_el0(el0);
+        m.cpu.sys.mdscr_el1 = 1 << 12;
+        m.expect_sync(insn, esr);
+    }
+    for insn in [
+        0xd5300042, // mrs x2, OSDTRRX_EL1
+        0xd53078c2, // mrs x2, DBGCLAIMSET_EL1
+        0xd5130103, // msr S2_3_C0_C1_0, x3
+    ] {
+        let mut m = M::at_el0(el0);
+        m.expect_sync(insn, 0x0200_0000);
+        let mut m = M::at_el0(el0);
+        m.cpu.sys.mdscr_el1 = 1 << 12;
+        m.expect_sync(insn, 0x0200_0000);
+    }
+}
+
+#[test]
 fn modalita_utente_invariata() {
     // Le istruzioni che la modalità sistema riconosce restano, in modalità
     // utente, quello che erano prima.
@@ -775,6 +863,10 @@ fn modalita_utente_invariata() {
             0xd53be042, // mrs x2, CNTVCT_EL0
             Err(Exception::Unimplemented { raw: 0xd53be042, what: "MRS/MSR registro di sistema" }),
         ),
+        // Canale di debug: SIGILL come in QEMU user (MDSCR_EL1.TDCC = 1).
+        (0xd5330100, Err(Exception::Undefined(0xd5330100))), // mrs x0, MDCCSR_EL0
+        (0xd5130403, Err(Exception::Undefined(0xd5130403))), // msr DBGDTR_EL0, x3
+        (0xd5330502, Err(Exception::Undefined(0xd5330502))), // mrs x2, DBGDTRRX_EL0
     ];
     for &(insn, ref want) in cases {
         let mut mem = UserMemory::new();

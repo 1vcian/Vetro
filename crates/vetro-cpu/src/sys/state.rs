@@ -157,6 +157,8 @@ pub struct SysState {
     pub dbgbcr: [u64; 6],
     pub dbgwvr: [u64; 4],
     pub dbgwcr: [u64; 4],
+    /// Bit di CLAIM (DBGCLAIMSET_EL1/DBGCLAIMCLR_EL1), 8 come in QEMU.
+    pub dbgclaim: u8,
     pub pmuserenr_el0: u64,
 
     /// SError in attesa (ISS di ESR_EL1), consegnato quando PSTATE.A = 0.

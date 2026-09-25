@@ -75,8 +75,10 @@ modalità (ADR 0009):
 
 In modalità utente le istruzioni di sistema restano come in M1: ERET, HVC,
 SMC, MSR immediato, SYS di EL1 e MSR TPIDRRO_EL0 → `Undefined`; WFI e WFE →
-NOP; MRS/MSR di registri diversi da NZCV, TPIDR_EL0, TPIDRRO_EL0, FPCR, FPSR,
-DCZID_EL0, CTR_EL0 → `Unimplemented`. LDTR/STTR accedono come LDR/STR.
+NOP; MRS/MSR del canale di debug di EL0 (MDCCSR_EL0, DBGDTR*_EL0) →
+`Undefined`, come QEMU user che (come Linux) accende MDSCR_EL1.TDCC; MRS/MSR
+di registri diversi da NZCV, TPIDR_EL0, TPIDRRO_EL0, FPCR, FPSR, DCZID_EL0,
+CTR_EL0 → `Unimplemented`. LDTR/STTR accedono come LDR/STR.
 
 ## Modalità sistema: comportamento
 - **Ordine di un passo**: FIQ, IRQ, SError non mascherati (in quest'ordine,
@@ -117,10 +119,18 @@ DCZID_EL0, CTR_EL0 → `Unimplemented`. LDTR/STTR accedono come LDR/STR.
   il GICD della virt), sola lettura. Codifiche MRS/MSR che la A53 non ha
   (estensioni successive come FPMR, ZCR, SMCR; codifiche libere) →
   UNDEFINED, come QEMU; la PMU, che la A53 ha, → `Unimplemented` finché
-  Vetro non la modella. Debug: MDSCR,
-  OSLAR/OSLSR (OSLK al reset), OSDLR (1 bit), DBGBVR/BCR 0..5, DBGWVR 0..3
-  (bit [1:0] a zero), DBGWCR 0..3, MDRAR = 0: solo memoria, nessuna
-  eccezione di debug.
+  Vetro non la modella. Debug (op0 = 2, come `debug_cp_reginfo` di QEMU,
+  verificati dalla sonda): MDSCR, OSLAR/OSLSR (OSLK al reset), OSDLR
+  (1 bit), DBGBVR/BCR 0..5, DBGWVR 0..3 (bit [1:0] a zero), DBGWCR 0..3,
+  MDRAR = 0: solo memoria, nessuna eccezione di debug. OSDTRRX_EL1,
+  OSDTRTX_EL1, OSECCR_EL1, MDCCINT_EL1: RAZ/WI. Canale di debug di EL0:
+  MDCCSR_EL0 (sola lettura, 0), DBGDTR_EL0 e DBGDTRRX/TX_EL0 (RAZ/WI);
+  da EL0 accessibili con MDSCR_EL1.TDCC = 0, in trap (EC 0x18) con
+  TDCC = 1; a EL1 TDCC non conta. DBGCLAIMSET_EL1 legge 0xff e accende i
+  bit [7:0] scritti; DBGCLAIMCLR_EL1 legge i bit di CLAIM e spegne quelli
+  scritti. DBGPRCR_EL1, DBGAUTHSTATUS_EL1, DBGVCR32_EL2, breakpoint e
+  watchpoint oltre il numero della A53 e il resto di op0 = 2: UNDEFINED,
+  come QEMU.
 - **Memoria**: gli accessi passano da `SysBus` con il privilegio del livello
   corrente (0 per LDTR/STTR). Accessi a cavallo di pagina: prima si
   traducono tutte le pagine. SCTLR.A → fault di allineamento prima della
