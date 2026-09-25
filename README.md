@@ -79,8 +79,8 @@ done only when that command passes in CI.
 |---|---|---|---|
 | M0 | Scaffolding and oracle | `cargo test` green; a test runs QEMU and reads its output in CI | ✅ done |
 | M1 | AArch64 CPU interpreter | per-instruction suite; ≥200 random programs match `qemu-aarch64` | ✅ done |
-| M2 | Linux user-mode syscalls | LTP subset, static BusyBox runs | 🚧 next |
-| M3 | System mode, kernel boot | kernel + initramfs reaches a shell; kselftest subset | — |
+| M2 | Linux user-mode syscalls | LTP subset, static BusyBox runs | ✅ done |
+| M3 | System mode, kernel boot | kernel + initramfs reaches a shell; kselftest subset | 🚧 next |
 | M4 | JIT to WebAssembly | M1/M2 tests pass with JIT; interpreter/JIT parity | — |
 | M5 | Android boots | home screen in Chrome; `adb install` of an APK works | — |
 | M6 | Snapshots and install | home in < 15 s from snapshot; drag-and-drop APK | — |
@@ -88,6 +88,22 @@ done only when that command passes in CI.
 | M8 | Binder and privacy | every sensitive access reported; decoy data tracked to the network | — |
 | M9 | Code tracing and scripting | ART method hooks, dynamic dex capture, Frida-like API | — |
 | M10 | Record & replay, 1.0 | deterministic replay; all 30 reference apps; 1.0 goals met | — |
+
+**Where we are.** Vetro runs unmodified static Linux arm64 programs in user
+mode. It has the complete ARMv8.0 integer, SIMD/FP and crypto instruction
+set of a Cortex-A53, and an emulated Linux kernel with processes, threads,
+signals, virtual time and `/proc`. Three test suites match `qemu-aarch64`
+in CI:
+- 355 LTP syscall tests;
+- the main BusyBox applets;
+- the RISU instruction tests.
+
+Tests where QEMU itself deviates from Linux are checked against the real
+kernel on an arm64 host (ADR 0010).
+
+The system-mode pieces for M3 are built and tested separately: EL1, stage-1
+MMU, GICv3, timer, PL011, virtio and user-mode networking. What remains is
+wiring them together to boot the guest kernel.
 
 Detailed plan and progress log (Italian): [`docs/PLAN.md`](docs/PLAN.md),
 [`docs/progress/`](docs/progress/), architecture decisions in
