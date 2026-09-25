@@ -65,6 +65,11 @@ pub struct Board {
     pub(crate) irq_dirty: bool,
     /// Un accesso a uno slot virtio-mmio: il dispositivo va servito.
     pub(crate) virtio_dirty: bool,
+    /// Livello della linea IRQ del GIC, se già calcolato: la CPU lo legge
+    /// prima di ogni istruzione con PSTATE.I = 0, e `Gic::irq_line` scorre
+    /// tutti gli interrupt. Si azzera a ogni operazione che può cambiare lo
+    /// stato del GIC (MMIO, ICC_*, `update_irqs`, virtio).
+    pub(crate) irq_cache: Option<bool>,
 }
 
 impl Board {
@@ -75,12 +80,14 @@ impl Board {
             cntpct: 0,
             irq_dirty: true,
             virtio_dirty: false,
+            irq_cache: None,
         }
     }
 
     /// Porta al GIC i livelli di tutte le linee.
     pub fn update_irqs(&mut self) {
         self.virt.update_irqs(self.cntpct);
+        self.irq_cache = None;
         self.irq_dirty = false;
     }
 
@@ -88,11 +95,13 @@ impl Board {
     pub fn service_virtio(&mut self) {
         let Board { ram, virt, .. } = self;
         virt.service_virtio(ram);
+        self.irq_cache = None;
         self.virtio_dirty = false;
         self.irq_dirty = true;
     }
 
     fn mmio_touched(&mut self, pa: u64) {
+        self.irq_cache = None;
         self.irq_dirty = true;
         let virtio_end = map::VIRTIO_BASE + map::VIRTIO_SLOTS * map::VIRTIO_SLOT_SIZE;
         if (map::VIRTIO_BASE..virtio_end).contains(&pa) {
@@ -146,13 +155,20 @@ const SPURIOUS: u64 = 1023;
 
 impl CpuEnv for Env<'_> {
     fn irq_line(&mut self) -> bool {
-        self.0.borrow().virt.irq_line()
+        let mut b = self.0.borrow_mut();
+        if let Some(l) = b.irq_cache {
+            return l;
+        }
+        let l = b.virt.irq_line();
+        b.irq_cache = Some(l);
+        l
     }
 
     fn read_sysreg(&mut self, reg: EnvReg) -> u64 {
         use EnvReg::*;
         let mut b = self.0.borrow_mut();
         let c = b.cntpct;
+        b.irq_cache = None;
         let v = &mut b.virt;
         match reg {
             CntfrqEl0 => u64::from(map::CNTFRQ_HZ),
@@ -185,6 +201,7 @@ impl CpuEnv for Env<'_> {
         use EnvReg::*;
         let mut b = self.0.borrow_mut();
         let c = b.cntpct;
+        b.irq_cache = None;
         b.irq_dirty = true;
         let v = &mut b.virt;
         match reg {
@@ -207,5 +224,60 @@ impl CpuEnv for Env<'_> {
             // arrivano qui (la CPU rifiuta la scrittura).
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vetro_platform::gic::*;
+    use vetro_platform::timer::CTL_ENABLE;
+
+    fn board_with_vtimer_enabled() -> RefCell<Board> {
+        let b = RefCell::new(Board::new(1 << 20, 0));
+        {
+            let mut bb = b.borrow_mut();
+            let bus = &mut bb.virt.bus;
+            bus.write(map::GICR_BASE + GICR_WAKER, 4, 0);
+            bus.write(map::GICD_BASE + GICD_CTLR, 4, u64::from(GICD_CTLR_ENABLE_GRP1));
+            bus.write(map::GICR_BASE + GICR_SGI_BASE + GICR_IGROUPR0, 4, 0xFFFF_FFFF);
+            bus.write(map::GICR_BASE + GICR_SGI_BASE + GICR_ISENABLER0, 4, 1 << map::PPI_VTIMER);
+        }
+        let mut env = Env(&b);
+        env.write_sysreg(EnvReg::IccPmrEl1, 0xF0);
+        env.write_sysreg(EnvReg::IccIgrpen1El1, 1);
+        b
+    }
+
+    /// La linea IRQ in cache segue ogni cambiamento del GIC: timer che scade
+    /// (`update_irqs`), acknowledge (lettura di ICC_IAR1), EOI (scrittura) e
+    /// accessi MMIO. Senza gli azzeramenti la CPU vedrebbe il livello vecchio.
+    #[test]
+    fn linea_irq_in_cache_segue_il_gic() {
+        let b = board_with_vtimer_enabled();
+        let mut env = Env(&b);
+        b.borrow_mut().update_irqs();
+        assert!(!env.irq_line());
+        assert_eq!(b.borrow().irq_cache, Some(false), "il livello resta in cache");
+
+        env.write_sysreg(EnvReg::CntvCvalEl0, 100);
+        env.write_sysreg(EnvReg::CntvCtlEl0, CTL_ENABLE);
+        b.borrow_mut().cntpct = 100;
+        b.borrow_mut().update_irqs();
+        assert!(env.irq_line(), "il timer scaduto alza la linea");
+
+        assert_eq!(env.read_sysreg(EnvReg::IccIar1El1), u64::from(map::PPI_VTIMER));
+        assert!(!env.irq_line(), "dopo l'acknowledge l'interrupt è attivo, non più in attesa");
+
+        env.write_sysreg(EnvReg::CntvCtlEl0, 0);
+        b.borrow_mut().update_irqs();
+        env.write_sysreg(EnvReg::IccEoir1El1, u64::from(map::PPI_VTIMER));
+        assert!(!env.irq_line());
+
+        // Un accesso MMIO al GIC azzera la cache: un SGI di nuovo pendente.
+        let mut phys = Phys(&b);
+        phys.write(map::GICR_BASE + GICR_SGI_BASE + GICR_ISENABLER0, &1u32.to_le_bytes()).unwrap();
+        phys.write(map::GICR_BASE + GICR_SGI_BASE + GICR_ISPENDR0, &1u32.to_le_bytes()).unwrap();
+        assert!(env.irq_line(), "SGI 0 abilitato e reso pendente via MMIO");
     }
 }

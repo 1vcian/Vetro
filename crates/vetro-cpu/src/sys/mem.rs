@@ -129,9 +129,24 @@ impl<B: SysBus + ?Sized> Memory for SysMem<'_, B> {
         self.write_as(addr, data, self.el)
     }
 
+    #[inline]
     fn fetch(&mut self, addr: u64) -> Result<u32, MemFault> {
         let mut w = [0u8; 4];
         let el = self.el;
+        // Caso comune (in `step_system` il PC è sempre allineato): la parola
+        // sta in una pagina, quindi una traduzione e una lettura di 4 byte,
+        // gli stessi passi di `access` senza il giro generico.
+        if addr & 3 == 0 {
+            let req = AccessReq { access: Access::Fetch, el, aligned: true };
+            let pa = match self.bus.translate(&self.regs, addr, req) {
+                Ok(pa) => pa,
+                Err(f) => return Err(self.fail(addr, Access::Fetch, f)),
+            };
+            if let Err(f) = self.bus.read_phys(pa, &mut w) {
+                return Err(self.fail(addr, Access::Fetch, f));
+            }
+            return Ok(u32::from_le_bytes(w));
+        }
         self.access(addr, 4, Access::Fetch, el, false, |b, pa, off, n| {
             b.read_phys(pa, &mut w[off..off + n])
         })?;

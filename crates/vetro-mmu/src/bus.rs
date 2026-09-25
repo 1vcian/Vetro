@@ -23,8 +23,13 @@ impl<'a, P: PhysMemory + ?Sized> MmuBus<'a, P> {
     }
 
     fn load_regs(&mut self, r: &TranslationRegs) {
-        self.mmu.regs = MmuRegs { sctlr: r.sctlr, tcr: r.tcr, ttbr0: r.ttbr0, ttbr1: r.ttbr1, mair: r.mair };
+        self.mmu.regs = mmu_regs(r);
     }
+}
+
+#[inline]
+fn mmu_regs(r: &TranslationRegs) -> MmuRegs {
+    MmuRegs { sctlr: r.sctlr, tcr: r.tcr, ttbr0: r.ttbr0, ttbr1: r.ttbr1, mair: r.mair }
 }
 
 fn bus_fault(kind: FaultKind) -> BusFault {
@@ -36,10 +41,10 @@ fn bus_fault(kind: FaultKind) -> BusFault {
 }
 
 impl<P: PhysMemory + ?Sized> SysBus for MmuBus<'_, P> {
+    #[inline]
     fn translate(&mut self, regs: &TranslationRegs, va: u64, req: AccessReq) -> Result<u64, BusFault> {
-        self.load_regs(regs);
-        match self.mmu.translate_checked(self.phys, va, req.access, req.el, req.aligned) {
-            Ok(t) => Ok(t.pa),
+        match self.mmu.translate_pa_with(&mmu_regs(regs), self.phys, va, req.access, req.el, req.aligned) {
+            Ok(pa) => Ok(pa),
             Err(f) => {
                 self.mmu.set_last_fault(f);
                 Err(bus_fault(f.kind))

@@ -84,6 +84,11 @@ fn tlbi_asid(xt: u64) -> u16 {
 #[derive(Clone, Debug)]
 pub struct Tlb {
     entries: Vec<Option<TlbEntry>>,
+    /// Generazione di ogni slot: cresce a ogni modifica dello slot
+    /// (inserimento, TLBI, svuotamento). La cache delle traduzioni recenti
+    /// della [`Mmu`](crate::Mmu) è valida solo finché lo slot da cui viene
+    /// non cambia.
+    gens: Box<[u64; ENTRIES]>,
 }
 
 impl Default for Tlb {
@@ -94,11 +99,18 @@ impl Default for Tlb {
 
 impl Tlb {
     pub fn new() -> Self {
-        Tlb { entries: vec![None; ENTRIES] }
+        Tlb { entries: vec![None; ENTRIES], gens: Box::new([0; ENTRIES]) }
     }
 
-    fn slot(key: u64) -> usize {
+    #[inline]
+    pub(crate) fn slot(key: u64) -> usize {
         (key >> 12) as usize & (ENTRIES - 1)
+    }
+
+    /// Generazione dello slot `slot`.
+    #[inline]
+    pub(crate) fn generation(&self, slot: usize) -> u64 {
+        self.gens[slot]
     }
 
     pub(crate) fn lookup(&self, key: u64, asid: u16) -> Option<&TlbEntry> {
@@ -106,7 +118,9 @@ impl Tlb {
     }
 
     pub(crate) fn insert(&mut self, key: u64, e: TlbEntry) {
-        self.entries[Self::slot(key)] = Some(e);
+        let s = Self::slot(key);
+        self.entries[s] = Some(e);
+        self.gens[s] += 1;
     }
 
     /// Numero di voci valide.
@@ -119,9 +133,10 @@ impl Tlb {
     }
 
     fn remove_if(&mut self, pred: impl Fn(&TlbEntry) -> bool) {
-        for slot in &mut self.entries {
+        for (slot, g) in self.entries.iter_mut().zip(self.gens.iter_mut()) {
             if slot.as_ref().is_some_and(&pred) {
                 *slot = None;
+                *g += 1;
             }
         }
     }
@@ -129,6 +144,9 @@ impl Tlb {
     /// Svuota tutto (VMALLE1).
     pub fn flush_all(&mut self) {
         self.entries.fill(None);
+        for g in self.gens.iter_mut() {
+            *g += 1;
+        }
     }
 
     /// Voci che contengono `va` e sono globali o di `asid` (VAE1, VALE1).
