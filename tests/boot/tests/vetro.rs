@@ -77,9 +77,11 @@ fn vetro_boots_guest_kernel_to_shell() {
 
     let at = r.until(BOOT_MARKER, 0).unwrap_or_else(|e| fail(&r, e));
     let t_boot = r.m.guest_ns();
-    let end = r.until(AUTOTEST_END, at).unwrap_or_else(|e| fail(&r, e));
-    let log = String::from_utf8_lossy(&r.log).into_owned();
-    assert!(log.contains(AUTOTEST_OK), "autotest con errori:\n{}", r.tail());
+    // Fino alla fine della riga: un blocco di istruzioni può finire a metà.
+    let at_end = r.until(AUTOTEST_END, at).unwrap_or_else(|e| fail(&r, e));
+    let end = r.until("\n", at_end).unwrap_or_else(|e| fail(&r, e));
+    let line = String::from_utf8_lossy(&r.log[at_end - AUTOTEST_END.len()..end]).into_owned();
+    assert_eq!(line.trim_end(), AUTOTEST_OK, "autotest con errori:\n{}", r.tail());
     let prompt = r.until("# ", end).unwrap_or_else(|e| fail(&r, e));
     r.m.console_input(b"echo VETRO-SHELL-$((6*7))\n");
     r.until("VETRO-SHELL-42", prompt).unwrap_or_else(|e| fail(&r, e));

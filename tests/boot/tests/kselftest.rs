@@ -3,9 +3,10 @@
 //! `tools/guest-kernel/kselftest.sh`) gira nel guest sotto QEMU e sotto
 //! Vetro, e l'esito di ogni test (ok, SKIP, fallito) deve coincidere.
 //!
-//! I test che falliscono anche sotto QEMU sono quelli che nel nostro initramfs
-//! non hanno ciò che serve (python, file system di prova, ecc.): contano lo
-//! stesso, perché Vetro deve fallire allo stesso modo. Solo in release e con
+//! Ogni test deve essere ok o SKIP, tranne quelli di
+//! `guest/kernel/kselftest/expected-failures.txt`, che falliscono anche sotto
+//! QEMU per l'ambiente del guest (python, bash, opzioni del kernel), ciascuno
+//! con il motivo: per quelli Vetro deve fallire allo stesso modo. Solo in release e con
 //! `VETRO_KSELFTEST=1`.
 
 use std::process::Command;
@@ -96,6 +97,25 @@ fn kselftest_come_sotto_qemu() {
         theirs.len(),
         m.steps
     );
+    // La selezione è verde: fuori dall'elenco documentato nessun fallimento.
+    let allowed: Vec<String> =
+        std::fs::read_to_string(root.join("guest/kernel/kselftest/expected-failures.txt"))
+            .unwrap()
+            .lines()
+            .filter_map(|l| l.split('#').next())
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(String::from)
+            .collect();
+    let name = |r: &str| {
+        r.split_whitespace().nth(if r.starts_with("not") { 3 } else { 2 }).unwrap_or("").to_string()
+    };
+    let failing: Vec<String> = theirs.iter().filter(|r| r.ends_with("# FAIL")).map(|r| name(r)).collect();
+    let unexpected: Vec<&String> = failing.iter().filter(|f| !allowed.contains(f)).collect();
+    assert!(unexpected.is_empty(), "falliti sotto QEMU fuori da expected-failures.txt: {unexpected:?}");
+    let stale: Vec<&String> = allowed.iter().filter(|a| !failing.contains(a)).collect();
+    assert!(stale.is_empty(), "in expected-failures.txt ma non falliti: {stale:?} (aggiorna l'elenco)");
+
     let diff: Vec<String> = theirs
         .iter()
         .zip(ours.iter().chain(std::iter::repeat(&String::new())))

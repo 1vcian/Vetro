@@ -51,11 +51,12 @@ fn qemu_boots_guest_kernel_to_shell() {
         panic!("{}", report(&con, "nessun marcatore di avvio"))
     };
     let t_boot = con.elapsed();
-    let Some(end) = con.wait_for(AUTOTEST_END, at, limit) else {
+    // La riga intera: la seriale può consegnare il marcatore prima dell'esito.
+    let Some((end, line)) = con.wait_line(AUTOTEST_END, at, limit) else {
         panic!("{}", report(&con, "autotest non finito"))
     };
     let t_autotest = con.elapsed();
-    assert!(con.log().contains(AUTOTEST_OK), "{}", report(&con, "autotest con errori"));
+    assert_eq!(line, AUTOTEST_OK, "{}", report(&con, "autotest con errori"));
 
     // Shell interattiva: il risultato dell'espansione distingue l'uscita del
     // comando dall'eco del terminale.

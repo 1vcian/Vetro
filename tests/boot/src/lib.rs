@@ -116,6 +116,20 @@ impl Console {
         }
     }
 
+    /// Come [`Console::wait_for`], ma aspetta anche la fine della riga che
+    /// contiene `needle`: la seriale arriva a pezzi, e la riga
+    /// `VETRO-AUTOTEST-FINE: ok` può arrivare spezzata dopo il marcatore.
+    /// Restituisce la posizione dopo il `\n` e la riga da `needle` in poi,
+    /// senza `\r`/`\n` finali.
+    pub fn wait_line(&mut self, needle: &str, from: usize, limit: Duration) -> Option<(usize, String)> {
+        let deadline = Instant::now() + limit;
+        let at = self.wait_for(needle, from, limit)?;
+        let left = deadline.saturating_duration_since(Instant::now());
+        let end = self.wait_for("\n", at, left)?;
+        let line = String::from_utf8_lossy(&self.log[at - needle.len()..end]);
+        Some((end, line.trim_end_matches(['\r', '\n']).to_string()))
+    }
+
     /// Scrive sulla console del guest (come dalla tastiera).
     pub fn send(&mut self, text: &str) {
         let stdin = self.stdin.as_mut().expect("stdin chiuso");
@@ -282,6 +296,22 @@ mod tests {
         let a = vec!["a".to_string(), "c".into()];
         let b = vec!["b".to_string(), "c".into()];
         assert_eq!(line_diff(&a, &b), ["- a", "+ b"]);
+    }
+
+    #[test]
+    fn riga_spezzata_dalla_seriale() {
+        // Il marcatore arriva prima del resto della riga, come dalla PL011
+        // sotto qemu-system-aarch64 nativo (CI): la riga va letta intera.
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "printf 'x\\r\\nVETRO-AUTOTEST-FINE'; sleep 0.5; printf ': ok\\r\\nresto'"]);
+        let mut con = Console::spawn(cmd).unwrap();
+        // Il controllo di prima (marcatore, poi `contains`) vede la riga a metà.
+        assert!(con.wait_for(AUTOTEST_END, 0, Duration::from_secs(10)).is_some());
+        assert!(!con.log().contains(AUTOTEST_OK));
+        let (end, line) = con.wait_line(AUTOTEST_END, 0, Duration::from_secs(10)).unwrap();
+        assert_eq!(line, AUTOTEST_OK);
+        assert_eq!(end, "x\r\nVETRO-AUTOTEST-FINE: ok\r\n".len());
+        con.finish(Duration::from_secs(10));
     }
 
     #[test]
