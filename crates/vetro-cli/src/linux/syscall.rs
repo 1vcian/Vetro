@@ -364,7 +364,7 @@ impl Kernel {
                 ret(0)
             }
             71 => self.sys_sendfile(t, a[0] as i64, a[1] as i64, a[2], a[3] as usize),
-            73 => self.sys_ppoll(t, a[0], a[1] as usize, a[2]),
+            73 => self.sys_ppoll(t, a[0], a[1] as usize, a[2], a[3]),
             72 => ret(a[0] as i64), // pselect6: tutto pronto (approssimazione)
             166 => {
                 let old = self.tasks[t].umask;
@@ -854,8 +854,15 @@ impl Kernel {
         self.do_write(t, out, &data)
     }
 
-    fn sys_ppoll(&mut self, t: usize, fds: u64, n: usize, timeout: u64) -> R {
+    fn sys_ppoll(&mut self, t: usize, fds: u64, n: usize, timeout: u64, sigmask: u64) -> R {
         let mm = self.mem(t);
+        // Maschera temporanea durante l'attesa, come rt_sigsuspend.
+        if sigmask != 0 && self.tasks[t].sig.saved_mask.is_none() {
+            let m = read_u64(&mut mm.borrow_mut().mem, sigmask)?;
+            let old = self.tasks[t].sig.mask;
+            self.tasks[t].sig.saved_mask = Some(old);
+            self.tasks[t].sig.mask = m & !UNBLOCKABLE;
+        }
         let mut ready = 0;
         for i in 0..n as u64 {
             let fd = read_u32(&mut mm.borrow_mut().mem, fds + 8 * i)? as i32;
@@ -887,17 +894,32 @@ impl Kernel {
                 ready += 1;
             }
         }
-        if ready == 0 && n > 0 {
-            if timeout != 0 {
+        if ready == 0 {
+            // Scadenza (relativa) fissata al primo blocco; NULL = per sempre.
+            if timeout != 0 && self.tasks[t].deadline.is_none() {
                 let s = read_u64(&mut mm.borrow_mut().mem, timeout)?;
                 let ns = read_u64(&mut mm.borrow_mut().mem, timeout + 8)?;
-                if s == 0 && ns == 0 {
-                    return ret(0);
-                }
+                self.tasks[t].deadline = Some(self.now() + s * 1_000_000_000 + ns);
             }
-            return Ok(Sys::Block(Wait::Pipe));
+            let until = self.tasks[t].deadline;
+            if until.is_none_or(|u| self.now() < u) {
+                // Senza descrittori (pause() di musl) sveglia solo un segnale.
+                return Ok(Sys::Block(if n == 0 && until.is_none() {
+                    Wait::Signal
+                } else {
+                    Wait::Poll { until }
+                }));
+            }
         }
+        self.restore_saved_mask(t);
         ret(ready)
+    }
+
+    /// Fine di un'attesa con maschera temporanea terminata senza segnali.
+    fn restore_saved_mask(&mut self, t: usize) {
+        if let Some(m) = self.tasks[t].sig.saved_mask.take() {
+            self.tasks[t].sig.mask = m;
+        }
     }
 
     fn sys_fcntl(&mut self, t: usize, fd: i64, cmd: u64, arg: u64) -> R {

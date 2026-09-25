@@ -149,6 +149,8 @@ pub enum Wait {
     Vfork { child: Pid },
     /// pause/rt_sigsuspend: solo un segnale sveglia.
     Signal,
+    /// ppoll/pselect: una pipe pronta o la scadenza.
+    Poll { until: Option<u64> },
     /// Condizione da ricontrollare a ogni giro (F_SETLKW): la syscall si
     /// riesegue finché non riesce.
     Retry,
@@ -451,6 +453,9 @@ impl Kernel {
             Wait::Vfork { child } => self.find(*child).is_none_or(|c| self.tasks[c].vfork_parent.is_none()),
             Wait::Signal => false,
             Wait::Retry => true,
+            Wait::Poll { until } => {
+                self.tasks[i].files.borrow().any_pipe_ready() || until.is_some_and(|u| self.now() >= u)
+            }
         }
     }
 
@@ -460,6 +465,7 @@ impl Kernel {
             let d = match &t.state {
                 State::Blocked(Wait::Sleep { until }) => Some(*until),
                 State::Blocked(Wait::Futex { until: Some(u), .. }) => Some(*u),
+                State::Blocked(Wait::Poll { until: Some(u) }) => Some(*u),
                 _ => None,
             };
             let d = match (d, t.sig.alarm) {

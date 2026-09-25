@@ -64,6 +64,8 @@ pub const TABLE: &[(u64, &str, &[Arg])] = &[
     (98, "futex", &[Ptr, Int, Hex, Ptr, Ptr, Hex]),
     (99, "set_robust_list", &[Ptr, Int]),
     (101, "nanosleep", &[Ptr, Ptr]),
+    (102, "getitimer", &[Int, Ptr]),
+    (103, "setitimer", &[Int, Ptr, Ptr]),
     (113, "clock_gettime", &[Int, Ptr]),
     (114, "clock_getres", &[Int, Ptr]),
     (115, "clock_nanosleep", &[Int, Hex, Ptr, Ptr]),
