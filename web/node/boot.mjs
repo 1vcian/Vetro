@@ -7,6 +7,11 @@
 // tutto va bene.
 //
 //   node web/node/boot.mjs [--wasm FILE] [--kernel DIR] [--expect-steps N]
+//                          [--jit [--jit-threshold N] [--jit-batch N]]
+//
+// Con --jit gira col JIT della modalità sistema (ADR 0013, moduli compilati
+// da V8): istruzioni e log devono essere gli stessi dell'interprete, e il
+// log va in target/guest-kernel/node-boot-jit.log.
 //
 // Node 22, nessuna dipendenza. Il .wasm si costruisce con tools/wasm-boot.sh
 // (cargo build --release --target wasm32-unknown-unknown -p vetro-wasm).
@@ -36,6 +41,9 @@ const opt = (name, def) => {
 const wasmPath = opt('--wasm', join(root, 'target/wasm32-unknown-unknown/release/vetro_wasm.wasm'));
 const kernelDir = opt('--kernel', join(root, 'target/guest-kernel'));
 const expectSteps = opt('--expect-steps', null);
+const jit = args.includes('--jit');
+const jitThreshold = Number(opt('--jit-threshold', '16'));
+const jitBatch = Number(opt('--jit-batch', '16'));
 
 class Fail extends Error {}
 
@@ -46,11 +54,12 @@ const normalize = (s) => s.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
 
 async function main() {
   const t0 = performance.now();
-  const { exports } = await instantiate(readFileSync(wasmPath));
+  const { exports, jit: engine } = await instantiate(readFileSync(wasmPath));
   const image = readFileSync(join(kernelDir, 'Image'));
   const initrd = readFileSync(join(kernelDir, 'initramfs.cpio.gz'));
   const m = new Machine(exports);
   m.loadLinux(image, initrd, CMDLINE);
+  if (jit) m.setJit(jitThreshold, jitBatch);
   const tLoad = performance.now();
 
   // Il log come stringa latin1: un carattere per byte, posizioni come in Rust.
@@ -97,7 +106,7 @@ async function main() {
   if (stop !== 'PowerOff') throw new Fail(`poweroff -f non ha spento la macchina: ${stop}`);
   const t1 = performance.now();
 
-  writeFileSync(join(kernelDir, 'node-boot.log'), normalize(log), 'latin1');
+  writeFileSync(join(kernelDir, jit ? 'node-boot-jit.log' : 'node-boot.log'), normalize(log), 'latin1');
   const steps = m.steps;
   const secs = (t1 - tLoad) / 1000;
   console.log(
@@ -108,6 +117,10 @@ async function main() {
     `tempo reale: caricamento ${((tLoad - t0) / 1000).toFixed(2)} s, /init ${((tInit - tLoad) / 1000).toFixed(2)} s, ` +
       `esecuzione ${secs.toFixed(2)} s (${(Number(steps) / secs / 1e6).toFixed(1)} MIPS)`,
   );
+  if (jit) {
+    console.log(`JIT (soglia ${jitThreshold}, ${jitBatch} blocchi per modulo): ${JSON.stringify(m.jitStats())}`);
+    console.log(`motore JS: ${JSON.stringify(engine.stats)}`);
+  }
   // Riga da leggere per gli script (tools/wasm-boot.sh).
   console.log(`VETRO-NODE-BOOT steps=${steps} ms=${Math.round(t1 - tLoad)}`);
   if (expectSteps !== null && BigInt(expectSteps) !== steps) {
@@ -116,7 +129,7 @@ async function main() {
   m.free();
 }
 main().then(
-  () => process.exit(0),
+  () => (process.exitCode = 0),
   (e) => {
     console.error(`ERRORE: ${e instanceof Fail ? e.message : e.stack ?? e}`);
     const t = tailOf();

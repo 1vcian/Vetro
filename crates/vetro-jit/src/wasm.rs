@@ -14,11 +14,16 @@ pub enum ValType {
 /// Opcode usati dal traduttore (Core spec, sezione 5.4).
 pub mod op {
     pub const UNREACHABLE: u8 = 0x00;
+    pub const BLOCK: u8 = 0x02;
+    pub const LOOP: u8 = 0x03;
     pub const IF: u8 = 0x04;
     pub const ELSE: u8 = 0x05;
     pub const END: u8 = 0x0b;
+    pub const BR: u8 = 0x0c;
+    pub const BR_IF: u8 = 0x0d;
     pub const RETURN: u8 = 0x0f;
     pub const CALL: u8 = 0x10;
+    pub const CALL_INDIRECT: u8 = 0x11;
     pub const DROP: u8 = 0x1a;
     pub const SELECT: u8 = 0x1b;
     pub const LOCAL_GET: u8 = 0x20;
@@ -26,8 +31,14 @@ pub mod op {
     pub const LOCAL_TEE: u8 = 0x22;
     pub const I32_LOAD: u8 = 0x28;
     pub const I64_LOAD: u8 = 0x29;
+    pub const I64_LOAD8_U: u8 = 0x31;
+    pub const I64_LOAD16_U: u8 = 0x33;
+    pub const I64_LOAD32_U: u8 = 0x35;
     pub const I32_STORE: u8 = 0x36;
     pub const I64_STORE: u8 = 0x37;
+    pub const I64_STORE8: u8 = 0x3c;
+    pub const I64_STORE16: u8 = 0x3d;
+    pub const I64_STORE32: u8 = 0x3e;
     pub const I32_CONST: u8 = 0x41;
     pub const I64_CONST: u8 = 0x42;
 
@@ -38,6 +49,7 @@ pub mod op {
     pub const I64_EQ: u8 = 0x51;
     pub const I64_NE: u8 = 0x52;
     pub const I64_LT_U: u8 = 0x54;
+    pub const I64_GT_U: u8 = 0x56;
     pub const I64_LE_U: u8 = 0x58;
 
     pub const I32_CLZ: u8 = 0x67;
@@ -113,6 +125,9 @@ pub struct Func {
     /// Gruppi (quantità, tipo) di variabili locali oltre ai parametri.
     pub locals: Vec<(u32, ValType)>,
     pub code: Vec<u8>,
+    /// Blocchi (`block`, `loop`, `if`) aperti nel punto corrente: serve a
+    /// calcolare le etichette di `br`.
+    pub depth: u32,
 }
 
 impl Func {
@@ -164,6 +179,55 @@ impl Func {
     pub fn i32_store(&mut self, offset: u32) -> &mut Self {
         self.memarg(op::I32_STORE, 2, offset)
     }
+    /// Load di `bytes` byte (1, 2, 4, 8) esteso a zero in un i64, con
+    /// l'allineamento naturale come suggerimento.
+    pub fn i64_load_n(&mut self, bytes: u32, offset: u32) -> &mut Self {
+        match bytes {
+            1 => self.memarg(op::I64_LOAD8_U, 0, offset),
+            2 => self.memarg(op::I64_LOAD16_U, 1, offset),
+            4 => self.memarg(op::I64_LOAD32_U, 2, offset),
+            _ => self.memarg(op::I64_LOAD, 3, offset),
+        }
+    }
+    /// Store dei `bytes` byte bassi di un i64.
+    pub fn i64_store_n(&mut self, bytes: u32, offset: u32) -> &mut Self {
+        match bytes {
+            1 => self.memarg(op::I64_STORE8, 0, offset),
+            2 => self.memarg(op::I64_STORE16, 1, offset),
+            4 => self.memarg(op::I64_STORE32, 2, offset),
+            _ => self.memarg(op::I64_STORE, 3, offset),
+        }
+    }
+    /// `call_indirect` sul tipo `ty` nella tabella 0.
+    pub fn call_indirect(&mut self, ty: u32) -> &mut Self {
+        self.code.push(op::CALL_INDIRECT);
+        uleb(&mut self.code, ty as u64);
+        self.code.push(0);
+        self
+    }
+    /// `loop` o `block` con tipo `bt`.
+    pub fn loop_(&mut self, bt: u8) -> &mut Self {
+        self.code.push(op::LOOP);
+        self.code.push(bt);
+        self.depth += 1;
+        self
+    }
+    pub fn block(&mut self, bt: u8) -> &mut Self {
+        self.code.push(op::BLOCK);
+        self.code.push(bt);
+        self.depth += 1;
+        self
+    }
+    pub fn br(&mut self, depth: u32) -> &mut Self {
+        self.code.push(op::BR);
+        uleb(&mut self.code, depth as u64);
+        self
+    }
+    pub fn br_if(&mut self, depth: u32) -> &mut Self {
+        self.code.push(op::BR_IF);
+        uleb(&mut self.code, depth as u64);
+        self
+    }
     pub fn call(&mut self, f: u32) -> &mut Self {
         self.code.push(op::CALL);
         uleb(&mut self.code, f as u64);
@@ -173,12 +237,14 @@ impl Func {
     pub fn if_(&mut self, bt: u8) -> &mut Self {
         self.code.push(op::IF);
         self.code.push(bt);
+        self.depth += 1;
         self
     }
     pub fn else_(&mut self) -> &mut Self {
         self.op(op::ELSE)
     }
     pub fn end(&mut self) -> &mut Self {
+        self.depth = self.depth.saturating_sub(1);
         self.op(op::END)
     }
 
@@ -220,6 +286,8 @@ pub struct Module {
     func_imports: Vec<(String, String, u32)>,
     funcs: Vec<(u32, Func)>,
     exports: Vec<(String, u32)>,
+    /// Tabella di funzioni importata: (modulo, campo, minimo di voci).
+    table: Option<(String, String, u32)>,
 }
 
 impl Module {
@@ -239,6 +307,12 @@ impl Module {
 
     pub fn import_memory(&mut self, module: &str, field: &str, mem: MemoryImport) {
         self.memory = Some((module.into(), field.into(), mem));
+    }
+
+    /// Importa la tabella 0 (`funcref`, almeno `min` voci): la condividono
+    /// i moduli del JIT per il concatenamento dei blocchi.
+    pub fn import_table(&mut self, module: &str, field: &str, min: u32) {
+        self.table = Some((module.into(), field.into(), min));
     }
 
     /// Importa una funzione; restituisce il suo indice. Va chiamata prima di
@@ -275,8 +349,16 @@ impl Module {
         section(&mut out, 1, &sec);
 
         sec.clear();
-        let n = self.func_imports.len() + self.memory.is_some() as usize;
+        let n = self.func_imports.len() + self.memory.is_some() as usize + self.table.is_some() as usize;
         uleb(&mut sec, n as u64);
+        if let Some((m, f, min)) = &self.table {
+            name(&mut sec, m);
+            name(&mut sec, f);
+            sec.push(0x01);
+            sec.push(0x70); // funcref
+            sec.push(0x00);
+            uleb(&mut sec, *min as u64);
+        }
         if let Some((m, f, mem)) = &self.memory {
             name(&mut sec, m);
             name(&mut sec, f);
@@ -386,6 +468,22 @@ mod tests {
         let b = m.func(t_blk, f);
         assert_eq!(b, 2);
         m.export_func("b0", b);
+        validate(&m.encode());
+    }
+
+    #[test]
+    fn table_import_and_call_indirect_are_valid() {
+        use ValType::*;
+        let mut m = Module::new();
+        let t = m.ty(&[I32], &[I32]);
+        m.import_memory("env", "mem", MemoryImport { min: 1, shared_max: None });
+        m.import_table("env", "tbl", 1 << 18);
+        let mut f = Func::default();
+        f.loop_(BLOCK_EMPTY).local_get(0).local_get(0).call_indirect(t).br_if(0).end();
+        f.local_get(0).i64_load_n(1, 3).i64_const(0).op(op::I64_GT_U).op(op::DROP);
+        f.local_get(0).i64_const(7).i64_store_n(2, 0);
+        f.i32_const(0);
+        m.func(t, f);
         validate(&m.encode());
     }
 

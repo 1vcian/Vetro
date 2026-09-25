@@ -10,9 +10,12 @@
 
 use std::ptr::NonNull;
 
+use vetro_jit::engine::TABLE_SIZE;
 use vetro_jit::state::off;
 use vetro_jit::{Engine, FAULT, Host, STOP};
-use wasmtime::{Caller, Instance, Linker, Memory, MemoryType, Store, TypedFunc};
+use wasmtime::{
+    Caller, Instance, Linker, Memory, MemoryType, Ref, RefType, Store, Table, TableType, TypedFunc,
+};
 
 /// Dati dello store: il `Host` della corsa in corso (solo durante `run`).
 struct Ctx {
@@ -22,6 +25,7 @@ struct Ctx {
 pub struct NativeEngine {
     store: Store<Ctx>,
     memory: Memory,
+    table: Table,
     linker: Linker<Ctx>,
 }
 
@@ -53,16 +57,20 @@ impl NativeEngine {
         let mut config = wasmtime::Config::new();
         config.cranelift_opt_level(wasmtime::OptLevel::Speed);
         let engine = wasmtime::Engine::new(&config).expect("configurazione di wasmtime");
-        let (store, memory, linker) = Self::store(&engine);
-        NativeEngine { store, memory, linker }
+        let (store, memory, table, linker) = Self::store(&engine);
+        NativeEngine { store, memory, table, linker }
     }
 
     /// Store nuovo con la sua memoria e gli import `env.*`.
-    fn store(engine: &wasmtime::Engine) -> (Store<Ctx>, Memory, Linker<Ctx>) {
+    fn store(engine: &wasmtime::Engine) -> (Store<Ctx>, Memory, Table, Linker<Ctx>) {
         let mut store = Store::new(engine, Ctx { host: None });
         let memory = Memory::new(&mut store, MemoryType::new(1, None)).expect("memoria del JIT");
+        let table =
+            Table::new(&mut store, TableType::new(RefType::FUNCREF, TABLE_SIZE, None), Ref::Func(None))
+                .expect("tabella del JIT");
         let mut linker = Linker::new(engine);
         linker.define(&store, "env", "mem", memory).expect("env.mem");
+        linker.define(&store, "env", "tbl", table).expect("env.tbl");
         linker
             .func_wrap(
                 "env",
@@ -70,7 +78,7 @@ impl NativeEngine {
                 move |mut caller: Caller<'_, Ctx>, state: i32, va: i64, size: i32| -> i64 {
                     // SAFETY: chiamata solo da un blocco eseguito da `run`.
                     let h = unsafe { host(&caller) };
-                    match h.ld(va as u64, size as u32) {
+                    match h.ld(memory.data_mut(&mut caller), va as u64, size as u32) {
                         Ok(v) => v as i64,
                         Err(()) => {
                             set_detail(memory, &mut caller, state, FAULT);
@@ -87,7 +95,7 @@ impl NativeEngine {
                 move |mut caller: Caller<'_, Ctx>, state: i32, va: i64, size: i32, value: i64| -> i32 {
                     // SAFETY: chiamata solo da un blocco eseguito da `run`.
                     let h = unsafe { host(&caller) };
-                    match h.st(va as u64, size as u32, value as u64) {
+                    match h.st(memory.data_mut(&mut caller), va as u64, size as u32, value as u64) {
                         Ok(false) => 0,
                         Ok(true) => {
                             set_detail(memory, &mut caller, state, STOP);
@@ -101,8 +109,22 @@ impl NativeEngine {
                 },
             )
             .expect("env.st");
-        (store, memory, linker)
+        linker
+            .func_wrap("env", "resolve", move |mut caller: Caller<'_, Ctx>, _state: i32| -> i32 {
+                // SAFETY: chiamata solo dal dispatcher eseguito da `run`.
+                let h = unsafe { host(&caller) };
+                h.resolve(memory.data_mut(&mut caller)) as i32
+            })
+            .expect("env.resolve");
+        (store, memory, table, linker)
     }
+}
+
+/// Il JIT della modalità sistema su wasmtime, per `Machine::set_jit`
+/// (configurazione di default, soglia `hot_threshold`).
+pub fn system_jit(hot_threshold: u32) -> Box<dyn vetro_jit::SysJitDyn> {
+    let cfg = vetro_jit::SysJitConfig { hot_threshold, ..vetro_jit::SysJitConfig::default() };
+    Box::new(vetro_jit::SysJit::new(NativeEngine::new(), cfg))
 }
 
 impl Default for NativeEngine {
@@ -144,11 +166,38 @@ impl Engine for NativeEngine {
         self.memory.data_mut(&mut self.store)
     }
 
+    fn place(&mut self, m: &NativeModule, count: u32, base: u32) {
+        for i in 0..count {
+            let f = *m.funcs[i as usize].func();
+            self.table
+                .set(&mut self.store, (base + i) as u64, Ref::Func(Some(f)))
+                .expect("voce della tabella");
+        }
+    }
+
+    fn reserve(&mut self, bytes: usize) {
+        let have = self.memory.data_size(&self.store);
+        if have < bytes {
+            let pages = (bytes - have).div_ceil(65536) as u64;
+            self.memory.grow(&mut self.store, pages).expect("memoria del JIT");
+        }
+    }
+
+    /// I blocchi raggiungono solo la memoria dello store: vale per i byte
+    /// dell'host che vi stanno dentro (i test la usano come RAM del guest).
+    fn host_address(&mut self, p: *const u8, len: usize) -> Option<u32> {
+        let base = self.memory.data_ptr(&self.store) as usize;
+        let size = self.memory.data_size(&self.store);
+        let off = (p as usize).checked_sub(base)?;
+        (off.checked_add(len)? <= size && off + len <= u32::MAX as usize).then_some(off as u32)
+    }
+
     /// Store nuovo: le istanze vecchie (e la memoria) si liberano con lui.
     fn reset(&mut self) {
-        let (store, memory, linker) = Self::store(self.store.engine());
+        let (store, memory, table, linker) = Self::store(self.store.engine());
         self.store = store;
         self.memory = memory;
+        self.table = table;
         self.linker = linker;
     }
 }

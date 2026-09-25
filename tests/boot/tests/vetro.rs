@@ -10,6 +10,11 @@
 //! I limiti sono in istruzioni, non in secondi: la macchina è deterministica.
 //! Va eseguito in release (`cargo test --release -p vetro-boot-tests`): in
 //! debug l'interprete è troppo lento e il test si salta.
+//!
+//! Con `VETRO_JIT=1` (`VETRO_JIT_THRESHOLD=N` per la soglia) lo stesso
+//! avvio gira anche col JIT della modalità sistema (wasmtime, ADR 0013), e
+//! deve dare esattamente le stesse istruzioni e lo stesso log, byte per
+//! byte, dell'interprete (`target/guest-kernel/vetro-boot-jit.log`).
 
 use vetro_boot_tests::*;
 use vetro_machine::{Machine, MachineConfig, Stop};
@@ -55,23 +60,22 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
-#[test]
-fn vetro_boots_guest_kernel_to_shell() {
-    if cfg!(debug_assertions) {
-        return skip_or_fail(
-            "VETRO_REQUIRE_GUEST_KERNEL",
-            "avvio sotto Vetro solo in release (cargo test --release)",
-        );
-    }
-    let Some((image, initrd)) = guest_kernel() else {
-        return skip_or_fail(
-            "VETRO_REQUIRE_GUEST_KERNEL",
-            "target/guest-kernel mancante: esegui tools/guest-kernel/build.sh",
-        );
-    };
-    let (image, initrd) = (std::fs::read(image).unwrap(), std::fs::read(initrd).unwrap());
+/// Esito di un avvio completo: log normalizzato, istruzioni, tempo del guest
+/// al marcatore di `/init` e allo spegnimento.
+struct Boot {
+    log: String,
+    steps: u64,
+    t_boot: u64,
+    t_end: u64,
+}
+
+/// Il copione completo, con o senza JIT (soglia).
+fn boot(image: &[u8], initrd: &[u8], jit: Option<u32>) -> Boot {
     let mut m = Machine::new(&MachineConfig::default());
-    m.load_linux(&image, Some(&initrd), "console=ttyAMA0").expect("caricamento del kernel");
+    m.load_linux(image, Some(initrd), "console=ttyAMA0").expect("caricamento del kernel");
+    if let Some(t) = jit {
+        m.set_jit(Some(vetro_jit_native::system_jit(t)));
+    }
     let mut r = Run { m, log: Vec::new() };
     let fail = |r: &Run, e: String| -> ! { panic!("{e}; ultime righe della console:\n{}", r.tail()) };
 
@@ -97,16 +101,73 @@ fn vetro_boots_guest_kernel_to_shell() {
         }
     };
     assert_eq!(stop, Stop::PowerOff, "poweroff -f non ha spento la macchina:\n{}", r.tail());
-
+    if let Some(s) = r.m.jit_stats() {
+        eprintln!("JIT: {s:?}");
+    }
     let log = normalize(&String::from_utf8_lossy(&r.log));
+    Boot { log, steps: r.m.steps, t_boot, t_end: r.m.guest_ns() }
+}
+
+fn jit_threshold() -> Option<u32> {
+    if !std::env::var("VETRO_JIT").is_ok_and(|v| v == "1") {
+        return None;
+    }
+    Some(std::env::var("VETRO_JIT_THRESHOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(16))
+}
+
+#[test]
+fn vetro_boots_guest_kernel_to_shell() {
+    if cfg!(debug_assertions) {
+        return skip_or_fail(
+            "VETRO_REQUIRE_GUEST_KERNEL",
+            "avvio sotto Vetro solo in release (cargo test --release)",
+        );
+    }
+    let Some((image, initrd)) = guest_kernel() else {
+        return skip_or_fail(
+            "VETRO_REQUIRE_GUEST_KERNEL",
+            "target/guest-kernel mancante: esegui tools/guest-kernel/build.sh",
+        );
+    };
+    let (image, initrd) = (std::fs::read(image).unwrap(), std::fs::read(initrd).unwrap());
+    let t0 = std::time::Instant::now();
+    let b = boot(&image, &initrd, None);
+    let interp_time = t0.elapsed();
+    let log = b.log;
     let root = repo_root();
     std::fs::write(root.join("target/guest-kernel/vetro-boot.log"), &log).unwrap();
     eprintln!(
         "Vetro: /init a {:.2} s di guest, spento a {:.2} s ({} istruzioni)",
-        t_boot as f64 / 1e9,
-        r.m.guest_ns() as f64 / 1e9,
-        r.m.steps
+        b.t_boot as f64 / 1e9,
+        b.t_end as f64 / 1e9,
+        b.steps
     );
+    eprintln!("interprete: {:.2} s", interp_time.as_secs_f64());
+
+    if let Some(t) = jit_threshold() {
+        let t0 = std::time::Instant::now();
+        let j = boot(&image, &initrd, Some(t));
+        let jit_time = t0.elapsed();
+        std::fs::write(root.join("target/guest-kernel/vetro-boot-jit.log"), &j.log).unwrap();
+        eprintln!(
+            "JIT (soglia {t}): {:.2} s, {} istruzioni (interprete {:.2} s)",
+            jit_time.as_secs_f64(),
+            j.steps,
+            interp_time.as_secs_f64()
+        );
+        assert_eq!(j.steps, b.steps, "istruzioni diverse col JIT");
+        assert_eq!((j.t_boot, j.t_end), (b.t_boot, b.t_end), "tempi del guest diversi col JIT");
+        if j.log != log {
+            let (a, c): (Vec<&str>, Vec<&str>) = (log.lines().collect(), j.log.lines().collect());
+            let i = a.iter().zip(&c).position(|(x, y)| x != y).unwrap_or(a.len().min(c.len()));
+            panic!(
+                "log diverso col JIT dalla riga {}:\ninterprete: {:?}\nJIT:        {:?}",
+                i + 1,
+                a.get(i),
+                c.get(i)
+            );
+        }
+    }
 
     // Confronto con l'avvio sotto QEMU degli stessi file, se c'è.
     let (ref_path, reference) = qemu_reference(&root);

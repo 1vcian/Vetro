@@ -24,7 +24,9 @@ use std::alloc::Layout;
 use vetro_machine::{Machine, MachineConfig, Stop};
 
 /// Versione dell'API C: cambia a ogni modifica incompatibile delle firme.
-pub const ABI_VERSION: u32 = 1;
+/// 2: JIT della modalità sistema (`vetro_machine_set_jit`, import
+/// `vetro_jit.reset` e tabella `env.tbl` dei blocchi).
+pub const ABI_VERSION: u32 = 2;
 
 /// Allineamento dei buffer di [`vetro_alloc`] (basta per `JitState`).
 const ALLOC_ALIGN: usize = 16;
@@ -65,6 +67,17 @@ impl Vm {
 
     pub fn machine(&mut self) -> &mut Machine {
         &mut self.m
+    }
+
+    /// Attiva il JIT della modalità sistema sul motore JS, con soglia
+    /// `hot_threshold` e `batch` blocchi per modulo.
+    pub fn set_jit(&mut self, hot_threshold: u32, batch: u32) {
+        let cfg = vetro_jit::SysJitConfig {
+            hot_threshold,
+            batch: batch.max(1) as usize,
+            ..vetro_jit::SysJitConfig::default()
+        };
+        self.m.set_jit(Some(Box::new(vetro_jit::SysJit::new(jit::JsEngine::default(), cfg))));
     }
 
     pub fn load_linux(&mut self, image: &[u8], initrd: Option<&[u8]>, cmdline: &[u8]) -> u32 {
@@ -215,6 +228,45 @@ pub unsafe extern "C" fn vetro_load_linux(
 pub unsafe extern "C" fn vetro_run(vm: *mut Vm, budget: u64) -> u32 {
     // SAFETY: `vm` viene da `vetro_machine_new`.
     unsafe { &mut *vm }.run(budget)
+}
+
+/// Attiva il JIT (ADR 0013) con soglia `hot_threshold` (ingressi prima di
+/// tradurre un blocco) e `batch` blocchi per modulo (0 = 1). Il risultato
+/// dell'esecuzione non cambia; cambia solo la velocità.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_machine_set_jit(vm: *mut Vm, hot_threshold: u32, batch: u32) {
+    // SAFETY: `vm` viene da `vetro_machine_new`.
+    unsafe { &mut *vm }.set_jit(hot_threshold, batch);
+}
+
+/// Contatori del JIT (`SysJitStats`, nell'ordine dei campi) in `out`, al
+/// più `cap` valori; restituisce quanti ne ha scritti (0 senza JIT).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_jit_stats(vm: *const Vm, out: *mut u64, cap: usize) -> usize {
+    // SAFETY: `vm` viene da `vetro_machine_new`, `out` vale per `cap` valori.
+    let vm = unsafe { &*vm };
+    let Some(s) = vm.m.jit_stats() else { return 0 };
+    let v = [
+        s.jit_steps,
+        s.runs,
+        s.resolves,
+        s.calls,
+        s.blocks,
+        s.modules,
+        s.reused,
+        s.invalidated_pages,
+        s.faults,
+        s.svcs,
+        s.stops,
+        s.epochs,
+        s.tlb_flushes,
+        s.resets,
+    ];
+    let n = v.len().min(cap);
+    if n > 0 {
+        unsafe { core::slice::from_raw_parts_mut(out, n) }.copy_from_slice(&v[..n]);
+    }
+    n
 }
 
 /// Istruzioni eseguite (l'orologio del guest).

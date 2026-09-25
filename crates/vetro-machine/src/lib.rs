@@ -11,6 +11,10 @@
 //!   dell'host ([`Machine::gpu`], [`Machine::keyboard`], [`Machine::pointer`],
 //!   [`Machine::vsock`]).
 //!
+//! Col JIT ([`Machine::set_jit`], ADR 0012 e 0013) i blocchi tradotti si
+//! alternano all'interprete fra un evento della piattaforma e l'altro: stesso
+//! numero di istruzioni, interrupt negli stessi punti.
+//!
 //! Il tempo del guest è il numero di istruzioni eseguite: CNTPCT avanza di 5
 //! ogni 8 istruzioni, cioè 62,5 MHz con una CPU nominale da 100 MHz (lo stesso
 //! passo del livello user mode, ADR 0010). Una WFI senza interrupt pronti
@@ -23,3 +27,4 @@ mod psci;
 
 pub use board::Board;
 pub use machine::{Devices, Machine, MachineConfig, Pointer, Slots, Stop};
+pub use vetro_jit::{SysJitDyn, SysJitStats};

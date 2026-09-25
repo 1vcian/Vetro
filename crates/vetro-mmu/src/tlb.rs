@@ -89,6 +89,10 @@ pub struct Tlb {
     /// della [`Mmu`](crate::Mmu) è valida solo finché lo slot da cui viene
     /// non cambia.
     gens: Box<[u64; ENTRIES]>,
+    /// Invalidazioni eseguite (TLBI e svuotamenti), anche a vuoto: chi
+    /// tiene copie delle traduzioni fuori dal TLB (la TLB software del JIT)
+    /// le scarta quando cambia.
+    flushes: u64,
 }
 
 impl Default for Tlb {
@@ -99,7 +103,7 @@ impl Default for Tlb {
 
 impl Tlb {
     pub fn new() -> Self {
-        Tlb { entries: vec![None; ENTRIES], gens: Box::new([0; ENTRIES]) }
+        Tlb { entries: vec![None; ENTRIES], gens: Box::new([0; ENTRIES]), flushes: 0 }
     }
 
     #[inline]
@@ -123,6 +127,12 @@ impl Tlb {
         self.gens[s] += 1;
     }
 
+    /// Numero di invalidazioni eseguite finora ([`tlbi`](Self::tlbi) e
+    /// [`flush_all`](Self::flush_all)).
+    pub fn flushes(&self) -> u64 {
+        self.flushes
+    }
+
     /// Numero di voci valide.
     pub fn len(&self) -> usize {
         self.entries.iter().filter(|e| e.is_some()).count()
@@ -143,6 +153,7 @@ impl Tlb {
 
     /// Svuota tutto (VMALLE1).
     pub fn flush_all(&mut self) {
+        self.flushes += 1;
         self.entries.fill(None);
         for g in self.gens.iter_mut() {
             *g += 1;
@@ -172,6 +183,7 @@ impl Tlb {
     /// agiscono qui come quelle locali.
     pub fn tlbi(&mut self, op: TlbiOp, xt: u64) {
         use TlbiOp::*;
+        self.flushes += 1;
         match op {
             Vmalle1 | Vmalle1is => self.flush_all(),
             Vae1 | Vae1is | Vale1 | Vale1is => self.flush_va(tlbi_va(xt), tlbi_asid(xt)),

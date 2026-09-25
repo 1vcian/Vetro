@@ -4,7 +4,7 @@
 
 import { JitEngine } from './jit-engine.mjs';
 
-export const ABI_VERSION = 1;
+export const ABI_VERSION = 2;
 /** Codici di vetro_run. */
 export const STOP = ['Budget', 'PowerOff', 'Reset', 'Idle', 'Unimplemented'];
 
@@ -110,6 +110,28 @@ export class Machine {
     const [p, n] = copyIn(x, toUtf8.encode(text));
     x.vetro_console_write(this.#vm, p, n);
     x.vetro_free(p, n);
+  }
+
+  /**
+   * Attiva il JIT della modalità sistema (ADR 0013): `threshold` ingressi
+   * prima di tradurre un blocco, `batch` blocchi per modulo. Il risultato
+   * non cambia, solo la velocità.
+   */
+  setJit(threshold = 16, batch = 16) {
+    this.#x.vetro_machine_set_jit(this.#vm, threshold, batch);
+  }
+
+  /** Contatori del JIT (`SysJitStats`), o null senza JIT. */
+  jitStats() {
+    const x = this.#x;
+    const names = ['jitSteps', 'runs', 'resolves', 'calls', 'blocks', 'modules', 'reused', 'invalidatedPages', 'faults',
+      'svcs', 'stops', 'epochs', 'tlbFlushes', 'resets'];
+    const p = x.vetro_alloc(8 * names.length);
+    const n = x.vetro_jit_stats(this.#vm, p, names.length);
+    const v = new BigUint64Array(x.memory.buffer, p, names.length);
+    const out = n ? Object.fromEntries(names.map((k, i) => [k, Number(v[i])])) : null;
+    x.vetro_free(p, 8 * names.length);
+    return out;
   }
 
   /** Istruzioni eseguite (BigInt). */

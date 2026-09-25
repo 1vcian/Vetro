@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 vetro-cpu = { path = "../vetro-cpu" }
+vetro-mmu = { path = "../vetro-mmu" }
 
 [dev-dependencies]
 # Solo nei test: valida i moduli generati.

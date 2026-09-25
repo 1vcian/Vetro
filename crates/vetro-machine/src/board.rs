@@ -6,17 +6,108 @@ use core::cell::RefCell;
 
 use vetro_cpu::sys::CpuEnv;
 use vetro_cpu::sysreg::EnvReg;
+use vetro_jit::SysPhys;
 use vetro_mmu::{BusError, PhysMemory};
 use vetro_platform::Virt;
 use vetro_platform::map;
 use vetro_platform::virtio::{GuestRam, RamError};
 
 /// La RAM del guest, da `map::RAM_BASE`.
+///
+/// Sorveglia le pagine da cui il JIT ha tradotto codice
+/// ([`watch_code`](Self::watch_code)): ogni scrittura che passa da qui (CPU,
+/// DMA dei dispositivi, caricamento delle immagini) le segna sporche. Per
+/// questo i byte si scrivono solo con [`write`](Self::write).
 pub struct Ram {
-    pub bytes: Vec<u8>,
+    bytes: Vec<u8>,
+    /// Un bit per pagina da 4 KiB: sorvegliata.
+    code: Vec<u64>,
+    /// Pagine sorvegliate.
+    watched: usize,
+    /// Pagine fisiche (`pa >> 12`) sorvegliate e poi scritte.
+    dirty: Vec<u64>,
 }
 
 impl Ram {
+    pub fn new(size: u64) -> Self {
+        let pages = size.div_ceil(4096) as usize;
+        Ram {
+            bytes: vec![0; size as usize],
+            code: vec![0; pages.div_ceil(64)],
+            watched: 0,
+            dirty: Vec::new(),
+        }
+    }
+
+    /// Byte di RAM.
+    pub fn size(&self) -> u64 {
+        self.bytes.len() as u64
+    }
+
+    /// I byte della RAM (in sola lettura).
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Sorveglia la pagina fisica `page` (`pa >> 12`); falso se non è RAM.
+    pub fn watch_code(&mut self, page: u64) -> bool {
+        let Some(i) = (page << 12).checked_sub(map::RAM_BASE).map(|o| (o >> 12) as usize) else {
+            return false;
+        };
+        if (i as u64) << 12 >= self.size() {
+            return false;
+        }
+        let (w, b) = (i / 64, 1u64 << (i % 64));
+        if self.code[w] & b == 0 {
+            self.code[w] |= b;
+            self.watched += 1;
+        }
+        true
+    }
+
+    /// Vero se la pagina fisica `page` è sorvegliata.
+    pub fn is_watched(&self, page: u64) -> bool {
+        match (page << 12).checked_sub(map::RAM_BASE) {
+            Some(o) if o < self.size() => {
+                let i = (o >> 12) as usize;
+                self.code[i / 64] & 1 << (i % 64) != 0
+            }
+            _ => false,
+        }
+    }
+
+    /// Aggiunge a `out` le pagine sorvegliate scritte da allora.
+    pub fn take_code_dirty(&mut self, out: &mut Vec<u64>) {
+        out.append(&mut self.dirty);
+    }
+
+    /// Segna sporche (e non più sorvegliate) le pagine di `[o, o+len)`
+    /// (offset nella RAM); vero se ce n'era almeno una.
+    #[inline]
+    fn touch(&mut self, o: usize, len: usize) -> bool {
+        if self.watched == 0 || len == 0 {
+            return false;
+        }
+        let mut hit = false;
+        for i in o >> 12..=(o + len - 1) >> 12 {
+            let (w, b) = (i / 64, 1u64 << (i % 64));
+            if self.code[w] & b != 0 {
+                self.code[w] &= !b;
+                self.watched -= 1;
+                self.dirty.push((map::RAM_BASE >> 12) + i as u64);
+                hit = true;
+            }
+        }
+        hit
+    }
+
+    /// Scrittura che dice anche se ha toccato codice sorvegliato: `None`
+    /// fuori dalla RAM.
+    pub fn write_watched(&mut self, pa: u64, data: &[u8]) -> Option<bool> {
+        let o = self.range(pa, data.len())?;
+        self.bytes[o..o + data.len()].copy_from_slice(data);
+        Some(self.touch(o, data.len()))
+    }
     /// Offset in `bytes` di `[pa, pa+len)`, se tutto dentro la RAM.
     #[inline]
     fn range(&self, pa: u64, len: usize) -> Option<usize> {
@@ -35,13 +126,7 @@ impl Ram {
     }
 
     pub fn write(&mut self, pa: u64, data: &[u8]) -> bool {
-        match self.range(pa, data.len()) {
-            Some(o) => {
-                self.bytes[o..o + data.len()].copy_from_slice(data);
-                true
-            }
-            None => false,
-        }
+        self.write_watched(pa, data).is_some()
     }
 }
 
@@ -75,7 +160,7 @@ pub struct Board {
 impl Board {
     pub fn new(ram_size: u64, now_secs: u64) -> Self {
         Board {
-            ram: Ram { bytes: vec![0; ram_size as usize] },
+            ram: Ram::new(ram_size),
             virt: Virt::new(now_secs),
             cntpct: 0,
             irq_dirty: true,
@@ -155,6 +240,31 @@ impl PhysMemory for Phys<'_> {
         }
         b.mmio_touched(pa);
         Ok(())
+    }
+}
+
+/// La memoria fisica per il JIT: la sola RAM, con le pagine di codice
+/// sorvegliate.
+impl SysPhys for Phys<'_> {
+    fn ram_read(&mut self, pa: u64, buf: &mut [u8]) -> bool {
+        self.0.borrow().ram.read(pa, buf)
+    }
+    fn ram_write(&mut self, pa: u64, data: &[u8]) -> Option<bool> {
+        self.0.borrow_mut().ram.write_watched(pa, data)
+    }
+    fn watch_code(&mut self, page: u64) -> bool {
+        self.0.borrow_mut().ram.watch_code(page)
+    }
+    fn is_watched(&self, page: u64) -> bool {
+        self.0.borrow().ram.is_watched(page)
+    }
+    fn take_code_dirty(&mut self, out: &mut Vec<u64>) {
+        self.0.borrow_mut().ram.take_code_dirty(out)
+    }
+    fn ram_region(&mut self) -> Option<(u64, *mut u8, usize)> {
+        let mut b = self.0.borrow_mut();
+        let len = b.ram.bytes.len();
+        Some((map::RAM_BASE, b.ram.bytes.as_mut_ptr(), len))
     }
 }
 

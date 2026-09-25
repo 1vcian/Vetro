@@ -2,8 +2,9 @@
 
 use core::cell::RefCell;
 
-use vetro_cpu::sys::SysEvent;
+use vetro_cpu::sys::{CpuEnv, SysEvent};
 use vetro_cpu::{Cpu, SysConfig};
+use vetro_jit::{Next, SysJitDyn, SysJitStats};
 use vetro_mmu::{Mmu, MmuBus};
 use vetro_platform::virtio::{GpuConfig, InputConfig, MemDisplay, VirtioGpu, VirtioInput, VirtioVsock};
 use vetro_platform::{VirtDtbConfig, VirtioDevice, map, virt_dtb};
@@ -114,6 +115,11 @@ pub struct Machine {
     /// Prossimo CNTPCT a cui il timer cambia livello (cache).
     timer_deadline: Option<u64>,
     slots: Slots,
+    /// Il JIT, se attivo ([`Machine::set_jit`]).
+    jit: Option<Box<dyn SysJitDyn>>,
+    /// Che cosa fa l'interprete prima di richiamare il JIT: niente
+    /// (`Jit`), un'istruzione (`One`), fino al prossimo salto (`Cold`).
+    interp: Next,
 }
 
 /// CNTPCT dopo `steps` istruzioni: 62,5 MHz su 100 MHz nominali.
@@ -173,7 +179,22 @@ impl Machine {
             timer_deadline: None,
             seed: cfg.seed,
             slots,
+            jit: None,
+            interp: Next::Jit,
         }
+    }
+
+    /// Attiva (o toglie) il JIT della modalità sistema. Il risultato
+    /// dell'esecuzione non cambia: stesse istruzioni, stessi interrupt negli
+    /// stessi punti, stessa uscita (vedi `vetro_jit::sys`).
+    pub fn set_jit(&mut self, jit: Option<Box<dyn SysJitDyn>>) {
+        self.jit = jit;
+        self.interp = Next::Jit;
+    }
+
+    /// Contatori del JIT, se attivo.
+    pub fn jit_stats(&self) -> Option<SysJitStats> {
+        self.jit.as_ref().map(|j| j.stats())
     }
 
     /// Slot dei dispositivi virtio montati.
@@ -227,7 +248,7 @@ impl Machine {
         initrd: Option<&[u8]>,
         bootargs: &str,
     ) -> Result<BootPlan, BootError> {
-        let ram_size = self.board.borrow().ram.bytes.len() as u64;
+        let ram_size = self.board.borrow().ram.size();
         let ram = RamConfig::virt(ram_size);
         let initrd_len = initrd.map(|i| i.len() as u64);
         // La posizione dell'initramfs non dipende dal DTB: un primo piano la
@@ -283,6 +304,34 @@ impl Machine {
         self.timer_deadline = b.virt.timer.next_deadline(b.cntpct);
     }
 
+    /// Passi che il JIT può eseguire adesso senza cambiare nulla rispetto
+    /// all'interprete, fino a `end`: nessuno se l'interprete prenderebbe
+    /// un interrupt (o PSTATE.IL, o PC non allineato), altrimenti fino alla
+    /// prossima scadenza del timer (lì l'interprete aggiorna le linee di
+    /// interrupt prima dell'istruzione).
+    fn jit_budget(&mut self, end: u64) -> Option<u64> {
+        let s = &self.cpu.sys;
+        if s.il || self.cpu.pc & 3 != 0 {
+            return None;
+        }
+        // PSTATE.I e PSTATE.A (bit 7 e 8 di DAIF), come `take_interrupt`.
+        if s.daif & 1 << 7 == 0 && Env(&self.board).irq_line() {
+            return None;
+        }
+        if s.daif & 1 << 8 == 0 && s.serror_pending.is_some() {
+            return None;
+        }
+        let mut limit = end - self.steps;
+        if let Some(d) = self.timer_deadline {
+            let at = steps_for(d);
+            if at <= self.steps {
+                return None;
+            }
+            limit = limit.min(at - self.steps);
+        }
+        Some(limit)
+    }
+
     /// Esegue al più `budget` istruzioni.
     pub fn run(&mut self, budget: u64) -> Stop {
         let end = self.steps.saturating_add(budget);
@@ -298,6 +347,20 @@ impl Machine {
                     self.sync_irqs();
                 }
             }
+            if self.interp == Next::Jit
+                && self.jit.is_some()
+                && let Some(limit) = self.jit_budget(end)
+            {
+                let jit = self.jit.as_mut().expect("controllato sopra");
+                let mut phys = Phys(&self.board);
+                let r = jit.run(&mut self.cpu, &mut self.mmu, &mut phys, limit);
+                self.steps += r.steps;
+                self.interp = if r.next == Next::Jit && r.steps == 0 { Next::One } else { r.next };
+                if r.steps > 0 {
+                    continue;
+                }
+            }
+            let old_pc = self.cpu.pc;
             let ev = {
                 let mut phys = Phys(&self.board);
                 let mut bus = MmuBus::new(&mut self.mmu, &mut phys);
@@ -305,6 +368,15 @@ impl Machine {
                 self.cpu.step_system(&mut bus, &mut env)
             };
             self.steps += 1;
+            if self.interp == Next::Cold {
+                // Fino al prossimo salto (o cambio di pagina, o evento).
+                let next = old_pc.wrapping_add(4);
+                if !(ev == SysEvent::Executed && self.cpu.pc == next && next >> 12 == old_pc >> 12) {
+                    self.interp = Next::Jit;
+                }
+            } else {
+                self.interp = Next::Jit;
+            }
             match ev {
                 SysEvent::Executed | SysEvent::Exception { .. } => {}
                 SysEvent::WaitForInterrupt => {

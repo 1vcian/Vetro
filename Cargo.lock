@@ -875,6 +875,7 @@ version = "0.0.0"
 name = "vetro-boot-tests"
 version = "0.0.0"
 dependencies = [
+ "vetro-jit-native",
  "vetro-machine",
  "vetro-platform",
 ]
@@ -920,6 +921,7 @@ name = "vetro-jit"
 version = "0.0.0"
 dependencies = [
  "vetro-cpu",
+ "vetro-mmu",
  "wasmparser 0.259.0",
 ]
 
@@ -946,6 +948,7 @@ name = "vetro-machine"
 version = "0.0.0"
 dependencies = [
  "vetro-cpu",
+ "vetro-jit",
  "vetro-mmu",
  "vetro-platform",
 ]
@@ -976,6 +979,7 @@ version = "0.0.0"
 name = "vetro-wasm"
 version = "0.0.0"
 dependencies = [
+ "vetro-jit",
  "vetro-machine",
 ]
 

@@ -13,7 +13,8 @@
 //! `steps` dell'istruzione che ha fallito: lo stato è quello che
 //! l'interprete avrebbe prima di eseguirla.
 
-use crate::state::off;
+use crate::engine::TABLE_SIZE;
+use crate::state::{area, off};
 use crate::wasm::{BLOCK_EMPTY, Func, MemoryImport, Module, ValType, op};
 use crate::{FAULT, NEXT, STOP, SVC};
 use vetro_cpu::Insn;
@@ -25,12 +26,18 @@ use vetro_cpu::decode::{
 /// Istruzioni massime per blocco (ADR 0012).
 pub const MAX_BLOCK: usize = 64;
 
+/// `size` di `st` per DC ZVA: azzera i 64 byte (allineati) all'indirizzo,
+/// con le regole di `zero_block` (fault di allineamento su memoria Device).
+pub const ZVA_BYTES: u32 = 64;
+
 /// Come si comporta un'istruzione per il traduttore.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
-    /// Tradotta, il blocco continua.
+    /// Tradotta, il blocco continua. I salti condizionati (B.cond,
+    /// CBZ/CBNZ, TBZ/TBNZ) sono di questo tipo: presi escono dal blocco
+    /// ("uscita laterale"), altrimenti il blocco prosegue.
     Linear,
-    /// Tradotta, e chiude il blocco (salto).
+    /// Tradotta, e chiude il blocco (salto incondizionato).
     Branch,
     /// Chiude il blocco con il codice `SVC`, senza essere eseguita:
     /// l'esegue l'interprete.
@@ -65,27 +72,109 @@ pub fn kind(insn: &Insn) -> Kind {
         | Insn::LdLiteral { .. }
         | Insn::LdStPair { .. }
         | Insn::LoadAcquire { .. }
-        | Insn::StoreRelease { .. } => Linear,
-        Insn::Dp2 { op: Dp2Op::Crc32 { .. }, .. } => Unsupported,
+        | Insn::StoreRelease { .. }
+        | Insn::BCond { .. }
+        | Insn::Cbz { .. }
+        | Insn::Tbz { .. } => Linear,
         Insn::Dp2 { .. } => Linear,
         Insn::Mrs { reg: SysReg::Nzcv, .. } | Insn::Msr { reg: SysReg::Nzcv, .. } => Linear,
         Insn::LdSt { .. } => Linear,
-        Insn::B { .. }
-        | Insn::BCond { .. }
-        | Insn::Cbz { .. }
-        | Insn::Tbz { .. }
-        | Insn::BranchReg { .. } => Branch,
+        Insn::B { .. } | Insn::BranchReg { .. } => Branch,
         Insn::Svc { .. } => Svc,
         _ => Unsupported,
     }
 }
 
+/// Parametri di un blocco della modalità sistema: il livello di eccezione e
+/// il Top Byte Ignore delle due metà dello spazio virtuale (TCR_EL1.TBI0 e
+/// TBI1), che decide l'indirizzo dei salti (`AArch64.BranchAddr`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SysTarget {
+    pub el: u8,
+    pub tbi0: bool,
+    pub tbi1: bool,
+    /// PSTATE.SP (a EL1: SP_EL0 si legge con MRS solo se vale 1).
+    pub spsel: bool,
+}
+
+/// Da dove legge un MRS tradotto.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MrsSrc {
+    /// Campo di `JitState`.
+    State(u32),
+    Const(u64),
+}
+
+/// MRS che un blocco della modalità sistema esegue da sé: i registri che
+/// cambiano solo con MSR tradotti (o fra una corsa e l'altra), con i
+/// permessi di `sysreg_access` per il livello del blocco.
+fn sys_mrs(reg: SysReg, s: SysTarget) -> Option<MrsSrc> {
+    let el1 = s.el == 1;
+    Some(match reg {
+        SysReg::TpidrEl0 => MrsSrc::State(off::TPIDR_EL0),
+        SysReg::TpidrroEl0 => MrsSrc::State(off::TPIDRRO_EL0),
+        SysReg::DczidEl0 => MrsSrc::State(off::DCZID),
+        SysReg::TpidrEl1 if el1 => MrsSrc::State(off::TPIDR_EL1),
+        SysReg::SpEl0 if el1 && s.spsel => MrsSrc::State(off::SP_EL0),
+        SysReg::TcrEl1 if el1 => MrsSrc::State(off::TCR),
+        SysReg::CurrentEl if el1 => MrsSrc::Const(4),
+        _ => return None,
+    })
+}
+
+/// MSR che un blocco della modalità sistema esegue da sé: campo di
+/// `JitState` da scrivere.
+fn sys_msr(reg: SysReg, s: SysTarget) -> Option<u32> {
+    let el1 = s.el == 1;
+    Some(match reg {
+        SysReg::TpidrEl0 => off::TPIDR_EL0,
+        SysReg::TpidrroEl0 if el1 => off::TPIDRRO_EL0,
+        SysReg::TpidrEl1 if el1 => off::TPIDR_EL1,
+        SysReg::SpEl0 if el1 && s.spsel => off::SP_EL0,
+        _ => return None,
+    })
+}
+
+impl SysTarget {
+    /// `AArch64.BranchAddr` come `Cpu::branch_addr`: con TBI attivo per la
+    /// metà di `t` il tag si toglie estendendo il bit 55.
+    pub fn branch_addr(&self, t: u64) -> u64 {
+        let tbi = if t >> 55 & 1 != 0 { self.tbi1 } else { self.tbi0 };
+        if tbi { ((t << 8) as i64 >> 8) as u64 } else { t }
+    }
+}
+
+/// Classificazione di un'istruzione in modalità utente (`sys = None`) o
+/// sistema. In modalità sistema restano all'interprete anche WFI (attesa
+/// degli interrupt), LDTR/STTR (permessi di EL0) e le manutenzioni delle
+/// cache a EL0 (SCTLR_EL1.UCI); si traducono in più le esclusive (il
+/// monitor sta in `JitState`), DC ZVA e alcuni MRS/MSR ([`sys_mrs`],
+/// [`sys_msr`]).
+pub fn kind_in(insn: &Insn, sys: Option<SysTarget>) -> Kind {
+    if let Some(s) = sys {
+        match *insn {
+            Insn::Wfi | Insn::LdSt { unpriv: true, .. } => return Kind::Unsupported,
+            Insn::CacheMaint if s.el == 0 => return Kind::Unsupported,
+            Insn::Exclusive { .. } | Insn::DcZva { .. } => return Kind::Linear,
+            Insn::Mrs { reg, .. } if reg != SysReg::Nzcv => {
+                return if sys_mrs(reg, s).is_some() { Kind::Linear } else { Kind::Unsupported };
+            }
+            Insn::Msr { reg, .. } if reg != SysReg::Nzcv => {
+                return if sys_msr(reg, s).is_some() { Kind::Linear } else { Kind::Unsupported };
+            }
+            _ => {}
+        }
+    }
+    kind(insn)
+}
+
 /// Un blocco da tradurre: indirizzo della prima istruzione e istruzioni
-/// consecutive (già decodificate).
+/// consecutive (già decodificate), con i parametri della modalità sistema.
 #[derive(Clone, Debug)]
 pub struct Block {
     pub pc: u64,
     pub insns: Vec<Insn>,
+    pub sys: Option<SysTarget>,
 }
 
 impl Block {
@@ -109,11 +198,15 @@ const F_ST: u32 = 1;
 const L_STATE: u32 = 0;
 const L_NZCV: u32 = 33;
 const L_T64: u32 = 34;
-const N_T64: u32 = 11;
+const N_T64: u32 = 13;
 /// `steps` all'ingresso del blocco.
 const L_STEPS0: u32 = L_T64 + 10;
+/// Uscita in corso: nuovo `pc`, passi fatti e codice (per la coda comune).
+const L_EXIT_PC: u32 = L_T64 + 11;
+const L_EXIT_DONE: u32 = L_T64 + 12;
 const L_T32: u32 = L_T64 + N_T64;
-const N_T32: u32 = 4;
+const N_T32: u32 = 5;
+const L_EXIT_CODE: u32 = L_T32 + 4;
 
 /// Bit dei registri nelle maschere di lettura/scrittura: 0..=30 x, 31 SP,
 /// 32 NZCV.
@@ -130,7 +223,8 @@ const fn t32(i: u32) -> u32 {
 }
 
 /// Genera il modulo WASM con un blocco per elemento di `blocks`: la
-/// funzione del blocco `i` si esporta come `b<i>`.
+/// funzione del blocco `i` si esporta come `b<i>`. In modalità sistema il
+/// motore le mette poi nella tabella del dispatcher (`Engine::place`).
 pub fn module(blocks: &[Block], memory: MemoryImport) -> Vec<u8> {
     use ValType::*;
     let mut m = Module::new();
@@ -149,14 +243,75 @@ pub fn module(blocks: &[Block], memory: MemoryImport) -> Vec<u8> {
     m.encode()
 }
 
+/// Il dispatcher della modalità sistema, esportato come `b0`: a partire
+/// da `pc` cerca il blocco nella cache dei salti ([`area::JC`]) e lo chiama
+/// dalla tabella, finché trova blocchi validi per `ctx` che stanno nel
+/// limite di passi e finiscono con `NEXT`. Una voce assente la chiede
+/// all'host (`env.resolve`). Restituisce `NEXT` (voce assente anche per
+/// l'host, o limite) o il codice d'uscita del blocco.
+pub fn dispatcher(memory: MemoryImport) -> Vec<u8> {
+    use ValType::*;
+    let mut m = Module::new();
+    let t = m.ty(&[I32], &[I32]);
+    m.import_memory("env", "mem", memory);
+    m.import_table("env", "tbl", TABLE_SIZE);
+    let resolve = m.import_func("env", "resolve", t);
+    // locali: 0 stato, 1 pc (i64), 2 voce (i32), 3 w (i32), 4 codice (i32)
+    let (s, pc, e, w, code) = (0, 1, 2, 3, 4);
+    let mut f = Func { locals: vec![(1, I64), (3, I32)], ..Func::default() };
+    f.loop_(BLOCK_EMPTY);
+    // e = s + ((pc >> 2) & (JC_ENTRIES - 1)) * 16
+    f.local_get(s).i64_load(off::PC).local_tee(pc);
+    f.i64_const(2).op(op::I64_SHR_U).op(op::I32_WRAP_I64);
+    f.i32_const((area::JC_ENTRIES - 1) as i32).op(op::I32_AND).i32_const(4).op(op::I32_SHL);
+    f.local_get(s).op(op::I32_ADD).local_set(e);
+    // voce di un altro pc o di un altro contesto: la chiede all'host
+    // (`env.resolve`), che la scrive se il blocco c'è; altrimenti all'host.
+    f.local_get(e).i64_load(area::JC).local_get(pc).op(op::I64_NE);
+    f.local_get(e).i32_load(area::JC + 8).local_get(s).i32_load(off::CTX).op(op::I32_NE);
+    f.op(op::I32_OR).if_(BLOCK_EMPTY);
+    f.local_get(s).call(resolve).op(op::I32_EQZ);
+    f.if_(BLOCK_EMPTY).i32_const(crate::NEXT as i32).op(op::RETURN).end();
+    f.end();
+    // steps + passi massimi del blocco > limit: all'host
+    f.local_get(e).i32_load(area::JC + 12).local_set(w);
+    f.local_get(s).i64_load(off::STEPS);
+    f.local_get(w).i32_const(0xff).op(op::I32_AND).op(op::I64_EXTEND_I32_U).op(op::I64_ADD);
+    f.local_get(s).i64_load(off::LIMIT).op(op::I64_GT_U);
+    f.if_(BLOCK_EMPTY).i32_const(crate::NEXT as i32).op(op::RETURN).end();
+    // codice = tabella[w >> 8](s)
+    f.local_get(s).local_get(w).i32_const(8).op(op::I32_SHR_U).call_indirect(t);
+    f.local_tee(code).if_(BLOCK_EMPTY).local_get(code).op(op::RETURN).end();
+    f.br(0);
+    f.end();
+    f.op(op::UNREACHABLE);
+    let idx = m.func(t, f);
+    m.export_func("b0", idx);
+    m.encode()
+}
+
 /// Funzione WASM di un blocco.
 pub fn function(b: &Block) -> Func {
     assert!(!b.insns.is_empty() && b.insns.len() <= MAX_BLOCK);
-    let mut t = Tx { f: Func::default(), read: 0, written: 0, pc: b.pc, index: 0, ended: false, saved: None };
+    let mut body = Func::default();
+    // Tutte le uscite escono da questo blocco verso la coda comune.
+    body.block(BLOCK_EMPTY);
+    let mut t = Tx {
+        f: body,
+        read: 0,
+        written: 0,
+        pc: b.pc,
+        index: 0,
+        ended: false,
+        saved: None,
+        sys: b.sys,
+        last: false,
+    };
     for (i, insn) in b.insns.iter().enumerate() {
         t.index = i as u64;
         t.pc = b.pc.wrapping_add(4 * i as u64);
-        let k = kind(insn);
+        t.last = i + 1 == b.insns.len();
+        let k = kind_in(insn, b.sys);
         assert!(k != Kind::Unsupported, "istruzione non traducibile nel blocco: {insn:?}");
         if k == Kind::Svc {
             assert_eq!(i + 1, b.insns.len(), "SVC non in fondo al blocco");
@@ -175,19 +330,30 @@ pub fn function(b: &Block) -> Func {
         t.index = b.insns.len() as u64;
         t.exit_const(NEXT, next, t.index);
     }
-    // Prologo: `steps` all'ingresso e i registri letti.
+    t.f.end();
+    debug_assert_eq!(t.f.depth, 0);
+    // Coda comune: si riscrivono tutti i registri che il blocco scrive
+    // (quelli non ancora scritti al punto d'uscita hanno il valore
+    // d'ingresso), poi `pc`, `steps` e il codice.
+    let all = t.written;
+    t.flush();
+    let f = &mut t.f;
+    f.local_get(L_STATE).local_get(L_EXIT_PC).i64_store(off::PC);
+    f.local_get(L_STATE).local_get(L_STEPS0).local_get(L_EXIT_DONE).op(op::I64_ADD).i64_store(off::STEPS);
+    f.local_get(L_EXIT_CODE);
+    // Prologo: `steps` all'ingresso e i registri letti o scritti.
+    let load = t.read | all;
     let mut pro = Func::default();
     pro.local_get(L_STATE).i64_load(off::STEPS).local_set(L_STEPS0);
     for r in 0..=B_SP {
-        if t.read & (1 << r) != 0 {
+        if load & (1 << r) != 0 {
             pro.local_get(L_STATE).i64_load(off::X + 8 * r).local_set(1 + r);
         }
     }
-    if t.read & (1 << B_NZCV) != 0 {
+    if load & (1 << B_NZCV) != 0 {
         pro.local_get(L_STATE).i32_load(off::NZCV).local_set(L_NZCV);
     }
     pro.code.extend_from_slice(&t.f.code);
-    pro.op(op::UNREACHABLE);
     pro.locals = vec![(32, ValType::I64), (1, ValType::I32), (N_T64, ValType::I64), (N_T32, ValType::I32)];
     pro
 }
@@ -206,6 +372,11 @@ struct Tx {
     ended: bool,
     /// Istruzione di cui `pc` e `steps` sono già in `JitState`.
     saved: Option<u64>,
+    /// Modalità sistema: accessi con la TLB software, allineamento di SP,
+    /// TBI sui salti.
+    sys: Option<SysTarget>,
+    /// L'istruzione corrente è l'ultima del blocco.
+    last: bool,
 }
 
 /// Da dove viene il nuovo `pc` di un'uscita.
@@ -281,20 +452,19 @@ impl Tx {
         }
     }
 
-    /// Uscita con codice `code`, nuovo `pc` e `steps` aumentato di `done`.
+    /// Uscita con codice `code`, nuovo `pc` e `steps` aumentato di `done`:
+    /// salto alla coda comune (fine della funzione), che riscrive i
+    /// registri e `JitState`.
     fn exit(&mut self, code: u32, pc: PcSrc, done: u64) {
-        if let PcSrc::Stack = pc {
-            self.f.local_set(t64(9));
+        if let PcSrc::Const(v) = pc {
+            self.f.i64_const(v as i64);
         }
-        self.flush();
-        self.f.local_get(L_STATE);
-        match pc {
-            PcSrc::Const(v) => self.f.i64_const(v as i64),
-            PcSrc::Stack => self.f.local_get(t64(9)),
-        };
-        self.f.i64_store(off::PC);
-        self.store_steps(done);
-        self.f.i32_const(code as i32).op(op::RETURN);
+        self.f.local_set(L_EXIT_PC);
+        self.f.i64_const(done as i64).local_set(L_EXIT_DONE);
+        self.f.i32_const(code as i32).local_set(L_EXIT_CODE);
+        let depth = self.f.depth;
+        debug_assert!(depth >= 1, "uscita fuori dal blocco comune");
+        self.f.br(depth - 1);
     }
 
     /// `steps` = valore all'ingresso + `done`.
@@ -334,6 +504,24 @@ impl Tx {
         self.f.if_(BLOCK_EMPTY);
         self.exit_fault();
         self.f.end();
+    }
+
+    /// Salto condizionato a `target` con la condizione (i32) in cima allo
+    /// stack. In fondo al blocco esce comunque (preso o no); in mezzo esce
+    /// solo se preso, altrimenti il blocco prosegue.
+    fn cond_branch(&mut self, target: u64) {
+        let target = self.target(target);
+        let next = self.pc.wrapping_add(4);
+        if self.last {
+            self.f.local_set(t32(3));
+            self.f.i64_const(target as i64).i64_const(next as i64).local_get(t32(3)).op(op::SELECT);
+            self.exit_branch();
+        } else {
+            self.f.if_(BLOCK_EMPTY);
+            let done = self.index + 1;
+            self.exit_const(NEXT, target, done);
+            self.f.end();
+        }
     }
 
     /// Chiude il blocco dopo un salto: `pc` in cima allo stack.
@@ -521,6 +709,23 @@ impl Tx {
     /// Load di `bytes` byte dall'indirizzo in `t64(4)`: valore esteso a
     /// zero sullo stack; esce con FAULT se l'accesso fallisce.
     fn ld(&mut self, addr: u32, bytes: u32) {
+        if let Some(sys) = self.sys {
+            // Percorso veloce: pagina nella TLB software di lettura, accesso
+            // allineato (i disallineati e i mancati vanno all'host).
+            let tlb = area::tlb(sys.el, false);
+            self.tlb_hit(addr, bytes, tlb);
+            self.f.if_(ValType::I64 as u8);
+            self.f.local_get(t32(2)).i64_load(tlb + 8).local_get(addr).op(op::I64_ADD);
+            self.f.op(op::I32_WRAP_I64).i64_load_n(bytes, 0);
+            self.f.else_();
+            self.save_pc();
+            self.f.local_get(L_STATE).local_get(addr).i32_const(bytes as i32).call(F_LD);
+            self.f.local_set(t64(5));
+            self.check_fault();
+            self.f.local_get(t64(5));
+            self.f.end();
+            return;
+        }
         self.save_once();
         self.f.local_get(L_STATE).local_get(addr).i32_const(bytes as i32).call(F_LD);
         self.f.local_set(t64(5));
@@ -531,11 +736,90 @@ impl Tx {
     /// Store di `bytes` byte del valore in `val` all'indirizzo in `addr`.
     /// Il risultato di `st` va in `t32(stop)`; se è un fault esce con FAULT.
     fn st(&mut self, addr: u32, bytes: u32, val: u32, stop: u32) {
+        if let Some(sys) = self.sys {
+            let tlb = area::tlb(sys.el, true);
+            self.tlb_hit(addr, bytes, tlb);
+            self.f.if_(BLOCK_EMPTY);
+            self.f.local_get(t32(2)).i64_load(tlb + 8).local_get(addr).op(op::I64_ADD);
+            self.f.op(op::I32_WRAP_I64).local_get(val).i64_store_n(bytes, 0);
+            self.f.i32_const(0).local_set(t32(stop));
+            self.f.else_();
+            self.save_pc();
+            self.f.local_get(L_STATE).local_get(addr).i32_const(bytes as i32).local_get(val).call(F_ST);
+            self.f.local_tee(t32(stop)).if_(BLOCK_EMPTY);
+            self.check_fault();
+            self.f.end();
+            self.f.end();
+            return;
+        }
         self.save_once();
         self.f.local_get(L_STATE).local_get(addr).i32_const(bytes as i32).local_get(val).call(F_ST);
         self.f.local_tee(t32(stop)).if_(BLOCK_EMPTY);
         self.check_fault();
         self.f.end();
+    }
+
+    /// Lascia sullo stack (i32) il colpo nella TLB software `tlb` per un
+    /// accesso di `bytes` byte all'indirizzo in `addr`, allineato: il tag
+    /// della voce è la pagina di `addr` e i bit bassi sotto `bytes` sono
+    /// zero. L'indirizzo della voce resta in `t32(2)`.
+    fn tlb_hit(&mut self, addr: u32, bytes: u32, tlb: u32) {
+        let f = &mut self.f;
+        f.local_get(addr).i64_const(12).op(op::I64_SHR_U).op(op::I32_WRAP_I64);
+        f.i32_const((area::TLB_ENTRIES - 1) as i32).op(op::I32_AND).i32_const(4).op(op::I32_SHL);
+        f.local_get(L_STATE).op(op::I32_ADD).local_tee(t32(2)).i64_load(tlb);
+        f.local_get(addr).i64_const((!0xfffu64 | (bytes as u64 - 1)) as i64).op(op::I64_AND);
+        f.op(op::I64_EQ);
+    }
+
+    /// Modalità sistema, base SP: con SP non allineato a 16 esce con FAULT
+    /// e l'interprete decide (SCTLR_EL1.SA/SA0, `CheckSPAlignment`).
+    fn sp_check(&mut self, rn: u8) {
+        if self.sys.is_none() || rn != 31 {
+            return;
+        }
+        self.get_xsp(31);
+        self.f.i64_const(15).op(op::I64_AND).op(op::I64_EQZ).op(op::I32_EQZ).if_(BLOCK_EMPTY);
+        self.exit_fault();
+        self.f.end();
+    }
+
+    /// Indirizzo di un salto preso con destinazione costante.
+    fn target(&self, t: u64) -> u64 {
+        match self.sys {
+            Some(s) => s.branch_addr(t),
+            None => t,
+        }
+    }
+
+    /// `AArch64.BranchAddr` sulla destinazione in `t64(3)` (modalità
+    /// sistema con TBI), che resta in `t64(3)`.
+    fn branch_addr_dyn(&mut self) {
+        let Some(s) = self.sys else { return };
+        let f = &mut self.f;
+        let bit55 = |f: &mut Func| {
+            f.local_get(t64(3)).i64_const(55).op(op::I64_SHR_U).i64_const(1).op(op::I64_AND);
+            f.op(op::I32_WRAP_I64);
+        };
+        match (s.tbi0, s.tbi1) {
+            (false, false) => return,
+            (true, true) => {
+                f.local_get(t64(3)).i64_const(8).op(op::I64_SHL).i64_const(8).op(op::I64_SHR_S);
+            }
+            (true, false) => {
+                f.local_get(t64(3)).i64_const(0x00ff_ffff_ffff_ffff).op(op::I64_AND);
+                f.local_get(t64(3));
+                bit55(f);
+                f.op(op::I32_EQZ).op(op::SELECT);
+            }
+            (false, true) => {
+                f.local_get(t64(3)).i64_const(0xff00_0000_0000_0000u64 as i64).op(op::I64_OR);
+                f.local_get(t64(3));
+                bit55(f);
+                f.op(op::SELECT);
+            }
+        }
+        f.local_set(t64(3));
     }
 
     /// Dopo gli store dell'istruzione corrente (e il writeback): se uno ha
@@ -801,19 +1085,14 @@ impl Tx {
                     self.f.i64_const(pc.wrapping_add(4) as i64);
                     self.set_x(30);
                 }
-                self.f.i64_const(pc.wrapping_add(offset as u64) as i64);
+                self.f.i64_const(self.target(pc.wrapping_add(offset as u64)) as i64);
                 self.exit_branch();
             }
             Insn::BCond { cond, offset } => {
-                self.f.i64_const(pc.wrapping_add(offset as u64) as i64);
-                self.f.i64_const(pc.wrapping_add(4) as i64);
                 self.cond(cond);
-                self.f.op(op::SELECT);
-                self.exit_branch();
+                self.cond_branch(pc.wrapping_add(offset as u64));
             }
             Insn::Cbz { sf, nonzero, rt, offset } => {
-                self.f.i64_const(pc.wrapping_add(offset as u64) as i64);
-                self.f.i64_const(pc.wrapping_add(4) as i64);
                 // (x != 0) == nonzero
                 self.get_x(rt);
                 self.trunc(sf);
@@ -821,24 +1100,21 @@ impl Tx {
                 if nonzero {
                     self.f.op(op::I32_EQZ);
                 }
-                self.f.op(op::SELECT);
-                self.exit_branch();
+                self.cond_branch(pc.wrapping_add(offset as u64));
             }
             Insn::Tbz { nonzero, bit, rt, offset } => {
-                self.f.i64_const(pc.wrapping_add(offset as u64) as i64);
-                self.f.i64_const(pc.wrapping_add(4) as i64);
                 self.get_x(rt);
                 self.f.i64_const(bit as i64).op(op::I64_SHR_U).i64_const(1).op(op::I64_AND);
                 self.f.op(op::I32_WRAP_I64);
                 if !nonzero {
                     self.f.op(op::I32_EQZ);
                 }
-                self.f.op(op::SELECT);
-                self.exit_branch();
+                self.cond_branch(pc.wrapping_add(offset as u64));
             }
             Insn::BranchReg { op: bop, rn } => {
                 self.get_x(rn);
                 self.f.local_set(t64(3));
+                self.branch_addr_dyn();
                 if bop == BrOp::Blr {
                     self.f.i64_const(pc.wrapping_add(4) as i64);
                     self.set_x(30);
@@ -859,10 +1135,53 @@ impl Tx {
                 self.set_nzcv();
             }
 
+            Insn::Mrs { reg, rt } => {
+                let s = self.sys.expect("MRS di sistema solo in modalità sistema");
+                match sys_mrs(reg, s).expect("classificato da kind_in") {
+                    MrsSrc::State(o) => {
+                        self.f.local_get(L_STATE).i64_load(o);
+                    }
+                    MrsSrc::Const(v) => {
+                        self.f.i64_const(v as i64);
+                    }
+                }
+                self.set_x(rt);
+            }
+            Insn::Msr { reg, rt } => {
+                let s = self.sys.expect("MSR di sistema solo in modalità sistema");
+                let o = sys_msr(reg, s).expect("classificato da kind_in");
+                self.f.local_get(L_STATE);
+                self.get_x(rt);
+                self.f.i64_store(o);
+            }
+            Insn::Exclusive { size, load, pair, rs, rt, rt2, rn } => {
+                self.exclusive(size, load, pair, rs, rt, rt2, rn)
+            }
+            Insn::DcZva { rt } => {
+                if self.sys.is_some_and(|s| s.el == 0) {
+                    // DCZID_EL0.DZP (SCTLR_EL1.DZE a 0): trap nell'interprete.
+                    self.f.local_get(L_STATE).i64_load(off::DCZID).i64_const(16).op(op::I64_AND);
+                    self.f.op(op::I32_WRAP_I64).if_(BLOCK_EMPTY);
+                    self.exit_fault();
+                    self.f.end();
+                }
+                self.get_x(rt);
+                self.f.i64_const(!63).op(op::I64_AND).local_set(t64(4));
+                self.f.i64_const(0).local_set(t64(7));
+                // Sempre dall'host: 64 byte, e fault di allineamento su
+                // memoria Device come `zero_block`.
+                self.save_pc();
+                self.f.local_get(L_STATE).local_get(t64(4)).i32_const(ZVA_BYTES as i32).local_get(t64(7));
+                self.f.call(F_ST).local_tee(t32(0)).if_(BLOCK_EMPTY);
+                self.check_fault();
+                self.f.end();
+                self.stop_after(&[0]);
+            }
             Insn::LdSt { size, op: mop, addr, rt, rn, unpriv: _ } => {
                 if mop == MemOp::Prefetch {
                     return;
                 }
+                self.sp_check(rn);
                 // address in t64(4), writeback in t64(6)
                 let writeback = match addr {
                     AddrMode::Imm { offset, index } => {
@@ -927,6 +1246,7 @@ impl Tx {
             }
             Insn::LdStPair { size, load, signed, index, offset, rt, rt2, rn } => {
                 // base in t64(6) → moved; address in t64(4), second in t64(8)
+                self.sp_check(rn);
                 self.get_xsp(rn);
                 self.f.local_tee(t64(4));
                 self.f.i64_const(offset).op(op::I64_ADD).local_set(t64(6));
@@ -966,6 +1286,7 @@ impl Tx {
                 }
             }
             Insn::LoadAcquire { size, rt, rn } => {
+                self.sp_check(rn);
                 self.get_xsp(rn);
                 self.f.local_set(t64(4));
                 self.misaligned_fault(size);
@@ -973,6 +1294,7 @@ impl Tx {
                 self.set_x(rt);
             }
             Insn::StoreRelease { size, rt, rn } => {
+                self.sp_check(rn);
                 self.get_xsp(rn);
                 self.f.local_set(t64(4));
                 self.misaligned_fault(size);
@@ -983,6 +1305,103 @@ impl Tx {
             }
             other => unreachable!("istruzione non traducibile: {other:?}"),
         }
+    }
+
+    /// LDXR/LDAXR/STXR/STLXR e le coppie, con il monitor in `JitState`,
+    /// come `Cpu::execute`: allineamento all'accesso intero (altrimenti
+    /// FAULT e l'interprete dà l'eccezione), il load attiva il monitor, lo
+    /// store riesce se il monitor è per lo stesso indirizzo e la stessa
+    /// dimensione e la memoria ha ancora il valore letto; il monitor si
+    /// spegne dopo lo store (anche fallito). Nessuno stato cambia prima
+    /// dell'ultimo accesso che può fallire.
+    #[allow(clippy::too_many_arguments)]
+    fn exclusive(&mut self, size: u8, load: bool, pair: bool, rs: u8, rt: u8, rt2: u8, rn: u8) {
+        self.sp_check(rn);
+        self.get_xsp(rn);
+        self.f.local_set(t64(4));
+        let elem = 1u32 << size;
+        let total = if pair { elem * 2 } else { elem };
+        self.misaligned_fault(total.trailing_zeros() as u8);
+        if total == 16 {
+            self.f.local_get(t64(4)).i64_const(8).op(op::I64_ADD).local_set(t64(8));
+        }
+        // Valore di `total` byte in (lo, hi): da `ld` o nuovo.
+        let load_pair = |t: &mut Tx, lo: u32, hi: u32| {
+            if total <= 8 {
+                t.ld(t64(4), total);
+                t.f.local_set(lo).i64_const(0).local_set(hi);
+            } else {
+                t.ld(t64(4), 8);
+                t.f.local_set(lo);
+                t.ld(t64(8), 8);
+                t.f.local_set(hi);
+            }
+        };
+        let (lo, hi) = (t64(7), t64(3));
+        if load {
+            load_pair(self, lo, hi);
+            let f = &mut self.f;
+            f.local_get(L_STATE).i32_const(1).i32_store(off::MON_VALID);
+            f.local_get(L_STATE).i32_const(total as i32).i32_store(off::MON_BYTES);
+            f.local_get(L_STATE).local_get(t64(4)).i64_store(off::MON_ADDR);
+            f.local_get(L_STATE).local_get(lo).i64_store(off::MON_LO);
+            f.local_get(L_STATE).local_get(hi).i64_store(off::MON_HI);
+            if pair && elem == 4 {
+                self.f.local_get(lo).i64_const(0xffff_ffff).op(op::I64_AND);
+                self.set_x(rt);
+                self.f.local_get(lo).i64_const(32).op(op::I64_SHR_U);
+                self.set_x(rt2);
+            } else {
+                self.f.local_get(lo);
+                self.set_x(rt);
+                if pair {
+                    self.f.local_get(hi);
+                    self.set_x(rt2);
+                }
+            }
+            return;
+        }
+        // Nuovo valore.
+        if pair && elem == 4 {
+            self.get_x(rt);
+            self.f.i64_const(0xffff_ffff).op(op::I64_AND);
+            self.get_x(rt2);
+            self.f.i64_const(32).op(op::I64_SHL).op(op::I64_OR).local_set(lo);
+            self.f.i64_const(0).local_set(hi);
+        } else {
+            self.get_x(rt);
+            self.f.local_set(lo);
+            if pair {
+                self.get_x(rt2);
+            } else {
+                self.f.i64_const(0);
+            }
+            self.f.local_set(hi);
+        }
+        // ok (t32(3)) = monitor per questo accesso e memoria invariata.
+        self.f.i32_const(0).local_set(t32(3));
+        self.f.i32_const(0).local_set(t32(0)).i32_const(0).local_set(t32(1));
+        let f = &mut self.f;
+        f.local_get(L_STATE).i32_load(off::MON_VALID);
+        f.local_get(L_STATE).i64_load(off::MON_ADDR).local_get(t64(4)).op(op::I64_EQ).op(op::I32_AND);
+        f.local_get(L_STATE).i32_load(off::MON_BYTES).i32_const(total as i32).op(op::I32_EQ).op(op::I32_AND);
+        f.if_(BLOCK_EMPTY);
+        load_pair(self, t64(6), t64(2));
+        let f = &mut self.f;
+        f.local_get(t64(6)).local_get(L_STATE).i64_load(off::MON_LO).op(op::I64_EQ);
+        f.local_get(t64(2)).local_get(L_STATE).i64_load(off::MON_HI).op(op::I64_EQ).op(op::I32_AND);
+        f.local_set(t32(3));
+        f.end();
+        self.f.local_get(t32(3)).if_(BLOCK_EMPTY);
+        self.st(t64(4), total.min(8), lo, 0);
+        if total == 16 {
+            self.st(t64(8), 8, hi, 1);
+        }
+        self.f.end();
+        self.f.local_get(L_STATE).i32_const(0).i32_store(off::MON_VALID);
+        self.f.local_get(t32(3)).op(op::I32_EQZ).op(op::I64_EXTEND_I32_U);
+        self.set_x(rs);
+        if total == 16 { self.stop_after(&[0, 1]) } else { self.stop_after(&[0]) }
     }
 
     /// Se l'indirizzo in `t64(4)` non è allineato a `1 << size`, esce con
@@ -1119,7 +1538,27 @@ impl Tx {
                     f.op(op::I64_EXTEND_I32_U);
                 }
             }
-            Dp2Op::Crc32 { .. } => unreachable!("CRC32 non si traduce"),
+            Dp2Op::Crc32 { bytes, c } => {
+                // Come `exec::crc32`: un byte alla volta, un bit alla volta.
+                let poly: u32 = if c { 0x82F6_3B78 } else { 0xEDB8_8320 };
+                let (crc, k, n) = (t32(0), t32(1), t32(3));
+                f.local_get(x).op(op::I32_WRAP_I64).local_set(crc);
+                f.i32_const(bytes as i32).local_set(n);
+                f.loop_(BLOCK_EMPTY);
+                f.local_get(crc).local_get(y).op(op::I32_WRAP_I64).i32_const(0xff).op(op::I32_AND);
+                f.op(op::I32_XOR).local_set(crc);
+                f.local_get(y).i64_const(8).op(op::I64_SHR_U).local_set(y);
+                f.i32_const(8).local_set(k);
+                f.loop_(BLOCK_EMPTY);
+                f.local_get(crc).i32_const(1).op(op::I32_SHR_U);
+                f.i32_const(0).local_get(crc).i32_const(1).op(op::I32_AND).op(op::I32_SUB);
+                f.i32_const(poly as i32).op(op::I32_AND).op(op::I32_XOR).local_set(crc);
+                f.local_get(k).i32_const(1).op(op::I32_SUB).local_tee(k).br_if(0);
+                f.end();
+                f.local_get(n).i32_const(1).op(op::I32_SUB).local_tee(n).br_if(0);
+                f.end();
+                f.local_get(crc).op(op::I64_EXTEND_I32_U);
+            }
         }
     }
 
@@ -1217,9 +1656,21 @@ mod tests {
                 continue;
             }
             count += 1;
-            blocks.push(Block { pc: 0x40_0000 + 4 * count, insns: vec![insn] });
+            blocks.push(Block { pc: 0x40_0000 + 4 * count, insns: vec![insn], sys: None });
             if blocks.len() == 64 {
-                validate(&module(&blocks, MemoryImport { min: 1, shared_max: None }));
+                let mem = MemoryImport { min: 1, shared_max: None };
+                validate(&module(&blocks, mem));
+                // Gli stessi in modalità sistema, nella tabella.
+                for i in 0..4 {
+                    let sys =
+                        SysTarget { el: (i & 1) as u8, tbi0: i & 1 != 0, tbi1: i & 2 != 0, spsel: i != 2 };
+                    let sb: Vec<Block> = blocks
+                        .iter()
+                        .filter(|b| kind_in(&b.insns[0], Some(sys)) != Kind::Unsupported)
+                        .map(|b| Block { sys: Some(sys), ..b.clone() })
+                        .collect();
+                    validate(&module(&sb, mem));
+                }
                 blocks.clear();
             }
         }
@@ -1227,9 +1678,43 @@ mod tests {
 
     #[test]
     fn max_steps_excludes_final_svc() {
-        let b = Block { pc: 0, insns: vec![Insn::Nop, Insn::Svc { imm: 0 }] };
+        let b = Block { pc: 0, insns: vec![Insn::Nop, Insn::Svc { imm: 0 }], sys: None };
         assert_eq!(b.max_steps(), 1);
-        let b = Block { pc: 0, insns: vec![Insn::Nop, Insn::Nop] };
+        let b = Block { pc: 0, insns: vec![Insn::Nop, Insn::Nop], sys: None };
         assert_eq!(b.max_steps(), 2);
+    }
+
+    #[test]
+    fn dispatcher_validates() {
+        validate(&dispatcher(MemoryImport { min: 1, shared_max: None }));
+        validate(&dispatcher(MemoryImport { min: 17, shared_max: Some(16384) }));
+    }
+
+    #[test]
+    fn branch_addr_come_la_cpu() {
+        let t = 0x5a00_0000_0040_1000u64;
+        let n = 0x5a80_0000_0040_1000u64;
+        let s = |tbi0, tbi1| SysTarget { el: 0, tbi0, tbi1, spsel: false };
+        assert_eq!(s(false, false).branch_addr(t), t);
+        assert_eq!(s(true, false).branch_addr(t), 0x0000_0000_0040_1000);
+        assert_eq!(s(true, false).branch_addr(n), n);
+        assert_eq!(s(false, true).branch_addr(n), 0xff80_0000_0040_1000);
+        assert_eq!(s(true, true).branch_addr(t), 0x0000_0000_0040_1000);
+    }
+
+    /// In modalità sistema WFI, LDTR/STTR e le manutenzioni delle cache a
+    /// EL0 restano all'interprete.
+    #[test]
+    fn istruzioni_solo_interprete_in_modalita_sistema() {
+        let el0 = Some(SysTarget { el: 0, tbi0: false, tbi1: false, spsel: false });
+        let el1 = Some(SysTarget { el: 1, tbi0: false, tbi1: false, spsel: true });
+        assert_eq!(kind_in(&Insn::Wfi, None), Kind::Linear);
+        assert_eq!(kind_in(&Insn::Wfi, el1), Kind::Unsupported);
+        assert_eq!(kind_in(&Insn::CacheMaint, el1), Kind::Linear);
+        assert_eq!(kind_in(&Insn::CacheMaint, el0), Kind::Unsupported);
+        let ldtr = decode(0xf8400820); // ldtr x0, [x1]
+        assert!(matches!(ldtr, Insn::LdSt { unpriv: true, .. }), "{ldtr:?}");
+        assert_eq!(kind_in(&ldtr, None), Kind::Linear);
+        assert_eq!(kind_in(&ldtr, el1), Kind::Unsupported);
     }
 }

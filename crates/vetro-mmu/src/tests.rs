@@ -1123,3 +1123,19 @@ fn equivalenza_con_seme(seed: u64, steps: usize) -> u64 {
     }
     e.mmu.recent_hits
 }
+
+/// Il contatore delle invalidazioni cresce a ogni TLBI e svuotamento,
+/// anche senza voci da togliere: chi copia le traduzioni fuori dal TLB (la
+/// TLB software del JIT) lo usa per sapere quando scartarle.
+#[test]
+fn contatore_delle_invalidazioni() {
+    let mut e = Env::new();
+    e.map(0x1000, 0xa000, 3, NORMAL);
+    let n = e.mmu.tlb().flushes();
+    e.mmu.tlbi(TlbiOp::Vae1, tlbi_xt(0x5000, 1));
+    assert_eq!(e.mmu.tlb().flushes(), n + 1);
+    e.mmu.tlb_mut().flush_all();
+    assert_eq!(e.mmu.tlb().flushes(), n + 2);
+    assert_eq!(e.pa(0x1000), 0xa000);
+    assert_eq!(e.mmu.tlb().flushes(), n + 2, "un walk non è un'invalidazione");
+}

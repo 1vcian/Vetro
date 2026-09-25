@@ -9,6 +9,8 @@ publish.workspace = true
 [dev-dependencies]
 vetro-machine = { path = "../../crates/vetro-machine" }
 vetro-platform = { path = "../../crates/vetro-platform" }
+# Il JIT della modalità sistema su wasmtime (VETRO_JIT=1, ADR 0013).
+vetro-jit-native = { path = "../../crates/vetro-jit-native" }
 
 [lints]
 workspace = true

@@ -176,14 +176,14 @@ struct MemHost<'a> {
 
 impl Host for MemHost<'_> {
     #[inline]
-    fn ld(&mut self, va: u64, size: u32) -> Result<u64, ()> {
+    fn ld(&mut self, _mem: &mut [u8], va: u64, size: u32) -> Result<u64, ()> {
         let mut b = [0u8; 8];
         self.mem.read(va, &mut b[..size as usize]).map_err(|_| ())?;
         Ok(u64::from_le_bytes(b))
     }
 
     #[inline]
-    fn st(&mut self, va: u64, size: u32, value: u64) -> Result<bool, ()> {
+    fn st(&mut self, _mem: &mut [u8], va: u64, size: u32, value: u64) -> Result<bool, ()> {
         self.mem.write(va, &value.to_le_bytes()[..size as usize]).map_err(|_| ())?;
         Ok(self.mem.code_dirty())
     }
@@ -439,7 +439,7 @@ impl<E: Engine> JitCpu<E> {
             self.stats.reused += 1;
             return Some(c.clone());
         }
-        let block = Block { pc, insns };
+        let block = Block { pc, insns, sys: None };
         let wasm = translate::module(std::slice::from_ref(&block), self.cfg.memory);
         let module = match self.engine.compile(&wasm) {
             Ok(m) => m,

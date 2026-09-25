@@ -10,6 +10,7 @@ publish.workspace = true
 vetro-cpu = { path = "../vetro-cpu" }
 vetro-mmu = { path = "../vetro-mmu" }
 vetro-platform = { path = "../vetro-platform" }
+vetro-jit = { path = "../vetro-jit" }
 
 [lints]
 workspace = true
