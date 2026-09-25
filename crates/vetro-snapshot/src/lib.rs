@@ -28,7 +28,7 @@ pub const MAGIC: [u8; 8] = *b"VETROSNP";
 /// Versione del formato. Cambia a ogni modifica di ciò che si scrive (campi
 /// nuovi, ordine, codifiche): uno snapshot di un'altra versione si rifiuta
 /// con [`Error::Version`], senza tentare conversioni.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 /// Byte dell'intestazione: magia, versione, hash della configurazione,
 /// lunghezza del contenuto, somma di controllo del contenuto.

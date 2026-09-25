@@ -13,7 +13,10 @@
 #   5. display e ingressi via API (tests/web/devices.mjs): framebuffer RGBA
 #      uguale al motivo del guest, cursore, tastiera, tablet, LED; istruzioni
 #      e log uguali al riferimento nativo;
-#   6. l'app in Chrome headless (tests/web/browser.mjs), se Chrome c'è
+#   6. connessioni dal JS verso un servizio TCP del guest
+#      (tests/web/hostfwd.mjs, GuestSocket, inoltro di porte): eco di
+#      200 KB, chiusura, rifiuto; due esecuzioni uguali;
+#   7. l'app in Chrome headless (tests/web/browser.mjs), se Chrome c'è
 #      (VETRO_CHROME; altrimenti SKIP, che non è un test passato;
 #      VETRO_REQUIRE_BROWSER=1 lo rende un errore).
 #
@@ -57,6 +60,9 @@ node tests/web/boot-disk.mjs "$@"
 
 echo "==> display e ingressi via API"
 node tests/web/devices.mjs "$@"
+
+echo "==> connessioni verso il guest via API"
+node tests/web/hostfwd.mjs "$@"
 
 echo "==> app in Chrome headless"
 node tests/web/browser.mjs

@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::net::{Ipv4Addr, SocketAddrV4};
 
 use crate::events::{CloseReason, DhcpMessage, Direction, EventKind, EventLog, NetEvent};
+use crate::hostfwd::{FIRST_EPHEMERAL_PORT, HOST_BUFFER, HostConnInfo, HostConnState, HostEnd, HostSide};
 use crate::tcp::{Ctx, Segment, State, TcpConn};
 use crate::upstream::Upstream;
 use crate::wire::{self, Mac, TCP_ACK, TCP_FIN, TCP_RST, TCP_SYN, TcpOut};
@@ -103,6 +104,8 @@ pub struct Stack<U: Upstream> {
     udp_index: BTreeMap<Flow, ConnId>,
     next_id: ConnId,
     ip_ident: u16,
+    /// Connessioni aperte dall'host verso il guest (inoltro di porte).
+    host: HostSide,
 }
 
 /// SplitMix64: funzione di mescolamento per derivare gli ISN dal seme.
@@ -128,6 +131,7 @@ impl<U: Upstream> Stack<U> {
             udp_index: BTreeMap::new(),
             next_id: 1,
             ip_ident: 0,
+            host: HostSide { conns: BTreeMap::new(), next_port: FIRST_EPHEMERAL_PORT },
         }
     }
 
@@ -200,17 +204,44 @@ impl<U: Upstream> Stack<U> {
 
     /// Fa avanzare timer e scambi con l'upstream fino a `now`.
     pub fn poll(&mut self, now: VirtualTime) {
+        // Connessioni chieste dall'host: il SYN parte adesso.
+        let opens: Vec<(ConnId, Flow)> = self
+            .host
+            .conns
+            .iter_mut()
+            .filter(|(_, h)| h.pending_open)
+            .map(|(id, h)| {
+                h.pending_open = false;
+                (*id, h.flow)
+            })
+            .collect();
+        for (id, flow) in opens {
+            let conn = TcpConn::new_active(
+                id,
+                flow,
+                self.iss_for(id),
+                self.local_mss(),
+                now,
+                self.config.tcp_connect_timeout_us,
+            );
+            self.log.push(now, EventKind::TcpConnect { id, flow });
+            self.tcp_index.insert(flow, id);
+            self.tcp.insert(id, conn);
+            self.with_conn(now, id, |c, ctx| c.start_active(ctx));
+        }
+
         // TCP, in ordine di id: l'ordine dei frame prodotti è deterministico.
         let ids: Vec<ConnId> = self.tcp.keys().copied().collect();
         for id in ids {
-            let mut segs = Vec::new();
-            let Some(conn) = self.tcp.get_mut(&id) else { continue };
-            let mut ctx = Ctx { now, up: &mut self.upstream, log: &mut self.log, out: &mut segs };
-            conn.on_timer(&mut ctx);
-            conn.process(&mut ctx);
-            let flow = conn.flow;
-            self.emit_segments(flow, segs);
-            self.reap_tcp(id);
+            let abort = self.host.conns.get_mut(&id).is_some_and(|h| std::mem::take(&mut h.abort));
+            self.with_conn(now, id, |conn, ctx| {
+                if abort {
+                    conn.abort(ctx);
+                } else {
+                    conn.on_timer(ctx);
+                    conn.process(ctx);
+                }
+            });
         }
 
         // Risposte UDP.
@@ -289,6 +320,172 @@ impl<U: Upstream> Stack<U> {
             && let Some(conn) = self.tcp.remove(&id)
         {
             self.tcp_index.remove(&conn.flow);
+            if let Some(h) = self.host.conns.get_mut(&id) {
+                if h.released {
+                    self.host.conns.remove(&id);
+                } else {
+                    h.closed = Some(conn.close_reason.unwrap_or(CloseReason::Normal));
+                }
+            }
+        }
+    }
+
+    /// Esegue `f` sulla connessione `id` con l'upstream giusto (quello dello
+    /// stack, o il lato host per le connessioni aperte dall'host), poi
+    /// manda i segmenti prodotti e toglie la connessione se è chiusa.
+    fn with_conn(
+        &mut self,
+        now: VirtualTime,
+        id: ConnId,
+        f: impl FnOnce(&mut TcpConn, &mut Ctx<'_, dyn Upstream + '_>),
+    ) {
+        let mut segs = Vec::new();
+        let Some(conn) = self.tcp.get_mut(&id) else { return };
+        let up: &mut dyn Upstream = if self.host.owns(id) { &mut self.host } else { &mut self.upstream };
+        let mut ctx = Ctx { now, up, log: &mut self.log, out: &mut segs };
+        f(conn, &mut ctx);
+        let flow = conn.flow;
+        self.emit_segments(flow, segs);
+        self.reap_tcp(id);
+    }
+
+    fn iss_for(&self, id: ConnId) -> u32 {
+        splitmix64(self.config.seed ^ id.wrapping_mul(0x2545_f491_4f6c_dd1d)) as u32
+    }
+
+    fn local_mss(&self) -> u16 {
+        self.config.mtu - (wire::IPV4_HEADER_LEN + wire::TCP_HEADER_LEN) as u16
+    }
+
+    // -----------------------------------------------------------------------
+    // Inoltro di porte: connessioni dall'host verso il guest (hostfwd.rs)
+    // -----------------------------------------------------------------------
+
+    /// Apre una connessione TCP dall'host verso `guest_port` del guest
+    /// (all'indirizzo `NetConfig::guest_ip`), come `hostfwd` di QEMU: il
+    /// guest la vede arrivare dal gateway (10.0.2.2) da una porta effimera
+    /// (49152, 49153, … in ordine). Il SYN parte al prossimo
+    /// [`Stack::poll`]. `None` solo se le porte effimere sono tutte occupate.
+    pub fn host_connect(&mut self, guest_port: u16) -> Option<ConnId> {
+        let guest = SocketAddrV4::new(self.config.guest_ip, guest_port);
+        let span = u32::from(u16::MAX - FIRST_EPHEMERAL_PORT) + 1;
+        for _ in 0..span {
+            let port = self.host.next_port;
+            self.host.next_port = if port == u16::MAX { FIRST_EPHEMERAL_PORT } else { port + 1 };
+            let flow = Flow { guest, remote: SocketAddrV4::new(self.config.gateway_ip, port) };
+            let taken = self.tcp_index.contains_key(&flow)
+                || self.host.conns.values().any(|h| h.flow == flow && h.closed.is_none());
+            if taken {
+                continue;
+            }
+            let id = self.next_id;
+            self.next_id += 1;
+            self.host.conns.insert(
+                id,
+                HostEnd {
+                    flow,
+                    pending_open: true,
+                    to_guest: VecDeque::new(),
+                    from_guest: VecDeque::new(),
+                    shutdown: false,
+                    abort: false,
+                    guest_fin: false,
+                    closed: None,
+                    released: false,
+                },
+            );
+            return Some(id);
+        }
+        None
+    }
+
+    /// Mette in coda byte per il guest; restituisce quanti ne ha accettati
+    /// (al più [`HOST_BUFFER`] in coda: il resto va riproposto dopo un
+    /// `poll`). 0 se la connessione è chiusa o sconosciuta, o se l'host ha
+    /// già chiuso il suo verso.
+    pub fn host_send(&mut self, id: ConnId, data: &[u8]) -> usize {
+        let Some(h) = self.host.conns.get_mut(&id) else { return 0 };
+        if h.closed.is_some() || h.shutdown || h.abort {
+            return 0;
+        }
+        let n = data.len().min(HOST_BUFFER - h.to_guest.len());
+        h.to_guest.extend(&data[..n]);
+        n
+    }
+
+    /// Legge byte arrivati dal guest; 0 se non ce ne sono (la fine del
+    /// flusso è [`HostConnInfo::guest_eof`]). Liberare spazio riapre la
+    /// finestra del guest al prossimo `poll`.
+    pub fn host_recv(&mut self, id: ConnId, buf: &mut [u8]) -> usize {
+        let Some(h) = self.host.conns.get_mut(&id) else { return 0 };
+        let n = buf.len().min(h.from_guest.len());
+        for (d, s) in buf.iter_mut().zip(h.from_guest.drain(..n)) {
+            *d = s;
+        }
+        n
+    }
+
+    /// Chiude il verso host→guest: FIN dopo i byte già in coda.
+    pub fn host_shutdown(&mut self, id: ConnId) {
+        if let Some(h) = self.host.conns.get_mut(&id) {
+            h.shutdown = true;
+        }
+    }
+
+    /// Interrompe la connessione: RST al guest al prossimo `poll` (se il SYN
+    /// non è ancora partito, finisce senza pacchetti).
+    pub fn host_abort(&mut self, id: ConnId) {
+        let Some(h) = self.host.conns.get_mut(&id) else { return };
+        if h.closed.is_some() {
+            return;
+        }
+        if h.pending_open {
+            h.pending_open = false;
+            h.closed = Some(CloseReason::RemoteReset);
+        } else {
+            h.abort = true;
+        }
+    }
+
+    /// Stato di una connessione dell'host; `None` se sconosciuta o già
+    /// rilasciata.
+    pub fn host_conn(&self, id: ConnId) -> Option<HostConnInfo> {
+        let h = self.host.conns.get(&id)?;
+        let state = match (h.closed, self.tcp.get(&id)) {
+            (Some(r), _) => HostConnState::Closed(r),
+            (None, Some(c)) if c.is_synchronized() => HostConnState::Open,
+            _ => HostConnState::Connecting,
+        };
+        let open = h.closed.is_none() && !h.shutdown && !h.abort;
+        Some(HostConnInfo {
+            state,
+            flow: h.flow,
+            readable: h.from_guest.len(),
+            writable: if open { HOST_BUFFER - h.to_guest.len() } else { 0 },
+            guest_eof: h.guest_fin && h.from_guest.is_empty(),
+            unsent: h.to_guest.len(),
+        })
+    }
+
+    /// Connessioni dell'host ancora registrate (anche chiuse ma non
+    /// rilasciate), in ordine di id.
+    pub fn host_conns(&self) -> impl Iterator<Item = ConnId> + '_ {
+        self.host.conns.keys().copied()
+    }
+
+    /// Dimentica una connessione dell'host. Se è ancora viva la interrompe
+    /// (RST al prossimo `poll`) e sparisce appena chiusa.
+    pub fn host_release(&mut self, id: ConnId) {
+        let Some(h) = self.host.conns.get_mut(&id) else { return };
+        if h.closed.is_some() {
+            self.host.conns.remove(&id);
+            return;
+        }
+        h.released = true;
+        h.from_guest.clear();
+        self.host_abort(id);
+        if self.host.conns.get(&id).is_some_and(|h| h.closed.is_some()) {
+            self.host.conns.remove(&id);
         }
     }
 
@@ -555,19 +752,15 @@ impl<U: Upstream> Stack<U> {
         let is_new_syn = h.has(TCP_SYN) && !h.has(TCP_ACK) && !h.has(TCP_RST);
 
         if let Some(&id) = self.tcp_index.get(&flow) {
-            let mut segs = Vec::new();
-            if let Some(conn) = self.tcp.get_mut(&id) {
-                let mut ctx = Ctx { now, up: &mut self.upstream, log: &mut self.log, out: &mut segs };
+            self.with_conn(now, id, |conn, ctx| {
                 if conn.state == State::TimeWait && is_new_syn {
                     // Riapertura della stessa quadrupla: la vecchia si chiude.
-                    conn.end_time_wait(&mut ctx);
+                    conn.end_time_wait(ctx);
                 } else {
-                    conn.input(&mut ctx, &h, payload);
-                    conn.process(&mut ctx);
+                    conn.input(ctx, &h, payload);
+                    conn.process(ctx);
                 }
-            }
-            self.emit_segments(flow, segs);
-            self.reap_tcp(id);
+            });
             if self.tcp_index.contains_key(&flow) || !is_new_syn {
                 return;
             }
@@ -576,8 +769,8 @@ impl<U: Upstream> Stack<U> {
         if is_new_syn {
             let id = self.next_id;
             self.next_id += 1;
-            let iss = splitmix64(self.config.seed ^ id.wrapping_mul(0x2545_f491_4f6c_dd1d)) as u32;
-            let local_mss = self.config.mtu - (wire::IPV4_HEADER_LEN + wire::TCP_HEADER_LEN) as u16;
+            let iss = self.iss_for(id);
+            let local_mss = self.local_mss();
             let mut conn =
                 TcpConn::new(id, flow, &h, iss, local_mss, now, self.config.tcp_connect_timeout_us);
             self.log.push(now, EventKind::TcpOpen { id, flow });

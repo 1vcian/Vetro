@@ -6,7 +6,7 @@
 use vetro_snapshot::{Error, Reader, Result, Writer};
 
 use super::{State, TcpConn};
-use crate::stack::snapshot::{get_flow, get_time, put_flow, put_time};
+use crate::stack::snapshot::{get_flow, get_reason, get_time, put_flow, put_reason, put_time};
 
 fn state_code(s: State) -> u8 {
     match s {
@@ -20,6 +20,7 @@ fn state_code(s: State) -> u8 {
         State::Closing => 7,
         State::TimeWait => 8,
         State::Closed => 9,
+        State::SynSent => 10,
     }
 }
 
@@ -35,6 +36,7 @@ fn state_from(v: u8) -> Result<State> {
         7 => State::Closing,
         8 => State::TimeWait,
         9 => State::Closed,
+        10 => State::SynSent,
         _ => return Err(Error::invalid(format!("stato TCP {v}"))),
     })
 }
@@ -84,6 +86,7 @@ impl TcpConn {
         put_time(w, self.time_wait_deadline);
         w.u64(self.bytes_to_remote);
         w.u64(self.bytes_to_guest);
+        w.opt(self.close_reason, put_reason);
     }
 
     pub(crate) fn restore(r: &mut Reader<'_>) -> Result<Self> {
@@ -133,6 +136,7 @@ impl TcpConn {
             time_wait_deadline: get_time(r)?,
             bytes_to_remote: r.u64()?,
             bytes_to_guest: r.u64()?,
+            close_reason: r.opt(get_reason)?,
         })
     }
 }

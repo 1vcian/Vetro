@@ -12,6 +12,11 @@
 //!   duplicato, controllo di congestione Reno (RFC 5681), sonde a finestra
 //!   zero con lo stesso timer (segmento vuoto con sequenza già riscontrata);
 //! - RST e SYN fuori posto trattati come la RFC 5961 (ACK di sfida per i SYN).
+//!
+//! Per l'inoltro di porte (`Stack::host_connect`) la stessa connessione fa
+//! anche l'apertura attiva: parte in `SynSent` con un SYN dal gateway verso
+//! una porta del guest, e dopo il SYN-ACK prosegue identica. L'"upstream" è
+//! allora il lato host dello stack (`hostfwd::HostSide`).
 
 use std::collections::VecDeque;
 
@@ -52,6 +57,9 @@ fn seq_le(a: u32, b: u32) -> bool {
 pub(crate) enum State {
     /// SYN ricevuto, in attesa che l'upstream apra (o rifiuti).
     Connecting,
+    /// Apertura attiva (inoltro di porte): SYN mandato al guest, in attesa
+    /// del SYN-ACK.
+    SynSent,
     SynReceived,
     Established,
     CloseWait,
@@ -75,7 +83,7 @@ pub(crate) struct Segment {
 }
 
 /// Quel che serve a una connessione per agire.
-pub(crate) struct Ctx<'a, U: Upstream> {
+pub(crate) struct Ctx<'a, U: Upstream + ?Sized> {
     pub now: VirtualTime,
     pub up: &'a mut U,
     pub log: &'a mut EventLog,
@@ -129,6 +137,8 @@ pub(crate) struct TcpConn {
     // Contatori.
     pub bytes_to_remote: u64,
     pub bytes_to_guest: u64,
+    /// Motivo della chiusura, quando la connessione è `Closed`.
+    pub close_reason: Option<CloseReason>,
 }
 
 impl TcpConn {
@@ -180,7 +190,68 @@ impl TcpConn {
             time_wait_deadline: VirtualTime(u64::MAX),
             bytes_to_remote: 0,
             bytes_to_guest: 0,
+            close_reason: None,
         }
+    }
+
+    /// Connessione aperta dall'host verso il guest (apertura attiva): il SYN
+    /// parte con [`TcpConn::start_active`].
+    pub(crate) fn new_active(
+        id: ConnId,
+        flow: Flow,
+        iss: u32,
+        local_mss: u16,
+        now: VirtualTime,
+        connect_timeout_us: u64,
+    ) -> Self {
+        let syn = TcpHeader {
+            src_port: flow.guest.port(),
+            dst_port: flow.remote.port(),
+            seq: 0,
+            ack: 0,
+            flags: TCP_SYN,
+            window: 0,
+            mss: None,
+            checksum_ok: true,
+        };
+        let mut c = TcpConn::new(id, flow, &syn, iss, local_mss, now, connect_timeout_us);
+        // Del guest non si sa ancora nulla: tutto arriva col SYN-ACK.
+        c.state = State::SynSent;
+        c.irs = 0;
+        c.rcv_nxt = 0;
+        c.snd_wl1 = 0;
+        c
+    }
+
+    /// Manda il primo SYN di un'apertura attiva.
+    pub(crate) fn start_active<U: Upstream + ?Sized>(&mut self, ctx: &mut Ctx<'_, U>) {
+        if self.state == State::SynSent {
+            self.send_syn(ctx);
+        }
+    }
+
+    fn send_syn<U: Upstream + ?Sized>(&mut self, ctx: &mut Ctx<'_, U>) {
+        self.emit(ctx, self.iss, TCP_SYN, Vec::new());
+        self.snd_nxt = self.iss.wrapping_add(1);
+        self.snd_max = self.snd_nxt;
+        if self.retries == 0 {
+            self.rtt_sample = Some((self.snd_nxt, ctx.now));
+        }
+        self.arm_rtx(ctx.now);
+    }
+
+    /// Interruzione chiesta dal lato host: RST al guest e chiusura.
+    pub(crate) fn abort<U: Upstream + ?Sized>(&mut self, ctx: &mut Ctx<'_, U>) {
+        if self.state == State::Closed {
+            return;
+        }
+        self.send_rst(ctx);
+        self.finish(ctx, CloseReason::RemoteReset, true);
+    }
+
+    /// Vero per le connessioni già stabilite (anche se in chiusura).
+    pub(crate) fn is_synchronized(&self) -> bool {
+        !matches!(self.state, State::Connecting | State::SynSent | State::SynReceived | State::Closed)
     }
 
     pub(crate) fn is_closed(&self) -> bool {
@@ -191,7 +262,7 @@ impl TcpConn {
         (RX_CAPACITY - self.rx.len()) as u32
     }
 
-    fn emit<U: Upstream>(&mut self, ctx: &mut Ctx<'_, U>, seq: u32, flags: u8, payload: Vec<u8>) {
+    fn emit<U: Upstream + ?Sized>(&mut self, ctx: &mut Ctx<'_, U>, seq: u32, flags: u8, payload: Vec<u8>) {
         let window = self.rcv_wnd();
         self.adv_edge = self.rcv_nxt.wrapping_add(window);
         self.ack_pending = false;
@@ -199,7 +270,7 @@ impl TcpConn {
         ctx.out.push(Segment { seq, ack: self.rcv_nxt, flags, window: window as u16, mss, payload });
     }
 
-    fn send_syn_ack<U: Upstream>(&mut self, ctx: &mut Ctx<'_, U>) {
+    fn send_syn_ack<U: Upstream + ?Sized>(&mut self, ctx: &mut Ctx<'_, U>) {
         self.emit(ctx, self.iss, TCP_SYN | TCP_ACK, Vec::new());
         self.snd_nxt = self.iss.wrapping_add(1);
         self.snd_max = self.snd_nxt;
@@ -207,7 +278,7 @@ impl TcpConn {
     }
 
     /// RST verso il guest per una connessione che conosciamo.
-    fn send_rst<U: Upstream>(&mut self, ctx: &mut Ctx<'_, U>) {
+    fn send_rst<U: Upstream + ?Sized>(&mut self, ctx: &mut Ctx<'_, U>) {
         let seq = self.snd_max;
         self.emit(ctx, seq, TCP_RST | TCP_ACK, Vec::new());
     }
@@ -222,11 +293,12 @@ impl TcpConn {
         self.snd_nxt.wrapping_sub(self.snd_una)
     }
 
-    fn finish<U: Upstream>(&mut self, ctx: &mut Ctx<'_, U>, reason: CloseReason, reset: bool) {
+    fn finish<U: Upstream + ?Sized>(&mut self, ctx: &mut Ctx<'_, U>, reason: CloseReason, reset: bool) {
         if self.state == State::Closed {
             return;
         }
         self.state = State::Closed;
+        self.close_reason = Some(reason);
         self.rtx_deadline = None;
         ctx.log.push(
             ctx.now,
@@ -264,7 +336,12 @@ impl TcpConn {
     }
 
     /// Segmento dal guest per questa connessione.
-    pub(crate) fn input<U: Upstream>(&mut self, ctx: &mut Ctx<'_, U>, h: &TcpHeader, payload: &[u8]) {
+    pub(crate) fn input<U: Upstream + ?Sized>(
+        &mut self,
+        ctx: &mut Ctx<'_, U>,
+        h: &TcpHeader,
+        payload: &[u8],
+    ) {
         match self.state {
             State::Closed => return,
             State::Connecting => {
@@ -272,6 +349,10 @@ impl TcpConn {
                 if h.has(TCP_RST) && (h.seq == self.rcv_nxt || h.seq == self.irs) {
                     self.finish(ctx, CloseReason::GuestReset, true);
                 }
+                return;
+            }
+            State::SynSent => {
+                self.input_syn_sent(ctx, h);
                 return;
             }
             State::SynReceived if h.has(TCP_SYN) && !h.has(TCP_ACK) && h.seq == self.irs => {
@@ -457,7 +538,57 @@ impl TcpConn {
         }
     }
 
-    fn fast_retransmit<U: Upstream>(&mut self, ctx: &mut Ctx<'_, U>) {
+    /// Risposta al nostro SYN (RFC 9293 3.10.7.3). L'apertura simultanea
+    /// (SYN senza ACK dal guest) non serve: il guest è sempre in ascolto.
+    fn input_syn_sent<U: Upstream + ?Sized>(&mut self, ctx: &mut Ctx<'_, U>, h: &TcpHeader) {
+        let ack_ok = h.has(TCP_ACK) && h.ack == self.snd_max;
+        if h.has(TCP_ACK) && !ack_ok {
+            if !h.has(TCP_RST) {
+                ctx.out.push(Segment {
+                    seq: h.ack,
+                    ack: 0,
+                    flags: TCP_RST,
+                    window: 0,
+                    mss: None,
+                    payload: Vec::new(),
+                });
+            }
+            return;
+        }
+        if h.has(TCP_RST) {
+            // Nessuno in ascolto su quella porta del guest.
+            if ack_ok {
+                self.finish(ctx, CloseReason::Refused, true);
+            }
+            return;
+        }
+        if !(h.has(TCP_SYN) && ack_ok) {
+            return;
+        }
+        self.irs = h.seq;
+        self.rcv_nxt = h.seq.wrapping_add(1);
+        self.snd_una = h.ack;
+        self.mss = u32::from(h.mss.unwrap_or(DEFAULT_MSS).min(self.local_mss).max(64));
+        self.cwnd = 10 * self.mss;
+        self.snd_wnd = u32::from(h.window);
+        self.snd_wl1 = h.seq;
+        self.snd_wl2 = h.ack;
+        if let Some((seq, t)) = self.rtt_sample.take()
+            && seq_le(seq, h.ack)
+        {
+            self.rtt_update(ctx.now.0.saturating_sub(t.0));
+        }
+        self.rto = self.rto_base;
+        self.retries = 0;
+        self.rtx_deadline = None;
+        self.state = State::Established;
+        ctx.log.push(ctx.now, EventKind::TcpEstablished { id: self.id });
+        // Eventuali dati nel SYN-ACK non si accettano: il guest li
+        // ritrasmetterà dopo il nostro ACK.
+        self.ack_pending = true;
+    }
+
+    fn fast_retransmit<U: Upstream + ?Sized>(&mut self, ctx: &mut Ctx<'_, U>) {
         let flight = self.in_flight();
         self.ssthresh = (flight / 2).max(2 * self.mss);
         self.cwnd = self.ssthresh;
@@ -475,14 +606,14 @@ impl TcpConn {
 
     /// Chiude subito una connessione in TIME-WAIT (il guest riapre la stessa
     /// quadrupla con un SYN nuovo).
-    pub(crate) fn end_time_wait<U: Upstream>(&mut self, ctx: &mut Ctx<'_, U>) {
+    pub(crate) fn end_time_wait<U: Upstream + ?Sized>(&mut self, ctx: &mut Ctx<'_, U>) {
         if self.state == State::TimeWait {
             self.finish(ctx, CloseReason::Normal, false);
         }
     }
 
     /// Scadenze dei timer. Da chiamare prima di `process`.
-    pub(crate) fn on_timer<U: Upstream>(&mut self, ctx: &mut Ctx<'_, U>) {
+    pub(crate) fn on_timer<U: Upstream + ?Sized>(&mut self, ctx: &mut Ctx<'_, U>) {
         let now = ctx.now;
         match self.state {
             State::Closed => return,
@@ -517,6 +648,10 @@ impl TcpConn {
             self.send_syn_ack(ctx);
             return;
         }
+        if self.state == State::SynSent {
+            self.send_syn(ctx);
+            return;
+        }
         // Go-back-N: si riparte da snd_una.
         self.snd_nxt = self.snd_una;
         if self.snd_wnd == 0 && !self.tx.is_empty() {
@@ -530,7 +665,7 @@ impl TcpConn {
 
     /// Scambi con l'upstream e invio: da chiamare dopo ogni `input` e a ogni
     /// giro di poll.
-    pub(crate) fn process<U: Upstream>(&mut self, ctx: &mut Ctx<'_, U>) {
+    pub(crate) fn process<U: Upstream + ?Sized>(&mut self, ctx: &mut Ctx<'_, U>) {
         match self.state {
             State::Closed => return,
             State::Connecting => match ctx.up.tcp_status(ctx.now, self.id) {
@@ -551,6 +686,13 @@ impl TcpConn {
                     return;
                 }
             },
+            State::SynSent => {
+                // Il guest non risponde al SYN: si rinuncia senza RST.
+                if ctx.now >= self.connect_deadline {
+                    self.finish(ctx, CloseReason::Timeout, true);
+                }
+                return;
+            }
             _ => {}
         }
 
@@ -613,7 +755,7 @@ impl TcpConn {
         }
     }
 
-    fn transmit<U: Upstream>(&mut self, ctx: &mut Ctx<'_, U>) {
+    fn transmit<U: Upstream + ?Sized>(&mut self, ctx: &mut Ctx<'_, U>) {
         if !matches!(
             self.state,
             State::Established | State::CloseWait | State::FinWait1 | State::LastAck | State::Closing
@@ -685,6 +827,9 @@ impl TcpConn {
         match self.state {
             State::Closed => None,
             State::Connecting => Some(self.connect_deadline),
+            State::SynSent => {
+                Some(self.rtx_deadline.map_or(self.connect_deadline, |d| d.min(self.connect_deadline)))
+            }
             State::TimeWait => Some(self.time_wait_deadline),
             _ => self.rtx_deadline,
         }

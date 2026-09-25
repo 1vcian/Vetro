@@ -1,7 +1,8 @@
 //! Stato dello stack negli snapshot della macchina (M6, ADR 0015): MAC del
 //! guest, frame in uscita, connessioni TCP (sequenze, finestre, timer, dati
 //! in transito), flussi UDP, indici, contatori, registro degli eventi e
-//! stato dell'upstream. La configurazione (`NetConfig`) non si salva: è
+//! stato dell'upstream, connessioni aperte dall'host (inoltro di porte:
+//! code nei due versi, richieste in attesa). La configurazione (`NetConfig`) non si salva: è
 //! quella con cui lo stack è stato costruito, e la macchina la controlla con
 //! l'hash della sua configurazione.
 //!
@@ -16,6 +17,7 @@ use vetro_snapshot::{Error, Reader, Result, Snapshot, Writer};
 
 use super::{Stack, Stats, UdpFlow};
 use crate::events::{CloseReason, DhcpMessage, Direction, EventKind, NetEvent};
+use crate::hostfwd::HostEnd;
 use crate::tcp::TcpConn;
 use crate::upstream::Upstream;
 use crate::wire::Mac;
@@ -81,7 +83,7 @@ fn get_dir(r: &mut Reader<'_>) -> Result<Direction> {
     }
 }
 
-fn put_reason(w: &mut Writer, c: CloseReason) {
+pub(crate) fn put_reason(w: &mut Writer, c: CloseReason) {
     w.u8(match c {
         CloseReason::Normal => 0,
         CloseReason::GuestReset => 1,
@@ -92,7 +94,7 @@ fn put_reason(w: &mut Writer, c: CloseReason) {
     });
 }
 
-fn get_reason(r: &mut Reader<'_>) -> Result<CloseReason> {
+pub(crate) fn get_reason(r: &mut Reader<'_>) -> Result<CloseReason> {
     Ok(match r.u8()? {
         0 => CloseReason::Normal,
         1 => CloseReason::GuestReset,
@@ -183,6 +185,11 @@ fn put_event(w: &mut Writer, e: &NetEvent) {
             w.u8(*rcode);
             w.seq(addrs, |w, a| put_ip(w, *a));
         }
+        EventKind::TcpConnect { id, flow } => {
+            w.u8(11);
+            w.u64(*id);
+            put_flow(w, flow);
+        }
     }
 }
 
@@ -229,6 +236,7 @@ fn get_event(r: &mut Reader<'_>) -> Result<NetEvent> {
             rcode: r.u8()?,
             addrs: r.seq(4, get_ip)?,
         },
+        11 => EventKind::TcpConnect { id: r.u64()?, flow: get_flow(r)? },
         v => return Err(Error::invalid(format!("evento di rete {v}"))),
     };
     Ok(NetEvent { at, kind })
@@ -282,6 +290,23 @@ impl<U: Upstream + Snapshot> Snapshot for Stack<U> {
         }
         w.seq(&self.log.events, put_event);
         w.section(b"UPST", |w| self.upstream.save(w));
+        w.section(b"HFWD", |w| {
+            w.u16(self.host.next_port);
+            w.seq(&self.host.conns, |w, (&id, h)| {
+                w.u64(id);
+                put_flow(w, &h.flow);
+                w.bool(h.pending_open);
+                let (a, b) = h.to_guest.as_slices();
+                w.bytes(&[a, b].concat());
+                let (a, b) = h.from_guest.as_slices();
+                w.bytes(&[a, b].concat());
+                w.bool(h.shutdown);
+                w.bool(h.abort);
+                w.bool(h.guest_fin);
+                w.opt(h.closed, put_reason);
+                w.bool(h.released);
+            });
+        });
     }
 
     fn restore(&mut self, r: &mut Reader<'_>) -> Result<()> {
@@ -319,7 +344,26 @@ impl<U: Upstream + Snapshot> Snapshot for Stack<U> {
         self.log.events = r.seq(9, get_event)?;
         let mut up = r.section(b"UPST")?;
         self.upstream.restore(&mut up)?;
-        up.finish()
+        up.finish()?;
+        let mut h = r.section(b"HFWD")?;
+        self.host.next_port = h.u16()?;
+        let conns = h.seq(42, |r| {
+            let id = r.u64()?;
+            let end = HostEnd {
+                flow: get_flow(r)?,
+                pending_open: r.bool()?,
+                to_guest: r.vec()?.into(),
+                from_guest: r.vec()?.into(),
+                shutdown: r.bool()?,
+                abort: r.bool()?,
+                guest_fin: r.bool()?,
+                closed: r.opt(get_reason)?,
+                released: r.bool()?,
+            };
+            Ok((id, end))
+        })?;
+        self.host.conns = conns.into_iter().collect();
+        h.finish()
     }
 }
 

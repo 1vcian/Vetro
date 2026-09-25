@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]
-//! vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--disk=FILE]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--restore=FILE]
+//! vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--disk=FILE]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--restore=FILE]
 //! ```
 //!
 //! `boot` avvia la macchina virt (M3) con la console PL011 su stdin/stdout.
@@ -12,7 +12,11 @@
 //! 28; `--no-devices` li toglie tutti, `--no-net` solo la rete, `--net` la
 //! rimette anche dopo `--no-devices`. `--net-events` stampa su stderr il
 //! registro degli eventi di rete (DHCP, DNS, connessioni, byte, chiusure)
-//! man mano che accadono, in tempo virtuale. Ogni `--disk` aggiunge
+//! man mano che accadono, in tempo virtuale. `--hostfwd` (ripetibile, la
+//! sintassi di QEMU) apre un socket in ascolto sull'host (127.0.0.1 se
+//! l'indirizzo manca; porta 0 = scelta dal sistema, stampata su stderr) e
+//! inoltra ogni connessione a quella porta del guest, che la vede arrivare
+//! da 10.0.2.2 (vedi `vetro_cli::hostfwd`). Ogni `--disk` aggiunge
 //! un virtio-blk nello slot libero più alto, nell'ordine della riga di comando
 //! (come i `-device virtio-blk-device` di QEMU): il file resta intatto, le
 //! scritture del guest restano in memoria (`snapshot=on`). `--guest-secs`
@@ -53,7 +57,7 @@ fn usage() -> ExitCode {
         "uso: vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]"
     );
     eprintln!(
-        "     vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--disk=FILE]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--restore=FILE]"
+        "     vetro boot --kernel=Image [--initrd=FILE] [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--disk=FILE]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--restore=FILE]"
     );
     ExitCode::from(2)
 }
@@ -143,6 +147,7 @@ fn run(args: &[String]) -> ExitCode {
 
 fn boot(args: &[String]) -> ExitCode {
     use std::io::{Read, Write};
+    use vetro_cli::hostfwd::{HostFwd, Input};
     use vetro_machine::{Devices, Machine, MachineConfig, NetSetup, Stop};
     use vetro_platform::virtio::{VirtioBlk, VirtioBlkConfig};
     let (mut kernel, mut initrd, mut append) = (None, None, "console=ttyAMA0".to_string());
@@ -152,6 +157,7 @@ fn boot(args: &[String]) -> ExitCode {
     let mut guest_ns = u64::MAX;
     let mut stats = false;
     let (mut net, mut net_events) = (None, false);
+    let mut forwards = Vec::new();
     let (mut jit, mut threshold) = (false, vetro_jit::SysJitConfig::default().hot_threshold);
     let mut save_at: Vec<(u64, String)> = Vec::new();
     let mut restore = None;
@@ -194,6 +200,13 @@ fn boot(args: &[String]) -> ExitCode {
                 _ => return usage(),
             },
             Some(("--restore", v)) => restore = Some(v.to_string()),
+            Some(("--hostfwd", v)) => match vetro_cli::hostfwd::parse_rule(v) {
+                Ok(r) => forwards.push(r),
+                Err(e) => {
+                    eprintln!("vetro: {e}");
+                    return ExitCode::from(2);
+                }
+            },
             Some(("--guest-secs", v)) => match v.parse::<u64>() {
                 Ok(s) => guest_ns = s.saturating_mul(1_000_000_000),
                 Err(_) => return usage(),
@@ -236,6 +249,10 @@ fn boot(args: &[String]) -> ExitCode {
         Some(false) => devices.net = None,
         _ => {}
     }
+    if !forwards.is_empty() && devices.net.is_none() {
+        eprintln!("vetro: --hostfwd richiede la rete (--net)");
+        return ExitCode::from(2);
+    }
     let mut m = Machine::with_devices(&cfg, &devices);
     for d in &disks {
         let backend = match vetro_cli::disk::cow_disk(std::path::Path::new(d)) {
@@ -267,17 +284,47 @@ fn boot(args: &[String]) -> ExitCode {
     if jit {
         m.set_jit(Some(vetro_jit_native::system_jit(threshold)));
     }
-    // stdin in un thread: i byte arrivano alla PL011 tra un quanto e l'altro.
-    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    // stdin in un thread, i socket di --hostfwd nei loro: tutto arriva su
+    // un canale e passa alla macchina tra un quanto e l'altro.
+    let (tx, rx) = std::sync::mpsc::channel::<Input>();
+    let stdin_tx = tx.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 256];
         let mut stdin = std::io::stdin();
         while let Ok(n) = stdin.read(&mut buf) {
-            if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+            if n == 0 || stdin_tx.send(Input::Console(buf[..n].to_vec())).is_err() {
                 break;
             }
         }
+        let _ = stdin_tx.send(Input::ConsoleClosed);
     });
+    let mut fwd = None;
+    if !forwards.is_empty() {
+        match HostFwd::listen(&forwards, tx.clone()) {
+            Ok((f, addrs)) => {
+                for (a, r) in addrs.iter().zip(&forwards) {
+                    eprintln!("vetro: hostfwd tcp {a} -> 10.0.2.15:{}", r.guest_port);
+                }
+                fwd = Some(f);
+            }
+            Err(e) => {
+                eprintln!("vetro: --hostfwd: {e}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    drop(tx);
+    let mut console_open = true;
+    let handle =
+        |m: &mut Machine, input: Input, console_open: &mut bool, fwd: &mut Option<HostFwd>| match input {
+            Input::Console(b) => m.console_input(&b),
+            Input::ConsoleClosed => *console_open = false,
+            other => {
+                if let Some(f) = fwd.as_mut() {
+                    f.input(m, other);
+                }
+            }
+        };
     let mut out = std::io::stdout();
     let t0 = std::time::Instant::now();
     let report = |m: &Machine| {
@@ -332,18 +379,26 @@ fn boot(args: &[String]) -> ExitCode {
             }
             eprintln!("vetro: snapshot a {} istruzioni in {path} ({} byte)", m.steps, snap.len());
         }
-        while let Ok(b) = rx.try_recv() {
-            m.console_input(&b);
+        while let Ok(i) = rx.try_recv() {
+            handle(&mut m, i, &mut console_open, &mut fwd);
+        }
+        if let Some(f) = fwd.as_mut() {
+            f.service(&mut m);
         }
         match stop {
             Stop::Budget => {}
-            Stop::Idle => match rx.recv() {
-                Ok(b) => m.console_input(&b),
-                Err(_) => {
-                    eprintln!("vetro: il guest aspetta un ingresso e stdin è chiuso");
-                    return ExitCode::from(3);
+            Stop::Idle => {
+                // Niente da fare per il guest: si aspetta un ingresso
+                // dell'host (console o rete).
+                let waiting = console_open || fwd.is_some();
+                match rx.recv() {
+                    Ok(i) if waiting => handle(&mut m, i, &mut console_open, &mut fwd),
+                    _ => {
+                        eprintln!("vetro: il guest aspetta un ingresso e stdin è chiuso");
+                        return ExitCode::from(3);
+                    }
                 }
-            },
+            }
             Stop::PowerOff => {
                 report(&m);
                 return ExitCode::SUCCESS;

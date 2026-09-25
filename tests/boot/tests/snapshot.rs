@@ -18,6 +18,9 @@
 //! shell (1 GiB di RAM), stampati e scritti in
 //! `target/guest-kernel/snapshot-misure.txt`.
 //!
+//! Anche con una connessione aperta dall'host (inoltro di porte) a metà
+//! trasferimento.
+//!
 //! Solo in release, come `vetro.rs`.
 
 use std::collections::BTreeMap;
@@ -605,4 +608,82 @@ fn snapshot_durante_l_uso_di_gpu_input_e_vsock() {
     let (run, host) = devices_script(&image, &initrd, &plan);
     same("dispositivi con tagli", &reference, &run);
     assert_eq!(host, ref_host, "ciò che l'host vede (scanout, cursore, vsock)");
+}
+
+// ---- Inoltro di porte (il copione di hostfwd.rs, ridotto) --------------------
+
+/// `nc -l -e cat` nel guest e 200 KB di eco da una connessione aperta
+/// dall'host (`Stack::host_connect`); i tagli cadono a trasferimento in
+/// corso: le code dell'inoltro, la connessione in `SynSent` o stabilita e
+/// le porte effimere sono stato, gli indici delle connessioni dell'host
+/// (qui `id`) restano validi nella macchina ripristinata.
+fn hostfwd_script(image: &[u8], initrd: &[u8], plan: &Plan) -> (Outcome, String) {
+    let devices = Devices { net: Some(NetSetup::default()), ..Devices::default() };
+    let fresh = Box::new(move || Machine::with_devices(&MachineConfig::default(), &devices));
+    let mut r = Run::new(
+        fresh,
+        |m| {
+            m.load_linux(image, Some(initrd), "console=ttyAMA0 vetro.noautotest").unwrap();
+        },
+        plan,
+    );
+    let at = r.until(SHELL_PROMPT, 0);
+    let at = r.command("udhcpc -i eth0 -n -q", at);
+    r.m.console_input(b"nc -n -v -l -p 5555 -e cat\n");
+    let at = r.until("listening on", at);
+    let data: Vec<u8> = (0..200_000u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 9) as u8).collect();
+    let id = r.m.net(|s| s.host_connect(5555)).flatten().expect("connessione dall'host");
+    r.mark("syn");
+    r.mark("eco");
+    r.mark("eco-indietro");
+    let (mut sent, mut got, mut shut) = (0usize, Vec::new(), false);
+    let at = r.until_with(SHELL_PROMPT, at, |m| {
+        m.net(|s| {
+            sent += s.host_send(id, &data[sent..]);
+            let mut buf = [0u8; 65536];
+            loop {
+                let n = s.host_recv(id, &mut buf);
+                if n == 0 {
+                    break;
+                }
+                got.extend_from_slice(&buf[..n]);
+            }
+            if !shut && got.len() == data.len() {
+                s.host_shutdown(id);
+                shut = true;
+            }
+        });
+    });
+    // TIME-WAIT della connessione dell'host (4 s di tempo virtuale).
+    let _ = r.command("sleep 5", at);
+    assert!(got == data, "eco di 200 KB diversa ({} byte)", got.len());
+    let state = r.m.net_view(|s| s.host_conn(id).map(|i| i.state)).flatten();
+    assert_eq!(
+        state,
+        Some(vetro_machine::vetro_net::HostConnState::Closed(vetro_machine::vetro_net::CloseReason::Normal))
+    );
+    r.poweroff();
+    let events = r.m.net_view(|s| format!("{:?}", s.events())).unwrap();
+    (r.finish(), format!("{state:?} {events}"))
+}
+
+#[test]
+fn snapshot_durante_una_connessione_dall_host() {
+    let Some((image, initrd)) = kernel() else { return };
+    let (reference, ref_net) = hostfwd_script(&image, &initrd, &Plan::default());
+    // Col SYN appena chiesto (non ancora partito), poi a eco in corso nei
+    // due versi (una macchina nuova, poi un ritorno indietro).
+    let plan = Plan {
+        at: vec![],
+        marks: [
+            ("syn", (0, Cut::Swap { jit: false })),
+            ("eco", (2, Cut::Swap { jit: false })),
+            ("eco-indietro", (4, Cut::Rewind { quanta: 2 })),
+        ]
+        .into(),
+        jit_from_start: false,
+    };
+    let (run, net) = hostfwd_script(&image, &initrd, &plan);
+    same("inoltro di porte con tagli", &reference, &run);
+    assert!(net == ref_net, "stato e registro della rete diversi");
 }

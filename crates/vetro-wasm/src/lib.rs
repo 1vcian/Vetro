@@ -13,6 +13,8 @@
 //! - dispositivi (M5): scanout di virtio-gpu in RGBA ([`display`]),
 //!   eventi di virtio-input, linee del GPIO (tasto di accensione), dischi
 //!   virtio-blk con i dati forniti dal JS a blocchi ([`disk`]);
+//! - rete (ABI 5): connessioni TCP dal JS verso i servizi del guest
+//!   (inoltro di porte, [`net`]);
 //! - import dal JS: `vetro_host.panic` (messaggio di un panic prima della
 //!   trappola) e il motore JIT di [`jit`] (`vetro_jit.*`).
 //!
@@ -24,6 +26,7 @@
 pub mod disk;
 pub mod display;
 pub mod jit;
+pub mod net;
 
 use std::alloc::Layout;
 
@@ -42,7 +45,9 @@ use display::WebDisplay;
 /// 3: dispositivi (`vetro_machine_new_with`, display, input, GPIO, dischi)
 /// e codice d'arresto `BLOCKED`.
 /// 4: snapshot della macchina (`vetro_snapshot_*`, ADR 0015).
-pub const ABI_VERSION: u32 = 4;
+/// 5: connessioni TCP dal JS verso i servizi del guest (`vetro_net_*`,
+/// inoltro di porte).
+pub const ABI_VERSION: u32 = 5;
 
 /// Allineamento dei buffer di [`vetro_alloc`] (basta per `JitState`).
 const ALLOC_ALIGN: usize = 16;

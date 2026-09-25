@@ -6,6 +6,11 @@
 //! prima di servire i dispositivi e chiama `poll` alla scadenza dello stack
 //! (vedi `Machine::sync_irqs`), così le ritrasmissioni e i timer cadono
 //! sempre sulla stessa istruzione.
+//!
+//! Le connessioni dall'host verso i servizi del guest (inoltro di porte,
+//! `Stack::host_connect`: `vetro boot --hostfwd`, `vetro_net_*` nel browser)
+//! passano da `Machine::net`: sono ingressi dell'host, e il `poll` forzato
+//! prima della prossima istruzione li porta al guest.
 
 use vetro_net::{NetConfig, Sinkhole, SinkholeConfig, Stack, VirtualTime};
 use vetro_platform::map;

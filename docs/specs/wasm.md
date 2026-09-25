@@ -20,7 +20,7 @@ memoria lineare (due macchine da 1 GiB) arrivano negativi.
 
 ## Export
 
-Versione: `vetro_abi_version() -> u32`, oggi **4**. Cambia a ogni modifica
+Versione: `vetro_abi_version() -> u32`, oggi **5**. Cambia a ogni modifica
 incompatibile delle firme o dei codici qui sotto; il caricatore JS
 (`web/node/vetro.mjs`) la controlla.
 
@@ -32,6 +32,8 @@ incompatibile delle firme o dei codici qui sotto; il caricatore JS
   default; la GPU di vetro-wasm mostra su `WebDisplay` (RGBA) invece di
   `MemDisplay` (al guest non cambia niente: stesse istruzioni).
 - 4 (M6): snapshot della macchina (`vetro_snapshot_*`, ADR 0015).
+- 5 (M5): connessioni TCP dal JS verso i servizi del guest (`vetro_net_*`,
+  inoltro di porte come `hostfwd` di QEMU; la base di adb nel browser).
 
 ### Memoria
 
@@ -134,7 +136,7 @@ Il giro con un disco via rete:
 
 | Export | Firma | Significato |
 |---|---|---|
-| `vetro_snapshot_version` | `() -> u32` | versione del formato degli snapshot (oggi 1): da mettere nella chiave della cache, così uno snapshot di un'altra versione non si prova nemmeno |
+| `vetro_snapshot_version` | `() -> u32` | versione del formato degli snapshot (oggi 2): da mettere nella chiave della cache, così uno snapshot di un'altra versione non si prova nemmeno |
 | `vetro_snapshot_save` | `(vm) -> usize` | salva la macchina intera in un buffer interno e ne restituisce la lunghezza. Prima leggere la console: l'uscita già tolta alla UART e non consegnata al JS non entra |
 | `vetro_snapshot_ptr` | `(vm) -> *const u8` | i byte dell'ultimo salvataggio (nullo se non ce n'è), validi fino al prossimo salvataggio, a `vetro_snapshot_clear` o a `vetro_machine_free` |
 | `vetro_snapshot_clear` | `(vm)` | libera il buffer |
@@ -154,6 +156,39 @@ attiva il JIT se si vuole (il risultato non cambia), poi
 | trasporti e code virtio, richieste in volo, stato di GPU (risorse e pixel), input, rete (stack e sinkhole), vsock | `WebDisplay`: riceve subito immagine e cursore ripristinati (`vetro_display_updates` cambia) |
 | livello copy-on-write dei dischi (le scritture del guest) | i dati dei dischi (`HostDisk`, HTTP Range, OPFS): dopo il ripristino i blocchi si chiedono di nuovo con `BLOCKED` come all'avvio; la dimensione si controlla |
 | (niente altro: anche il contenuto di `vetro_disk_add_mem` è una base in sola lettura sotto il copy-on-write) | il contenuto dei dischi in memoria (`vetro_disk_add_mem`), controllato con un hash; l'uscita della console già consegnata al JS; gli ingressi non ancora dati |
+
+### Rete: connessioni verso il guest (ABI 5)
+
+Il JS apre connessioni TCP verso una porta del guest (10.0.2.15), che le
+vede arrivare dal gateway 10.0.2.2 da una porta effimera (49152, 49153, …),
+come con `-netdev user,hostfwd=…` di QEMU. È lo stesso
+`Stack::host_connect` di `vetro boot --hostfwd` (`docs/specs/net.md`). Serve
+una macchina con la rete (bit `NET`) e un guest che ha già fatto il DHCP.
+L'id della connessione è un `u64` (> 0, in JS `BigInt`).
+
+| Export | Firma | Significato |
+|---|---|---|
+| `vetro_net_connect` | `(vm, guest_port: u32) -> u64` | apre una connessione verso `guest_port`; il SYN parte prima della prossima istruzione. 0 senza rete o con porta 0 / > 65535 |
+| `vetro_net_send` | `(vm, conn: u64, src: *const u8, len: usize) -> usize` | mette in coda byte per il guest; restituisce quanti ne ha presi (al più 256 KiB in coda: il resto va riproposto dopo un `vetro_run`). 0 se chiusa, sconosciuta o dopo `vetro_net_shutdown` |
+| `vetro_net_recv` | `(vm, conn, dst: *mut u8, cap: usize) -> usize` | copia e consuma al più `cap` byte arrivati dal guest; 0 = niente (senza toccare la macchina) |
+| `vetro_net_shutdown` | `(vm, conn) -> u32` | chiude il verso JS→guest: FIN dopo i byte in coda. 1 fatto, 0 sconosciuta |
+| `vetro_net_abort` | `(vm, conn) -> u32` | interrompe: RST al guest |
+| `vetro_net_release` | `(vm, conn) -> u32` | dimentica la connessione (se è viva, prima la interrompe); da chiamare dopo `CLOSED` e l'ultima lettura |
+| `vetro_net_state` | `(vm, conn, out: *mut u32, cap: usize) -> u32` | stato: 0 sconosciuta (o senza rete), 1 in apertura, 2 aperta (anche durante la chiusura), 3 chiusa. In `out` (al più `cap`): motivo della chiusura (0 nessuno, 1 `Normal`, 2 `GuestReset`, 3 `RemoteReset`, 4 `Refused` = nessuno in ascolto nel guest, 5 `Timeout`), byte leggibili, spazio per `vetro_net_send`, fine del flusso dal guest (1 = il guest ha chiuso e tutto è stato letto), byte in coda non ancora presi dal guest. Non tocca la macchina |
+
+I byte si muovono mentre la macchina esegue: chi chiama alterna `vetro_run`
+e `send`/`recv`, come per la console. Aprire, scrivere, leggere byte pronti,
+chiudere e interrompere sono ingressi (arrivano al guest prima della
+prossima istruzione, da registrare per il replay di M10); `vetro_net_state`
+e una `vetro_net_recv` senza byte pronti non cambiano l'esecuzione.
+
+In JS: `Machine.connectGuest(port)` restituisce un `GuestSocket`
+(`web/node/vetro.mjs`) con `send(bytes)`, `recv()`, `shutdown()`,
+`abort()`, `release()` e `state()` (`{ state, reason, readable, writable,
+guestEof, unsent }`, nomi in `NET_STATE` e `NET_REASON`). Prova:
+`tests/web/hostfwd.mjs` (in `tools/web-test.sh`): `nc -l -e cat` nel
+guest, eco di 200 KB dal JS, chiusura, porta senza servizio, stesse
+istruzioni con e senza JIT e in due esecuzioni.
 
 ### Ponte JIT
 

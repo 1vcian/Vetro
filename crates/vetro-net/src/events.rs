@@ -26,9 +26,11 @@ pub enum CloseReason {
     Normal,
     /// RST inviato dal guest.
     GuestReset,
-    /// L'upstream ha interrotto la connessione (RST verso il guest).
+    /// L'upstream (o l'host, per le connessioni aperte dall'host) ha
+    /// interrotto la connessione (RST verso il guest).
     RemoteReset,
-    /// L'upstream ha rifiutato la connessione (RST al SYN del guest).
+    /// L'upstream ha rifiutato la connessione (RST al SYN del guest); per le
+    /// connessioni aperte dall'host, il guest ha risposto RST al SYN.
     Refused,
     /// Il guest non risponde più: ritrasmissioni esaurite o connessione
     /// rimasta in attesa dell'upstream troppo a lungo.
@@ -64,6 +66,14 @@ pub enum EventKind {
     },
     /// SYN del guest ricevuto: la connessione esiste da qui.
     TcpOpen {
+        id: ConnId,
+        flow: Flow,
+    },
+    /// L'host apre una connessione verso un servizio del guest (inoltro di
+    /// porte, `Stack::host_connect`): SYN dal gateway verso `flow.guest`,
+    /// da `flow.remote`. Da qui la connessione è come le altre: `TcpData`
+    /// `ToRemote` sono i byte del guest verso l'host.
+    TcpConnect {
         id: ConnId,
         flow: Flow,
     },
@@ -170,6 +180,9 @@ impl fmt::Display for NetEvent {
                 write!(f, "icmp echo {dst} {}", if *answered { "risposto" } else { "senza risposta" })
             }
             EventKind::TcpOpen { id, flow } => write!(f, "tcp {id} syn {flow}"),
+            EventKind::TcpConnect { id, flow } => {
+                write!(f, "tcp {id} dall'host {} -> {}", flow.remote, flow.guest)
+            }
             EventKind::TcpEstablished { id } => write!(f, "tcp {id} stabilita"),
             EventKind::TcpData { id, dir: d, len } => write!(f, "tcp {id} {} {len} byte", dir(d)),
             EventKind::TcpClosed { id, reason, bytes_to_remote, bytes_to_guest } => write!(

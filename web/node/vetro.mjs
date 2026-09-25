@@ -4,7 +4,7 @@
 
 import { JitEngine } from './jit-engine.mjs';
 
-export const ABI_VERSION = 4;
+export const ABI_VERSION = 5;
 /** Codici di vetro_run. */
 export const STOP = ['Budget', 'PowerOff', 'Reset', 'Idle', 'Unimplemented', 'Blocked'];
 
@@ -14,6 +14,9 @@ export const DEV = { GPU: 1, KEYBOARD: 2, TABLET: 4, MULTITOUCH: 8, NET: 16, DEF
 export const DISK = { READ_ONLY: 1 };
 /** Dispositivi di vetro_input_events. */
 export const INPUT = { KEYBOARD: 0, POINTER: 1 };
+/** Stati e motivi di chiusura di vetro_net_state (GuestSocket.state). */
+export const NET_STATE = ['Unknown', 'Connecting', 'Open', 'Closed'];
+export const NET_REASON = [null, 'Normal', 'GuestReset', 'RemoteReset', 'Refused', 'Timeout'];
 
 const utf8 = new TextDecoder();
 const toUtf8 = new TextEncoder();
@@ -242,6 +245,19 @@ export class Machine {
     return Object.fromEntries(names.map((k, i) => [k, Number(v[i])]));
   }
 
+  // ---- Rete: connessioni verso i servizi del guest (ABI 5) ---------------
+
+  /**
+   * Apre una connessione TCP verso `port` del guest (10.0.2.15), che la vede
+   * arrivare dal gateway 10.0.2.2, come `hostfwd` di QEMU (per esempio adbd
+   * sulla 5555). Il SYN parte al prossimo `run`. Lancia senza rete.
+   */
+  connectGuest(port) {
+    const id = this.#x.vetro_net_connect(this.#vm, port);
+    if (id === 0n) throw new Error(`vetro_net_connect(${port}): rete assente o porta non valida`);
+    return new GuestSocket(this.#x, this.#vm, id);
+  }
+
   #message() {
     const x = this.#x;
     const ptr = x.vetro_message_ptr(this.#vm) >>> 0;
@@ -333,5 +349,93 @@ export class Machine {
   free() {
     this.#x.vetro_free(this.#buf, this.#cap);
     this.#x.vetro_machine_free(this.#vm);
+  }
+}
+
+/**
+ * Una connessione dal JS verso un servizio TCP del guest (vedi
+ * `Machine.connectGuest`). Sincrona: `send` mette in coda, `recv` legge ciò
+ * che è arrivato; i byte si muovono mentre la macchina esegue (`run`), quindi
+ * chi la usa alterna i due, come la console. Scrivere, leggere byte pronti,
+ * chiudere sono ingressi della macchina (da registrare per il replay); lo
+ * stato no.
+ */
+export class GuestSocket {
+  #x;
+  #vm;
+  #buf;
+  #cap = 64 * 1024;
+
+  constructor(x, vm, id) {
+    this.#x = x;
+    this.#vm = vm;
+    /** Id della connessione nello stack (BigInt). */
+    this.id = id;
+    this.#buf = x.vetro_alloc(this.#cap) >>> 0;
+  }
+
+  /**
+   * { state, reason, readable, writable, guestEof, unsent }: state in
+   * NET_STATE, reason in NET_REASON (null finché è aperta), guestEof vero
+   * quando il guest ha chiuso il suo verso e tutto è stato letto.
+   */
+  state() {
+    const x = this.#x;
+    const code = x.vetro_net_state(this.#vm, this.id, this.#buf, 5);
+    if (code === 0) return { state: 'Unknown', reason: null, readable: 0, writable: 0, guestEof: false, unsent: 0 };
+    const [reason, readable, writable, eof, unsent] = new Uint32Array(x.memory.buffer, this.#buf, 5);
+    return { state: NET_STATE[code], reason: NET_REASON[reason], readable, writable, guestEof: eof === 1, unsent };
+  }
+
+  /** Mette in coda byte (Uint8Array) per il guest; restituisce quanti ne ha presi. */
+  send(bytes) {
+    let sent = 0;
+    while (sent < bytes.length) {
+      const n = Math.min(this.#cap, bytes.length - sent);
+      new Uint8Array(this.#x.memory.buffer, this.#buf, n).set(bytes.subarray(sent, sent + n));
+      const k = this.#x.vetro_net_send(this.#vm, this.id, this.#buf, n);
+      sent += k;
+      if (k < n) break;
+    }
+    return sent;
+  }
+
+  /** I byte arrivati dal guest (Uint8Array, vuota se non ce ne sono). */
+  recv() {
+    const x = this.#x;
+    const parts = [];
+    let total = 0;
+    for (;;) {
+      const n = x.vetro_net_recv(this.#vm, this.id, this.#buf, this.#cap);
+      if (n === 0) break;
+      parts.push(new Uint8Array(x.memory.buffer, this.#buf, n).slice());
+      total += n;
+    }
+    if (parts.length === 1) return parts[0];
+    const out = new Uint8Array(total);
+    let at = 0;
+    for (const p of parts) {
+      out.set(p, at);
+      at += p.length;
+    }
+    return out;
+  }
+
+  /** Chiude il verso JS→guest (FIN dopo i byte in coda). */
+  shutdown() {
+    this.#x.vetro_net_shutdown(this.#vm, this.id);
+  }
+
+  /** Interrompe la connessione (RST al guest). */
+  abort() {
+    this.#x.vetro_net_abort(this.#vm, this.id);
+  }
+
+  /** Dimentica la connessione (se è viva la interrompe) e libera il buffer. */
+  release() {
+    if (!this.#buf) return;
+    this.#x.vetro_net_release(this.#vm, this.id);
+    this.#x.vetro_free(this.#buf, this.#cap);
+    this.#buf = 0;
   }
 }
