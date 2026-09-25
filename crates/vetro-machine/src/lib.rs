@@ -33,12 +33,14 @@
 pub mod android;
 mod board;
 pub mod boot;
+pub mod files;
 mod machine;
 pub mod net;
 mod psci;
 pub mod record;
 
 pub use board::Board;
+pub use files::FilesClient;
 pub use machine::{Devices, Machine, MachineConfig, Pointer, RecordOptions, Slots, Stop};
 pub use net::{FrameDir, NetLink, NetSetup, TappedFrame};
 pub use record::{Digest, Divergence, HostNetOp, Input, Log, ReplayStatus, Reply, VsockOp};

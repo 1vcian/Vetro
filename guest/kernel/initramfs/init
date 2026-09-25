@@ -6,6 +6,8 @@
 #   vetro.poweroff    spegne la macchina (PSCI) dopo l'autotest, senza shell;
 #   vetro.kselftest   esegue i kselftest (/etc/kselftest.sh, initramfs dei
 #                     kselftest) e spegne la macchina.
+# Con un dispositivo virtio-vsock parte vetro-files, il demone del gestore dei
+# file (M8, ADR 0020): sotto QEMU (senza vsock) non parte e il log non cambia.
 /bin/busybox --install -s
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 mount -t proc proc /proc
@@ -13,6 +15,10 @@ mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev
 mount -t tmpfs tmpfs /tmp
 echo "VETRO-BOOT-OK: /init avviato ($(uname -r))"
+# virtio-vsock ha l'id di dispositivo 19 (0x0013).
+if grep -qx 0x0013 /sys/bus/virtio/devices/*/device 2>/dev/null; then
+  vetro-files </dev/null &
+fi
 cmdline=$(cat /proc/cmdline)
 case " $cmdline " in
   *" vetro.noautotest "*) ;;

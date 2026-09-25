@@ -8,6 +8,7 @@
 pub use vetro_machine::boot;
 pub mod disk;
 pub mod elf;
+pub mod files;
 pub mod hostfwd;
 pub mod linux;
 pub mod netcap;

@@ -20,7 +20,7 @@ memoria lineare (due macchine da 1 GiB) arrivano negativi.
 
 ## Export
 
-Versione: `vetro_abi_version() -> u32`, oggi **6**. Cambia a ogni modifica
+Versione: `vetro_abi_version() -> u32`, oggi **7**. Cambia a ogni modifica
 incompatibile delle firme o dei codici qui sotto; il caricatore JS
 (`web/node/vetro.mjs`) la controlla.
 
@@ -37,6 +37,8 @@ incompatibile delle firme o dei codici qui sotto; il caricatore JS
 - 6 (M6): overlay copy-on-write persistente dei dischi (`vetro_overlay_*`,
   ADR 0017); `vetro_snapshot_restore` segna gli overlay per il confronto
   completo.
+- 7 (M8): virtio-vsock (bit `VSOCK` di `vetro_machine_new_with`) e gestore
+  dei file (`vetro_files_*`, ADR 0020, `docs/specs/files.md`).
 
 ### Memoria
 
@@ -88,7 +90,7 @@ conteggio che in nativo. `tools/wasm-boot.sh` lo verifica.
 
 | Export | Firma | Significato |
 |---|---|---|
-| `vetro_machine_new_with` | `(ram_size: u64, now_secs: u64, seed: u64, devices: u32, width: u32, height: u32) -> *mut Vm` | come `vetro_machine_new`, con i dispositivi scelti: bit `GPU` 1, `KEYBOARD` 2, `TABLET` 4, `MULTITOUCH` 8 (vince su `TABLET`), `NET` 16 (virtio-net con `vetro-net` e il sinkhole, `NetSetup::default`); 23 = `Devices::default`. `width`x`height`: risoluzione iniziale dello scanout 0 (0 = 1280x800). Slot come `Devices` (GPU 31, tastiera 30, puntatore 29, rete 28; i dischi dopo) |
+| `vetro_machine_new_with` | `(ram_size: u64, now_secs: u64, seed: u64, devices: u32, width: u32, height: u32) -> *mut Vm` | come `vetro_machine_new`, con i dispositivi scelti: bit `GPU` 1, `KEYBOARD` 2, `TABLET` 4, `MULTITOUCH` 8 (vince su `TABLET`), `NET` 16 (virtio-net con `vetro-net` e il sinkhole, `NetSetup::default`), `VSOCK` 32 (virtio-vsock, CID 3, ABI 7); 23 = `Devices::default`. `width`x`height`: risoluzione iniziale dello scanout 0 (0 = 1280x800). Slot come `Devices` (GPU 31, tastiera 30, puntatore 29, rete 28; i dischi dopo) |
 | `vetro_display_size` | `(vm, scanout: u32) -> u64` | `(larghezza << 32) \| altezza`; 0 se spento o senza GPU |
 | `vetro_display_ptr` | `(vm, scanout) -> *const u8` | pixel RGBA (4 byte, righe da `larghezza * 4`), nullo se spento. Valido fino alla prossima `vetro_run` |
 | `vetro_display_updates` | `(vm, scanout) -> u64` | contatore degli aggiornamenti (immagine o spegnimento): se non cambia, niente da ridisegnare |
@@ -213,6 +215,35 @@ guestEof, unsent }`, nomi in `NET_STATE` e `NET_REASON`). Prova:
 `tests/web/hostfwd.mjs` (in `tools/web-test.sh`): `nc -l -e cat` nel
 guest, eco di 200 KB dal JS, chiusura, porta senza servizio, stesse
 istruzioni con e senza JIT e in due esecuzioni.
+
+### Gestore dei file (ABI 7, ADR 0020, `docs/specs/files.md`)
+
+Il client di `vetro_machine::files` verso il demone `vetro-files` del guest
+(porta vsock 5200). Serve il bit `VSOCK`.
+
+| Export | Firma | Significato |
+|---|---|---|
+| `vetro_files_open` | `(vm, port: u32) -> u32` | crea il client (porta 0 = 5200), al posto di quello che c'era; 1 fatto, 0 senza vsock. Dopo `vetro_load_linux` o `vetro_snapshot_restore`: le connessioni al demone rimaste nello snapshot si chiudono al primo `pump` |
+| `vetro_files_close` | `(vm)` | chiude la connessione e toglie il client |
+| `vetro_files_status` | `(vm, out: *mut u32, cap: usize) -> u32` | 0 nessun client, 1 in collegamento (o in attesa di riprovare), 2 collegato. In `out`: operazioni non finite, saluti ricevuti (cresce a ogni ricollegamento: le osservazioni vanno rifatte), pezzo massimo e flag del saluto (bit 0 SELinux). Non tocca la macchina |
+| `vetro_files_request` | `(vm, op: u32, a: *const u8, a_len, b: *const u8, b_len, x: u64, y: u64) -> u32` | chiede un'operazione sul percorso `a` (UTF-8): 1 `STAT`, 2 `LIST`, 3 `READ` (`x` offset, `y` byte, `u64::MAX` = fino alla fine, al più 256 MiB), 4 `WRITE` (`b` contenuto, `x` modo di un file nuovo), 5 `MKDIR` (`x` modo), 6 `CREATE` (`x` modo), 7 `DELETE` (`x` 1 = ricorsivo), 8 `RENAME` (`b` destinazione), 9 `WATCH`, 10 `UNWATCH` (`x` wd). Restituisce l'id (> 0) o 0 |
+| `vetro_files_pump` | `(vm) -> u32` | fa avanzare il client (fra un quanto e l'altro) e restituisce i messaggi pronti |
+| `vetro_files_take` | `(vm) -> usize` | prepara il prossimo messaggio e ne dà la lunghezza (0 = nessuno) |
+| `vetro_files_ptr` | `(vm) -> *const u8` | i byte del messaggio, validi fino alla prossima `take` |
+
+Messaggio: `u32` lunghezza del JSON, JSON UTF-8, poi i byte di una lettura.
+JSON di una risposta: `{"kind":"reply","op":N,"ok":true,"type":T,...}` con
+`T` = `stat` (`stat`), `list` (`entries: [{name, stat}]`), `data` (`size`,
+`length`: i byte seguono), `written` (`stat`), `watch` (`wd`), `done`; o
+`{"kind":"reply","op":N,"ok":false,"error":"ENOENT (2)","errno":2,"code":"ENOENT"}`
+(`code` `PROTOCOL` o `DISCONNECTED` con `errno` null). `stat` = `{kind,
+mode, uid, gid, size, mtime, mtimeNs, nlink, link, selinux}`. Evento:
+`{"kind":"event","wd":N,"mask":N,"cookie":N,"name":"..."}`.
+
+Collegarsi, mandare e leggere sono ingressi (`Machine::input`, registrati
+per il replay); `status`, `take` e `ptr` no. In JS: `Machine.files(port)`
+→ `GuestFiles` (Promise per operazione, `onEvent`, `status()`, `pump()`,
+`close()`), costanti `FILES_OP`, `FILES_STATUS`, `INOTIFY`.
 
 ### Ponte JIT
 
@@ -350,8 +381,9 @@ server che ospita l'app dovrà mandarle, e ogni risorsa di un'altra origine
 (es. un disco su una CDN) dovrà avere CORS o `Cross-Origin-Resource-Policy:
 cross-origin`. Parametri dell'URL:
 `?kernel=URL&initrd=URL&disk=URL&cmdline=...&pointer=multitouch&webgpu=1&autostart=1`,
-più `snapshot=0` (niente cache degli snapshot) e `persist=0` (dischi non
-persistenti).
+più `snapshot=0` (niente cache degli snapshot), `persist=0` (dischi non
+persistenti), `files=/a,/b` (radici del gestore dei file) e `nofiles=1`
+(senza gestore dei file né vsock).
 
 - `main.mjs` (thread della pagina): sceglie kernel, initramfs e disco (URL
   o file locale), opzioni (RAM, risoluzione, tablet o touchscreen, blocchi
@@ -368,6 +400,14 @@ persistenti).
   rispondere alle richieste del terminale. `window.vetroState` (`boot`:
   `{ mode: 'cold' | 'snapshot', ms, times }`, `snapshots`, `disks`) per i
   test.
+- Gestore dei file (M8, ADR 0020, `docs/specs/files.md`): opzione attiva di
+  default (virtio-vsock nella macchina e nella chiave degli snapshot); il
+  Worker tiene `GuestFiles` e lo fa avanzare fra una fetta e l'altra, le
+  richieste della pagina sono ingressi registrati in `inputLog`; il
+  pannello `files.mjs` accanto allo schermo mostra l'albero delle radici
+  (`window.vetroFiles.setRoots`), aggiornato dagli eventi di inotify, con i
+  visualizzatori (testo, JSON, XML/SharedPreferences, esadecimale,
+  immagini, SQLite con `sqlite.mjs`) e il salvataggio nel guest.
 - Ingressi: tastiera sul canvas con `KeyboardEvent.code` → codice Linux
   (`keymap.mjs`; le ripetizioni del browser si scartano, l'autorepeat lo fa
   il guest con EV_REP; al blur si rilasciano i tasti premuti); mouse con
@@ -432,6 +472,11 @@ persistenti).
   uguali all'esecuzione senza tagli; avvio da zero con l'overlay (la
   scrittura c'è); base cambiata (overlay scartato). Stampa tempi e
   dimensioni di salvataggio e ripristino in V8;
+- `tests/web/files.mjs` (M8): il gestore dei file via API sul kernel M3
+  con vsock: list, lettura, ENOENT, scrittura che conserva modo e
+  proprietario letta dal guest, evento di un processo del guest entro 1 s
+  di tempo del guest, 1,2 MB scritti e riletti a pezzi (`cmp` nel guest),
+  cancellazione ricorsiva; due esecuzioni uguali;
 - `tests/web/browser.mjs`: l'app in Chrome headless pilotato col protocollo
   DevTools (WebSocket di Node 22): avvio col disco via HTTP, `md5sum` e
   motivo del guest sul canvas pixel per pixel con cursore visibile, tasto
@@ -439,7 +484,10 @@ persistenti).
   scrittura sul disco e snapshot risalvato; seconda sessione con
   `snapshot=0` (avvio da zero, scrittura ritrovata dall'overlay in OPFS,
   blocchi dalla cache OPFS); terza sessione ripristinata dallo snapshot
-  (tempo misurato, console che risponde, scrittura presente). Senza Chrome
+  (tempo misurato, console che risponde, scrittura presente); pannello del
+  gestore dei file (albero aggiornato dal vivo quando il guest crea un
+  file, file aperto, modificato e salvato, riletto dal guest con `cat`,
+  ricollegamento dopo il ripristino). Senza Chrome
   (`VETRO_CHROME`) stampa SKIP; `VETRO_REQUIRE_BROWSER=1` lo rende un
   errore.
 

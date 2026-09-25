@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]
-//! vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=ISTRUZIONE [--dump=VA:BYTE]]]
+//! vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=ISTRUZIONE [--dump=VA:BYTE]]] [--vsock] [--files-ls=PERCORSO]... [--files-cat=PERCORSO]... [--files-put=PERCORSO:FILE]...
 //! ```
 //!
 //! `boot` avvia la macchina virt (M3) con la console PL011 su stdin/stdout.
@@ -69,6 +69,14 @@
 //! 0) o dove diverge (codice 1). `--goto=N` va all'istruzione N (dal
 //! keyframe più vicino) e stampa i registri; `--dump=VA:BYTE` aggiunge i
 //! byte della memoria virtuale a quell'indirizzo (tabelle correnti).
+//!
+//! Gestore dei file (M8, ADR 0020): `--vsock` monta virtio-vsock (CID 3),
+//! su cui `/init` avvia il demone `vetro-files`. `--files-ls=PERCORSO`,
+//! `--files-cat=PERCORSO` e `--files-put=PERCORSO_GUEST:FILE_HOST`
+//! (ripetibili, implicano `--vsock`) eseguono nell'ordine le operazioni
+//! appena il demone risponde e scrivono i risultati su stdout; finite
+//! tutte, `vetro` esce con 0 se sono riuscite, 1 altrimenti (vedi
+//! `vetro_cli::files`).
 
 use std::process::ExitCode;
 use vetro_cli::linux::{ClockMode, Config, Exit};
@@ -92,7 +100,7 @@ fn usage() -> ExitCode {
         "uso: vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]"
     );
     eprintln!(
-        "     vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=ISTRUZIONE [--dump=VA:BYTE]]]"
+        "     vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=ISTRUZIONE [--dump=VA:BYTE]]] [--vsock] [--files-ls=PERCORSO]... [--files-cat=PERCORSO]... [--files-put=PERCORSO:FILE]..."
     );
     ExitCode::from(2)
 }
@@ -183,6 +191,7 @@ fn run(args: &[String]) -> ExitCode {
 fn boot(args: &[String]) -> ExitCode {
     use std::io::{Read, Write};
     use vetro_cli::disk::{FileBackend, FileOverlay};
+    use vetro_cli::files::{FileCmd, FilesTask};
     use vetro_cli::hostfwd::{HostFwd, Input};
     use vetro_machine::{Devices, Machine, MachineConfig, NetSetup, Stop};
     use vetro_platform::virtio::{CowBackend, VirtioBlk, VirtioBlkConfig};
@@ -203,6 +212,8 @@ fn boot(args: &[String]) -> ExitCode {
     let (mut record, mut replay, mut goto, mut dump) = (None, None, None, None);
     let mut keyframes = 100_000_000u64;
     let mut capture = vetro_cli::netcap::NetCapture::default();
+    let mut vsock = false;
+    let mut file_cmds: Vec<FileCmd> = Vec::new();
     for a in &join_values(&vetro_cli::netcap::join_values(args)) {
         match a.as_str() {
             "--recovery" => {
@@ -235,6 +246,10 @@ fn boot(args: &[String]) -> ExitCode {
             }
             "--stats" => {
                 stats = true;
+                continue;
+            }
+            "--vsock" => {
+                vsock = true;
                 continue;
             }
             _ => {}
@@ -272,6 +287,15 @@ fn boot(args: &[String]) -> ExitCode {
                     _ => return usage(),
                 }
             }
+            Some(("--files-ls", v)) => file_cmds.push(FileCmd::Ls(v.to_string())),
+            Some(("--files-cat", v)) => file_cmds.push(FileCmd::Cat(v.to_string())),
+            Some(("--files-put", v)) => match vetro_cli::files::parse_put(v) {
+                Ok(c) => file_cmds.push(c),
+                Err(e) => {
+                    eprintln!("vetro: {e}");
+                    return ExitCode::from(2);
+                }
+            },
             Some(("--hostfwd", v)) => match vetro_cli::hostfwd::parse_rule(v) {
                 Ok(r) => forwards.push(r),
                 Err(e) => {
@@ -404,6 +428,14 @@ fn boot(args: &[String]) -> ExitCode {
         Some(false) => devices.net = None,
         _ => {}
     }
+    if vsock || !file_cmds.is_empty() {
+        devices.vsock_cid = Some(3);
+    }
+    if replay.is_some() && !file_cmds.is_empty() {
+        eprintln!("vetro: in replay gli ingressi vengono dal log: niente --files-*");
+        return ExitCode::from(2);
+    }
+    let mut files = (!file_cmds.is_empty()).then(|| FilesTask::new(file_cmds));
     if !forwards.is_empty() && devices.net.is_none() {
         eprintln!("vetro: --hostfwd richiede la rete (--net)");
         return ExitCode::from(2);
@@ -662,8 +694,16 @@ fn boot(args: &[String]) -> ExitCode {
         if let Some(f) = fwd.as_mut() {
             f.service(&mut m);
         }
+        if let Some(t) = files.as_mut()
+            && let Some(ok) = t.step(&mut m, &mut out)
+        {
+            report(&m);
+            break if ok { ExitCode::SUCCESS } else { ExitCode::from(1) };
+        }
         match stop {
             Stop::Budget => {}
+            // Il gestore dei file ha richieste per il guest: si continua.
+            Stop::Idle if files.is_some() => {}
             Stop::Idle => {
                 // Niente da fare per il guest: si aspetta un ingresso
                 // dell'host (console o rete).
@@ -756,6 +796,9 @@ const BOOT_VALUE_OPTIONS: &[&str] = &[
     "--replay",
     "--goto",
     "--dump",
+    "--files-ls",
+    "--files-cat",
+    "--files-put",
 ];
 
 fn join_values(args: &[String]) -> Vec<String> {

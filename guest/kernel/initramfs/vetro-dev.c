@@ -17,6 +17,10 @@
  *                                 chiude in scrittura e stampa la risposta
  *   vetro-dev vsock-listen PORTA  accetta una connessione, rimanda in
  *                                 maiuscolo quello che riceve
+ *   vetro-dev xattr-set FILE NOME VALORE
+ *                                 imposta un xattr (M8: prove del gestore
+ *                                 dei file; BusyBox non ha setfattr)
+ *   vetro-dev xattr-get FILE NOME stampa il valore di un xattr
  *
  * Compilato da tools/guest-kernel/build.sh con gli header UAPI del kernel
  * guest (drm/ non c'è negli header di Alpine).
@@ -32,6 +36,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/xattr.h>
 #include <unistd.h>
 #include <linux/input.h>
 #include <linux/vm_sockets.h>
@@ -406,6 +411,25 @@ static int vsock_listen(unsigned port)
 	return 0;
 }
 
+/* ---- xattr (M8) --------------------------------------------------- */
+
+static int xattr_set(const char *path, const char *name, const char *value)
+{
+	if (lsetxattr(path, name, value, strlen(value), 0))
+		return die("lsetxattr");
+	return 0;
+}
+
+static int xattr_get(const char *path, const char *name)
+{
+	char buf[1024];
+	ssize_t n = lgetxattr(path, name, buf, sizeof(buf));
+	if (n < 0)
+		return die("lgetxattr");
+	P("xattr %s=%.*s\n", name, (int)n, buf);
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	setvbuf(stdout, NULL, _IOLBF, 0);
@@ -426,7 +450,12 @@ int main(int argc, char **argv)
 		return vsock_connect((unsigned)atoi(argv[2]), argv[3]);
 	if (!strcmp(cmd, "vsock-listen") && argc == 3)
 		return vsock_listen((unsigned)atoi(argv[2]));
+	if (!strcmp(cmd, "xattr-set") && argc == 5)
+		return xattr_set(argv[2], argv[3], argv[4]);
+	if (!strcmp(cmd, "xattr-get") && argc == 4)
+		return xattr_get(argv[2], argv[3]);
 	fprintf(stderr, "uso: vetro-dev drm|drm-hold|input|input-read DEV N|led DEV CODICE V|"
-			"vsock-cid|vsock-connect PORTA MSG|vsock-listen PORTA\n");
+			"vsock-cid|vsock-connect PORTA MSG|vsock-listen PORTA|xattr-set FILE NOME VALORE|"
+			"xattr-get FILE NOME\n");
 	return 2;
 }

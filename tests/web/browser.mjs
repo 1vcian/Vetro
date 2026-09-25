@@ -8,7 +8,11 @@
 //      motivo del guest pixel per pixel e il cursore dev'essere visibile;
 //   2. col canvas a fuoco un tasto vero (KeyA) arriva al guest da
 //      virtio-input (`vetro-dev input-read`);
-//   3. il primo avvio salva lo snapshot in OPFS al prompt; il guest scrive
+//   3. gestore dei file (M8): con le radici impostate dal test il pannello
+//      mostra l'albero, si aggiorna da solo quando un processo del guest
+//      crea un file, apre un file, lo modifica e lo salva nel guest, che lo
+//      rilegge con cat (modo conservato);
+//   3b. il primo avvio salva lo snapshot in OPFS al prompt; il guest scrive
 //      sul disco (dd + sync) e lo snapshot si risalva insieme all'overlay
 //      (M6, ADR 0016);
 //   4. seconda sessione senza snapshot (`snapshot=0`, stesso profilo):
@@ -16,7 +20,8 @@
 //      OPFS), e i blocchi del disco vengono dalla cache OPFS: nessuna lettura
 //      Range oltre la prima (dimensione);
 //   5. terza sessione: riparte dallo snapshot invece di avviare il kernel
-//      (tempo misurato), la console risponde, la scrittura c'è.
+//      (tempo misurato), la console risponde, la scrittura c'è, il gestore
+//      dei file si ricollega al demone dello snapshot.
 //
 // Chrome: VETRO_CHROME, altrimenti i percorsi soliti. Senza Chrome il test
 // dice SKIP (non è un test passato) ed esce con 0, o con 1 se
@@ -110,6 +115,34 @@ run(async () => {
     at = await page.until('vetro-dev: evento 1 30 0', at);
     console.log('tastiera: KeyA dal canvas arrivato al guest come KEY_A (virtio-input)');
     at = await page.until('# ', at);
+
+    // Gestore dei file (M8, ADR 0020): il pannello mostra le radici
+    // impostate, si aggiorna da solo quando un processo del guest crea un
+    // file (inotify), apre un file, lo modifica e lo salva nel guest, che lo
+    // rilegge con cat (modo conservato).
+    await page.type('mkdir -p /tmp/web && echo prima > /tmp/web/nota.txt && chmod 640 /tmp/web/nota.txt');
+    at = await page.until('# ', at);
+    const files = (expr) => page.eval(`window.vetroFiles.state()${expr}`);
+    await page.waitFor('gestore dei file collegato', async () => (await files('.state')) === 'Ready', 60_000);
+    await page.eval("window.vetroFiles.setRoots(['/tmp/web'])");
+    await page.waitFor('nota.txt nell\'albero', async () => (await files('.shown')).includes('/tmp/web/nota.txt'), 30_000);
+    await page.type('echo dal-guest > /tmp/web/nuovo.txt');
+    at = await page.until('# ', at);
+    await page.waitFor('nuovo.txt comparso da solo', async () => (await files('.shown')).includes('/tmp/web/nuovo.txt'), 30_000);
+    await page.eval(`document.querySelector('[data-path="/tmp/web/nota.txt"]').click()`);
+    await page.waitFor('nota.txt aperto', async () => (await page.eval("document.querySelector('#files-content textarea')?.value")) === 'prima\n', 30_000);
+    await page.eval(`(() => {
+      const a = document.querySelector('#files-content textarea');
+      a.value = 'modificato dal pannello\\n';
+      a.dispatchEvent(new Event('input'));
+      document.getElementById('files-save').click();
+    })()`);
+    await page.waitFor('salvataggio nel guest', async () => (await files('.message')).startsWith('salvato nel guest'), 30_000);
+    await page.type("cat /tmp/web/nota.txt; stat -c 'modo-%a' /tmp/web/nota.txt");
+    at = await page.until('modificato dal pannello', at);
+    at = await page.until('modo-640', at);
+    at = await page.until('# ', at);
+    console.log('gestore dei file: albero aggiornato dal vivo, file modificato nel pannello e riletto dal guest con cat (modo 640 conservato)');
     await page.type(`printf ${TEXT} | dd of=/dev/vda bs=1 seek=${WRITE_AT} conv=notrunc 2>/dev/null; sync`);
     at = await page.until('# ', at);
     const snap2 = await page.waitFor('snapshot dopo la scrittura', async () => (await page.state()).snapshots.find((x) => x.why === 'dischi cambiati'), 60_000);
@@ -147,6 +180,11 @@ run(async () => {
     at = await page.until(`${md5After}  /dev/vda`, at);
     const answeredMs = Date.now() - t0;
     check((await page.consoleText()).slice(-400).includes(`L-${TEXT}-F`), 'dopo il ripristino la scrittura non c\'è');
+    // Il gestore dei file si ricollega al demone dello snapshot (la
+    // connessione della prima sessione, rimasta nello snapshot, si chiude).
+    await page.waitFor('gestore dei file dopo il ripristino', async () => (await page.eval('window.vetroFiles.state().state')) === 'Ready', 60_000);
+    await page.eval("window.vetroFiles.setRoots(['/tmp/web'])");
+    await page.waitFor('albero dopo il ripristino', async () => (await page.eval('window.vetroFiles.state().shown')).includes('/tmp/web/nota.txt'), 30_000);
     const t = boot3.times;
     console.log(`terza sessione (snapshot): pronta in ${(restoredMs / 1000).toFixed(2)} s dall'apertura della pagina ` +
       `(nel Worker: wasm ${t.wasm.toFixed(0)} ms, kernel e initramfs ${t.files.toFixed(0)} ms, chiave ${t.key.toFixed(0)} ms, ` +

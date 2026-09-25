@@ -171,3 +171,170 @@ main {
 #console:focus {
   border-color: var(--accent);
 }
+
+/* Gestore dei file (M8) */
+#files-box {
+  flex: 1 1 380px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 90vh;
+}
+
+#files-head {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+}
+
+#files-status,
+#files-info,
+.fmeta,
+.fnote {
+  color: var(--dim);
+  font: 12px ui-monospace, monospace;
+}
+
+#files-roots {
+  flex: 1;
+  min-width: 0;
+}
+
+#files-tree {
+  flex: 0 1 35vh;
+  min-height: 120px;
+  overflow: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  font: 12px/1.6 ui-monospace, monospace;
+}
+
+.fnode {
+  display: flex;
+  gap: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.fnode:hover {
+  background: var(--line);
+}
+
+.fnode.sel {
+  background: #24405c;
+}
+
+.twisty {
+  width: 1em;
+  color: var(--dim);
+}
+
+.fname.dir {
+  color: var(--accent);
+}
+
+.fname.symlink {
+  color: #c792ea;
+}
+
+.fmeta {
+  margin-left: auto;
+  padding-right: 6px;
+}
+
+.ferr,
+#files-message.err {
+  color: #ff7b72;
+  font-size: 12px;
+}
+
+#files-message {
+  font-size: 12px;
+  color: var(--dim);
+  min-height: 1.2em;
+}
+
+#files-view {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+#files-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+#files-path {
+  font: 12px ui-monospace, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+#files-save:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+#files-content {
+  overflow: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.fedit {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 40vh;
+  background: #000;
+  color: #c8d0d8;
+  border: 1px solid var(--line);
+  font: 12px/1.35 ui-monospace, monospace;
+  white-space: pre;
+  tab-size: 4;
+}
+
+.fimg {
+  max-width: 100%;
+  image-rendering: auto;
+  background: repeating-conic-gradient(#333 0 25%, #222 0 50%) 0 0 / 16px 16px;
+}
+
+.ftable {
+  border-collapse: collapse;
+  font: 12px ui-monospace, monospace;
+}
+
+.ftable th,
+.ftable td {
+  border: 1px solid var(--line);
+  padding: 2px 6px;
+  text-align: left;
+  vertical-align: top;
+  max-width: 32em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ftable th {
+  background: var(--panel);
+}
+
+.fnull {
+  color: var(--dim);
+  font-style: italic;
+}
+
+.fsmall {
+  padding: 2px 8px;
+  font-weight: 400;
+}

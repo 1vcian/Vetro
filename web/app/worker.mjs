@@ -14,6 +14,14 @@
 // differenza); senza, va alla massima velocità. Mentre un disco aspetta
 // dati (`Blocked`) il tempo del guest è fermo (ADR 0014).
 //
+// Gestore dei file (M8, ADR 0020): con `files` la macchina ha virtio-vsock e
+// il Worker tiene il client `GuestFiles` del demone `vetro-files` del guest;
+// le richieste della pagina (messaggi `files`) sono ingressi come gli altri
+// (registrati in `inputLog`), il client avanza fra una fetta e l'altra e
+// risposte, eventi di inotify e stato tornano alla pagina (`files-reply`,
+// `files-event`, `files-status`). Dopo il ripristino di uno snapshot il
+// client è nuovo: le connessioni rimaste nello snapshot si chiudono.
+//
 // Persistenza (M6, ADR 0017):
 // - le scritture del guest sui dischi vanno nell'overlay copy-on-write, che
 //   si salva in OPFS (`vetro-overlays/`) fra una fetta e l'altra (al più
@@ -65,6 +73,9 @@ let lastSnapshot = null;
 let saveRequested = false;
 let consoleTail = [];
 let consoleTailLen = 0;
+/** Client del gestore dei file (GuestFiles) e ultimo stato mandato alla pagina. */
+let files = null;
+let filesKey = '';
 
 const post = (msg, transfer = []) => postMessage(msg, transfer);
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
@@ -116,6 +127,7 @@ function devicesOf(c) {
   let devices = DEV.GPU | DEV.KEYBOARD;
   devices |= c.pointer === 'multitouch' ? DEV.MULTITOUCH : DEV.TABLET;
   if (c.net) devices |= DEV.NET;
+  if (c.files) devices |= DEV.VSOCK;
   return devices;
 }
 
@@ -238,6 +250,10 @@ async function start(c) {
     post({ type: 'cold', times });
   }
   if (c.jit) m.setJit(16, 16);
+  if (c.files) {
+    files = m.files();
+    files.onEvent = (event) => post({ type: 'files-event', event });
+  }
   post({ type: 'started', pointer: c.pointer, restored: !!restored });
   running = true;
   loop().catch((e) => {
@@ -273,9 +289,45 @@ function apply(msg) {
     case 'resize':
       m.displayResize(msg.width, msg.height);
       break;
+    case 'files':
+      filesRequest(msg);
+      break;
     default:
       inputLog.pop();
       break;
+  }
+}
+
+/** Operazioni del gestore dei file chieste dalla pagina. */
+const FILE_OPS = {
+  stat: (a) => files.stat(a.path),
+  list: (a) => files.list(a.path),
+  read: (a) => files.read(a.path, a.offset ?? 0, a.length ?? null),
+  write: (a) => files.writeFile(a.path, a.bytes, a.mode ?? 0o644),
+  mkdir: (a) => files.mkdir(a.path, a.mode ?? 0o755),
+  create: (a) => files.create(a.path, a.mode ?? 0o644),
+  delete: (a) => files.delete(a.path, { recursive: !!a.recursive }),
+  rename: (a) => files.rename(a.path, a.to),
+  watch: (a) => files.watch(a.path),
+  unwatch: (a) => files.unwatch(a.wd),
+};
+
+function filesRequest(msg) {
+  const reply = (r) => post({ type: 'files-reply', id: msg.id, ...r }, r.result?.data ? [r.result.data.buffer] : []);
+  const op = FILE_OPS[msg.op];
+  if (!files || !op) return reply({ ok: false, error: files ? `operazione ${msg.op} sconosciuta` : 'gestore dei file spento' });
+  op(msg.args).then((result) => reply({ ok: true, result }), (e) => reply({ ok: false, error: e.message, code: e.code }));
+}
+
+/** Fa avanzare il gestore dei file; manda lo stato alla pagina se è cambiato. */
+function pumpFiles() {
+  if (!files) return;
+  files.pump();
+  const st = files.status();
+  const key = `${st.state}/${st.generation}`;
+  if (key !== filesKey) {
+    filesKey = key;
+    post({ type: 'files-status', status: st });
   }
 }
 
@@ -340,6 +392,7 @@ async function loop() {
   for (;;) {
     if (inbox.length) activity();
     while (inbox.length) apply(inbox.shift());
+    pumpFiles();
     const slice = performance.now();
     let stop;
     for (;;) {
@@ -355,6 +408,7 @@ async function loop() {
       if (cfg.realtime && guestMs() > performance.now() - t0 - paused + 20) break;
     }
     if (flush()) activity();
+    pumpFiles();
     const now = performance.now();
     if (stop !== 'Budget' || now - lastPersist > PERSIST_MS) {
       if (persistOverlays()) activity();

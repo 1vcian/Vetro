@@ -4,12 +4,12 @@
 
 import { JitEngine } from './jit-engine.mjs';
 
-export const ABI_VERSION = 6;
+export const ABI_VERSION = 7;
 /** Codici di vetro_run. */
 export const STOP = ['Budget', 'PowerOff', 'Reset', 'Idle', 'Unimplemented', 'Blocked'];
 
 /** Bit dei dispositivi di vetro_machine_new_with. */
-export const DEV = { GPU: 1, KEYBOARD: 2, TABLET: 4, MULTITOUCH: 8, NET: 16, DEFAULT: 1 | 2 | 4 | 16 };
+export const DEV = { GPU: 1, KEYBOARD: 2, TABLET: 4, MULTITOUCH: 8, NET: 16, VSOCK: 32, DEFAULT: 1 | 2 | 4 | 16 };
 /** Bit dei dischi. */
 export const DISK = { READ_ONLY: 1 };
 /** Dispositivi di vetro_input_events. */
@@ -21,6 +21,15 @@ export const RESTORE = [null, 'BadMagic', 'Version', 'Config', 'Corrupt'];
 /** Codici di vetro_overlay_open. */
 export const OVERLAY = ['Loaded', 'New', 'Mismatch', 'Corrupt', 'NoDisk'];
 export const NET_REASON = [null, 'Normal', 'GuestReset', 'RemoteReset', 'Refused', 'Timeout'];
+/** Operazioni di vetro_files_request (gestore dei file, ABI 7). */
+export const FILES_OP = { STAT: 1, LIST: 2, READ: 3, WRITE: 4, MKDIR: 5, CREATE: 6, DELETE: 7, RENAME: 8, WATCH: 9, UNWATCH: 10 };
+/** Stati di vetro_files_status. */
+export const FILES_STATUS = ['None', 'Connecting', 'Ready'];
+/** Bit degli eventi di inotify (GuestFiles.onEvent). */
+export const INOTIFY = {
+  MODIFY: 0x2, ATTRIB: 0x4, CLOSE_WRITE: 0x8, MOVED_FROM: 0x40, MOVED_TO: 0x80, CREATE: 0x100, DELETE: 0x200,
+  DELETE_SELF: 0x400, MOVE_SELF: 0x800, Q_OVERFLOW: 0x4000, IGNORED: 0x8000, ISDIR: 0x40000000,
+};
 
 const utf8 = new TextDecoder();
 const toUtf8 = new TextEncoder();
@@ -260,6 +269,17 @@ export class Machine {
     const id = this.#x.vetro_net_connect(this.#vm, port);
     if (id === 0n) throw new Error(`vetro_net_connect(${port}): rete assente o porta non valida`);
     return new GuestSocket(this.#x, this.#vm, id);
+  }
+
+  // ---- Gestore dei file (ABI 7, ADR 0020) --------------------------------
+
+  /**
+   * Il client del gestore dei file verso il demone `vetro-files` del guest
+   * (serve DEV.VSOCK). Le richieste partono e le risposte arrivano con
+   * `pump()`, da chiamare fra un quanto e l'altro. Lancia senza vsock.
+   */
+  files(port = 0) {
+    return new GuestFiles(this.#x, this.#vm, port);
   }
 
   // ---- Snapshot (ABI 4, ADR 0015) ---------------------------------------
@@ -535,5 +555,132 @@ export class GuestSocket {
     this.#x.vetro_net_release(this.#vm, this.id);
     this.#x.vetro_free(this.#buf, this.#cap);
     this.#buf = 0;
+  }
+}
+
+/**
+ * Il gestore dei file dal JS (vedi `Machine.files`): operazioni sui file del
+ * guest attraverso il demone `vetro-files` su virtio-vsock (ADR 0020).
+ * Ogni operazione restituisce una Promise che si risolve (o fallisce con un
+ * Error con `code`, per esempio 'ENOENT', ed `errno`) durante un `pump()`.
+ * Gli eventi di inotify delle osservazioni arrivano a `onEvent({ wd, mask,
+ * cookie, name })`. Chiedere, mandare e leggere sono ingressi della macchina
+ * (registrati per il replay); `status()` no.
+ */
+export class GuestFiles {
+  #x;
+  #vm;
+  #pending = new Map();
+  /** Callback degli eventi di inotify. */
+  onEvent = null;
+
+  constructor(x, vm, port = 0) {
+    this.#x = x;
+    this.#vm = vm;
+    if (x.vetro_files_open(vm, port) !== 1) throw new Error('vetro_files_open: la macchina non ha virtio-vsock (DEV.VSOCK)');
+  }
+
+  /** { state: 'None' | 'Connecting' | 'Ready', pending, generation, maxChunk, selinux }. */
+  status() {
+    const x = this.#x;
+    const p = x.vetro_alloc(16) >>> 0;
+    const code = x.vetro_files_status(this.#vm, p, 4);
+    const [pending, generation, maxChunk, flags] = new Uint32Array(x.memory.buffer, p, 4);
+    x.vetro_free(p, 16);
+    return { state: FILES_STATUS[code], pending, generation, maxChunk, selinux: (flags & 1) === 1 };
+  }
+
+  #request(op, path, b = null, x = 0n, y = 0n) {
+    const ex = this.#x;
+    const a = copyIn(ex, toUtf8.encode(path));
+    const bb = copyIn(ex, typeof b === 'string' ? toUtf8.encode(b) : b ?? new Uint8Array());
+    const id = ex.vetro_files_request(this.#vm, op, ...a, ...bb, BigInt(x), BigInt(y));
+    for (const [p, n] of [a, bb]) if (n) ex.vetro_free(p, n);
+    if (id === 0) return Promise.reject(new Error(`vetro_files_request(${op}, ${path}): rifiutata`));
+    return new Promise((ok, ko) => this.#pending.set(id, { ok, ko }));
+  }
+
+  /** Metadati: { kind, mode, uid, gid, size, mtime, mtimeNs, nlink, link, selinux }. */
+  stat(path) {
+    return this.#request(FILES_OP.STAT, path).then((r) => r.stat);
+  }
+
+  /** Le voci della cartella: [{ name, stat }], in ordine di nome. */
+  list(path) {
+    return this.#request(FILES_OP.LIST, path).then((r) => r.entries);
+  }
+
+  /** { size, data: Uint8Array }: `length` byte da `offset` (null = fino alla fine). */
+  read(path, offset = 0, length = null) {
+    return this.#request(FILES_OP.READ, path, null, offset, length === null ? 0xffffffffffffffffn : length)
+      .then((r) => ({ size: r.size, data: r.data }));
+  }
+
+  /** Sostituisce il file (scrittura atomica; proprietario, modo e xattr restano). Restituisce i nuovi metadati. */
+  writeFile(path, bytes, mode = 0o644) {
+    return this.#request(FILES_OP.WRITE, path, bytes, mode).then((r) => r.stat);
+  }
+
+  mkdir(path, mode = 0o755) {
+    return this.#request(FILES_OP.MKDIR, path, null, mode).then(() => undefined);
+  }
+
+  create(path, mode = 0o644) {
+    return this.#request(FILES_OP.CREATE, path, null, mode).then(() => undefined);
+  }
+
+  delete(path, { recursive = false } = {}) {
+    return this.#request(FILES_OP.DELETE, path, null, recursive ? 1 : 0).then(() => undefined);
+  }
+
+  rename(from, to) {
+    return this.#request(FILES_OP.RENAME, from, to).then(() => undefined);
+  }
+
+  /** Osserva una cartella con inotify: l'id (wd) degli eventi. */
+  watch(path) {
+    return this.#request(FILES_OP.WATCH, path).then((r) => r.wd);
+  }
+
+  unwatch(wd) {
+    return this.#request(FILES_OP.UNWATCH, '/', null, wd).then(() => undefined);
+  }
+
+  /** Fa avanzare il client e consegna risposte ed eventi; restituisce quanti messaggi. */
+  pump() {
+    const x = this.#x;
+    x.vetro_files_pump(this.#vm);
+    let count = 0;
+    for (;;) {
+      const n = x.vetro_files_take(this.#vm) >>> 0;
+      if (n === 0) return count;
+      count++;
+      const ptr = x.vetro_files_ptr(this.#vm) >>> 0;
+      const buf = new Uint8Array(x.memory.buffer, ptr, n);
+      const jl = buf[0] | (buf[1] << 8) | (buf[2] << 16) | (buf[3] << 24);
+      const msg = JSON.parse(utf8.decode(buf.subarray(4, 4 + jl)));
+      if (msg.kind === 'event') {
+        this.onEvent?.(msg);
+        continue;
+      }
+      if (msg.type === 'data') msg.data = buf.slice(4 + jl, 4 + jl + msg.length);
+      const p = this.#pending.get(msg.op);
+      if (!p) continue;
+      this.#pending.delete(msg.op);
+      if (msg.ok) p.ok(msg);
+      else {
+        const e = new Error(msg.error);
+        e.code = msg.code;
+        e.errno = msg.errno;
+        p.ko(e);
+      }
+    }
+  }
+
+  /** Chiude la connessione; le richieste in corso falliscono al prossimo pump (se ce n'è uno). */
+  close() {
+    this.#x.vetro_files_close(this.#vm);
+    for (const p of this.#pending.values()) p.ko(Object.assign(new Error('gestore dei file chiuso'), { code: 'CLOSED' }));
+    this.#pending.clear();
   }
 }

@@ -15,6 +15,8 @@
 //!   virtio-blk con i dati forniti dal JS a blocchi ([`disk`]);
 //! - rete (ABI 5): connessioni TCP dal JS verso i servizi del guest
 //!   (inoltro di porte, [`net`]);
+//! - gestore dei file (ABI 7, ADR 0020): il client del demone
+//!   `vetro-files` del guest su virtio-vsock ([`files`]);
 //! - snapshot della macchina (ABI 4, ADR 0015) e overlay copy-on-write
 //!   persistente dei dischi (ABI 6, ADR 0017): le scritture del guest diventano
 //!   scritture su un file che il JS tiene in OPFS;
@@ -28,6 +30,7 @@
 
 pub mod disk;
 pub mod display;
+pub mod files;
 pub mod jit;
 pub mod net;
 
@@ -53,7 +56,9 @@ use display::WebDisplay;
 /// inoltro di porte).
 /// 6: overlay copy-on-write persistente dei dischi (`vetro_overlay_*`,
 /// ADR 0017).
-pub const ABI_VERSION: u32 = 6;
+/// 7: virtio-vsock (bit `VSOCK`) e gestore dei file (`vetro_files_*`,
+/// ADR 0020).
+pub const ABI_VERSION: u32 = 7;
 
 /// Allineamento dei buffer di [`vetro_alloc`] (basta per `JitState`).
 const ALLOC_ALIGN: usize = 16;
@@ -78,6 +83,8 @@ pub mod dev {
     pub const MULTITOUCH: u32 = 8;
     /// virtio-net con lo stack di `vetro-net` e il sinkhole (`NetSetup::default`).
     pub const NET: u32 = 16;
+    /// virtio-vsock (CID 3), per il gestore dei file (`vetro_files_*`).
+    pub const VSOCK: u32 = 32;
     /// Quelli di `Devices::default` (la macchina del test di avvio).
     pub const DEFAULT: u32 = GPU | KEYBOARD | TABLET | NET;
 }
@@ -122,6 +129,12 @@ pub struct Vm {
     overlays: Vec<Option<DiskOverlay>>,
     /// Ultime scritture di `vetro_overlay_take`, finché JS non le applica.
     patches: Vec<u8>,
+    /// Client del gestore dei file (`vetro_files_open`).
+    files: Option<vetro_machine::FilesClient>,
+    /// Messaggi del gestore dei file non ancora presi dal JS.
+    files_queue: std::collections::VecDeque<Vec<u8>>,
+    /// L'ultimo messaggio preso (`vetro_files_take`).
+    files_msg: Vec<u8>,
 }
 
 /// L'overlay persistente di un disco dal lato di Rust: dove sta ogni
@@ -192,6 +205,9 @@ impl Vm {
             snapshot: Vec::new(),
             overlays: Vec::new(),
             patches: Vec::new(),
+            files: None,
+            files_queue: std::collections::VecDeque::new(),
+            files_msg: Vec::new(),
         };
         // Senza `Machine::gpu`: cambiare backend non deve far servire la GPU.
         vm.with_gpu(|g| g.set_backend(Box::new(WebDisplay::default())));
@@ -653,7 +669,7 @@ pub fn devices_from(bits: u32, width: u32, height: u32) -> Devices {
         keyboard: bits & dev::KEYBOARD != 0,
         pointer,
         net: (bits & dev::NET != 0).then(NetSetup::default),
-        vsock_cid: None,
+        vsock_cid: (bits & dev::VSOCK != 0).then_some(3),
     }
 }
 

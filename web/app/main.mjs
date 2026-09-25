@@ -7,6 +7,11 @@
 // Parametri dell'URL per precompilare ed eventualmente avviare:
 //   ?kernel=URL&initrd=URL&disk=URL&cmdline=...&pointer=multitouch&webgpu=1&autostart=1
 //   &snapshot=0 (niente cache degli snapshot) &persist=0 (dischi non persistenti)
+//   &files=/tmp,/root (radici del gestore dei file) &nofiles=1 (senza gestore)
+//
+// Gestore dei file (M8, ADR 0020): pannello accanto allo schermo con
+// l'albero delle radici (`window.vetroFiles.setRoots([...])`: oggi a mano,
+// con Android le imposterà il rilevamento dell'app in primo piano).
 //
 // Persistenza (M6, ADR 0017): il Worker salva in OPFS lo snapshot della
 // macchina e l'overlay dei dischi; al secondo avvio riparte dallo snapshot.
@@ -15,6 +20,7 @@
 import { absAxis, BUTTONS, evdevCode } from './keymap.mjs';
 import { keyToBytes, Terminal } from './terminal.mjs';
 import { Canvas2DRenderer, WebGpuRenderer } from './display.mjs';
+import { FilePanel } from './files.mjs';
 
 const $ = (id) => document.getElementById(id);
 const form = $('setup');
@@ -30,6 +36,44 @@ let pointerKind = 'tablet';
 /** Stato visibile ai test: come è partita la macchina, snapshot salvati, dischi. */
 const vetroState = (window.vetroState = { boot: null, snapshots: [], disks: [], stopped: null });
 let startedAt = 0;
+
+// ---- Gestore dei file --------------------------------------------------------
+
+const DEFAULT_ROOTS = ['/tmp', '/root', '/etc'];
+let rpcId = 0;
+const rpcPending = new Map();
+/** Un'operazione del gestore dei file nel Worker: Promise del risultato. */
+function rpc(op, args) {
+  return new Promise((ok, ko) => {
+    if (!worker) return ko(new Error('macchina spenta'));
+    const id = ++rpcId;
+    rpcPending.set(id, { ok, ko });
+    worker.postMessage({ type: 'files', id, op, args });
+  });
+}
+const filePanel = new FilePanel({
+  box: $('files-box'),
+  status: $('files-status'),
+  roots: $('files-roots'),
+  tree: $('files-tree'),
+  path: $('files-path'),
+  info: $('files-info'),
+  mode: $('files-mode'),
+  save: $('files-save'),
+  reload: $('files-reload'),
+  content: $('files-content'),
+  message: $('files-message'),
+}, rpc);
+let pendingRoots = DEFAULT_ROOTS;
+/** Per i test e per chi imposta le radici (l'app in primo piano). */
+window.vetroFiles = {
+  panel: filePanel,
+  setRoots: (roots) => {
+    pendingRoots = roots;
+    return filePanel.status.state === 'Ready' ? filePanel.setRoots(roots) : Promise.resolve();
+  },
+  state: () => filePanel.snapshot(),
+};
 
 const setStatus = (t) => {
   statusEl.textContent = t;
@@ -233,6 +277,7 @@ async function start() {
     height: Number(el.height.value),
     pointer: el.pointer.value,
     net: el.net.checked,
+    files: el.files.checked,
     jit: el.jit.checked,
     realtime: el.realtime.checked,
     opfs: el.opfs.checked,
@@ -243,6 +288,7 @@ async function start() {
   renderer = (el.webgpu.checked && (await WebGpuRenderer.create(screen).catch(() => null))) || new Canvas2DRenderer(screen);
   form.hidden = true;
   $('machine').hidden = false;
+  $('files-box').hidden = !config.files;
   startedAt = performance.now();
   worker = new Worker(new URL('./worker.mjs', import.meta.url), { type: 'module' });
   worker.onmessage = (e) => {
@@ -286,6 +332,22 @@ async function start() {
       case 'status':
         setStatus(msg.text);
         break;
+      case 'files-reply': {
+        const p = rpcPending.get(msg.id);
+        rpcPending.delete(msg.id);
+        if (msg.ok) p?.ok(msg.result);
+        else p?.ko(Object.assign(new Error(msg.error), { code: msg.code }));
+        break;
+      }
+      case 'files-event':
+        filePanel.onEvent(msg.event);
+        break;
+      case 'files-status': {
+        const first = msg.status.state === 'Ready' && filePanel.status.generation === 0;
+        filePanel.onStatus(msg.status);
+        if (first) filePanel.setRoots(pendingRoots);
+        break;
+      }
       case 'started':
         if (!msg.restored) setStatus(`in esecuzione (${renderer.name}, ${config.jit ? 'JIT' : 'interprete'}${crossOriginIsolated ? ', isolata' : ''})`);
         consoleEl.focus();
@@ -335,4 +397,6 @@ for (const [param, field] of [['kernel', 'kernelUrl'], ['initrd', 'initrdUrl'], 
 if (q.get('webgpu') === '1') form.elements.webgpu.checked = true;
 if (q.get('snapshot') === '0') form.elements.snapshot.checked = false;
 if (q.get('persist') === '0') form.elements.persist.checked = false;
+if (q.get('nofiles') === '1') form.elements.files.checked = false;
+if (q.has('files')) pendingRoots = q.get('files').split(',').map((s) => s.trim()).filter(Boolean);
 if (q.get('autostart') === '1') start().catch((err) => setStatus(`errore: ${err.message ?? err}`));

@@ -19,7 +19,7 @@
 //! `target/guest-kernel/snapshot-misure.txt`.
 //!
 //! Anche con una connessione aperta dall'host (inoltro di porte) a metà
-//! trasferimento.
+//! trasferimento, e a metà di una sessione del gestore dei file (M8).
 //!
 //! Solo in release, come `vetro.rs`.
 
@@ -27,9 +27,10 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 use vetro_boot_tests::*;
+use vetro_machine::files::{FilesError, Outcome as FilesOutcome};
 use vetro_machine::vetro_net::TcpReply;
 use vetro_machine::vetro_snapshot::{Snapshot, Writer, hash64};
-use vetro_machine::{Devices, Machine, MachineConfig, NetSetup, Stop};
+use vetro_machine::{Devices, FilesClient, Machine, MachineConfig, NetSetup, Stop};
 use vetro_platform::virtio::{
     CowBackend, MemBackend, MemDisplay, VirtioBlk, VirtioBlkConfig, VsockConn, VsockState,
 };
@@ -686,4 +687,103 @@ fn snapshot_durante_una_connessione_dall_host() {
     let (run, net) = hostfwd_script(&image, &initrd, &plan);
     same("inoltro di porte con tagli", &reference, &run);
     assert!(net == ref_net, "stato e registro della rete diversi");
+}
+
+// ---- Gestore dei file (M8, ADR 0020) ------------------------------------------
+
+/// Esegue finché l'operazione `op` del gestore dei file finisce; ciò che il
+/// client vede (risposte ed eventi) finisce in `seen`.
+fn files_wait(
+    r: &mut Run,
+    fc: &mut FilesClient,
+    seen: &mut Vec<String>,
+    op: u32,
+) -> Result<FilesOutcome, FilesError> {
+    let limit = r.m.steps + PHASE_BUDGET;
+    loop {
+        fc.pump(&mut r.m);
+        while let Some(e) = fc.take_event() {
+            seen.push(format!("evento {e:?}"));
+        }
+        while let Some(c) = fc.take_completion() {
+            let brief = match &c.result {
+                Ok(FilesOutcome::Data { size, data }) => format!("Data {size} {:x}", hash64(data)),
+                r => format!("{r:?}"),
+            };
+            seen.push(format!("op {} {brief}", c.op));
+            if c.op == op {
+                return c.result;
+            }
+        }
+        assert!(r.m.steps < limit, "operazione {op} del gestore non finita:\n{}", r.tail());
+        assert_eq!(r.quantum(), Stop::Budget, "{}", r.tail());
+    }
+}
+
+/// Una sessione del gestore dei file (il demone `vetro-files` del guest e
+/// il client di `vetro_machine::files`). Il client è l'host: resta lo
+/// stesso, la macchina sotto di lui si taglia a lettura a pezzi in corso,
+/// con un'osservazione aperta e l'evento in arrivo, a scrittura grande in
+/// volo. Connessione, crediti e byte in transito sono stato di virtio-vsock.
+fn files_script(image: &[u8], initrd: &[u8], plan: &Plan) -> (Outcome, String) {
+    let devices = Devices { vsock_cid: Some(GUEST_CID), ..Devices::default() };
+    let fresh = Box::new(move || Machine::with_devices(&MachineConfig::default(), &devices));
+    let mut r = Run::new(
+        fresh,
+        |m| {
+            m.load_linux(image, Some(initrd), "console=ttyAMA0 vetro.noautotest").unwrap();
+        },
+        plan,
+    );
+    let mut fc = FilesClient::default();
+    let mut seen = Vec::new();
+    let at = r.until(SHELL_PROMPT, 0);
+    let at = r.command("mkdir /tmp/f && seq 1 200000 > /tmp/f/grande", at);
+    let big: Vec<u8> = (1..=200_000u32).flat_map(|i| format!("{i}\n").into_bytes()).collect();
+    let op = fc.list("/tmp/f");
+    files_wait(&mut r, &mut fc, &mut seen, op).expect("list");
+    r.mark("files-lettura");
+    let op = fc.read_file("/tmp/f/grande");
+    let Ok(FilesOutcome::Data { data, .. }) = files_wait(&mut r, &mut fc, &mut seen, op) else { panic!() };
+    assert!(data == big, "lettura a pezzi diversa ({} byte)", data.len());
+    let op = fc.watch("/tmp/f");
+    files_wait(&mut r, &mut fc, &mut seen, op).expect("watch");
+    r.m.console_input(b"echo dal-guest > /tmp/f/g.txt\n");
+    r.mark("files-evento");
+    let limit = r.m.steps + PHASE_BUDGET;
+    while !seen.iter().any(|s| s.starts_with("evento") && s.contains("\"g.txt\"") && s.contains("mask: 8,")) {
+        assert!(r.m.steps < limit, "evento non arrivato: {seen:?}");
+        assert_eq!(r.quantum(), Stop::Budget);
+        fc.pump(&mut r.m);
+        while let Some(e) = fc.take_event() {
+            seen.push(format!("evento {e:?}"));
+        }
+    }
+    let at = r.until(SHELL_PROMPT, at);
+    r.mark("files-scrittura");
+    let op = fc.write_file("/tmp/f/copia", &big, 0o644);
+    files_wait(&mut r, &mut fc, &mut seen, op).expect("scrittura");
+    r.m.console_input(b"cmp /tmp/f/grande /tmp/f/copia && echo COPIA-\"\"UGUALE\n");
+    r.until("COPIA-UGUALE", at);
+    r.poweroff();
+    (r.finish(), seen.join("\n"))
+}
+
+#[test]
+fn snapshot_durante_una_sessione_del_gestore_dei_file() {
+    let Some((image, initrd)) = kernel() else { return };
+    let (reference, ref_seen) = files_script(&image, &initrd, &Plan::default());
+    let plan = Plan {
+        at: vec![],
+        marks: [
+            ("files-lettura", (1, Cut::Swap { jit: false })),
+            ("files-evento", (1, Cut::Swap { jit: true })),
+            ("files-scrittura", (1, Cut::Rewind { quanta: 2 })),
+        ]
+        .into(),
+        jit_from_start: false,
+    };
+    let (run, run_seen) = files_script(&image, &initrd, &plan);
+    same("gestore dei file con tagli", &reference, &run);
+    assert!(run_seen == ref_seen, "risposte ed eventi del gestore diversi:\n{ref_seen}\n---\n{run_seen}");
 }

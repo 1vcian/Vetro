@@ -306,7 +306,10 @@ Con il kernel guest (`cargo test --release -p vetro-boot-tests`):
   movimenti letti dal guest con evdev, vede il LED acceso dal guest, e
   scambia dati vsock nei due versi (300 KB verso il guest, oltre il suo
   credito; 200 KB di eco); due esecuzioni danno lo stesso log e le stesse
-  istruzioni.
+  istruzioni;
+- `files.rs` (solo Vetro, con vsock, M8): il demone del gestore dei file
+  `vetro-files`, che `/init` avvia quando c'è virtio-vsock, e il client
+  dell'host (`docs/specs/files.md`, ADR 0020).
 I test virtio usano un driver di prova (`virtio/testdrv.rs`) che fa ciò che
 fa Linux su una RAM finta: negoziazione, setup delle code, catene dirette e
 indirette, notifiche, used ring con aggiornamento di used_event,

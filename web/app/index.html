@@ -49,6 +49,7 @@
         </select>
       </label>
       <label title="virtio-net con lo stack di vetro-net e il sinkhole (DHCP 10.0.2.15)"><input name="net" type="checkbox" checked> rete</label>
+      <label title="virtio-vsock e il demone vetro-files del guest (ADR 0020)"><input name="files" type="checkbox" checked> gestore dei file</label>
       <label><input name="jit" type="checkbox" checked> JIT</label>
       <label><input name="realtime" type="checkbox" checked> tempo reale</label>
       <label><input name="opfs" type="checkbox" checked> cache OPFS</label>
@@ -72,6 +73,32 @@
         <button id="save" type="button" title="Salva ora lo snapshot della macchina e i dischi (OPFS)">Salva stato</button>
         <span id="snapinfo"></span>
         <span id="stats"></span>
+      </div>
+    </section>
+    <section id="files-box" hidden>
+      <div id="files-head">
+        <strong>File del guest</strong>
+        <span id="files-status">spento</span>
+      </div>
+      <label id="files-roots-label">Radici <input id="files-roots" spellcheck="false" title="Percorsi separati da virgole: le cartelle da mostrare"></label>
+      <div id="files-tree" role="tree"></div>
+      <div id="files-view">
+        <div id="files-bar">
+          <span id="files-path">nessun file aperto</span>
+          <select id="files-mode" title="Visualizzatore">
+            <option value="text">testo</option>
+            <option value="json">JSON</option>
+            <option value="xml">XML</option>
+            <option value="hex">esadecimale</option>
+            <option value="image">immagine</option>
+            <option value="sqlite">SQLite</option>
+          </select>
+          <button id="files-save" type="button" disabled title="Scrive il file nel guest (scrittura atomica: proprietario, modo e contesto SELinux restano)">Salva</button>
+          <button id="files-reload" type="button">Ricarica</button>
+        </div>
+        <div id="files-info"></div>
+        <div id="files-message"></div>
+        <div id="files-content"></div>
       </div>
     </section>
     <section id="console-box">

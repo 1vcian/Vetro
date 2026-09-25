@@ -3,7 +3,8 @@
 # senza dipendenze npm:
 #   1. controllo della sintassi dei moduli JS (node --check);
 #   2. test unitari JS (tests/web/unit.mjs): server con Range, DiskFeeder,
-#      mappa dei tasti, terminale, persistenza (MemFile, cache degli snapshot);
+#      mappa dei tasti, terminale, persistenza (MemFile, cache degli snapshot),
+#      lettore SQLite e visualizzatori del gestore dei file;
 #   3. riferimento nativo (tests/boot/tests/web.rs): gli stessi copioni con
 #      l'API di vetro-wasm compilata per l'host, interprete, disco locale;
 #   4. disco via HTTP Range (tests/web/boot-disk.mjs): il kernel M3 legge e
@@ -21,10 +22,16 @@
 #      e interprete), stesso seguito del log, stesse istruzioni, stesso file
 #      dell'overlay; scritture ritrovate da un avvio da zero; overlay di
 #      un'altra base scartato; tempi e dimensioni in V8;
-#   8. l'app in Chrome headless (tests/web/browser.mjs), se Chrome c'è
+#   8. gestore dei file via API (tests/web/files.mjs, M8, ADR 0020): list,
+#      letture, scritture che conservano modo e proprietario lette dal guest,
+#      evento di inotify entro 1 s di tempo del guest, 1,2 MB a pezzi; due
+#      esecuzioni uguali;
+#   9. l'app in Chrome headless (tests/web/browser.mjs), se Chrome c'è
 #      (VETRO_CHROME; altrimenti SKIP, che non è un test passato;
 #      VETRO_REQUIRE_BROWSER=1 lo rende un errore): anche snapshot e dischi
-#      persistenti in OPFS, e il secondo avvio dallo snapshot (tempo misurato).
+#      persistenti in OPFS, il secondo avvio dallo snapshot (tempo misurato)
+#      e il pannello del gestore dei file (albero dal vivo, un file modificato
+#      e salvato nel pannello, riletto dal guest con cat).
 #
 #   tools/web-test.sh [--no-jit]
 #
@@ -72,6 +79,9 @@ node tests/web/hostfwd.mjs "$@"
 
 echo "==> snapshot e overlay persistente dei dischi via API (M6)"
 node tests/web/snapshot.mjs "$@"
+
+echo "==> gestore dei file via API (M8)"
+node tests/web/files.mjs "$@"
 
 echo "==> app in Chrome headless"
 node tests/web/browser.mjs

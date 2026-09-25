@@ -3,6 +3,8 @@
 #   Image               kernel Linux arm64 (formato Image, avvio diretto)
 #   initramfs.cpio.gz   BusyBox statica + /init + autotest + vetro-dev
 #   vetro-dev           prova dei dispositivi di M5 (nell'initramfs)
+#   vetro-files         demone del gestore dei file di M8 (nell'initramfs,
+#                       ADR 0020)
 #   config, System.map  configurazione completa e simboli (per il debug)
 #   sources/            sorgenti esatti usati (GPL-2.0, vedi CLAUDE.md)
 #   VERSIONS            versioni di kernel, compilatore e BusyBox
@@ -94,6 +96,9 @@ docker run --rm --platform linux/arm64 \
   # kernel (Alpine non li ha); -idirafter lascia la precedenza a quelli di musl.
   gcc -static -O2 -Wall -Werror -idirafter "$obj/usr/include" \
     -o "$out/vetro-dev" /src/guest/kernel/initramfs/vetro-dev.c
+  # Demone del gestore dei file di M8 (ADR 0020), statico come vetro-dev.
+  gcc -static -O2 -Wall -Wextra -Werror -idirafter "$obj/usr/include" \
+    -o "$out/vetro-files" /src/guest/kernel/initramfs/vetro-files.c
   cp "$obj/arch/arm64/boot/Image" "$obj/.config" "$obj/System.map" "$out/"
   mv "$out/.config" "$out/config"
 
@@ -106,7 +111,8 @@ docker run --rm --platform linux/arm64 \
   cp /src/guest/kernel/config/vetro.config /src/guest/kernel/config/defconfig \
      /src/guest/kernel/initramfs/files.list /src/guest/kernel/initramfs/init \
      /src/guest/kernel/initramfs/autotest.sh /src/guest/kernel/initramfs/kselftest.sh \
-     /src/guest/kernel/initramfs/vetro-dev.c /src/guest/kernel/initramfs/udhcpc.script \
+     /src/guest/kernel/initramfs/vetro-dev.c /src/guest/kernel/initramfs/vetro-files.c \
+     /src/guest/kernel/initramfs/udhcpc.script \
      /src/tools/guest-kernel/build.sh \
      /src/tools/guest-kernel/Dockerfile "$out/sources/"
   {
