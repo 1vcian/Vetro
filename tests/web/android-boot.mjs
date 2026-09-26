@@ -83,7 +83,12 @@ run(async () => {
 
   // Macchina nuova: riusa la regione della prima (azzerata) e ripristina.
   const t1 = performance.now();
-  const r = new Session(exports, kernel, { jit, machine: { ramSize: RAM }, restore: snap });
+  const r = new Session(exports, kernel, { jit, machine: { ramSize: RAM }, setup: (sess) => {
+    // Ripristino a pezzi (vetro_snapshot_restore_stream, import vetro_host.snapshot_read).
+    const t = performance.now();
+    sess.m.snapshotRestoreStream(snap.length, (view, at) => view.set(snap.subarray(at, at + view.length)));
+    sess.restoreMs = performance.now() - t;
+  }, load: () => {} });
   check(r.m.steps === cutSteps, `ripristinata a ${r.m.steps} istruzioni invece di ${cutSteps}`);
   check(r.m.memoryBytes < memBefore + 2 ** 30, `seconda macchina: memoria ${r.m.memoryBytes} byte, la regione non è stata riusata`);
   await r.poweroff(0);

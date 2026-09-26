@@ -264,6 +264,25 @@ export class SnapshotStore {
     }
   }
 
+  /**
+   * Un lettore dello snapshot `key`: `{ size, readAt(view, offset), close() }`
+   * (sincrono, per `Machine.snapshotRestoreStream`).
+   */
+  async openReader(key) {
+    if (this.#mem) {
+      const all = this.#mem.get(`${key}.snap`);
+      return { size: all.length, readAt: (view, at) => view.set(all.subarray(at, at + view.length)), close: () => {} };
+    }
+    const h = await (await this.#dir.getFileHandle(`${key}.snap`)).createSyncAccessHandle();
+    return {
+      size: h.getSize(),
+      readAt: (view, at) => {
+        if (h.read(view, { at }) !== view.length) throw new Error('snapshot: lettura corta');
+      },
+      close: () => h.close(),
+    };
+  }
+
   /** Legge i byte dello snapshot `key` in `view` (lunga `meta.size`). */
   async readInto(key, view) {
     if (this.#mem) {
@@ -284,8 +303,31 @@ export class SnapshotStore {
    * lunghezza totale (vedi `Machine.snapshotSaveTo`).
    */
   async saveStream(key, meta, produce) {
-    await this.#remove(`${key}.json`);
     let size;
+    if (!this.#mem) {
+      // In un file nuovo, poi al posto del vecchio: se il salvataggio fallisce
+      // (memoria esaurita, pagina chiusa) lo snapshot di prima resta.
+      const fh = await this.#dir.getFileHandle(`${key}.new`, { create: true });
+      if (typeof fh.move === 'function') {
+        const h = await fh.createSyncAccessHandle();
+        try {
+          h.truncate(0);
+          size = produce((b, at) => {
+            if (h.write(b, { at }) !== b.length) throw new Error('snapshot: scrittura corta in OPFS');
+          });
+          h.flush();
+        } finally {
+          h.close();
+        }
+        await this.#remove(`${key}.json`);
+        await this.#remove(`${key}.snap`);
+        await fh.move(`${key}.snap`);
+        await this.#write(`${key}.json`, new TextEncoder().encode(JSON.stringify({ ...meta, size })));
+        return size;
+      }
+      await this.#remove(`${key}.new`);
+    }
+    await this.#remove(`${key}.json`);
     if (this.#mem) {
       const parts = [];
       size = produce((b, at) => parts.push([at, b.slice()]));

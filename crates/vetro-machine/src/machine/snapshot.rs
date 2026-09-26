@@ -62,6 +62,47 @@ fn config_bytes(m: &Machine) -> Vec<u8> {
     w.into_bytes()
 }
 
+/// Il contenuto della RAM letto a pezzi da `pull`, con l'hash del file che
+/// avanza man mano.
+struct PullSource<'a> {
+    pull: &'a mut dyn FnMut(&mut [u8]) -> usize,
+    buf: Vec<u8>,
+    start: usize,
+    end: usize,
+    /// Byte della sezione ancora da leggere da `pull`.
+    left: u64,
+    hash: &'a mut Hash64,
+}
+
+impl crate::board::RamSource for PullSource<'_> {
+    fn take(&mut self, n: usize) -> Result<&[u8], Error> {
+        if self.end - self.start < n {
+            if n > self.buf.len() {
+                self.buf.resize(n.next_power_of_two(), 0);
+            }
+            self.buf.copy_within(self.start..self.end, 0);
+            self.end -= self.start;
+            self.start = 0;
+            while self.end < n {
+                if self.left == 0 {
+                    return Err(Error::Truncated);
+                }
+                let cap = (self.buf.len() - self.end).min(usize::try_from(self.left).unwrap_or(usize::MAX));
+                let got = (self.pull)(&mut self.buf[self.end..self.end + cap]);
+                if got == 0 || got > cap {
+                    return Err(Error::Truncated);
+                }
+                self.hash.update(&self.buf[self.end..self.end + got]);
+                self.end += got;
+                self.left -= got as u64;
+            }
+        }
+        let at = self.start;
+        self.start += n;
+        Ok(&self.buf[at..at + n])
+    }
+}
+
 /// [`vetro_snapshot::hash64`] a pezzi, con la lunghezza totale nota prima.
 struct Hash64 {
     h: u64,
@@ -221,6 +262,20 @@ impl Machine {
             return Err(Error::Config { found: header.config_hash, expected });
         }
         let mut r = Reader::new(payload);
+        self.load_head(&mut r)?;
+        {
+            let mut b = self.board.borrow_mut();
+            let mut s = r.section(b"RAM ")?;
+            b.ram.restore(&mut s)?;
+            s.finish()?;
+        }
+        r.finish()?;
+        self.interp = Next::Jit;
+        Ok(())
+    }
+
+    /// Le sezioni prima della RAM.
+    fn load_head(&mut self, r: &mut Reader<'_>) -> Result<(), Error> {
         let mut s = r.section(b"MACH")?;
         self.steps = s.u64()?;
         self.timer_deadline = s.opt_u64()?;
@@ -241,16 +296,68 @@ impl Machine {
         let mut s = r.section(b"MMU ")?;
         self.mmu.restore(&mut s)?;
         s.finish()?;
-        {
-            let mut b = self.board.borrow_mut();
-            let mut s = r.section(b"PLAT")?;
-            b.virt.restore(&mut s)?;
-            s.finish()?;
-            let mut s = r.section(b"RAM ")?;
-            b.ram.restore(&mut s)?;
-            s.finish()?;
+        let mut b = self.board.borrow_mut();
+        let mut s = r.section(b"PLAT")?;
+        b.virt.restore(&mut s)?;
+        s.finish()?;
+        Ok(())
+    }
+
+    /// Come [`Machine::load_state`] senza il file intero in memoria (ADR
+    /// 0028): `head` sono i byte del file dall'inizio fino all'intestazione
+    /// della sezione `RAM ` compresa (etichetta e lunghezza), `pull` riempie
+    /// il buffer dato con i byte successivi del file (il contenuto della RAM)
+    /// e ne restituisce il numero (0 = fine). Magia, versione e configurazione
+    /// si controllano prima di toccare la macchina (come `load_state`); la
+    /// somma di controllo si verifica mentre la RAM arriva, quindi un file
+    /// rovinato dà [`Error::Checksum`] a macchina già cambiata, da scartare.
+    pub fn load_state_stream(
+        &mut self,
+        head: &[u8],
+        pull: &mut dyn FnMut(&mut [u8]) -> usize,
+    ) -> Result<(), Error> {
+        const H: usize = vetro_snapshot::HEADER_LEN;
+        if head.len() < 8 || head[..8] != vetro_snapshot::MAGIC {
+            return Err(Error::BadMagic);
         }
+        if head.len() < H + 12 {
+            return Err(Error::Truncated);
+        }
+        let mut r = Reader::new(&head[8..H]);
+        let version = r.u32()?;
+        if version != vetro_snapshot::FORMAT_VERSION {
+            return Err(Error::Version { found: version, expected: vetro_snapshot::FORMAT_VERSION });
+        }
+        let config_hash = r.u64()?;
+        let total = r.u64()?;
+        let sum = r.u64()?;
+        let expected = self.config_hash();
+        if config_hash != expected {
+            return Err(Error::Config { found: config_hash, expected });
+        }
+        let body = &head[H..head.len() - 12];
+        let tail = &head[head.len() - 12..];
+        if &tail[..4] != b"RAM " {
+            return Err(Error::Section { expected: *b"RAM ", found: tail[..4].try_into().expect("4 byte") });
+        }
+        let ram_len = u64::from_le_bytes(tail[4..].try_into().expect("8 byte"));
+        if (head.len() - H) as u64 + ram_len != total {
+            return Err(Error::Truncated);
+        }
+        let mut hash = Hash64::new(total);
+        hash.update(&head[H..]);
+        let mut r = Reader::new(body);
+        self.load_head(&mut r)?;
         r.finish()?;
+        let mut src =
+            PullSource { pull, buf: vec![0; 1 << 20], start: 0, end: 0, left: ram_len, hash: &mut hash };
+        self.board.borrow_mut().ram.restore_from(&mut src)?;
+        if src.left != 0 || src.start != src.end {
+            return Err(Error::invalid("sezione RAM più lunga del contenuto"));
+        }
+        if hash.finish() != sum {
+            return Err(Error::Checksum);
+        }
         self.interp = Next::Jit;
         Ok(())
     }
@@ -507,6 +614,66 @@ pub(super) mod tests {
             }
             assert_eq!(h.finish(), vetro_snapshot::hash64(&data), "taglio a {cut}");
         }
+    }
+
+    /// Il ripristino a pezzi (`load_state_stream`, per il browser) dà lo
+    /// stesso stato di `load_state`, con pezzi di ogni dimensione; i file
+    /// rovinati si rifiutano (magia, versione, configurazione a macchina
+    /// intatta; somma di controllo alla fine).
+    #[test]
+    fn ripristino_a_pezzi_uguale() {
+        let mut m = probe();
+        run_to(&mut m, 123_457, 10_000, &mut Vec::new());
+        let snap = m.save();
+        // Dove comincia il contenuto della RAM: dopo le sezioni e l'intestazione di `RAM `.
+        let mut at = vetro_snapshot::HEADER_LEN;
+        while &snap[at..at + 4] != b"RAM " {
+            at += 12 + u64::from_le_bytes(snap[at + 4..at + 12].try_into().unwrap()) as usize;
+        }
+        let head = &snap[..at + 12];
+        for piece in [1usize, 7, 4096, 1 << 20] {
+            let mut n = probe();
+            run_to(&mut n, 250_000, 10_000, &mut Vec::new());
+            let mut pos = head.len();
+            n.load_state_stream(head, &mut |buf: &mut [u8]| {
+                let k = buf.len().min(piece).min(snap.len() - pos);
+                buf[..k].copy_from_slice(&snap[pos..pos + k]);
+                pos += k;
+                k
+            })
+            .unwrap();
+            assert!(n.save() == snap, "pezzi da {piece}: stato diverso");
+        }
+        let mut n = probe();
+        let before = n.save();
+        let mut bad = head.to_vec();
+        bad[0] ^= 1;
+        assert!(matches!(n.load_state_stream(&bad, &mut |_| 0), Err(Error::BadMagic)));
+        let mut bad = head.to_vec();
+        bad[12] ^= 1;
+        assert!(matches!(n.load_state_stream(&bad, &mut |_| 0), Err(Error::Config { .. })));
+        assert!(n.save() == before, "macchina intatta dopo un rifiuto d'intestazione");
+        // Un byte della RAM cambiato: somma di controllo sbagliata.
+        let mut pos = head.len();
+        let r = n.load_state_stream(head, &mut |buf: &mut [u8]| {
+            let k = buf.len().min(snap.len() - pos);
+            buf[..k].copy_from_slice(&snap[pos..pos + k]);
+            if pos + k == snap.len() {
+                buf[k - 1] ^= 0x40;
+            }
+            pos += k;
+            k
+        });
+        assert!(r.is_err(), "RAM rovinata accettata");
+        // File troncato.
+        let mut pos = head.len();
+        let r = probe().load_state_stream(head, &mut |buf: &mut [u8]| {
+            let k = buf.len().min(snap.len() - 10 - pos);
+            buf[..k].copy_from_slice(&snap[pos..pos + k]);
+            pos += k;
+            k
+        });
+        assert!(matches!(r, Err(Error::Truncated)), "{r:?}");
     }
 
     /// Il ripristino in una macchina che ha già girato (stato diverso

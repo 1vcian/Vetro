@@ -548,6 +548,18 @@ impl Vm {
         Ok(())
     }
 
+    /// Come [`Vm::restore_state`] con il file letto a pezzi
+    /// ([`vetro_machine::Machine::load_state_stream`]).
+    pub fn restore_state_stream(
+        &mut self,
+        head: &[u8],
+        pull: &mut dyn FnMut(&mut [u8]) -> usize,
+    ) -> Result<(), vetro_machine::vetro_snapshot::Error> {
+        self.m.load_state_stream(head, pull)?;
+        self.after_state_change();
+        Ok(())
+    }
+
     /// Copia in `dst` al più `dst.len()` byte dell'uscita della console, che
     /// consuma; il resto aspetta la chiamata successiva.
     pub fn console_read(&mut self, dst: &mut [u8]) -> usize {
@@ -607,6 +619,8 @@ mod host {
         pub fn panic(ptr: *const u8, len: usize);
         /// Un pezzo di uno snapshot di `vetro_snapshot_save_stream`.
         pub fn snapshot_write(ptr: *const u8, len: usize);
+        /// I prossimi byte di uno snapshot per `vetro_snapshot_restore_stream`.
+        pub fn snapshot_read(ptr: *mut u8, cap: usize) -> usize;
     }
 }
 
@@ -1296,6 +1310,40 @@ pub unsafe extern "C" fn vetro_snapshot_restore(vm: *mut Vm, data: *const u8, le
     // SAFETY: `vm` viene da `vetro_machine_new`, `data` vale per `len` byte.
     let vm = unsafe { &mut *vm };
     match vm.restore_state(unsafe { bytes(data, len) }) {
+        Ok(()) => restore::OK,
+        Err(e) => {
+            vm.message = e.to_string();
+            match e {
+                Error::BadMagic => restore::BAD_MAGIC,
+                Error::Version { .. } => restore::VERSION,
+                Error::Config { .. } => restore::CONFIG,
+                _ => restore::CORRUPT,
+            }
+        }
+    }
+}
+
+/// Ripristino a pezzi (ABI 12, ADR 0028), senza il file intero nella memoria
+/// del modulo: `head` sono i byte del file fino all'intestazione della
+/// sezione `RAM ` compresa, il resto (il contenuto della RAM) si chiede al JS
+/// con l'import `vetro_host.snapshot_read(ptr, cap) -> byte scritti` (0 =
+/// fine). Stessi codici di [`vetro_snapshot_restore`]; con `CORRUPT` (anche
+/// una somma di controllo sbagliata, che si scopre alla fine) la macchina va
+/// scartata.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_snapshot_restore_stream(vm: *mut Vm, head: *const u8, head_len: usize) -> u32 {
+    use vetro_machine::vetro_snapshot::Error;
+    // SAFETY: `vm` viene da `vetro_machine_new`, `head` vale per `head_len` byte.
+    let vm = unsafe { &mut *vm };
+    let head = unsafe { bytes(head, head_len) };
+    #[cfg(target_arch = "wasm32")]
+    let mut pull = |buf: &mut [u8]| -> usize {
+        // SAFETY: import di `vetro_host`: scrive al più `buf.len()` byte in `buf`.
+        (unsafe { host::snapshot_read(buf.as_mut_ptr(), buf.len()) }).min(buf.len())
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut pull = |_: &mut [u8]| -> usize { 0 };
+    match vm.restore_state_stream(head, &mut pull) {
         Ok(()) => restore::OK,
         Err(e) => {
             vm.message = e.to_string();

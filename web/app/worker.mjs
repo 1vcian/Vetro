@@ -315,12 +315,21 @@ async function start(c) {
         status(`ripristino lo snapshot (${(meta.size / 2 ** 20).toFixed(0)} MiB)`);
         const t3 = performance.now();
         try {
-          // I byte vanno da OPFS direttamente nella memoria del modulo.
-          await m.snapshotRestoreWith(meta.size, async (view) => {
-            await store.readInto(snapKey, view);
-            times.readSnapshot = performance.now() - t3;
-          });
-          times.restore = performance.now() - t3 - times.readSnapshot;
+          // A pezzi da OPFS: nella memoria del modulo solo la parte prima
+          // della RAM (ADR 0028).
+          const reader = await store.openReader(snapKey);
+          let readMs = 0;
+          try {
+            m.snapshotRestoreStream(reader.size, (view, at) => {
+              const tr = performance.now();
+              reader.readAt(view, at);
+              readMs += performance.now() - tr;
+            });
+          } finally {
+            reader.close();
+          }
+          times.readSnapshot = readMs;
+          times.restore = performance.now() - t3 - readMs;
           restored = { meta, size: meta.size };
         } catch (e) {
           status(`snapshot non usato: ${e.message}`);

@@ -45,6 +45,8 @@ const toUtf8 = new TextEncoder();
 export const SNAPSHOT_HEADER_LEN = 36;
 /** Dove vanno i pezzi di vetro_snapshot_save_stream (import vetro_host.snapshot_write). */
 let snapshotSink = null;
+/** Da dove vengono quelli di vetro_snapshot_restore_stream (import vetro_host.snapshot_read). */
+let snapshotSource = null;
 
 /**
  * Byte di un percorso del guest da una stringa in *surrogateescape* (ADR
@@ -197,6 +199,10 @@ export async function instantiate(wasmBytes, { jitBudget } = {}) {
       panic: (ptr, len) => {
         const msg = utf8.decode(new Uint8Array(exports.memory.buffer, ptr >>> 0, len));
         console.error(`vetro-wasm: panic: ${msg}`);
+      },
+      snapshot_read: (ptr, cap) => {
+        if (!snapshotSource) throw new Error('vetro_host.snapshot_read fuori da Machine.snapshotRestoreStream');
+        return snapshotSource(ptr >>> 0, cap >>> 0);
       },
       snapshot_write: (ptr, len) => {
         if (!snapshotSink) throw new Error('vetro_host.snapshot_write fuori da Machine.snapshotSaveTo');
@@ -508,6 +514,49 @@ export class Machine {
       }
     } finally {
       x.vetro_free(ptr, n);
+    }
+  }
+
+  /**
+   * Ripristino a pezzi (ABI 12, ADR 0028): `readAt(view, offset)`
+   * (sincrona) riempie `view` con i byte del file da `offset`; `size` è la
+   * lunghezza del file. Nella memoria del modulo va solo la parte prima della
+   * RAM (dispositivi e copy-on-write); la RAM arriva a pezzi da 1 MiB, così
+   * un buffer grande quanto lo snapshot non frammenta la memoria di chi
+   * dopo vuole salvare di nuovo. Lancia come `snapshotRestore`.
+   */
+  snapshotRestoreStream(size, readAt) {
+    const x = this.#x;
+    const small = new Uint8Array(12);
+    let at = SNAPSHOT_HEADER_LEN;
+    for (;;) {
+      if (at + 12 > size) throw Object.assign(new Error('snapshot: sezione RAM non trovata'), { code: 'Corrupt' });
+      readAt(small, at);
+      const tag = String.fromCharCode(...small.subarray(0, 4));
+      if (tag === 'RAM ') break;
+      at += 12 + Number(new DataView(small.buffer).getBigUint64(4, true));
+    }
+    const headLen = at + 12;
+    const ptr = x.vetro_alloc(headLen) >>> 0;
+    if (!ptr) throw Object.assign(new Error(`vetro_alloc(${headLen}) fallita: memoria del modulo esaurita`), { code: 'Memory' });
+    let pos = headLen;
+    snapshotSource = (p, cap) => {
+      const n = Math.min(cap, size - pos);
+      if (n > 0) readAt(new Uint8Array(x.memory.buffer, p, n), pos);
+      pos += n;
+      return n;
+    };
+    try {
+      readAt(new Uint8Array(x.memory.buffer, ptr, headLen), 0);
+      const r = x.vetro_snapshot_restore_stream(this.#vm, ptr, headLen);
+      if (r !== 0) {
+        const e = new Error(`vetro_snapshot_restore_stream: ${RESTORE[r] ?? r}: ${this.#message()}`);
+        e.code = RESTORE[r] ?? String(r);
+        throw e;
+      }
+    } finally {
+      snapshotSource = null;
+      x.vetro_free(ptr, headLen);
     }
   }
 

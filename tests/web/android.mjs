@@ -13,6 +13,9 @@
 //   --save=FILE        salva lo snapshot quando la home è a schermo (tempi e dimensione)
 //   --restore=FILE     riparte da uno snapshot di --save (stessa RAM) invece di avviare
 //   --params=RIGA      parametri del bootloader (default ANDROID_PARAMS di web/node/android.mjs)
+//   --aosp=DIR         immagini e disco (default target/aosp)
+//   --compact          prima dello snapshot: drop_caches e memoria libera
+//                      riempita di zeri nel guest (prova di ADR 0028)
 //   --apk=FILE         APK da installare (default target/apps/tocco.apk, da
 //                      tests/apps/tocco/build.sh)
 //
@@ -48,7 +51,9 @@ const guestSecs = Number(arg('guest-secs', 1500));
 const until = arg('until', 'home');
 const jit = !flag('no-jit');
 const logPath = arg('log', join(root, 'target/aosp/node-android.log'));
-const aosp = join(root, 'target/aosp');
+const aosp = arg('aosp', join(root, 'target/aosp'));
+const compact = flag('compact');
+const saveAfterApp = arg('save-after-app', null);
 const savePath = arg('save', null);
 const restorePath = arg('restore', null);
 const params = arg('params', ANDROID_PARAMS);
@@ -94,7 +99,7 @@ async function main() {
   if (restorePath) {
     const t = performance.now();
     const bytes = readFileSync(restorePath);
-    await m.snapshotRestoreWith(bytes.length, (view) => view.set(bytes));
+    m.snapshotRestoreStream(bytes.length, (view, at) => view.set(bytes.subarray(at, at + view.length)));
     console.log(`ripristinato da ${restorePath}: ${mib(bytes.length)} MiB in ${(performance.now() - t).toFixed(0)} ms, a ${m.steps} istruzioni`);
     progress.feed('sys-boot-completed-set\n', Number(m.guestNs) / 1e9);
   } else {
@@ -148,11 +153,13 @@ async function main() {
       await writeFile(logPath, log);
       screenshot(m, 'node-live.png', true);
     }
-    if (flow?.wantSave && !saved) {
+    if (flow?.wantSave && (!saved || typeof flow.wantSave === 'string')) {
+      const path = typeof flow.wantSave === 'string' ? flow.wantSave : savePath;
+      flow.wantSave = false;
       saved = true;
       report('prima dello snapshot');
       const ts = performance.now();
-      const fh = openSync(savePath, 'w');
+      const fh = openSync(path, 'w');
       const size = m.snapshotSaveTo((b, at) => writeSync(fh, b, 0, b.length, at));
       closeSync(fh);
       const saveMs = performance.now() - ts;
@@ -287,6 +294,14 @@ function homeFlow(m, t0, save) {
     console.log(`home: ${top} a ${(Number(m.guestNs) / 1e9).toFixed(1)} s di guest, ${secs()} s reali`);
     await waitGuest('home disegnata', () => false, 5).catch(() => {});
     screenshot(m, 'node-home-accesa.png');
+    if (compact) {
+      // La cache delle pagine si butta e la memoria libera si riempie di zeri
+      // (un file in /dev, che è tmpfs, poi cancellato): le pagine a zero non
+      // entrano nello snapshot.
+      const tc = performance.now();
+      const r = await adb.shell("su 0 sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches; free=$(awk \"/MemFree/ {print int(\\$2/1024) - 96}\" /proc/meminfo); dd if=/dev/zero of=/dev/vetro-zeri bs=1M count=$free 2>&1 | tail -1; rm -f /dev/vetro-zeri; grep -E \"MemFree|^Cached\" /proc/meminfo'");
+      console.log(`compattazione: ${JSON.stringify(r)} (${secs()} s reali, ${((performance.now() - tc) / 1000).toFixed(1)} s)`);
+    }
     if (save) {
       holder.wantSave = true;
       await savedP;
@@ -313,6 +328,10 @@ function homeFlow(m, t0, save) {
     screenshot(m, 'node-app-2.png');
     const log = await adb.shell('logcat -d -s vetro-tocco:I | tail -3');
     console.log(`tocco ricevuto: centro ${center(m)} su ${size.width}x${size.height}; logcat: ${log.stdout.trim().split('\n').join(' | ')}`);
+    if (saveAfterApp) {
+      holder.wantSave = saveAfterApp;
+      await new Promise((ok) => (holder.saved = ok));
+    }
   };
   const holder = { pump: () => state.adb?.pump(), result: null, wantSave: false, saved: () => savedOk() };
   run().then(() => (holder.result = 'fatto'), (e) => (holder.result = e));

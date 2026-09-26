@@ -318,33 +318,60 @@ impl vetro_snapshot::Snapshot for Ram {
     /// già, così una RAM appena allocata resta non toccata (nel browser le
     /// pagine mai scritte non occupano memoria).
     fn restore(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
+        self.restore_from(r)
+    }
+}
+
+/// Da dove viene il contenuto della sezione `RAM ` di uno snapshot: un
+/// [`vetro_snapshot::Reader`] sul file intero, o i pezzi di un file letto a
+/// poco a poco ([`Machine::load_state_stream`](crate::Machine::load_state_stream)).
+pub trait RamSource {
+    /// I prossimi `n` byte.
+    fn take(&mut self, n: usize) -> vetro_snapshot::Result<&[u8]>;
+}
+
+impl RamSource for vetro_snapshot::Reader<'_> {
+    fn take(&mut self, n: usize) -> vetro_snapshot::Result<&[u8]> {
+        self.raw(n)
+    }
+}
+
+fn take_u64(r: &mut dyn RamSource) -> vetro_snapshot::Result<u64> {
+    Ok(u64::from_le_bytes(r.take(8)?.try_into().expect("8 byte")))
+}
+
+impl Ram {
+    /// Ripristina la RAM dal contenuto della sezione `RAM ` (vedi
+    /// [`vetro_snapshot::Snapshot::restore`] per [`Ram`]), da qualunque
+    /// [`RamSource`].
+    pub fn restore_from(&mut self, r: &mut dyn RamSource) -> vetro_snapshot::Result<()> {
         use vetro_snapshot::Error;
         const PAGE: usize = vetro_snapshot::BLOCK;
         let len = self.bytes.len;
-        let found = r.u64()?;
+        let found = take_u64(r)?;
         if found != len as u64 {
             return Err(Error::invalid(format!("dati di {found} byte, attesi {len}")));
         }
         let pages = len.div_ceil(PAGE);
-        let count = r.u64()?;
+        let count = take_u64(r)?;
         if count > pages as u64 {
             return Err(Error::invalid("più blocchi dei dati"));
         }
         let mut present = vec![0u64; pages.div_ceil(64)];
         let mut last: Option<u64> = None;
         for _ in 0..count {
-            let i = r.u64()?;
+            let i = take_u64(r)?;
             if i >= pages as u64 || last.is_some_and(|l| i <= l) {
                 return Err(Error::invalid(format!("blocco {i} fuori posto")));
             }
             last = Some(i);
             let i = i as usize;
             let dst = self.bytes.get_mut(i * PAGE, (len - i * PAGE).min(PAGE));
-            match r.u8()? {
-                0 => dst.copy_from_slice(r.raw(dst.len())?),
+            match r.take(1)?[0] {
+                0 => dst.copy_from_slice(r.take(dst.len())?),
                 1 => {
-                    let n = r.u32()? as usize;
-                    vetro_snapshot::lz::decompress(r.raw(n)?, dst)?;
+                    let n = u32::from_le_bytes(r.take(4)?.try_into().expect("4 byte")) as usize;
+                    vetro_snapshot::lz::decompress(r.take(n)?, dst)?;
                 }
                 v => return Err(Error::invalid(format!("codifica di blocco {v}"))),
             }
