@@ -127,6 +127,15 @@ jobs:
         with:
           path: target/guest-kernel
           key: guest-kernel-${{ hashFiles('guest/kernel/config/**', 'guest/kernel/initramfs/**', 'guest/kernel/kselftest/**', 'tools/guest-kernel/**', 'tools/guest-bins/**') }}
+      # Guest binaries (static BusyBox, test programs): built by the kernel
+      # build, but the introspection test also reads them when the kernel
+      # comes from the cache, so they get their own cache entry.
+      - uses: actions/cache@v4
+        with:
+          path: target/guest-bins
+          key: guest-bins-${{ hashFiles('tools/guest-bins/**', 'tests/linux/c/**') }}
+      - name: Guest binaries
+        run: test -f target/guest-bins/busybox || tools/guest-bins/build.sh
       # kselftest.sh usa i sorgenti estratti da build.sh nel volume Docker:
       # si costruiscono insieme, e insieme vanno in cache.
       - name: Kernel guest, initramfs e kselftest
