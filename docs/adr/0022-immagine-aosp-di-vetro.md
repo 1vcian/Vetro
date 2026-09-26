@@ -186,8 +186,9 @@ niente PCI) con il bootloader di ADR 0018, e che porti microG.
 - Aggiornare AOSP = cambiare tag, rifare `repo sync`, controllare che la
   patch di `frameworks/base` si applichi (`prepare.sh` si ferma se no).
 - Aggiornare microG = nuovo `microg.lock` e allowlist rigenerata.
-- Da fare: marchi nella UI di AOSP (la barra di ricerca di Launcher3 mostra
-  "Google", l'icona del programma di installazione è il robot, i testi dicono
-  "Phone"): overlay di Launcher3 e delle stringhe; SELinux enforcing, virtio-rng deterministico in Vetro (il modulo
+- Marchi nella UI di AOSP (barra "Google" di Launcher3, robot,
+  `ro.product.system.*`): preparati nell'ADR 0030 (overlay, sfondo,
+  QuickSearchBox tolto), in attesa della build.
+- Da fare: SELinux enforcing, virtio-rng deterministico in Vetro (il modulo
   è già nella prima fase), adb su canale virtio per il browser, disco
   via HTTP Range (M6).

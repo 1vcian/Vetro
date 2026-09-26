@@ -47,7 +47,10 @@ partono dagli agganci dell'ADR 0027, senza toccare il guest.
   della nostra CA o ignora il certificato. Le primitive (SHA-256, HMAC,
   HKDF, ChaCha20-Poly1305) sono verificate coi vettori RFC ma non ancora
   integrate: si aggiungono col server, provato contro `openssl s_client`
-  come oracolo prima di dichiararlo fatto.
+  come oracolo prima di dichiararlo fatto. La strada (a) è preparata
+  nell'ADR 0030: CA di sviluppo EC P-256 (`guest/aosp/vendor/vetro/dev-ca/
+  vetro-dev-ca.pem`, chiave in `~/.config/vetro/dev-ca/`, fuori dal
+  repository) nell'APEX di conscrypt con una patch; in attesa della build.
 
 ### Decoder Binder (M8)
 - **Mappa AIDL dall'immagine, non a mano.** `tools/aosp/aidl-map.sh`
