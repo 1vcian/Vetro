@@ -121,6 +121,25 @@ immagini, `build-info.txt`, `SHA256SUMS`, `manifest.json` (`version`,
 `base_url`, `files[]` con `path`, `size`, `sha256`) e `sources/` (sorgenti
 GPL, README). URL pubblico: `R2_PUBLIC_URL` + chiave.
 
+## Stato delle prove (versione `android-15.0.0_r36-BP1A.250505.005.D1-9d91633`)
+Stessa immagine, stessi dispositivi, disco in copy-on-write (ogni avvio è un
+primo avvio). Tempi in secondi di guest (timestamp di printk):
+
+| Tappa | QEMU 10 (TCG, Docker) | Vetro (`--jit`) |
+|---|---|---|
+| prima fase di init | 1,2 | ~5 |
+| zygote avviato | 81 | 181 |
+| surfaceflinger avviato | 96 | 203 |
+| `sys.boot_completed=1` | 476 | 801 |
+| adb (`adb connect 127.0.0.1:5555/5556`) | sì | sì |
+| home disegnata (screencap) | sì, ~11 min di guest dopo il boot | vedi `docs/progress/M5.md` |
+
+Tempo reale: QEMU ~8 min fino a `boot_completed`, Vetro ~1 h 15 min.
+Servizi che muoiono prima di `boot_completed`: stesso insieme e stessi
+segnali nei due (HAL di Cuttlefish senza host, `odsign` e `hwservicemanager`
+terminati da init, `idmap2d` a riposo, `misctrl`, `cppreopts`); nessun
+errore del kernel. `adb install` di un APK provato sotto QEMU.
+
 ## GPL
 `tools/aosp/gpl-sources.sh` → `target/aosp/sources/`: `linux-<versione>.tar.xz`
 (kernel/common al commit `-g…` della stringa del kernel), moduli

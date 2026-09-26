@@ -7,6 +7,10 @@ on early-init
 on property:sys.boot_completed=1
     # Livello 2: dopo l'avvio la console stampa solo i messaggi sotto il 4.
     write /dev/kmsg "<2>VETRO: sys.boot_completed=1"
+    # Schermo sempre acceso (alimentazione "collegata"): su una CPU emulata
+    # lenta lo spegnimento per inattività arriva prima che la home sia
+    # disegnata, e l'analisi vuole lo schermo visibile.
+    exec_background - system system -- /system/bin/settings put global stay_on_while_plugged_in 7
 
 # Servizi di Cuttlefish che senza il suo host (vsock, /dev/hvcN, simulatori)
 # escono o abortiscono subito e init riavvierebbe ogni 5 s, con un tombstone a

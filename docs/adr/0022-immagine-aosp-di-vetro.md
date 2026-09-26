@@ -69,6 +69,24 @@ niente PCI) con il bootloader di ADR 0018, e che porti microG.
   Vetro non legge vbmeta (ADR 0018), la build userdebug è "orange". La build
   produce comunque vbmeta firmato con le chiavi di test: non si usa.
 
+### Cosa di Cuttlefish si toglie o si ferma (dalle prove sotto QEMU)
+- **Luci e OEM lock** (`LOCAL_ENABLE_LIGHT/OEMLOCK := false` prima di
+  ereditare il vendor): i loro HAL parlano con l'host e abortiscono, ma sono
+  dichiarati nella VINTF, e system_server li aspetta per sempre
+  (`LightsService` su `ILights/default`): senza toglierli il boot si ferma
+  prima di `activity`.
+- **HAL e servizi che abortiscono o escono senza host** (UWB, Thread,
+  ConfirmationUI, NFC, `bt_socket`, `seriallogging`): `init.vetro.rc` li
+  ferma al primo passaggio a `restarting`. A ciclo costavano un tombstone
+  ogni pochi secondi e `flags_health_check`: il carico medio del guest
+  scendeva da ~30 e il primo avvio metteva il doppio.
+- **Odex nelle partizioni** (`BOARD_USES_SYSTEM_OTHER_ODEX :=`): Cuttlefish
+  li mette in `system_other` (slot B) e li copia in `/data` al primo avvio;
+  il nostro disco ha solo lo slot A, e senza odex ArtService ricompilava ogni
+  app al primo avvio (sys.boot_completed da ~1300 a 476 s di guest sotto
+  QEMU).
+- **Niente schermata di blocco** (`ro.lockscreen.disable.default=true`).
+
 ### Grafica
 - SwiftShader (Vulkan "pastel") con ANGLE per GLES 3.1, gralloc minigbm,
   HWC ranchu con composizione nel guest sul DRM di virtio-gpu 2D, gli stessi
@@ -168,6 +186,8 @@ niente PCI) con il bootloader di ADR 0018, e che porti microG.
 - Aggiornare AOSP = cambiare tag, rifare `repo sync`, controllare che la
   patch di `frameworks/base` si applichi (`prepare.sh` si ferma se no).
 - Aggiornare microG = nuovo `microg.lock` e allowlist rigenerata.
-- Da fare: SELinux enforcing, virtio-rng deterministico in Vetro (il modulo
+- Da fare: marchi nella UI di AOSP (la barra di ricerca di Launcher3 mostra
+  "Google", l'icona del programma di installazione è il robot, i testi dicono
+  "Phone"): overlay di Launcher3 e delle stringhe; SELinux enforcing, virtio-rng deterministico in Vetro (il modulo
   è già nella prima fase), adb su canale virtio per il browser, disco
   via HTTP Range (M6).
