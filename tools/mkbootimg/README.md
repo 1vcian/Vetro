@@ -1,24 +1,24 @@
-# mkbootimg di AOSP (riferimento per i test)
+# AOSP mkbootimg (reference for the tests)
 
-Copia **non modificata** dello strumento con cui AOSP costruisce `boot.img`,
-`vendor_boot.img` e `init_boot.img`. I test del caricatore di immagini
-Android (`crates/vetro-machine/src/android`, `docs/specs/android-boot.md`)
-costruiscono le immagini con questo script, così il formato non è quello
-che crediamo noi ma quello che produce AOSP.
+**Unmodified** copy of the tool AOSP uses to build `boot.img`,
+`vendor_boot.img` and `init_boot.img`. The tests of the Android image
+loader (`crates/vetro-machine/src/android`, `docs/specs/android-boot.md`)
+build their images with this script, so the format is not what we
+believe it is but what AOSP produces.
 
-- Sorgente: `https://android.googlesource.com/platform/system/tools/mkbootimg`
-- Commit: `d2bb0af5ba6d3198a3e99529c97eda1be0b5a093` (2 marzo 2025, ramo `main`)
-- Licenza: Apache 2.0 (intestazione dei file).
+- Source: `https://android.googlesource.com/platform/system/tools/mkbootimg`
+- Commit: `d2bb0af5ba6d3198a3e99529c97eda1be0b5a093` (2025-03-02, branch `main`)
+- License: Apache 2.0 (file headers).
 
-| File | blob git | sha256 |
+| File | git blob | sha256 |
 |---|---|---|
 | `mkbootimg.py` | `ec2958179691a434df917cd1b6f196edaa80e31d` | `37d84b3d162e0bc62e36c1f4e1c63c85ea0caa9f29be023eb2f8efe006ad948c` |
 | `gki/generate_gki_certificate.py` | `739c61b04a9dbd95cafa5196533e3a472c31f2d9` | `1bb1feec68a13da18d581aa2c631798f86f6bc10b55d587b2dd31446a0f8a203` |
 
-`gki/generate_gki_certificate.py` serve solo perché `mkbootimg.py` lo importa
-(la firma GKI 2.0, deprecata, non si usa).
+`gki/generate_gki_certificate.py` is needed only because `mkbootimg.py` imports it
+(the deprecated GKI 2.0 signature is not used).
 
-Verifica: `git hash-object tools/mkbootimg/mkbootimg.py` deve dare il blob
-della tabella, uguale a quello del commit indicato. Per aggiornare: scaricare
-i due file dallo stesso commit (`?format=TEXT`, base64) e aggiornare la
-tabella. Serve `python3` (solo libreria standard).
+Verification: `git hash-object tools/mkbootimg/mkbootimg.py` must give the blob
+in the table, equal to the one in the stated commit. To update: download
+the two files from the same commit (`?format=TEXT`, base64) and update the
+table. Requires `python3` (standard library only).

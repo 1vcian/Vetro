@@ -1,151 +1,151 @@
-# M5 — avvio del kernel GKI android15-6.6 sulla macchina di Vetro (2026-09-25)
+# M5 — booting the GKI android15-6.6 kernel on the Vetro machine (2026-09-25)
 
-Esperimento: l'immagine dell'emulatore SDK Android 15 arm64 "default"
+Experiment: the Android 15 arm64 "default" SDK emulator image
 (`arm64-v8a-35_r02.zip`, kernel `6.6.30-android15-8`, build
-`AE3A.240806.019`) avviata sulla macchina di Vetro sotto
-`qemu-system-aarch64` 10.0 e sotto `vetro boot`, con la stessa
-configurazione, per vedere fin dove arrivano e dove divergono. Solo uso
-locale: l'immagine è sotto licenza SDK e non va committata né distribuita
+`AE3A.240806.019`) booted on the Vetro machine under
+`qemu-system-aarch64` 10.0 and under `vetro boot`, with the same
+configuration, to see how far they get and where they diverge. Local use
+only: the image is under the SDK license and must not be committed or distributed
 (`tools/android-emu/README.md`).
 
-## Configurazione comune
-- Macchina: `virt,gic-version=3,its=off`, Cortex-A53, una CPU, 2 GiB,
-  virtio-mmio moderno, niente rete, niente GPU né input (i `-device` di
-  QEMU e `--no-devices` di Vetro).
-- Avvio diretto: `Image` (il `kernel-ranchu` decompresso) e `ramdisk.img`
-  così com'è: due cpio (ramdisk generico e ramdisk del vendor con
-  `fstab.ranchu` e i moduli virtio) in un flusso LZ4 legacy; il GKI ha
-  `CONFIG_RD_LZ4=y`. `virtio_mmio`, `virtio_blk` e il resto sono moduli,
-  caricati dalla prima fase di init (`modules.load`).
-- Dischi (copy-on-write: `snapshot=on` in QEMU, `CowBackend` sopra il file
-  in Vetro), nell'ordine dei `-device`; il primo va nello slot virtio-mmio
-  più alto e Linux numera i dischi per indirizzo crescente:
-  | Slot | Indirizzo | File | Linux | Uso |
+## Common configuration
+- Machine: `virt,gic-version=3,its=off`, Cortex-A53, one CPU, 2 GiB,
+  modern virtio-mmio, no network, no GPU or input (QEMU's `-device`s
+  and Vetro's `--no-devices`).
+- Direct boot: `Image` (the decompressed `kernel-ranchu`) and `ramdisk.img`
+  as is: two cpio archives (generic ramdisk and vendor ramdisk with
+  `fstab.ranchu` and the virtio modules) in a legacy LZ4 stream; the GKI has
+  `CONFIG_RD_LZ4=y`. `virtio_mmio`, `virtio_blk` and the rest are modules,
+  loaded by the first stage of init (`modules.load`).
+- Disks (copy-on-write: `snapshot=on` in QEMU, `CowBackend` over the file
+  in Vetro), in the order of the `-device`s; the first goes into the highest
+  virtio-mmio slot and Linux numbers the disks by increasing address:
+  | Slot | Address | File | Linux | Use |
   |---|---|---|---|---|
-  | 31 | `a003e00` | `userdata.img` (ext4 vuoto, 2 GiB) | vdc | `/data` (il fstab vuole `/dev/block/vdc`) |
-  | 30 | `a003c00` | `encryptionkey.img` (GPT "metadata") | vdb | `/metadata` (il fstab vuole `a003c00.virtio_mmio`) |
-  | 29 | `a003a00` | `system.img` (GPT "vbmeta" + "super") | vda | partizioni logiche system, system_ext, product, vendor, system_dlkm |
-  Il `vendor.img` separato non serve: vendor sta in super.
-- Riga di comando (`tools/android-emu/cmdline.sh`): `console=ttyAMA0
+  | 31 | `a003e00` | `userdata.img` (empty ext4, 2 GiB) | vdc | `/data` (the fstab wants `/dev/block/vdc`) |
+  | 30 | `a003c00` | `encryptionkey.img` (GPT "metadata") | vdb | `/metadata` (the fstab wants `a003c00.virtio_mmio`) |
+  | 29 | `a003a00` | `system.img` (GPT "vbmeta" + "super") | vda | logical partitions system, system_ext, product, vendor, system_dlkm |
+  The separate `vendor.img` is not needed: vendor lives in super.
+- Command line (`tools/android-emu/cmdline.sh`): `console=ttyAMA0
   nokaslr 8250.nr_uarts=1 printk.devkmsg=on loop.max_part=7
   androidboot.hardware=ranchu androidboot.qemu=1
   androidboot.selinux=permissive androidboot.boot_devices=a003a00.virtio_mmio
-  androidboot.console=ttyAMA0` più i tre `androidboot.vbmeta.*` di
-  `VerifiedBootParams.textproto`. `nokaslr` rende confrontabili gli
-  indirizzi (entrambi danno `kaslr-seed` nel DTB). Il fstab non chiede
-  AVB/verity, quindi basta così.
-- `/data`: con un disco a zero init non lo formatta (niente `formattable`),
-  vold trova la cifratura dei metadati senza chiave e init riavvia in
-  recovery (`init_user0_failed`). Con un ext4 vuoto (`mkfs.ext4`, come fa
-  l'host dell'emulatore) vold genera la chiave, monta `/data` su
-  dm-default-key e il boot prosegue. Senza `/data` del tutto: `bpfloader`
-  fallisce e init riavvia (`netbpfload-missing`).
+  androidboot.console=ttyAMA0` plus the three `androidboot.vbmeta.*` from
+  `VerifiedBootParams.textproto`. `nokaslr` makes the addresses comparable
+  (both provide `kaslr-seed` in the DTB). The fstab does not ask for
+  AVB/verity, so this is enough.
+- `/data`: with a zero-filled disk init does not format it (no `formattable`),
+  vold finds metadata encryption without a key and init reboots into
+  recovery (`init_user0_failed`). With an empty ext4 (`mkfs.ext4`, as the
+  emulator host does) vold generates the key, mounts `/data` on
+  dm-default-key and the boot continues. Without `/data` at all: `bpfloader`
+  fails and init reboots (`netbpfload-missing`).
 
-## Fin dove arrivano
-Tempi in secondi di guest (timestamp di printk):
+## How far they get
+Times in guest seconds (printk timestamps):
 
-| Tappa | QEMU | Vetro |
+| Stage | QEMU | Vetro |
 |---|---|---|
-| `/init` (prima fase) | 0,53 | 2,25 |
-| seconda fase di init | 1,70 | 3,73 |
-| `mount_all --late` riuscito (vold, `/data` cifrato) | 19,6 | 39,2 |
-| `init_user0` riuscito | 38,0 | 106,3 |
-| `bpfloader` finito (status 0) | 60,2 | 135,3 |
-| **zygote avviato** | **60,6** | **135,8** |
-| surfaceflinger avviato | 71,7 | 151,4 |
-| surfaceflinger abortisce, zygote riavviato | 84,3 | 167,5 |
+| `/init` (first stage) | 0.53 | 2.25 |
+| second stage of init | 1.70 | 3.73 |
+| `mount_all --late` succeeded (vold, encrypted `/data`) | 19.6 | 39.2 |
+| `init_user0` succeeded | 38.0 | 106.3 |
+| `bpfloader` finished (status 0) | 60.2 | 135.3 |
+| **zygote started** | **60.6** | **135.8** |
+| surfaceflinger started | 71.7 | 151.4 |
+| surfaceflinger aborts, zygote restarted | 84.3 | 167.5 |
 
-Tutti e due arrivano allo stesso punto: **zygote parte, poi surfaceflinger
-abortisce (SIGABRT) e init riavvia zygote a ciclo** (ogni ~16 s di guest in
-QEMU, ~20 s in Vetro). Il motivo è lo stesso nei due: l'immagine
-dell'emulatore compone via gfxstream e dispositivi goldfish (pipe, sync,
-address space) che la virt non ha. Anche con `-device virtio-gpu-device`
-(2D, `number of cap sets: 0`) surfaceflinger abortisce allo stesso modo in
-QEMU. Falliscono allo stesso modo, nei due, anche i servizi goldfish:
+Both reach the same point: **zygote starts, then surfaceflinger
+aborts (SIGABRT) and init restarts zygote in a loop** (every ~16 guest s in
+QEMU, ~20 s in Vetro). The reason is the same in both: the emulator
+image composes via gfxstream and goldfish devices (pipe, sync,
+address space) that virt does not have. Even with `-device virtio-gpu-device`
+(2D, `number of cap sets: 0`) surfaceflinger aborts the same way in
+QEMU. The goldfish services also fail the same way in both:
 `vendor.sensors-hal-multihal` (SIGABRT), `goldfish-logcat` (status 6),
-`qemu-props`, `misctrl`, `kcmdlinectrl`; `keystore2` va in crash solo
-senza `/data`. L'insieme dei servizi morti e dei segnali coincide.
+`qemu-props`, `misctrl`, `kcmdlinectrl`; `keystore2` crashes only
+without `/data`. The set of dead services and signals matches.
 
-Il tempo di guest di Vetro è più lungo perché la sua CPU virtuale va a 100
-MHz nominali (un'istruzione ogni 10 ns, ADR 0011): lo stesso lavoro che in
-QEMU (TCG col tempo reale dell'host, circa 1 miliardo di istruzioni al
-secondo di guest) dura da 2 a 10 volte di più in secondi di guest. Vetro
-nativo esegue 35–55 milioni di istruzioni al secondo reale: zygote dopo
-4–5 minuti reali (13,6 miliardi di istruzioni), QEMU in Docker dopo circa
-1,5 minuti.
+Vetro's guest time is longer because its virtual CPU runs at a nominal 100
+MHz (one instruction every 10 ns, ADR 0011): the same work that in
+QEMU (TCG with host real time, about 1 billion instructions per
+guest second) takes 2 to 10 times longer in guest seconds. Native Vetro
+executes 35–55 million instructions per real second: zygote after
+4–5 real minutes (13.6 billion instructions), QEMU in Docker after about
+1.5 minutes.
 
-## Divergenze trovate
-Confronto riga per riga senza tempi (`tools/android-emu/compare.py`),
-prima divergenza e righe presenti in un solo log.
+## Divergences found
+Line-by-line comparison without timestamps (`tools/android-emu/compare.py`),
+first divergence and lines present in only one log.
 
-1. **GPIO PL061 e `gpio-keys` mancanti in Vetro — corretta.** Il DTB di
-   QEMU virt ha `pl061@9030000` (SPI 7) e `gpio-keys/poweroff` (linea 3,
-   KEY_POWER). Il GKI li usa: `input: gpio-keys as .../input0`, e init
-   trova `/dev/input` (`EVIOCSMASK not supported`); sotto Vetro init
-   stampava `Could not add watch for /dev/input` e Android non aveva il
-   tasto di accensione. Ora `vetro-platform` ha il PL061 (logica di
-   `hw/gpio/pl061.c`, linee non pilotate a 0 come nella virt), il device
-   tree ha gli stessi nodi di QEMU e l'host preme il tasto con
-   `Board::gpio_input(3, ..)`. Sotto Vetro compaiono le stesse righe di
-   QEMU (`PL061 GPIO chip registered`, `input: gpio-keys`, `EVIOCSMASK`).
-   Test: `pl061::tests` (6, tra cui entrambi i fronti come gpio-keys, livello,
-   maschera di DATA, ID PrimeCell), `virt::tests::tasto_di_spegnimento_sullo_spi_7`,
-   `board::tests::tasto_di_spegnimento_dall_host`, e i nodi nel test del DTB
-   (`proprieta_della_piattaforma`, valori presi dal DTB di QEMU 10.0 con
-   `dumpdtb`). Il kernel guest di M3 non ha i driver GPIO: i suoi log non
-   cambiano.
-2. **`jitterentropy: Initialization failed ... requirements: 9` solo in
-   Vetro — nota, non corretta.** Errore 9 è `JENT_EHEALTH`: il test di
-   ripetizione della sorgente di entropia a jitter fallisce perché in Vetro
-   il contatore (CNTVCT) è una funzione esatta delle istruzioni, quindi due
-   misure dello stesso ciclo danno lo stesso tempo. È la conseguenza voluta
-   del determinismo (ADR 0010/0011); non verificato con `-icount` di QEMU.
-   Il GKI non è in modalità FIPS, quindi il fallimento non è fatale e il
-   boot prosegue identico. Renderlo "vero" vorrebbe un rumore deterministico
-   nel contatore: da decidere con un ADR, se servirà.
-3. **Differenze note già in `tests/boot`** (`KNOWN_DIFFERENCES`): QEMU dichiara
-   gli LPI senza ITS; Vetro non ha AArch32 (manca "32-bit EL0/EL1 Support":
-   l'immagine è solo 64 bit, `zygote_secondary` non esiste in nessuno dei
-   due); il DTB di QEMU ha anche PCIe (`pci-host-generic`, nessun
-   dispositivo), fw-cfg, flash e PMU (`hw perfevents: armv8_pmuv3`).
-   L'ora dell'RTC è quella fissa di Vetro (2026-01-01), le chiavi di
-   cifratura di `/data` sono casuali in tutti e due.
-4. **Effetti dei tempi, non errori:** in Vetro init stampa più righe
-   `Command ... took Nms` (le stampa oltre 50 ms), compare una volta
-   `sched: RT throttling activated` (un thread real-time supera il 95% di
-   un secondo di guest su una CPU più lenta), l'ordine dei `loopN` di apexd
-   cambia, e in un avvio `prng_seeder` ha scritto su kmsg (logd non ancora
-   pronto) il fallimento che sotto QEMU va in logcat: in tutti e due manca
-   `/dev/hw_random`, perché nessuno dei due ha virtio-rng.
+1. **PL061 GPIO and `gpio-keys` missing in Vetro — fixed.** The QEMU
+   virt DTB has `pl061@9030000` (SPI 7) and `gpio-keys/poweroff` (line 3,
+   KEY_POWER). The GKI uses them: `input: gpio-keys as .../input0`, and init
+   finds `/dev/input` (`EVIOCSMASK not supported`); under Vetro init
+   printed `Could not add watch for /dev/input` and Android had no
+   power button. Now `vetro-platform` has the PL061 (logic from
+   `hw/gpio/pl061.c`, undriven lines at 0 as in virt), the device
+   tree has the same nodes as QEMU and the host presses the button with
+   `Board::gpio_input(3, ..)`. Under Vetro the same lines as
+   QEMU appear (`PL061 GPIO chip registered`, `input: gpio-keys`, `EVIOCSMASK`).
+   Tests: `pl061::tests` (6, including both edges as gpio-keys uses, level,
+   DATA mask, PrimeCell ID), `virt::tests::tasto_di_spegnimento_sullo_spi_7`,
+   `board::tests::tasto_di_spegnimento_dall_host`, and the nodes in the DTB test
+   (`proprieta_della_piattaforma`, values taken from the QEMU 10.0 DTB with
+   `dumpdtb`). The M3 guest kernel has no GPIO drivers: its logs do not
+   change.
+2. **`jitterentropy: Initialization failed ... requirements: 9` only in
+   Vetro — noted, not fixed.** Error 9 is `JENT_EHEALTH`: the repetition
+   test of the jitter entropy source fails because in Vetro
+   the counter (CNTVCT) is an exact function of instructions, so two
+   measurements of the same loop give the same time. It is the intended consequence
+   of determinism (ADR 0010/0011); not verified with QEMU's `-icount`.
+   The GKI is not in FIPS mode, so the failure is not fatal and the
+   boot continues identically. Making it "real" would require deterministic noise
+   in the counter: to be decided with an ADR, if it becomes necessary.
+3. **Differences already known in `tests/boot`** (`KNOWN_DIFFERENCES`): QEMU declares
+   LPIs without an ITS; Vetro has no AArch32 ("32-bit EL0/EL1 Support" is missing:
+   the image is 64-bit only, `zygote_secondary` exists in neither
+   of the two); the QEMU DTB also has PCIe (`pci-host-generic`, no
+   devices), fw-cfg, flash and PMU (`hw perfevents: armv8_pmuv3`).
+   The RTC time is Vetro's fixed one (2026-01-01); the `/data`
+   encryption keys are random in both.
+4. **Timing effects, not errors:** in Vetro init prints more
+   `Command ... took Nms` lines (it prints them above 50 ms), `sched: RT throttling
+   activated` appears once (a real-time thread exceeds 95% of
+   a guest second on a slower CPU), the order of apexd's `loopN`
+   changes, and in one boot `prng_seeder` wrote to kmsg (logd not yet
+   ready) the failure that under QEMU goes to logcat: both lack
+   `/dev/hw_random`, because neither has virtio-rng.
 
-Nessuna istruzione mancante, nessun registro di sistema sbagliato, nessun
-crash in più: fino al ciclo di surfaceflinger il comportamento di Vetro
-coincide con QEMU, compresi i processi che vanno in crash (stessi segnali,
-stessi messaggi d'abort e, per `keystore2` senza `/data`, lo stesso punto
-d'abort nel tombstone: `abort+168` in libc con la stessa catena Rust).
+No missing instructions, no wrong system registers, no extra
+crashes: up to the surfaceflinger loop Vetro's behaviour
+matches QEMU, including the processes that crash (same signals,
+same abort messages and, for `keystore2` without `/data`, the same abort
+point in the tombstone: `abort+168` in libc with the same Rust chain).
 
-## Cosa manca per andare oltre
-- **Grafica:** l'immagine dell'emulatore vuole gfxstream + goldfish; con
-  una virtio-gpu 2D non compone. Serve l'immagine nostra (fork di
-  `vsoc_arm64_only`, `m5-android-images.md`) con SwiftShader +
-  drm_hwcomposer + minigbm sulla virtio-gpu 2D di Vetro, o un'immagine
-  ranchu con la composizione software (`ro.hardware.egl=swiftshader`,
-  HWC su DRM). Non è un difetto di Vetro: QEMU si ferma nello stesso punto.
-- **virtio-rng** (per `prng_seeder` e l'entropia del kernel): dispositivo
-  piccolo, da alimentare con un generatore deterministico seminato da
-  `MachineConfig::seed`. Da confrontare con `-device virtio-rng-device`.
-- **Dispositivi goldfish** (pipe, sync, address space, batteria): servono
-  solo all'immagine SDK, non a quella nostra.
-- **PMU** (`armv8_pmuv3`): serve a simpleperf/perfetto, non all'avvio.
-- **PCIe (ECAM)** per le immagini Cuttlefish senza modifiche: vedi
-  `m5-android-images.md`, da decidere con un ADR.
-- **Velocità:** a circa 50 MIPS reali il primo zygote arriva dopo 4–5 minuti;
-  il JIT di sistema (M4, in corso) è il prossimo moltiplicatore.
+## What is needed to go further
+- **Graphics:** the emulator image wants gfxstream + goldfish; with
+  a 2D virtio-gpu it does not compose. We need our own image (fork of
+  `vsoc_arm64_only`, `m5-android-images.md`) with SwiftShader +
+  drm_hwcomposer + minigbm on Vetro's 2D virtio-gpu, or a
+  ranchu image with software composition (`ro.hardware.egl=swiftshader`,
+  HWC on DRM). It is not a Vetro defect: QEMU stops at the same point.
+- **virtio-rng** (for `prng_seeder` and kernel entropy): a small
+  device, to be fed by a deterministic generator seeded from
+  `MachineConfig::seed`. To be compared with `-device virtio-rng-device`.
+- **Goldfish devices** (pipe, sync, address space, battery): needed
+  only by the SDK image, not by ours.
+- **PMU** (`armv8_pmuv3`): needed by simpleperf/perfetto, not by boot.
+- **PCIe (ECAM)** for unmodified Cuttlefish images: see
+  `m5-android-images.md`, to be decided with an ADR.
+- **Speed:** at about 50 real MIPS the first zygote arrives after 4–5 minutes;
+  the system JIT (M4, in progress) is the next multiplier.
 
-## Riproduzione
-`tools/android-emu/README.md`: preparazione dei file, `qemu.sh`, `vetro.sh
-[secondi di guest]` e `compare.py`. `vetro boot` ha le opzioni nuove
-`--no-devices`, `--disk=FILE` (ripetibile, copy-on-write in memoria),
-`--guest-secs=N` e `--stats`; il test
-`crates/vetro-cli/tests/boot_disk.rs` le prova col kernel guest di M3
-(lettura, scrittura, file intatto).
+## Reproduction
+`tools/android-emu/README.md`: file preparation, `qemu.sh`, `vetro.sh
+[guest seconds]` and `compare.py`. `vetro boot` has the new options
+`--no-devices`, `--disk=FILE` (repeatable, copy-on-write in memory),
+`--guest-secs=N` and `--stats`; the test
+`crates/vetro-cli/tests/boot_disk.rs` exercises them with the M3 guest kernel
+(read, write, file intact).

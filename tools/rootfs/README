@@ -1,2 +1,2 @@
-Sysroot minimo del guest per i test (usato come `qemu -L` da Vetro e da QEMU):
-solo i file di /etc che le librerie leggono.
+Minimal guest sysroot for the tests (used as `qemu -L` by Vetro and by QEMU):
+only the /etc files that the libraries read.

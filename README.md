@@ -124,7 +124,7 @@ Next is M5, Android. So far:
 - Android 15's GKI kernel and userspace reach zygote under Vetro exactly as
   under QEMU.
 
-Detailed plan and progress log (Italian): [`docs/PLAN.md`](docs/PLAN.md),
+Detailed plan and progress log: [`docs/PLAN.md`](docs/PLAN.md),
 [`docs/progress/`](docs/progress/), architecture decisions in
 [`docs/adr/`](docs/adr/).
 
