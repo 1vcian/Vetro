@@ -219,6 +219,17 @@ fn row(out: &mut String, x: &HttpExchange) {
         x.server
     );
     opt_str(out, x.resolved_name.as_deref());
+    let _ = write!(out, ",\"secure\":{}", x.secure);
+    if let Some(a) = &x.attribution {
+        out.push_str(",\"attribution\":{\"pid\":");
+        let _ = write!(out, "{},\"tid\":{},\"process\":", a.pid, a.tid);
+        q(out, &a.process);
+        out.push_str(",\"package\":");
+        opt_str(out, a.package.as_deref());
+        out.push_str(",\"library\":");
+        q(out, &a.library);
+        out.push('}');
+    }
     out.push_str(",\"timings\":");
     timings(out, &x.timings);
     out.push('}');

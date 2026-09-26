@@ -532,6 +532,44 @@ impl<'a, M: PhysMem + ?Sized> Linux<'a, M> {
         (f != 0).then_some(f)
     }
 
+    /// Estremi di un socket IPv4 del descrittore `fd`: (locale, remoto),
+    /// come `/proc/net/tcp`. `None` se non è un socket IPv4 o il BTF non
+    /// ha le strutture dei socket.
+    pub fn socket_endpoints(
+        &self,
+        task: u64,
+        fd: u32,
+    ) -> Option<(std::net::SocketAddrV4, std::net::SocketAddrV4)> {
+        let s = self.l().sock?;
+        let file = self.fd_file(task, fd)?;
+        let inode = self.file_inode(file)?;
+        let sb = self.u64(inode.wrapping_add(self.l().inode_sb))?;
+        if self.u64(sb.wrapping_add(self.l().sb_magic))? != SOCKFS_MAGIC {
+            return None;
+        }
+        let sock = self.u64(file.wrapping_add(s.file_private_data))?;
+        let sk = self.u64(sock.wrapping_add(s.socket_sk))?;
+        let mut fam = [0u8; 2];
+        if !self.read(sk.wrapping_add(s.skc_family), &mut fam) || u16::from_le_bytes(fam) != 2 {
+            return None;
+        }
+        let ip = |o: u64| -> Option<std::net::Ipv4Addr> {
+            let mut b = [0u8; 4];
+            self.read(sk.wrapping_add(o), &mut b).then_some(std::net::Ipv4Addr::from(b))
+        };
+        let mut dport = [0u8; 2];
+        let mut num = [0u8; 2];
+        if !self.read(sk.wrapping_add(s.skc_dport), &mut dport)
+            || !self.read(sk.wrapping_add(s.skc_num), &mut num)
+        {
+            return None;
+        }
+        Some((
+            std::net::SocketAddrV4::new(ip(s.skc_rcv_saddr)?, u16::from_le_bytes(num)),
+            std::net::SocketAddrV4::new(ip(s.skc_daddr)?, u16::from_be_bytes(dport)),
+        ))
+    }
+
     /// I file aperti di un task, come `/proc/<pid>/fd`.
     pub fn files(&self, task: u64) -> Vec<OpenFile> {
         let l = self.l();

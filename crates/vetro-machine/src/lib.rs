@@ -46,6 +46,7 @@ mod machine;
 pub mod net;
 mod psci;
 pub mod record;
+pub mod tls;
 
 pub use board::Board;
 pub use files::FilesClient;

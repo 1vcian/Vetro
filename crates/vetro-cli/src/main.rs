@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]
-//! vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--save-on=TESTO:FILE [--save-delay=S] [--exit-after-save]] [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=ISTRUZIONE [--dump=VA:BYTE]]] [--vsock] [--files-ls=PERCORSO]... [--files-cat=PERCORSO]... [--files-put=PERCORSO:FILE]... [--kernel-profile=FILE [--system-map=FILE] [--kernel-btf=FILE]] [--binder-log=FILE]
+//! vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--save-on=TESTO:FILE [--save-delay=S] [--exit-after-save]] [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=ISTRUZIONE [--dump=VA:BYTE]]] [--vsock] [--files-ls=PERCORSO]... [--files-cat=PERCORSO]... [--files-put=PERCORSO:FILE]... [--kernel-profile=FILE [--system-map=FILE] [--kernel-btf=FILE]] [--tls] [--binder-log=FILE]
 //! ```
 //!
 //! `boot` avvia la macchina virt (M3) con la console PL011 su stdin/stdout.
@@ -80,6 +80,17 @@
 //! appena il demone risponde e scrivono i risultati su stdout; finite
 //! tutte, `vetro` esce con 0 se sono riuscite, 1 altrimenti (vedi
 //! `vetro_cli::files`).
+//!
+//! Analisi dall'esterno (M7/M8, ADR 0027, `vetro_cli::analysis`): serve il
+//! profilo del kernel (`--kernel-profile=FILE`: un `boot.img` di Android o
+//! un `Image`, con `--system-map`/`--kernel-btf` per il kernel di prova;
+//! senza, si usa `--boot-img`/`--kernel`). `--tls` aggancia
+//! `SSL_write`/`SSL_read` di `libssl` (BoringSSL, anche Conscrypt): le
+//! richieste HTTPS in chiaro finiscono nell'HAR (`--har`) e nella lista
+//! (`--net-requests`) come quelle in chiaro, legate a processo e libreria.
+//! `--binder-log=FILE` scrive le chiamate Binder decodificate (interfaccia
+//! e metodo AIDL, mittente e destinatario) in JSON (`.json`) o in righe di
+//! testo, e stampa su stderr gli accessi sensibili (ispettore privacy).
 
 use std::process::ExitCode;
 use vetro_cli::linux::{ClockMode, Config, Exit};
@@ -103,7 +114,7 @@ fn usage() -> ExitCode {
         "uso: vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]"
     );
     eprintln!(
-        "     vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--save-on=TESTO:FILE [--save-delay=S] [--exit-after-save]] [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=ISTRUZIONE [--dump=VA:BYTE]]] [--vsock] [--files-ls=PERCORSO]... [--files-cat=PERCORSO]... [--files-put=PERCORSO:FILE]... [--kernel-profile=FILE [--system-map=FILE] [--kernel-btf=FILE]] [--binder-log=FILE]"
+        "     vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--save-on=TESTO:FILE [--save-delay=S] [--exit-after-save]] [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=ISTRUZIONE [--dump=VA:BYTE]]] [--vsock] [--files-ls=PERCORSO]... [--files-cat=PERCORSO]... [--files-put=PERCORSO:FILE]... [--kernel-profile=FILE [--system-map=FILE] [--kernel-btf=FILE]] [--tls] [--binder-log=FILE]"
     );
     ExitCode::from(2)
 }
@@ -691,6 +702,7 @@ fn boot(args: &[String]) -> ExitCode {
         // Un quanto non supera il prossimo salvataggio.
         let budget = save_at.last().map_or(2_000_000, |s| s.0.saturating_sub(m.steps).clamp(1, 2_000_000));
         let stop = m.run(budget);
+        analysis.tls_service(&mut m);
         print_net(&m);
         if capture.wanted() {
             capture.collect(&mut m);
@@ -825,6 +837,7 @@ fn boot(args: &[String]) -> ExitCode {
     }
     if capture.wanted() {
         capture.collect(&mut m);
+        capture.set_tls(analysis.tls_conversations(&mut m));
         match capture.finish() {
             Ok(lines) => lines.iter().for_each(|l| eprintln!("vetro: {l}")),
             Err(e) => {
@@ -881,6 +894,10 @@ const BOOT_VALUE_OPTIONS: &[&str] = &[
     "--files-ls",
     "--files-cat",
     "--files-put",
+    "--kernel-profile",
+    "--system-map",
+    "--kernel-btf",
+    "--binder-log",
 ];
 
 fn join_values(args: &[String]) -> Vec<String> {

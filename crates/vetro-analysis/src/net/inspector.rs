@@ -66,6 +66,22 @@ pub struct HttpExchange {
     pub timings: Timings,
     /// Prima richiesta della sua connessione.
     pub first_on_connection: bool,
+    /// Ricostruita dal testo in chiaro degli hook TLS (M7), non dai frame.
+    pub secure: bool,
+    /// Attribuzione (solo per le richieste HTTPS dagli hook TLS): processo
+    /// e libreria che ha cifrato.
+    pub attribution: Option<Attribution>,
+}
+
+/// Chi ha fatto una richiesta HTTPS (dagli hook TLS).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Attribution {
+    pub pid: i32,
+    pub tid: i32,
+    pub process: String,
+    pub package: Option<String>,
+    /// Libreria TLS: `libssl` di sistema o Conscrypt.
+    pub library: String,
 }
 
 impl HttpExchange {
@@ -274,6 +290,8 @@ impl NetworkAnalysis {
                     response_body,
                     timings: t,
                     first_on_connection: first,
+                    secure: false,
+                    attribution: None,
                 });
             }
         }
@@ -282,6 +300,27 @@ impl NetworkAnalysis {
             x.index = i;
         }
         NetworkAnalysis { frames: frames.len(), flows, dns, http, tls }
+    }
+
+    /// Unisce le richieste HTTPS ricostruite dal testo in chiaro degli hook
+    /// TLS (M7): ogni conversazione contribuisce le sue richieste, poi la
+    /// lista si riordina e reindicizza. Il flusso di una conversazione è
+    /// quello TCP con la stessa 4-tupla, se c'è, altrimenti un indice a
+    /// parte.
+    pub fn merge_tls(&mut self, convs: &[super::tls::TlsConversation]) {
+        for (i, c) in convs.iter().enumerate() {
+            let flow = self
+                .flows
+                .tcp
+                .iter()
+                .find(|f| f.client == c.client && f.server == c.server)
+                .map_or(usize::MAX - i, |f| f.index);
+            self.http.extend(c.exchanges(flow));
+        }
+        self.http.sort_by_key(|x: &HttpExchange| (x.timings.started_us, x.flow, x.request.start));
+        for (i, x) in self.http.iter_mut().enumerate() {
+            x.index = i;
+        }
     }
 
     /// La lista dell'ispettore: una riga per richiesta, in ordine di inizio.

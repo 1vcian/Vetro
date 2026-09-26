@@ -29,7 +29,9 @@ pub mod inspector;
 pub mod json;
 pub mod packet;
 pub mod pcapng;
+pub mod tls;
 pub mod view;
 
 pub use capture::{Capture, Direction, Frame};
-pub use inspector::{HttpExchange, NetworkAnalysis, RequestRow, Timings};
+pub use inspector::{Attribution, HttpExchange, NetworkAnalysis, RequestRow, Timings};
+pub use tls::{TlsConversation, TlsMessage};

@@ -270,6 +270,21 @@ fn entry(x: &HttpExchange, opts: &HarOptions) -> String {
     if !req.complete {
         s.push_str(",\"comment\":\"vetro: richiesta troncata nella cattura\"");
     }
+    if x.secure {
+        s.push_str(",\"_secure\":true");
+        if let Some(a) = &x.attribution {
+            write!(
+                s,
+                ",\"_vetro\":{{\"pid\":{},\"tid\":{},\"process\":{},\"package\":{},\"library\":{}}}",
+                a.pid,
+                a.tid,
+                quote(&a.process),
+                a.package.as_deref().map_or("null".into(), quote),
+                quote(&a.library)
+            )
+            .unwrap_or(());
+        }
+    }
     s.push('}');
     s
 }

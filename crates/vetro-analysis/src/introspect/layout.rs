@@ -102,6 +102,34 @@ pub struct Layout {
     pub xarray_head: u64,
     pub xa_node_shift: u64,
     pub xa_node_slots: u64,
+    /// Socket (per gli hook TLS: descrittore -> quadrupla), se il BTF li ha.
+    pub sock: Option<SockLayout>,
+}
+
+/// `file->private_data` -> `struct socket` -> `sk` -> `sock_common`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SockLayout {
+    pub file_private_data: u64,
+    pub socket_sk: u64,
+    pub skc_daddr: u64,
+    pub skc_rcv_saddr: u64,
+    pub skc_dport: u64,
+    pub skc_num: u64,
+    pub skc_family: u64,
+}
+
+impl SockLayout {
+    pub fn from_btf(b: &Btf) -> Option<SockLayout> {
+        Some(SockLayout {
+            file_private_data: b.offset_of("file", "private_data")?,
+            socket_sk: b.offset_of("socket", "sk")?,
+            skc_daddr: b.offset_of("sock_common", "skc_daddr")?,
+            skc_rcv_saddr: b.offset_of("sock_common", "skc_rcv_saddr")?,
+            skc_dport: b.offset_of("sock_common", "skc_dport")?,
+            skc_num: b.offset_of("sock_common", "skc_num")?,
+            skc_family: b.offset_of("sock_common", "skc_family")?,
+        })
+    }
 }
 
 /// Il campo che manca, per il messaggio d'errore.
@@ -208,6 +236,7 @@ impl Layout {
             xarray_head: off("xarray", "xa_head")?,
             xa_node_shift: off("xa_node", "shift")?,
             xa_node_slots: off("xa_node", "slots")?,
+            sock: SockLayout::from_btf(b),
         })
     }
 }

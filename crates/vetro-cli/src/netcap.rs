@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use vetro_analysis::net::har::HarOptions;
 use vetro_analysis::net::pcapng::{self, PcapngOptions};
-use vetro_analysis::net::{Capture, Direction, NetworkAnalysis};
+use vetro_analysis::net::{Capture, Direction, NetworkAnalysis, TlsConversation};
 use vetro_machine::{FrameDir, Machine, TappedFrame};
 
 /// Cosa esportare a fine esecuzione.
@@ -19,12 +19,20 @@ pub struct NetCapture {
     /// Stampa su stderr la lista dell'ispettore (una riga per richiesta).
     pub requests: bool,
     capture: Capture,
+    /// Conversazioni TLS in chiaro dagli hook (M7): finiscono nell'HAR e
+    /// nella lista come le richieste in chiaro.
+    tls: Vec<TlsConversation>,
 }
 
 impl NetCapture {
     /// Serve la cattura?
     pub fn wanted(&self) -> bool {
         self.pcap.is_some() || self.har.is_some() || self.requests
+    }
+
+    /// Le conversazioni TLS in chiaro da unire (dagli hook di M7).
+    pub fn set_tls(&mut self, tls: Vec<TlsConversation>) {
+        self.tls = tls;
     }
 
     /// Aggiunge i frame catturati finora dalla macchina.
@@ -57,7 +65,10 @@ impl NetCapture {
             out.push(format!("pcapng: {} frame in {}", frames.len(), p.display()));
         }
         if self.har.is_some() || self.requests {
-            let a = NetworkAnalysis::from_frames(frames);
+            let mut a = NetworkAnalysis::from_frames(frames);
+            if !self.tls.is_empty() {
+                a.merge_tls(&self.tls);
+            }
             if self.requests {
                 out.extend(a.requests().iter().map(|r| format!("http: {r}")));
             }

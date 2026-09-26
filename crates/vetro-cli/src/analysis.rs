@@ -1,13 +1,16 @@
-//! Analisi dall'esterno in `vetro boot` (M8, ADR 0027): `--binder-log`
-//! (chiamate Binder decodificate e ispettore privacy). Serve il profilo
-//! del kernel: `--kernel-profile=boot.img` (o `Image`, con
-//! `--system-map`/`--kernel-btf` per il kernel di prova); senza, si usa
-//! `--boot-img`/`--kernel` se ci sono.
+//! Analisi dall'esterno in `vetro boot` (M7/M8, ADR 0027): `--binder-log`
+//! (chiamate Binder decodificate e ispettore privacy) e `--tls` (testo in
+//! chiaro degli hook TLS, che finisce nell'HAR come le richieste in
+//! chiaro). Serve il profilo del kernel: `--kernel-profile=boot.img` (o
+//! `Image`, con `--system-map`/`--kernel-btf` per il kernel di prova);
+//! senza, si usa `--boot-img`/`--kernel` se ci sono.
 
 use std::path::PathBuf;
 
+use vetro_analysis::net::TlsConversation;
 use vetro_machine::Machine;
 use vetro_machine::analysis::{BinderTracer, Tracers, kernel_profile};
+use vetro_machine::tls::TlsTracer;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AnalysisOptions {
@@ -17,15 +20,21 @@ pub struct AnalysisOptions {
     /// File delle chiamate Binder: JSON se finisce in `.json`, righe di
     /// testo altrimenti.
     pub binder_log: Option<PathBuf>,
+    /// Hook TLS: le richieste HTTPS in chiaro nell'HAR e nell'ispettore.
+    pub tls: bool,
 }
 
 impl AnalysisOptions {
     pub fn wanted(&self) -> bool {
-        self.binder_log.is_some()
+        self.binder_log.is_some() || self.tls
     }
 
     /// Prende le opzioni che conosce; falso se `a` non è sua.
     pub fn parse(&mut self, a: &str) -> bool {
+        if a == "--tls" {
+            self.tls = true;
+            return true;
+        }
         let Some((k, v)) = a.split_once('=') else { return false };
         match k {
             "--kernel-profile" => self.profile = Some(v.into()),
@@ -61,11 +70,30 @@ impl AnalysisOptions {
             kernel_profile(&file, map.as_deref(), btf.as_deref()).map_err(|e| format!("{path}: {e}"))?;
         let mut t = Tracers::default();
         if self.binder_log.is_some() {
-            t.0.push(Box::new(BinderTracer::new(kernel)));
+            t.0.push(Box::new(BinderTracer::new(kernel.clone())));
+        }
+        if self.tls {
+            t.0.push(Box::new(TlsTracer::new(kernel)));
         }
         m.set_tracer(Some(Box::new(t)));
         m.trace_syscalls(true);
         Ok(())
+    }
+
+    /// Aggiorna gli agganci TLS (processi e ritorni nuovi); da chiamare fra
+    /// due quanti quando `--tls` è attivo.
+    pub fn tls_service(&self, m: &mut Machine) {
+        if self.tls {
+            vetro_machine::tls::tls_service(m);
+        }
+    }
+
+    /// Le conversazioni TLS catturate finora.
+    pub fn tls_conversations(&self, m: &mut Machine) -> Vec<TlsConversation> {
+        m.tracer_mut::<Tracers>()
+            .and_then(|t| t.get::<TlsTracer>())
+            .map(|t| t.conversations.clone())
+            .unwrap_or_default()
     }
 
     /// Scrive i file; restituisce le righe di riepilogo per stderr.
