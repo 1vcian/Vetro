@@ -51,6 +51,10 @@ android_app_import {
     presigned: true,
     privileged: true,
     product_specific: true,
+    optional_uses_libs: [
+        "androidx.window.extensions",
+        "androidx.window.sidecar",
+    ],
 }
 
 prebuilt_etc {

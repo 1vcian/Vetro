@@ -24,7 +24,8 @@ echo $$ > "$work/build.pid"
   lunch "$lunch_target" || exit 1
   # droid = tutte le immagini (boot, vendor_boot, init_boot, super,
   # userdata, vbmeta). Il disco GPT si compone sul Mac (tools/aosp/mkdisk.sh).
-  m droid
+  # -k: non fermarsi al primo errore, per vederli tutti in un giro.
+  m -k droid
 ) >> "$work/build.log" 2>&1
 code=$?
 if [ "$code" -eq 0 ]; then echo OK > "$work/build.status"; else echo "FAIL $code" > "$work/build.status"; fi
