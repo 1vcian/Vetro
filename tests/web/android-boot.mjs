@@ -91,4 +91,19 @@ run(async () => {
   check(r.log === tail, `seguito del log diverso dopo il ripristino:\n${r.tail()}`);
   console.log(`ripristino su una macchina nuova da 3 GiB: ${r.restoreMs.toFixed(0)} ms, seguito identico (${((performance.now() - t1) / 1000).toFixed(1)} s)`);
   r.m.free();
+
+  // Limite del codice del JIT (jit-engine.mjs, ADR 0028): con un limite
+  // piccolo il motore si azzera spesso, e l'esecuzione resta la stessa.
+  if (jit) {
+    const small = await loadVetro({ jitBudget: 256 << 10 });
+    const b = new Session(small.exports, kernel, { jit, machine: { ramSize: RAM }, load });
+    const at2 = await b.until(SHELL_PROMPT);
+    const [, end2] = await b.command('head -1 /proc/meminfo', at2);
+    await b.poweroff(end2);
+    const st = b.m.jitStats();
+    check(b.m.steps === steps && b.log === s.log, `con il limite del codice del JIT: ${b.m.steps} istruzioni invece di ${steps}, o log diverso`);
+    check(st.resets > 2 && small.jit.stats.refused > 2, `limite del codice del JIT: ${st.resets} azzeramenti, ${small.jit.stats.refused} rifiuti`);
+    console.log(`limite del codice del JIT di 256 KiB: ${st.resets} azzeramenti, stessa esecuzione (${b.m.steps} istruzioni)`);
+    b.m.free();
+  }
 });

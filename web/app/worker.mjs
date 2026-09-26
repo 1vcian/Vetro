@@ -86,7 +86,7 @@ import { Recording } from '../node/recording.mjs';
 import { BlobSource, DiskFeeder, LayoutSource, MemoryCache, OpfsCache, RangeSource } from '../node/disk.mjs';
 import { AdbClient } from '../node/adb.mjs';
 import { apkInfo } from '../node/apk.mjs';
-import { BootProgress } from '../node/android.mjs';
+import { BootProgress, HOME_QUERY, isHome } from '../node/android.mjs';
 import { DiskOverlay, fromBase64, opfsFile, sha256Hex, SnapshotStore, snapshotKey, staleReason, toBase64 } from '../node/persist.mjs';
 
 const QUANTUM = 1_000_000;
@@ -97,10 +97,16 @@ const PERSIST_MS = 1000;
 const REST_NS = 1_500_000_000n;
 /** Coda della console tenuta per lo snapshot (la pagina la rimostra). */
 const CONSOLE_TAIL = 64 * 1024;
-/** Tempo del guest dopo sys.boot_completed prima dello snapshot di Android (20 s). */
-const ANDROID_HOME_NS = 20_000_000_000n;
+/** Tempo del guest dopo la home prima dello snapshot di Android (5 s: si disegna). */
+const ANDROID_HOME_NS = 5_000_000_000n;
+/** Ogni quanto (tempo del guest) si chiede ad adb se la home è a schermo. */
+const HOME_POLL_NS = 5_000_000_000n;
+/** Se la home non arriva entro tanto dopo sys.boot_completed, lo snapshot si salva lo stesso. */
+const HOME_GIVE_UP_NS = 3000_000_000_000n;
 /** Attesa (tempo del guest) prima di riprovare a collegarsi ad adbd. */
 const ADB_RETRY_NS = 5_000_000_000n;
+/** Comando adb che tiene acceso lo schermo e lo risveglia (dopo il collegamento). */
+const ANDROID_WAKE = 'svc power stayon true; settings put system screen_off_timeout 2147483647; input keyevent KEYCODE_WAKEUP; wm dismiss-keyguard';
 /** Blocchi del disco di Android tenuti in memoria (64 MiB): il resto è in OPFS. */
 const ANDROID_MAX_BLOCKS = 64;
 const EV_SYN = 0;
@@ -333,6 +339,7 @@ async function start(c) {
       for (const ev of restored.meta.progress ?? []) android.progress.events.push(ev);
       android.progress.index = android.progress.events.length - 1;
       android.bootedNs = m.guestNs;
+      if (android.progress.phase === 'home') android.homeNs = m.guestNs;
       android.savedBoot = true;
     }
     times.total = performance.now() - t0;
@@ -396,6 +403,9 @@ async function prepareAndroid(c) {
     params: c.android.params ?? 'nokaslr',
     progress: new BootProgress(),
     bootedNs: null,
+    homeNs: null,
+    homePollNs: 0n,
+    homeQuery: false,
     savedBoot: false,
     adb: null,
     adbReady: false,
@@ -468,9 +478,12 @@ function androidTick() {
     const adb = new AdbClient(sock);
     a.adb = adb;
     post({ type: 'adb-status', state: 'connecting' });
-    adb.connect().then((banner) => {
+    adb.connect().then(async (banner) => {
+      // Una macchina virtuale nella pagina: lo schermo resta acceso.
+      await adb.shell(ANDROID_WAKE);
       a.adbReady = true;
-      return adb.devices().then((devices) => post({ type: 'adb-status', state: 'ready', banner, devices }));
+      const devices = await adb.devices();
+      post({ type: 'adb-status', state: 'ready', banner, devices });
     }).catch((e) => {
       sock.release();
       if (a.adb === adb) a.adb = null;
@@ -487,12 +500,26 @@ function androidTick() {
     a.adbRetryNs = m.guestNs + ADB_RETRY_NS;
     post({ type: 'adb-status', state: 'waiting', error: `connessione chiusa (${why})` });
   }
-  if (a.adbReady && !a.busy && a.ops.length) runAdbOp(a.ops.shift());
-  if (store && !a.savedBoot && m.guestNs - a.bootedNs >= ANDROID_HOME_NS) {
+  // La home: l'attività in primo piano diventa il launcher.
+  if (a.adbReady && a.homeNs === null && !a.homeQuery && !a.busy && m.guestNs >= a.homePollNs) {
+    a.homeQuery = true;
+    a.adb.shell(HOME_QUERY).then((r) => {
+      if (isHome(r.stdout) && a.homeNs === null) {
+        a.homeNs = m.guestNs;
+        for (const ev of a.progress.mark('home', Number(m.guestNs) / 1e9)) post({ type: 'progress', ...ev, wallMs: performance.now() - startT0, detail: r.stdout.trim() });
+      }
+    }).catch(() => {}).finally(() => {
+      a.homeQuery = false;
+      a.homePollNs = m.guestNs + HOME_POLL_NS;
+    });
+  }
+  if (a.adbReady && !a.busy && !a.homeQuery && a.ops.length) runAdbOp(a.ops.shift());
+  const homeReady = a.homeNs !== null && m.guestNs - a.homeNs >= ANDROID_HOME_NS;
+  if (store && !a.savedBoot && (homeReady || m.guestNs - a.bootedNs >= HOME_GIVE_UP_NS)) {
     a.savedBoot = true;
     if (!lastSnapshot) {
       saveRequested = true;
-      saveWhy = 'avvio finito';
+      saveWhy = homeReady ? 'home a schermo' : 'avvio finito (home non vista)';
     }
   }
 }

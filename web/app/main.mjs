@@ -390,12 +390,16 @@ function onAndroidMessage(msg) {
     case 'progress':
       androidState.phases.push({ phase: msg.phase, label: msg.label, guestSecs: msg.guestSecs, wallMs: msg.wallMs });
       renderPhases();
-      if (msg.phase !== 'booted') setStatus(`avvio: ${msg.label} (${msg.guestSecs.toFixed(0)} s di guest)`);
+      if (msg.phase === 'home') {
+        androidState.home = { guestSecs: msg.guestSecs, wallMs: msg.wallMs, activity: msg.detail };
+        $('boot-info').textContent += ` · home a ${msg.guestSecs.toFixed(0)} s di guest, ${(msg.wallMs / 60000).toFixed(1)} min reali`;
+        setStatus('home a schermo: tra poco lo stato si salva (dal prossimo avvio si riparte da qui)');
+      } else if (msg.phase !== 'booted') setStatus(`avvio: ${msg.label} (${msg.guestSecs.toFixed(0)} s di guest)`);
       return true;
     case 'booted':
       androidState.booted = { guestSecs: msg.guestSecs, wallMs: msg.wallMs };
       $('boot-info').textContent = `avvio finito a ${msg.guestSecs.toFixed(0)} s di tempo del guest, ${(msg.wallMs / 60000).toFixed(1)} min reali`;
-      setStatus('avvio finito: tra poco lo stato si salva (dal prossimo avvio la home torna subito)');
+      setStatus('avvio finito: si aspetta la home (prima c\'è "Phone is starting")');
       return true;
     case 'adb-status': {
       androidState.adb = { state: msg.state, devices: msg.devices, error: msg.error };

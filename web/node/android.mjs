@@ -17,7 +17,14 @@ export const PHASES = [
   // `sys.boot_completed=1`: init mette in coda l'evento sys-boot-completed-set
   // (azione di init.cutf_cvm.rc nell'immagine di Vetro).
   ['booted', 'avvio finito', /\(sys\.boot_completed=1\)|sys-boot-completed-set/],
+  // Non dalla console: l'attività in primo piano diventa il launcher (prima
+  // c'è FallbackHome, "Phone is starting"). Chi ha adb chiama `mark`.
+  ['home', 'home (launcher)', null],
 ];
+
+/** Comando adb per l'attività in primo piano; la home c'è se contiene "launcher". */
+export const HOME_QUERY = 'dumpsys activity activities | grep -m1 mResumedActivity';
+export const isHome = (out) => /launcher/i.test(out);
 
 /** Segue la console e dice quando si entra in una fase nuova. */
 export class BootProgress {
@@ -44,7 +51,7 @@ export class BootProgress {
     if (this.#line.length > 4096) this.#line = this.#line.slice(-4096);
     for (const l of lines) {
       for (let k = this.index + 1; k < PHASES.length; k++) {
-        if (PHASES[k][2].test(l)) {
+        if (PHASES[k][2]?.test(l)) {
           // Le fasi saltate (righe perse) contano come viste adesso.
           for (let j = this.index + 1; j <= k; j++) {
             const ev = { phase: PHASES[j][0], label: PHASES[j][1], guestSecs };
@@ -56,6 +63,20 @@ export class BootProgress {
         }
       }
     }
+    return out;
+  }
+
+  /** Segna una fase vista da fuori della console (la home); restituisce le fasi nuove. */
+  mark(phase, guestSecs) {
+    const k = PHASES.findIndex((p) => p[0] === phase);
+    if (k <= this.index) return [];
+    const out = [];
+    for (let j = this.index + 1; j <= k; j++) {
+      const ev = { phase: PHASES[j][0], label: PHASES[j][1], guestSecs };
+      this.events.push(ev);
+      out.push(ev);
+    }
+    this.index = k;
     return out;
   }
 }

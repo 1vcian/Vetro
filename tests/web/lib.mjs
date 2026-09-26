@@ -32,9 +32,9 @@ export function guestKernel() {
   return { image: readFileSync(image), initrd: readFileSync(initrd) };
 }
 
-export async function loadVetro() {
+export async function loadVetro(opts = {}) {
   if (!existsSync(wasmPath)) throw new Fail(`${wasmPath} mancante: cargo build --release --target wasm32-unknown-unknown -p vetro-wasm`);
-  return instantiate(readFileSync(wasmPath));
+  return instantiate(readFileSync(wasmPath), opts);
 }
 
 /**

@@ -8,7 +8,8 @@
 //    disco da un server locale (target/aosp/out, `/aosp/`) o da
 //    VETRO_ANDROID_MANIFEST (per R2 serve la porta 8080: VETRO_WEB_PORT=8080,
 //    il CORS del bucket la ammette). Le fasi dell'avvio con i tempi reali,
-//    fino a sys.boot_completed; adb collegato; lo snapshot salvato in OPFS
+//    fino a sys.boot_completed e alla home (launcher in primo piano, visto
+//    con adb); adb collegato; lo snapshot salvato in OPFS
 //    (dimensione, tempi, memoria del modulo). Schermata della home in
 //    target/aosp/chrome-home-1.png.
 // 2. Secondo avvio, stesso profilo: dallo snapshot. Tempo dall'apertura
@@ -79,6 +80,9 @@ async function session(chrome, profile, url, first) {
       misure.fasi = st.phases;
       misure.boot_completed = st.booted;
       console.log(`avvio finito: ${st.booted.guestSecs.toFixed(0)} s di guest, ${secs(st.booted.wallMs)} s reali`);
+      const home = await page.waitFor('home (launcher)', async () => (await page.eval('window.vetroAndroid.state()')).home, BOOT_LIMIT_MS);
+      misure.home = home;
+      console.log(`home: ${home.guestSecs.toFixed(0)} s di guest, ${secs(home.wallMs)} s reali (${home.activity})`);
       const snap = await page.waitFor('snapshot dopo l\'avvio', async () => (await page.state()).snapshots[0], 30 * 60_000);
       misure.snapshot_avvio = snap;
       console.log(`snapshot: ${(snap.size / 2 ** 20).toFixed(0)} MiB, salvataggio ${snap.saveMs.toFixed(0)} ms, scrittura OPFS ${snap.writeMs.toFixed(0)} ms, memoria del modulo ${(snap.memory / 2 ** 20).toFixed(0)} MiB`);

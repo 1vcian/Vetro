@@ -23,14 +23,34 @@
 /** Voci della tabella dei blocchi (`vetro_jit::engine::TABLE_SIZE`). */
 export const TABLE_SIZE = 1 << 18;
 
+/**
+ * Byte di moduli generati compilati fra un azzeramento e l'altro, al più.
+ * Oltre, `compile` rifiuta il modulo e vetro-jit azzera il motore (come per
+ * la tabella piena): V8 non restituisce errori quando lo spazio per il
+ * codice compilato finisce (4 GiB), chiude il processo. Con Android il JIT
+ * arrivava lì dopo mezz'ora (ADR 0028); 96 MiB di wasm sono qualche centinaio
+ * di MiB di codice macchina.
+ */
+export const CODE_BUDGET = 96 << 20;
+
 export class JitEngine {
   #vetro = null; // export dell'istanza di vetro-wasm
   #table = null;
   #instances = new Map(); // indice -> export del modulo generato
   #rt = {}; // export del modulo di runtime (import `rt.*` dei moduli)
   #next = 0;
+  /** Byte compilati dall'ultimo azzeramento, e limite. */
+  #since = 0;
+  #budget;
+  /** Voci della tabella delle funzioni di vetro-wasm date con `entry`, e quelle libere. */
+  #entries = [];
+  #free = [];
   /** Moduli compilati, byte e azzeramenti, per i benchmark. */
-  stats = { modules: 0, bytes: 0, resets: 0, compileMs: 0 };
+  stats = { modules: 0, bytes: 0, resets: 0, compileMs: 0, refused: 0 };
+
+  constructor({ budget = CODE_BUDGET } = {}) {
+    this.#budget = budget;
+  }
 
   /** Da chiamare appena istanziato vetro-wasm (gli import servono prima). */
   attach(vetroExports) {
@@ -45,6 +65,10 @@ export class JitEngine {
   /** Compila e istanzia un modulo generato; restituisce il suo indice. */
   compile(bytes) {
     const v = this.#vetro;
+    if (this.#since > 0 && this.#since + bytes.length > this.#budget) {
+      this.stats.refused++;
+      throw new RangeError(`limite del codice del JIT (${this.#budget} byte dall'ultimo azzeramento)`);
+    }
     const t0 = performance.now();
     const module = new WebAssembly.Module(bytes);
     const instance = new WebAssembly.Instance(module, {
@@ -56,6 +80,7 @@ export class JitEngine {
     this.#instances.set(id, instance.exports);
     this.stats.modules++;
     this.stats.bytes += bytes.length;
+    this.#since += bytes.length;
     return id;
   }
 
@@ -92,6 +117,17 @@ export class JitEngine {
   reset() {
     this.#instances.clear();
     this.#table = null;
+    // Le voci date a Rust tengono vivi i loro moduli (il dispatcher tiene la
+    // tabella dei blocchi, che tiene tutti i blocchi): si svuotano, così il
+    // codice di prima si può liberare. Rust non le usa più (gli id dei moduli
+    // nuovi sono diversi).
+    const t = this.#vetro?.__indirect_function_table;
+    for (const i of this.#entries) {
+      t?.set(i, null);
+      this.#free.push(i);
+    }
+    this.#entries = [];
+    this.#since = 0;
     this.stats.resets++;
   }
 
@@ -103,8 +139,9 @@ export class JitEngine {
    */
   entry(id, index) {
     const t = this.#vetro.__indirect_function_table;
-    const i = t.grow(1);
+    const i = this.#free.length ? this.#free.pop() : t.grow(1);
     t.set(i, this.#instances.get(id)[`b${index}`]);
+    this.#entries.push(i);
     return i;
   }
 
@@ -117,7 +154,7 @@ export class JitEngine {
         try {
           return this.compile(bytes);
         } catch (e) {
-          console.error(`vetro_jit.compile: ${e}`);
+          if (!(e instanceof RangeError)) console.error(`vetro_jit.compile: ${e}`);
           return -1;
         }
       },

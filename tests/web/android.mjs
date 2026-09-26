@@ -10,7 +10,7 @@
 //   --until=boot       si ferma a sys.boot_completed (default: home + adb)
 //   --no-jit           interprete
 //   --log=FILE         console del guest (default target/aosp/node-android.log)
-//   --save=FILE        a sys.boot_completed salva lo snapshot (tempi e dimensione)
+//   --save=FILE        salva lo snapshot quando la home è a schermo (tempi e dimensione)
 //   --restore=FILE     riparte da uno snapshot di --save (stessa RAM) invece di avviare
 //   --apk=FILE         APK da installare (default target/apps/tocco.apk, da
 //                      tests/apps/tocco/build.sh)
@@ -22,7 +22,8 @@
 // quello dell'app (blu), un tocco sul touchscreen lo fa diventare arancione.
 
 import { open, stat, writeFile } from 'node:fs/promises';
-import { closeSync, existsSync, openSync, readFileSync, writeSync } from 'node:fs';
+import { deflateSync } from 'node:zlib';
+import { closeSync, existsSync, openSync, readFileSync, writeFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { DEV } from '../../web/node/vetro.mjs';
 import { AdbClient } from '../../web/node/adb.mjs';
@@ -144,7 +145,7 @@ async function main() {
       report('stato');
       await writeFile(logPath, log);
     }
-    if (progress.phase === 'booted' && savePath && !saved) {
+    if (flow?.wantSave && !saved) {
       saved = true;
       report('prima dello snapshot');
       const ts = performance.now();
@@ -154,12 +155,13 @@ async function main() {
       const saveMs = performance.now() - ts;
       console.log(`snapshot: ${mib(size)} MiB (${size} byte) in ${saveMs.toFixed(0)} ms (a pezzi, scrittura compresa), a ${m.steps} istruzioni, memoria del modulo ${mib(m.memoryBytes)} MiB`);
       report('dopo lo snapshot');
+      flow.saved();
     }
     if (until === 'boot' && progress.phase === 'booted') break;
     if (progress.phase === 'booted') {
       bootedNs ??= m.guestNs;
       // La home ha qualche secondo di guest per disegnarsi.
-      if (!flow && m.guestNs - bootedNs >= 10_000_000_000n) flow = homeFlow(m, t0);
+      if (!flow && m.guestNs - bootedNs >= 10_000_000_000n) flow = homeFlow(m, t0, !!savePath && !saved);
       flow?.pump?.();
       // Il copione aspetta Promise e condizioni: gli si lascia il turno.
       if (flow) await new Promise((ok) => setImmediate(ok));
@@ -184,6 +186,49 @@ function center(m) {
 }
 
 const near = (a, b) => a && a.every((v, i) => Math.abs(v - b[i]) <= 8);
+/** Tiene acceso lo schermo della macchina virtuale e lo risveglia (lo stesso comando del Worker). */
+const WAKE = 'svc power stayon true; settings put system screen_off_timeout 2147483647; input keyevent KEYCODE_WAKEUP; wm dismiss-keyguard';
+/** L'attività in primo piano (lo stesso comando del Worker). */
+const HOME_QUERY = 'dumpsys activity activities | grep -m1 mResumedActivity';
+
+/** Lo scanout in un PNG in target/aosp (per guardarlo). */
+function screenshot(m, name) {
+  const size = m.displaySize();
+  const px = m.displayPixels();
+  if (!size || !px) return;
+  const { width: w, height: h } = size;
+  const raw = Buffer.alloc((w * 4 + 1) * h);
+  for (let y = 0; y < h; y++) {
+    raw[y * (w * 4 + 1)] = 0;
+    Buffer.from(px.buffer, px.byteOffset + y * w * 4, w * 4).copy(raw, y * (w * 4 + 1) + 1);
+  }
+  const crcTable = Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c >>> 0;
+  });
+  const crc = (buf) => {
+    let c = 0xffffffff;
+    for (const b of buf) c = crcTable[(c ^ b) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const td = Buffer.concat([Buffer.from(type), data]);
+    const c = Buffer.alloc(4);
+    c.writeUInt32BE(crc(td));
+    return Buffer.concat([len, td, c]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  const png = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+  writeFileSync(join(aosp, name), png);
+  console.log(`schermata: target/aosp/${name}`);
+}
 const BLU = [0x15, 0x65, 0xc0];
 const ARANCIONE = [0xef, 0x6c, 0x00];
 
@@ -192,8 +237,10 @@ const ARANCIONE = [0xef, 0x6c, 0x00];
  * aspettano le Promise del client (che avanzano con `pump`) e le condizioni
  * sullo schermo. Restituisce { pump, result } (result: 'fatto' o l'errore).
  */
-function homeFlow(m, t0) {
+function homeFlow(m, t0, save) {
   const state = { adb: null, sock: null };
+  let savedOk;
+  const savedP = new Promise((ok) => (savedOk = ok));
   const secs = () => ((performance.now() - t0) / 1000).toFixed(0);
   const waitGuest = async (what, pred, guestSecs) => {
     const limit = m.guestNs + BigInt(guestSecs * 1e9);
@@ -205,6 +252,7 @@ function homeFlow(m, t0) {
   const run = async () => {
     const home = center(m);
     console.log(`home: pixel al centro ${home}, schermo ${JSON.stringify(m.displaySize())}`);
+    screenshot(m, 'node-home.png');
     for (let attempt = 0; ; attempt++) {
       state.sock = m.connectGuest(5555);
       state.adb = new AdbClient(state.sock);
@@ -221,6 +269,26 @@ function homeFlow(m, t0) {
     }
     const adb = state.adb;
     console.log(`adb devices: ${JSON.stringify(await adb.devices())}`);
+    // Una macchina virtuale: lo schermo resta acceso (come fa il Worker dell'app).
+    console.log(`schermo acceso: ${JSON.stringify(await adb.shell(WAKE))}`);
+    await waitGuest('schermo acceso', () => false, 3).catch(() => {});
+    // La home: l'attività in primo piano è il launcher (prima c'è
+    // FallbackHome, "Phone is starting").
+    const b0 = m.guestNs;
+    let top = '';
+    for (;;) {
+      top = (await adb.shell(HOME_QUERY)).stdout.trim();
+      if (/launcher/i.test(top)) break;
+      await waitGuest('attesa della home', () => false, 5).catch(() => {});
+      if (m.guestNs - b0 > 3000_000_000_000n) throw new Fail(`home non arrivata: ${top}`);
+    }
+    console.log(`home: ${top} a ${(Number(m.guestNs) / 1e9).toFixed(1)} s di guest, ${secs()} s reali`);
+    await waitGuest('home disegnata', () => false, 5).catch(() => {});
+    screenshot(m, 'node-home-accesa.png');
+    if (save) {
+      holder.wantSave = true;
+      await savedP;
+    }
     const r = await adb.shell('getprop sys.boot_completed; getprop ro.build.version.release; cat /proc/meminfo | head -3');
     console.log(`adb shell: ${JSON.stringify(r)}`);
     if (!existsSync(apkPath)) throw new Fail(`${apkPath} mancante: tests/apps/tocco/build.sh`);
@@ -234,15 +302,17 @@ function homeFlow(m, t0) {
     console.log(`am start: ${st.stdout.trim().split('\n').join(' | ')} (${((performance.now() - t) / 1000).toFixed(1)} s reali)`);
     await waitGuest("l'app a schermo (centro blu)", () => near(center(m), BLU), 120);
     console.log(`app a schermo: centro ${center(m)}`);
+    screenshot(m, 'node-app-1.png');
     const size = m.displaySize();
     m.touch(0, [16384, 16384]);
     await waitGuest('tocco (giù)', () => false, 0.2).catch(() => {});
     m.touch(0, null);
     await waitGuest("l'app ha ricevuto il tocco (centro arancione)", () => near(center(m), ARANCIONE), 60);
+    screenshot(m, 'node-app-2.png');
     const log = await adb.shell('logcat -d -s vetro-tocco:I | tail -3');
     console.log(`tocco ricevuto: centro ${center(m)} su ${size.width}x${size.height}; logcat: ${log.stdout.trim().split('\n').join(' | ')}`);
   };
-  const holder = { pump: () => state.adb?.pump(), result: null };
+  const holder = { pump: () => state.adb?.pump(), result: null, wantSave: false, saved: () => savedOk() };
   run().then(() => (holder.result = 'fatto'), (e) => (holder.result = e));
   return holder;
 }

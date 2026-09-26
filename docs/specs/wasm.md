@@ -179,6 +179,7 @@ Il giro con un disco via rete:
 | `vetro_snapshot_save` | `(vm) -> usize` | salva la macchina intera in un buffer interno e ne restituisce la lunghezza. Prima leggere la console: l'uscita già tolta alla UART e non consegnata al JS non entra |
 | `vetro_snapshot_ptr` | `(vm) -> *const u8` | i byte dell'ultimo salvataggio (nullo se non ce n'è), validi fino al prossimo salvataggio, a `vetro_snapshot_clear` o a `vetro_machine_free` |
 | `vetro_snapshot_clear` | `(vm)` | libera il buffer |
+| `vetro_snapshot_save_stream` | `(vm) -> u64` | ABI 12: lo stesso file di `vetro_snapshot_save` a pezzi, senza tenerlo intero in memoria (Android): i pezzi del contenuto vanno all'import `vetro_host.snapshot_write(ptr, len)` in ordine (da scrivere dall'offset 36 in poi), l'intestazione (36 byte) resta nel buffer di `vetro_snapshot_ptr`. Restituisce la lunghezza del file. In memoria oltre ai pezzi (1 MiB) c'è solo la parte prima della RAM (dispositivi e copy-on-write dei dischi); la RAM si comprime due volte (la lunghezza entra nell'hash) |
 | `vetro_snapshot_restore` | `(vm, data: *const u8, len: usize) -> u32` | ripristina; il buffer si può liberare subito dopo. Codici: 0 `OK`, 1 `BAD_MAGIC` (non è uno snapshot), 2 `VERSION` (altro formato), 3 `CONFIG` (macchina configurata diversamente), 4 `CORRUPT` (rovinato o incoerente: la macchina va scartata); motivo nel messaggio. Con 1, 2 e 3 la macchina non cambia |
 
 Per ripristinare si costruisce la macchina con gli stessi parametri di
@@ -388,6 +389,7 @@ Il JS li fornisce all'istanziazione (`web/node/vetro.mjs`):
 | Import | Firma | Significato |
 |---|---|---|
 | `vetro_host.panic` | `(ptr: *const u8, len: usize)` | messaggio UTF-8 di un panic, subito prima della trappola `unreachable` |
+| `vetro_host.snapshot_write` | `(ptr: *const u8, len: usize)` | ABI 12: un pezzo di `vetro_snapshot_save_stream` (la vista vale solo durante la chiamata) |
 | `vetro_jit.compile` | `(ptr: *const u8, len: usize) -> i32` | compila e istanzia un modulo generato; indice ≥ 0, o < 0 se rifiutato |
 | `vetro_jit.runtime` | `(ptr: *const u8, len: usize) -> i32` | compila e istanzia il modulo di runtime (con `env.mem`, `env.ld`, `env.st`, `env.vsync`, `env.simd` dall'ABI 11); i suoi export sono gli import `rt.*` dei moduli compilati dopo, anche dopo `reset`; 0, o < 0 se rifiutato (ABI 10) |
 | `vetro_jit.entry` | `(module: i32, index: u32) -> u32` | mette l'export `b<index>` del modulo in una voce nuova di `__indirect_function_table` e la restituisce: `JsEngine::run` la chiama come un puntatore a funzione, senza passare da JS |
@@ -474,7 +476,8 @@ nel Worker (`opfsFile(cartella, nome)`), `MemFile` nei test.
   (troncamento, dati, flush, intestazione, flush) e dice se ha scritto;
   `generation`, `info`.
 - `SnapshotStore.opfs()` / `.memory()`: `loadMeta(chiave)` (metadati di uno
-  snapshot completo senza leggerne i byte) e `readInto(chiave, vista)`;
+  snapshot completo senza leggerne i byte), `readInto(chiave, vista)`,
+  `saveStream(chiave, metadati, produce)` (pezzi scritti man mano);
   `save(chiave, metadati, byte)`
   scrive `<chiave>.snap` e poi `<chiave>.json` (con `size`), `load(chiave)`
   restituisce `{ meta, bytes }` solo se i metadati ci sono e la lunghezza
@@ -485,9 +488,10 @@ nel Worker (`opfsFile(cartella, nome)`), `MemFile` nei test.
   `toBase64`/`fromBase64` per la coda della console nei metadati.
 
 La classe `Machine` di `vetro.mjs` ha `snapshotVersion`, `snapshotSave()`
-(copia dei byte), `snapshotSaveWith(use)` e `snapshotRestoreWith(n, fill)`
-(senza copie nel JS: la vista sui byte nella memoria del modulo va
-direttamente in OPFS e viceversa; per Android, centinaia di MiB),
+(copia dei byte), `snapshotSaveTo(write)` (a pezzi: `write(bytes,
+offset)` sincrona, poi l'intestazione a offset 0) e
+`snapshotRestoreWith(n, fill)` (i byte letti da OPFS direttamente nella
+memoria del modulo; per Android, centinaia di MiB),
 `memoryBytes`, `snapshotRestore(bytes)` (lancia un `Error` con `code`
 `BadMagic`/`Version`/`Config`/`Corrupt`), `overlayOpen(disk, identity,
 bytes)`, `overlayTake(disk)` (`{ truncate, writes: [{ at, bytes }] }` o null),

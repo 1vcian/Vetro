@@ -15,7 +15,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { BlobSource, composePlan, composeRead, DiskFeeder, LayoutSource, MemoryCache, parseLayout, RangeSource } from '../../web/node/disk.mjs';
-import { BootProgress, PHASES } from '../../web/node/android.mjs';
+import { BootProgress, isHome, PHASES } from '../../web/node/android.mjs';
 import { apkInfo, parseAxml, zipEntries } from '../../web/node/apk.mjs';
 import { parseRange, serve } from '../../tools/web-serve.mjs';
 import { absAxis, BUTTONS, evdevCode } from '../../web/app/keymap.mjs';
@@ -526,7 +526,12 @@ test('fasi dell\'avvio di Android (BootProgress)', () => {
   eq(p.feed("init: starting service 'zygote'...\n", 90).length, 0, 'fase già vista');
   eq(p.feed("init: Control message: Processed ctl.start for 'idmap2d' from pid: 794 (system_server)\n", 193).map((e) => e.phase), ['surfaceflinger', 'system_server'], 'system_server');
   eq(p.feed('init: processing action (persist.sys.zram_enabled=1 && sys-boot-completed-set) from (x)\n', 585).map((e) => e.phase), ['booted'], 'avvio finito');
-  eq([p.phase, p.label, p.events.length, p.events.at(-1).guestSecs], ['booted', 'avvio finito', PHASES.length, 585], 'stato finale');
+  eq([p.phase, p.label, p.events.length, p.events.at(-1).guestSecs], ['booted', 'avvio finito', PHASES.length - 1, 585], 'fine dell\'avvio');
+  // La home la segna chi ha adb (attività in primo piano).
+  check(isHome('  mResumedActivity: ActivityRecord{1 u0 com.android.launcher3/.uioverlay.QuickstepLauncher t5}') && !isHome('mResumedActivity: ActivityRecord{2 u0 com.android.settings/.FallbackHome t1}'), 'home riconosciuta dal launcher');
+  eq(p.mark('home', 1600).map((e) => e.phase), ['home'], 'home segnata');
+  eq(p.mark('home', 1700).length, 0, 'home già segnata');
+  eq([p.phase, p.events.length], ['home', PHASES.length], 'stato finale');
 });
 
 test('APK: ZIP e manifesto binario (testdata/tocco-manifest.axml)', async () => {

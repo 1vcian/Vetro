@@ -184,9 +184,13 @@ export function sqlValue(v) {
   return new Uint8Array(x.match(/../g)?.map((h) => parseInt(h, 16)) ?? []);
 }
 
-/** Istanzia vetro-wasm dai byte del .wasm: { exports, jit }. */
-export async function instantiate(wasmBytes) {
-  const jit = new JitEngine();
+/**
+ * Istanzia vetro-wasm dai byte del .wasm: { exports, jit }. `jitBudget`:
+ * byte di moduli del JIT fra un azzeramento e l'altro (CODE_BUDGET di
+ * jit-engine.mjs).
+ */
+export async function instantiate(wasmBytes, { jitBudget } = {}) {
+  const jit = new JitEngine(jitBudget ? { budget: jitBudget } : {});
   let exports = null;
   const imports = {
     vetro_host: {
