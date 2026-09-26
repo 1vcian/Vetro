@@ -320,7 +320,8 @@ impl Kernel {
     pub fn new(cfg: Config) -> Self {
         let console = Rc::new(RefCell::new(Console::new(cfg.stdin.clone(), cfg.echo)));
         let jit = cfg.jit.then(|| {
-            let jc = JitConfig { hot_threshold: cfg.jit_threshold, ..JitConfig::default() };
+            let profile = std::env::var("VETRO_JIT_PROFILE").is_ok_and(|v| v == "1");
+            let jc = JitConfig { hot_threshold: cfg.jit_threshold, profile, ..JitConfig::default() };
             Box::new(JitCpu::new(NativeEngine::new(), jc))
         });
         Kernel {
@@ -352,6 +353,11 @@ impl Kernel {
     /// Contatori del JIT, se attivo.
     pub fn jit_stats(&self) -> Option<JitStats> {
         self.jit.as_ref().map(|j| j.stats)
+    }
+
+    /// Istruzioni dell'interprete per classe (`VETRO_JIT_PROFILE=1`).
+    pub fn jit_profile(&self) -> Option<&vetro_jit::Profile> {
+        self.jit.as_ref().and_then(|j| j.profile.as_ref())
     }
 
     pub fn stdout(&self) -> Vec<u8> {

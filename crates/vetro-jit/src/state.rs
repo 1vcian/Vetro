@@ -64,13 +64,25 @@ pub struct JitState {
     /// un'istruzione di tipo `fk` con operandi `fa`, `fb` e risultato `fr`
     /// ([`lazy_nzcv`]), altrimenti è `nzcv`.
     pub fk: u32,
-    pub _pad: [u32; 2],
+    /// FPCR (letto dalle regioni) e FPSR (flag cumulativi, scritti dalle
+    /// regioni e da `env.simd`), come `Cpu::fpcr`/`Cpu::fpsr` (ADR 0026).
+    pub fpcr: u32,
+    pub fpsr: u32,
     /// V0..V31 (128 bit: metà bassa e alta), validi se `v_valid`.
     pub v: [[u64; 2]; 32],
     pub fa: u64,
     pub fb: u64,
     pub fr: u64,
-    pub _pad2: u64,
+    /// Modalità sistema (ADR 0026): istruzioni della macchina all'inizio
+    /// della corsa del dispatcher (lo scrive l'host prima di ogni corsa):
+    /// CNTPCT di un'istruzione è `counter(time_base + steps + indice)`.
+    pub time_base: u64,
+    /// CNTVOFF: CNTVCT = CNTPCT - `cntvoff`.
+    pub cntvoff: u64,
+    /// 1 se `time_base` e `cntvoff` valgono per questa corsa; altrimenti
+    /// MRS CNTPCT/CNTVCT esce e lo fa l'interprete.
+    pub time_ok: u32,
+    pub _pad2: u32,
 }
 
 /// Offset dei campi (byte dall'inizio della struttura).
@@ -103,13 +115,18 @@ pub mod off {
     pub const FAR_EL1: u32 = 408;
     pub const V_VALID: u32 = 416;
     pub const FK: u32 = 420;
+    pub const FPCR: u32 = 424;
+    pub const FPSR: u32 = 428;
     /// V0..V31, 16 byte ciascuno (metà bassa poi alta).
     pub const V: u32 = 432;
     pub const FA: u32 = 944;
     pub const FB: u32 = 952;
     pub const FR: u32 = 960;
+    pub const TIME_BASE: u32 = 968;
+    pub const CNTVOFF: u32 = 976;
+    pub const TIME_OK: u32 = 984;
     /// Dimensione totale.
-    pub const SIZE: usize = 976;
+    pub const SIZE: usize = 992;
 }
 
 /// Area del JIT in modalità sistema, a partire da `JitState` (offset dal
@@ -149,7 +166,15 @@ pub mod area {
 
 impl JitState {
     pub fn from_cpu(cpu: &Cpu) -> Self {
-        JitState { x: cpu.x, sp: cpu.sp, pc: cpu.pc, nzcv: cpu.nzcv, ..Default::default() }
+        JitState {
+            x: cpu.x,
+            sp: cpu.sp,
+            pc: cpu.pc,
+            nzcv: cpu.nzcv,
+            fpcr: cpu.fpcr,
+            fpsr: cpu.fpsr,
+            ..Default::default()
+        }
     }
 
     /// Ricopia nella `Cpu` i campi che i blocchi possono cambiare (i
@@ -158,6 +183,7 @@ impl JitState {
         cpu.x = self.x;
         cpu.sp = self.sp;
         cpu.pc = self.pc;
+        cpu.fpsr = self.fpsr;
         cpu.nzcv = lazy_nzcv(self.fk, self.fa, self.fb, self.fr, self.nzcv);
         if self.v_valid != 0 {
             for (d, s) in cpu.v.iter_mut().zip(&self.v) {
@@ -264,11 +290,15 @@ impl JitState {
         }
         w(416, &self.v_valid.to_le_bytes());
         w(420, &self.fk.to_le_bytes());
-        w(424, &[0; 8]);
+        w(424, &self.fpcr.to_le_bytes());
+        w(428, &self.fpsr.to_le_bytes());
         w(944, &self.fa.to_le_bytes());
         w(952, &self.fb.to_le_bytes());
         w(960, &self.fr.to_le_bytes());
-        w(968, &[0; 8]);
+        w(968, &self.time_base.to_le_bytes());
+        w(976, &self.cntvoff.to_le_bytes());
+        w(984, &self.time_ok.to_le_bytes());
+        w(988, &[0; 4]);
         for (i, r) in self.v.iter().enumerate() {
             w(432 + 16 * i, &r[0].to_le_bytes());
             w(440 + 16 * i, &r[1].to_le_bytes());
@@ -317,11 +347,15 @@ impl JitState {
             far_el1: q(408),
             v_valid: d(416),
             fk: d(420),
-            _pad: [0; 2],
+            fpcr: d(424),
+            fpsr: d(428),
             v,
             fa: q(944),
             fb: q(952),
             fr: q(960),
+            time_base: q(968),
+            cntvoff: q(976),
+            time_ok: d(984),
             _pad2: 0,
         }
     }
@@ -433,9 +467,14 @@ mod tests {
         assert_eq!(offset_of!(JitState, fa), off::FA as usize);
         assert_eq!(offset_of!(JitState, fb), off::FB as usize);
         assert_eq!(offset_of!(JitState, fr), off::FR as usize);
+        assert_eq!(offset_of!(JitState, fpcr), off::FPCR as usize);
+        assert_eq!(offset_of!(JitState, fpsr), off::FPSR as usize);
+        assert_eq!(offset_of!(JitState, time_base), off::TIME_BASE as usize);
+        assert_eq!(offset_of!(JitState, cntvoff), off::CNTVOFF as usize);
+        assert_eq!(offset_of!(JitState, time_ok), off::TIME_OK as usize);
         // Niente riempimento implicito (`store` copia i byte della struttura).
-        assert_eq!(offset_of!(JitState, _pad) + 8, off::V as usize);
-        assert_eq!(offset_of!(JitState, _pad2) + 8, off::SIZE);
+        assert_eq!(offset_of!(JitState, fpsr) + 4, off::V as usize);
+        assert_eq!(offset_of!(JitState, _pad2) + 4, off::SIZE);
         assert_eq!(size_of::<JitState>(), off::SIZE);
         assert_eq!(align_of::<JitState>(), 16);
     }
@@ -477,6 +516,11 @@ mod tests {
         s.fa = 20;
         s.fb = 21;
         s.fr = 22;
+        s.fpcr = 0x0300_0000;
+        s.fpsr = 0x9f;
+        s.time_base = 23;
+        s.cntvoff = 24;
+        s.time_ok = 1;
         let mut mem = vec![0xaau8; 16 + off::SIZE];
         s.store(&mut mem, 16);
         assert_eq!(JitState::load(&mem, 16), s);
@@ -497,9 +541,12 @@ mod tests {
         cpu.pc = 0x2000;
         cpu.nzcv = 0x8000_0000;
         cpu.tpidr_el0 = 9;
+        cpu.fpcr = 0x0040_0000;
+        cpu.fpsr = 0x11;
         let s = JitState::from_cpu(&cpu);
         let mut back = Cpu::new();
         back.tpidr_el0 = 9;
+        back.fpcr = 0x0040_0000;
         s.to_cpu(&mut back);
         assert_eq!(back, cpu);
     }

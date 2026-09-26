@@ -64,5 +64,8 @@ pub fn run_elf(
     let envp: Vec<Vec<u8>> = envp.iter().map(|s| s.as_bytes().to_vec()).collect();
     k.spawn(image, &argv, &envp, exe)?;
     let exit = k.run();
+    if let Some(p) = k.jit_profile() {
+        eprint!("vetro: {}", p.report(40));
+    }
     Ok(Outcome { exit, stdout: k.stdout(), stderr: k.stderr(), steps: k.steps(), jit: k.jit_stats() })
 }

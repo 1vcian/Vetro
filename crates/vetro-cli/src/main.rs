@@ -630,6 +630,9 @@ fn boot(args: &[String]) -> ExitCode {
                 eprintln!("vetro: jit {j:?}");
             }
         }
+        if let Some(p) = m.jit_profile() {
+            eprint!("vetro: {}", p.report(40));
+        }
     };
     // Eventi di rete già stampati (il registro si legge senza toccarlo:
     // l'esecuzione non cambia con --net-events).

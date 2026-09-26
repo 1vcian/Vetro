@@ -67,7 +67,7 @@ export class JitEngine {
     const v = this.#vetro;
     const module = new WebAssembly.Module(bytes);
     const instance = new WebAssembly.Instance(module, {
-      env: { mem: v.memory, ld: v.vetro_jit_ld, st: v.vetro_jit_st, vsync: v.vetro_jit_vsync },
+      env: { mem: v.memory, ld: v.vetro_jit_ld, st: v.vetro_jit_st, vsync: v.vetro_jit_vsync, simd: v.vetro_jit_simd },
     });
     this.#rt = instance.exports;
   }

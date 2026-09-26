@@ -63,3 +63,17 @@ pub(crate) fn exec_crypto(cpu: &mut crate::state::Cpu, i: CryptoInsn) {
 pub(crate) fn exec_fp(cpu: &mut crate::state::Cpu, i: FpInsn) {
     fpinsn::exec(cpu, i)
 }
+
+/// Esegue un'istruzione SIMD/FP senza accessi alla memoria (intera, FP o
+/// crittografica) come l'interprete: per il JIT, che la chiama dalle
+/// regioni (`env.simd`, ADR 0026). Legge e scrive solo `v`, `x`, `nzcv`,
+/// `fpcr` e `fpsr`. Un load/store (`SimdInsn::Mem`) è un errore del
+/// chiamante.
+pub fn exec_dp(cpu: &mut crate::state::Cpu, i: SimdInsn) {
+    match i {
+        SimdInsn::Int(i) => int::exec(cpu, i),
+        SimdInsn::Fp(f) => fpinsn::exec(cpu, f),
+        SimdInsn::Crypto(c) => crypto::exec(cpu, c),
+        SimdInsn::Mem(m) => panic!("exec_dp con un load/store SIMD: {m:?}"),
+    }
+}

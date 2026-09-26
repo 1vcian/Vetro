@@ -95,8 +95,11 @@ pub fn kind(insn: &Insn) -> Kind {
         Insn::LdSt { .. } => Linear,
         // SIMD (ADR 0024): load/store di registri V singoli e in coppia,
         // DUP/INS/UMOV/SMOV, MOVI/MVNI/ORR/BIC immediati.
-        Insn::Simd(SimdInsn::Mem(VecMemInsn::Reg { .. } | VecMemInsn::Pair { .. }))
-        | Insn::Simd(SimdInsn::Int(IntInsn::Copy { .. } | IntInsn::MovImm { .. })) => Linear,
+        Insn::Simd(SimdInsn::Mem(VecMemInsn::Reg { .. } | VecMemInsn::Pair { .. })) => Linear,
+        // Tutte le istruzioni SIMD/FP senza memoria (ADR 0026): quelle
+        // senza una forma in linea le esegue l'interprete dalla regione
+        // (`env.simd`, [`crate::helper`]).
+        Insn::Simd(SimdInsn::Int(_) | SimdInsn::Fp(_) | SimdInsn::Crypto(_)) => Linear,
         Insn::B { .. } | Insn::BranchReg { .. } => Branch,
         Insn::Svc { .. } => Svc,
         _ => Unsupported,
@@ -214,6 +217,8 @@ pub fn kind_in(insn: &Insn, sys: Option<SysTarget>) -> Kind {
 pub struct Bb {
     pub pc: u64,
     pub insns: Vec<Insn>,
+    /// Le parole delle istruzioni (per `env.simd`).
+    pub words: Vec<u32>,
 }
 
 impl Bb {
@@ -269,15 +274,17 @@ pub fn direct_target(insn: &Insn, pc: u64, sys: Option<SysTarget>) -> Option<u64
 impl Region {
     /// Una sequenza lineare di istruzioni da `pc`, divisa in blocchi base
     /// dopo ogni salto e SVC (per i test).
-    pub fn linear(pc: u64, insns: Vec<Insn>, sys: Option<SysTarget>) -> Region {
+    pub fn linear(pc: u64, words: Vec<u32>, sys: Option<SysTarget>) -> Region {
         let mut bbs = Vec::new();
-        let mut cur = Bb { pc, insns: Vec::new() };
-        for (i, insn) in insns.into_iter().enumerate() {
+        let mut cur = Bb { pc, insns: Vec::new(), words: Vec::new() };
+        for (i, w) in words.into_iter().enumerate() {
+            let insn = vetro_cpu::decode(w);
             let end = is_cond_branch(&insn) || kind(&insn) != Kind::Linear;
             cur.insns.push(insn);
+            cur.words.push(w);
             if end || cur.insns.len() == MAX_BLOCK {
                 let next = pc.wrapping_add(4 * (i as u64 + 1));
-                bbs.push(std::mem::replace(&mut cur, Bb { pc: next, insns: Vec::new() }));
+                bbs.push(std::mem::replace(&mut cur, Bb { pc: next, insns: Vec::new(), words: Vec::new() }));
             }
         }
         if !cur.insns.is_empty() {
@@ -410,9 +417,9 @@ pub fn discover(
     let mut todo: Vec<u64> = leaders.iter().copied().filter(|l| decoded.contains_key(l)).collect();
     let mut seen: BTreeSet<u64> = todo.iter().copied().collect();
     while let Some(l) = todo.pop() {
-        let mut bb = Bb { pc: l, insns: Vec::new() };
+        let mut bb = Bb { pc: l, insns: Vec::new(), words: Vec::new() };
         let mut a = l;
-        while let Some(&(_, insn)) = decoded.get(&a) {
+        while let Some(&(w, insn)) = decoded.get(&a) {
             if a != l && leaders.contains(&a) {
                 break;
             }
@@ -424,6 +431,7 @@ pub fn discover(
                 break;
             }
             bb.insns.push(insn);
+            bb.words.push(w);
             if kind_in(&insn, sys) != Kind::Linear || is_cond_branch(&insn) {
                 break;
             }
@@ -561,8 +569,10 @@ const F_STQ_SLOW: u32 = 37;
 /// allineati (`area::tlb_u`), poi l'host (per EL).
 const F_LDU: u32 = 38;
 const F_STU: u32 = 40;
+/// `simd(state, parola, x, nzcv) -> valore`: `env.simd` (ADR 0026).
+const F_SIMD: u32 = 42;
 /// Funzioni del runtime.
-const N_RT: u32 = 42;
+const N_RT: u32 = 43;
 
 /// Bit di `size` per `env.ld`/`env.st`: metà di un accesso da 16 byte non
 /// allineato a 16. L'host tratta la metà come non allineata (SCTLR_EL1.A,
@@ -619,6 +629,7 @@ fn rt_sig(id: u32) -> (String, Vec<ValType>, Vec<ValType>) {
         F_LDU | 39 => (format!("ldu{}", id - F_LDU), vec![I32, I64, I64, I64, I32], vec![I64, I32]),
         F_STU | 41 => (format!("stu{}", id - F_STU), vec![I32, I64, I64, I64, I64, I32], vec![I32]),
         F_STQ_SLOW => ("stq_slow".into(), vec![I32, I64, I64, I64, I64, I64, I32], vec![I32]),
+        F_SIMD => ("simd".into(), vec![I32, I32, I64, I32], vec![I64]),
         _ => unreachable!("funzione del runtime sconosciuta: {id}"),
     }
 }
@@ -651,9 +662,11 @@ pub fn runtime(memory: MemoryImport) -> Vec<u8> {
     let t_vsync = m.ty(&[I32], &[]);
     let (ld, st) = (m.import_func("env", "ld", t_ld), m.import_func("env", "st", t_st));
     let vsync = m.import_func("env", "vsync", t_vsync);
+    let t_simd = m.ty(&[I32, I32, I64, I32], &[I64]);
+    let simd = m.import_func("env", "simd", t_simd);
     // Indice nel runtime della funzione `id` (dopo gli import `env.*`).
     fn rt(id: u32) -> u32 {
-        id + 3
+        id + 4
     }
     fn def(m: &mut Module, id: u32, f: Func) {
         let (name, p, r) = rt_sig(id);
@@ -995,6 +1008,11 @@ pub fn runtime(memory: MemoryImport) -> Vec<u8> {
             def(&mut m, if write { F_STU } else { F_LDU } + el as u32, f);
         }
     }
+
+    // simd(state, parola, x, nzcv) -> valore: `env.simd`.
+    let mut f = Func::default();
+    f.local_get(0).local_get(1).local_get(2).local_get(3).call(simd);
+    def(&mut m, F_SIMD, f);
     m.encode()
 }
 
@@ -1073,6 +1091,7 @@ pub fn function(r: &Region) -> Func {
         read: 0,
         written: 0,
         pc: r.pc,
+        word: 0,
         index: 0,
         pc0: r.pc & !0xfff,
         fl: Fl::Unknown,
@@ -1164,6 +1183,8 @@ struct Tx {
     written: u64,
     /// Indirizzo dell'istruzione corrente.
     pc: u64,
+    /// Parola dell'istruzione corrente.
+    word: u32,
     /// Indice dell'istruzione corrente nel blocco base.
     index: u64,
     /// Inizio della pagina (valore di `L_PC0`).
@@ -1213,6 +1234,7 @@ impl Tx {
         for (i, insn) in bb.insns.iter().enumerate() {
             self.index = i as u64;
             self.pc = bb.pc.wrapping_add(4 * i as u64);
+            self.word = bb.words[i];
             let k = kind_in(insn, self.sys);
             assert!(k != Kind::Unsupported, "istruzione non traducibile nel blocco: {insn:?}");
             if k == Kind::Svc {
@@ -2299,6 +2321,38 @@ impl Tx {
         }
     }
 
+    /// Istruzione SIMD/FP senza memoria eseguita dall'interprete dalla
+    /// regione (`rt.simd` → `env.simd`, [`crate::helper`]): passa il
+    /// registro generale letto e NZCV, e scrive il registro generale o NZCV
+    /// restituito.
+    fn simd_helper(&mut self, s: &SimdInsn) {
+        let io = crate::helper::io(s);
+        self.simd = true;
+        self.f.local_get(L_STATE).i32_const(self.word as i32);
+        match io.x_in {
+            Some(rn) => self.get_x(rn),
+            None => {
+                self.f.i64_const(0);
+            }
+        }
+        if io.nzcv_in {
+            self.get_nzcv();
+        } else {
+            self.f.i32_const(0);
+        }
+        self.f.call(F_SIMD);
+        match io.out {
+            crate::helper::Out::None => {
+                self.f.op(op::DROP);
+            }
+            crate::helper::Out::X(rd) => self.set_x(rd),
+            crate::helper::Out::Nzcv => {
+                self.f.op(op::I32_WRAP_I64);
+                self.set_nzcv();
+            }
+        }
+    }
+
     /// Se la cima dello stack (i32) non è zero (interrupt smascherati), esce
     /// con YIELD dopo l'istruzione corrente.
     fn yield_if(&mut self) {
@@ -2877,7 +2931,8 @@ impl Tx {
                 self.st(t64(4), 1 << size, t64(7), None);
             }
             Insn::Simd(SimdInsn::Mem(m)) => self.vec_mem(m),
-            Insn::Simd(SimdInsn::Int(i)) => self.vec_int(i),
+            Insn::Simd(SimdInsn::Int(i @ (IntInsn::Copy { .. } | IntInsn::MovImm { .. }))) => self.vec_int(i),
+            Insn::Simd(s) => self.simd_helper(&s),
             other => unreachable!("istruzione non traducibile: {other:?}"),
         }
     }
@@ -3231,7 +3286,7 @@ mod tests {
                 continue;
             }
             count += 1;
-            blocks.push(Region::linear(0x40_0000 + 4 * count, vec![insn], None));
+            blocks.push(Region::linear(0x40_0000 + 4 * count, vec![w], None));
             if blocks.len() == 64 {
                 let mem = MemoryImport { min: 1, shared_max: None };
                 validate(&module(&blocks, mem));
@@ -3258,9 +3313,10 @@ mod tests {
 
     #[test]
     fn max_steps_excludes_final_svc() {
-        let b = Region::linear(0, vec![Insn::Nop, Insn::Svc { imm: 0 }], None);
+        // nop; svc #0 (tools/a64asm.sh)
+        let b = Region::linear(0, vec![0xd503201f, 0xd4000001], None);
         assert_eq!(b.max_steps(), 1);
-        let b = Region::linear(0, vec![Insn::Nop, Insn::Nop], None);
+        let b = Region::linear(0, vec![0xd503201f, 0xd503201f], None);
         assert_eq!(b.max_steps(), 2);
     }
 
@@ -3321,8 +3377,7 @@ mod tests {
         ];
         let sys = Some(SysTarget { el: 1, tbi0: false, tbi1: true, spsel: true, fp: true });
         let pc = 0xffff_8000_1234_5000u64;
-        let insns: Vec<Insn> = words.iter().map(|&w| vetro_cpu::decode(w)).collect();
-        let r = Region::linear(pc, insns, sys);
+        let r = Region::linear(pc, words.to_vec(), sys);
         let m = module(std::slice::from_ref(&r), MemoryImport { min: 1, shared_max: None });
         validate(&m);
         let body: usize = r.bbs.len();

@@ -74,7 +74,9 @@ use display::WebDisplay;
 /// 10: JIT a regioni (ADR 0024): import `vetro_jit.runtime` (modulo di
 /// runtime `rt.*`), export `vetro_jit_vsync`, contatore `yields` in fondo a
 /// `vetro_jit_stats`.
-pub const ABI_VERSION: u32 = 10;
+/// 11: FP/SIMD nelle regioni (ADR 0026): export `vetro_jit_simd` (import
+/// `env.simd` del runtime), `JitState` con FPCR/FPSR e l'orologio.
+pub const ABI_VERSION: u32 = 11;
 
 /// Allineamento dei buffer di [`vetro_alloc`] (basta per `JitState`).
 const ALLOC_ALIGN: usize = 16;

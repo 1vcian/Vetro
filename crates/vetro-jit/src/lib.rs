@@ -5,6 +5,9 @@
 //! - [`translate`]: da regioni di istruzioni decodificate a funzioni WASM,
 //!   il modulo di runtime e il dispatcher (ADR 0024);
 //! - [`engine`]: i trait [`Engine`] e [`Host`] (ABI in docs/specs/jit.md);
+//! - [`helper`]: `env.simd`, le istruzioni SIMD/FP eseguite
+//!   dall'interprete dentro le regioni (ADR 0026);
+//! - [`profile`]: istruzioni dell'interprete per classe, per le misure;
 //! - [`driver`]: [`JitCpu`], che in modalità utente alterna blocchi tradotti
 //!   e passi dell'interprete, con cache e invalidazione;
 //! - [`sys`]: [`SysJit`], i blocchi della modalità sistema (MMU, pagine
@@ -15,6 +18,8 @@
 
 pub mod driver;
 pub mod engine;
+pub mod helper;
+pub mod profile;
 pub mod state;
 pub mod sys;
 pub mod translate;
@@ -22,6 +27,7 @@ pub mod wasm;
 
 pub use driver::{JitConfig, JitCpu, JitStats};
 pub use engine::{Engine, Host};
+pub use profile::Profile;
 pub use state::JitState;
 pub use sys::{Next, SysJit, SysJitConfig, SysJitDyn, SysJitStats, SysPhys, SysRun};
 

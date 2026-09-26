@@ -203,6 +203,17 @@ pub unsafe extern "C" fn vetro_jit_vsync(state: usize) {
     with_host(|h, mem| h.vsync(mem, (state - base) as u32))
 }
 
+/// `env.simd` del runtime (ADR 0026): istruzione SIMD/FP senza memoria
+/// eseguita dall'interprete sul `JitState` all'indirizzo (assoluto) `state`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_jit_simd(state: usize, word: u32, x: u64, nzcv: u32) -> u64 {
+    // SAFETY: `state` è l'indirizzo di un `JitState` allineato a 16 nella
+    // memoria condivisa (contratto dei moduli generati); nessun altro lo
+    // usa mentre la regione chiama `env.simd`.
+    let st = unsafe { core::slice::from_raw_parts_mut(state as *mut u8, off::SIZE) };
+    vetro_jit::helper::exec(st, 0, word, x, nzcv)
+}
+
 unsafe fn set_exit_detail(state: usize, v: u32) {
     let p = (state + off::EXIT_DETAIL as usize) as *mut u32;
     // SAFETY: `state` punta a un `JitState` allineato a 16 (contratto).

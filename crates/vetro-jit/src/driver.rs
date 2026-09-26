@@ -35,6 +35,7 @@ use std::rc::Rc;
 use vetro_cpu::{Cpu, Exception, Memory, UserMemory};
 
 use crate::engine::{Engine, Host};
+use crate::profile::Profile;
 use crate::state::{self, JitState, off};
 use crate::translate::{self, MAX_REGION};
 use crate::wasm::MemoryImport;
@@ -49,11 +50,18 @@ pub struct JitConfig {
     pub memory: MemoryImport,
     /// Indirizzo di `JitState` nella memoria del motore (allineato a 16).
     pub state_addr: u32,
+    /// Conta per classe le istruzioni dell'interprete ([`Profile`]).
+    pub profile: bool,
 }
 
 impl Default for JitConfig {
     fn default() -> Self {
-        JitConfig { hot_threshold: 16, memory: MemoryImport { min: 1, shared_max: None }, state_addr: 16 }
+        JitConfig {
+            hot_threshold: 16,
+            memory: MemoryImport { min: 1, shared_max: None },
+            state_addr: 16,
+            profile: false,
+        }
     }
 }
 
@@ -84,8 +92,11 @@ enum Look<M> {
     Hot(Rc<Compiled<M>>),
     /// Da tradurre ora.
     Translate,
-    /// All'interprete (freddo o non traducibile).
+    /// All'interprete (freddo).
     Interp,
+    /// All'interprete: la prima istruzione non si traduce (dopo di lei può
+    /// cominciare una regione).
+    One,
 }
 
 /// Hash per chiavi u64 (indirizzi, pagine): la ricerca del blocco si fa a
@@ -174,6 +185,8 @@ pub struct JitCpu<E: Engine> {
     compiled: HashMap<BlockKey, Entries<E::Module>>,
     tick: u64,
     pub stats: JitStats,
+    /// Istruzioni dell'interprete per classe, se `cfg.profile`.
+    pub profile: Option<Profile>,
 }
 
 /// `Host` sopra la memoria utente.
@@ -213,6 +226,7 @@ impl<E: Engine> JitCpu<E> {
             compiled: HashMap::new(),
             tick: 0,
             stats: JitStats::default(),
+            profile: cfg.profile.then(Profile::default),
         }
     }
 
@@ -264,9 +278,14 @@ impl<E: Engine> JitCpu<E> {
         let mut jit_pc = 0;
         while done < budget {
             let pc = if in_jit { jit_pc } else { cpu.pc };
+            let mut one = false;
             let hot = match self.lookup(id, pc) {
                 Look::Hot(c) => Some(c),
                 Look::Interp => None,
+                Look::One => {
+                    one = true;
+                    None
+                }
                 Look::Translate => {
                     // La compilazione può azzerare il motore (e la sua
                     // memoria): prima lo stato torna nella Cpu.
@@ -274,7 +293,9 @@ impl<E: Engine> JitCpu<E> {
                         JitState::load(self.engine.memory(), at).to_cpu(cpu);
                         in_jit = false;
                     }
-                    self.install(id, pc, mem)
+                    let c = self.install(id, pc, mem);
+                    one = c.is_none();
+                    c
                 }
             };
             if let Some(c) = &hot
@@ -343,9 +364,10 @@ impl<E: Engine> JitCpu<E> {
                 if done >= budget || cpu.pc != old.wrapping_add(4) || cpu.pc >> 12 != old >> 12 {
                     break;
                 }
-                if hot.is_some() {
-                    // Blocco compilato ma più lungo del budget rimasto: un
-                    // passo alla volta, cercandolo di nuovo.
+                if hot.is_some() || one {
+                    // Blocco compilato ma più lungo del budget rimasto, o
+                    // istruzione non traducibile: un passo, poi si cerca
+                    // di nuovo (una regione può cominciare subito dopo).
                     break;
                 }
             }
@@ -366,6 +388,11 @@ impl<E: Engine> JitCpu<E> {
     }
 
     fn interp_step(&mut self, id: u64, cpu: &mut Cpu, mem: &mut UserMemory) -> Result<(), Exception> {
+        if let Some(p) = &mut self.profile
+            && let Ok(w) = mem.fetch(cpu.pc)
+        {
+            p.note(w, None);
+        }
         let r = cpu.step(mem);
         self.stats.interp_steps += 1;
         self.drain(id, mem);
@@ -378,7 +405,7 @@ impl<E: Engine> JitCpu<E> {
         let s = self.spaces.get_mut(&id).expect("spazio creato da run");
         match s.blocks.get_mut(&pc) {
             Some(Entry::Hot(c)) => Look::Hot(c.clone()),
-            Some(Entry::NoBlock) => Look::Interp,
+            Some(Entry::NoBlock) => Look::One,
             Some(Entry::Cold(n)) => {
                 *n += 1;
                 if *n < threshold { Look::Interp } else { Look::Translate }

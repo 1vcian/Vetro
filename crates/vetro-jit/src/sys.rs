@@ -69,6 +69,7 @@ use vetro_cpu::{Access, Cpu};
 use vetro_mmu::{BusError, Mmu, MmuBus, PhysMemory, tcr};
 
 use crate::engine::{Engine, Host, TABLE_SIZE};
+use crate::profile::Profile;
 use crate::state::{self, JitState, area, off};
 use crate::translate::{self, MAX_REGION, Region, SysTarget, ZVA_BYTES};
 use crate::wasm::MemoryImport;
@@ -137,6 +138,9 @@ pub struct SysJitConfig {
     /// Indirizzo di `JitState` (e dell'area che lo segue, [`area::SIZE`]
     /// byte) nella memoria del motore, allineato a 16.
     pub state_addr: u32,
+    /// Conta per classe le istruzioni dell'interprete
+    /// ([`SysJit::profile_step`], [`Profile`]).
+    pub profile: bool,
 }
 
 impl Default for SysJitConfig {
@@ -146,6 +150,7 @@ impl Default for SysJitConfig {
             batch: 16,
             memory: MemoryImport { min: 1, shared_max: None },
             state_addr: 16,
+            profile: false,
         }
     }
 }
@@ -435,6 +440,7 @@ pub struct SysJit<E: Engine> {
     ram: Option<(u64, u32, u64)>,
     ram_key: Option<(u64, usize, usize)>,
     dirty: Vec<u64>,
+    profile: Option<Profile>,
 }
 
 /// L'host dei blocchi: accessi attraverso la MMU con i permessi di EL e le
@@ -579,6 +585,7 @@ impl<E: Engine> SysJit<E> {
             ram: None,
             ram_key: None,
             dirty: Vec::new(),
+            profile: cfg.profile.then(Profile::default),
         };
         j.init_area();
         j
@@ -590,6 +597,31 @@ impl<E: Engine> SysJit<E> {
 
     pub fn stats(&self) -> SysJitStats {
         self.cache.stats
+    }
+
+    /// Con `cfg.profile`: conta la classe dell'istruzione che l'interprete
+    /// sta per eseguire a `cpu.pc` (letta con la traduzione di un fetch,
+    /// senza effetti sulla RAM; un fetch che fallisce non si conta).
+    pub fn profile_step(&mut self, cpu: &Cpu, mmu: &mut Mmu, phys: &mut dyn SysPhys) {
+        let Some(p) = &mut self.profile else { return };
+        let regs = translation_regs(cpu);
+        let el = cpu.sys.el;
+        let pa = {
+            let mut ram = RamOnly(phys);
+            let mut bus = MmuBus::new(mmu, &mut ram);
+            bus.translate(&regs, cpu.pc, AccessReq { access: Access::Fetch, el, aligned: true })
+        };
+        let mut w = [0u8; 4];
+        if let Ok(pa) = pa
+            && phys.ram_read(pa, &mut w)
+        {
+            p.note(u32::from_le_bytes(w), Some(target(cpu)));
+        }
+    }
+
+    /// Istruzioni dell'interprete per classe, se `cfg.profile`.
+    pub fn profile(&self) -> Option<&Profile> {
+        self.profile.as_ref()
     }
 
     /// Cache dei salti vuota e TLB software vuota.
@@ -938,6 +970,14 @@ impl<E: Engine> SysJit<E> {
 pub trait SysJitDyn {
     fn run(&mut self, cpu: &mut Cpu, mmu: &mut Mmu, phys: &mut dyn SysPhys, budget: u64) -> SysRun;
     fn stats(&self) -> SysJitStats;
+    /// Vero se conta le istruzioni dell'interprete ([`SysJit::profile_step`]).
+    fn profiling(&self) -> bool {
+        false
+    }
+    fn profile_step(&mut self, _cpu: &Cpu, _mmu: &mut Mmu, _phys: &mut dyn SysPhys) {}
+    fn profile(&self) -> Option<&Profile> {
+        None
+    }
 }
 
 impl<E: Engine> SysJitDyn for SysJit<E> {
@@ -946,5 +986,14 @@ impl<E: Engine> SysJitDyn for SysJit<E> {
     }
     fn stats(&self) -> SysJitStats {
         self.cache.stats
+    }
+    fn profiling(&self) -> bool {
+        self.profile.is_some()
+    }
+    fn profile_step(&mut self, cpu: &Cpu, mmu: &mut Mmu, phys: &mut dyn SysPhys) {
+        SysJit::profile_step(self, cpu, mmu, phys)
+    }
+    fn profile(&self) -> Option<&Profile> {
+        SysJit::profile(self)
     }
 }

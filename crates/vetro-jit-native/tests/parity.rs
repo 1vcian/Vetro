@@ -102,6 +102,59 @@ fn setup(seed: u64) -> (Cpu, UserMemory) {
             _ => rng.next(),
         };
     }
+    // Registri SIMD/FP (ADR 0026): valori FP speciali (zeri, denormali,
+    // infiniti, NaN silenziosi e segnalanti, limiti degli interi) e
+    // casuali; FPCR con arrotondamenti, FZ e DN, FPSR con o senza flag.
+    for v in cpu.v.iter_mut() {
+        let lane = |rng: &mut Rng| -> u64 {
+            const D: [u64; 12] = [
+                0,
+                1 << 63,
+                0x7ff0_0000_0000_0000,
+                0x7ff8_0000_0000_0000,
+                0x7ff4_0000_0000_0001,
+                1,
+                0x0010_0000_0000_0000,
+                0x3ff0_0000_0000_0000,
+                0x43e0_0000_0000_0000,
+                0x7fef_ffff_ffff_ffff,
+                0xc1e0_0000_0000_0000,
+                0x3fb9_9999_9999_999a,
+            ];
+            const S: [u32; 10] = [
+                0,
+                0x8000_0000,
+                0x7f80_0000,
+                0x7fc0_0000,
+                0x7fa0_0001,
+                1,
+                0x0080_0000,
+                0x3f80_0000,
+                0x4f00_0000,
+                0x3dcc_cccd,
+            ];
+            match rng.below(4) {
+                0 => D[rng.below(D.len() as u64) as usize],
+                1 => {
+                    S[rng.below(S.len() as u64) as usize] as u64
+                        | (S[rng.below(S.len() as u64) as usize] as u64) << 32
+                }
+                2 => {
+                    // Normali vicini: somme e prodotti esatti e inesatti.
+                    let e = 0x3f0 + rng.below(0x20);
+                    e << 52 | rng.next() >> 12 & !((1u64 << rng.below(52)) - 1)
+                }
+                _ => rng.next(),
+            }
+        };
+        *v = lane(&mut rng) as u128 | (lane(&mut rng) as u128) << 64;
+    }
+    cpu.fpcr = if rng.below(2) == 0 { 0 } else { (rng.below(32) as u32) << 22 };
+    cpu.fpsr = match rng.below(3) {
+        0 => 0,
+        1 => 0x10,
+        _ => rng.next() as u32 & 0x0800_009f,
+    };
     (cpu, mem)
 }
 
@@ -197,6 +250,14 @@ fn diff(a: &Trace, b: &Trace) -> String {
             "  sp {:#x}/{:#x} pc {:#x}/{:#x} nzcv {:#x}/{:#x}\n",
             a.cpu.sp, b.cpu.sp, a.cpu.pc, b.cpu.pc, a.cpu.nzcv, b.cpu.nzcv
         );
+    }
+    for r in 0..32 {
+        if a.cpu.v[r] != b.cpu.v[r] {
+            s += &format!("  v{r}: {:#034x} contro {:#034x}\n", a.cpu.v[r], b.cpu.v[r]);
+        }
+    }
+    if a.cpu.fpsr != b.cpu.fpsr {
+        s += &format!("  fpsr: {:#x} contro {:#x}\n", a.cpu.fpsr, b.cpu.fpsr);
     }
     if a.code != b.code {
         s += "  codice diverso\n";

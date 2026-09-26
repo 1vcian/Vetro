@@ -119,6 +119,17 @@ impl NativeEngine {
             })
             .expect("env.vsync");
         linker
+            .func_wrap(
+                "env",
+                "simd",
+                move |mut caller: Caller<'_, Ctx>, state: i32, word: i32, x: i64, nzcv: i32| -> i64 {
+                    let mem = memory.data_mut(&mut caller);
+                    vetro_jit::helper::exec(mem, state as u32 as usize, word as u32, x as u64, nzcv as u32)
+                        as i64
+                },
+            )
+            .expect("env.simd");
+        linker
             .func_wrap("env", "resolve", move |mut caller: Caller<'_, Ctx>, _state: i32| -> i32 {
                 // SAFETY: chiamata solo dal dispatcher eseguito da `run`.
                 let h = unsafe { host(&caller) };
@@ -130,9 +141,11 @@ impl NativeEngine {
 }
 
 /// Il JIT della modalità sistema su wasmtime, per `Machine::set_jit`
-/// (configurazione di default, soglia `hot_threshold`).
+/// (configurazione di default, soglia `hot_threshold`; con
+/// `VETRO_JIT_PROFILE=1` conta le istruzioni dell'interprete per classe).
 pub fn system_jit(hot_threshold: u32) -> Box<dyn vetro_jit::SysJitDyn> {
-    let cfg = vetro_jit::SysJitConfig { hot_threshold, ..vetro_jit::SysJitConfig::default() };
+    let profile = std::env::var("VETRO_JIT_PROFILE").is_ok_and(|v| v == "1");
+    let cfg = vetro_jit::SysJitConfig { hot_threshold, profile, ..vetro_jit::SysJitConfig::default() };
     Box::new(vetro_jit::SysJit::new(NativeEngine::new(), cfg))
 }
 

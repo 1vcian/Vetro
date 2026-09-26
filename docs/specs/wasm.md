@@ -20,7 +20,7 @@ memoria lineare (due macchine da 1 GiB) arrivano negativi.
 
 ## Export
 
-Versione: `vetro_abi_version() -> u32`, oggi **10**. Cambia a ogni modifica
+Versione: `vetro_abi_version() -> u32`, oggi **11**. Cambia a ogni modifica
 incompatibile delle firme o dei codici qui sotto; il caricatore JS
 (`web/node/vetro.mjs`) la controlla.
 
@@ -355,6 +355,7 @@ costanti `TIMELINE_INPUT`, `TIMELINE_EFFECT`, `RR_STATE`, `REPLAY_START`;
 | `vetro_jit_st` | `(state: usize, va: u64, size: u32, value: u64) -> u32` | `env.st` dei moduli generati |
 | `vetro_jit_resolve` | `(state: usize) -> u32` | `env.resolve` del dispatcher |
 | `vetro_jit_vsync` | `(state: usize)` | `env.vsync` del runtime: V0..V31 della `Cpu` nel `JitState` (ABI 10) |
+| `vetro_jit_simd` | `(state: usize, word: u32, x: u64, nzcv: u32) -> u64` | `env.simd` del runtime: istruzione SIMD/FP senza memoria eseguita dall'interprete sul `JitState` (ABI 11, ADR 0026) |
 | `__indirect_function_table` | tabella | la tabella delle funzioni di vetro-wasm, esportata ed estendibile (`build.rs`): il JS vi mette il dispatcher, che Rust chiama come un puntatore a funzione |
 | `vetro_jit_selftest` | `(wasm: *const u8, len: usize) -> u64` | prova del giro completo con un modulo di prova (sotto) |
 
@@ -366,7 +367,7 @@ Il JS li fornisce all'istanziazione (`web/node/vetro.mjs`):
 |---|---|---|
 | `vetro_host.panic` | `(ptr: *const u8, len: usize)` | messaggio UTF-8 di un panic, subito prima della trappola `unreachable` |
 | `vetro_jit.compile` | `(ptr: *const u8, len: usize) -> i32` | compila e istanzia un modulo generato; indice ≥ 0, o < 0 se rifiutato |
-| `vetro_jit.runtime` | `(ptr: *const u8, len: usize) -> i32` | compila e istanzia il modulo di runtime (con `env.mem`, `env.ld`, `env.st`, `env.vsync`); i suoi export sono gli import `rt.*` dei moduli compilati dopo, anche dopo `reset`; 0, o < 0 se rifiutato (ABI 10) |
+| `vetro_jit.runtime` | `(ptr: *const u8, len: usize) -> i32` | compila e istanzia il modulo di runtime (con `env.mem`, `env.ld`, `env.st`, `env.vsync`, `env.simd` dall'ABI 11); i suoi export sono gli import `rt.*` dei moduli compilati dopo, anche dopo `reset`; 0, o < 0 se rifiutato (ABI 10) |
 | `vetro_jit.entry` | `(module: i32, index: u32) -> u32` | mette l'export `b<index>` del modulo in una voce nuova di `__indirect_function_table` e la restituisce: `JsEngine::run` la chiama come un puntatore a funzione, senza passare da JS |
 | `vetro_jit.place` | `(module: i32, count: u32, base: u32)` | mette `b0..b<count-1>` del modulo nella tabella dei blocchi (`env.tbl` del dispatcher) dalla voce `base` |
 | `vetro_jit.reset` | `()` | scarta tutte le istanze e ricrea la tabella dei blocchi |

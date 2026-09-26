@@ -249,6 +249,12 @@ impl Machine {
         self.jit.as_ref().map(|j| j.stats())
     }
 
+    /// Istruzioni dell'interprete per classe, se il JIT le conta
+    /// (`SysJitConfig::profile`).
+    pub fn jit_profile(&self) -> Option<&vetro_jit::Profile> {
+        self.jit.as_ref().and_then(|j| j.profile())
+    }
+
     /// Slot dei dispositivi virtio montati.
     pub fn slots(&self) -> Slots {
         self.slots
@@ -596,6 +602,11 @@ impl Machine {
                 }
             }
             let old_pc = self.cpu.pc;
+            if let Some(jit) = self.jit.as_mut()
+                && jit.profiling()
+            {
+                jit.profile_step(&self.cpu, &mut self.mmu, &mut Phys(&self.board));
+            }
             let ev = {
                 let mut phys = Phys(&self.board);
                 let mut bus = MmuBus::new(&mut self.mmu, &mut phys);
