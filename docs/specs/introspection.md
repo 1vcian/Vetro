@@ -51,6 +51,29 @@ base)` (dalla memoria del processo, conteggio da DT_HASH/DT_GNU_HASH),
 (codice, target, flag, dimensioni, indirizzi del Parcel), `interface()`
 (descrittore AIDL in testa al Parcel).
 
+### `parcel`, `aidl`, `ipc`, `privacy` — decoder Binder (M8, ADR 0029)
+- `parcel::Parcel` legge i tipi di base (`i32`, `i64`, `String16`) e
+  `interface_header()` (intestazione `writeInterfaceToken`: strict mode,
+  work source, `SYST`/`VNDR`, descrittore); `strings16(&[u8])` tutte le
+  stringhe leggibili.
+- `aidl::method(descriptor, code) -> Option<&str>` dalla mappa
+  dell'immagine (`aidl_aosp15.tsv`, generata da `tools/aosp/aidl-map.sh`)
+  più i codici riservati di `IBinder`; `known_interface`, `table_size`.
+- `ipc::BinderCall` (mittente/destinatario come `Party` con pid, uid,
+  `package()`, interfaccia, metodo, `sensitive`) e `BinderLog` (accoppia
+  le due metà BC/BR per codice e byte del Parcel; `to_json`, `line`,
+  `sensitive()`).
+- `privacy::classify(descriptor, method, strings) -> Vec<Sensitive>`
+  (`Category`: posizione, contatti, registro chiamate, sms, calendario,
+  appunti, identificativi, fotocamera, microfono, account, app installate).
+
+### `linux::socket_endpoints` — 4-tupla di un fd (M7)
+`socket_endpoints(task, fd) -> Option<(SocketAddrV4, SocketAddrV4)>`
+(locale, remoto) dalla `struct sock` del kernel (offset dal BTF,
+`layout::SockLayout`; `None` se non è un socket IPv4 o il BTF non li ha).
+La usa l'hook TLS per legare `SSL*` alla connessione (via il fd di
+`connect`).
+
 ### `strace` — syscall decodificate
 `SyscallRecord` (pid/tid, comm, nr, argomenti, ret, percorso, fd→percorso,
 dati letti/scritti, indirizzo del socket, transazioni binder). `line()` in
@@ -71,6 +94,14 @@ stile strace; `decode_entry(&user, &fd_path)` e `decode_exit(&user)`.
   `GuestView`: `cpu`, `read_phys`, `cpu_regs`, `sp_el0/1`; è `PhysMem`.
 - Pronto: `introspect::SyscallTracer` (registra syscall e punti d'arresto
   con la decodifica di `vetro-analysis`), `BreakpointHit`.
+- `analysis::{Tracers, BinderTracer, ProcessNames, kernel_profile}` (M8):
+  `Tracers` ospita più tracciatori; `BinderTracer` accoppia le transazioni
+  in `BinderLog`; `kernel_profile(file, system_map, btf)` carica il profilo
+  da un `boot.img` o da un `Image`.
+- `tls::{TlsTracer, tls_service, Func}` (M7): punti d'arresto sui simboli
+  di `libssl` per processo (risolti da `tls_service` fra due quanti),
+  cattura del chiaro di `SSL_write`/`SSL_read`/`_ex` (ritorno via LR),
+  4-tupla dal fd di `connect`; `conversations: Vec<TlsConversation>`.
 
 Regole: nulla scrive nel guest; l'esecuzione (istruzioni, interrupt, RAM,
 console, snapshot, log) è identica con e senza agganci, anche nel replay.

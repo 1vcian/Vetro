@@ -65,6 +65,20 @@ restituiscono `None`/`Err` o segnano i messaggi incompleti).
   `note` (binario). `text` è `Decoded::to_text` (al più 512 KiB), `base64`
   i primi 256 KiB del corpo decodificato; `split_url`.
 
+## `net::tls`: testo in chiaro dagli hook TLS (M7, ADR 0029)
+- `TlsMessage { at_us, to_server, data }`: un blocco di `SSL_write`
+  (`to_server`) o `SSL_read` di una connessione, col tempo del guest.
+- `TlsConversation { client, server, host, pid, tid, process, package,
+  library, messages }`: una connessione cifrata vista in chiaro dagli
+  hook, con l'attribuzione (processo e libreria). `exchanges(flow)` ne
+  ricostruisce le richieste come `HttpExchange { secure: true, attribution }`.
+- `NetworkAnalysis::merge_tls(&[TlsConversation])`: unisce le richieste
+  HTTPS a quelle in chiaro (stesso ordine, stessa lista, stesso HAR).
+- `HttpExchange.secure` e `.attribution` (`Attribution { pid, tid,
+  process, package, library }`); nell'HAR come `_secure` e `_vetro`, nel
+  `view` come `secure` e `attribution`. La macchina riempie le
+  `TlsConversation` (`vetro_machine::tls`), qui c'è solo la ricostruzione.
+
 ## `timeline`: interfaccia pubblica (ADR 0023)
 - Tempo: µs di tempo del guest, `step_us(istruzioni) = istruzioni / 100`
   (lo stesso dei frame catturati).
