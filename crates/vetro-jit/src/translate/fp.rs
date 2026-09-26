@@ -254,13 +254,28 @@ pub(super) fn rt_sig(k: usize) -> (String, Vec<ValType>, Vec<ValType>) {
 // --- nelle regioni ----------------------------------------------------
 
 impl Tx {
+    /// Indice nel modulo della funzione `rt.fp<k>` di `op` (importata dopo
+    /// quelle fisse, nell'ordine del primo uso).
+    fn rt_fp(&mut self, op_: FpRt) -> u32 {
+        let id = rt_id(op_);
+        let k = match self.fp_used.iter().position(|&u| u == id) {
+            Some(k) => k,
+            None => {
+                self.fp_used.push(id);
+                self.fp_used.len() - 1
+            }
+        };
+        F_FP0 + k as u32
+    }
+
     /// Istruzioni FP in linea o con un percorso veloce del runtime; falso se
     /// le esegue `env.simd`.
     pub(super) fn fp_inline(&mut self, i: FpInsn) -> bool {
         let w = self.word as i32;
         let call = |t: &mut Tx, op_: FpRt| {
             t.simd = true;
-            t.f.local_get(L_STATE).i32_const(w).call(rt_id(op_));
+            let f = t.rt_fp(op_);
+            t.f.local_get(L_STATE).i32_const(w).call(f);
         };
         match i {
             FpInsn::Dp1 { ty: ty @ 0..=1, opcode: opcode @ 0..=2, rn, rd } => {
@@ -364,9 +379,10 @@ impl Tx {
             }
             FpInsn::FromInt { ty, sf, unsigned, fbits: 0, rn, .. } => {
                 self.simd = true;
+                let f = self.rt_fp(FpRt::FromInt { d: ty == 1, sf, u: unsigned });
                 self.f.local_get(L_STATE).i32_const(w);
                 self.get_x(rn);
-                self.f.call(rt_id(FpRt::FromInt { d: ty == 1, sf, u: unsigned }));
+                self.f.call(f);
                 true
             }
             FpInsn::MovToGp { kind, rn, rd } => {

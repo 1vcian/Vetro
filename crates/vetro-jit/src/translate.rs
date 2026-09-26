@@ -549,13 +549,18 @@ pub fn module(blocks: &[Region], memory: MemoryImport) -> Vec<u8> {
     let mut m = Module::new();
     let t_blk = m.ty(&[I32], &[I32]);
     m.import_memory("env", "mem", memory);
-    for id in 0..n_rt() {
+    // Prima le funzioni (che scelgono quali `rt.fp<k>` importare), poi gli
+    // import: quelli fissi (0..F_FP0) e i percorsi veloci usati, negli indici
+    // assegnati dalle regioni (ADR 0026: importarli tutti costerebbe ~1,5 KB
+    // per modulo).
+    let mut used = Vec::new();
+    let funcs: Vec<Func> = blocks.iter().map(|b| function_with(b, &mut used)).collect();
+    for id in (0..F_FP0).chain(used.iter().copied()) {
         let (name, p, r) = rt_sig(id);
         let t = m.ty(&p, &r);
-        assert_eq!(m.import_func("rt", &name, t), id);
+        m.import_func("rt", &name, t);
     }
-    for (i, b) in blocks.iter().enumerate() {
-        let f = function(b);
+    for (i, f) in funcs.into_iter().enumerate() {
         let idx = m.func(t_blk, f);
         m.export_func(&format!("b{i}"), idx);
     }
@@ -1111,6 +1116,14 @@ pub fn dispatcher(memory: MemoryImport) -> Vec<u8> {
 /// suoi passi stiano nel limite (`limit`), altrimenti esce con `NEXT` al
 /// suo inizio: il numero di istruzioni resta esatto anche nei cicli.
 pub fn function(r: &Region) -> Func {
+    function_with(r, &mut Vec::new())
+}
+
+/// Come [`function`]; `used` sono le funzioni `rt.fp<k>` (indici del
+/// runtime) che il modulo importa dopo quelle fisse, nell'ordine: la
+/// regione le chiama con l'indice `F_FP0 + posizione` e aggiunge quelle
+/// che mancano.
+fn function_with(r: &Region, used: &mut Vec<u32>) -> Func {
     assert!(!r.bbs.is_empty() && r.len() <= MAX_REGION.max(MAX_BLOCK));
     // Il `loop` serve con più blocchi base o con un blocco che salta a sé.
     let multi = r.bbs.len() > 1
@@ -1137,6 +1150,7 @@ pub fn function(r: &Region) -> Func {
         loop_depth: 0,
         simd: false,
         inline_tlb: INLINE_TLB,
+        fp_used: std::mem::take(used),
     };
     let n = r.bbs.len();
     if multi {
@@ -1167,6 +1181,7 @@ pub fn function(r: &Region) -> Func {
     // Per FAULT `pc` e `steps` li ha già salvati il percorso lento (o
     // `exit_fault`).
     let all = t.written;
+    *used = std::mem::take(&mut t.fp_used);
     t.flush();
     let f = &mut t.f;
     // NEXT (il caso comune) senza chiamate; gli altri con `rt.finish`.
@@ -1248,6 +1263,8 @@ struct Tx {
     simd: bool,
     /// Percorso veloce della TLB in linea (altrimenti sempre `rt.*`).
     inline_tlb: bool,
+    /// Funzioni `rt.fp<k>` importate dal modulo, oltre a quelle fisse.
+    fp_used: Vec<u32>,
 }
 
 /// Da dove viene il nuovo `pc` di un'uscita.
