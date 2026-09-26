@@ -54,7 +54,7 @@ export class Session {
    * kernel (dopo `setup`, che aggiunge gli stessi dischi); `onQuantum`: si
    * chiama a ogni confine di quanto (dopo aver letto la console).
    */
-  constructor(exports, kernel, { cmdline = 'console=ttyAMA0 vetro.noautotest', jit = true, machine = {}, setup = () => {}, restore = null, onQuantum = null } = {}) {
+  constructor(exports, kernel, { cmdline = 'console=ttyAMA0 vetro.noautotest', jit = true, machine = {}, setup = () => {}, restore = null, onQuantum = null, load = null } = {}) {
     this.m = new Machine(exports, machine);
     this.feeder = null;
     this.onQuantum = onQuantum;
@@ -64,6 +64,7 @@ export class Session {
       this.m.snapshotRestore(restore);
       this.restoreMs = performance.now() - t0;
     }
+    else if (load) load(this.m);
     else this.m.loadLinux(kernel.image, kernel.initrd, cmdline);
     if (jit) this.m.setJit(16, 16);
   }

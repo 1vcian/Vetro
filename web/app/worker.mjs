@@ -58,10 +58,33 @@
 //   generazione dell'overlay di ogni disco al momento del salvataggio. Alla
 //   sessione successiva lo snapshot si ripristina invece di avviare il
 //   kernel, se gli overlay sono ancora a quella generazione.
+//
+// L'immagine AOSP di Vetro (M5/M6, ADR 0027), con `config.android`:
+// - dal manifest.json della versione (R2 o server locale) vengono gli hash
+//   delle immagini (chiave degli snapshot) e i loro URL; boot, vendor_boot
+//   e init_boot si scaricano (verificati con lo sha256, tenuti in OPFS,
+//   `vetro-images/`) solo per un avvio da zero; il disco è la mappa
+//   `web/disk.json` (LayoutSource: super e userdata dai file sparsi con HTTP
+//   Range), con la cache dei blocchi in OPFS;
+// - le fasi dell'avvio (BootProgress) vanno alla pagina (`progress`);
+// - dopo sys.boot_completed il client ADB (web/node/adb.mjs) si collega ad
+//   adbd (TCP 5555 del guest, GuestSocket) e serve le richieste della pagina
+//   (`adb`: shell, devices, install di un APK trascinato e apertura); le
+//   richieste sono ingressi (registrati in `inputLog`);
+// - lo snapshot si salva ANDROID_HOME_NS di tempo del guest dopo
+//   sys.boot_completed (la home è disegnata), dopo l'installazione di un
+//   APK e a richiesta; niente riposo della console (Android scrive sempre).
+//   Gli overlay si salvano solo insieme allo snapshot, così alla sessione
+//   successiva lo snapshot vale sempre: le scritture dopo l'ultimo
+//   salvataggio si perdono, come tornare all'ultimo stato salvato (un avvio
+//   da zero costa decine di minuti).
 
 import { DEV, INOTIFY, INPUT, instantiate, Machine, TIMELINE_EFFECT, TIMELINE_INPUT } from '../node/vetro.mjs';
 import { Recording } from '../node/recording.mjs';
-import { BlobSource, DiskFeeder, MemoryCache, OpfsCache, RangeSource } from '../node/disk.mjs';
+import { BlobSource, DiskFeeder, LayoutSource, MemoryCache, OpfsCache, RangeSource } from '../node/disk.mjs';
+import { AdbClient } from '../node/adb.mjs';
+import { apkInfo } from '../node/apk.mjs';
+import { BootProgress } from '../node/android.mjs';
 import { DiskOverlay, fromBase64, opfsFile, sha256Hex, SnapshotStore, snapshotKey, staleReason, toBase64 } from '../node/persist.mjs';
 
 const QUANTUM = 1_000_000;
@@ -72,6 +95,12 @@ const PERSIST_MS = 1000;
 const REST_NS = 1_500_000_000n;
 /** Coda della console tenuta per lo snapshot (la pagina la rimostra). */
 const CONSOLE_TAIL = 64 * 1024;
+/** Tempo del guest dopo sys.boot_completed prima dello snapshot di Android (20 s). */
+const ANDROID_HOME_NS = 20_000_000_000n;
+/** Attesa (tempo del guest) prima di riprovare a collegarsi ad adbd. */
+const ADB_RETRY_NS = 5_000_000_000n;
+/** Blocchi del disco di Android tenuti in memoria (64 MiB): il resto è in OPFS. */
+const ANDROID_MAX_BLOCKS = 64;
 const EV_SYN = 0;
 const EV_REL = 2;
 const REL_WHEEL = 8;
@@ -91,6 +120,11 @@ let snapKey = null;
 /** Metadati dell'ultimo snapshot salvato o ripristinato in questa sessione. */
 let lastSnapshot = null;
 let saveRequested = false;
+/** Perché si salva lo snapshot richiesto (per la pagina). */
+let saveWhy = 'richiesta';
+/** Stato di Android (config.android), o null col kernel di prova. */
+let android = null;
+let startT0 = 0;
 let consoleTail = [];
 let consoleTailLen = 0;
 /** Client del gestore dei file (GuestFiles) e ultimo stato mandato alla pagina. */
@@ -128,10 +162,10 @@ async function bytesOf(src, what) {
 }
 
 async function openDisk(d, i, sources) {
-  const source = sources[i] ?? (d.file ? new BlobSource(d.file) : await new RangeSource(d.url).open());
+  const source = sources[i] ?? (d.file ? new BlobSource(d.file) : d.layout ? await new LayoutSource(d.layout).open() : await new RangeSource(d.url).open());
   sources[i] = source;
   let cache = null;
-  if (d.url) {
+  if (d.url || d.layout) {
     if (cfg.opfs) {
       try {
         cache = await OpfsCache.open(source.key, d.blockSize, Math.ceil(source.size / d.blockSize));
@@ -141,8 +175,8 @@ async function openDisk(d, i, sources) {
     }
     cache ??= new MemoryCache();
   }
-  const index = feeder.add(source, { cache, blockSize: d.blockSize, readOnly: d.readOnly, readahead: d.readahead ?? 1 });
-  status(`disco ${i}: ${d.url ?? d.file.name}, ${(source.size / 2 ** 20).toFixed(1)} MiB, blocchi da ${d.blockSize >> 10} KiB`);
+  const index = feeder.add(source, { cache, blockSize: d.blockSize, maxBlocks: d.maxBlocks ?? 0, readOnly: d.readOnly, readahead: d.readahead ?? 1 });
+  status(`disco ${i}: ${d.url ?? d.layout ?? d.file.name}, ${(source.size / 2 ** 20).toFixed(1)} MiB, blocchi da ${d.blockSize >> 10} KiB`);
   overlays[index] = null;
   if (cfg.persist && cfg.opfs && !d.readOnly) {
     try {
@@ -189,9 +223,6 @@ const generations = () => overlays.map((o) => (o ? o.generation : null));
 /** Snapshot della macchina in OPFS, insieme agli overlay (salvati prima). */
 async function saveSnapshot(why) {
   persistOverlays();
-  const t0 = performance.now();
-  const bytes = m.snapshotSave();
-  const saveMs = performance.now() - t0;
   const meta = {
     steps: String(m.steps),
     generations: generations(),
@@ -199,11 +230,21 @@ async function saveSnapshot(why) {
     savedAt: new Date().toISOString(),
     why,
   };
-  const t1 = performance.now();
-  await store.save(snapKey, meta, bytes);
+  if (android) meta.progress = android.progress.events;
+  // I byte restano nella memoria del modulo e vanno in OPFS da lì: con
+  // Android sono centinaia di MiB (ADR 0027).
+  const t0 = performance.now();
+  let saveMs = 0;
+  let size = 0;
+  const memory = m.memoryBytes;
+  await m.snapshotSaveWith(async (view) => {
+    saveMs = performance.now() - t0;
+    size = view.length;
+    await store.save(snapKey, meta, view);
+  });
   lastSnapshot = meta;
-  const writeMs = performance.now() - t1;
-  post({ type: 'snapshot', why, steps: Number(m.steps), size: bytes.length, saveMs, writeMs, generations: meta.generations });
+  const writeMs = performance.now() - t0 - saveMs;
+  post({ type: 'snapshot', why, steps: Number(m.steps), size, saveMs, writeMs, generations: meta.generations, memory: Math.max(memory, m.memoryBytes) });
 }
 
 function joinTail() {
@@ -225,13 +266,15 @@ function keepTail(bytes) {
 async function start(c) {
   cfg = c;
   const t0 = performance.now();
+  startT0 = t0;
   const times = {};
   status('carico vetro-wasm');
   const wasm = await (await fetch(c.wasmUrl)).arrayBuffer();
   ({ exports } = await instantiate(wasm));
   times.wasm = performance.now() - t0;
-  const kernel = await bytesOf(c.kernel, 'il kernel');
-  const initrd = await bytesOf(c.initrd, "l'initramfs");
+  if (c.android) android = await prepareAndroid(c);
+  const kernel = android ? null : await bytesOf(c.kernel, 'il kernel');
+  const initrd = android ? null : await bytesOf(c.initrd, "l'initramfs");
   times.files = performance.now() - t0 - times.wasm;
   const sources = [];
   await build(c, sources);
@@ -240,33 +283,38 @@ async function start(c) {
     try {
       store = await SnapshotStore.opfs();
       const t1 = performance.now();
-      snapKey = await snapshotKey({
+      const common = {
         format: m.snapshotVersion,
-        kernel: await sha256Hex(kernel),
-        initrd: initrd ? await sha256Hex(initrd) : null,
-        cmdline: c.cmdline,
         ramMiB: c.ramMiB,
         width: c.width,
         height: c.height,
         devices: devicesOf(c),
         disks: sources.map((s, i) => ({ identity: s.key, size: Math.floor(s.size / 512) * 512, readOnly: !!c.disks[i].readOnly })),
-      });
+      };
+      snapKey = await snapshotKey(android
+        ? { ...common, android: android.manifest.version, images: android.images.map((f) => f.sha256), params: android.params }
+        : { ...common, kernel: await sha256Hex(kernel), initrd: initrd ? await sha256Hex(initrd) : null, cmdline: c.cmdline });
       times.key = performance.now() - t1;
       const t2 = performance.now();
-      const rec = await store.load(snapKey);
+      const meta = await store.loadMeta(snapKey);
       times.read = performance.now() - t2;
-      const stale = rec && staleReason(rec.meta, overlays);
-      if (rec && stale) status(`snapshot non usato: ${stale}`);
-      if (rec && !stale) {
+      const stale = meta && staleReason(meta, overlays);
+      if (meta && stale) status(`snapshot non usato: ${stale}`);
+      if (meta && !stale) {
+        status(`ripristino lo snapshot (${(meta.size / 2 ** 20).toFixed(0)} MiB)`);
         const t3 = performance.now();
         try {
-          m.snapshotRestore(rec.bytes);
-          times.restore = performance.now() - t3;
-          restored = rec;
+          // I byte vanno da OPFS direttamente nella memoria del modulo.
+          await m.snapshotRestoreWith(meta.size, async (view) => {
+            await store.readInto(snapKey, view);
+            times.readSnapshot = performance.now() - t3;
+          });
+          times.restore = performance.now() - t3 - times.readSnapshot;
+          restored = { meta, size: meta.size };
         } catch (e) {
           status(`snapshot non usato: ${e.message}`);
           // Con 'Corrupt' la macchina va scartata: si rifà da capo.
-          if (e.code === 'Corrupt') await build(c, sources);
+          if (e.code === 'Corrupt' || e.code === 'Memory') await build(c, sources);
         }
       }
     } catch (e) {
@@ -278,8 +326,22 @@ async function start(c) {
     lastSnapshot = restored.meta;
     const tail = fromBase64(restored.meta.console ?? '');
     if (tail.length) keepTail(tail);
+    if (android) {
+      for (const ev of restored.meta.progress ?? []) android.progress.events.push(ev);
+      android.progress.index = android.progress.events.length - 1;
+      android.bootedNs = m.guestNs;
+      android.savedBoot = true;
+    }
     times.total = performance.now() - t0;
-    post({ type: 'restored', steps: Number(m.steps), size: restored.bytes.length, times, savedAt: restored.meta.savedAt, console: tail }, [tail.buffer]);
+    post({ type: 'restored', steps: Number(m.steps), size: restored.size, times, savedAt: restored.meta.savedAt, console: tail,
+      progress: android?.progress.events ?? null, memory: m.memoryBytes }, [tail.buffer]);
+  } else if (android) {
+    const [boot, vendorBoot, initBoot] = await androidImages(android);
+    times.images = performance.now() - t0 - times.wasm - times.files;
+    const desc = m.loadAndroid({ boot, vendorBoot, initBoot, params: android.params });
+    status(`immagini Android caricate: ${desc.split(';')[0]}`);
+    times.total = performance.now() - t0;
+    post({ type: 'cold', times, android: desc });
   } else {
     m.loadLinux(kernel, initrd, c.cmdline);
     times.total = performance.now() - t0;
@@ -303,6 +365,186 @@ async function start(c) {
     running = false;
     post({ type: 'error', text: e.stack ?? String(e) });
   });
+}
+
+// ---- L'immagine AOSP di Vetro (ADR 0027) --------------------------------------
+
+/**
+ * Legge il manifest.json della versione e prepara la configurazione: i
+ * dischi (la mappa accanto al manifest) e gli URL delle immagini.
+ */
+async function prepareAndroid(c) {
+  const url = new URL(c.android.manifest, location.href).href;
+  status(`immagine Android: ${url}`);
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${url}: stato ${res.status}`);
+  const manifest = await res.json();
+  const file = (path) => {
+    const f = manifest.files.find((x) => x.path === path);
+    if (!f) throw new Error(`manifest senza ${path}`);
+    return { ...f, url: new URL(path, url).href };
+  };
+  const images = ['boot.img', 'vendor_boot.img', 'init_boot.img'].map(file);
+  const layout = new URL(c.android.layout ?? 'web/disk.json', url).href;
+  c.disks = [{ layout, blockSize: c.android.blockSize ?? 1 << 20, maxBlocks: ANDROID_MAX_BLOCKS, readOnly: false, readahead: 1 }];
+  return {
+    manifest,
+    images,
+    params: c.android.params ?? 'nokaslr',
+    progress: new BootProgress(),
+    bootedNs: null,
+    savedBoot: false,
+    adb: null,
+    adbReady: false,
+    adbRetryNs: 0n,
+    ops: [],
+    busy: false,
+  };
+}
+
+/** Le tre immagini di avvio: da OPFS se ci sono, altrimenti scaricate e verificate. */
+async function androidImages(a) {
+  const dir = cfg.opfs ? await navigator.storage.getDirectory().then((r) => r.getDirectoryHandle('vetro-images', { create: true })).catch(() => null) : null;
+  const out = [];
+  for (const f of a.images) {
+    let bytes = null;
+    if (dir) {
+      try {
+        const h = await (await dir.getFileHandle(`${f.sha256}.img`)).createSyncAccessHandle();
+        try {
+          if (h.getSize() === f.size) {
+            bytes = new Uint8Array(f.size);
+            h.read(bytes, { at: 0 });
+          }
+        } finally {
+          h.close();
+        }
+      } catch {}
+    }
+    if (!bytes) {
+      status(`scarico ${f.path} (${(f.size / 2 ** 20).toFixed(0)} MiB)`);
+      const res = await fetch(f.url);
+      if (!res.ok) throw new Error(`${f.url}: stato ${res.status}`);
+      bytes = new Uint8Array(await res.arrayBuffer());
+      const got = await sha256Hex(bytes);
+      if (got !== f.sha256) throw new Error(`${f.path}: sha256 ${got}, il manifest dice ${f.sha256}`);
+      if (dir) {
+        try {
+          const h = await (await dir.getFileHandle(`${f.sha256}.img`, { create: true })).createSyncAccessHandle();
+          h.truncate(0);
+          h.write(bytes, { at: 0 });
+          h.flush();
+          h.close();
+        } catch {}
+      }
+    }
+    out.push(bytes);
+  }
+  return out;
+}
+
+const latin1 = new TextDecoder('latin1');
+
+/** Le fasi dell'avvio lette dall'uscita della console. */
+function androidConsole(bytes) {
+  for (const ev of android.progress.feed(latin1.decode(bytes), Number(m.guestNs) / 1e9)) {
+    post({ type: 'progress', ...ev, wallMs: performance.now() - startT0 });
+  }
+}
+
+/** Collegamento ad adbd, richieste della pagina, snapshot dopo l'avvio. */
+function androidTick() {
+  const a = android;
+  if (a.progress.phase === 'booted' && a.bootedNs === null) {
+    a.bootedNs = m.guestNs;
+    post({ type: 'booted', guestSecs: Number(m.guestNs) / 1e9, wallMs: performance.now() - startT0 });
+  }
+  if (a.bootedNs === null || mode !== 'live') return;
+  if (!a.adb && m.guestNs >= a.adbRetryNs) {
+    const sock = m.connectGuest(5555);
+    const adb = new AdbClient(sock);
+    a.adb = adb;
+    post({ type: 'adb-status', state: 'connecting' });
+    adb.connect().then((banner) => {
+      a.adbReady = true;
+      return adb.devices().then((devices) => post({ type: 'adb-status', state: 'ready', banner, devices }));
+    }).catch((e) => {
+      sock.release();
+      if (a.adb === adb) a.adb = null;
+      a.adbReady = false;
+      a.adbRetryNs = m.guestNs + ADB_RETRY_NS;
+      post({ type: 'adb-status', state: 'waiting', error: String(e.message ?? e) });
+    });
+  }
+  a.adb?.pump();
+  if (a.adb?.lost && a.adbReady) {
+    const why = a.adb.lost;
+    a.adbReady = false;
+    a.adb = null;
+    a.adbRetryNs = m.guestNs + ADB_RETRY_NS;
+    post({ type: 'adb-status', state: 'waiting', error: `connessione chiusa (${why})` });
+  }
+  if (a.adbReady && !a.busy && a.ops.length) runAdbOp(a.ops.shift());
+  if (store && !a.savedBoot && m.guestNs - a.bootedNs >= ANDROID_HOME_NS) {
+    a.savedBoot = true;
+    if (!lastSnapshot) {
+      saveRequested = true;
+      saveWhy = 'avvio finito';
+    }
+  }
+}
+
+/** Una richiesta ADB della pagina (una alla volta). */
+function runAdbOp(msg) {
+  const a = android;
+  a.busy = true;
+  inputLog.push([Number(m.steps), { type: 'adb', op: msg.op, name: msg.name, cmd: msg.cmd }]);
+  const reply = (r) => post({ type: 'adb-reply', id: msg.id, ...r });
+  const t0 = performance.now();
+  let p;
+  switch (msg.op) {
+    case 'shell':
+      m.timelineInput(TIMELINE_INPUT.OTHER, `adb shell ${msg.cmd}`);
+      p = a.adb.shell(msg.cmd);
+      break;
+    case 'devices':
+      p = a.adb.devices();
+      break;
+    case 'install':
+      p = adbInstall(new Uint8Array(msg.bytes), msg);
+      break;
+    default:
+      p = Promise.reject(new Error(`operazione adb ${msg.op} sconosciuta`));
+  }
+  p.then((result) => reply({ ok: true, result, ms: performance.now() - t0 }), (e) => reply({ ok: false, error: String(e.message ?? e), ms: performance.now() - t0 }))
+    .finally(() => (a.busy = false));
+}
+
+/** Installa un APK con adb (push + pm install) e apre la sua attività principale. */
+async function adbInstall(bytes, msg) {
+  const adb = android.adb;
+  const info = await apkInfo(bytes);
+  m.timelineInput(TIMELINE_INPUT.OTHER, `installa ${info.package}`);
+  post({ type: 'adb-progress', id: msg.id, text: `installo ${info.package} (${(bytes.length / 1024).toFixed(0)} KiB)` });
+  const t0 = performance.now();
+  const output = await adb.install(bytes, { name: `${info.package}.apk` });
+  const installMs = performance.now() - t0;
+  let component = info.launcher ? `${info.package}/${info.launcher}` : null;
+  if (!component) {
+    const r = await adb.shell(`cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER ${info.package} | tail -n 1`);
+    component = r.stdout.trim().includes('/') ? r.stdout.trim() : null;
+  }
+  let start = null;
+  if (component && msg.open !== false) {
+    post({ type: 'adb-progress', id: msg.id, text: `apro ${component}` });
+    const r = await adb.shell(`am start -W -n ${component}`);
+    start = `${r.stdout}${r.stderr}`.trim();
+  }
+  if (store && msg.save !== false) {
+    saveRequested = true;
+    saveWhy = 'app installata';
+  }
+  return { info, output, component, start, installMs, openMs: performance.now() - t0 - installMs };
 }
 
 function apply(msg) {
@@ -430,6 +672,7 @@ function flush() {
   const out = m.consoleRead();
   if (out.length) {
     active = true;
+    if (android) androidConsole(out);
     keepTail(out);
     post({ type: 'console', bytes: out }, [out.buffer]);
   }
@@ -627,21 +870,25 @@ async function loop() {
     if (mode === 'paused') continue;
     if (flush()) activity();
     pumpFiles();
+    if (android) androidTick();
     const now = performance.now();
-    if (stop !== 'Budget' || now - lastPersist > PERSIST_MS) {
+    // Con Android gli overlay si salvano solo insieme allo snapshot (vedi in cima).
+    if (!android && (stop !== 'Budget' || now - lastPersist > PERSIST_MS)) {
       if (persistOverlays()) activity();
       lastPersist = now;
     }
     // Snapshot: la prima volta che il guest è a riposo (avvio finito), poi a
-    // riposo se i dischi sono cambiati, o a richiesta.
-    const rest = stop === 'Idle' || (!rested && m.guestNs - activeNs >= REST_NS);
+    // riposo se i dischi sono cambiati, o a richiesta. Android: vedi androidTick.
+    const rest = !android && (stop === 'Idle' || (!rested && m.guestNs - activeNs >= REST_NS));
     if (rest && stop !== 'Idle') {
       rested = true;
       if (persistOverlays()) activity();
     }
     if (store && mode === 'live' && (saveRequested || (rest && (!lastSnapshot || String(generations()) !== String(lastSnapshot.generations))))) {
-      const why = saveRequested ? 'richiesta' : lastSnapshot ? 'dischi cambiati' : 'avvio finito';
+      const why = saveRequested ? saveWhy : lastSnapshot ? 'dischi cambiati' : 'avvio finito';
       saveRequested = false;
+      saveWhy = 'richiesta';
+      status(`salvo lo snapshot (${why})`);
       await saveSnapshot(why).catch((e) => status(`snapshot non salvato: ${e.message ?? e}`));
     }
     // Dopo un replay il contatore può tornare indietro.
@@ -660,6 +907,7 @@ async function loop() {
         feeder: feeder.stats,
         jit: m.jitStats(),
         inputs: inputLog.length,
+        memory: m.memoryBytes,
       });
       if (mode !== 'live' || m.rrStatus().state === 'Recording') postRr();
       lastStats = now;
@@ -749,6 +997,13 @@ onmessage = (e) => {
       ({ result, transfer = [] }) => post({ type: 'inspect-reply', id: msg.id, ok: true, result }, transfer),
       (err) => post({ type: 'inspect-reply', id: msg.id, ok: false, error: String(err.message ?? err) }),
     );
+    return;
+  }
+  if (msg.type === 'adb') {
+    if (!android) return post({ type: 'adb-reply', id: msg.id, ok: false, error: 'adb serve l\'immagine Android' });
+    android.ops.push(msg);
+    if (!android.adbReady) post({ type: 'adb-progress', id: msg.id, text: 'in attesa di adbd (fine dell\'avvio)' });
+    wake?.();
     return;
   }
   if (msg.type === 'save') {

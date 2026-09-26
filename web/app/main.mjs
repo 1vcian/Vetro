@@ -24,12 +24,25 @@
 // Persistenza (M6, ADR 0017): il Worker salva in OPFS lo snapshot della
 // macchina e l'overlay dei dischi; al secondo avvio riparte dallo snapshot.
 // Lo stato si legge anche da `window.vetroState` (per i test nel browser).
+//
+// L'immagine AOSP di Vetro (M5/M6, ADR 0027): `?os=android` (o il selettore
+// "Sistema") e `&manifest=URL` (default: la versione pubblicata su R2). Il
+// riquadro accanto allo schermo mostra le fasi dell'avvio lette dalla
+// console, lo stato di adb e il posto dove trascinare un APK (anche sullo
+// schermo), che il Worker installa con il client ADB e apre; una riga per
+// `adb shell`. `window.vetroAndroid` per i test.
 
 import { absAxis, BUTTONS, evdevCode } from './keymap.mjs';
 import { keyToBytes, Terminal } from './terminal.mjs';
 import { Canvas2DRenderer, WebGpuRenderer } from './display.mjs';
 import { FilePanel } from './files.mjs';
 import { AnalysisPanels } from './analysis.mjs';
+import { PHASES } from '../node/android.mjs';
+
+/** La versione dell'immagine AOSP di Vetro pubblicata su R2 (ADR 0022, 0027). */
+export const DEFAULT_MANIFEST = 'https://pub-06e88fdd7f374fffb06844d60083f2ae.r2.dev/aosp/android-15.0.0_r36-BP1A.250505.005.D1-9d91633/manifest.json';
+/** RAM del guest con AOSP nel browser (ADR 0027). */
+export const ANDROID_RAM_MIB = 2048;
 
 const $ = (id) => document.getElementById(id);
 const form = $('setup');
@@ -49,6 +62,7 @@ let startedAt = 0;
 // ---- Gestore dei file --------------------------------------------------------
 
 const DEFAULT_ROOTS = ['/tmp', '/root', '/etc'];
+const ANDROID_ROOTS = ['/data/local/tmp', '/sdcard/Download'];
 let rpcId = 0;
 const rpcPending = new Map();
 /** Un'operazione del gestore dei file nel Worker: Promise del risultato. */
@@ -74,6 +88,7 @@ const filePanel = new FilePanel({
   message: $('files-message'),
 }, rpc);
 let pendingRoots = DEFAULT_ROOTS;
+let rootsFromUrl = false;
 /** Per i test e per chi imposta le radici (l'app in primo piano). */
 window.vetroFiles = {
   panel: filePanel,
@@ -141,6 +156,7 @@ function onFrame(msg) {
     renderer.clear();
     return;
   }
+  if (!vetroState.firstFrame) vetroState.firstFrame = performance.now() - startedAt;
   $('screen-off').hidden = true;
   if (msg.width !== fb.width || msg.height !== fb.height) {
     fb = { width: msg.width, height: msg.height };
@@ -276,6 +292,7 @@ function fmtStats(s) {
     `guest ${s.guestSecs.toFixed(2)} s`,
     `${s.mips.toFixed(1)} MIPS`,
   ];
+  if (s.memory) parts.push(`memoria ${(s.memory / 2 ** 20).toFixed(0)} MiB`);
   for (const [i, d] of s.disks.entries()) {
     const ov = d.overlay ? ` (persistente, gen. ${d.overlay.generation})` : '';
     parts.push(`vd${String.fromCharCode(97 + i)}: ${d.fills} blocchi, ${d.http.requests} letture, cow ${d.dirtyClusters}${ov}`);
@@ -285,11 +302,164 @@ function fmtStats(s) {
   return parts.join(' · ');
 }
 
+// ---- AOSP: fasi dell'avvio e adb ------------------------------------------------
+
+const osValue = () => form.elements.os.value;
+
+function showOs() {
+  const android = osValue() === 'android';
+  $('android-fields').hidden = !android;
+  $('linux-fields').hidden = android;
+  const el = form.elements;
+  if (android) {
+    el.ramMiB.value = String(ANDROID_RAM_MIB);
+    el.pointer.value = 'multitouch';
+    el.net.checked = true;
+    if (!el.manifestUrl.value) el.manifestUrl.value = DEFAULT_MANIFEST;
+    if (!rootsFromUrl) pendingRoots = ANDROID_ROOTS;
+  } else {
+    el.ramMiB.value = '1024';
+    el.pointer.value = 'tablet';
+    if (!rootsFromUrl) pendingRoots = DEFAULT_ROOTS;
+  }
+}
+for (const r of form.elements.os) r.addEventListener('change', showOs);
+
+/** Stato di AOSP per i test: fasi, adb, installazioni. */
+const androidState = { phases: [], booted: null, adb: { state: 'none' }, installs: [] };
+let adbId = 0;
+const adbPending = new Map();
+
+/** Una richiesta ADB al Worker: Promise del risultato. */
+function adbRequest(op, args = {}, transfer = []) {
+  return new Promise((ok, ko) => {
+    if (!worker) return ko(new Error('macchina spenta'));
+    const id = ++adbId;
+    adbPending.set(id, { ok, ko, op });
+    worker.postMessage({ type: 'adb', id, op, ...args }, transfer);
+  });
+}
+
+async function installApk(bytes, name = 'app.apk') {
+  $('apk-status').textContent = `${name}: invio al Worker (${(bytes.byteLength / 1024).toFixed(0)} KiB)`;
+  const buf = bytes instanceof ArrayBuffer ? bytes : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  const t0 = performance.now();
+  try {
+    const r = await adbRequest('install', { bytes: buf, name }, [buf]);
+    const entry = { name, ...r, ms: performance.now() - t0 };
+    androidState.installs.push(entry);
+    $('apk-status').textContent = `${r.info.package} installato (${(r.installMs / 1000).toFixed(1)} s) e aperto (${(r.openMs / 1000).toFixed(1)} s): ${r.component ?? 'nessuna attività principale'}`;
+    screen.focus();
+    return entry;
+  } catch (e) {
+    androidState.installs.push({ name, error: e.message });
+    $('apk-status').textContent = `${name}: ${e.message}`;
+    throw e;
+  }
+}
+
+window.vetroAndroid = {
+  state: () => androidState,
+  install: installApk,
+  shell: (cmd) => adbRequest('shell', { cmd }),
+  devices: () => adbRequest('devices'),
+};
+
+function renderPhases() {
+  const list = $('phases');
+  list.textContent = '';
+  const seen = new Map(androidState.phases.map((p) => [p.phase, p]));
+  const current = androidState.phases.at(-1)?.phase;
+  for (const [name, label] of PHASES) {
+    const li = document.createElement('li');
+    li.textContent = label;
+    const p = seen.get(name);
+    if (p) {
+      li.className = name === current && name !== 'booted' ? 'current' : 'done';
+      const t = document.createElement('span');
+      t.className = 't';
+      t.textContent = `${p.guestSecs.toFixed(0)} s di guest${p.wallMs !== undefined ? `, ${(p.wallMs / 1000).toFixed(0)} s reali` : ''}`;
+      li.append(t);
+    }
+    list.append(li);
+  }
+}
+
+function onAndroidMessage(msg) {
+  switch (msg.type) {
+    case 'progress':
+      androidState.phases.push({ phase: msg.phase, label: msg.label, guestSecs: msg.guestSecs, wallMs: msg.wallMs });
+      renderPhases();
+      if (msg.phase !== 'booted') setStatus(`avvio: ${msg.label} (${msg.guestSecs.toFixed(0)} s di guest)`);
+      return true;
+    case 'booted':
+      androidState.booted = { guestSecs: msg.guestSecs, wallMs: msg.wallMs };
+      $('boot-info').textContent = `avvio finito a ${msg.guestSecs.toFixed(0)} s di tempo del guest, ${(msg.wallMs / 60000).toFixed(1)} min reali`;
+      setStatus('avvio finito: tra poco lo stato si salva (dal prossimo avvio la home torna subito)');
+      return true;
+    case 'adb-status': {
+      androidState.adb = { state: msg.state, devices: msg.devices, error: msg.error };
+      const d = msg.devices?.[0];
+      $('adb-status').textContent = msg.state === 'ready' ? `collegato: ${d?.serial ?? '?'} (${d?.model ?? ''}, ${msg.banner?.props?.['ro.product.name'] ?? ''})`
+        : msg.state === 'connecting' ? 'collegamento ad adbd…' : `in attesa di adbd${msg.error ? ` (${msg.error})` : ''}`;
+      return true;
+    }
+    case 'adb-progress':
+      $('apk-status').textContent = msg.text;
+      return true;
+    case 'adb-reply': {
+      const p = adbPending.get(msg.id);
+      adbPending.delete(msg.id);
+      if (msg.ok) p?.ok({ ...msg.result, ms: msg.ms });
+      else p?.ko(new Error(msg.error));
+      return true;
+    }
+  }
+  return false;
+}
+
+// APK trascinato sul riquadro o sullo schermo, o scelto.
+async function onApkFiles(files) {
+  const f = [...files].find((x) => /\.apk$/i.test(x.name)) ?? files[0];
+  if (!f) return;
+  await installApk(await f.arrayBuffer(), f.name).catch(() => {});
+}
+for (const target of [$('apk-drop'), $('screen-wrap')]) {
+  target.addEventListener('dragover', (e) => {
+    if (osValue() !== 'android' || !e.dataTransfer?.types.includes('Files')) return;
+    e.preventDefault();
+    target.classList.add('over');
+  });
+  target.addEventListener('dragleave', () => target.classList.remove('over'));
+  target.addEventListener('drop', (e) => {
+    target.classList.remove('over');
+    if (osValue() !== 'android' || !e.dataTransfer?.files.length) return;
+    e.preventDefault();
+    onApkFiles(e.dataTransfer.files);
+  });
+}
+$('apk-file').addEventListener('change', (e) => onApkFiles(e.target.files));
+$('adb-shell').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const cmd = $('adb-cmd').value.trim();
+  if (!cmd) return;
+  const out = $('adb-out');
+  out.textContent += `$ ${cmd}\n`;
+  try {
+    const r = await adbRequest('shell', { cmd });
+    out.textContent += `${r.stdout}${r.stderr}${r.exitCode ? `[codice ${r.exitCode}]\n` : ''}`;
+  } catch (err) {
+    out.textContent += `errore: ${err.message}\n`;
+  }
+  out.scrollTop = out.scrollHeight;
+});
+
 async function start() {
   const el = form.elements;
-  const kernel = source('kernelUrl', 'kernelFile');
-  if (!kernel) return setStatus('manca il kernel');
-  const disk = source('diskUrl', 'diskFile');
+  const android = osValue() === 'android';
+  const kernel = android ? null : source('kernelUrl', 'kernelFile');
+  if (!kernel && !android) return setStatus('manca il kernel');
+  const disk = android ? null : source('diskUrl', 'diskFile');
   const config = {
     wasmUrl: new URL('../wasm/vetro_wasm.wasm', location.href).href,
     kernel,
@@ -307,17 +477,27 @@ async function start() {
     opfs: el.opfs.checked,
     snapshot: el.snapshot.checked,
     persist: el.persist.checked,
+    android: android ? { manifest: new URL(el.manifestUrl.value.trim() || DEFAULT_MANIFEST, location.href).href } : null,
   };
+  if (android) {
+    config.net = true;
+    config.pointer = 'multitouch';
+  }
   pointerKind = config.pointer;
   renderer = (el.webgpu.checked && (await WebGpuRenderer.create(screen).catch(() => null))) || new Canvas2DRenderer(screen);
   form.hidden = true;
   $('machine').hidden = false;
   $('files-box').hidden = !config.files;
+  $('android-box').hidden = !android;
+  $('screen-demo').hidden = android;
+  $('screen-android').hidden = !android;
+  if (android) renderPhases();
   startedAt = performance.now();
   worker = new Worker(new URL('./worker.mjs', import.meta.url), { type: 'module' });
   worker.onmessage = (e) => {
     const msg = e.data;
     if (panels.onMessage(msg) && msg.type !== 'replay-started' && msg.type !== 'replay-ended') return;
+    if (onAndroidMessage(msg)) return;
     switch (msg.type) {
       case 'replay-started':
         // Una riga nel terminale (solo nella pagina, il guest non la vede).
@@ -346,9 +526,17 @@ async function start() {
       case 'stats':
         $('stats').textContent = fmtStats(msg);
         vetroState.disks = msg.disks;
+        vetroState.memory = Math.max(vetroState.memory ?? 0, msg.memory ?? 0);
+        vetroState.stats = msg;
         break;
       case 'restored': {
-        vetroState.boot = { mode: 'snapshot', ms: performance.now() - startedAt, steps: msg.steps, size: msg.size, times: msg.times };
+        vetroState.boot = { mode: 'snapshot', ms: performance.now() - startedAt, steps: msg.steps, size: msg.size, times: msg.times, memory: msg.memory };
+        if (msg.progress) {
+          androidState.phases = msg.progress.map((p) => ({ ...p, wallMs: undefined }));
+          androidState.booted = { restored: true };
+          renderPhases();
+          $('boot-info').textContent = 'ripartito dallo snapshot salvato alla fine dell\'avvio';
+        }
         replaying = true;
         term.feed(msg.console);
         replaying = false;
@@ -359,7 +547,7 @@ async function start() {
         break;
       }
       case 'cold':
-        vetroState.boot = { mode: 'cold', ms: performance.now() - startedAt, times: msg.times };
+        vetroState.boot = { mode: 'cold', ms: performance.now() - startedAt, times: msg.times, android: msg.android };
         break;
       case 'snapshot':
         vetroState.snapshots.push({ ...msg, at: performance.now() - startedAt });
@@ -427,12 +615,20 @@ form.addEventListener('submit', (e) => {
 
 // Parametri dell'URL.
 const q = new URLSearchParams(location.search);
-for (const [param, field] of [['kernel', 'kernelUrl'], ['initrd', 'initrdUrl'], ['disk', 'diskUrl'], ['cmdline', 'cmdline'], ['pointer', 'pointer']]) {
+if (q.get('os') === 'android') {
+  form.elements.os.value = 'android';
+  showOs();
+}
+if (q.has('manifest')) form.elements.manifestUrl.value = q.get('manifest');
+for (const [param, field] of [['kernel', 'kernelUrl'], ['initrd', 'initrdUrl'], ['disk', 'diskUrl'], ['cmdline', 'cmdline'], ['pointer', 'pointer'], ['ram', 'ramMiB']]) {
   if (q.has(param)) form.elements[field].value = q.get(param);
 }
 if (q.get('webgpu') === '1') form.elements.webgpu.checked = true;
 if (q.get('snapshot') === '0') form.elements.snapshot.checked = false;
 if (q.get('persist') === '0') form.elements.persist.checked = false;
 if (q.get('nofiles') === '1') form.elements.files.checked = false;
-if (q.has('files')) pendingRoots = q.get('files').split(',').map((s) => s.trim()).filter(Boolean);
+if (q.has('files')) {
+  pendingRoots = q.get('files').split(',').map((s) => s.trim()).filter(Boolean);
+  rootsFromUrl = true;
+}
 if (q.get('autostart') === '1') start().catch((err) => setStatus(`errore: ${err.message ?? err}`));

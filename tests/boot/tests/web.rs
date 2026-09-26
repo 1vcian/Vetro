@@ -1,5 +1,6 @@
 //! Riferimento nativo dei test web (tests/web): gli stessi copioni di
-//! `boot-disk.mjs` e `devices.mjs`, con la stessa API di vetro-wasm
+//! `boot-disk.mjs`, `devices.mjs` e `android-boot.mjs` (RAM di 3 GiB, ADR
+//! 0027), con la stessa API di vetro-wasm
 //! compilata per l'host, l'interprete e un disco locale sempre pronto.
 //! Scrive istruzioni e log grezzo in `target/web-test/native-*.{steps,log}`:
 //! `tools/web-test.sh` lo esegue prima dei test in Node, che devono dare le
@@ -43,8 +44,12 @@ struct Session {
 
 impl Session {
     fn new(image: &[u8], initrd: &[u8], setup: impl FnOnce(&mut Vm)) -> Self {
-        let mut vm =
-            Vm::with_devices(&vetro_machine::MachineConfig::default(), &devices_from(dev::DEFAULT, 0, 0));
+        Self::with_ram(image, initrd, vetro_machine::MachineConfig::default().ram_size, setup)
+    }
+
+    fn with_ram(image: &[u8], initrd: &[u8], ram_size: u64, setup: impl FnOnce(&mut Vm)) -> Self {
+        let cfg = vetro_machine::MachineConfig { ram_size, ..vetro_machine::MachineConfig::default() };
+        let mut vm = Vm::with_devices(&cfg, &devices_from(dev::DEFAULT, 0, 0));
         setup(&mut vm);
         assert_eq!(vm.load_linux(image, Some(initrd), CMDLINE), 0);
         Session { vm, log: Vec::new() }
@@ -165,6 +170,16 @@ fn devices_session(image: &[u8], initrd: &[u8]) -> u64 {
     s.save("devices")
 }
 
+/// Come android-boot.mjs: RAM di 3 GiB (su wasm32 una regione fuori
+/// dall'allocatore), fino al prompt, prima riga di /proc/meminfo, spegnimento.
+fn ram3g_session(image: &[u8], initrd: &[u8]) -> u64 {
+    let mut s = Session::with_ram(image, initrd, 3 << 30, |_| {});
+    let at = s.until(SHELL_PROMPT, 0);
+    let _ = s.command("head -1 /proc/meminfo", at);
+    s.poweroff();
+    s.save("ram3g")
+}
+
 #[test]
 fn riferimento_nativo_dei_test_web() {
     if cfg!(debug_assertions) {
@@ -179,7 +194,9 @@ fn riferimento_nativo_dei_test_web() {
     let (image, initrd) = (std::fs::read(image).unwrap(), std::fs::read(initrd).unwrap());
     let d = disk_session(&image, &initrd);
     let v = devices_session(&image, &initrd);
+    let r = ram3g_session(&image, &initrd);
     eprintln!(
-        "riferimento nativo: disco {d} istruzioni, dispositivi {v} istruzioni (target/web-test/native-*)"
+        "riferimento nativo: disco {d} istruzioni, dispositivi {v} istruzioni, RAM di 3 GiB {r} istruzioni \
+         (target/web-test/native-*)"
     );
 }

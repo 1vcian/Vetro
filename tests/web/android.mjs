@@ -85,6 +85,10 @@ async function main() {
   let log = '';
   let lastReport = 0;
   let saved = false;
+  const jitInfo = () => {
+    const j = m.jitStats();
+    return j ? `, JIT ${j.modules} moduli, ${j.blocks} blocchi, ${j.resets} reset` : '';
+  };
   const report = (why) => {
     const mem = process.memoryUsage();
     const wasmMem = exports.memory.buffer.byteLength;
@@ -92,7 +96,7 @@ async function main() {
     console.log(`[${why}] guest ${(Number(m.guestNs) / 1e9).toFixed(1)} s, reale ${((performance.now() - t0) / 1000).toFixed(0)} s, ` +
       `${(Number(m.steps) / 1e6).toFixed(0)} M istr., WASM ${mib(wasmMem)} MiB, RSS ${mib(mem.rss)} MiB, ` +
       `disco: ${d.fills} blocchi consegnati, ${d.cachedBlocks} in memoria, cow ${d.dirtyClusters} cluster (${mib(d.dirtyClusters * 4096)} MiB), ` +
-      `sorgente ${mib(disk.stats.bytes)} MiB`);
+      `sorgente ${mib(disk.stats.bytes)} MiB${jitInfo()}`);
   };
   for (;;) {
     const stop = m.run(1_000_000);

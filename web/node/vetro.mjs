@@ -450,6 +450,50 @@ export class Machine {
   }
 
   /**
+   * Snapshot senza copiarlo nel JS: `use(view)` riceve la vista sui byte
+   * nella memoria del modulo (da non usare dopo il ritorno) e può scriverli
+   * altrove (OPFS); restituisce quello che restituisce `use`. Con Android lo
+   * snapshot è di centinaia di MiB: una copia in più conta (ADR 0027).
+   */
+  async snapshotSaveWith(use) {
+    const x = this.#x;
+    const n = x.vetro_snapshot_save(this.#vm) >>> 0;
+    const ptr = x.vetro_snapshot_ptr(this.#vm) >>> 0;
+    try {
+      return await use(new Uint8Array(x.memory.buffer, ptr, n));
+    } finally {
+      x.vetro_snapshot_clear(this.#vm);
+    }
+  }
+
+  /**
+   * Come `snapshotRestore`, con i byte scritti da `fill(view)` direttamente
+   * in un buffer di `n` byte della memoria del modulo (per esempio letti da
+   * OPFS), senza una copia nel JS.
+   */
+  async snapshotRestoreWith(n, fill) {
+    const x = this.#x;
+    const ptr = x.vetro_alloc(n) >>> 0;
+    if (!ptr) throw Object.assign(new Error(`vetro_alloc(${n}) fallita: memoria del modulo esaurita`), { code: 'Memory' });
+    try {
+      await fill(new Uint8Array(x.memory.buffer, ptr, n));
+      const r = x.vetro_snapshot_restore(this.#vm, ptr, n);
+      if (r !== 0) {
+        const e = new Error(`vetro_snapshot_restore: ${RESTORE[r] ?? r}: ${this.#message()}`);
+        e.code = RESTORE[r] ?? String(r);
+        throw e;
+      }
+    } finally {
+      x.vetro_free(ptr, n);
+    }
+  }
+
+  /** Byte della memoria lineare del modulo (RAM del guest compresa). */
+  get memoryBytes() {
+    return this.#x.memory.buffer.byteLength;
+  }
+
+  /**
    * Ripristina uno snapshot su questa macchina, costruita come quella salvata
    * (stessi dispositivi, stessi dischi aggiunti nello stesso ordine). Lancia
    * un Error con `code` ('BadMagic', 'Version', 'Config', 'Corrupt') e il

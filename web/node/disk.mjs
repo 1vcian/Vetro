@@ -152,7 +152,8 @@ export function composePlan(layout, offset, length) {
     const e = Math.min(at + len, stop);
     if (s >= e || file === -1) continue;
     if (file === -2) {
-      plan.push({ at: s - offset, length: e - s, fill: off >>> 0 });
+      // La parola si ripete dall'inizio dell'estensione.
+      plan.push({ at: s - offset, length: e - s, fill: off >>> 0, shift: (s - at) & 3 });
       continue;
     }
     const fileOffset = off + (s - at);
@@ -166,7 +167,7 @@ export function composePlan(layout, offset, length) {
 function applyFill(out, p) {
   const word = new Uint8Array(4);
   new DataView(word.buffer).setUint32(0, p.fill, true);
-  for (let k = 0; k < p.length; k++) out[p.at + k] = word[(p.at + k) & 3];
+  for (let k = 0; k < p.length; k++) out[p.at + k] = word[(p.shift + k) & 3];
 }
 
 /** `length` byte da `offset` del disco con `read(file, offset, length)` sincrona. */

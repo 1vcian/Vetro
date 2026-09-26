@@ -48,6 +48,12 @@
 #      con il corpo JSON decodificato e legato al comando nella timeline,
 #      download di log, HAR e pcapng, replay identico, salto a un'istruzione
 #      con registri e memoria, log ricaricato e rigiocato.
+#  13. avvio da immagini Android e RAM di 3 GiB (tests/web/android-boot.mjs,
+#      M5, ADR 0027): boot.img e init_boot.img di mkbootimg.py intorno al
+#      kernel M3, vetro_load_android; istruzioni e log uguali al riferimento
+#      nativo; snapshot e ripristino su una macchina nuova da 3 GiB;
+#  14. client ADB contro un finto adbd (tests/web/adb.mjs): CNXN, AUTH,
+#      shell v2, push, install, devices.
 #
 #   tools/web-test.sh [--no-jit]
 #
@@ -104,6 +110,12 @@ node tests/web/inspector.mjs "$@"
 
 echo "==> record & replay via API (M10)"
 node tests/web/replay.mjs "$@"
+
+echo "==> avvio da boot.img e RAM di 3 GiB (M5)"
+node tests/web/android-boot.mjs "$@"
+
+echo "==> client ADB contro un finto adbd (M5)"
+node tests/web/adb.mjs
 
 echo "==> app in Chrome headless"
 node tests/web/browser.mjs

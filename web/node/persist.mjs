@@ -239,6 +239,45 @@ export class SnapshotStore {
     return { meta, bytes };
   }
 
+  /**
+   * Solo i metadati di uno snapshot completo (la lunghezza del file torna),
+   * senza leggerne i byte: per gli snapshot grandi (Android, centinaia di
+   * MiB) i byte si leggono con `readInto` direttamente dove servono.
+   */
+  async loadMeta(key) {
+    const m = await this.#read(`${key}.json`);
+    if (!m) return null;
+    let meta;
+    try {
+      meta = JSON.parse(new TextDecoder().decode(m));
+    } catch {
+      return null;
+    }
+    if (this.#mem) return this.#mem.get(`${key}.snap`)?.length === meta.size ? meta : null;
+    try {
+      const h = await (await this.#dir.getFileHandle(`${key}.snap`)).createSyncAccessHandle();
+      const size = h.getSize();
+      h.close();
+      return size === meta.size ? meta : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Legge i byte dello snapshot `key` in `view` (lunga `meta.size`). */
+  async readInto(key, view) {
+    if (this.#mem) {
+      view.set(this.#mem.get(`${key}.snap`));
+      return;
+    }
+    const h = await (await this.#dir.getFileHandle(`${key}.snap`)).createSyncAccessHandle();
+    try {
+      if (h.read(view, { at: 0 }) !== view.length) throw new Error('snapshot: lettura corta');
+    } finally {
+      h.close();
+    }
+  }
+
   /** Salva i byte, poi i metadati (con `size`). */
   async save(key, meta, bytes) {
     await this.#remove(`${key}.json`);
