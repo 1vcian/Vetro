@@ -1,0 +1,53 @@
+--- /dev/null
++++ b/files/79e94fc0.0
+@@ -0,0 +1,50 @@
++-----BEGIN CERTIFICATE-----
++MIICFDCCAbugAwIBAgIUHe3sFDBaSVEYh69p2ojLYEx/GmMwCgYIKoZIzj0EAwIw
++ZzEOMAwGA1UECgwFVmV0cm8xITAfBgNVBAsMGFZldHJvIGRldmVsb3BtZW50IGJ1
++aWxkczEyMDAGA1UEAwwpVmV0cm8gRGV2ZWxvcG1lbnQgQ0EgKG5vdCBmb3IgcHJv
++ZHVjdGlvbikwHhcNMjYwOTI2MTc1MDU0WhcNMzYwOTIzMTc1MDU0WjBnMQ4wDAYD
++VQQKDAVWZXRybzEhMB8GA1UECwwYVmV0cm8gZGV2ZWxvcG1lbnQgYnVpbGRzMTIw
++MAYDVQQDDClWZXRybyBEZXZlbG9wbWVudCBDQSAobm90IGZvciBwcm9kdWN0aW9u
++KTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABNl4C6AjCHZ+dXRvpKqk1ojM0oes
++T2BEHkH7MuXAcHvwmsQFyIVJwGyCk4LBMSydWGZ3LpCxfzsxWsySyitfvAajRTBD
++MBIGA1UdEwEB/wQIMAYBAf8CAQAwDgYDVR0PAQH/BAQDAgEGMB0GA1UdDgQWBBSO
++N3N0yXs2Ypl4siHFB3w2gSjrhzAKBggqhkjOPQQDAgNHADBEAiBCyWh5EVBeRbd+
++W2IEAd49q4oJsvnr7SoDOUn/TlTYJgIgSa+Bfbo0URMqLW5x6hz2/GFpNo/xyijT
++9DvM0uiV7qc=
++-----END CERTIFICATE-----
++Certificate:
++    Data:
++        Version: 3 (0x2)
++        Serial Number:
++            1d:ed:ec:14:30:5a:49:51:18:87:af:69:da:88:cb:60:4c:7f:1a:63
++        Signature Algorithm: ecdsa-with-SHA256
++        Issuer: O=Vetro, OU=Vetro development builds, CN=Vetro Development CA (not for production)
++        Validity
++            Not Before: Sep 26 17:50:54 2026 GMT
++            Not After : Sep 23 17:50:54 2036 GMT
++        Subject: O=Vetro, OU=Vetro development builds, CN=Vetro Development CA (not for production)
++        Subject Public Key Info:
++            Public Key Algorithm: id-ecPublicKey
++                Public-Key: (256 bit)
++                pub:
++                    04:d9:78:0b:a0:23:08:76:7e:75:74:6f:a4:aa:a4:
++                    d6:88:cc:d2:87:ac:4f:60:44:1e:41:fb:32:e5:c0:
++                    70:7b:f0:9a:c4:05:c8:85:49:c0:6c:82:93:82:c1:
++                    31:2c:9d:58:66:77:2e:90:b1:7f:3b:31:5a:cc:92:
++                    ca:2b:5f:bc:06
++                ASN1 OID: prime256v1
++                NIST CURVE: P-256
++        X509v3 extensions:
++            X509v3 Basic Constraints: critical
++                CA:TRUE, pathlen:0
++            X509v3 Key Usage: critical
++                Certificate Sign, CRL Sign
++            X509v3 Subject Key Identifier:
++                8E:37:73:74:C9:7B:36:62:99:78:B2:21:C5:07:7C:36:81:28:EB:87
++    Signature Algorithm: ecdsa-with-SHA256
++    Signature Value:
++        30:44:02:20:42:c9:68:79:11:50:5e:45:b7:7e:5b:62:04:01:
++        de:3d:ab:8a:09:b2:f9:eb:ed:2a:03:39:49:ff:4e:54:d8:26:
++        02:20:49:af:81:7d:ba:34:51:13:2a:2d:6e:71:ea:1c:f6:fc:
++        61:69:36:8f:f1:ca:28:d3:f4:3b:cc:d2:e8:95:ee:a7
++sha1 Fingerprint=8D:58:BC:64:D6:63:32:DA:38:F9:43:3D:E9:C5:0C:DE:4D:F0:73:94
