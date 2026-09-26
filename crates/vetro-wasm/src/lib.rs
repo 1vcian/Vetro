@@ -76,7 +76,8 @@ use display::WebDisplay;
 /// `vetro_jit_stats`.
 /// 11: FP/SIMD nelle regioni (ADR 0026): export `vetro_jit_simd` (import
 /// `env.simd` del runtime), `JitState` con FPCR/FPSR e l'orologio.
-pub const ABI_VERSION: u32 = 11;
+/// 12: avvio da immagini Android (`vetro_load_android`, ADR 0018 e 0027).
+pub const ABI_VERSION: u32 = 12;
 
 /// Allineamento dei buffer di [`vetro_alloc`] (basta per `JitState`).
 const ALLOC_ALIGN: usize = 16;
@@ -120,12 +121,18 @@ pub mod input_dev {
     pub const POINTER: u32 = 1;
 }
 
-/// Codici di [`vetro_load_linux`].
+/// Bit di `flags` di [`vetro_load_android`].
+pub mod android_flags {
+    /// Avvio in recovery: anche i ramdisk del vendor di tipo recovery.
+    pub const RECOVERY: u32 = 1;
+}
+
+/// Codici di [`vetro_load_linux`] e [`vetro_load_android`].
 pub mod load {
     pub const OK: u32 = 0;
     /// Il caricatore ha rifiutato i file: il motivo è in `vetro_message_*`.
     pub const BOOT_ERROR: u32 = 1;
-    /// La riga di comando non è UTF-8.
+    /// La riga di comando (o i parametri del bootloader) non è UTF-8.
     pub const BAD_CMDLINE: u32 = 2;
 }
 
@@ -441,6 +448,59 @@ impl Vm {
         }
     }
 
+    /// Il bootloader Android di Vetro (ADR 0018): combina `boot.img`,
+    /// `vendor_boot.img` e `init_boot.img` (vuoti = assenti) con i parametri
+    /// del bootloader `params` e carica il risultato come [`load_linux`].
+    /// Riuscito, il messaggio descrive kernel, ramdisk e bootconfig.
+    ///
+    /// [`load_linux`]: Self::load_linux
+    pub fn load_android(
+        &mut self,
+        boot: &[u8],
+        vendor: &[u8],
+        init: &[u8],
+        params: &[u8],
+        recovery: bool,
+    ) -> u32 {
+        let Ok(params) = core::str::from_utf8(params) else {
+            self.message = "parametri del bootloader non UTF-8".into();
+            return load::BAD_CMDLINE;
+        };
+        let opts = vetro_machine::android::BootOptions { params: params.to_string(), recovery };
+        fn some(b: &[u8]) -> Option<&[u8]> {
+            (!b.is_empty()).then_some(b)
+        }
+        let a = match vetro_machine::android::AndroidBoot::from_images(boot, some(vendor), some(init), &opts)
+        {
+            Ok(a) => a,
+            Err(e) => {
+                self.message = e.to_string();
+                return load::BOOT_ERROR;
+            }
+        };
+        match self.m.load_android(&a) {
+            Ok(_) => {
+                self.message = format!(
+                    "kernel {} ({} byte), ramdisk: {}{}; riga di comando: {}",
+                    a.kernel_format,
+                    a.kernel.len(),
+                    if a.ramdisks.is_empty() { "nessuno".to_string() } else { a.ramdisks.join(", ") },
+                    if a.bootconfig.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", bootconfig {} byte", a.bootconfig.len())
+                    },
+                    a.cmdline
+                );
+                load::OK
+            }
+            Err(e) => {
+                self.message = e.to_string();
+                load::BOOT_ERROR
+            }
+        }
+    }
+
     pub fn run(&mut self, budget: u64) -> u32 {
         let stop = self.m.run(budget);
         self.collect_capture();
@@ -599,6 +659,39 @@ pub unsafe extern "C" fn vetro_load_linux(
     let (image, initrd, cmdline) =
         unsafe { (bytes(image, image_len), bytes(initrd, initrd_len), bytes(cmdline, cmdline_len)) };
     vm.load_linux(image, (!initrd.is_empty()).then_some(initrd), cmdline)
+}
+
+/// Avvio da immagini Android (ABI 12): `boot.img`, `vendor_boot.img` e
+/// `init_boot.img` (nulli o lunghi 0 = assenti), parametri del bootloader
+/// (`params`, UTF-8: gli `androidboot.*` vanno nel bootconfig con
+/// `vendor_boot` v4), `flags` di [`android_flags`]. Restituisce un codice di
+/// [`load`]; riuscito, `vetro_message_*` descrive kernel e ramdisk. I buffer
+/// si possono liberare subito dopo.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn vetro_load_android(
+    vm: *mut Vm,
+    boot: *const u8,
+    boot_len: usize,
+    vendor_boot: *const u8,
+    vendor_boot_len: usize,
+    init_boot: *const u8,
+    init_boot_len: usize,
+    params: *const u8,
+    params_len: usize,
+    flags: u32,
+) -> u32 {
+    // SAFETY: puntatori validi per le lunghezze date (contratto dell'API).
+    let vm = unsafe { &mut *vm };
+    let (boot, vendor, init, params) = unsafe {
+        (
+            bytes(boot, boot_len),
+            bytes(vendor_boot, vendor_boot_len),
+            bytes(init_boot, init_boot_len),
+            bytes(params, params_len),
+        )
+    };
+    vm.load_android(boot, vendor, init, params, flags & android_flags::RECOVERY != 0)
 }
 
 /// Esegue al più `budget` istruzioni; restituisce un codice di [`stop`].
@@ -1276,6 +1369,51 @@ mod tests {
         let code =
             unsafe { vetro_load_linux(vm, junk.as_ptr(), junk.len(), core::ptr::null(), 0, bad.as_ptr(), 1) };
         assert_eq!(code, load::BAD_CMDLINE);
+        unsafe { vetro_machine_free(vm) };
+    }
+
+    /// ABI 12: immagini rifiutate con il motivo, parametri non UTF-8.
+    #[test]
+    fn avvio_android_rifiutato_con_messaggio() {
+        let vm = small();
+        let msg = |vm| unsafe {
+            core::str::from_utf8(bytes(vetro_message_ptr(vm), vetro_message_len(vm))).unwrap().to_string()
+        };
+        let junk = [0u8; 64];
+        let p = b"androidboot.serialno=X";
+        let code = unsafe {
+            vetro_load_android(
+                vm,
+                junk.as_ptr(),
+                junk.len(),
+                core::ptr::null(),
+                0,
+                core::ptr::null(),
+                0,
+                p.as_ptr(),
+                p.len(),
+                0,
+            )
+        };
+        assert_eq!(code, load::BOOT_ERROR);
+        assert!(!msg(vm).is_empty());
+        let bad = [0xffu8];
+        let code = unsafe {
+            vetro_load_android(
+                vm,
+                junk.as_ptr(),
+                junk.len(),
+                core::ptr::null(),
+                0,
+                core::ptr::null(),
+                0,
+                bad.as_ptr(),
+                1,
+                0,
+            )
+        };
+        assert_eq!(code, load::BAD_CMDLINE);
+        assert!(msg(vm).contains("UTF-8"), "{}", msg(vm));
         unsafe { vetro_machine_free(vm) };
     }
 

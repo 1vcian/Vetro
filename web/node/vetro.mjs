@@ -4,7 +4,7 @@
 
 import { JitEngine } from './jit-engine.mjs';
 
-export const ABI_VERSION = 11;
+export const ABI_VERSION = 12;
 /** Codici di vetro_run. */
 export const STOP = ['Budget', 'PowerOff', 'Reset', 'Idle', 'Unimplemented', 'Blocked'];
 
@@ -747,6 +747,23 @@ export class Machine {
     const code = x.vetro_load_linux(this.#vm, ...bufs.flat());
     for (const [p, n] of bufs) x.vetro_free(p, n);
     if (code !== 0) throw new Error(`vetro_load_linux: codice ${code}: ${this.#message()}`);
+  }
+
+  /**
+   * Avvio da immagini Android (ABI 12, ADR 0018): `boot` (boot.img),
+   * `vendorBoot`, `initBoot` (Uint8Array o null), `params` (parametri del
+   * bootloader: gli `androidboot.*` vanno nel bootconfig), `recovery`.
+   * Restituisce la descrizione di kernel e ramdisk; lancia in caso di errore.
+   */
+  loadAndroid({ boot, vendorBoot = null, initBoot = null, params = '', recovery = false }) {
+    const x = this.#x;
+    const empty = new Uint8Array();
+    const bufs = [copyIn(x, boot), copyIn(x, vendorBoot ?? empty), copyIn(x, initBoot ?? empty), copyIn(x, toUtf8.encode(params))];
+    const code = x.vetro_load_android(this.#vm, ...bufs.flat(), recovery ? 1 : 0);
+    for (const [p, n] of bufs) if (n) x.vetro_free(p, n);
+    const msg = this.#message();
+    if (code !== 0) throw new Error(`vetro_load_android: codice ${code}: ${msg}`);
+    return msg;
   }
 
   /** Esegue al più `budget` istruzioni; restituisce il motivo dell'arresto. */
