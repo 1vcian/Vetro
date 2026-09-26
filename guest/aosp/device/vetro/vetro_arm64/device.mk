@@ -47,6 +47,28 @@ PRODUCT_PACKAGES += \
     default-permissions-vetro-microg.xml \
     sysconfig-vetro-microg.xml
 
+# CA di sviluppo di Vetro (ADR 0030): nessun modulo qui. Il certificato entra
+# nel trust store di sistema con due patch (guest/aosp/patches/external/
+# conscrypt e system/ca-certificates, tools/aosp/dev-ca.sh), perché AOSP 15
+# legge le CA da /apex/com.android.conscrypt/cacerts e l'APEX si costruisce
+# dal suo progetto.
+
+# Marchi (ADR 0030): il prodotto non si presenta come "Android".
+# - overlay statici: icona predefinita delle app e del programma di
+#   installazione senza robot; VetroFrameworkOverlay toglie QuickSearchBox
+#   (widget "Google" sulla home di Launcher3);
+# - sfondo predefinito nostro (WallpaperManager.openDefaultWallpaper legge
+#   prima ro.config.wallpaper), generato da tools/aosp/wallpaper.py;
+# - ro.product.system.* come le altre partizioni (generic_system.mk mette
+#   Android/mainline/generic, pensato per il GSI).
+PRODUCT_PACKAGES += \
+    VetroFrameworkOverlay \
+    VetroPackageInstallerOverlay
+PRODUCT_COPY_FILES += \
+    device/vetro/vetro_arm64/branding/wallpaper.png:$(TARGET_COPY_OUT_PRODUCT)/media/wallpaper/vetro.png
+PRODUCT_PRODUCT_PROPERTIES += \
+    ro.config.wallpaper=/product/media/wallpaper/vetro.png
+
 # Demone del gestore dei file (ADR 0020): vsock, porta 5200, solo nelle build
 # di sviluppo (vetro-files/vetro-files.rc). Il sorgente arriva da
 # guest/kernel/initramfs con tools/aosp/sync.sh.

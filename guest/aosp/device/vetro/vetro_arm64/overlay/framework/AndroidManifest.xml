@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Overlay statico del framework (ADR 0030): icona predefinita delle app
+     senza icona (sym_def_app_icon, il robot di AOSP) con quella di Vetro. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="vetro.overlay.framework">
+    <application android:hasCode="false" />
+    <overlay
+        android:targetPackage="android"
+        android:isStatic="true"
+        android:priority="10" />
+</manifest>

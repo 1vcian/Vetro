@@ -30,3 +30,27 @@ prebuilt_etc {
     dsts: ["fstab.vetro"],
     vendor_ramdisk: true,
 }
+
+// Marchi (ADR 0030): overlay statici in /product/overlay, solo risorse.
+
+runtime_resource_overlay {
+    // Icona predefinita delle app senza icona: niente robot.
+    name: "VetroFrameworkOverlay",
+    product_specific: true,
+    manifest: "overlay/framework/AndroidManifest.xml",
+    resource_dirs: ["overlay/framework/res"],
+    // QuickSearchBox è il widget di ricerca "Google" che Launcher3 mette
+    // sulla prima pagina (è l'attività di ricerca globale; il campo usa
+    // hint_google). Senza, Launcher3 mostra la sua barra neutra ("Search",
+    // qsb_default_view). overrides lo toglie dai PRODUCT_PACKAGES ereditati
+    // da handheld_product.mk (main.mk, module-overrides).
+    overrides: ["QuickSearchBox"],
+}
+
+runtime_resource_overlay {
+    // Icona del programma di installazione: niente robot.
+    name: "VetroPackageInstallerOverlay",
+    product_specific: true,
+    manifest: "overlay/packageinstaller/AndroidManifest.xml",
+    resource_dirs: ["overlay/packageinstaller/res"],
+}

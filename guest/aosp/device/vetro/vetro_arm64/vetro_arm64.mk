@@ -53,6 +53,14 @@ PRODUCT_MANUFACTURER := Vetro
 PRODUCT_MODEL := Vetro arm64
 PRODUCT_MAX_PAGE_SIZE_SUPPORTED := 16384
 
+# ro.product.system.*: generic_system.mk mette Android/mainline/generic (per
+# il GSI); qui la partizione system è solo di Vetro (ADR 0030).
+PRODUCT_SYSTEM_NAME := vetro_arm64
+PRODUCT_SYSTEM_DEVICE := vetro_arm64
+PRODUCT_SYSTEM_BRAND := Vetro
+PRODUCT_SYSTEM_MANUFACTURER := Vetro
+PRODUCT_SYSTEM_MODEL := Vetro arm64
+
 PRODUCT_VENDOR_PROPERTIES += \
     ro.soc.manufacturer=Vetro \
     ro.soc.model=vetro_arm64

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Primo piano di un'icona adattiva (108dp, zona sicura 66dp al centro):
+     la V di Vetro con un riflesso. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillAlpha="0.18"
+        android:pathData="M30,66L66,30L74,30L30,74Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M38,38L47,38L54,57L61,38L70,38L59,70L49,70Z" />
+</vector>

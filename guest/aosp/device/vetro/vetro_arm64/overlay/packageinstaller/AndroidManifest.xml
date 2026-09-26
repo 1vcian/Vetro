@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Overlay statico del programma di installazione (ADR 0030): primo piano
+     dell'icona adattiva (app_icon_foreground, il robot di AOSP) con la V di
+     Vetro; lo sfondo resta il colore d'accento del sistema. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="vetro.overlay.packageinstaller">
+    <application android:hasCode="false" />
+    <overlay
+        android:targetPackage="com.android.packageinstaller"
+        android:isStatic="true"
+        android:priority="10" />
+</manifest>
