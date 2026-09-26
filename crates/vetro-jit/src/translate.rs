@@ -30,6 +30,7 @@ use vetro_cpu::decode::{
     PstateField, Shift, SysReg,
 };
 use vetro_cpu::simd::{CopyOp, IntInsn, MovImmOp, SimdInsn, VecMemInsn};
+use vetro_cpu::sysreg::EnvReg;
 
 mod fp;
 mod vec;
@@ -127,11 +128,18 @@ pub struct SysTarget {
     /// Istruzioni FP/SIMD permesse a questo EL (CPACR_EL1.FPEN): senza, le
     /// traduce solo l'interprete (trap).
     pub fp: bool,
+    /// CNTKCTL_EL1.EL0PCTEN (bit 0) ed EL0VCTEN (bit 1): a EL0 MRS di
+    /// CNTPCT/CNTVCT si traduce solo se permesso (ADR 0026).
+    pub cntk: u8,
 }
 
 /// Da dove legge un MRS tradotto.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MrsSrc {
+    /// CNTPCT (`virt` falso) o CNTVCT dal numero di istruzioni (ADR 0026).
+    Counter {
+        virt: bool,
+    },
     /// Campo di `JitState`.
     State(u32),
     /// Campo a 32 bit di `JitState`.
@@ -145,6 +153,8 @@ enum MrsSrc {
 fn sys_mrs(reg: SysReg, s: SysTarget) -> Option<MrsSrc> {
     let el1 = s.el == 1;
     Some(match reg {
+        SysReg::Env(EnvReg::CntpctEl0) if el1 || s.cntk & 1 != 0 => MrsSrc::Counter { virt: false },
+        SysReg::Env(EnvReg::CntvctEl0) if el1 || s.cntk & 2 != 0 => MrsSrc::Counter { virt: true },
         SysReg::TpidrEl0 => MrsSrc::State(off::TPIDR_EL0),
         SysReg::TpidrroEl0 => MrsSrc::State(off::TPIDRRO_EL0),
         SysReg::DczidEl0 => MrsSrc::State(off::DCZID),
@@ -2382,6 +2392,36 @@ impl Tx {
         }
     }
 
+    /// CNTPCT (o CNTVCT se `virt`) dell'istruzione corrente sullo stack
+    /// (i64), come la macchina (`Machine::counter`): il numero di istruzioni
+    /// `s` = `time_base` + passi fatti, e CNTPCT = s / 8 × 5 + (s mod 8) × 5
+    /// / 8 (62,5 MHz su 100 MHz nominali); CNTVCT = CNTPCT - CNTVOFF. Senza
+    /// `time_ok` (l'host non ha dato l'orologio) esce e lo legge
+    /// l'interprete.
+    fn counter(&mut self, virt: bool) {
+        self.f.local_get(L_STATE).i32_load(off::TIME_OK).op(op::I32_EQZ).if_(BLOCK_EMPTY);
+        self.exit_fault();
+        self.f.end();
+        let s = t64(0);
+        let f = &mut self.f;
+        f.local_get(L_STATE).i64_load(off::TIME_BASE).local_get(L_STEPS).op(op::I64_ADD);
+        if self.index != 0 {
+            f.i64_const(self.index as i64).op(op::I64_ADD);
+        }
+        f.local_tee(s).i64_const(3).op(op::I64_SHR_U).i64_const(5).op(op::I64_MUL);
+        f.local_get(s)
+            .i64_const(7)
+            .op(op::I64_AND)
+            .i64_const(5)
+            .op(op::I64_MUL)
+            .i64_const(3)
+            .op(op::I64_SHR_U);
+        f.op(op::I64_ADD);
+        if virt {
+            f.local_get(L_STATE).i64_load(off::CNTVOFF).op(op::I64_SUB);
+        }
+    }
+
     /// Se la cima dello stack (i32) non è zero (interrupt smascherati), esce
     /// con YIELD dopo l'istruzione corrente.
     fn yield_if(&mut self) {
@@ -2769,6 +2809,7 @@ impl Tx {
                     MrsSrc::Const(v) => {
                         self.f.i64_const(v as i64);
                     }
+                    MrsSrc::Counter { virt } => self.counter(virt),
                 }
                 self.set_x(rt);
             }
@@ -3329,6 +3370,7 @@ mod tests {
                         tbi1: i & 2 != 0,
                         spsel: i != 2,
                         fp: i != 3,
+                        cntk: i as u8 & 3,
                     };
                     let sb: Vec<Region> = blocks
                         .iter()
@@ -3387,7 +3429,7 @@ mod tests {
     fn branch_addr_come_la_cpu() {
         let t = 0x5a00_0000_0040_1000u64;
         let n = 0x5a80_0000_0040_1000u64;
-        let s = |tbi0, tbi1| SysTarget { el: 0, tbi0, tbi1, spsel: false, fp: true };
+        let s = |tbi0, tbi1| SysTarget { el: 0, tbi0, tbi1, spsel: false, fp: true, cntk: 0 };
         assert_eq!(s(false, false).branch_addr(t), t);
         assert_eq!(s(true, false).branch_addr(t), 0x0000_0000_0040_1000);
         assert_eq!(s(true, false).branch_addr(n), n);
@@ -3399,8 +3441,8 @@ mod tests {
     /// EL0 restano all'interprete.
     #[test]
     fn istruzioni_solo_interprete_in_modalita_sistema() {
-        let el0 = Some(SysTarget { el: 0, tbi0: false, tbi1: false, spsel: false, fp: true });
-        let el1 = Some(SysTarget { el: 1, tbi0: false, tbi1: false, spsel: true, fp: true });
+        let el0 = Some(SysTarget { el: 0, tbi0: false, tbi1: false, spsel: false, fp: true, cntk: 0 });
+        let el1 = Some(SysTarget { el: 1, tbi0: false, tbi1: false, spsel: true, fp: true, cntk: 0 });
         assert_eq!(kind_in(&Insn::Wfi, None), Kind::Linear);
         assert_eq!(kind_in(&Insn::Wfi, el1), Kind::Unsupported);
         assert_eq!(kind_in(&Insn::CacheMaint, el1), Kind::Linear);
@@ -3432,7 +3474,7 @@ mod tests {
             0xd65f03c0,    // ret
             0x94000020,    // bl .+128
         ];
-        let sys = Some(SysTarget { el: 1, tbi0: false, tbi1: true, spsel: true, fp: true });
+        let sys = Some(SysTarget { el: 1, tbi0: false, tbi1: true, spsel: true, fp: true, cntk: 0 });
         let pc = 0xffff_8000_1234_5000u64;
         let r = Region::linear(pc, words.to_vec(), sys);
         let m = module(std::slice::from_ref(&r), MemoryImport { min: 1, shared_max: None });

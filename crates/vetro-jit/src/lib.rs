@@ -29,7 +29,7 @@ pub use driver::{JitConfig, JitCpu, JitStats};
 pub use engine::{Engine, Host};
 pub use profile::Profile;
 pub use state::JitState;
-pub use sys::{Next, SysJit, SysJitConfig, SysJitDyn, SysJitStats, SysPhys, SysRun};
+pub use sys::{Clock, Next, SysJit, SysJitConfig, SysJitDyn, SysJitStats, SysPhys, SysRun};
 
 /// Codici d'uscita di un blocco (docs/specs/jit.md).
 pub const NEXT: u32 = 0;

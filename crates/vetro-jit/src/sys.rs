@@ -64,7 +64,7 @@ use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::rc::Rc;
 
-use vetro_cpu::sys::{AccessReq, SysBus, TranslationRegs, cpacr, sctlr};
+use vetro_cpu::sys::{AccessReq, SysBus, TranslationRegs, cntkctl, cpacr, sctlr};
 use vetro_cpu::{Access, Cpu};
 use vetro_mmu::{BusError, Mmu, MmuBus, PhysMemory, tcr};
 
@@ -239,8 +239,17 @@ type FastMap<K, V> = HashMap<K, V, BuildHasherDefault<U64Hasher>>;
 type Key = (u64, u8);
 
 fn flags(sys: SysTarget) -> u8 {
-    sys.el | (sys.tbi0 as u8) << 1 | (sys.tbi1 as u8) << 2 | (sys.spsel as u8) << 3 | (sys.fp as u8) << 4
+    sys.el
+        | (sys.tbi0 as u8) << 1
+        | (sys.tbi1 as u8) << 2
+        | (sys.spsel as u8) << 3
+        | (sys.fp as u8) << 4
+        | (sys.cntk & 3) << 5
 }
+
+/// Bit dei parametri della regione nel contesto (`ctx = epoca << CTX_SHIFT
+/// | parametri`).
+const CTX_SHIFT: u32 = 7;
 
 /// I parametri di traduzione per lo stato corrente della CPU.
 pub fn target(cpu: &Cpu) -> SysTarget {
@@ -251,7 +260,21 @@ pub fn target(cpu: &Cpu) -> SysTarget {
         0b01 => cpu.sys.el == 1,
         _ => false,
     };
-    SysTarget { el: cpu.sys.el, tbi0: t & tcr::TBI0 != 0, tbi1: t & tcr::TBI1 != 0, spsel: cpu.sys.spsel, fp }
+    // CNTKCTL_EL1: conta solo a EL0 (a EL1 CNTPCT/CNTVCT si leggono sempre).
+    let k = cpu.sys.cntkctl_el1;
+    let cntk = if cpu.sys.el == 0 {
+        (k & cntkctl::EL0PCTEN != 0) as u8 | ((k & cntkctl::EL0VCTEN != 0) as u8) << 1
+    } else {
+        0
+    };
+    SysTarget {
+        el: cpu.sys.el,
+        tbi0: t & tcr::TBI0 != 0,
+        tbi1: t & tcr::TBI1 != 0,
+        spsel: cpu.sys.spsel,
+        fp,
+        cntk,
+    }
 }
 
 /// Un ingresso di una regione compilata.
@@ -329,7 +352,7 @@ impl<M> Cache<M> {
     /// Contesto delle voci della cache dei salti valide adesso per i
     /// parametri `fl` ([`flags`]: EL, TBI, SPSel, FP).
     fn ctx(&self, fl: u8) -> u32 {
-        self.epoch << 5 | fl as u32
+        self.epoch << CTX_SHIFT | fl as u32
     }
 
     /// Cerca il blocco di `pc` per la pagina fisica da cui la CPU lo
@@ -441,6 +464,17 @@ pub struct SysJit<E: Engine> {
     ram_key: Option<(u64, usize, usize)>,
     dirty: Vec<u64>,
     profile: Option<Profile>,
+    /// Orologio della prossima corsa ([`SysJit::set_time`]).
+    time: Option<Clock>,
+}
+
+/// L'orologio del guest per le regioni (ADR 0026): istruzioni eseguite
+/// dalla macchina e CNTVOFF. MRS di CNTPCT/CNTVCT nelle regioni ne danno lo
+/// stesso valore dell'interprete.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Clock {
+    pub steps: u64,
+    pub cntvoff: u64,
 }
 
 /// L'host dei blocchi: accessi attraverso la MMU con i permessi di EL e le
@@ -585,6 +619,7 @@ impl<E: Engine> SysJit<E> {
             ram: None,
             ram_key: None,
             dirty: Vec::new(),
+            time: None,
             profile: cfg.profile.then(|| {
                 crate::helper::profile(true);
                 Profile::default()
@@ -620,6 +655,12 @@ impl<E: Engine> SysJit<E> {
         {
             p.note(u32::from_le_bytes(w), Some(target(cpu)));
         }
+    }
+
+    /// L'orologio per la prossima [`run`](Self::run) (vale solo per quella):
+    /// senza, MRS di CNTPCT/CNTVCT nelle regioni esce all'interprete.
+    pub fn set_time(&mut self, c: Clock) {
+        self.time = Some(c);
     }
 
     /// Istruzioni dell'interprete per classe, se `cfg.profile`.
@@ -659,7 +700,7 @@ impl<E: Engine> SysJit<E> {
     fn new_epoch(&mut self) {
         self.cache.epoch += 1;
         self.cache.stats.epochs += 1;
-        if self.cache.epoch >= 1 << 26 {
+        if self.cache.epoch >= 1 << (32 - CTX_SHIFT) {
             let at = self.cache.at + area::JC as usize;
             self.engine.memory()[at..at + area::JC_ENTRIES as usize * 16].fill(0);
             self.cache.epoch = 1;
@@ -732,6 +773,7 @@ impl<E: Engine> SysJit<E> {
         let mut done = 0u64;
         let mut in_jit = false;
         let mut pc = cpu.pc;
+        let time = self.time.take();
         let next = loop {
             if done >= budget {
                 break Next::Jit;
@@ -778,6 +820,15 @@ impl<E: Engine> SysJit<E> {
                 state::write_u64(m, at, off::LIMIT, budget - done);
                 state::write_u32(m, at, off::CTX, ctx);
                 state::write_u32(m, at, off::EXIT_DETAIL, 0);
+            }
+            // Orologio: `steps` di JitState riparte da 0 a ogni corsa.
+            match time {
+                Some(c) => {
+                    state::write_u64(m, at, off::TIME_BASE, c.steps + done);
+                    state::write_u64(m, at, off::CNTVOFF, c.cntvoff);
+                    state::write_u32(m, at, off::TIME_OK, 1);
+                }
+                None => state::write_u32(m, at, off::TIME_OK, 0),
             }
             let code = {
                 let v = &cpu.v;
@@ -978,6 +1029,8 @@ pub trait SysJitDyn {
         false
     }
     fn profile_step(&mut self, _cpu: &Cpu, _mmu: &mut Mmu, _phys: &mut dyn SysPhys) {}
+    /// L'orologio per la prossima corsa ([`SysJit::set_time`]).
+    fn set_time(&mut self, _c: Clock) {}
     fn profile(&self) -> Option<&Profile> {
         None
     }
@@ -992,6 +1045,9 @@ impl<E: Engine> SysJitDyn for SysJit<E> {
     }
     fn profiling(&self) -> bool {
         self.profile.is_some()
+    }
+    fn set_time(&mut self, c: Clock) {
+        SysJit::set_time(self, c)
     }
     fn profile_step(&mut self, cpu: &Cpu, mmu: &mut Mmu, phys: &mut dyn SysPhys) {
         SysJit::profile_step(self, cpu, mmu, phys)

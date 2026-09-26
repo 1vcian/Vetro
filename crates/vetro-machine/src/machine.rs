@@ -593,6 +593,9 @@ impl Machine {
                 && let Some(limit) = self.jit_budget(end)
             {
                 let jit = self.jit.as_mut().expect("controllato sopra");
+                // L'orologio per MRS CNTPCT/CNTVCT dentro le regioni.
+                let cntvoff = self.board.borrow().virt.timer.cntvoff;
+                jit.set_time(vetro_jit::Clock { steps: self.steps, cntvoff });
                 let mut phys = Phys(&self.board);
                 let r = jit.run(&mut self.cpu, &mut self.mmu, &mut phys, limit);
                 self.steps += r.steps;

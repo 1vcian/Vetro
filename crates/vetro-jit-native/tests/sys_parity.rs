@@ -56,7 +56,9 @@ const HANDLER: [u32; 4] = [
 
 /// Istruzioni di sistema (registri Rt = x0, Rn = x1, Rs = w2, Rt2 = x3:
 /// il generatore li cambia a caso).
-const SYSTEM: [u32; 40] = [
+const SYSTEM: [u32; 42] = [
+    0xd53be040, // mrs x0, CNTVCT_EL0 (ADR 0026)
+    0xd53be020, // mrs x0, CNTPCT_EL0
     0xd53bd040, // mrs x0, TPIDR_EL0
     0xd51bd040, // msr TPIDR_EL0, x0
     0xd53bd060, // mrs x0, TPIDRRO_EL0
@@ -269,14 +271,29 @@ impl SysPhys for TestPhys {
     }
 }
 
-struct NoEnv;
+/// CNTVOFF delle prove.
+const CNTVOFF: u64 = 12345;
+
+/// CNTPCT dopo `steps` istruzioni, come `vetro_machine` (62,5 MHz su 100).
+fn counter(steps: u64) -> u64 {
+    steps / 8 * 5 + steps % 8 * 5 / 8
+}
+
+/// Nessun interrupt; CNTPCT e CNTVCT dal numero di istruzioni già fatte.
+struct NoEnv {
+    steps: u64,
+}
 
 impl CpuEnv for NoEnv {
     fn irq_line(&mut self) -> bool {
         false
     }
-    fn read_sysreg(&mut self, _: EnvReg) -> u64 {
-        0
+    fn read_sysreg(&mut self, r: EnvReg) -> u64 {
+        match r {
+            EnvReg::CntpctEl0 => counter(self.steps),
+            EnvReg::CntvctEl0 => counter(self.steps).wrapping_sub(CNTVOFF),
+            _ => 0,
+        }
     }
     fn write_sysreg(&mut self, _: EnvReg, _: u64) {}
 }
@@ -329,6 +346,7 @@ fn setup(seed: u64) -> (Cpu, Vec<u8>) {
         tbi1: false,
         spsel: !el0,
         fp: true,
+        cntk: 0,
     };
     // Programma: istruzioni casuali, di sistema, coppie esclusive.
     let mut prog = Vec::with_capacity(PROG_LEN);
@@ -380,6 +398,8 @@ fn setup(seed: u64) -> (Cpu, Vec<u8>) {
         s.cpacr_el1 = 0b11 << 20; // FP/SIMD senza trap
     }
     s.tpidr_el1 = rng.next();
+    // CNTKCTL_EL1.EL0PCTEN/EL0VCTEN: MRS del contatore a EL0 permesso o no.
+    s.cntkctl_el1 = rng.below(4);
     cpu.tpidr_el0 = rng.next();
     cpu.tpidrro_el0 = rng.next();
     cpu.nzcv = (rng.below(16) as u32) << 28;
@@ -429,7 +449,8 @@ fn step(
     events: &mut Vec<(u64, SysEvent)>,
     n: u64,
 ) -> bool {
-    let ev = cpu.step_system(&mut MmuBus::new(mmu, phys), &mut NoEnv);
+    // `n` conta anche questo passo: prima ne erano stati fatti n - 1.
+    let ev = cpu.step_system(&mut MmuBus::new(mmu, phys), &mut NoEnv { steps: n - 1 });
     match ev {
         SysEvent::Executed | SysEvent::WaitForInterrupt => true,
         SysEvent::Unimplemented { .. } => {
@@ -485,6 +506,10 @@ fn run_jit(mut cpu: Cpu, ram: &[u8], seed: u64) -> (Trace, vetro_jit::SysJitStat
         // Come `Machine::jit_budget`: niente interrupt in questa prova.
         if interp == Next::Jit && !cpu.sys.il && cpu.pc & 3 == 0 {
             let budget = (STEP_LIMIT - n).min(1 + rng.below(300));
+            // L'orologio (a volte no: MRS del contatore esce all'interprete).
+            if rng.below(8) != 0 {
+                jit.set_time(vetro_jit::Clock { steps: n, cntvoff: CNTVOFF });
+            }
             let r = jit.run(&mut cpu, &mut mmu, &mut phys, budget);
             n += r.steps;
             interp = if r.next == Next::Jit && r.steps == 0 { Next::One } else { r.next };
