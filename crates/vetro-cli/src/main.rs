@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]
-//! vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=ISTRUZIONE [--dump=VA:BYTE]]] [--vsock] [--files-ls=PERCORSO]... [--files-cat=PERCORSO]... [--files-put=PERCORSO:FILE]...
+//! vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--save-on=TESTO:FILE [--save-delay=S] [--exit-after-save]] [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=ISTRUZIONE [--dump=VA:BYTE]]] [--vsock] [--files-ls=PERCORSO]... [--files-cat=PERCORSO]... [--files-put=PERCORSO:FILE]...
 //! ```
 //!
 //! `boot` avvia la macchina virt (M3) con la console PL011 su stdin/stdout.
@@ -49,7 +49,10 @@
 //!
 //! Snapshot (M6, ADR 0015): `--save-at=N:FILE` salva la macchina intera in
 //! FILE al primo confine fra due quanti con almeno N istruzioni eseguite
-//! (una WFI può saltare oltre N), e continua; si può ripetere. `--restore=FILE`
+//! (una WFI può saltare oltre N), e continua; si può ripetere.
+//! `--save-on=TESTO:FILE` salva quando TESTO compare sulla console (per
+//! Android `sys.boot_completed=1`), dopo altri `--save-delay=S` secondi di
+//! guest; con `--exit-after-save` poi esce (codice 0). `--restore=FILE`
 //! riparte da uno snapshot invece che dal kernel (`--kernel` non serve):
 //! RAM, dispositivi e opzioni (`--mem`, dispositivi, `--disk` con gli stessi
 //! file) devono essere quelli della macchina salvata, altrimenti lo snapshot
@@ -100,7 +103,7 @@ fn usage() -> ExitCode {
         "uso: vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]"
     );
     eprintln!(
-        "     vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=ISTRUZIONE [--dump=VA:BYTE]]] [--vsock] [--files-ls=PERCORSO]... [--files-cat=PERCORSO]... [--files-put=PERCORSO:FILE]..."
+        "     vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--save-on=TESTO:FILE [--save-delay=S] [--exit-after-save]] [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=ISTRUZIONE [--dump=VA:BYTE]]] [--vsock] [--files-ls=PERCORSO]... [--files-cat=PERCORSO]... [--files-put=PERCORSO:FILE]..."
     );
     ExitCode::from(2)
 }
@@ -208,6 +211,8 @@ fn boot(args: &[String]) -> ExitCode {
     let mut forwards = Vec::new();
     let (mut jit, mut threshold) = (false, vetro_jit::SysJitConfig::default().hot_threshold);
     let mut save_at: Vec<(u64, String)> = Vec::new();
+    let mut save_on: Option<(String, String)> = None;
+    let (mut save_delay_ns, mut exit_after_save) = (0u64, false);
     let mut restore = None;
     let (mut record, mut replay, mut goto, mut dump) = (None, None, None, None);
     let mut keyframes = 100_000_000u64;
@@ -252,6 +257,10 @@ fn boot(args: &[String]) -> ExitCode {
                 vsock = true;
                 continue;
             }
+            "--exit-after-save" => {
+                exit_after_save = true;
+                continue;
+            }
             _ => {}
         }
         match a.split_once('=') {
@@ -266,6 +275,16 @@ fn boot(args: &[String]) -> ExitCode {
             },
             Some(("--save-at", v)) => match v.split_once(':').map(|(n, f)| (n.parse::<u64>(), f)) {
                 Some((Ok(n), f)) if !f.is_empty() => save_at.push((n, f.to_string())),
+                _ => return usage(),
+            },
+            Some(("--save-on", v)) => match v.rsplit_once(':') {
+                Some((t, f)) if !t.is_empty() && !f.is_empty() => {
+                    save_on = Some((t.to_string(), f.to_string()))
+                }
+                _ => return usage(),
+            },
+            Some(("--save-delay", v)) => match v.parse::<f64>() {
+                Ok(s) if s >= 0.0 => save_delay_ns = (s * 1e9) as u64,
                 _ => return usage(),
             },
             Some(("--restore", v)) => restore = Some(v.to_string()),
@@ -651,6 +670,7 @@ fn boot(args: &[String]) -> ExitCode {
             net_seen = s.events().len();
         });
     };
+    let (mut console_tail, mut save_on_at) = (Vec::<u8>::new(), None::<u64>);
     let code = loop {
         if let Err(c) = persist(&m, &mut overlays) {
             break c;
@@ -671,6 +691,45 @@ fn boot(args: &[String]) -> ExitCode {
         if !o.is_empty() {
             let _ = out.write_all(&o);
             let _ = out.flush();
+        }
+        // --save-on: il testo sulla console fissa l'istante del salvataggio.
+        if let Some((text, _)) = &save_on
+            && save_on_at.is_none()
+        {
+            console_tail.extend_from_slice(&o);
+            if console_tail.windows(text.len()).any(|w| w == text.as_bytes()) {
+                save_on_at = Some(m.guest_ns().saturating_add(save_delay_ns));
+                eprintln!(
+                    "vetro: {text:?} sulla console a {:.1} s di guest: snapshot fra {:.1} s di guest",
+                    m.guest_ns() as f64 / 1e9,
+                    save_delay_ns as f64 / 1e9
+                );
+            }
+            let keep = console_tail.len().saturating_sub(text.len());
+            console_tail.drain(..keep);
+        }
+        if let Some(at) = save_on_at
+            && m.guest_ns() >= at
+            && let Some((_, path)) = save_on.take()
+        {
+            let t = std::time::Instant::now();
+            let snap = m.save();
+            if let Err(e) = std::fs::write(&path, &snap) {
+                eprintln!("vetro: {path}: {e}");
+                return ExitCode::from(2);
+            }
+            eprintln!(
+                "vetro: snapshot a {} istruzioni ({:.1} s di guest, {:.0} s reali) in {path} ({} byte, salvato in {:.1} s)",
+                m.steps,
+                m.guest_ns() as f64 / 1e9,
+                t0.elapsed().as_secs_f64(),
+                snap.len(),
+                t.elapsed().as_secs_f64()
+            );
+            if exit_after_save {
+                report(&m);
+                break ExitCode::SUCCESS;
+            }
         }
         match m.replay_status() {
             Some(vetro_machine::ReplayStatus::Finished) if log.is_some() => {
@@ -791,6 +850,8 @@ const BOOT_VALUE_OPTIONS: &[&str] = &[
     "--guest-secs",
     "--jit-threshold",
     "--save-at",
+    "--save-on",
+    "--save-delay",
     "--restore",
     "--overlay",
     "--boot-img",
