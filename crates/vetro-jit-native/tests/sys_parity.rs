@@ -464,25 +464,39 @@ fn step(
     }
 }
 
-fn run_interp(mut cpu: Cpu, mut ram: Vec<u8>) -> Trace {
+fn run_interp(cpu: Cpu, ram: Vec<u8>) -> Trace {
+    run_interp_stops(cpu, ram, &[]).0
+}
+
+/// Come [`run_interp`]; conta anche i passi fatti con il PC in `stops`.
+fn run_interp_stops(mut cpu: Cpu, mut ram: Vec<u8>, stops: &[u64]) -> (Trace, u64) {
     let mut phys = TestPhys { ram: ram.as_mut_ptr(), watched: vec![false; RAM_LEN >> 12], dirty: Vec::new() };
     let mut mmu = Mmu::new(Mmu::PA_BITS_CORTEX_A53);
     let mut events = Vec::new();
     let mut n = 0;
+    let mut hits = 0;
     while n < STEP_LIMIT {
         n += 1;
+        hits += u64::from(stops.contains(&cpu.pc));
         if !step(&mut cpu, &mut mmu, &mut phys, &mut events, n) {
             break;
         }
     }
-    Trace { events, steps: n, cpu, ram_hash: hash(&ram) }
+    (Trace { events, steps: n, cpu, ram_hash: hash(&ram) }, hits)
 }
 
 /// Offset della RAM del guest nella memoria di wasmtime (dopo l'area del
 /// JIT).
 const RAM_IN_ENGINE: usize = 1 << 20;
 
-fn run_jit(mut cpu: Cpu, ram: &[u8], seed: u64) -> (Trace, vetro_jit::SysJitStats) {
+fn run_jit(cpu: Cpu, ram: &[u8], seed: u64) -> (Trace, vetro_jit::SysJitStats) {
+    let (t, s, _) = run_jit_stops(cpu, ram, seed, &[]);
+    (t, s)
+}
+
+/// Come [`run_jit`] con `SysJit::set_stops(stops)`; conta anche i passi
+/// dell'interprete fatti con il PC in `stops`.
+fn run_jit_stops(mut cpu: Cpu, ram: &[u8], seed: u64, stops: &[u64]) -> (Trace, vetro_jit::SysJitStats, u64) {
     let mut rng = Rng(seed ^ 0xb0d9e7);
     let mut engine = NativeEngine::new();
     vetro_jit::Engine::reserve(&mut engine, RAM_IN_ENGINE + RAM_LEN);
@@ -492,12 +506,14 @@ fn run_jit(mut cpu: Cpu, ram: &[u8], seed: u64) -> (Trace, vetro_jit::SysJitStat
         ..Default::default()
     };
     let mut jit = SysJit::new(engine, cfg);
+    jit.set_stops(stops);
     let base = vetro_jit::Engine::memory(jit.engine())[RAM_IN_ENGINE..].as_mut_ptr();
     let mut phys = TestPhys { ram: base, watched: vec![false; RAM_LEN >> 12], dirty: Vec::new() };
     phys.bytes().copy_from_slice(ram);
     let mut mmu = Mmu::new(Mmu::PA_BITS_CORTEX_A53);
     let mut events = Vec::new();
     let mut n = 0;
+    let mut hits = 0;
     let mut interp = Next::Jit;
     loop {
         if n >= STEP_LIMIT {
@@ -519,6 +535,7 @@ fn run_jit(mut cpu: Cpu, ram: &[u8], seed: u64) -> (Trace, vetro_jit::SysJitStat
         }
         let old = cpu.pc;
         n += 1;
+        hits += u64::from(stops.contains(&cpu.pc));
         let before = events.len();
         if !step(&mut cpu, &mut mmu, &mut phys, &mut events, n) {
             break;
@@ -535,7 +552,36 @@ fn run_jit(mut cpu: Cpu, ram: &[u8], seed: u64) -> (Trace, vetro_jit::SysJitStat
     let stats = jit.stats();
     assert_eq!(stats.resets, 0, "la RAM sta nella memoria del motore: niente azzeramenti");
     let h = hash(phys.bytes());
-    (Trace { events, steps: n, cpu, ram_hash: h }, stats)
+    (Trace { events, steps: n, cpu, ram_hash: h }, stats, hits)
+}
+
+/// Punti di fermata del JIT (ADR 0027, punti di aggancio
+/// dell'introspezione): con indirizzi del programma in `set_stops`, le
+/// regioni non li contengono. L'esecuzione resta identica all'interprete,
+/// e ogni passo con il PC su un punto di fermata lo fa l'interprete (lo
+/// stesso numero di volte che nell'esecuzione tutta interpretata), così
+/// la macchina vi può controllare i punti di aggancio. Senza le fermate
+/// nelle regioni il conto scende (provato togliendo il controllo in
+/// `install`).
+#[test]
+fn punti_di_fermata_restano_all_interprete() {
+    let mut total_hits = 0;
+    let mut jit_steps = 0;
+    for seed in 0..150u64 {
+        let (cpu, ram) = setup(seed);
+        let mut rng = Rng(seed ^ 0x5709);
+        let stops: Vec<u64> = (0..3).map(|_| START + 4 * rng.below(PROG_LEN as u64 / 2)).collect();
+        let (want, want_hits) = run_interp_stops(cpu.clone(), ram.clone(), &stops);
+        let (got, s, got_hits) = run_jit_stops(cpu, &ram, seed, &stops);
+        assert_eq!(got, want, "seme {seed}: interprete e JIT con fermate {stops:x?}");
+        assert_eq!(got_hits, want_hits, "seme {seed}: il JIT ha eseguito un punto di fermata {stops:x?}");
+        total_hits += want_hits;
+        jit_steps += s.jit_steps;
+    }
+    assert!(
+        total_hits > 100 && jit_steps > 10_000,
+        "prova troppo debole: {total_hits} fermate, {jit_steps} passi nel JIT"
+    );
 }
 
 fn env_u64(name: &str, default: u64) -> u64 {

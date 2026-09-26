@@ -466,6 +466,9 @@ pub struct SysJit<E: Engine> {
     profile: Option<Profile>,
     /// Orologio della prossima corsa ([`SysJit::set_time`]).
     time: Option<Clock>,
+    /// Indirizzi virtuali che nessuna regione contiene
+    /// ([`SysJit::set_stops`], punti di aggancio dell'introspezione).
+    stops: std::collections::BTreeSet<u64>,
 }
 
 /// L'orologio del guest per le regioni (ADR 0026): istruzioni eseguite
@@ -620,6 +623,7 @@ impl<E: Engine> SysJit<E> {
             ram_key: None,
             dirty: Vec::new(),
             time: None,
+            stops: std::collections::BTreeSet::new(),
             profile: cfg.profile.then(|| {
                 crate::helper::profile(true);
                 Profile::default()
@@ -627,6 +631,29 @@ impl<E: Engine> SysJit<E> {
         };
         j.init_area();
         j
+    }
+
+    /// Indirizzi virtuali (di qualunque spazio) che le regioni non
+    /// contengono: un blocco finisce prima, e una regione non comincia lì.
+    /// Così l'istruzione a quell'indirizzo la esegue sempre l'interprete,
+    /// che vi controlla i punti di aggancio dell'introspezione (ADR 0027).
+    /// Il risultato dell'esecuzione non cambia. Se l'insieme cambia si
+    /// dimenticano tutti i blocchi (anche quelli in attesa) e le voci della
+    /// cache dei salti (nuova epoca); le voci della tabella restano
+    /// occupate fino al prossimo azzeramento, senza toccare il motore.
+    pub fn set_stops(&mut self, stops: &[u64]) {
+        let new: std::collections::BTreeSet<u64> = stops.iter().copied().collect();
+        if new == self.stops {
+            return;
+        }
+        self.stops = new;
+        let c = &mut self.cache;
+        c.blocks.clear();
+        c.pages.clear();
+        c.compiled.clear();
+        c.pending.clear();
+        c.pending_hits = 0;
+        self.new_epoch();
     }
 
     pub fn engine(&mut self) -> &mut E {
@@ -891,7 +918,11 @@ impl<E: Engine> SysJit<E> {
             self.compile_pending();
             return self.compiled_block(key, pa);
         }
+        let stops = &self.stops;
         let found = translate::discover(pc, Some(sys), MAX_REGION, |a| {
+            if stops.contains(&a) {
+                return None;
+            }
             let mut w = [0u8; 4];
             phys.ram_read(pa.wrapping_add(a.wrapping_sub(pc)), &mut w).then(|| u32::from_le_bytes(w))
         });
@@ -1031,6 +1062,8 @@ pub trait SysJitDyn {
     fn profile_step(&mut self, _cpu: &Cpu, _mmu: &mut Mmu, _phys: &mut dyn SysPhys) {}
     /// L'orologio per la prossima corsa ([`SysJit::set_time`]).
     fn set_time(&mut self, _c: Clock) {}
+    /// Indirizzi che le regioni non contengono ([`SysJit::set_stops`]).
+    fn set_stops(&mut self, stops: &[u64]);
     fn profile(&self) -> Option<&Profile> {
         None
     }
@@ -1048,6 +1081,9 @@ impl<E: Engine> SysJitDyn for SysJit<E> {
     }
     fn set_time(&mut self, c: Clock) {
         SysJit::set_time(self, c)
+    }
+    fn set_stops(&mut self, stops: &[u64]) {
+        SysJit::set_stops(self, stops)
     }
     fn profile_step(&mut self, cpu: &Cpu, mmu: &mut Mmu, phys: &mut dyn SysPhys) {
         SysJit::profile_step(self, cpu, mmu, phys)
