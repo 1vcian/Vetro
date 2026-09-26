@@ -1,89 +1,100 @@
-# Vetro — regole per tutti gli agenti
+# Vetro — rules for all agents
 
-Vetro è un emulatore di sistema ARM64 completo, in Rust, che gira in WebAssembly
-nel browser e fa girare Android (AOSP + microG) con strumenti di analisi
-dall'esterno. Il piano, le milestone e lo stato stanno in `docs/PLAN.md`; il
-diario di lavoro in `docs/progress/`. Leggili a inizio sessione.
+Vetro is a complete ARM64 system emulator written in Rust. It runs in
+WebAssembly in the browser and runs Android (AOSP + microG), with analysis
+tools that observe it from the outside. The plan, milestones and status live
+in `docs/PLAN.md`; the work log lives in `docs/progress/`. Read them at the
+start of every session.
 
-"Vetro" è il nome ufficiale. Il prodotto non si presenta mai come "Android" (marchio Google).
+"Vetro" is the official name. The product never presents itself as "Android"
+(a Google trademark).
 
-## Principi
+## Language
 
-- **Fedeltà prima della velocità.** Prima corretto e verificato, poi veloce.
-- **L'oracolo è QEMU.** Ogni comportamento della CPU si confronta con
+**Everything is in English**: code comments, commit messages, docs (ADRs,
+specs, progress logs, plan), UI strings, test output and messages. Existing
+Italian text is being translated; any file you touch should end up in English,
+and all new text is written in English from the start.
+
+## Principles
+
+- **Fidelity before speed.** Correct and verified first, fast second.
+- **QEMU is the oracle.** Every CPU behaviour is compared against
   `qemu-aarch64` / `qemu-system-aarch64`.
-- **Determinismo dal primo giorno.** Orologio, casualità, input e tempi dei
-  dispositivi passano da un unico punto registrabile (serve al replay di M10).
+- **Determinism from day one.** Clock, randomness, input and device timing
+  go through a single recordable point (needed for M10 replay).
 
-## Regola d'oro
+## Golden rule
 
-Nessuna milestone è completa finché il suo comando di uscita non passa in CI
-(in un giro completo: notturno o con `[ci full]` nel commit, ADR 0025).
-Non dichiarare fatto ciò che un test non conferma. Un test saltato (`SKIP`) non
-è un test passato. Se un test è rosso, si lavora finché diventa verde o finché
-se ne capisce il motivo, scritto in `docs/progress/`.
+No milestone is complete until its exit command passes in CI (in a full run:
+the nightly one, or a commit with `[ci full]`, ADR 0025). Don't declare done
+what a test doesn't confirm. A skipped test (`SKIP`) is not a passed test. If
+a test is red, keep working until it is green or until the reason is
+understood and written down in `docs/progress/`.
 
-## Comandi
+## Commands
 
 ```sh
-tools/ci.sh                          # tutti i controlli della CI in locale
-cargo test --workspace               # test nativi
-cargo test -p vetro-diff             # oracolo QEMU e programmi casuali (ADR 0006)
-cargo test -p vetro-isa-tests        # test per istruzione (anche contro QEMU)
-VETRO_DIFF_SEED=<seme> VETRO_DIFF_CASES=1 cargo test -p vetro-diff --test random   # riproduce un caso
+tools/ci.sh                          # all CI checks locally
+cargo test --workspace               # native tests
+cargo test -p vetro-diff             # QEMU oracle and random programs (ADR 0006)
+cargo test -p vetro-isa-tests        # per-instruction tests (also against QEMU)
+VETRO_DIFF_SEED=<seed> VETRO_DIFF_CASES=1 cargo test -p vetro-diff --test random   # reproduce a case
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 cargo build --target wasm32-unknown-unknown --workspace --exclude vetro-cli --exclude vetro-diff --exclude vetro-isa-tests --exclude vetro-linux-tests --exclude vetro-jit-native
-VETRO_JIT=1 cargo test --release -p vetro-linux-tests   # gli stessi test col JIT (ADR 0012)
-VETRO_JIT=1 cargo test --release -p vetro-boot-tests --test vetro   # avvio del kernel col JIT di sistema (ADR 0013)
-tools/wasm-boot.sh --jit             # avvio in Node: interprete e JIT in V8, soglia di M4
-tools/pages/build.sh && node tests/web/pages.mjs   # sito di GitHub Pages e sua prova in Chrome
+VETRO_JIT=1 cargo test --release -p vetro-linux-tests   # same tests with the JIT (ADR 0012)
+VETRO_JIT=1 cargo test --release -p vetro-boot-tests --test vetro   # kernel boot with the system JIT (ADR 0013)
+tools/wasm-boot.sh --jit             # boot in Node: interpreter and JIT in V8, M4 threshold
+tools/pages/build.sh && node tests/web/pages.mjs   # GitHub Pages site and its Chrome test
 ```
 
-Oracolo su macOS (QEMU user mode esiste solo su Linux; serve Docker attivo):
+Oracle on macOS (QEMU user mode only exists on Linux; Docker must be running):
 
 ```sh
 export VETRO_QEMU_AARCH64="$PWD/tools/oracle/qemu-aarch64-docker.sh"
 ```
 
-Codifiche per i test: `printf 'add x0, x1, #1\n' | tools/a64asm.sh` (assembler
-vero, rifiuta le rilocazioni). Mai scrivere codifiche a mano nei test.
+Encodings for tests: `printf 'add x0, x1, #1\n' | tools/a64asm.sh` (a real
+assembler; it rejects relocations). Never hand-write encodings in tests.
 
-`VETRO_REQUIRE_ORACLE=1` trasforma lo skip dell'oracolo in un fallimento
-(attivo in CI). Usalo anche in locale prima di dichiarare chiuso un lavoro.
+`VETRO_REQUIRE_ORACLE=1` turns an oracle skip into a failure (on in CI). Use
+it locally too before declaring work finished.
 
 ## Toolchain
 
-Rust nightly fissato in `rust-toolchain.toml` (i thread WASM richiedono
-build-std, vedi `docs/adr/0002`). Non cambiarlo senza un ADR.
+Rust nightly pinned in `rust-toolchain.toml` (WASM threads need build-std,
+see `docs/adr/0002`). Don't change it without an ADR.
 
-## Regole non negoziabili
+## Non-negotiable rules
 
-- Ogni correzione di bug entra con un test che fallirebbe senza la correzione.
-- Ogni istruzione o syscall nuova arriva con il suo caso mirato o differenziale.
-- Una singola differenza con QEMU nel set differenziale blocca il rilascio.
-- Le prestazioni si misurano, non si stimano.
-- **Mai ricompilare AOSP in CI.** Le immagini si costruiscono sulla macchina
-  Linux dedicata e si caricano come artefatti versionati.
+- Every bug fix lands with a test that would fail without the fix.
+- Every new instruction or syscall comes with its targeted or differential
+  test.
+- A single difference from QEMU in the differential set blocks the release.
+- Performance is measured, not estimated.
+- **Never rebuild AOSP in CI.** Images are built on the dedicated Linux
+  machine and uploaded as versioned artifacts.
 
-## Confini e collaborazione
+## Boundaries and collaboration
 
-- Ogni area ha un proprietario (vedi `.claude/agents/` e `docs/PLAN.md`,
-  sezione "Squadra di agenti"). Un agente scrive solo nelle sue cartelle.
-- Le interfacce tra crate stanno in `docs/specs/`. Cambiarle è una decisione
-  architetturale: prima l'ADR in `docs/adr/`, poi il codice.
-- Le decisioni non ovvie diventano un ADR numerato, così non si rimettono in
-  discussione.
-- Branch `area/descrizione` (es. `cpu/decoder-simd`). Una PR per unità di
-  lavoro, sempre con il test che dimostra il criterio.
-- Commit che citano la milestone, es. `M1: decoder ADD/SUB immediato`.
+- Every area has an owner (see `.claude/agents/` and `docs/PLAN.md`, section
+  "Agent team"). An agent writes only in its own folders.
+- Interfaces between crates live in `docs/specs/`. Changing them is an
+  architectural decision: ADR in `docs/adr/` first, then code.
+- Non-obvious decisions become a numbered ADR, so they aren't reopened.
+- Branches `area/description` (e.g. `cpu/decoder-simd`). One PR per unit of
+  work, always with the test that proves the criterion.
+- Commits cite the milestone, e.g. `M1: ADD/SUB immediate decoder`.
 
-## Fine sessione
+## End of session
 
-Aggiungi tre righe in `docs/progress/Mx.md`: fatto, manca, bloccato.
+Add three lines to `docs/progress/Mx.md`: done, missing, blocked.
 
-## Licenze
+## Licensing
 
-Codice nostro: PolyForm Noncommercial 1.0.0 (`LICENSE.md`, vedi ADR 0004):
-niente uso commerciale. Il kernel Linux è GPL-2.0: per ogni immagine
-distribuita si pubblicano anche i sorgenti del kernel usato.
+Our code: PolyForm Noncommercial 1.0.0 (`LICENSE.md`, see ADR 0004): no
+commercial use by third parties; the owner keeps the right to offer
+commercial licences (see "Sustainability" in `docs/PLAN.md`). The Linux
+kernel is GPL-2.0: for every distributed image the sources of the kernel used
+are published too.

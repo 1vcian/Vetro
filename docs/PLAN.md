@@ -136,6 +136,46 @@ Safari mobile; qualsiasi componente cloud obbligatorio.
 - **Uscita:** replay identico con ritorno al momento esatto di una chiamata;
   30 app superano i flussi base; criteri 1.0 soddisfatti.
 
+## Sustainability and monetisation (planned, post-1.0 track)
+
+Status: direction agreed with the owner (2026-09-26); decisions still to be
+taken through ADRs. Until then everything is developed in the open, in
+English, aiming at international visibility.
+
+**Model: open core.**
+- *Community (free):* the emulator, Vetro in the browser with our Android
+  image, snapshots, basic network capture and the file manager.
+- *Pro (subscription):* the advanced analysis features — HTTPS in clear
+  text (TLS hooks), Binder decoder and privacy inspector, ART introspection
+  and Frida-like scripting, record & replay with jump-to-event, reports and
+  exports, curated app sets and device profiles.
+- *Team / Enterprise:* on-premise or self-hosted builds, custom images,
+  shared sessions and reports, support and SLAs.
+
+**Constraints to resolve first (each one an ADR):**
+1. *Licensing.* Our code is PolyForm Noncommercial: third parties can't use
+   it commercially, and the owner can sell commercial licences (dual
+   licensing). Decide whether Pro features stay in this repository (legal
+   enforcement only) or live in a separate closed module/repository.
+2. *Enforcement.* Everything runs client-side in the browser, so a pure
+   client-side paywall is easy to bypass. Paid value should lean on things
+   that need a service: prebuilt and updated images and snapshots, cloud
+   storage of sessions, team sharing, report generation, curated app
+   corpora, support.
+3. *Contributions.* A CLA (or copyright assignment) is needed before
+   accepting outside contributions, otherwise dual licensing breaks.
+4. *Third-party licences.* GPL (kernel) and Apache (AOSP, microG) obligations
+   stay the same in every edition; no Google trademarks in the product.
+5. *Name and responsible use.* Trademark search for "Vetro"; an acceptable
+   use policy (security research, privacy auditing, app developers testing
+   their own apps).
+6. *Payments and accounts.* Provider, pricing research against comparable
+   tools (commercial mobile-analysis platforms, security tooling
+   subscriptions), and a minimal account system.
+
+**When:** after M8 (the Pro features exist by then), with the licensing ADR
+before accepting external contributions.
+
 ## Squadra di agenti
 
 | Agente | Cartelle | Attivo in |
