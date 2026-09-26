@@ -154,6 +154,8 @@ docker run --rm --platform linux/arm64 \
   fi
   make -s -C "$src" O="$btfobj" -j"$(nproc)" vmlinux
   pahole --btf_encode_detached="$out/vmlinux.btf" "$btfobj/vmlinux"
+  # pahole lo crea 0640 (root nel container): i test lo leggono da utente.
+  chmod 644 "$out/vmlinux.btf"
 
   echo "==> initramfs"
   sed "s|^\(file [^ ]*\) \([^ ]*\)|\1 /src/\2|" /src/guest/kernel/initramfs/files.list \
