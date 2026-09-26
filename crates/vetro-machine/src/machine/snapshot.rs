@@ -76,6 +76,10 @@ impl Machine {
     pub fn save(&self) -> Vec<u8> {
         let ram = self.board.borrow().ram.size() as usize;
         let mut w = Writer::with_capacity((1 << 20) + ram / 32);
+        // Il file si scrive sul posto: prima lo spazio per l'intestazione,
+        // riempito alla fine. Con Android (centinaia di MiB) una copia del
+        // contenuto in più non starebbe nella memoria di wasm32 (ADR 0027).
+        w.raw(&[0; vetro_snapshot::HEADER_LEN]);
         w.section(b"MACH", |w| {
             w.u64(self.steps);
             w.opt_u64(self.timer_deadline);
@@ -93,7 +97,14 @@ impl Machine {
         w.section(b"PLAT", |w| w.put(&b.virt));
         w.section(b"RAM ", |w| w.put(&b.ram));
         drop(b);
-        vetro_snapshot::encode_file(self.config_hash(), w.as_bytes())
+        let mut file = w.into_bytes();
+        let (head, payload) = file.split_at_mut(vetro_snapshot::HEADER_LEN);
+        head.copy_from_slice(
+            &vetro_snapshot::encode_file(self.config_hash(), &[])[..vetro_snapshot::HEADER_LEN],
+        );
+        head[20..28].copy_from_slice(&(payload.len() as u64).to_le_bytes());
+        head[28..36].copy_from_slice(&vetro_snapshot::hash64(payload).to_le_bytes());
+        file
     }
 
     /// Porta la macchina nello stato di `bytes` (da [`Machine::save`]).
@@ -299,7 +310,7 @@ pub(super) mod tests {
         let (ref_out, ref_state, ref_m) = reference;
         assert_eq!(n.steps, ref_m.steps, "{what}: istruzioni");
         assert_eq!(n.cpu, ref_m.cpu, "{what}: CPU");
-        assert!(n.board.borrow().ram.bytes() == ref_m.board.borrow().ram.bytes(), "{what}: RAM");
+        assert!(n.board.borrow().ram.same_bytes(&ref_m.board.borrow().ram), "{what}: RAM");
         assert!(out == *ref_out, "{what}: console");
         assert!(n.save() == *ref_state, "{what}: stato finale");
     }

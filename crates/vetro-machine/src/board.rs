@@ -12,6 +12,105 @@ use vetro_platform::Virt;
 use vetro_platform::map;
 use vetro_platform::virtio::{GuestRam, RamError, VirtioBlk};
 
+/// I byte della RAM in un blocco contiguo della memoria dell'host.
+///
+/// Di solito un `Vec<u8>`. Su wasm32 però nessuna allocazione di Rust (e
+/// nessuna slice) può superare `isize::MAX` = 2 GiB - 1, mentre la memoria
+/// lineare arriva a 4 GiB: una RAM più grande (Android vuole 2–3 GiB, ADR
+/// 0027) è una regione presa direttamente con `memory.grow`, fuori
+/// dall'allocatore, e si legge e si scrive solo a pezzi piccoli. Contigua in
+/// tutti e due i casi: la TLB software del JIT punta dentro
+/// ([`SysPhys::ram_region`]).
+struct Store {
+    ptr: *mut u8,
+    len: usize,
+    /// Il vettore che possiede i byte (assente per la regione di wasm32).
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    vec: Option<Vec<u8>>,
+}
+
+// SAFETY: `Store` possiede i suoi byte (il vettore, o la regione che nessun
+// altro usa) come un `Vec<u8>`.
+unsafe impl Send for Store {}
+
+impl Store {
+    fn new(size: u64) -> Self {
+        let len = usize::try_from(size).expect("RAM più grande dello spazio d'indirizzi dell'host");
+        if len <= isize::MAX as usize {
+            let mut v = vec![0u8; len];
+            return Store { ptr: v.as_mut_ptr(), len, vec: Some(v) };
+        }
+        Self::region(len)
+    }
+
+    /// Una regione a zero di `len` byte fuori dall'allocatore (solo wasm32:
+    /// altrove `isize::MAX` basta sempre). Le pagine nuove di `memory.grow`
+    /// sono a zero per la specifica; una regione liberata da una macchina di
+    /// prima si riusa (la memoria lineare non si restituisce) dopo averla
+    /// azzerata.
+    #[cfg(target_arch = "wasm32")]
+    fn region(len: usize) -> Self {
+        let mut free = FREE_REGIONS.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(i) = free.iter().position(|&(_, l)| l >= len) {
+            let (base, _) = free.swap_remove(i);
+            let ptr = core::ptr::with_exposed_provenance_mut::<u8>(base);
+            // A pezzi: niente scritture più lunghe di isize::MAX.
+            let mut at = 0;
+            while at < len {
+                let n = (len - at).min(1 << 30);
+                // SAFETY: la regione è nostra e lunga almeno `len` byte.
+                unsafe { core::ptr::write_bytes(ptr.wrapping_add(at), 0, n) };
+                at += n;
+            }
+            return Store { ptr, len, vec: None };
+        }
+        drop(free);
+        let pages = len.div_ceil(65536);
+        let old = core::arch::wasm32::memory_grow(0, pages);
+        assert!(old != usize::MAX, "memoria lineare esaurita: RAM di {len} byte");
+        Store { ptr: core::ptr::with_exposed_provenance_mut(old * 65536), len, vec: None }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn region(len: usize) -> Self {
+        unreachable!("RAM di {len} byte oltre isize::MAX su un host a 64 bit")
+    }
+
+    /// `[o, o+n)` (già controllato da chi chiama, `n` piccolo).
+    #[inline]
+    fn get(&self, o: usize, n: usize) -> &[u8] {
+        debug_assert!(o + n <= self.len);
+        // SAFETY: dentro i byte posseduti; una slice lunga `n` <= isize::MAX.
+        unsafe { core::slice::from_raw_parts(self.ptr.wrapping_add(o), n) }
+    }
+
+    #[inline]
+    fn get_mut(&mut self, o: usize, n: usize) -> &mut [u8] {
+        debug_assert!(o + n <= self.len);
+        // SAFETY: come `get`, con `&mut self`.
+        unsafe { core::slice::from_raw_parts_mut(self.ptr.wrapping_add(o), n) }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl Drop for Store {
+    fn drop(&mut self) {
+        if self.vec.is_none() {
+            FREE_REGIONS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((self.ptr.expose_provenance(), self.len));
+        }
+    }
+}
+
+/// Regioni di RAM di macchine distrutte, da riusare (wasm32).
+#[cfg(target_arch = "wasm32")]
+static FREE_REGIONS: std::sync::Mutex<Vec<(usize, usize)>> = std::sync::Mutex::new(Vec::new());
+
+/// Pezzo della RAM per le operazioni su tutta la RAM (hash, confronti).
+pub const RAM_CHUNK: usize = 1 << 28;
+
 /// La RAM del guest, da `map::RAM_BASE`.
 ///
 /// Sorveglia le pagine da cui il JIT ha tradotto codice
@@ -19,7 +118,7 @@ use vetro_platform::virtio::{GuestRam, RamError, VirtioBlk};
 /// DMA dei dispositivi, caricamento delle immagini) le segna sporche. Per
 /// questo i byte si scrivono solo con [`write`](Self::write).
 pub struct Ram {
-    bytes: Vec<u8>,
+    bytes: Store,
     /// Un bit per pagina da 4 KiB: sorvegliata.
     code: Vec<u64>,
     /// Pagine sorvegliate.
@@ -31,22 +130,51 @@ pub struct Ram {
 impl Ram {
     pub fn new(size: u64) -> Self {
         let pages = size.div_ceil(4096) as usize;
-        Ram {
-            bytes: vec![0; size as usize],
-            code: vec![0; pages.div_ceil(64)],
-            watched: 0,
-            dirty: Vec::new(),
-        }
+        Ram { bytes: Store::new(size), code: vec![0; pages.div_ceil(64)], watched: 0, dirty: Vec::new() }
     }
 
     /// Byte di RAM.
     pub fn size(&self) -> u64 {
-        self.bytes.len() as u64
+        self.bytes.len as u64
     }
 
-    /// I byte della RAM (in sola lettura).
+    /// I byte della RAM in una slice sola (in sola lettura). Sugli host a 64
+    /// bit sempre; su wasm32 solo fino a 2 GiB - 1 (oltre, [`chunks`](Self::chunks)).
     pub fn bytes(&self) -> &[u8] {
-        &self.bytes
+        assert!(self.bytes.len <= isize::MAX as usize, "RAM oltre isize::MAX: usare Ram::chunks");
+        self.bytes.get(0, self.bytes.len)
+    }
+
+    /// La RAM a pezzi di [`RAM_CHUNK`] byte (l'ultimo più corto), in ordine:
+    /// oltre 2 GiB su wasm32 non esiste una slice di tutta la RAM.
+    pub fn chunks(&self) -> impl Iterator<Item = &[u8]> {
+        let len = self.bytes.len;
+        (0..len.div_ceil(RAM_CHUNK))
+            .map(move |i| self.bytes.get(i * RAM_CHUNK, (len - i * RAM_CHUNK).min(RAM_CHUNK)))
+    }
+
+    /// [`vetro_snapshot::hash64`] di tutta la RAM, senza una slice di tutta
+    /// la RAM (stesso valore: i pezzi sono multipli di 8 byte).
+    pub fn hash(&self) -> u64 {
+        const P: u64 = 0x0000_0100_0000_01b3;
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325 ^ self.bytes.len as u64;
+        for c in self.chunks() {
+            let (words, rest) = c.as_chunks::<8>();
+            for w in words {
+                h = (h ^ u64::from_le_bytes(*w)).wrapping_mul(P).rotate_left(23);
+            }
+            for &b in rest {
+                h = (h ^ u64::from(b)).wrapping_mul(P);
+            }
+        }
+        h = (h ^ (h >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        h = (h ^ (h >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        h ^ (h >> 31)
+    }
+
+    /// Vero se le due RAM hanno gli stessi byte.
+    pub fn same_bytes(&self, other: &Ram) -> bool {
+        self.size() == other.size() && self.chunks().zip(other.chunks()).all(|(a, b)| a == b)
     }
 
     /// Sorveglia la pagina fisica `page` (`pa >> 12`); falso se non è RAM.
@@ -105,20 +233,20 @@ impl Ram {
     /// fuori dalla RAM.
     pub fn write_watched(&mut self, pa: u64, data: &[u8]) -> Option<bool> {
         let o = self.range(pa, data.len())?;
-        self.bytes[o..o + data.len()].copy_from_slice(data);
+        self.bytes.get_mut(o, data.len()).copy_from_slice(data);
         Some(self.touch(o, data.len()))
     }
     /// Offset in `bytes` di `[pa, pa+len)`, se tutto dentro la RAM.
     #[inline]
     fn range(&self, pa: u64, len: usize) -> Option<usize> {
         let off = pa.checked_sub(map::RAM_BASE)?;
-        (off.checked_add(len as u64)? <= self.bytes.len() as u64).then_some(off as usize)
+        (off.checked_add(len as u64)? <= self.bytes.len as u64).then_some(off as usize)
     }
 
     pub fn read(&self, pa: u64, buf: &mut [u8]) -> bool {
         match self.range(pa, buf.len()) {
             Some(o) => {
-                buf.copy_from_slice(&self.bytes[o..o + buf.len()]);
+                buf.copy_from_slice(self.bytes.get(o, buf.len()));
                 true
             }
             None => false,
@@ -138,21 +266,76 @@ impl Ram {
 /// sorvegliata risulta scritta, così il JIT scarta i blocchi tradotti dalla
 /// RAM di prima.
 impl vetro_snapshot::Snapshot for Ram {
+    /// Lo stesso formato di [`vetro_snapshot::compress`] sulla RAM intera,
+    /// scritto pagina per pagina.
     fn save(&self, w: &mut vetro_snapshot::Writer) {
-        vetro_snapshot::compress(w, &self.bytes);
+        const PAGE: usize = vetro_snapshot::BLOCK;
+        let len = self.bytes.len;
+        let page = |i: usize| self.bytes.get(i * PAGE, (len - i * PAGE).min(PAGE));
+        let present: Vec<u32> = (0..len.div_ceil(PAGE))
+            .filter(|&i| !vetro_snapshot::is_zero(page(i)))
+            .map(|i| i as u32)
+            .collect();
+        w.u64(len as u64);
+        w.u64(present.len() as u64);
+        let mut scratch = Vec::with_capacity(PAGE + PAGE / 8);
+        let mut table = vetro_snapshot::lz::Table::new();
+        for i in present {
+            let block = page(i as usize);
+            w.u64(u64::from(i));
+            scratch.clear();
+            vetro_snapshot::lz::compress(block, &mut scratch, &mut table);
+            if scratch.len() < block.len() {
+                w.u8(1);
+                w.u32(scratch.len() as u32);
+                w.raw(&scratch);
+            } else {
+                w.u8(0);
+                w.raw(block);
+            }
+        }
     }
 
+    /// Come [`vetro_snapshot::decompress_into`] sulla RAM intera. Le pagine
+    /// assenti devono essere a zero: si scrivono solo quelle che non lo sono
+    /// già, così una RAM appena allocata resta non toccata (nel browser le
+    /// pagine mai scritte non occupano memoria).
     fn restore(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
+        use vetro_snapshot::Error;
         const PAGE: usize = vetro_snapshot::BLOCK;
-        let len = self.bytes.len();
+        let len = self.bytes.len;
+        let found = r.u64()?;
+        if found != len as u64 {
+            return Err(Error::invalid(format!("dati di {found} byte, attesi {len}")));
+        }
         let pages = len.div_ceil(PAGE);
+        let count = r.u64()?;
+        if count > pages as u64 {
+            return Err(Error::invalid("più blocchi dei dati"));
+        }
         let mut present = vec![0u64; pages.div_ceil(64)];
-        vetro_snapshot::decompress_into(r, &mut self.bytes, |i| present[i / 64] |= 1 << (i % 64))?;
-        // Le pagine assenti devono essere a zero. Si scrivono solo quelle
-        // che non lo sono già: una RAM appena allocata resta non toccata.
+        let mut last: Option<u64> = None;
+        for _ in 0..count {
+            let i = r.u64()?;
+            if i >= pages as u64 || last.is_some_and(|l| i <= l) {
+                return Err(Error::invalid(format!("blocco {i} fuori posto")));
+            }
+            last = Some(i);
+            let i = i as usize;
+            let dst = self.bytes.get_mut(i * PAGE, (len - i * PAGE).min(PAGE));
+            match r.u8()? {
+                0 => dst.copy_from_slice(r.raw(dst.len())?),
+                1 => {
+                    let n = r.u32()? as usize;
+                    vetro_snapshot::lz::decompress(r.raw(n)?, dst)?;
+                }
+                v => return Err(Error::invalid(format!("codifica di blocco {v}"))),
+            }
+            present[i / 64] |= 1 << (i % 64);
+        }
         for i in 0..pages {
             if present[i / 64] & 1 << (i % 64) == 0 {
-                let p = &mut self.bytes[i * PAGE..((i + 1) * PAGE).min(len)];
+                let p = self.bytes.get_mut(i * PAGE, (len - i * PAGE).min(PAGE));
                 if !vetro_snapshot::is_zero(p) {
                     p.fill(0);
                 }
@@ -304,9 +487,8 @@ impl SysPhys for Phys<'_> {
         self.0.borrow_mut().ram.take_code_dirty(out)
     }
     fn ram_region(&mut self) -> Option<(u64, *mut u8, usize)> {
-        let mut b = self.0.borrow_mut();
-        let len = b.ram.bytes.len();
-        Some((map::RAM_BASE, b.ram.bytes.as_mut_ptr(), len))
+        let b = self.0.borrow();
+        Some((map::RAM_BASE, b.ram.bytes.ptr, b.ram.bytes.len))
     }
 }
 
@@ -395,6 +577,40 @@ mod tests {
     use super::*;
     use vetro_platform::gic::*;
     use vetro_platform::timer::CTL_ENABLE;
+
+    /// La RAM a pezzi (hash, snapshot pagina per pagina) dà gli stessi byte
+    /// delle funzioni di `vetro-snapshot` sulla RAM intera: gli snapshot e i
+    /// log restano uguali fra l'host e wasm32 con più di 2 GiB.
+    #[test]
+    fn ram_a_pezzi_come_la_ram_intera() {
+        use vetro_snapshot::{Reader, Snapshot, Writer};
+        // Più di un pezzo da RAM_CHUNK non serve: la logica dei pezzi è la
+        // stessa, e l'ultimo pezzo corto lo prova una lunghezza dispari.
+        let size = 3 * 4096 * 64 + 4096 * 3 + 520;
+        let mut ram = Ram::new(size as u64);
+        for (i, pa) in [0u64, 4096 * 7 + 13, 4096 * 100, size as u64 - 9].into_iter().enumerate() {
+            let data: Vec<u8> = (0..9).map(|k| (i * 31 + k * 7 + 1) as u8).collect();
+            assert!(ram.write(map::RAM_BASE + pa, &data));
+        }
+        let incompressible: Vec<u8> =
+            (0..4096u32).map(|k| (k.wrapping_mul(2654435761) >> 13) as u8).collect();
+        assert!(ram.write(map::RAM_BASE + 4096 * 50, &incompressible));
+        assert_eq!(ram.hash(), vetro_snapshot::hash64(ram.bytes()));
+        let mut a = Writer::new();
+        ram.save(&mut a);
+        let mut b = Writer::new();
+        vetro_snapshot::compress(&mut b, ram.bytes());
+        assert_eq!(a.as_bytes(), b.as_bytes(), "stesso formato di compress");
+        // Ripristino sopra una RAM sporca: le pagine assenti tornano a zero.
+        let mut other = Ram::new(size as u64);
+        assert!(other.write(map::RAM_BASE + 4096 * 9, &[0xaa; 100]));
+        other.restore(&mut Reader::new(a.as_bytes())).unwrap();
+        assert!(other.same_bytes(&ram));
+        assert_eq!(other.hash(), ram.hash());
+        // Lunghezza diversa rifiutata.
+        let mut small = Ram::new(4096);
+        assert!(small.restore(&mut Reader::new(a.as_bytes())).is_err());
+    }
 
     fn board_with_vtimer_enabled() -> RefCell<Board> {
         let b = RefCell::new(Board::new(1 << 20, 0));

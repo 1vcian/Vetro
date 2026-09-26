@@ -268,7 +268,7 @@ impl Machine {
             cpu: self.cpu_hash(),
             mmu: hash(&|w| self.mmu.save(w)),
             platform: hash(&|w| b.virt.save(w)),
-            ram: hash64(b.ram.bytes()),
+            ram: b.ram.hash(),
             console_len: self.console.len,
             console_hash: self.console.hash,
         }
@@ -711,7 +711,7 @@ mod tests {
         while m.steps < END {
             while stops.last().is_some_and(|&s| s <= m.steps) {
                 stops.pop();
-                at.push((m.steps, m.cpu.clone(), hash64(m.board.borrow().ram.bytes())));
+                at.push((m.steps, m.cpu.clone(), m.board.borrow().ram.hash()));
             }
             while inputs.last().is_some_and(|i| i.0 <= m.steps) {
                 let (_, i) = inputs.pop().unwrap();
@@ -816,7 +816,7 @@ mod tests {
             let reached = m.goto(&log, *target).unwrap();
             assert_eq!(reached, *target);
             assert_eq!(m.cpu, *cpu, "registri a {target}");
-            assert_eq!(hash64(m.board.borrow().ram.bytes()), *ram, "RAM a {target}");
+            assert_eq!(m.board.borrow().ram.hash(), *ram, "RAM a {target}");
         }
         // Lettura della memoria al punto: la somma dei punti interrotti.
         m.goto(&log, 123_457).unwrap();
