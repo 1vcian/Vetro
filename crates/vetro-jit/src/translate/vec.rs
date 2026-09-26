@@ -71,6 +71,19 @@ impl Tx {
         self.f.v128_store(off::V + 16 * rd as u32);
     }
 
+    /// Due v128 sullo stack: se differiscono (solo nella metà bassa con
+    /// `!q`), FPSR.QC = 1 (flag cumulativo della saturazione).
+    fn qc_if_differ(&mut self, q: bool) {
+        self.f.v(v::XOR);
+        if !q {
+            self.f.v128_const(u64::MAX, 0).v(v::AND);
+        }
+        self.f.v(v::ANY_TRUE).if_(BLOCK_EMPTY);
+        self.f.local_get(L_STATE).local_get(L_STATE).i32_load(off::FPSR);
+        self.f.i32_const(1 << 27).op(op::I32_OR).i32_store(off::FPSR);
+        self.f.end();
+    }
+
     /// Vd = op(Vn, Vm) con un'istruzione WASM binaria.
     fn vbin(&mut self, op_: u32, rn: u8, rm: u8, rd: u8, q: bool) {
         self.vst_begin();
@@ -314,13 +327,47 @@ impl Tx {
                 self.vst_end(rd, q);
                 true
             }
+            (_, 0b00001 | 0b00101) if size <= 1 => {
+                // [SU]Q{ADD,SUB} a 8 e 16 bit: saturanti del WASM; QC se una
+                // corsia differisce dalla somma modulare (c'è saturazione
+                // esattamente quando differiscono).
+                let (sat_op, wrap) = match (u, opcode, size) {
+                    (false, 0b00001, 0) => (v::I8X16_ADD_SAT_S, v::I8X16_ADD),
+                    (true, 0b00001, 0) => (v::I8X16_ADD_SAT_U, v::I8X16_ADD),
+                    (false, _, 0) => (v::I8X16_SUB_SAT_S, v::I8X16_SUB),
+                    (true, _, 0) => (v::I8X16_SUB_SAT_U, v::I8X16_SUB),
+                    (false, 0b00001, _) => (v::I16X8_ADD_SAT_S, v::I16X8_ADD),
+                    (true, 0b00001, _) => (v::I16X8_ADD_SAT_U, v::I16X8_ADD),
+                    (false, _, _) => (v::I16X8_SUB_SAT_S, v::I16X8_SUB),
+                    (true, _, _) => (v::I16X8_SUB_SAT_U, v::I16X8_SUB),
+                };
+                self.vld(rn);
+                self.vld(rm);
+                self.f.v(sat_op).local_tee(L_V0);
+                self.vld(rn);
+                self.vld(rm);
+                self.f.v(wrap);
+                self.qc_if_differ(q);
+                self.vst_begin();
+                self.f.local_get(L_V0);
+                self.vst_end(rd, q);
+                true
+            }
             (true, 0b00010) if size <= 1 => {
                 // URHADD: (a + b + 1) >> 1 senza traboccare
                 bin(self, [Some(v::I8X16_AVGR_U), Some(v::I16X8_AVGR_U), None, None])
             }
-            (false, 0b10111) => {
-                // ADDP: somme a coppie di concat(a, b)
-                let Some(add) = ADD[s] else { return false };
+            (_, 0b10111 | 0b10100 | 0b10101) => {
+                // ADDP, [SU]MAXP, [SU]MINP: a coppie di concat(a, b)
+                let ops = match (u, opcode) {
+                    (false, 0b10111) => ADD,
+                    (true, 0b10111) => return false,
+                    (false, 0b10100) => MAX_S,
+                    (true, 0b10100) => MAX_U,
+                    (false, _) => MIN_S,
+                    (true, _) => MIN_U,
+                };
+                let Some(add) = ops[s] else { return false };
                 let eb = 1usize << size;
                 let n = (if q { 16 } else { 8 }) / eb;
                 let half = n / 2;
@@ -418,6 +465,42 @@ impl Tx {
                     self.f.v(if size == 0 { v::I16X8_ADD } else { v::I32X4_ADD });
                 }
                 self.vst_end(rd, q);
+                true
+            }
+            (_, 0b10100) | (true, 0b10010) if size <= 1 => {
+                // SQXTN(2) (u=0, 10100), SQXTUN(2) (u=1, 10010): da 2*esize
+                // con saturazione (narrow del WASM, che legge l'ingresso con
+                // segno); UQXTN (u=1, 10100) no. QC se il risultato
+                // differisce dal troncamento.
+                let narrow = match (u, opcode, size) {
+                    (false, 0b10100, 0) => v::I8X16_NARROW_I16X8_S,
+                    (true, 0b10010, 0) => v::I8X16_NARROW_I16X8_U,
+                    (false, 0b10100, _) => v::I16X8_NARROW_I32X4_S,
+                    (true, 0b10010, _) => v::I16X8_NARROW_I32X4_U,
+                    _ => return false,
+                };
+                let eb = 1usize << size;
+                let trunc = lanes(8 / eb, eb, |e| 2 * e);
+                // Risultato (8 byte bassi) in L_V0, troncamento accanto.
+                self.vld(rn);
+                self.vld(rn);
+                self.f.v(narrow).local_tee(L_V0);
+                self.vld(rn);
+                self.vld(rn);
+                self.f.shuffle(trunc);
+                self.qc_if_differ(false);
+                self.vst_begin();
+                if q {
+                    // XTN2: metà bassa di Vd, poi il risultato.
+                    self.vld(rd);
+                    self.f.local_get(L_V0);
+                    self.f
+                        .shuffle(core::array::from_fn(|j| if j < 8 { j as u8 } else { (16 + j - 8) as u8 }));
+                    self.vst_end(rd, true);
+                } else {
+                    self.f.local_get(L_V0);
+                    self.vst_end(rd, false);
+                }
                 true
             }
             (false, 0b10010) => {
