@@ -78,7 +78,7 @@ impl Machine {
         let mut w = Writer::with_capacity((1 << 20) + ram / 32);
         // Il file si scrive sul posto: prima lo spazio per l'intestazione,
         // riempito alla fine. Con Android (centinaia di MiB) una copia del
-        // contenuto in più non starebbe nella memoria di wasm32 (ADR 0027).
+        // contenuto in più non starebbe nella memoria di wasm32 (ADR 0028).
         w.raw(&[0; vetro_snapshot::HEADER_LEN]);
         w.section(b"MACH", |w| {
             w.u64(self.steps);

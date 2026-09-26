@@ -1,4 +1,4 @@
-// Client ADB in JavaScript (M5/M6, ADR 0027, docs/specs/net.md "Come adb
+// Client ADB in JavaScript (M5/M6, ADR 0028, docs/specs/net.md "Come adb
 // userà l'inoltro"): parla il protocollo di adb con adbd del guest su una
 // connessione TCP verso la porta 5555, senza adb dell'host. Non usa API di
 // Node: gira nel Worker dell'app e nei test.

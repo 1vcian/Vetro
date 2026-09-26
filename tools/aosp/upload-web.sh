@@ -1,6 +1,6 @@
 #!/bin/sh
 # Carica su R2, accanto a una versione già pubblicata dell'immagine AOSP di
-# Vetro, i file per il browser (ADR 0027): la mappa del disco e i suoi
+# Vetro, i file per il browser (ADR 0028): la mappa del disco e i suoi
 # blocchi (tools/aosp/web-disk.mjs), in aosp/<versione>/web/:
 #   web/disk.json      mappa del disco GPT ricomposto da super.img e
 #                      userdata.img (sparsi) già pubblicati

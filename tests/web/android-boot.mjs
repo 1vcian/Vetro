@@ -1,5 +1,5 @@
 // Avvio da immagini Android e RAM di 3 GiB in vetro-wasm (M5, ADR 0018 e
-// 0027), veloce: il kernel guest di M3 impacchettato come lo impacchetta una
+// 0028), veloce: il kernel guest di M3 impacchettato come lo impacchetta una
 // build GKI (`boot.img` v4 col kernel gzip, `init_boot.img` v4 con
 // l'initramfs, da `mkbootimg.py` di AOSP in tools/mkbootimg/) e caricato con
 // `vetro_load_android` (ABI 12) su una macchina con 3 GiB di RAM: su wasm32

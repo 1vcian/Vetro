@@ -53,7 +53,7 @@ incompatibile delle firme o dei codici qui sotto; il caricatore JS
   `vetro_jit_stats`.
 - 11 (M4): FP/SIMD nelle regioni (ADR 0026): export `vetro_jit_simd`.
 - 12 (M5): avvio da immagini Android (`vetro_load_android`, ADR 0018 e
-  0027). Non cambia firme esistenti; la RAM può superare 2 GiB anche su
+  0028). Non cambia firme esistenti; la RAM può superare 2 GiB anche su
   wasm32 (sotto, "RAM oltre 2 GiB").
 
 ### Memoria
@@ -94,7 +94,7 @@ Codici di `vetro_load_linux`: 0 riuscito; 1 il caricatore ha rifiutato i file
 In JS: `Machine.loadAndroid({ boot, vendorBoot, initBoot, params, recovery })`
 restituisce la descrizione. Prova: `tests/web/android-boot.mjs`.
 
-#### RAM oltre 2 GiB (ABI 12, ADR 0027)
+#### RAM oltre 2 GiB (ABI 12, ADR 0028)
 
 Su wasm32 nessuna allocazione di Rust supera `isize::MAX` (2 GiB - 1): con
 `ram_size` più grande la RAM del guest è una regione contigua presa con
@@ -595,7 +595,7 @@ Vetro `os=android` e `manifest=URL` (default: la versione pubblicata su R2;
   gli overlay sono cambiati, e a richiesta. A riposo: `Idle`, o 1,5 s di
   tempo del guest senza console, scanout, ingressi né dischi.
 
-### L'immagine AOSP nell'app (M5/M6, ADR 0027)
+### L'immagine AOSP nell'app (M5/M6, ADR 0028)
 
 - `web/node/android.mjs`: `PHASES` e `BootProgress` (fasi dell'avvio dalla
   console: kernel, init prima e seconda fase, zygote, surfaceflinger,

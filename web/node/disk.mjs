@@ -96,7 +96,7 @@ export class BlobSource {
   }
 }
 
-// ---- Disco ricomposto da una mappa (M5, ADR 0027) ---------------------------
+// ---- Disco ricomposto da una mappa (M5, ADR 0028) ---------------------------
 
 /**
  * Controlla una mappa di disco (`tools/aosp/web-disk.mjs`: `{ format:

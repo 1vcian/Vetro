@@ -1,6 +1,6 @@
 //! Riferimento nativo dei test web (tests/web): gli stessi copioni di
 //! `boot-disk.mjs`, `devices.mjs` e `android-boot.mjs` (RAM di 3 GiB, ADR
-//! 0027), con la stessa API di vetro-wasm
+//! 0028), con la stessa API di vetro-wasm
 //! compilata per l'host, l'interprete e un disco locale sempre pronto.
 //! Scrive istruzioni e log grezzo in `target/web-test/native-*.{steps,log}`:
 //! `tools/web-test.sh` lo esegue prima dei test in Node, che devono dare le

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// L'immagine AOSP di Vetro nell'app, in Chrome headless (M5/M6, ADR 0027).
+// L'immagine AOSP di Vetro nell'app, in Chrome headless (M5/M6, ADR 0028).
 // Lungo (decine di minuti o più): gira solo con VETRO_ANDROID=1.
 //
 //   VETRO_ANDROID=1 node tests/web/android-chrome.mjs

@@ -147,7 +147,7 @@ adbd nel guest Android ascolta su TCP 5555 (`service.adb.tcp.port=5555`,
   CLSE) passa trasparente sulla connessione inoltrata. Come con QEMU
   (`hostfwd=tcp::5555-:5555`); l'emulatore di Android Studio usa invece
   la coppia 5554/5555 sulla console, che qui non c'è.
-- Browser (fatto, ADR 0027): il client ADB in JS di `web/node/adb.mjs`
+- Browser (fatto, ADR 0028): il client ADB in JS di `web/node/adb.mjs`
   sopra `GuestSocket` (`connectGuest(5555)`): messaggi da 24 byte + dati,
   `shell,v2,raw:` (stdout, stderr, codice d'uscita), `sync:` per push,
   install = push in `/data/local/tmp` + `pm install -r`, `devices` dal

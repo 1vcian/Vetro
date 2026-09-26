@@ -49,7 +49,7 @@
 #      download di log, HAR e pcapng, replay identico, salto a un'istruzione
 #      con registri e memoria, log ricaricato e rigiocato.
 #  13. avvio da immagini Android e RAM di 3 GiB (tests/web/android-boot.mjs,
-#      M5, ADR 0027): boot.img e init_boot.img di mkbootimg.py intorno al
+#      M5, ADR 0028): boot.img e init_boot.img di mkbootimg.py intorno al
 #      kernel M3, vetro_load_android; istruzioni e log uguali al riferimento
 #      nativo; snapshot e ripristino su una macchina nuova da 3 GiB;
 #  14. client ADB contro un finto adbd (tests/web/adb.mjs): CNXN, AUTH,

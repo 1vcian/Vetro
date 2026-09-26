@@ -25,7 +25,7 @@
 // macchina e l'overlay dei dischi; al secondo avvio riparte dallo snapshot.
 // Lo stato si legge anche da `window.vetroState` (per i test nel browser).
 //
-// L'immagine AOSP di Vetro (M5/M6, ADR 0027): `?os=android` (o il selettore
+// L'immagine AOSP di Vetro (M5/M6, ADR 0028): `?os=android` (o il selettore
 // "Sistema") e `&manifest=URL` (default: la versione pubblicata su R2). Il
 // riquadro accanto allo schermo mostra le fasi dell'avvio lette dalla
 // console, lo stato di adb e il posto dove trascinare un APK (anche sullo
@@ -39,9 +39,9 @@ import { FilePanel } from './files.mjs';
 import { AnalysisPanels } from './analysis.mjs';
 import { PHASES } from '../node/android.mjs';
 
-/** La versione dell'immagine AOSP di Vetro pubblicata su R2 (ADR 0022, 0027). */
+/** La versione dell'immagine AOSP di Vetro pubblicata su R2 (ADR 0022, 0028). */
 export const DEFAULT_MANIFEST = 'https://pub-06e88fdd7f374fffb06844d60083f2ae.r2.dev/aosp/android-15.0.0_r36-BP1A.250505.005.D1-9d91633/manifest.json';
-/** RAM del guest con AOSP nel browser (ADR 0027). */
+/** RAM del guest con AOSP nel browser (ADR 0028). */
 export const ANDROID_RAM_MIB = 2048;
 
 const $ = (id) => document.getElementById(id);

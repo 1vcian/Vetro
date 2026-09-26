@@ -1,4 +1,4 @@
-// Client ADB di web/node/adb.mjs (M5/M6, ADR 0027) contro un finto adbd in
+// Client ADB di web/node/adb.mjs (M5/M6, ADR 0028) contro un finto adbd in
 // memoria che parla il protocollo di AOSP (messaggi da 24 byte, CNXN, AUTH,
 // OPEN/OKAY/WRTE/CLSE, shell v2, sync). Il finto controlla quello che un adbd
 // vero rifiuterebbe: un solo WRTE in volo per flusso, somme dei dati, magia,

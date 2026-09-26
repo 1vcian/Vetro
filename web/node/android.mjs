@@ -1,4 +1,4 @@
-// L'immagine AOSP di Vetro nel browser e in Node (M5, ADR 0027): le fasi
+// L'immagine AOSP di Vetro nel browser e in Node (M5, ADR 0028): le fasi
 // dell'avvio lette dalla console del guest. Non usa API di Node.
 //
 // Il kernel GKI scrive su ttyAMA0 e init (con `printk.devkmsg=on`) scrive in

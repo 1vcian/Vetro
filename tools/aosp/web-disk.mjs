@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Il disco dell'immagine AOSP di Vetro per il browser (M5, ADR 0027): invece
+// Il disco dell'immagine AOSP di Vetro per il browser (M5, ADR 0028): invece
 // di pubblicare target/aosp/disk.img (GPT di 15 GiB, quasi tutto zeri), una
 // mappa che ricompone lo stesso disco dagli artefatti già pubblicati:
 //

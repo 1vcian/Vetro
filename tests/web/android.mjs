@@ -1,4 +1,4 @@
-// Android in Node/V8 (M5, ADR 0027): l'immagine AOSP di Vetro (target/aosp,
+// Android in Node/V8 (M5, ADR 0028): l'immagine AOSP di Vetro (target/aosp,
 // tools/aosp/fetch.sh) avviata con vetro-wasm e il JIT in V8, come nell'app
 // ma senza browser. Lungo (decine di minuti): gira solo con VETRO_ANDROID=1.
 //

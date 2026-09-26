@@ -59,7 +59,7 @@
 //   sessione successiva lo snapshot si ripristina invece di avviare il
 //   kernel, se gli overlay sono ancora a quella generazione.
 //
-// L'immagine AOSP di Vetro (M5/M6, ADR 0027), con `config.android`:
+// L'immagine AOSP di Vetro (M5/M6, ADR 0028), con `config.android`:
 // - dal manifest.json della versione (R2 o server locale) vengono gli hash
 //   delle immagini (chiave degli snapshot) e i loro URL; boot, vendor_boot
 //   e init_boot si scaricano (verificati con lo sha256, tenuti in OPFS,
@@ -236,7 +236,7 @@ async function saveSnapshot(why) {
   };
   if (android) meta.progress = android.progress.events;
   // I byte restano nella memoria del modulo e vanno in OPFS da lì: con
-  // Android sono centinaia di MiB (ADR 0027).
+  // Android sono centinaia di MiB (ADR 0028).
   const t0 = performance.now();
   let saveMs = 0;
   let size = 0;
@@ -371,7 +371,7 @@ async function start(c) {
   });
 }
 
-// ---- L'immagine AOSP di Vetro (ADR 0027) --------------------------------------
+// ---- L'immagine AOSP di Vetro (ADR 0028) --------------------------------------
 
 /**
  * Legge il manifest.json della versione e prepara la configurazione: i

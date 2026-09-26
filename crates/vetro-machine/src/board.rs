@@ -17,7 +17,7 @@ use vetro_platform::virtio::{GuestRam, RamError, VirtioBlk};
 /// Di solito un `Vec<u8>`. Su wasm32 però nessuna allocazione di Rust (e
 /// nessuna slice) può superare `isize::MAX` = 2 GiB - 1, mentre la memoria
 /// lineare arriva a 4 GiB: una RAM più grande (Android vuole 2–3 GiB, ADR
-/// 0027) è una regione presa direttamente con `memory.grow`, fuori
+/// 0028) è una regione presa direttamente con `memory.grow`, fuori
 /// dall'allocatore, e si legge e si scrive solo a pezzi piccoli. Contigua in
 /// tutti e due i casi: la TLB software del JIT punta dentro
 /// ([`SysPhys::ram_region`]).

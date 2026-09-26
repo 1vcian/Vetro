@@ -453,7 +453,7 @@ export class Machine {
    * Snapshot senza copiarlo nel JS: `use(view)` riceve la vista sui byte
    * nella memoria del modulo (da non usare dopo il ritorno) e può scriverli
    * altrove (OPFS); restituisce quello che restituisce `use`. Con Android lo
-   * snapshot è di centinaia di MiB: una copia in più conta (ADR 0027).
+   * snapshot è di centinaia di MiB: una copia in più conta (ADR 0028).
    */
   async snapshotSaveWith(use) {
     const x = this.#x;

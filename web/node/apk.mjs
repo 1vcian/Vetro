@@ -1,4 +1,4 @@
-// Informazioni di un APK lette nel browser (M6, ADR 0027): nome del
+// Informazioni di un APK lette nel browser (M6, ADR 0028): nome del
 // pacchetto, versione ed eventuale attività principale dal manifesto binario
 // (AXML) dentro lo ZIP. Serve a installare un APK trascinato e ad aprirlo
 // senza riga di comando. Non usa API di Node (DecompressionStream c'è nei

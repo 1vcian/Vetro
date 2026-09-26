@@ -76,7 +76,7 @@ use display::WebDisplay;
 /// `vetro_jit_stats`.
 /// 11: FP/SIMD nelle regioni (ADR 0026): export `vetro_jit_simd` (import
 /// `env.simd` del runtime), `JitState` con FPCR/FPSR e l'orologio.
-/// 12: avvio da immagini Android (`vetro_load_android`, ADR 0018 e 0027).
+/// 12: avvio da immagini Android (`vetro_load_android`, ADR 0018 e 0028).
 pub const ABI_VERSION: u32 = 12;
 
 /// Allineamento dei buffer di [`vetro_alloc`] (basta per `JitState`).
