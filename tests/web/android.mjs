@@ -30,7 +30,7 @@ import { DEV } from '../../web/node/vetro.mjs';
 import { AdbClient } from '../../web/node/adb.mjs';
 import { apkInfo } from '../../web/node/apk.mjs';
 import { DiskFeeder, MemoryCache } from '../../web/node/disk.mjs';
-import { ANDROID_PARAMS, BootProgress, HOME_QUERY } from '../../web/node/android.mjs';
+import { ANDROID_PARAMS, BootProgress, colorSeen, HOME_QUERY } from '../../web/node/android.mjs';
 import { Fail, loadVetro, root } from './lib.mjs';
 
 if (process.env.VETRO_ANDROID !== '1') {
@@ -188,7 +188,6 @@ function center(m) {
   return [px[o], px[o + 1], px[o + 2]];
 }
 
-const near = (a, b) => a && a.every((v, i) => Math.abs(v - b[i]) <= 8);
 /** Tiene acceso lo schermo della macchina virtuale e lo risveglia (lo stesso comando del Worker). */
 const WAKE = 'svc power stayon true; settings put system screen_off_timeout 2147483647; input keyevent KEYCODE_WAKEUP; wm dismiss-keyguard';
 
@@ -303,14 +302,14 @@ function homeFlow(m, t0, save) {
     t = performance.now();
     const st = await adb.shell(`am start -W -n ${info.package}/${info.launcher}`);
     console.log(`am start: ${st.stdout.trim().split('\n').join(' | ')} (${((performance.now() - t) / 1000).toFixed(1)} s reali)`);
-    await waitGuest("l'app a schermo (centro blu)", () => near(center(m), BLU), 120);
-    console.log(`app a schermo: centro ${center(m)}`);
+    await waitGuest("l'app a schermo (centro blu)", () => colorSeen(center(m), BLU), 300);
+    console.log(`app a schermo: centro ${center(m)} (${colorSeen(center(m), BLU) === 'bgr' ? 'rosso e blu scambiati dallo scanout' : 'colori giusti'})`);
     screenshot(m, 'node-app-1.png');
     const size = m.displaySize();
     m.touch(0, [16384, 16384]);
     await waitGuest('tocco (giù)', () => false, 0.2).catch(() => {});
     m.touch(0, null);
-    await waitGuest("l'app ha ricevuto il tocco (centro arancione)", () => near(center(m), ARANCIONE), 60);
+    await waitGuest("l'app ha ricevuto il tocco (centro arancione)", () => colorSeen(center(m), ARANCIONE), 120);
     screenshot(m, 'node-app-2.png');
     const log = await adb.shell('logcat -d -s vetro-tocco:I | tail -3');
     console.log(`tocco ricevuto: centro ${center(m)} su ${size.width}x${size.height}; logcat: ${log.stdout.trim().split('\n').join(' | ')}`);

@@ -40,7 +40,7 @@ import { AnalysisPanels } from './analysis.mjs';
 import { PHASES } from '../node/android.mjs';
 
 /** La versione dell'immagine AOSP di Vetro pubblicata su R2 (ADR 0022, 0028). */
-export const DEFAULT_MANIFEST = 'https://pub-06e88fdd7f374fffb06844d60083f2ae.r2.dev/aosp/android-15.0.0_r36-BP1A.250505.005.D1-9d91633/manifest.json';
+export const DEFAULT_MANIFEST = 'https://pub-06e88fdd7f374fffb06844d60083f2ae.r2.dev/aosp/android-15.0.0_r36-BP1A.250505.005.D1-bd09e2f/manifest.json';
 /** RAM del guest con AOSP nel browser (ADR 0028). */
 export const ANDROID_RAM_MIB = 2048;
 

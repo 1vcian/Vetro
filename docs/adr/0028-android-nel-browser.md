@@ -30,8 +30,17 @@ dove e quando si salva lo stato.
   processo 0,4–1,1 GiB (le pagine mai toccate non occupano memoria). Lo
   **snapshot fallisce**: nel salvare il copy-on-write l'allocazione del
   buffer supera i 4 GiB (`handle_alloc_error` in `vetro_snapshot::compress`).
-- **vetro-wasm con 2 GiB**: vedi `docs/progress/M5.md` (2026-09-26, Android
-  nel browser) per i numeri della stessa prova.
+- **vetro-wasm con 2 GiB**: sys.boot_completed a 759,7 s di guest in
+  1492 s reali; memoria lineare 2274 MiB a 40 s, 2862 MiB alla fine
+  dell'avvio (RAM 2048 + copy-on-write 330 + blocchi 64 + JIT e resto). Lo
+  snapshot con `Machine::save` **fallisce anche qui**: il `Vec` del file
+  cresce raddoppiando (e una riallocazione vuole vecchio + nuovo). Col
+  salvataggio a pezzi (sotto) riesce: 1376 MiB in 36 s (scrittura su disco
+  compresa), memoria lineare al massimo 3209 MiB; ripristino su una macchina
+  nuova in 8,6–9,8 s (Node, lettura del file compresa).
+- **Codice del JIT**: dopo ~30 min V8 chiude il processo ("Exceeding
+  maximum wasm committed code space", 4 GiB di codice compilato): il motore
+  JS non liberava mai i moduli (sotto).
 - memory64 non è stato provato: il JIT genera moduli con memoria a 32 bit
   (`vetro-jit`, ADR 0012/0024) e la TLB software punta dentro la memoria
   lineare; cambiare vorrebbe dire un altro backend del JIT e controlli dei
@@ -57,9 +66,21 @@ dove e quando si salva lo stato.
   Contigua come prima: la TLB software del JIT (`SysPhys::ram_region`) non
   cambia. La regione di una macchina distrutta si riusa (azzerata). Serve a
   chi vuole 3 GiB senza snapshot, e ha permesso la misura.
-- `Machine::save` scrive l'intestazione sul posto (niente copia del
-  contenuto) e il JS legge e scrive gli snapshot direttamente dalla memoria
-  del modulo verso OPFS (`snapshotSaveWith`, `snapshotRestoreWith`).
+- **Snapshot a pezzi**: `Machine::save_stream` (vetro-wasm
+  `vetro_snapshot_save_stream`, import `vetro_host.snapshot_write`) manda il
+  file al JS a pezzi da 1 MiB, che il Worker scrive in OPFS man mano; in
+  memoria resta solo la parte prima della RAM (dispositivi e copy-on-write,
+  con il buffer dimensionato in anticipo). La RAM si comprime due volte: la
+  lunghezza del contenuto entra nell'hash dell'intestazione prima di tutto
+  il resto, e il formato del file non cambia (ADR 0015). Il ripristino legge
+  il file da OPFS direttamente in un buffer della memoria del modulo
+  (`snapshotRestoreWith`). `Machine::save` scrive l'intestazione sul posto.
+- **Limite del codice del JIT in V8** (`web/node/jit-engine.mjs`): al più
+  96 MiB di moduli fra un azzeramento e l'altro, poi `compile` rifiuta e
+  vetro-jit azzera il motore (lo stesso percorso della tabella piena);
+  all'azzeramento il motore svuota le voci di `__indirect_function_table`
+  date a Rust, che tenevano vivo il dispatcher, la sua tabella e quindi
+  tutti i blocchi. Nessun cambiamento in vetro-jit.
 - Scartate: "RAM a pagine allocate su richiesta" (le pagine mai toccate già
   non occupano memoria fisica in V8: il limite è lo spazio d'indirizzi, e la
   cache delle pagine del guest lo riempie comunque; più il JIT vorrebbe la
@@ -100,17 +121,35 @@ binario (pacchetto, attività principale), poi install e `am start -W -n`.
 Scartato il ponte WebSocket verso un adb dell'host: servirebbe un processo
 fuori dal browser.
 
+### Bootloader: le righe del vendor_boot si possono sostituire (modifica all'ADR 0018)
+Un `androidboot.*` dei parametri con la stessa chiave di una riga della
+sezione bootconfig del vendor_boot la sostituisce al suo posto, invece di
+ripeterla (il kernel scarterebbe tutto il blocco). Serve per
+`androidboot.hardware.hwcomposer.display_framebuffer_format=bgra`
+(`ANDROID_PARAMS`): l'immagine dice `rgba`, ma il driver virtio-gpu del
+kernel crea i buffer dumb dello scanout sempre XRGB8888 (in memoria B, G,
+R, X), e l'app di prova blu (0x1565c0) arrivava allo schermo come
+(192, 101, 21). La correzione giusta è nell'immagine (ADR 0022, prossima
+build); nel frattempo il bootloader la applica.
+
 ### Fasi dell'avvio
 Dalla console (`web/node/android.mjs`): kernel, init prima e seconda fase,
 zygote, surfaceflinger, system_server (primo messaggio di init con
 "(system_server)"), avvio finito (`sys-boot-completed-set`, l'evento di
 init su `sys.boot_completed=1`: la riga "processing action
-(sys.boot_completed=1…)" non compare in kmsg).
+(sys.boot_completed=1…)" non compare in kmsg). Poi la **home**, che non è
+nella console: dopo sys.boot_completed resta a lungo FallbackHome ("Phone
+is starting", 600 s di guest in più con 2 GiB); il Worker chiede ad adb
+`dumpsys window | grep -m1 mCurrentFocus` ogni 5 s di guest finché è il
+launcher (`mResumedActivity` di `dumpsys activity` in Android 15 non c'è
+più). Dopo il collegamento il Worker tiene acceso lo schermo (`svc power
+stayon true`).
 
 ### Snapshot di Android
-- Si salva 20 s di guest dopo sys.boot_completed (la home è disegnata),
-  dopo l'installazione di un APK e col pulsante; il riposo della console
-  (ADR 0017) non vale per Android.
+- Si salva 5 s di guest dopo che la home è a schermo (o 3000 s di guest
+  dopo sys.boot_completed se la home non si vede), dopo l'installazione di
+  un APK e col pulsante; il riposo della console (ADR 0017) non vale per
+  Android.
 - **Lo snapshot è l'unità di persistenza**: contiene già il copy-on-write
   dei dischi (ADR 0015), quindi con Android niente overlay separato in OPFS
   (330 MiB in più da scrivere a ogni salvataggio e da rileggere a ogni

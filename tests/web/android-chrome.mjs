@@ -29,6 +29,7 @@ import { join } from 'node:path';
 import { appMounts, serve } from '../../tools/web-serve.mjs';
 import { check, Fail, root, run } from './lib.mjs';
 import { findChrome, launch, openPage } from './chrome.mjs';
+import { colorSeen } from '../../web/node/android.mjs';
 
 if (process.env.VETRO_ANDROID !== '1') {
   console.log('SKIP: test lungo di Android in Chrome (VETRO_ANDROID=1 per eseguirlo)');
@@ -56,7 +57,7 @@ const SCREEN = `(() => {
   for (let y = 0; y < c.height; y += 16) for (let x = 0; x < c.width; x += 16) colors.add(at(x, y).join());
   return { w: c.width, h: c.height, center: at(c.width >> 1, c.height >> 1), colors: colors.size, off: !document.getElementById('screen-off').hidden };
 })()`;
-const near = (a, b) => a && a.every((v, i) => Math.abs(v - b[i]) <= 8);
+const near = (a, b) => colorSeen(a, b) !== null;
 const BLU = [0x15, 0x65, 0xc0];
 const ARANCIONE = [0xef, 0x6c, 0x00];
 

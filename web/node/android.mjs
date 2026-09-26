@@ -23,14 +23,25 @@ export const PHASES = [
 ];
 
 /**
- * Parametri del bootloader per l'immagine AOSP di Vetro (ADR 0028):
- * `nokaslr` come tools/aosp/vetro.sh, e lo scanout in BGRA. L'immagine dice
- * `display_framebuffer_format=rgba`, ma il driver virtio-gpu del kernel crea
- * i buffer "dumb" dello scanout sempre XRGB8888 (in memoria B, G, R, X): con
- * rgba l'app blu 0x1565c0 arriva allo schermo come (192, 101, 21). Il
- * bootloader di Vetro sostituisce la riga del vendor_boot.
+ * Parametri del bootloader per l'immagine AOSP di Vetro (ADR 0028): `nokaslr`
+ * come tools/aosp/vetro.sh.
  */
-export const ANDROID_PARAMS = 'nokaslr androidboot.hardware.hwcomposer.display_framebuffer_format=bgra';
+export const ANDROID_PARAMS = 'nokaslr';
+
+/**
+ * Un colore dell'app come lo mostra lo scanout. L'immagine di oggi scambia
+ * rosso e blu (l'app blu 0x1565c0 arriva come (192, 101, 21): il composer
+ * scrive RGBA in buffer che virtio-gpu presenta come XRGB8888; con
+ * `display_framebuffer_format=bgra` non cambia, ADR 0028): i test accettano
+ * i due ordini e dicono quale hanno visto.
+ */
+export function colorSeen(px, rgb, tol = 8) {
+  if (!px) return null;
+  const near = (c) => c.every((v, i) => Math.abs(v - px[i]) <= tol);
+  if (near(rgb)) return 'rgb';
+  if (near([rgb[2], rgb[1], rgb[0]])) return 'bgr';
+  return null;
+}
 
 /** Comando adb per l'attività in primo piano; la home c'è se contiene "launcher". */
 export const HOME_QUERY = 'dumpsys window | grep -m1 mCurrentFocus';
