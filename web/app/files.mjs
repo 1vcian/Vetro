@@ -419,6 +419,8 @@ export class FilePanel {
     this.open = new Map();
     /** wd → percorso. */
     this.watches = new Map();
+    /** Cartelle di cui si aspetta la prima lista (nell'albero: "…"). */
+    this.loading = new Set();
     this.refreshTimers = new Map();
     this.status = { state: 'None', generation: 0 };
     /** File nel visualizzatore: { path, stat, bytes, view, dirty }. */
@@ -448,6 +450,7 @@ export class FilePanel {
     for (const [path, d] of this.open) if (d.wd !== null) this.rpc('unwatch', { wd: d.wd }).catch(() => {});
     this.open.clear();
     this.watches.clear();
+    this.loading.clear();
     this.#renderTree();
     if (this.status.state === 'Ready') for (const r of roots) await this.expand(r).catch(() => {});
   }
@@ -497,7 +500,14 @@ export class FilePanel {
 
   /** Apre (lista + osservazione) una cartella. */
   async expand(path) {
-    const entries = await this.rpc('list', { path });
+    this.loading.add(path);
+    this.#renderTree();
+    let entries;
+    try {
+      entries = await this.rpc('list', { path });
+    } finally {
+      this.loading.delete(path);
+    }
     const known = this.open.get(path);
     let wd = known?.wd ?? null;
     if (wd === null) {
@@ -542,10 +552,11 @@ export class FilePanel {
     const node = (path, name, stat, depth) => {
       const isDir = !stat || stat.kind === 'dir';
       const isOpen = this.open.has(path);
+      const isLoading = !isOpen && this.loading.has(path);
       const row = el('div', { className: `fnode${this.current?.path === path ? ' sel' : ''}` });
       row.dataset.path = path;
       row.style.paddingLeft = `${depth * 14 + 4}px`;
-      row.append(el('span', { className: 'twisty', textContent: isDir ? (isOpen ? '▾' : '▸') : ' ' }));
+      row.append(el('span', { className: 'twisty', textContent: isDir ? (isOpen || isLoading ? '▾' : '▸') : ' ' }));
       row.append(el('span', { className: `fname ${stat?.kind ?? 'dir'}`, textContent: displayName(name) }));
       if (stat) {
         row.append(el('span', { className: 'fmeta', textContent: `${modeString(stat.kind, stat.mode)} ${stat.uid}:${stat.gid}${isDir ? '' : ` ${sizeString(stat.size)}`}` }));
@@ -557,6 +568,13 @@ export class FilePanel {
         else this.openFile(path).catch((e) => this.#message(`${path}: ${e.message}`, true));
       });
       tree.append(row);
+      // Righe senza data-path: non sono voci (vetroFiles.state().shown).
+      const note = (text) => {
+        const n = el('div', { className: 'fempty', textContent: text });
+        n.style.paddingLeft = `${(depth + 1) * 14 + 4}px`;
+        tree.append(n);
+      };
+      if (isLoading) note('…');
       if (isOpen) {
         const d = this.open.get(path);
         if (d.error) tree.append(el('div', { className: 'ferr', textContent: d.error }));
@@ -564,6 +582,7 @@ export class FilePanel {
         const dirFirst = (e) => (e.stat.kind === 'dir' ? 0 : 1);
         const sorted = [...d.entries].sort((a, b) => dirFirst(a) - dirFirst(b) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
         for (const e of sorted) node(join(path, e.name), e.name, e.stat, depth + 1);
+        if (!sorted.length && !d.error) note('(vuota)');
       }
     };
     for (const r of this.roots) node(r, r, null, 0);

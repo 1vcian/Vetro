@@ -4,14 +4,18 @@
 //
 //   1. la pagina avvia il kernel M3 nel Worker con un disco via HTTP Range
 //      (cache OPFS vuota); dalla console della pagina (tasti veri) si lancia
-//      `md5sum /dev/vda` e `vetro-dev drm-hold`: il canvas deve mostrare il
-//      motivo del guest pixel per pixel e il cursore dev'essere visibile;
+//      `md5sum /dev/vda`; a scanout spento lo schermo mostra il messaggio
+//      che spiega perché, e il suo pulsante digita `timeout 30 vetro-dev
+//      drm-hold`: il canvas deve mostrare il motivo del guest pixel per
+//      pixel, il cursore dev'essere visibile; Invio lo chiude e il messaggio
+//      torna;
 //   2. col canvas a fuoco un tasto vero (KeyA) arriva al guest da
 //      virtio-input (`vetro-dev input-read`);
 //   3. gestore dei file (M8): con le radici impostate dal test il pannello
 //      mostra l'albero, si aggiorna da solo quando un processo del guest
 //      crea un file, apre un file, lo modifica e lo salva nel guest, che lo
-//      rilegge con cat (modo conservato); una cella di un database SQLite
+//      rilegge con cat (modo conservato), una cartella vuota aperta mostra
+//      "(vuota)"; una cella di un database SQLite
 //      in WAL tenuto aperto dal guest cambiata dal pannello (anteprima della
 //      query, SQL eseguito nel guest, tabella riletta dal -wal, valore
 //      riletto con sqlite3) e un valore delle SharedPreferences cambiato
@@ -101,7 +105,13 @@ run(async () => {
       `salvato in ${snap1.saveMs.toFixed(0)} ms + scrittura OPFS ${snap1.writeMs.toFixed(0)} ms`);
     await page.type('md5sum /dev/vda');
     at = await page.until(`${md5}  /dev/vda`, at);
-    await page.type('vetro-dev drm-hold');
+    // Scanout spento: il messaggio spiega che il guest non disegna; il
+    // pulsante digita nella console il comando del motivo di prova.
+    const offMsg = "(() => { const o = document.getElementById('screen-off'); return o.hidden ? null : o.textContent.replace(/\\s+/g, ' ').trim(); })()";
+    const shownOff = await page.eval(offMsg);
+    check(shownOff?.includes('Il guest non sta disegnando') && shownOff.includes('Disegna un motivo di prova'), `messaggio a scanout spento: ${shownOff}`);
+    await page.eval("document.getElementById('screen-demo').click()");
+    at = await page.until('timeout 30 vetro-dev drm-hold', at);
     at = await page.until('VETRO-DRM-PRONTO', at);
     const cv = await page.waitFor('motivo sul canvas', async () => {
       const r = await page.eval(CHECK_CANVAS);
@@ -110,8 +120,13 @@ run(async () => {
       throw new Fail(`${e.message}\ncanvas: ${JSON.stringify(await page.eval(CHECK_CANVAS))}`);
     });
     console.log(`canvas: ${cv.w}x${cv.h}, motivo del guest pixel per pixel, cursore visibile`);
+    // Invio nella console chiude il motivo prima dei 30 s: lo scanout si
+    // spegne e il messaggio torna.
     await page.type('');
+    at = await page.until('vetro-dev: drm chiuso', at);
     at = await page.until('# ', at);
+    await page.waitFor('messaggio di nuovo a scanout spento', () => page.eval(offMsg), 20_000);
+    console.log('scanout spento: messaggio visibile, il pulsante disegna il motivo di prova, Invio lo chiude e il messaggio torna');
     await page.type('vetro-dev input-read /dev/input/event1 4');
     at = await page.until('VETRO-INPUT-PRONTO', at);
     await page.eval("document.getElementById('screen').focus()");
@@ -124,12 +139,19 @@ run(async () => {
     // impostate, si aggiorna da solo quando un processo del guest crea un
     // file (inotify), apre un file, lo modifica e lo salva nel guest, che lo
     // rilegge con cat (modo conservato).
-    await page.type('mkdir -p /tmp/web && echo prima > /tmp/web/nota.txt && chmod 640 /tmp/web/nota.txt');
+    await page.type('mkdir -p /tmp/web/vuota && echo prima > /tmp/web/nota.txt && chmod 640 /tmp/web/nota.txt');
     at = await page.until('# ', at);
     const files = (expr) => page.eval(`window.vetroFiles.state()${expr}`);
     await page.waitFor('gestore dei file collegato', async () => (await files('.state')) === 'Ready', 60_000);
     await page.eval("window.vetroFiles.setRoots(['/tmp/web'])");
     await page.waitFor('nota.txt nell\'albero', async () => (await files('.shown')).includes('/tmp/web/nota.txt'), 30_000);
+    // Una cartella vuota aperta dice "(vuota)" (riga che non è una voce).
+    await page.waitFor('cartella vuota nell\'albero', async () => (await files('.shown')).includes('/tmp/web/vuota'), 30_000);
+    await page.eval(`document.querySelector('[data-path="/tmp/web/vuota"]').click()`);
+    const emptyNote = `(() => { const r = document.querySelector('[data-path="/tmp/web/vuota"]'); const n = r?.nextElementSibling; return r?.querySelector('.twisty').textContent === '▾' && n?.classList.contains('fempty') ? n.textContent : null; })()`;
+    const empty = await page.waitFor('"(vuota)" sotto la cartella vuota', async () => (await page.eval(emptyNote)) === '(vuota)' || null, 30_000);
+    check(empty, 'cartella vuota');
+    console.log('gestore dei file: una cartella vuota aperta mostra "(vuota)"');
     await page.type('echo dal-guest > /tmp/web/nuovo.txt');
     at = await page.until('# ', at);
     await page.waitFor('nuovo.txt comparso da solo', async () => (await files('.shown')).includes('/tmp/web/nuovo.txt'), 30_000);

@@ -66,7 +66,11 @@
       <div id="screen-wrap">
         <canvas id="screen" width="1280" height="800" tabindex="0" title="Clic per mandare tastiera e mouse al guest"></canvas>
         <canvas id="cursor" width="64" height="64" hidden></canvas>
-        <div id="screen-off">scanout spento</div>
+        <div id="screen-off" role="status">
+          <p><strong>Il guest non sta disegnando</strong> (scanout spento): questa demo usa la console seriale, il riquadro di testo della pagina.
+            Lo schermo si accende quando un programma disegna (con Android, il telefono).</p>
+          <button id="screen-demo" type="button" title="Digita nella console: timeout 30 vetro-dev drm-hold. Il motivo resta 30 s di tempo del guest; Invio nella console lo chiude prima">Disegna un motivo di prova</button>
+        </div>
       </div>
       <div id="controls">
         <button id="power" type="button" title="Tasto di accensione (GPIO 3, KEY_POWER): tieni premuto">Tasto di accensione</button>

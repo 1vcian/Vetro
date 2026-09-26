@@ -17,6 +17,10 @@
 // di rete, della timeline input→effetti e della registrazione/replay
 // (analysis.mjs); `window.vetroAnalysis` per i test.
 //
+// Schermo: a scanout spento un messaggio spiega che il guest non disegna e
+// un pulsante digita nella console `timeout 30 vetro-dev drm-hold` (motivo
+// di prova, vedi DEMO_COMMAND).
+//
 // Persistenza (M6, ADR 0017): il Worker salva in OPFS lo snapshot della
 // macchina e l'overlay dei dischi; al secondo avvio riparte dallo snapshot.
 // Lo stato si legge anche da `window.vetroState` (per i test nel browser).
@@ -145,6 +149,19 @@ function onFrame(msg) {
   }
   renderer.draw(msg.rect, msg.pixels);
 }
+
+// Scanout spento: col kernel di prova il guest non disegna finché un
+// programma non usa il DRM. Il pulsante digita nella console un comando del
+// guest di prova che disegna il motivo noto di `vetro-dev drm-hold`
+// (tests/boot/tests/devices.rs) e lo tiene finché arriva una riga su stdin
+// (Invio nella console) o per 30 s di tempo del guest (`timeout` di
+// BusyBox): la shell torna libera in ogni caso, e chiuso il DRM lo scanout
+// si spegne di nuovo.
+const DEMO_COMMAND = 'timeout 30 vetro-dev drm-hold';
+$('screen-demo').addEventListener('click', () => {
+  worker?.postMessage({ type: 'serial', text: `${DEMO_COMMAND}\r` });
+  consoleEl.focus();
+});
 
 function onCursor(msg) {
   cursor = msg;

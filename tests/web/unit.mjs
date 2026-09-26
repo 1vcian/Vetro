@@ -23,7 +23,7 @@ import {
   prefsToXml, sizeString,
 } from '../../web/app/files.mjs';
 import { encodeSqlArgs, pathBytes, pathString, sqlValue } from '../../web/node/vetro.mjs';
-import { duration, fromB64, guestTime, hexdump } from '../../web/app/analysis.mjs';
+import { bodyCell, duration, fromB64, guestTime, hexdump, typeText } from '../../web/app/analysis.mjs';
 import { check, root, run } from './lib.mjs';
 
 const eq = (a, b, what) => check(JSON.stringify(a) === JSON.stringify(b), `${what}: ${JSON.stringify(a)} invece di ${JSON.stringify(b)}`);
@@ -426,6 +426,18 @@ test('pannelli di analisi: tempi, durate, dump', () => {
     'ffff800080010810  2e 2e                                            ..',
   ], 'dump esadecimale');
   eq(hexdump(new Uint8Array(40), 0n, 16).split('\n').at(-1), '… altri 24 byte', 'dump tagliato');
+});
+
+test('ispettore: celle dei corpi e del tipo', () => {
+  eq([bodyCell(0, 'vuoto'), bodyCell(12, 'json'), bodyCell(2048, 'binario'), bodyCell(5, '-'), bodyCell(null, '-'), bodyCell(undefined)],
+    ['0 B', '12 B json', '2.0 KiB binario', '5 B', '–', '–'], 'corpi');
+  const t = (r) => typeText(r).text;
+  eq([
+    t({ mime: 'application/json', status: 200, respBytes: 2, respKind: 'json' }),
+    t({ mime: null, status: 200, respBytes: 0, respKind: 'vuoto' }),
+    t({ mime: null, status: 200, respBytes: 7, respKind: 'testo' }),
+    t({ mime: null, status: null, respBytes: 0, respKind: '-' }),
+  ], ['application/json', 'vuoto', 'testo', '–'], 'tipo');
 });
 
 run(async () => {

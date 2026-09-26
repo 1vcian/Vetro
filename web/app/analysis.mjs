@@ -29,6 +29,33 @@ export function bytes(n) {
   return `${(n / 2 ** 20).toFixed(1)} MiB`;
 }
 
+/**
+ * Cella del corpo nella lista: "0 B" per un corpo vuoto (Content-Length: 0
+ * o nessun byte), dimensione e tipo riconosciuto altrimenti; "–" solo se
+ * l'informazione manca (dimensione assente).
+ */
+export function bodyCell(size, kind) {
+  if (size === null || size === undefined) return '–';
+  if (!size) return '0 B';
+  return kind && kind !== '-' ? `${bytes(size)} ${kind}` : bytes(size);
+}
+
+/**
+ * Il tipo della risposta: il Content-Type, se c'è; altrimenti quello
+ * riconosciuto dal contenuto (attenuato); "–" senza risposta.
+ */
+export function typeText(r) {
+  if (r.mime) return { text: r.mime, title: r.mime, guessed: false };
+  if (r.status === null || r.status === undefined) return { text: '–', title: 'senza risposta', guessed: false };
+  const kind = r.respBytes ? r.respKind : 'vuoto';
+  return { text: kind, title: 'nessun Content-Type: tipo riconosciuto dal contenuto', guessed: true };
+}
+
+function typeCell(r) {
+  const t = typeText(r);
+  return el('td', { text: t.text, title: t.title, class: t.guessed ? 'guessed' : '' });
+}
+
 /** Byte da base64. */
 export function fromB64(s) {
   const bin = atob(s);
@@ -144,9 +171,9 @@ class NetPanel {
         el('td', { text: r.host, title: r.host }),
         el('td', { class: 'path', text: r.path, title: r.url }),
         el('td', { class: `status s${String(r.status ?? 0)[0]}`, text: r.status ?? '—', title: r.reason ?? 'senza risposta' }),
-        el('td', { class: 'num', text: r.reqBytes ? `${bytes(r.reqBytes)} ${r.reqKind}` : '–' }),
-        el('td', { class: 'num', text: r.respBytes ? `${bytes(r.respBytes)} ${r.respKind}` : '–' }),
-        el('td', { text: r.mime ?? '', title: r.mime ?? '' }),
+        el('td', { class: 'num', text: bodyCell(r.reqBytes, r.reqKind) }),
+        el('td', { class: 'num', text: r.status === null ? '–' : bodyCell(r.respBytes, r.respKind), title: r.status === null ? 'senza risposta' : '' }),
+        typeCell(r),
         el('td', { class: 'num', text: duration(r.timings.totalUs) }),
         el('td', { class: 'wf' }, el('span', { style: `left:${left}%;width:${width}%` })),
       );

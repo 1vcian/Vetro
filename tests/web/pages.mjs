@@ -3,7 +3,7 @@
 // un sottopercorso (/Vetro/) e senza intestazioni COOP/COEP. In Chrome
 // headless la pagina d'ingresso porta all'app, l'app avvia il kernel guest
 // fino alla shell e la console risponde, l'ispettore di rete vede una
-// richiesta del guest; i sorgenti GPL ci sono e il tarball
+// richiesta del guest (corpi vuoti come "0 B"); i sorgenti GPL ci sono e il tarball
 // del kernel ricomposto dai pezzi ha lo sha256 dichiarato.
 //
 //   node tests/web/pages.mjs [target/pages]
@@ -68,7 +68,14 @@ run(async () => {
     const req = await page.waitFor('richiesta nell\'ispettore', async () =>
       (await page.eval('window.vetroAnalysis.state().requests'))?.requests.find((r) => r.host === 'pages.vetro.test'), 30_000);
     check(req.method === 'GET' && req.path === '/prova' && req.status === 200, `ispettore: ${JSON.stringify(req)}`);
-    console.log(`sito sotto /Vetro/ senza COOP/COEP: shell in ${(ms / 1000).toFixed(2)} s, la console risponde, l'ispettore vede la rete`);
+    // La risposta del sinkhole è vuota (Content-Length: 0, senza
+    // Content-Type): nella lista "0 B" per i due corpi, tipo dal contenuto.
+    const cells = await page.waitFor('riga nella tabella', () => page.eval(`(() => {
+      const r = document.querySelector('#net-table tr[data-i="${req.i}"]');
+      return r ? [...r.cells].slice(6, 9).map((c) => c.textContent) : null;
+    })()`), 10_000);
+    check(JSON.stringify(cells) === JSON.stringify(['0 B', '0 B', 'vuoto']), `celle richiesta, risposta, tipo: ${JSON.stringify(cells)}`);
+    console.log(`sito sotto /Vetro/ senza COOP/COEP: shell in ${(ms / 1000).toFixed(2)} s, la console risponde, l'ispettore vede la rete (corpi vuoti: 0 B)`);
   } finally {
     await srv.close();
     await closeChrome(proc, cdp, profile);
