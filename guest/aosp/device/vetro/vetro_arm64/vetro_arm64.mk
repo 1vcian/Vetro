@@ -29,6 +29,13 @@ $(call inherit-product, $(SRC_TARGET_DIR)/product/aosp_product.mk)
 # minigbm, HWC ranchu/drm_hwcomposer, KeyMint e Gatekeeper software).
 # Niente packages/modules/Virtualization: la virt di Vetro non ha KVM.
 #
+# HAL di Cuttlefish che parlano con l'host (vsock o /dev/hvcN) e senza host
+# abortiscono a ciclo: le luci bloccano system_server (LightsService aspetta
+# ILights/default, dichiarato nella VINTF dall'APEX ma mai registrato), l'OEM
+# lock lo stesso per OemLockService. Si tolgono con gli interruttori di
+# shared/device.mk (valgono prima dell'inherit).
+LOCAL_ENABLE_LIGHT := false
+LOCAL_ENABLE_OEMLOCK := false
 $(call inherit-product, device/google/cuttlefish/shared/phone/device_vendor.mk)
 $(call inherit-product, device/google/cuttlefish/vsoc_arm64/bootloader.mk)
 

@@ -11,11 +11,14 @@ set -eu
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 a="$root/target/aosp"
+# Immagini e disco (VETRO_AOSP_IMAGES, VETRO_AOSP_DISK: per provare una copia).
+o="${VETRO_AOSP_IMAGES:-$a/out}"
+disk="${VETRO_AOSP_DISK:-$a/disk.img}"
 vetro="${VETRO_BIN:-$root/target/release/vetro}"
 jit=""
 [ "${VETRO_JIT:-0}" = 1 ] && jit="--jit"
 # shellcheck disable=SC2086
-exec "$vetro" boot --boot-img="$a/out/boot.img" --vendor-boot="$a/out/vendor_boot.img" \
-  --init-boot="$a/out/init_boot.img" --append="nokaslr ${VETRO_AOSP_APPEND:-}" \
-  --mem=3072 --disk="$a/disk.img" --hostfwd="tcp:127.0.0.1:${VETRO_ADB_PORT:-5555}-:5555" \
+exec "$vetro" boot --boot-img="$o/boot.img" --vendor-boot="$o/vendor_boot.img" \
+  --init-boot="$o/init_boot.img" --append="nokaslr ${VETRO_AOSP_APPEND:-}" \
+  --mem=3072 --disk="$disk" --hostfwd="tcp:127.0.0.1:${VETRO_ADB_PORT:-5555}-:5555" \
   --guest-secs="${1:-1800}" --stats $jit ${VETRO_VETRO_EXTRA:-}

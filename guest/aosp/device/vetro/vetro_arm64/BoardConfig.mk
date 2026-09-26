@@ -103,6 +103,13 @@ BOARD_BOOTCONFIG += \
 # primo avvio, vedi ADR 0022).
 BOARD_BOOTCONFIG += androidboot.selinux=permissive
 
+# Codice precompilato (odex/vdex) delle app nelle loro partizioni, non in
+# system_other: Cuttlefish lo mette nello slot B (system_other.img) e lo copia
+# in /data al primo avvio (cppreopts), ma il nostro disco ha solo lo slot A.
+# Senza, al primo avvio ArtService ricompila ogni app: decine di minuti di
+# guest sotto QEMU, molto di più sotto Vetro.
+BOARD_USES_SYSTEM_OTHER_ODEX :=
+
 # Policy SELinux nostra (demone vetro-files, ADR 0020/0022).
 BOARD_VENDOR_SEPOLICY_DIRS += device/vetro/vetro_arm64/sepolicy
 

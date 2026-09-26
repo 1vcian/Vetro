@@ -17,11 +17,17 @@ set -eu
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 a="$root/target/aosp"
+# Immagini e disco (VETRO_AOSP_IMAGES, VETRO_AOSP_DISK: per provare una copia).
+o="${VETRO_AOSP_IMAGES:-$a/out}"
+disk="${VETRO_AOSP_DISK:-$a/disk.img}"
 vetro="${VETRO_BIN:-$root/target/release/vetro}"
 dump="$a/boot"
-"$vetro" boot --boot-img="$a/out/boot.img" --vendor-boot="$a/out/vendor_boot.img" \
-  --init-boot="$a/out/init_boot.img" --append="nokaslr ${VETRO_AOSP_APPEND:-}" \
-  --android-dump="$dump" --no-devices --mem=512 --guest-secs=0 >/dev/null
+rm -rf "$dump"
+# --guest-secs=0: scrive i file e si ferma subito (codice 124, limite di tempo).
+"$vetro" boot --boot-img="$o/boot.img" --vendor-boot="$o/vendor_boot.img" \
+  --init-boot="$o/init_boot.img" --append="nokaslr ${VETRO_AOSP_APPEND:-}" \
+  --android-dump="$dump" --no-devices --mem=512 --guest-secs=0 >/dev/null || true
+[ -s "$dump/Image" ] && [ -s "$dump/initrd" ] || { echo "vetro boot --android-dump non ha scritto $dump" >&2; exit 1; }
 image="${VETRO_QEMU_SYSTEM_IMAGE:-vetro-qemu-system:latest}"
 docker image inspect "$image" >/dev/null 2>&1 ||
   docker build -q -t "$image" -f "$root/tools/guest-kernel/Dockerfile.qemu" "$root/tools/guest-kernel" >&2
@@ -33,5 +39,5 @@ exec docker run --rm -i --init --name "${VETRO_ORACLE_NAME:-vetro-aosp-qemu}" \
   -kernel "$dump/Image" -initrd "$dump/initrd" -append "$(cat "$dump/cmdline")" \
   -device virtio-gpu-device -device virtio-keyboard-device -device virtio-tablet-device \
   -netdev user,id=net0,hostfwd=tcp::5555-:5555 -device virtio-net-device,netdev=net0 \
-  -drive "file=$a/disk.img,if=none,id=disk,format=raw,snapshot=on" -device virtio-blk-device,drive=disk \
+  -drive "file=$disk,if=none,id=disk,format=raw,snapshot=on" -device virtio-blk-device,drive=disk \
   ${VETRO_QEMU_EXTRA:-}
