@@ -1,29 +1,28 @@
 #!/usr/bin/env node
-// Il disco dell'immagine AOSP di Vetro per il browser (M5, ADR 0028): invece
-// di pubblicare target/aosp/disk.img (GPT di 15 GiB, quasi tutto zeri), una
-// mappa che ricompone lo stesso disco dagli artefatti già pubblicati:
+// The disk of Vetro's AOSP image for the browser (M5, ADR 0028): instead of
+// publishing target/aosp/disk.img (a 15 GiB GPT disk, mostly zeros), a map
+// that rebuilds the same disk from the artifacts already published:
 //
-//   out/web/disk.json      la mappa: dimensione del disco ed estensioni
-//                          [offset nel disco, lunghezza, file, offset nel file]
-//                          (file -1 = zeri, -2 = riempimento con la parola a
-//                          32 bit in "offset nel file"); fuori dalle
-//                          estensioni il disco è a zero
-//   out/web/disk-head.bin  i blocchi non a zero del disco che non stanno nelle
-//                          immagini della build: GPT primaria e di riserva,
-//                          metadata (ext4 vuoto di mkdisk.sh); pochi KiB
+//   out/web/disk.json      the map: disk size and extents
+//                          [disk offset, length, file, file offset]
+//                          (file -1 = zeros, -2 = fill with the 32-bit word
+//                          in "file offset"); outside the extents the disk is
+//                          zero
+//   out/web/disk-head.bin  the disk's non-zero blocks that are not in the
+//                          build's images: primary and backup GPT, metadata
+//                          (empty ext4 from mkdisk.sh); a few KiB
 //
-// super e userdata vengono dai file sparsi della build (super.img,
-// userdata.img, formato sparse di Android): ogni pezzo RAW diventa
-// un'estensione che punta dentro il file sparso, FILL un riempimento,
-// DONT_CARE zeri. I percorsi dei file sono relativi alla mappa
-// (`../super.img`), come su R2 (aosp/<versione>/web/disk.json accanto a
-// aosp/<versione>/super.img). Il browser legge i byte con HTTP Range
-// (LayoutSource di web/node/disk.mjs).
+// super and userdata come from the build's sparse files (super.img,
+// userdata.img, Android sparse format): every RAW chunk becomes an extent
+// pointing into the sparse file, FILL a fill, DONT_CARE zeros. File paths are
+// relative to the map (`../super.img`), as on R2 (aosp/<version>/web/disk.json
+// next to aosp/<version>/super.img). The browser reads the bytes with HTTP
+// Range (LayoutSource in web/node/disk.mjs).
 //
-// Uso: node tools/aosp/web-disk.mjs [--no-verify]
-// Ingressi: target/aosp/disk.img (tools/aosp/mkdisk.sh), target/aosp/out/.
-// Con la verifica (default) il disco ricomposto dalla mappa si confronta
-// byte per byte con disk.img.
+// Usage: node tools/aosp/web-disk.mjs [--no-verify]
+// Inputs: target/aosp/disk.img (tools/aosp/mkdisk.sh), target/aosp/out/.
+// With verification (the default) the disk rebuilt from the map is compared
+// byte for byte with disk.img.
 
 import { createHash } from 'node:crypto';
 import { mkdirSync, openSync, readSync, closeSync, fstatSync, writeFileSync } from 'node:fs';
@@ -48,10 +47,10 @@ function readAt(fd, offset, length) {
   return buf.subarray(0, done);
 }
 
-/** Partizioni GPT del disco: [{ name, start, size }] in byte. */
+/** The disk's GPT partitions: [{ name, start, size }] in bytes. */
 function gpt(fd) {
   const h = readAt(fd, 512, 512);
-  if (h.toString('latin1', 0, 8) !== 'EFI PART') throw new Error('disk.img: GPT mancante');
+  if (h.toString('latin1', 0, 8) !== 'EFI PART') throw new Error('disk.img: no GPT');
   const entriesLba = Number(h.readBigUInt64LE(72));
   const count = h.readUInt32LE(80);
   const size = h.readUInt32LE(84);
@@ -68,11 +67,11 @@ function gpt(fd) {
   return parts;
 }
 
-/** Pezzi di un'immagine sparse di Android: [{ at, length, kind, fileOffset|value }]. */
+/** Chunks of an Android sparse image: [{ at, length, kind, fileOffset|value }]. */
 function sparseChunks(path) {
   const fd = openSync(path, 'r');
   const h = readAt(fd, 0, 28);
-  if (h.readUInt32LE(0) !== 0xed26ff3a) throw new Error(`${path}: non è un'immagine sparse`);
+  if (h.readUInt32LE(0) !== 0xed26ff3a) throw new Error(`${path}: not a sparse image`);
   const fileHdr = h.readUInt16LE(8);
   const chunkHdr = h.readUInt16LE(10);
   const blk = h.readUInt32LE(12);
@@ -89,18 +88,18 @@ function sparseChunks(path) {
     const length = blocks * blk;
     const data = pos + chunkHdr;
     if (type === 0xcac1) {
-      if (total - chunkHdr !== length) throw new Error(`${path}: pezzo RAW ${i} di lunghezza incoerente`);
+      if (total - chunkHdr !== length) throw new Error(`${path}: RAW chunk ${i} has an inconsistent length`);
       out.push({ at: block * blk, length, kind: 'raw', fileOffset: data });
     } else if (type === 0xcac2) {
       out.push({ at: block * blk, length, kind: 'fill', value: readAt(fd, data, 4).readUInt32LE(0) });
     } else if (type !== 0xcac3 && type !== 0xcac4) {
-      throw new Error(`${path}: pezzo ${i} di tipo ${type.toString(16)}`);
+      throw new Error(`${path}: chunk ${i} of type ${type.toString(16)}`);
     }
     if (type !== 0xcac4) block += blocks;
     pos += total;
   }
   closeSync(fd);
-  if (block !== totalBlocks) throw new Error(`${path}: ${block} blocchi invece di ${totalBlocks}`);
+  if (block !== totalBlocks) throw new Error(`${path}: ${block} blocks instead of ${totalBlocks}`);
   return { size: totalBlocks * blk, chunks: out };
 }
 
@@ -132,13 +131,13 @@ function main() {
     { part: 'userdata', file: 'userdata.img' },
   ];
   const extents = [];
-  // File 0: disk-head.bin; 1..: le immagini sparse.
+  // File 0: disk-head.bin; 1..: the sparse images.
   const files = [{ path: 'disk-head.bin' }];
   for (const [k, img] of images.entries()) {
     const p = byName[img.part];
-    if (!p) throw new Error(`disk.img: partizione ${img.part} mancante`);
+    if (!p) throw new Error(`disk.img: partition ${img.part} missing`);
     const s = sparseChunks(join(out, img.file));
-    if (s.size > p.size) throw new Error(`${img.file}: ${s.size} byte, partizione di ${p.size}`);
+    if (s.size > p.size) throw new Error(`${img.file}: ${s.size} bytes, partition of ${p.size}`);
     for (const c of s.chunks) {
       if (c.kind === 'raw') extents.push([p.start + c.at, c.length, k + 1, c.fileOffset]);
       else if (c.value !== 0) extents.push([p.start + c.at, c.length, -2, c.value]);
@@ -146,7 +145,7 @@ function main() {
     img.range = [p.start, p.start + p.size];
     files.push({ path: `../${img.file}` });
   }
-  // Il resto del disco: blocchi non a zero in disk-head.bin.
+  // The rest of the disk: non-zero blocks in disk-head.bin.
   const covered = images.map((i) => i.range).sort((a, b) => a[0] - b[0]);
   const gaps = [];
   let at = 0;
@@ -193,7 +192,7 @@ function main() {
   const text = `${JSON.stringify(layout)}\n`;
   parseLayout(JSON.parse(text));
   writeFileSync(join(webDir, 'disk.json'), text);
-  console.log(`disk.json: disco di ${(diskSize / 2 ** 30).toFixed(2)} GiB, ${extents.length} estensioni, disk-head.bin ${headBuf.length} byte`);
+  console.log(`disk.json: ${(diskSize / 2 ** 30).toFixed(2)} GiB disk, ${extents.length} extents, disk-head.bin ${headBuf.length} bytes`);
   if (verify) {
     const l = parseLayout(JSON.parse(text));
     const fds = files.map((f) => openSync(join(webDir, f.path), 'r'));
@@ -206,10 +205,10 @@ function main() {
       if (!want.equals(Buffer.from(got.buffer, got.byteOffset, got.length))) {
         let i = 0;
         while (want[i] === got[i]) i++;
-        throw new Error(`disco ricomposto diverso da disk.img al byte ${off + i}`);
+        throw new Error(`rebuilt disk differs from disk.img at byte ${off + i}`);
       }
     }
-    console.log('verifica: il disco ricomposto dalla mappa è uguale a disk.img byte per byte');
+    console.log('verified: the disk rebuilt from the map equals disk.img byte for byte');
   }
   closeSync(fd);
 }

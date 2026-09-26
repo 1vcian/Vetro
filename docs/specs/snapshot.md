@@ -28,11 +28,15 @@ Nessuna dipendenza; compila per wasm32. Lo usano `vetro-cpu`, `vetro-mmu`,
 - `Machine::save(&self) -> Vec<u8>`: non cambia la macchina; fra due
   `run` qualsiasi.
 - `Machine::save_stream(&self, reserve, sink) -> [u8; HEADER_LEN]` (ADR
-  0028): lo stesso file a pezzi, per wasm32 con Android: il contenuto va a
-  `sink` in ordine, l'intestazione è il risultato; la RAM
-  (`Ram::save_chunks`, pezzi da 1 MiB) si comprime due volte, la prima per
-  la lunghezza che entra nell'hash. `reserve`: dimensione prevista delle
-  sezioni prima della RAM.
+  0028): the same file in chunks, for wasm32 with Android: the content goes
+  to `sink` in order, the header is the result; the RAM (`Ram::save_chunks`,
+  1 MiB chunks) is compressed twice, the first time for the length that
+  enters the hash. `reserve`: expected size of the sections before the RAM.
+- `Machine::load_state_stream(&mut self, head, pull)` (ADR 0028): chunked
+  restore: `head` = the file up to and including the header of the `RAM `
+  section, `pull` provides the rest (`Ram::restore_from` with a
+  `RamSource`). Magic, version and configuration are checked before the
+  machine is touched; the checksum (chunked hash64) at the end.
 - `Machine::load_state(&mut self, &[u8]) -> Result<(), Error>`: sulla
   macchina costruita e completata come quella salvata (stessi
   `MachineConfig` e `Devices`, stessi dispositivi montati dopo con i loro

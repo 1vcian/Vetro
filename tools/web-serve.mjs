@@ -11,8 +11,8 @@
 //   /wasm/vetro_wasm.wasm   -> target/wasm32-unknown-unknown/release/vetro_wasm.wasm
 //   /guest/                 -> target/guest-kernel/  (Image, initramfs.cpio.gz)
 //   /disks/                 -> target/web-disks/     (immagini di disco da provare)
-//   /aosp/                  -> target/aosp/out/      (immagine AOSP di Vetro: manifest.json,
-//                              immagini, web/disk.json; tools/aosp/fetch.sh e web-disk.mjs)
+//   /aosp/                  -> target/aosp/out/      (Vetro's AOSP image: manifest.json,
+//                              images, web/disk.json; tools/aosp/fetch.sh and web-disk.mjs)
 //
 // Come modulo: `serve({ mounts, port, onRequest })` restituisce
 // `{ server, url, close() }` (porta 0 = una libera). `isolation: false`

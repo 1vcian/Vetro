@@ -15,17 +15,17 @@
 
   <form id="setup">
     <fieldset id="os-box">
-      <legend>Sistema</legend>
-      <label title="Il kernel Linux e la shell di BusyBox di M3: pronto in pochi secondi"><input type="radio" name="os" value="linux" checked> Linux di prova</label>
-      <label title="L'immagine AOSP 15 di Vetro (ADR 0022): il primo avvio dura decine di minuti, dal secondo riparte dallo snapshot salvato in OPFS"><input type="radio" name="os" value="android"> AOSP 15 di Vetro</label>
+      <legend>System</legend>
+      <label title="The M3 Linux kernel and BusyBox shell: ready in a few seconds"><input type="radio" name="os" value="linux" checked> Test Linux</label>
+      <label title="Vetro's AOSP 15 image (ADR 0022): the first boot takes tens of minutes, from the second start it resumes from the snapshot saved in OPFS"><input type="radio" name="os" value="android"> Vetro's AOSP 15</label>
     </fieldset>
     <fieldset id="android-fields" hidden>
-      <legend>Immagine AOSP</legend>
-      <label>Versione (manifest.json)
+      <legend>AOSP image</legend>
+      <label>Version (manifest.json)
         <input name="manifestUrl" spellcheck="false">
       </label>
-      <p class="dim">Immagini di avvio (80 MiB circa) e disco letti a pezzi con HTTP Range, tenuti in OPFS.
-        Il primo avvio dura decine di minuti; dopo la fine dell'avvio lo stato si salva e dal secondo avvio la home torna in pochi secondi.</p>
+      <p class="dim">Boot images (about 136 MiB, mostly zeros) and disk read in pieces with HTTP Range and kept in OPFS.
+        The first boot takes about 45 minutes; once the home screen is up the state is saved, and from the second start the home screen is back in about 5 seconds.</p>
     </fieldset>
     <fieldset id="linux-fields">
       <legend>Macchina</legend>
@@ -82,7 +82,7 @@
         <div id="screen-off" role="status">
           <p><strong>Il guest non sta disegnando</strong> (scanout spento): questa demo usa la console seriale, il riquadro di testo della pagina.
             Lo schermo si accende quando un programma disegna (con Android, il telefono).</p>
-          <p id="screen-android" hidden><strong>Il sistema si sta avviando</strong>: lo schermo si accende quando parte la grafica (surfaceflinger); le fasi sono nel riquadro accanto.</p>
+          <p id="screen-android" hidden><strong>The system is booting</strong>: the screen turns on when the graphics start (surfaceflinger); the phases are in the panel next to it.</p>
           <button id="screen-demo" type="button" title="Digita nella console: timeout 30 vetro-dev drm-hold. Il motivo resta 30 s di tempo del guest; Invio nella console lo chiude prima">Disegna un motivo di prova</button>
         </div>
       </div>
@@ -94,19 +94,19 @@
       </div>
     </section>
     <section id="android-box" hidden>
-      <h3>Avvio</h3>
+      <h3>Boot</h3>
       <ol id="phases"></ol>
       <p id="boot-info" class="dim"></p>
       <h3>adb</h3>
-      <p id="adb-status">in attesa della fine dell'avvio</p>
-      <div id="apk-drop" tabindex="0" title="Trascina un file .apk qui o sullo schermo">
-        Trascina qui un APK, o <label class="file-button">sceglilo <input id="apk-file" type="file" accept=".apk,application/vnd.android.package-archive"></label>:
-        si installa con adb e si apre.
+      <p id="adb-status">waiting for the end of the boot</p>
+      <div id="apk-drop" tabindex="0" title="Drop an .apk file here or on the screen">
+        Drop an APK here, or <label class="file-button">choose it <input id="apk-file" type="file" accept=".apk,application/vnd.android.package-archive"></label>:
+        it is installed with adb and opened.
       </div>
       <p id="apk-status" class="dim"></p>
       <form id="adb-shell">
-        <input id="adb-cmd" placeholder="comando per adb shell, es. getprop ro.build.version.release" spellcheck="false">
-        <button type="submit">Esegui</button>
+        <input id="adb-cmd" placeholder="adb shell command, e.g. getprop ro.build.version.release" spellcheck="false">
+        <button type="submit">Run</button>
       </form>
       <pre id="adb-out" class="mono-box"></pre>
     </section>

@@ -41,11 +41,11 @@ export const INOTIFY = {
 
 const utf8 = new TextDecoder();
 const toUtf8 = new TextEncoder();
-/** Byte dell'intestazione di uno snapshot (vetro_snapshot::HEADER_LEN). */
+/** Bytes of a snapshot header (vetro_snapshot::HEADER_LEN). */
 export const SNAPSHOT_HEADER_LEN = 36;
-/** Dove vanno i pezzi di vetro_snapshot_save_stream (import vetro_host.snapshot_write). */
+/** Where the chunks of vetro_snapshot_save_stream go (import vetro_host.snapshot_write). */
 let snapshotSink = null;
-/** Da dove vengono quelli di vetro_snapshot_restore_stream (import vetro_host.snapshot_read). */
+/** Where those of vetro_snapshot_restore_stream come from (import vetro_host.snapshot_read). */
 let snapshotSource = null;
 
 /**
@@ -187,8 +187,8 @@ export function sqlValue(v) {
 }
 
 /**
- * Istanzia vetro-wasm dai byte del .wasm: { exports, jit }. `jitBudget`:
- * byte di moduli del JIT fra un azzeramento e l'altro (CODE_BUDGET di
+ * Instantiates vetro-wasm from the .wasm bytes: { exports, jit }.
+ * `jitBudget`: bytes of JIT modules between two resets (CODE_BUDGET in
  * jit-engine.mjs).
  */
 export async function instantiate(wasmBytes, { jitBudget } = {}) {
@@ -201,11 +201,11 @@ export async function instantiate(wasmBytes, { jitBudget } = {}) {
         console.error(`vetro-wasm: panic: ${msg}`);
       },
       snapshot_read: (ptr, cap) => {
-        if (!snapshotSource) throw new Error('vetro_host.snapshot_read fuori da Machine.snapshotRestoreStream');
+        if (!snapshotSource) throw new Error('vetro_host.snapshot_read outside Machine.snapshotRestoreStream');
         return snapshotSource(ptr >>> 0, cap >>> 0);
       },
       snapshot_write: (ptr, len) => {
-        if (!snapshotSink) throw new Error('vetro_host.snapshot_write fuori da Machine.snapshotSaveTo');
+        if (!snapshotSink) throw new Error('vetro_host.snapshot_write outside Machine.snapshotSaveTo');
         snapshotSink(ptr >>> 0, len >>> 0);
       },
     },
@@ -468,12 +468,12 @@ export class Machine {
   }
 
   /**
-   * Snapshot a pezzi (ABI 12, ADR 0028), senza tenerlo intero né nella
-   * memoria del modulo né nel JS: `write(bytes, offset)` (sincrona: si
-   * chiama da dentro vetro-wasm) riceve i pezzi del file in ordine, poi
-   * l'intestazione a offset 0; `bytes` è una vista da non tenere dopo il
-   * ritorno. Restituisce la lunghezza del file. Con Android lo snapshot è di
-   * centinaia di MiB e intero non starebbe nei 4 GiB di wasm32.
+   * Chunked snapshot (ABI 12, ADR 0028), never held whole in the module's
+   * memory or in JS: `write(bytes, offset)` (synchronous: it is called from
+   * inside vetro-wasm) receives the file's chunks in order, then the header at
+   * offset 0; `bytes` is a view not to keep after returning. Returns the file
+   * length. With Android the snapshot is hundreds of MiB and would not fit
+   * whole in wasm32's 4 GiB.
    */
   snapshotSaveTo(write) {
     const x = this.#x;
@@ -491,19 +491,19 @@ export class Machine {
     const head = new Uint8Array(x.memory.buffer, x.vetro_snapshot_ptr(this.#vm) >>> 0, SNAPSHOT_HEADER_LEN).slice();
     x.vetro_snapshot_clear(this.#vm);
     write(head, 0);
-    if (at !== total) throw new Error(`snapshot a pezzi: ${at} byte invece di ${total}`);
+    if (at !== total) throw new Error(`chunked snapshot: ${at} bytes instead of ${total}`);
     return total;
   }
 
   /**
-   * Come `snapshotRestore`, con i byte scritti da `fill(view)` direttamente
-   * in un buffer di `n` byte della memoria del modulo (per esempio letti da
-   * OPFS), senza una copia nel JS.
+   * Like `snapshotRestore`, with the bytes written by `fill(view)` straight
+   * into an `n`-byte buffer in the module's memory (read from OPFS, for
+   * example), without a copy in JS.
    */
   async snapshotRestoreWith(n, fill) {
     const x = this.#x;
     const ptr = x.vetro_alloc(n) >>> 0;
-    if (!ptr) throw Object.assign(new Error(`vetro_alloc(${n}) fallita: memoria del modulo esaurita`), { code: 'Memory' });
+    if (!ptr) throw Object.assign(new Error(`vetro_alloc(${n}) failed: module memory exhausted`), { code: 'Memory' });
     try {
       await fill(new Uint8Array(x.memory.buffer, ptr, n));
       const r = x.vetro_snapshot_restore(this.#vm, ptr, n);
@@ -518,19 +518,19 @@ export class Machine {
   }
 
   /**
-   * Ripristino a pezzi (ABI 12, ADR 0028): `readAt(view, offset)`
-   * (sincrona) riempie `view` con i byte del file da `offset`; `size` è la
-   * lunghezza del file. Nella memoria del modulo va solo la parte prima della
-   * RAM (dispositivi e copy-on-write); la RAM arriva a pezzi da 1 MiB, così
-   * un buffer grande quanto lo snapshot non frammenta la memoria di chi
-   * dopo vuole salvare di nuovo. Lancia come `snapshotRestore`.
+   * Chunked restore (ABI 12, ADR 0028): `readAt(view, offset)` (synchronous)
+   * fills `view` with the file's bytes from `offset`; `size` is the file
+   * length. Only the part before the RAM goes into the module's memory
+   * (devices and copy-on-write); the RAM arrives in 1 MiB chunks, so a buffer
+   * as large as the snapshot does not fragment the memory of whoever wants to
+   * save again later. Throws like `snapshotRestore`.
    */
   snapshotRestoreStream(size, readAt) {
     const x = this.#x;
     const small = new Uint8Array(12);
     let at = SNAPSHOT_HEADER_LEN;
     for (;;) {
-      if (at + 12 > size) throw Object.assign(new Error('snapshot: sezione RAM non trovata'), { code: 'Corrupt' });
+      if (at + 12 > size) throw Object.assign(new Error('snapshot: RAM section not found'), { code: 'Corrupt' });
       readAt(small, at);
       const tag = String.fromCharCode(...small.subarray(0, 4));
       if (tag === 'RAM ') break;
@@ -538,7 +538,7 @@ export class Machine {
     }
     const headLen = at + 12;
     const ptr = x.vetro_alloc(headLen) >>> 0;
-    if (!ptr) throw Object.assign(new Error(`vetro_alloc(${headLen}) fallita: memoria del modulo esaurita`), { code: 'Memory' });
+    if (!ptr) throw Object.assign(new Error(`vetro_alloc(${headLen}) failed: module memory exhausted`), { code: 'Memory' });
     let pos = headLen;
     snapshotSource = (p, cap) => {
       const n = Math.min(cap, size - pos);
@@ -560,7 +560,7 @@ export class Machine {
     }
   }
 
-  /** Byte della memoria lineare del modulo (RAM del guest compresa). */
+  /** Bytes of the module's linear memory (guest RAM included). */
   get memoryBytes() {
     return this.#x.memory.buffer.byteLength;
   }
@@ -866,10 +866,10 @@ export class Machine {
   }
 
   /**
-   * Avvio da immagini Android (ABI 12, ADR 0018): `boot` (boot.img),
-   * `vendorBoot`, `initBoot` (Uint8Array o null), `params` (parametri del
-   * bootloader: gli `androidboot.*` vanno nel bootconfig), `recovery`.
-   * Restituisce la descrizione di kernel e ramdisk; lancia in caso di errore.
+   * Boot from Android images (ABI 12, ADR 0018): `boot` (boot.img),
+   * `vendorBoot`, `initBoot` (Uint8Array or null), `params` (bootloader
+   * parameters: `androidboot.*` go into the bootconfig), `recovery`. Returns
+   * the description of kernel and ramdisks; throws on error.
    */
   loadAndroid({ boot, vendorBoot = null, initBoot = null, params = '', recovery = false }) {
     const x = this.#x;
@@ -878,7 +878,7 @@ export class Machine {
     const code = x.vetro_load_android(this.#vm, ...bufs.flat(), recovery ? 1 : 0);
     for (const [p, n] of bufs) if (n) x.vetro_free(p, n);
     const msg = this.#message();
-    if (code !== 0) throw new Error(`vetro_load_android: codice ${code}: ${msg}`);
+    if (code !== 0) throw new Error(`vetro_load_android: code ${code}: ${msg}`);
     return msg;
   }
 

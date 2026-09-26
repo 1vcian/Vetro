@@ -6,8 +6,8 @@
 // SQLite (anche con il WAL) e visualizzatori del gestore dei file
 // (web/app/sqlite.mjs, web/app/files.mjs, M8), SQL e SharedPreferences
 // del pannello, nomi non UTF-8 e argomenti SQL di vetro.mjs (ADR 0021),
-// formati dei pannelli di analisi (web/app/analysis.mjs, M7/M10), disco
-// ricomposto da una mappa, fasi dell'avvio di Android e manifesto degli APK
+// formati dei pannelli di analisi (web/app/analysis.mjs, M7/M10), the disk
+// rebuilt from a map, Android boot phases and APK manifests
 // (web/node/disk.mjs, android.mjs, apk.mjs, M5/M6).
 //
 //   node tests/web/unit.mjs
@@ -444,7 +444,7 @@ test('ispettore: celle dei corpi e del tipo', () => {
   ], ['application/json', 'vuoto', 'testo', '–'], 'tipo');
 });
 
-test('mappa del disco: estensioni, riempimenti, buchi, LayoutSource via HTTP', async () => {
+test('disk map: extents, fills, holes, LayoutSource over HTTP', async () => {
   const dir = join(root, 'target/web-test/layout');
   mkdirSync(join(dir, 'web'), { recursive: true });
   const head = new Uint8Array(3000).map((_, i) => (i * 7 + 1) & 0xff);
@@ -456,7 +456,7 @@ test('mappa del disco: estensioni, riempimenti, buchi, LayoutSource via HTTP', a
     files: [{ path: 'head.bin', size: head.length }, { path: '../big.img', size: big.length }],
     extents: [[0, 1000, 0, 0], [1000, 500, 0, 2000], [4096, 8192, 1, 100], [12288, 4096, 1, 8292], [20000, 6, -2, 0x04030201], [30000, 100, -1, 0], [60000, 5536, 1, 1000]],
   };
-  // Il disco atteso, byte per byte.
+  // The expected disk, byte by byte.
   const want = new Uint8Array(65536);
   want.set(head.subarray(0, 1000), 0);
   want.set(head.subarray(2000, 2500), 1000);
@@ -466,19 +466,19 @@ test('mappa del disco: estensioni, riempimenti, buchi, LayoutSource via HTTP', a
   want.set(big.subarray(1000, 1000 + 5536), 60000);
   writeFileSync(join(dir, 'web/disk.json'), JSON.stringify(layout));
   const l = parseLayout(layout);
-  // Due estensioni contigue nel disco e nel file: un pezzo solo.
-  eq(composePlan(l, 4096, 12288), [{ at: 0, length: 12288, file: 1, fileOffset: 100 }], 'pezzi uniti');
+  // Two extents contiguous in the disk and in the file: a single piece.
+  eq(composePlan(l, 4096, 12288), [{ at: 0, length: 12288, file: 1, fileOffset: 100 }], 'pieces merged');
   const files = [head, big];
   for (const [off, len] of [[0, 65536], [999, 3], [4000, 200], [19990, 20], [59999, 5537], [30000, 100]]) {
     const got = composeRead(l, off, len, (f, o, n) => files[f].subarray(o, o + n));
     eq(Buffer.compare(Buffer.from(got), Buffer.from(want.subarray(off, off + len))), 0, `composeRead ${off}+${len}`);
   }
   for (const [bad, what] of [
-    [{ ...layout, extents: [[0, 10, 0, 0], [5, 10, 0, 0]] }, 'sovrapposte'],
-    [{ ...layout, extents: [[65530, 10, 0, 0]] }, 'oltre il disco'],
-    [{ ...layout, extents: [[0, 10, 0, 2995]] }, 'oltre il file'],
-    [{ ...layout, extents: [[0, 10, 5, 0]] }, 'file sconosciuto'],
-    [{ ...layout, version: 2 }, 'versione'],
+    [{ ...layout, extents: [[0, 10, 0, 0], [5, 10, 0, 0]] }, 'overlapping'],
+    [{ ...layout, extents: [[65530, 10, 0, 0]] }, 'beyond the disk'],
+    [{ ...layout, extents: [[0, 10, 0, 2995]] }, 'beyond the file'],
+    [{ ...layout, extents: [[0, 10, 5, 0]] }, 'unknown file'],
+    [{ ...layout, version: 2 }, 'version'],
   ]) {
     let threw = false;
     try {
@@ -486,23 +486,23 @@ test('mappa del disco: estensioni, riempimenti, buchi, LayoutSource via HTTP', a
     } catch {
       threw = true;
     }
-    check(threw, `mappa rifiutata: ${what}`);
+    check(threw, `map rejected: ${what}`);
   }
   const srv = await serve({ mounts: [['/l/', dir]] });
   try {
     const src = await new LayoutSource(`${srv.url}/l/web/disk.json`).open();
-    eq(src.size, 65536, 'dimensione dalla mappa');
-    check(src.key.startsWith(`layout:${srv.url}/l/web/disk.json|65536|`), 'chiave con URL e hash della mappa');
+    eq(src.size, 65536, 'size from the map');
+    check(src.key.startsWith(`layout:${srv.url}/l/web/disk.json|65536|`), 'key with the map URL and hash');
     const got = await src.read(0, 65536);
-    eq(Buffer.compare(Buffer.from(got), Buffer.from(want)), 0, 'disco intero via HTTP Range');
-    // Col DiskFeeder e blocchi da 4 KiB: gli stessi byte.
+    eq(Buffer.compare(Buffer.from(got), Buffer.from(want)), 0, 'whole disk over HTTP Range');
+    // With the DiskFeeder and 4 KiB blocks: the same bytes.
     const fed = new Map();
-    const machine = { addDisk: () => 0, diskWanted: () => [...Array(16).keys()].map((b) => ({ disk: 0, block: b })), diskFill: (_d, b, bytes) => fed.set(b, bytes.slice()), diskFail: () => { throw new Error('fallito'); } };
+    const machine = { addDisk: () => 0, diskWanted: () => [...Array(16).keys()].map((b) => ({ disk: 0, block: b })), diskFill: (_d, b, bytes) => fed.set(b, bytes.slice()), diskFail: () => { throw new Error('failed'); } };
     const feeder = new DiskFeeder(machine);
     feeder.add(src, { blockSize: 4096 });
     await feeder.serve();
-    for (let b = 0; b < 16; b++) eq(Buffer.compare(Buffer.from(fed.get(b)), Buffer.from(want.subarray(b * 4096, (b + 1) * 4096))), 0, `blocco ${b}`);
-    // File del server diverso dalla mappa: rifiutato all'apertura.
+    for (let b = 0; b < 16; b++) eq(Buffer.compare(Buffer.from(fed.get(b)), Buffer.from(want.subarray(b * 4096, (b + 1) * 4096))), 0, `block ${b}`);
+    // A server file differing from the map: rejected on open.
     writeFileSync(join(dir, 'big.img'), big.subarray(0, 100));
     let threw = false;
     try {
@@ -510,66 +510,66 @@ test('mappa del disco: estensioni, riempimenti, buchi, LayoutSource via HTTP', a
     } catch {
       threw = true;
     }
-    check(threw, 'file più corto della mappa: rifiutato');
+    check(threw, 'file shorter than the map: rejected');
   } finally {
     await srv.close();
   }
 });
 
-test('fasi dell\'avvio di Android (BootProgress)', () => {
+test('Android boot phases (BootProgress)', () => {
   const p = new BootProgress();
-  eq(p.phase, null, 'all\'inizio nessuna fase');
-  eq(p.feed('[    0.000000][    T0] Booting Linux on physical CPU 0x0\n[    1.1][    T1] Run /init as ', 1).map((e) => e.phase), ['kernel'], 'riga spezzata');
-  eq(p.feed('init process\n', 2).map((e) => e.phase), ['init'], 'riga completata');
-  // Riga di zygote senza la seconda fase: le fasi saltate contano come viste.
-  eq(p.feed("[   84.3][    T1] init: starting service 'zygote'...\r\n", 84).map((e) => e.phase), ['init2', 'zygote'], 'fasi saltate');
-  eq(p.feed("init: starting service 'zygote'...\n", 90).length, 0, 'fase già vista');
+  eq(p.phase, null, 'no phase at the start');
+  eq(p.feed('[    0.000000][    T0] Booting Linux on physical CPU 0x0\n[    1.1][    T1] Run /init as ', 1).map((e) => e.phase), ['kernel'], 'split line');
+  eq(p.feed('init process\n', 2).map((e) => e.phase), ['init'], 'line completed');
+  // A zygote line without the second stage: skipped phases count as seen.
+  eq(p.feed("[   84.3][    T1] init: starting service 'zygote'...\r\n", 84).map((e) => e.phase), ['init2', 'zygote'], 'skipped phases');
+  eq(p.feed("init: starting service 'zygote'...\n", 90).length, 0, 'phase already seen');
   eq(p.feed("init: Control message: Processed ctl.start for 'idmap2d' from pid: 794 (system_server)\n", 193).map((e) => e.phase), ['surfaceflinger', 'system_server'], 'system_server');
-  eq(p.feed('init: processing action (persist.sys.zram_enabled=1 && sys-boot-completed-set) from (x)\n', 585).map((e) => e.phase), ['booted'], 'avvio finito');
-  eq([p.phase, p.label, p.events.length, p.events.at(-1).guestSecs], ['booted', 'avvio finito', PHASES.length - 1, 585], 'fine dell\'avvio');
-  // La home la segna chi ha adb (attività in primo piano).
-  check(isHome('  mCurrentFocus=Window{5d2 u0 com.android.launcher3/com.android.launcher3.uioverlay.QuickstepLauncher}') && !isHome('  mCurrentFocus=Window{a1 u0 com.android.settings/com.android.settings.FallbackHome}'), 'home riconosciuta dal launcher');
-  eq(p.mark('home', 1600).map((e) => e.phase), ['home'], 'home segnata');
-  eq(p.mark('home', 1700).length, 0, 'home già segnata');
-  eq([p.phase, p.events.length], ['home', PHASES.length], 'stato finale');
-  // Home disegnata: colori distinti sulla griglia.
+  eq(p.feed('init: processing action (persist.sys.zram_enabled=1 && sys-boot-completed-set) from (x)\n', 585).map((e) => e.phase), ['booted'], 'boot finished');
+  eq([p.phase, p.label, p.events.length, p.events.at(-1).guestSecs], ['booted', 'boot finished', PHASES.length - 1, 585], 'end of the boot');
+  // The home screen is marked by whoever has adb (focused window).
+  check(isHome('  mCurrentFocus=Window{5d2 u0 com.android.launcher3/com.android.launcher3.uioverlay.QuickstepLauncher}') && !isHome('  mCurrentFocus=Window{a1 u0 com.android.settings/com.android.settings.FallbackHome}'), 'home screen recognised from the launcher');
+  eq(p.mark('home', 1600).map((e) => e.phase), ['home'], 'home screen marked');
+  eq(p.mark('home', 1700).length, 0, 'home screen already marked');
+  eq([p.phase, p.events.length], ['home', PHASES.length], 'final state');
+  // Home screen drawn: distinct colours on the grid.
   const img = new Uint8Array(64 * 32 * 4);
-  eq(gridColors(img, 64, 32), 1, 'schermo nero: un colore');
+  eq(gridColors(img, 64, 32), 1, 'black screen: one colour');
   for (let i = 0; i < 64 * 32; i++) img.set([i & 255, (i >> 3) & 255, 7], i * 4);
-  eq(gridColors(img, 64, 32), 8, 'griglia di passo 16: 4x2 campioni');
+  eq(gridColors(img, 64, 32), 8, '16-pixel grid: 4x2 samples');
 });
 
-test('APK: ZIP e manifesto binario (testdata/tocco-manifest.axml)', async () => {
+test('APK: ZIP and binary manifest (testdata/tocco-manifest.axml)', async () => {
   const axml = new Uint8Array(readFileSync(join(root, 'tests/web/testdata/tocco-manifest.axml')));
   const els = parseAxml(axml);
-  eq(els[0].name, 'manifest', 'primo elemento');
-  eq(els[0].attrs.package, 'it.vetro.tocco', 'pacchetto');
-  // Uno ZIP con il manifesto compresso (deflate) e un file non compresso.
+  eq(els[0].name, 'manifest', 'first element');
+  eq(els[0].attrs.package, 'it.vetro.tocco', 'package');
+  // A ZIP with the manifest compressed (deflate) and an uncompressed file.
   const deflated = new Uint8Array(await new Response(new Blob([axml]).stream().pipeThrough(new CompressionStream('deflate-raw'))).arrayBuffer());
   const zip = makeZip([['classes.dex', new TextEncoder().encode('dex\n035'), 0], ['AndroidManifest.xml', deflated, 8, axml.length]]);
-  eq([...zipEntries(zip).keys()], ['classes.dex', 'AndroidManifest.xml'], 'file dello ZIP');
-  eq(await apkInfo(zip), { package: 'it.vetro.tocco', versionName: '1.0', versionCode: 1, label: 'Tocco', launcher: 'it.vetro.tocco.Main' }, 'informazioni');
+  eq([...zipEntries(zip).keys()], ['classes.dex', 'AndroidManifest.xml'], 'ZIP files');
+  eq(await apkInfo(zip), { package: 'it.vetro.tocco', versionName: '1.0', versionCode: 1, label: 'Tocco', launcher: 'it.vetro.tocco.Main' }, 'information');
   let threw = false;
   try {
     await apkInfo(new Uint8Array(100));
   } catch {
     threw = true;
   }
-  check(threw, 'non uno ZIP: rifiutato');
+  check(threw, 'not a ZIP: rejected');
 });
 
-test('cache degli snapshot: metadati e lettura in un buffer dato', async () => {
+test('snapshot cache: metadata and reading into a given buffer', async () => {
   const store = SnapshotStore.memory();
   await store.save('k', { why: 'prova' }, new Uint8Array([5, 6, 7, 8]));
   const meta = await store.loadMeta('k');
-  eq([meta.size, meta.why], [4, 'prova'], 'metadati');
+  eq([meta.size, meta.why], [4, 'prova'], 'metadata');
   const view = new Uint8Array(4);
   await store.readInto('k', view);
-  eq([...view], [5, 6, 7, 8], 'byte nel buffer');
-  eq(await store.loadMeta('altro'), null, 'chiave assente');
+  eq([...view], [5, 6, 7, 8], 'bytes in the buffer');
+  eq(await store.loadMeta('altro'), null, 'missing key');
 });
 
-/** ZIP minimo: [nome, dati, metodo, lunghezza non compressa]. */
+/** A minimal ZIP: [name, data, method, uncompressed length]. */
 function makeZip(files) {
   const parts = [];
   const central = [];

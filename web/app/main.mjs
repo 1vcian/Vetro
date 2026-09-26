@@ -25,12 +25,12 @@
 // macchina e l'overlay dei dischi; al secondo avvio riparte dallo snapshot.
 // Lo stato si legge anche da `window.vetroState` (per i test nel browser).
 //
-// L'immagine AOSP di Vetro (M5/M6, ADR 0028): `?os=android` (o il selettore
-// "Sistema") e `&manifest=URL` (default: la versione pubblicata su R2). Il
-// riquadro accanto allo schermo mostra le fasi dell'avvio lette dalla
-// console, lo stato di adb e il posto dove trascinare un APK (anche sullo
-// schermo), che il Worker installa con il client ADB e apre; una riga per
-// `adb shell`. `window.vetroAndroid` per i test.
+// Vetro's AOSP image (M5/M6, ADR 0028): `?os=android` (or the "System"
+// selector) and `&manifest=URL` (default: the version published on R2). The
+// panel next to the screen shows the boot phases read from the console and
+// the home screen, the adb status and the place to drop an APK (also on the
+// screen), which the Worker installs with the ADB client and opens; an
+// `adb shell` line. `window.vetroAndroid` for tests.
 
 import { absAxis, BUTTONS, evdevCode } from './keymap.mjs';
 import { keyToBytes, Terminal } from './terminal.mjs';
@@ -39,9 +39,9 @@ import { FilePanel } from './files.mjs';
 import { AnalysisPanels } from './analysis.mjs';
 import { PHASES } from '../node/android.mjs';
 
-/** La versione dell'immagine AOSP di Vetro pubblicata su R2 (ADR 0022, 0028). */
+/** The version of Vetro's AOSP image published on R2 (ADR 0022, 0028, 0030). */
 export const DEFAULT_MANIFEST = 'https://pub-06e88fdd7f374fffb06844d60083f2ae.r2.dev/aosp/android-15.0.0_r36-BP1A.250505.005.D1-bd09e2f/manifest.json';
-/** RAM del guest con AOSP nel browser (ADR 0028). */
+/** Guest RAM with AOSP in the browser (ADR 0028). */
 export const ANDROID_RAM_MIB = 2048;
 
 const $ = (id) => document.getElementById(id);
@@ -292,7 +292,7 @@ function fmtStats(s) {
     `guest ${s.guestSecs.toFixed(2)} s`,
     `${s.mips.toFixed(1)} MIPS`,
   ];
-  if (s.memory) parts.push(`memoria ${(s.memory / 2 ** 20).toFixed(0)} MiB`);
+  if (s.memory) parts.push(`memory ${(s.memory / 2 ** 20).toFixed(0)} MiB`);
   for (const [i, d] of s.disks.entries()) {
     const ov = d.overlay ? ` (persistente, gen. ${d.overlay.generation})` : '';
     parts.push(`vd${String.fromCharCode(97 + i)}: ${d.fills} blocchi, ${d.http.requests} letture, cow ${d.dirtyClusters}${ov}`);
@@ -302,7 +302,7 @@ function fmtStats(s) {
   return parts.join(' · ');
 }
 
-// ---- AOSP: fasi dell'avvio e adb ------------------------------------------------
+// ---- AOSP: boot phases and adb ---------------------------------------------------
 
 const osValue = () => form.elements.os.value;
 
@@ -325,15 +325,15 @@ function showOs() {
 }
 for (const r of form.elements.os) r.addEventListener('change', showOs);
 
-/** Stato di AOSP per i test: fasi, adb, installazioni. */
+/** AOSP state for tests: phases, home screen, adb, installs. */
 const androidState = { phases: [], booted: null, adb: { state: 'none' }, installs: [] };
 let adbId = 0;
 const adbPending = new Map();
 
-/** Una richiesta ADB al Worker: Promise del risultato. */
+/** An ADB request to the Worker: a Promise of the result. */
 function adbRequest(op, args = {}, transfer = []) {
   return new Promise((ok, ko) => {
-    if (!worker) return ko(new Error('macchina spenta'));
+    if (!worker) return ko(new Error('machine off'));
     const id = ++adbId;
     adbPending.set(id, { ok, ko, op });
     worker.postMessage({ type: 'adb', id, op, ...args }, transfer);
@@ -341,14 +341,14 @@ function adbRequest(op, args = {}, transfer = []) {
 }
 
 async function installApk(bytes, name = 'app.apk') {
-  $('apk-status').textContent = `${name}: invio al Worker (${(bytes.byteLength / 1024).toFixed(0)} KiB)`;
+  $('apk-status').textContent = `${name}: sending to the Worker (${(bytes.byteLength / 1024).toFixed(0)} KiB)`;
   const buf = bytes instanceof ArrayBuffer ? bytes : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
   const t0 = performance.now();
   try {
     const r = await adbRequest('install', { bytes: buf, name }, [buf]);
     const entry = { name, ...r, ms: performance.now() - t0 };
     androidState.installs.push(entry);
-    $('apk-status').textContent = `${r.info.package} installato (${(r.installMs / 1000).toFixed(1)} s) e aperto (${(r.openMs / 1000).toFixed(1)} s): ${r.component ?? 'nessuna attività principale'}`;
+    $('apk-status').textContent = `${r.info.package} installed (${(r.installMs / 1000).toFixed(1)} s) and opened (${(r.openMs / 1000).toFixed(1)} s): ${r.component ?? 'no main activity'}`;
     screen.focus();
     return entry;
   } catch (e) {
@@ -378,7 +378,7 @@ function renderPhases() {
       li.className = name === current && name !== 'booted' ? 'current' : 'done';
       const t = document.createElement('span');
       t.className = 't';
-      t.textContent = `${p.guestSecs.toFixed(0)} s di guest${p.wallMs !== undefined ? `, ${(p.wallMs / 1000).toFixed(0)} s reali` : ''}`;
+      t.textContent = `${p.guestSecs.toFixed(0)} s of guest time${p.wallMs !== undefined ? `, ${(p.wallMs / 1000).toFixed(0)} s wall` : ''}`;
       li.append(t);
     }
     list.append(li);
@@ -392,20 +392,20 @@ function onAndroidMessage(msg) {
       renderPhases();
       if (msg.phase === 'home') {
         androidState.home = { guestSecs: msg.guestSecs, wallMs: msg.wallMs, activity: msg.detail, colors: msg.colors, focusGuestSecs: msg.focusGuestSecs };
-        $('boot-info').textContent += ` · home a ${msg.guestSecs.toFixed(0)} s di guest, ${(msg.wallMs / 60000).toFixed(1)} min reali`;
-        setStatus('home a schermo: tra poco lo stato si salva (dal prossimo avvio si riparte da qui)');
-      } else if (msg.phase !== 'booted') setStatus(`avvio: ${msg.label} (${msg.guestSecs.toFixed(0)} s di guest)`);
+        $('boot-info').textContent += ` · home screen at ${msg.guestSecs.toFixed(0)} s of guest time, ${(msg.wallMs / 60000).toFixed(1)} min wall`;
+        setStatus('home screen up: the state is saved shortly (the next start resumes from here)');
+      } else if (msg.phase !== 'booted') setStatus(`boot: ${msg.label} (${msg.guestSecs.toFixed(0)} s of guest time)`);
       return true;
     case 'booted':
       androidState.booted = { guestSecs: msg.guestSecs, wallMs: msg.wallMs };
-      $('boot-info').textContent = `avvio finito a ${msg.guestSecs.toFixed(0)} s di tempo del guest, ${(msg.wallMs / 60000).toFixed(1)} min reali`;
-      setStatus('avvio finito: si aspetta la home (prima c\'è "Phone is starting")');
+      $('boot-info').textContent = `boot finished at ${msg.guestSecs.toFixed(0)} s of guest time, ${(msg.wallMs / 60000).toFixed(1)} min wall`;
+      setStatus('boot finished: waiting for the home screen ("Phone is starting" comes first)');
       return true;
     case 'adb-status': {
       androidState.adb = { state: msg.state, devices: msg.devices, error: msg.error };
       const d = msg.devices?.[0];
-      $('adb-status').textContent = msg.state === 'ready' ? `collegato: ${d?.serial ?? '?'} (${d?.model ?? ''}, ${msg.banner?.props?.['ro.product.name'] ?? ''})`
-        : msg.state === 'connecting' ? 'collegamento ad adbd…' : `in attesa di adbd${msg.error ? ` (${msg.error})` : ''}`;
+      $('adb-status').textContent = msg.state === 'ready' ? `connected: ${d?.serial ?? '?'} (${d?.model ?? ''}, ${msg.banner?.props?.['ro.product.name'] ?? ''})`
+        : msg.state === 'connecting' ? 'connecting to adbd…' : `waiting for adbd${msg.error ? ` (${msg.error})` : ''}`;
       return true;
     }
     case 'adb-progress':
@@ -414,7 +414,8 @@ function onAndroidMessage(msg) {
     case 'adb-reply': {
       const p = adbPending.get(msg.id);
       adbPending.delete(msg.id);
-      if (msg.ok) p?.ok({ ...msg.result, ms: msg.ms });
+      // The time is added only to results that are objects (not to lists).
+      if (msg.ok) p?.ok(msg.result && typeof msg.result === 'object' && !Array.isArray(msg.result) ? { ...msg.result, ms: msg.ms } : msg.result);
       else p?.ko(new Error(msg.error));
       return true;
     }
@@ -422,7 +423,7 @@ function onAndroidMessage(msg) {
   return false;
 }
 
-// APK trascinato sul riquadro o sullo schermo, o scelto.
+// APK dropped on the panel or on the screen, or chosen.
 async function onApkFiles(files) {
   const f = [...files].find((x) => /\.apk$/i.test(x.name)) ?? files[0];
   if (!f) return;
@@ -451,9 +452,9 @@ $('adb-shell').addEventListener('submit', async (e) => {
   out.textContent += `$ ${cmd}\n`;
   try {
     const r = await adbRequest('shell', { cmd });
-    out.textContent += `${r.stdout}${r.stderr}${r.exitCode ? `[codice ${r.exitCode}]\n` : ''}`;
+    out.textContent += `${r.stdout}${r.stderr}${r.exitCode ? `[exit code ${r.exitCode}]\n` : ''}`;
   } catch (err) {
-    out.textContent += `errore: ${err.message}\n`;
+    out.textContent += `error: ${err.message}\n`;
   }
   out.scrollTop = out.scrollHeight;
 });
@@ -539,7 +540,7 @@ async function start() {
           androidState.phases = msg.progress.map((p) => ({ ...p, wallMs: undefined }));
           androidState.booted = { restored: true };
           renderPhases();
-          $('boot-info').textContent = 'ripartito dallo snapshot salvato alla fine dell\'avvio';
+          $('boot-info').textContent = 'resumed from the snapshot saved at the home screen';
         }
         replaying = true;
         term.feed(msg.console);

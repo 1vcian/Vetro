@@ -1,11 +1,11 @@
-// App di prova di Vetro (M5/M6): uno schermo di un colore che cambia a ogni
-// tocco. I test la installano con il client ADB della pagina, la aprono con
-// `am start` e controllano i pixel dello scanout prima e dopo un tocco
+// Vetro's test app (M5/M6): a screen of one colour that changes at every
+// touch. The tests install it with the page's ADB client, open it with
+// `am start` and check the scanout pixels before and after a touch
 // (tests/web/android.mjs, tests/web/android-chrome.mjs).
 //
-// Colori: blu (0xff1565c0) all'avvio, poi arancione e blu alternati; al
-// centro il numero di tocchi. Ogni tocco va anche nel log
-// ("vetro-tocco: tocco N") e nel file files/tocchi dell'app.
+// Colours: blue (0xff1565c0) at start, then orange and blue alternating; the
+// number of touches above the centre. Every touch also goes to the log
+// ("vetro-tocco: tocco N") and to the app's files/tocchi file.
 package it.vetro.tocco;
 
 import android.app.Activity;
@@ -43,7 +43,7 @@ public class Main extends Activity {
         @Override
         protected void onDraw(Canvas c) {
             c.drawColor(tocchi % 2 == 0 ? BLU : ARANCIONE);
-            // Il numero sta sopra il centro: il pixel centrale resta del colore di fondo.
+            // The number sits above the centre: the central pixel keeps the background colour.
             c.drawText(Integer.toString(tocchi), getWidth() / 2f, getHeight() / 4f, testo);
         }
 

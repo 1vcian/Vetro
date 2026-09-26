@@ -24,12 +24,12 @@
 export const TABLE_SIZE = 1 << 18;
 
 /**
- * Byte di moduli generati compilati fra un azzeramento e l'altro, al più.
- * Oltre, `compile` rifiuta il modulo e vetro-jit azzera il motore (come per
- * la tabella piena): V8 non restituisce errori quando lo spazio per il
- * codice compilato finisce (4 GiB), chiude il processo. Con Android il JIT
- * arrivava lì dopo mezz'ora (ADR 0028); 96 MiB di wasm sono qualche centinaio
- * di MiB di codice macchina.
+ * At most this many bytes of generated modules compiled between two resets.
+ * Beyond it, `compile` refuses the module and vetro-jit resets the engine (as
+ * for a full table): V8 returns no error when the space for compiled code
+ * runs out (4 GiB), it kills the process. With Android the JIT got there after
+ * half an hour (ADR 0028); 96 MiB of wasm are a few hundred MiB of machine
+ * code.
  */
 export const CODE_BUDGET = 96 << 20;
 
@@ -39,10 +39,10 @@ export class JitEngine {
   #instances = new Map(); // indice -> export del modulo generato
   #rt = {}; // export del modulo di runtime (import `rt.*` dei moduli)
   #next = 0;
-  /** Byte compilati dall'ultimo azzeramento, e limite. */
+  /** Bytes compiled since the last reset, and the limit. */
   #since = 0;
   #budget;
-  /** Voci della tabella delle funzioni di vetro-wasm date con `entry`, e quelle libere. */
+  /** Entries of vetro-wasm's function table handed out with `entry`, and the free ones. */
   #entries = [];
   #free = [];
   /** Moduli compilati, byte e azzeramenti, per i benchmark. */
@@ -67,7 +67,7 @@ export class JitEngine {
     const v = this.#vetro;
     if (this.#since > 0 && this.#since + bytes.length > this.#budget) {
       this.stats.refused++;
-      throw new RangeError(`limite del codice del JIT (${this.#budget} byte dall'ultimo azzeramento)`);
+      throw new RangeError(`JIT code limit (${this.#budget} bytes since the last reset)`);
     }
     const t0 = performance.now();
     const module = new WebAssembly.Module(bytes);
@@ -117,10 +117,10 @@ export class JitEngine {
   reset() {
     this.#instances.clear();
     this.#table = null;
-    // Le voci date a Rust tengono vivi i loro moduli (il dispatcher tiene la
-    // tabella dei blocchi, che tiene tutti i blocchi): si svuotano, così il
-    // codice di prima si può liberare. Rust non le usa più (gli id dei moduli
-    // nuovi sono diversi).
+    // The entries handed to Rust keep their modules alive (the dispatcher
+    // holds the block table, which holds every block): clearing them lets the
+    // old code be freed. Rust no longer uses them (new modules have different
+    // ids).
     const t = this.#vetro?.__indirect_function_table;
     for (const i of this.#entries) {
       t?.set(i, null);

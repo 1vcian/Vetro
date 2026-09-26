@@ -76,7 +76,9 @@ use display::WebDisplay;
 /// `vetro_jit_stats`.
 /// 11: FP/SIMD nelle regioni (ADR 0026): export `vetro_jit_simd` (import
 /// `env.simd` del runtime), `JitState` con FPCR/FPSR e l'orologio.
-/// 12: avvio da immagini Android (`vetro_load_android`, ADR 0018 e 0028).
+/// 12: booting from Android images (`vetro_load_android`, ADR 0018 and
+/// 0028), chunked snapshots (`vetro_snapshot_save_stream`,
+/// `vetro_snapshot_restore_stream`, imports `vetro_host.snapshot_write/read`).
 pub const ABI_VERSION: u32 = 12;
 
 /// Allineamento dei buffer di [`vetro_alloc`] (basta per `JitState`).
@@ -121,18 +123,18 @@ pub mod input_dev {
     pub const POINTER: u32 = 1;
 }
 
-/// Bit di `flags` di [`vetro_load_android`].
+/// Bits of the `flags` of [`vetro_load_android`].
 pub mod android_flags {
-    /// Avvio in recovery: anche i ramdisk del vendor di tipo recovery.
+    /// Recovery boot: also the vendor ramdisks of type recovery.
     pub const RECOVERY: u32 = 1;
 }
 
-/// Codici di [`vetro_load_linux`] e [`vetro_load_android`].
+/// Codes of [`vetro_load_linux`] and [`vetro_load_android`].
 pub mod load {
     pub const OK: u32 = 0;
     /// Il caricatore ha rifiutato i file: il motivo è in `vetro_message_*`.
     pub const BOOT_ERROR: u32 = 1;
-    /// La riga di comando (o i parametri del bootloader) non è UTF-8.
+    /// The command line (or the bootloader parameters) is not UTF-8.
     pub const BAD_CMDLINE: u32 = 2;
 }
 
@@ -448,10 +450,10 @@ impl Vm {
         }
     }
 
-    /// Il bootloader Android di Vetro (ADR 0018): combina `boot.img`,
-    /// `vendor_boot.img` e `init_boot.img` (vuoti = assenti) con i parametri
-    /// del bootloader `params` e carica il risultato come [`load_linux`].
-    /// Riuscito, il messaggio descrive kernel, ramdisk e bootconfig.
+    /// Vetro's Android bootloader (ADR 0018): combines `boot.img`,
+    /// `vendor_boot.img` and `init_boot.img` (empty = absent) with the
+    /// bootloader parameters `params` and loads the result like [`load_linux`].
+    /// On success the message describes kernel, ramdisks and bootconfig.
     ///
     /// [`load_linux`]: Self::load_linux
     pub fn load_android(
@@ -463,7 +465,7 @@ impl Vm {
         recovery: bool,
     ) -> u32 {
         let Ok(params) = core::str::from_utf8(params) else {
-            self.message = "parametri del bootloader non UTF-8".into();
+            self.message = "bootloader parameters are not UTF-8".into();
             return load::BAD_CMDLINE;
         };
         let opts = vetro_machine::android::BootOptions { params: params.to_string(), recovery };
@@ -481,14 +483,14 @@ impl Vm {
         match self.m.load_android(&a) {
             Ok(_) => {
                 self.message = format!(
-                    "kernel {} ({} byte), ramdisk: {}{}; riga di comando: {}",
+                    "kernel {} ({} bytes), ramdisks: {}{}; command line: {}",
                     a.kernel_format,
                     a.kernel.len(),
-                    if a.ramdisks.is_empty() { "nessuno".to_string() } else { a.ramdisks.join(", ") },
+                    if a.ramdisks.is_empty() { "none".to_string() } else { a.ramdisks.join(", ") },
                     if a.bootconfig.is_empty() {
                         String::new()
                     } else {
-                        format!(", bootconfig {} byte", a.bootconfig.len())
+                        format!(", bootconfig {} bytes", a.bootconfig.len())
                     },
                     a.cmdline
                 );
@@ -525,9 +527,9 @@ impl Vm {
         self.m.save()
     }
 
-    /// Snapshot a pezzi ([`Machine::save_stream`]): il contenuto va a
-    /// `sink`, l'intestazione è il risultato. Il buffer della parte prima
-    /// della RAM si dimensiona sul copy-on-write dei dischi.
+    /// Chunked snapshot ([`Machine::save_stream`]): the content goes to
+    /// `sink`, the header is the result. The buffer for the part before the
+    /// RAM is sized on the disks' copy-on-write layer.
     pub fn save_state_stream(
         &mut self,
         sink: &mut dyn FnMut(&[u8]),
@@ -548,7 +550,7 @@ impl Vm {
         Ok(())
     }
 
-    /// Come [`Vm::restore_state`] con il file letto a pezzi
+    /// Like [`Vm::restore_state`] with the file read in chunks
     /// ([`vetro_machine::Machine::load_state_stream`]).
     pub fn restore_state_stream(
         &mut self,
@@ -617,9 +619,9 @@ mod host {
     unsafe extern "C" {
         /// Messaggio UTF-8 di un panic, subito prima della trappola.
         pub fn panic(ptr: *const u8, len: usize);
-        /// Un pezzo di uno snapshot di `vetro_snapshot_save_stream`.
+        /// A chunk of a `vetro_snapshot_save_stream` snapshot.
         pub fn snapshot_write(ptr: *const u8, len: usize);
-        /// I prossimi byte di uno snapshot per `vetro_snapshot_restore_stream`.
+        /// The next bytes of a snapshot for `vetro_snapshot_restore_stream`.
         pub fn snapshot_read(ptr: *mut u8, cap: usize) -> usize;
     }
 }
@@ -688,12 +690,12 @@ pub unsafe extern "C" fn vetro_load_linux(
     vm.load_linux(image, (!initrd.is_empty()).then_some(initrd), cmdline)
 }
 
-/// Avvio da immagini Android (ABI 12): `boot.img`, `vendor_boot.img` e
-/// `init_boot.img` (nulli o lunghi 0 = assenti), parametri del bootloader
-/// (`params`, UTF-8: gli `androidboot.*` vanno nel bootconfig con
-/// `vendor_boot` v4), `flags` di [`android_flags`]. Restituisce un codice di
-/// [`load`]; riuscito, `vetro_message_*` descrive kernel e ramdisk. I buffer
-/// si possono liberare subito dopo.
+/// Boot from Android images (ABI 12): `boot.img`, `vendor_boot.img` and
+/// `init_boot.img` (null or 0 long = absent), bootloader parameters
+/// (`params`, UTF-8: `androidboot.*` go into the bootconfig with a v4
+/// `vendor_boot`), `flags` from [`android_flags`]. Returns a [`load`] code; on
+/// success `vetro_message_*` describes kernel and ramdisks. The buffers can be
+/// freed right after.
 #[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn vetro_load_android(
@@ -708,7 +710,7 @@ pub unsafe extern "C" fn vetro_load_android(
     params_len: usize,
     flags: u32,
 ) -> u32 {
-    // SAFETY: puntatori validi per le lunghezze date (contratto dell'API).
+    // SAFETY: pointers valid for the given lengths (API contract).
     let vm = unsafe { &mut *vm };
     let (boot, vendor, init, params) = unsafe {
         (
@@ -1237,13 +1239,13 @@ pub unsafe extern "C" fn vetro_snapshot_save(vm: *mut Vm) -> usize {
     vm.snapshot.len()
 }
 
-/// Snapshot a pezzi (ABI 12, ADR 0028), per gli snapshot che non stanno
-/// interi nella memoria del modulo (Android): il contenuto va al JS con
-/// l'import `vetro_host.snapshot_write(ptr, len)`, un pezzo alla volta e in
-/// ordine (da scrivere dopo l'intestazione, all'offset
-/// `vetro_snapshot::HEADER_LEN`); l'intestazione resta nel buffer di
-/// [`vetro_snapshot_ptr`]. Restituisce la lunghezza del file intero. Sul
-/// target nativo (test) i pezzi finiscono nel buffer dopo l'intestazione.
+/// Chunked snapshot (ABI 12, ADR 0028), for snapshots that do not fit whole
+/// in the module's memory (Android): the content goes to JS through the import
+/// `vetro_host.snapshot_write(ptr, len)`, one chunk at a time and in order (to
+/// be written after the header, from offset `vetro_snapshot::HEADER_LEN`); the
+/// header stays in the [`vetro_snapshot_ptr`] buffer. Returns the length of the
+/// whole file. On the native target (tests) the chunks end up in the buffer
+/// after the header.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_snapshot_save_stream(vm: *mut Vm) -> u64 {
     // SAFETY: `vm` viene da `vetro_machine_new`.
@@ -1253,7 +1255,7 @@ pub unsafe extern "C" fn vetro_snapshot_save_stream(vm: *mut Vm) -> u64 {
     {
         let head = vm.save_state_stream(&mut |c| {
             total += c.len() as u64;
-            // SAFETY: import di `vetro_host`, legge `c` durante la chiamata.
+            // SAFETY: `vetro_host` import, reads `c` during the call.
             unsafe { host::snapshot_write(c.as_ptr(), c.len()) };
         });
         vm.snapshot = head.to_vec();
@@ -1323,22 +1325,21 @@ pub unsafe extern "C" fn vetro_snapshot_restore(vm: *mut Vm, data: *const u8, le
     }
 }
 
-/// Ripristino a pezzi (ABI 12, ADR 0028), senza il file intero nella memoria
-/// del modulo: `head` sono i byte del file fino all'intestazione della
-/// sezione `RAM ` compresa, il resto (il contenuto della RAM) si chiede al JS
-/// con l'import `vetro_host.snapshot_read(ptr, cap) -> byte scritti` (0 =
-/// fine). Stessi codici di [`vetro_snapshot_restore`]; con `CORRUPT` (anche
-/// una somma di controllo sbagliata, che si scopre alla fine) la macchina va
-/// scartata.
+/// Chunked restore (ABI 12, ADR 0028), without the whole file in the module's
+/// memory: `head` is the file's bytes up to and including the header of the
+/// `RAM ` section; the rest (the RAM content) is requested from JS through the
+/// import `vetro_host.snapshot_read(ptr, cap) -> bytes written` (0 = end).
+/// Same codes as [`vetro_snapshot_restore`]; with `CORRUPT` (including a wrong
+/// checksum, found at the end) the machine must be discarded.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_snapshot_restore_stream(vm: *mut Vm, head: *const u8, head_len: usize) -> u32 {
     use vetro_machine::vetro_snapshot::Error;
-    // SAFETY: `vm` viene da `vetro_machine_new`, `head` vale per `head_len` byte.
+    // SAFETY: `vm` comes from `vetro_machine_new`, `head` is valid for `head_len` bytes.
     let vm = unsafe { &mut *vm };
     let head = unsafe { bytes(head, head_len) };
     #[cfg(target_arch = "wasm32")]
     let mut pull = |buf: &mut [u8]| -> usize {
-        // SAFETY: import di `vetro_host`: scrive al più `buf.len()` byte in `buf`.
+        // SAFETY: `vetro_host` import: writes at most `buf.len()` bytes into `buf`.
         (unsafe { host::snapshot_read(buf.as_mut_ptr(), buf.len()) }).min(buf.len())
     };
     #[cfg(not(target_arch = "wasm32"))]
@@ -1466,7 +1467,7 @@ mod tests {
         unsafe { vetro_machine_free(vm) };
     }
 
-    /// ABI 12: immagini rifiutate con il motivo, parametri non UTF-8.
+    /// ABI 12: images rejected with the reason, parameters not UTF-8.
     #[test]
     fn avvio_android_rifiutato_con_messaggio() {
         let vm = small();
@@ -1633,10 +1634,10 @@ mod tests {
             let snap = bytes(vetro_snapshot_ptr(a), n).to_vec();
             vetro_snapshot_clear(a);
             assert!(vetro_snapshot_ptr(a).is_null());
-            // A pezzi (ABI 12): lo stesso file.
+            // Chunked (ABI 12): the same file.
             let total = vetro_snapshot_save_stream(a) as usize;
             assert_eq!(total, n);
-            assert!(bytes(vetro_snapshot_ptr(a), total) == snap.as_slice(), "snapshot a pezzi diverso");
+            assert!(bytes(vetro_snapshot_ptr(a), total) == snap.as_slice(), "chunked snapshot differs");
             vetro_snapshot_clear(a);
 
             let b = new();

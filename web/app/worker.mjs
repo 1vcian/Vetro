@@ -59,27 +59,27 @@
 //   sessione successiva lo snapshot si ripristina invece di avviare il
 //   kernel, se gli overlay sono ancora a quella generazione.
 //
-// L'immagine AOSP di Vetro (M5/M6, ADR 0028), con `config.android`:
-// - dal manifest.json della versione (R2 o server locale) vengono gli hash
-//   delle immagini (chiave degli snapshot) e i loro URL; boot, vendor_boot
-//   e init_boot si scaricano (verificati con lo sha256, tenuti in OPFS,
-//   `vetro-images/`) solo per un avvio da zero; il disco è la mappa
-//   `web/disk.json` (LayoutSource: super e userdata dai file sparsi con HTTP
-//   Range), con la cache dei blocchi in OPFS;
-// - le fasi dell'avvio (BootProgress) vanno alla pagina (`progress`);
-// - dopo sys.boot_completed il client ADB (web/node/adb.mjs) si collega ad
-//   adbd (TCP 5555 del guest, GuestSocket) e serve le richieste della pagina
-//   (`adb`: shell, devices, install di un APK trascinato e apertura); le
-//   richieste sono ingressi (registrati in `inputLog`);
-// - lo snapshot si salva ANDROID_HOME_NS di tempo del guest dopo
-//   sys.boot_completed (la home è disegnata), dopo l'installazione di un
-//   APK e a richiesta; niente riposo della console (Android scrive sempre).
-//   Lo snapshot è l'unità di persistenza: contiene anche le scritture del
-//   guest sui dischi (il copy-on-write), quindi niente overlay separato (che
-//   costerebbe centinaia di MiB in più da scrivere e da rileggere). Alla
-//   sessione successiva si riparte dall'ultimo snapshot: le scritture fatte
-//   dopo si perdono, come tornare all'ultimo stato salvato; senza snapshot
-//   si rifà il primo avvio.
+// Vetro's AOSP image (M5/M6, ADR 0028), with `config.android`:
+// - the version's manifest.json (R2 or a local server) gives the image hashes
+//   (snapshot key) and their URLs; boot, vendor_boot and init_boot are
+//   downloaded (checked with the sha256, kept in OPFS, `vetro-images/`) only
+//   for a cold boot; the disk is the `web/disk.json` map (LayoutSource: super
+//   and userdata from the sparse files with HTTP Range), with the block cache
+//   in OPFS;
+// - the boot phases (BootProgress) go to the page (`progress`);
+// - after sys.boot_completed the ADB client (web/node/adb.mjs) connects to
+//   adbd (TCP 5555 in the guest, GuestSocket), keeps the screen on, watches
+//   for the home screen (launcher focused and drawn on the scanout) and
+//   serves the page's requests (`adb`: shell, devices, install of a dropped
+//   APK and opening it); the requests are inputs (recorded in `inputLog`);
+// - the snapshot is saved ANDROID_HOME_NS of guest time after the home screen
+//   is drawn, after an APK install and on request; no console idle heuristic
+//   (Android always writes). The snapshot is the unit of persistence: it
+//   also holds the guest's disk writes (the copy-on-write layer), so there is
+//   no separate overlay (hundreds of MiB more to write and read back). The
+//   next session resumes from the last snapshot: writes made after it are
+//   lost, like going back to the last saved state; without a snapshot the
+//   first boot runs again. Snapshots go to and come from OPFS in chunks.
 
 import { DEV, INOTIFY, INPUT, instantiate, Machine, TIMELINE_EFFECT, TIMELINE_INPUT } from '../node/vetro.mjs';
 import { Recording } from '../node/recording.mjs';
@@ -97,19 +97,19 @@ const PERSIST_MS = 1000;
 const REST_NS = 1_500_000_000n;
 /** Coda della console tenuta per lo snapshot (la pagina la rimostra). */
 const CONSOLE_TAIL = 64 * 1024;
-/** Tempo del guest dopo la home disegnata prima dello snapshot di Android. */
+/** Guest time after the home screen is drawn before the Android snapshot. */
 const ANDROID_HOME_NS = 5_000_000_000n;
-/** Al più tanto tempo del guest dal launcher in primo piano alla home disegnata. */
+/** At most this much guest time from the launcher being focused to the home screen drawn. */
 const HOME_DRAW_NS = 300_000_000_000n;
-/** Ogni quanto (tempo del guest) si chiede ad adb se la home è a schermo. */
+/** How often (guest time) adb is asked whether the home screen is up. */
 const HOME_POLL_NS = 5_000_000_000n;
-/** Se la home non arriva entro tanto dopo sys.boot_completed, lo snapshot si salva lo stesso. */
+/** If the home screen does not come within this long after sys.boot_completed, the snapshot is saved anyway. */
 const HOME_GIVE_UP_NS = 3000_000_000_000n;
-/** Attesa (tempo del guest) prima di riprovare a collegarsi ad adbd. */
+/** Wait (guest time) before trying to connect to adbd again. */
 const ADB_RETRY_NS = 5_000_000_000n;
-/** Comando adb che tiene acceso lo schermo e lo risveglia (dopo il collegamento). */
+/** adb command that keeps the screen on and wakes it (after connecting). */
 const ANDROID_WAKE = 'svc power stayon true; settings put system screen_off_timeout 2147483647; input keyevent KEYCODE_WAKEUP; wm dismiss-keyguard';
-/** Blocchi del disco di Android tenuti in memoria (64 MiB): il resto è in OPFS. */
+/** Android disk blocks kept in memory (64 MiB): the rest is in OPFS. */
 const ANDROID_MAX_BLOCKS = 64;
 const EV_SYN = 0;
 const EV_REL = 2;
@@ -130,9 +130,9 @@ let snapKey = null;
 /** Metadati dell'ultimo snapshot salvato o ripristinato in questa sessione. */
 let lastSnapshot = null;
 let saveRequested = false;
-/** Perché si salva lo snapshot richiesto (per la pagina). */
+/** Why the requested snapshot is saved (for the page). */
 let saveWhy = 'richiesta';
-/** Stato di Android (config.android), o null col kernel di prova. */
+/** Android state (config.android), or null with the test kernel. */
 let android = null;
 let startT0 = 0;
 let consoleTail = [];
@@ -186,10 +186,10 @@ async function openDisk(d, i, sources) {
     cache ??= new MemoryCache();
   }
   const index = feeder.add(source, { cache, blockSize: d.blockSize, maxBlocks: d.maxBlocks ?? 0, readOnly: d.readOnly, readahead: d.readahead ?? 1 });
-  status(`disco ${i}: ${d.url ?? d.layout ?? d.file.name}, ${(source.size / 2 ** 20).toFixed(1)} MiB, blocchi da ${d.blockSize >> 10} KiB`);
+  status(`disk ${i}: ${d.url ?? d.layout ?? d.file.name}, ${(source.size / 2 ** 20).toFixed(1)} MiB, ${d.blockSize >> 10} KiB blocks`);
   overlays[index] = null;
-  // Con Android l'unità di persistenza è lo snapshot (che contiene anche le
-  // scritture del guest): niente overlay separato (vedi in cima).
+  // With Android the unit of persistence is the snapshot (which also holds
+  // the guest's writes): no separate overlay (see the top of the file).
   if (cfg.persist && cfg.opfs && !d.readOnly && !android) {
     try {
       const file = await opfsFile('vetro-overlays', `${(await sha256Hex(source.key)).slice(0, 32)}.cow`);
@@ -243,8 +243,8 @@ async function saveSnapshot(why) {
     why,
   };
   if (android) meta.progress = android.progress.events;
-  // A pezzi, direttamente in OPFS: con Android sono centinaia di MiB, che
-  // interi non starebbero nella memoria del modulo (ADR 0028).
+  // In chunks, straight to OPFS: with Android it is hundreds of MiB, which
+  // whole would not fit in the module's memory (ADR 0028).
   const t0 = performance.now();
   let writeMs = 0;
   const memory = m.memoryBytes;
@@ -310,13 +310,13 @@ async function start(c) {
       const meta = await store.loadMeta(snapKey);
       times.read = performance.now() - t2;
       const stale = meta && staleReason(meta, overlays);
-      if (meta && stale) status(`snapshot non usato: ${stale}`);
+      if (meta && stale) status(`snapshot not used: ${stale}`);
       if (meta && !stale) {
-        status(`ripristino lo snapshot (${(meta.size / 2 ** 20).toFixed(0)} MiB)`);
+        status(`restoring the snapshot (${(meta.size / 2 ** 20).toFixed(0)} MiB)`);
         const t3 = performance.now();
         try {
-          // A pezzi da OPFS: nella memoria del modulo solo la parte prima
-          // della RAM (ADR 0028).
+          // In chunks from OPFS: only the part before the RAM goes into the
+          // module's memory (ADR 0028).
           const reader = await store.openReader(snapKey);
           let readMs = 0;
           try {
@@ -360,7 +360,7 @@ async function start(c) {
     const [boot, vendorBoot, initBoot] = await androidImages(android);
     times.images = performance.now() - t0 - times.wasm - times.files;
     const desc = m.loadAndroid({ boot, vendorBoot, initBoot, params: android.params });
-    status(`immagini Android caricate: ${desc.split(';')[0]}`);
+    status(`Android images loaded: ${desc.split(';')[0]}`);
     times.total = performance.now() - t0;
     post({ type: 'cold', times, android: desc });
   } else {
@@ -388,21 +388,21 @@ async function start(c) {
   });
 }
 
-// ---- L'immagine AOSP di Vetro (ADR 0028) --------------------------------------
+// ---- Vetro's AOSP image (ADR 0028) ----------------------------------------------
 
 /**
- * Legge il manifest.json della versione e prepara la configurazione: i
- * dischi (la mappa accanto al manifest) e gli URL delle immagini.
+ * Reads the version's manifest.json and prepares the configuration: the
+ * disks (the map next to the manifest) and the image URLs.
  */
 async function prepareAndroid(c) {
   const url = new URL(c.android.manifest, location.href).href;
-  status(`immagine Android: ${url}`);
+  status(`Android image: ${url}`);
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`${url}: stato ${res.status}`);
+  if (!res.ok) throw new Error(`${url}: status ${res.status}`);
   const manifest = await res.json();
   const file = (path) => {
     const f = manifest.files.find((x) => x.path === path);
-    if (!f) throw new Error(`manifest senza ${path}`);
+    if (!f) throw new Error(`manifest without ${path}`);
     return { ...f, url: new URL(path, url).href };
   };
   const images = ['boot.img', 'vendor_boot.img', 'init_boot.img'].map(file);
@@ -428,7 +428,7 @@ async function prepareAndroid(c) {
   };
 }
 
-/** Le tre immagini di avvio: da OPFS se ci sono, altrimenti scaricate e verificate. */
+/** The three boot images: from OPFS if there, otherwise downloaded and checked. */
 async function androidImages(a) {
   const dir = cfg.opfs ? await navigator.storage.getDirectory().then((r) => r.getDirectoryHandle('vetro-images', { create: true })).catch(() => null) : null;
   const out = [];
@@ -448,12 +448,12 @@ async function androidImages(a) {
       } catch {}
     }
     if (!bytes) {
-      status(`scarico ${f.path} (${(f.size / 2 ** 20).toFixed(0)} MiB)`);
+      status(`downloading ${f.path} (${(f.size / 2 ** 20).toFixed(0)} MiB)`);
       const res = await fetch(f.url);
-      if (!res.ok) throw new Error(`${f.url}: stato ${res.status}`);
+      if (!res.ok) throw new Error(`${f.url}: status ${res.status}`);
       bytes = new Uint8Array(await res.arrayBuffer());
       const got = await sha256Hex(bytes);
-      if (got !== f.sha256) throw new Error(`${f.path}: sha256 ${got}, il manifest dice ${f.sha256}`);
+      if (got !== f.sha256) throw new Error(`${f.path}: sha256 ${got}, the manifest says ${f.sha256}`);
       if (dir) {
         try {
           const h = await (await dir.getFileHandle(`${f.sha256}.img`, { create: true })).createSyncAccessHandle();
@@ -471,14 +471,14 @@ async function androidImages(a) {
 
 const latin1 = new TextDecoder('latin1');
 
-/** Le fasi dell'avvio lette dall'uscita della console. */
+/** The boot phases read from the console output. */
 function androidConsole(bytes) {
   for (const ev of android.progress.feed(latin1.decode(bytes), Number(m.guestNs) / 1e9)) {
     post({ type: 'progress', ...ev, wallMs: performance.now() - startT0 });
   }
 }
 
-/** Collegamento ad adbd, richieste della pagina, snapshot dopo l'avvio. */
+/** Connection to adbd, the page's requests, the snapshot after the boot. */
 function androidTick() {
   const a = android;
   if (a.progress.phase === 'booted' && a.bootedNs === null) {
@@ -492,7 +492,7 @@ function androidTick() {
     a.adb = adb;
     post({ type: 'adb-status', state: 'connecting' });
     adb.connect().then(async (banner) => {
-      // Una macchina virtuale nella pagina: lo schermo resta acceso.
+      // A virtual machine in the page: the screen stays on.
       await adb.shell(ANDROID_WAKE);
       a.adbReady = true;
       const devices = await adb.devices();
@@ -511,10 +511,10 @@ function androidTick() {
     a.adbReady = false;
     a.adb = null;
     a.adbRetryNs = m.guestNs + ADB_RETRY_NS;
-    post({ type: 'adb-status', state: 'waiting', error: `connessione chiusa (${why})` });
+    post({ type: 'adb-status', state: 'waiting', error: `connection closed (${why})` });
   }
-  // La home: l'attività in primo piano diventa il launcher, e lo scanout la
-  // mostra (prima può restare FallbackHome per decine di secondi di guest).
+  // The home screen: the focused window becomes the launcher, and the scanout
+  // shows it (FallbackHome can stay for tens of seconds of guest time first).
   if (a.focusNs !== null && a.homeNs === null) {
     const size = m.displaySize();
     const px = size && m.displayPixels();
@@ -544,12 +544,12 @@ function androidTick() {
     a.savedBoot = true;
     if (!lastSnapshot) {
       saveRequested = true;
-      saveWhy = homeReady ? 'home a schermo' : 'avvio finito (home non vista)';
+      saveWhy = homeReady ? 'home screen' : 'boot finished (home screen not seen)';
     }
   }
 }
 
-/** Una richiesta ADB della pagina (una alla volta). */
+/** An ADB request from the page (one at a time). */
 function runAdbOp(msg) {
   const a = android;
   a.busy = true;
@@ -569,18 +569,18 @@ function runAdbOp(msg) {
       p = adbInstall(new Uint8Array(msg.bytes), msg);
       break;
     default:
-      p = Promise.reject(new Error(`operazione adb ${msg.op} sconosciuta`));
+      p = Promise.reject(new Error(`unknown adb operation ${msg.op}`));
   }
   p.then((result) => reply({ ok: true, result, ms: performance.now() - t0 }), (e) => reply({ ok: false, error: String(e.message ?? e), ms: performance.now() - t0 }))
     .finally(() => (a.busy = false));
 }
 
-/** Installa un APK con adb (push + pm install) e apre la sua attività principale. */
+/** Installs an APK with adb (push + pm install) and opens its main activity. */
 async function adbInstall(bytes, msg) {
   const adb = android.adb;
   const info = await apkInfo(bytes);
-  m.timelineInput(TIMELINE_INPUT.OTHER, `installa ${info.package}`);
-  post({ type: 'adb-progress', id: msg.id, text: `installo ${info.package} (${(bytes.length / 1024).toFixed(0)} KiB)` });
+  m.timelineInput(TIMELINE_INPUT.OTHER, `install ${info.package}`);
+  post({ type: 'adb-progress', id: msg.id, text: `installing ${info.package} (${(bytes.length / 1024).toFixed(0)} KiB)` });
   const t0 = performance.now();
   const output = await adb.install(bytes, { name: `${info.package}.apk` });
   const installMs = performance.now() - t0;
@@ -591,13 +591,13 @@ async function adbInstall(bytes, msg) {
   }
   let start = null;
   if (component && msg.open !== false) {
-    post({ type: 'adb-progress', id: msg.id, text: `apro ${component}` });
+    post({ type: 'adb-progress', id: msg.id, text: `opening ${component}` });
     const r = await adb.shell(`am start -W -n ${component}`);
     start = `${r.stdout}${r.stderr}`.trim();
   }
   if (store && msg.save !== false) {
     saveRequested = true;
-    saveWhy = 'app installata';
+    saveWhy = 'app installed';
   }
   return { info, output, component, start, installMs, openMs: performance.now() - t0 - installMs };
 }
@@ -927,13 +927,13 @@ async function loop() {
     pumpFiles();
     if (android) androidTick();
     const now = performance.now();
-    // Con Android gli overlay si salvano solo insieme allo snapshot (vedi in cima).
+    // With Android there is no separate overlay (see the top of the file).
     if (!android && (stop !== 'Budget' || now - lastPersist > PERSIST_MS)) {
       if (persistOverlays()) activity();
       lastPersist = now;
     }
     // Snapshot: la prima volta che il guest è a riposo (avvio finito), poi a
-    // riposo se i dischi sono cambiati, o a richiesta. Android: vedi androidTick.
+    // riposo se i dischi sono cambiati, o a richiesta. Android: see androidTick.
     const rest = !android && (stop === 'Idle' || (!rested && m.guestNs - activeNs >= REST_NS));
     if (rest && stop !== 'Idle') {
       rested = true;
@@ -943,7 +943,7 @@ async function loop() {
       const why = saveRequested ? saveWhy : lastSnapshot ? 'dischi cambiati' : 'avvio finito';
       saveRequested = false;
       saveWhy = 'richiesta';
-      status(`salvo lo snapshot (${why})`);
+      status(`saving the snapshot (${why})`);
       await saveSnapshot(why).catch((e) => status(`snapshot non salvato: ${e.message ?? e}`));
     }
     // Dopo un replay il contatore può tornare indietro.
@@ -1055,9 +1055,9 @@ onmessage = (e) => {
     return;
   }
   if (msg.type === 'adb') {
-    if (!android) return post({ type: 'adb-reply', id: msg.id, ok: false, error: 'adb serve l\'immagine Android' });
+    if (!android) return post({ type: 'adb-reply', id: msg.id, ok: false, error: 'adb needs the Android image' });
     android.ops.push(msg);
-    if (!android.adbReady) post({ type: 'adb-progress', id: msg.id, text: 'in attesa di adbd (fine dell\'avvio)' });
+    if (!android.adbReady) post({ type: 'adb-progress', id: msg.id, text: 'waiting for adbd (end of the boot)' });
     wake?.();
     return;
   }

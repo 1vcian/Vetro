@@ -52,9 +52,11 @@ incompatibile delle firme o dei codici qui sotto; il caricatore JS
   (`env.vsync` del runtime), contatore `yields` in fondo a
   `vetro_jit_stats`.
 - 11 (M4): FP/SIMD nelle regioni (ADR 0026): export `vetro_jit_simd`.
-- 12 (M5): avvio da immagini Android (`vetro_load_android`, ADR 0018 e
-  0028). Non cambia firme esistenti; la RAM può superare 2 GiB anche su
-  wasm32 (sotto, "RAM oltre 2 GiB").
+- 12 (M5, M6): booting from Android images (`vetro_load_android`, ADR 0018
+  and 0028), chunked snapshots (`vetro_snapshot_save_stream`,
+  `vetro_snapshot_restore_stream`, imports `vetro_host.snapshot_write` and
+  `snapshot_read`). Existing signatures are unchanged; the RAM may exceed
+  2 GiB on wasm32 too (below, "RAM beyond 2 GiB").
 
 ### Memoria
 
@@ -89,21 +91,21 @@ Codici di `vetro_load_linux`: 0 riuscito; 1 il caricatore ha rifiutato i file
 
 | Export | Firma | Significato |
 |---|---|---|
-| `vetro_load_android` | `(vm, boot, boot_len, vendor_boot, vendor_boot_len, init_boot, init_boot_len, params, params_len, flags: u32) -> u32` | ABI 12: il bootloader di `vetro_machine::android` (ADR 0018) combina `boot.img` (obbligatorio), `vendor_boot.img` e `init_boot.img` (nulli o lunghi 0 = assenti) con i parametri del bootloader `params` (UTF-8; gli `androidboot.*` vanno nel bootconfig con `vendor_boot` v4, gli altri in coda alla riga di comando) e carica il risultato come `vetro_load_linux`. `flags` bit 0 = recovery. Stessi codici di `vetro_load_linux` (2 = parametri non UTF-8); riuscito, `vetro_message_*` descrive kernel, ramdisk, bootconfig e riga di comando. I buffer si possono liberare subito dopo |
+| `vetro_load_android` | `(vm, boot, boot_len, vendor_boot, vendor_boot_len, init_boot, init_boot_len, params, params_len, flags: u32) -> u32` | ABI 12: the bootloader in `vetro_machine::android` (ADR 0018) combines `boot.img` (required), `vendor_boot.img` and `init_boot.img` (null or 0 long = absent) with the bootloader parameters `params` (UTF-8; `androidboot.*` go into the bootconfig with a v4 `vendor_boot`, the others at the end of the command line) and loads the result like `vetro_load_linux`. `flags` bit 0 = recovery. Same codes as `vetro_load_linux` (2 = parameters not UTF-8); on success `vetro_message_*` describes kernel, ramdisks, bootconfig and command line. The buffers can be freed right after |
 
 In JS: `Machine.loadAndroid({ boot, vendorBoot, initBoot, params, recovery })`
-restituisce la descrizione. Prova: `tests/web/android-boot.mjs`.
+returns the description. Test: `tests/web/android-boot.mjs`.
 
-#### RAM oltre 2 GiB (ABI 12, ADR 0028)
+#### RAM beyond 2 GiB (ABI 12, ADR 0028)
 
-Su wasm32 nessuna allocazione di Rust supera `isize::MAX` (2 GiB - 1): con
-`ram_size` più grande la RAM del guest è una regione contigua presa con
-`memory.grow` fuori dall'allocatore (`vetro_machine::board::Ram`), letta e
-scritta a pezzi; la regione di una macchina distrutta si riusa (azzerata)
-per la prossima. La memoria lineare arriva a 4 GiB: con 3 GiB di RAM
-restano meno di 1 GiB per tutto il resto (copy-on-write dei dischi,
-blocchi in memoria, JIT, buffer degli snapshot). Il comportamento del guest
-non cambia (stesse istruzioni del riferimento nativo, `ram3g`).
+On wasm32 no Rust allocation can exceed `isize::MAX` (2 GiB - 1): with a
+larger `ram_size` the guest RAM is a contiguous region taken with
+`memory.grow` outside the allocator (`vetro_machine::board::Ram`), read and
+written in pieces; the region of a destroyed machine is reused (zeroed) by
+the next one. Linear memory stops at 4 GiB: with 3 GiB of RAM less than
+1 GiB is left for everything else (disk copy-on-write, cached blocks, JIT,
+snapshot buffers). The guest's behaviour does not change (same instructions
+as the native reference, `ram3g`).
 
 Codici di `vetro_run` (`Stop` di `vetro-machine`):
 
@@ -179,7 +181,8 @@ Il giro con un disco via rete:
 | `vetro_snapshot_save` | `(vm) -> usize` | salva la macchina intera in un buffer interno e ne restituisce la lunghezza. Prima leggere la console: l'uscita già tolta alla UART e non consegnata al JS non entra |
 | `vetro_snapshot_ptr` | `(vm) -> *const u8` | i byte dell'ultimo salvataggio (nullo se non ce n'è), validi fino al prossimo salvataggio, a `vetro_snapshot_clear` o a `vetro_machine_free` |
 | `vetro_snapshot_clear` | `(vm)` | libera il buffer |
-| `vetro_snapshot_save_stream` | `(vm) -> u64` | ABI 12: lo stesso file di `vetro_snapshot_save` a pezzi, senza tenerlo intero in memoria (Android): i pezzi del contenuto vanno all'import `vetro_host.snapshot_write(ptr, len)` in ordine (da scrivere dall'offset 36 in poi), l'intestazione (36 byte) resta nel buffer di `vetro_snapshot_ptr`. Restituisce la lunghezza del file. In memoria oltre ai pezzi (1 MiB) c'è solo la parte prima della RAM (dispositivi e copy-on-write dei dischi); la RAM si comprime due volte (la lunghezza entra nell'hash) |
+| `vetro_snapshot_restore_stream` | `(vm, head: *const u8, head_len: usize) -> u32` | ABI 12: restore without the whole file in memory: `head` = the file's bytes up to and including the header of the `RAM ` section; the RAM content is requested from the import `vetro_host.snapshot_read(ptr, cap) -> bytes written` (0 = end). Same codes as `vetro_snapshot_restore`; the checksum is verified at the end (`CORRUPT` = discard the machine). After a restore with a buffer as large as the snapshot, memory stayed high and fragmented and the next save found no contiguous space |
+| `vetro_snapshot_save_stream` | `(vm) -> u64` | ABI 12: the same file as `vetro_snapshot_save` in chunks, without holding it whole in memory (Android): the content's chunks go to the import `vetro_host.snapshot_write(ptr, len)` in order (to be written from offset 36 on), the header (36 bytes) stays in the `vetro_snapshot_ptr` buffer. Returns the file length. Besides the chunks (1 MiB) only the part before the RAM is in memory (devices and disk copy-on-write); the RAM is compressed twice (its length enters the hash) |
 | `vetro_snapshot_restore` | `(vm, data: *const u8, len: usize) -> u32` | ripristina; il buffer si può liberare subito dopo. Codici: 0 `OK`, 1 `BAD_MAGIC` (non è uno snapshot), 2 `VERSION` (altro formato), 3 `CONFIG` (macchina configurata diversamente), 4 `CORRUPT` (rovinato o incoerente: la macchina va scartata); motivo nel messaggio. Con 1, 2 e 3 la macchina non cambia |
 
 Per ripristinare si costruisce la macchina con gli stessi parametri di
@@ -389,7 +392,8 @@ Il JS li fornisce all'istanziazione (`web/node/vetro.mjs`):
 | Import | Firma | Significato |
 |---|---|---|
 | `vetro_host.panic` | `(ptr: *const u8, len: usize)` | messaggio UTF-8 di un panic, subito prima della trappola `unreachable` |
-| `vetro_host.snapshot_write` | `(ptr: *const u8, len: usize)` | ABI 12: un pezzo di `vetro_snapshot_save_stream` (la vista vale solo durante la chiamata) |
+| `vetro_host.snapshot_write` | `(ptr: *const u8, len: usize)` | ABI 12: a chunk of `vetro_snapshot_save_stream` (the view is valid only during the call) |
+| `vetro_host.snapshot_read` | `(ptr: *mut u8, cap: usize) -> usize` | ABI 12: the next bytes (at most `cap`) for `vetro_snapshot_restore_stream`, 0 at the end |
 | `vetro_jit.compile` | `(ptr: *const u8, len: usize) -> i32` | compila e istanzia un modulo generato; indice ≥ 0, o < 0 se rifiutato |
 | `vetro_jit.runtime` | `(ptr: *const u8, len: usize) -> i32` | compila e istanzia il modulo di runtime (con `env.mem`, `env.ld`, `env.st`, `env.vsync`, `env.simd` dall'ABI 11); i suoi export sono gli import `rt.*` dei moduli compilati dopo, anche dopo `reset`; 0, o < 0 se rifiutato (ABI 10) |
 | `vetro_jit.entry` | `(module: i32, index: u32) -> u32` | mette l'export `b<index>` del modulo in una voce nuova di `__indirect_function_table` e la restituisce: `JsEngine::run` la chiama come un puntatore a funzione, senza passare da JS |
@@ -475,9 +479,11 @@ nel Worker (`opfsFile(cartella, nome)`), `MemFile` nei test.
   `Corrupt`); `persist()` applica le scritture di `vetro_overlay_take`
   (troncamento, dati, flush, intestazione, flush) e dice se ha scritto;
   `generation`, `info`.
-- `SnapshotStore.opfs()` / `.memory()`: `loadMeta(chiave)` (metadati di uno
-  snapshot completo senza leggerne i byte), `readInto(chiave, vista)`,
-  `saveStream(chiave, metadati, produce)` (pezzi scritti man mano);
+- `SnapshotStore.opfs()` / `.memory()`: `loadMeta(key)` (metadata of a
+  complete snapshot without reading its bytes), `readInto(key, view)`,
+  `openReader(key)` (`{ size, readAt, close }`), `saveStream(key, meta,
+  produce)` (chunks written as they come into a new file, which replaces the
+  old one only when the save succeeded);
   `save(chiave, metadati, byte)`
   scrive `<chiave>.snap` e poi `<chiave>.json` (con `size`), `load(chiave)`
   restituisce `{ meta, bytes }` solo se i metadati ci sono e la lunghezza
@@ -488,11 +494,12 @@ nel Worker (`opfsFile(cartella, nome)`), `MemFile` nei test.
   `toBase64`/`fromBase64` per la coda della console nei metadati.
 
 La classe `Machine` di `vetro.mjs` ha `snapshotVersion`, `snapshotSave()`
-(copia dei byte), `snapshotSaveTo(write)` (a pezzi: `write(bytes,
-offset)` sincrona, poi l'intestazione a offset 0) e
-`snapshotRestoreWith(n, fill)` (i byte letti da OPFS direttamente nella
-memoria del modulo; per Android, centinaia di MiB),
-`memoryBytes`, `snapshotRestore(bytes)` (lancia un `Error` con `code`
+(copia dei byte), `snapshotSaveTo(write)` (chunked: synchronous
+`write(bytes, offset)`, then the header at offset 0),
+`snapshotRestoreStream(size, readAt)` (chunked: only the part before the
+RAM goes into the module's memory), `snapshotRestoreWith(n, fill)` (the
+bytes read straight into a buffer in the module's memory), `memoryBytes`,
+`snapshotRestore(bytes)` (lancia un `Error` con `code`
 `BadMagic`/`Version`/`Config`/`Corrupt`), `overlayOpen(disk, identity,
 bytes)`, `overlayTake(disk)` (`{ truncate, writes: [{ at, bytes }] }` o null),
 `overlayInfo(disk)`.
@@ -522,9 +529,9 @@ cross-origin`. Parametri dell'URL:
 `?kernel=URL&initrd=URL&disk=URL&cmdline=...&pointer=multitouch&webgpu=1&autostart=1`,
 più `snapshot=0` (niente cache degli snapshot), `persist=0` (dischi non
 persistenti), `files=/a,/b` (radici del gestore dei file), `nofiles=1`
-(senza gestore dei file né vsock), `ram=MiB`, e per l'immagine AOSP di
-Vetro `os=android` e `manifest=URL` (default: la versione pubblicata su R2;
-`tools/web-serve.mjs` serve anche `target/aosp/out` in `/aosp/`).
+(senza gestore dei file né vsock), plus `ram=MiB` and, for Vetro's AOSP
+image, `os=android` and `manifest=URL` (default: the version published on
+R2; `tools/web-serve.mjs` also serves `target/aosp/out` at `/aosp/`).
 
 - `main.mjs` (thread della pagina): sceglie kernel, initramfs e disco (URL
   o file locale), opzioni (RAM, risoluzione, tablet o touchscreen, blocchi
@@ -599,38 +606,41 @@ Vetro `os=android` e `manifest=URL` (default: la versione pubblicata su R2;
   gli overlay sono cambiati, e a richiesta. A riposo: `Idle`, o 1,5 s di
   tempo del guest senza console, scanout, ingressi né dischi.
 
-### L'immagine AOSP nell'app (M5/M6, ADR 0028)
+### The AOSP image in the app (M5/M6, ADR 0028)
 
-- `web/node/android.mjs`: `PHASES` e `BootProgress` (fasi dell'avvio dalla
-  console: kernel, init prima e seconda fase, zygote, surfaceflinger,
-  system_server, avvio finito = `sys-boot-completed-set`).
-- `web/node/adb.mjs`: client ADB sopra un trasporto con `send`/`recv`/
-  `state` (il `GuestSocket` verso la porta 5555 del guest): `connect`
-  (CNXN; AUTH con `AdbKey` RSA se il dispositivo la chiede), `open`,
-  `shell` (shell v2 con stdout, stderr e codice), `push` (sync), `install`
-  (push in /data/local/tmp + `pm install -r`), `devices`; `pump()` fra un
-  quanto e l'altro.
-- `web/node/apk.mjs`: `apkInfo(bytes)` = pacchetto, versione, etichetta e
-  attività principale dal manifesto binario dello ZIP.
-- `web/node/disk.mjs`: `LayoutSource(url)`, il disco ricomposto da una
-  mappa (`tools/aosp/web-disk.mjs`): estensioni verso i file sparsi
-  pubblicati (`super.img`, `userdata.img`) letti con HTTP Range,
-  riempimenti e buchi; `parseLayout`, `composePlan`, `composeRead`.
-- Worker: con `config.android` legge il manifest (hash delle immagini per
-  la chiave degli snapshot), scarica le immagini di avvio solo per un avvio
-  da zero (sha256 verificato, copia in OPFS `vetro-images/`), disco dalla
-  mappa con 64 blocchi da 1 MiB in memoria e il resto in OPFS, macchina con
-  touchscreen, rete e (se scelto) vsock; manda le fasi (`progress`,
-  `booted`), dopo `sys.boot_completed` collega il client ADB
-  (`adb-status`) e serve le richieste `adb` della pagina (`shell`,
-  `devices`, `install` con apertura via `am start -W -n`); lo snapshot si
-  salva 20 s di guest dopo la fine dell'avvio, dopo un'installazione e a
-  richiesta; niente overlay separato (lo snapshot contiene già il
-  copy-on-write).
-- Pagina: selettore "Sistema", riquadro con le fasi e i tempi, stato di
-  adb, APK trascinato sul riquadro o sullo schermo (o scelto), riga per
-  `adb shell`; `window.vetroAndroid` (`state`, `install`, `shell`,
-  `devices`) per i test.
+- `web/node/android.mjs`: `PHASES` and `BootProgress` (boot phases from the
+  console: kernel, init first and second stage, zygote, surfaceflinger,
+  system_server, boot finished = `sys-boot-completed-set`; the home screen
+  is marked from outside with `mark`), `HOME_QUERY`/`isHome` (focused
+  window via adb), `gridColors`/`HOME_MIN_COLORS` (home actually drawn),
+  `ANDROID_PARAMS`, `colorSeen` (a colour in RGB or BGR order).
+- `web/node/adb.mjs`: ADB client over a transport with `send`/`recv`/
+  `state` (the `GuestSocket` to port 5555 of the guest): `connect` (CNXN;
+  AUTH with an RSA `AdbKey` if the device asks), `open`, `shell` (shell v2
+  with stdout, stderr and exit code), `push` (sync), `install` (push to
+  /data/local/tmp + `pm install -r`), `devices`; `pump()` between quanta.
+- `web/node/apk.mjs`: `apkInfo(bytes)` = package, version, label and main
+  activity from the ZIP's binary manifest.
+- `web/node/disk.mjs`: `LayoutSource(url)`, the disk rebuilt from a map
+  (`tools/aosp/web-disk.mjs`): extents into the published sparse files
+  (`super.img`, `userdata.img`) read with HTTP Range, fills and holes;
+  `parseLayout`, `composePlan`, `composeRead`.
+- Worker: with `config.android` it reads the manifest (image hashes for the
+  snapshot key), downloads the boot images only for a cold boot (sha256
+  checked, copy in OPFS `vetro-images/`), disk from the map with 64 1 MiB
+  blocks in memory and the rest in OPFS, machine with touchscreen, network
+  and (if chosen) vsock; it sends the phases (`progress`, `booted`), after
+  `sys.boot_completed` it connects the ADB client (`adb-status`), keeps the
+  screen on, watches for the home screen, and serves the page's `adb`
+  requests (`shell`, `devices`, `install` opening the app with
+  `am start -W -n`); the snapshot is saved 5 s of guest time after the home
+  screen is drawn, after an install and on request; no separate overlay (the
+  snapshot already contains the copy-on-write layer). Snapshots are written
+  to and read from OPFS in chunks.
+- Page: "System" selector, a panel with the phases and their times, adb
+  status, APK dropped on the panel or on the screen (or chosen), an
+  `adb shell` line; `window.vetroAndroid` (`state`, `install`, `shell`,
+  `devices`) for tests.
 
 ## Test web
 
@@ -695,21 +705,24 @@ Vetro `os=android` e `manifest=URL` (default: la versione pubblicata su R2;
   timeline uguali), salto a un'istruzione con gli stessi registri e la
   stessa memoria a VBAR_EL1, log ricomposto uguale al file, keyframe
   alterato rifiutato;
-- `tests/web/android-boot.mjs` (M5, ABI 12): `boot.img` e `init_boot.img`
-  v4 di `mkbootimg.py` intorno al kernel M3, `vetro_load_android` su una
-  macchina da 3 GiB: istruzioni e log uguali al riferimento nativo `ram3g`
-  (`load_linux` diretto); snapshot al prompt e ripristino su una macchina
-  nuova da 3 GiB (regione riusata) con lo stesso seguito;
-- `tests/web/adb.mjs`: il client ADB contro un finto adbd (un WRTE in volo
-  per flusso, sync, shell v2 e grezza, AUTH con firma e con chiave
-  pubblica); `tests/web/adb-tcp.mjs HOST:PORTA [APK]` contro un adbd vero
-  (prova manuale);
-- lunghi, solo con `VETRO_ANDROID=1` (non in CI): `tests/web/android.mjs`
-  (Android in Node dall'avvio o da uno snapshot, fasi, memoria, snapshot,
-  adb via GuestSocket, APK di prova installato e aperto, tocco) e
-  `tests/web/android-chrome.mjs` (l'app in Chrome: primo avvio fino alla
-  home, snapshot, secondo avvio dallo snapshot misurato, APK installato
-  dalla pagina, clic sul canvas; misure in `target/aosp/chrome-misure.json`);
+- `tests/web/android-boot.mjs` (M5, ABI 12): v4 `boot.img` and
+  `init_boot.img` from `mkbootimg.py` around the M3 kernel,
+  `vetro_load_android` on a 3 GiB machine: instructions and log equal to the
+  native reference `ram3g` (direct `load_linux`); chunked snapshot equal to
+  the whole one; chunked restore on a new 3 GiB machine (region reused) with
+  the same continuation; a tiny JIT code limit (260 resets) with the same
+  execution;
+- `tests/web/adb.mjs`: the ADB client against a fake adbd (one WRTE in
+  flight per stream, sync, shell v2 and raw, AUTH with a signature and with
+  the public key); `tests/web/adb-tcp.mjs HOST:PORT [APK]` against a real
+  adbd (manual test);
+- long, only with `VETRO_ANDROID=1` (not in CI): `tests/web/android.mjs`
+  (Android in Node from a cold boot or a snapshot, phases, memory,
+  snapshot, adb over GuestSocket, the test APK installed and opened, a touch)
+  and `tests/web/android-chrome.mjs` (the app in Chrome: first boot to the
+  home screen, snapshot, second start from the snapshot measured, APK
+  installed from the page, a click on the canvas; measurements in
+  `target/aosp/chrome-measurements.json`);
 - `tests/web/browser-analysis.mjs` (Chrome, come `browser.mjs`): wget
   nell'ispettore con il JSON decodificato e legato al comando nella
   timeline, scrittura di un file legata al suo comando, download veri di

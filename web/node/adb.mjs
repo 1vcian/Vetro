@@ -1,22 +1,22 @@
-// Client ADB in JavaScript (M5/M6, ADR 0028, docs/specs/net.md "Come adb
-// userà l'inoltro"): parla il protocollo di adb con adbd del guest su una
-// connessione TCP verso la porta 5555, senza adb dell'host. Non usa API di
-// Node: gira nel Worker dell'app e nei test.
+// ADB client in JavaScript (M5/M6, ADR 0028, docs/specs/net.md "Come adb
+// userà l'inoltro"): speaks the adb protocol with the guest's adbd over a TCP
+// connection to port 5555, without a host adb. Uses no Node API: it runs in
+// the app's Worker and in tests.
 //
-// Il trasporto è qualunque oggetto con `send(bytes) -> byte presi`,
-// `recv() -> Uint8Array` e `state() -> { state, guestEof }`: il GuestSocket di
-// web/node/vetro.mjs (i byte si muovono mentre la macchina esegue) o un finto
-// adbd nei test. Il client è a interrogazione, come il resto dell'API:
-// `pump()` fra un quanto e l'altro manda i byte in coda, legge quelli
-// arrivati e fa avanzare le Promise.
+// The transport is any object with `send(bytes) -> bytes taken`,
+// `recv() -> Uint8Array` and `state() -> { state, guestEof }`: the GuestSocket
+// of web/node/vetro.mjs (bytes move while the machine runs) or a fake adbd in
+// tests. The client is polled, like the rest of the API: `pump()` between
+// quanta sends the queued bytes, reads the ones that arrived and advances the
+// Promises.
 //
-// Protocollo (system/core/adb/protocol.txt di AOSP): messaggi di 24 byte
-// little endian (comando, arg0, arg1, lunghezza dei dati, somma dei byte dei
-// dati, comando ^ 0xffffffff) seguiti dai dati. CNXN per il saluto (con
-// `ro.adb.secure=1` il dispositivo manda prima AUTH: si firma il gettone con
-// una chiave RSA, o si offre la chiave pubblica), OPEN/OKAY/WRTE/CLSE per i
-// flussi, uno per servizio (`shell,v2,raw:`, `exec:`, `sync:`). Su un flusso
-// un solo WRTE alla volta: il prossimo parte dopo l'OKAY del dispositivo.
+// Protocol (AOSP's system/core/adb/protocol.txt): 24-byte little-endian
+// messages (command, arg0, arg1, data length, sum of the data bytes,
+// command ^ 0xffffffff) followed by the data. CNXN for the handshake (with
+// `ro.adb.secure=1` the device sends AUTH first: the token is signed with an
+// RSA key, or the public key is offered), OPEN/OKAY/WRTE/CLSE for streams, one
+// per service (`shell,v2,raw:`, `exec:`, `sync:`). One WRTE at a time per
+// stream: the next one goes after the device's OKAY.
 
 const A_SYNC = 0x434e5953;
 const A_CNXN = 0x4e584e43;
@@ -31,13 +31,13 @@ const MAX_DATA = 256 * 1024;
 const AUTH_TOKEN = 1;
 const AUTH_SIGNATURE = 2;
 const AUTH_RSAPUBLICKEY = 3;
-/** Pezzo dei dati di push (il limite di sync è 64 KiB). */
+/** Push data piece (sync's limit is 64 KiB). */
 const SYNC_CHUNK = 64 * 1024;
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-/** Un messaggio ADB codificato (intestazione + dati). */
+/** An encoded ADB message (header + data). */
 export function encodeMessage(command, arg0, arg1, data = new Uint8Array()) {
   const out = new Uint8Array(24 + data.length);
   const v = new DataView(out.buffer);
@@ -53,7 +53,7 @@ export function encodeMessage(command, arg0, arg1, data = new Uint8Array()) {
   return out;
 }
 
-/** Legge i messaggi completi da un accumulatore: { messages, rest }. */
+/** Reads the complete messages from an accumulator: { messages, rest }. */
 export function decodeMessages(buf) {
   const messages = [];
   let at = 0;
@@ -61,8 +61,8 @@ export function decodeMessages(buf) {
     const v = new DataView(buf.buffer, buf.byteOffset + at, 24);
     const command = v.getUint32(0, true);
     const len = v.getUint32(12, true);
-    if (v.getUint32(20, true) !== (command ^ 0xffffffff) >>> 0) throw new Error(`adb: messaggio non valido (magia) a ${at}`);
-    if (len > 16 << 20) throw new Error(`adb: messaggio di ${len} byte`);
+    if (v.getUint32(20, true) !== (command ^ 0xffffffff) >>> 0) throw new Error(`adb: invalid message (magic) at ${at}`);
+    if (len > 16 << 20) throw new Error(`adb: message of ${len} bytes`);
     if (buf.length - at < 24 + len) break;
     messages.push({ command, arg0: v.getUint32(4, true), arg1: v.getUint32(8, true), data: buf.slice(at + 24, at + 24 + len) });
     at += 24 + len;
@@ -79,7 +79,7 @@ const concat = (a, b) => {
   return out;
 };
 
-// ---- Chiave RSA di adb (AUTH) ---------------------------------------------
+// ---- adb RSA key (AUTH) -------------------------------------------------------
 
 const b64 = (bytes) => btoa(String.fromCharCode(...bytes));
 const unb64url = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (s.length % 4)) % 4)), (c) => c.charCodeAt(0));
@@ -102,10 +102,10 @@ function modPow(b, e, m) {
   }
   return r;
 }
-/** Prefisso DigestInfo di SHA-1 (PKCS#1 v1.5): adb firma il gettone come se fosse un digest SHA-1. */
+/** SHA-1 DigestInfo prefix (PKCS#1 v1.5): adb signs the token as if it were a SHA-1 digest. */
 const SHA1_PREFIX = [0x30, 0x21, 0x30, 0x09, 0x06, 0x05, 0x2b, 0x0e, 0x03, 0x02, 0x1a, 0x05, 0x00, 0x04, 0x14];
 
-/** Il blocco PKCS#1 v1.5 del gettone per una chiave di `len` byte. */
+/** The PKCS#1 v1.5 block of the token for a key of `len` bytes. */
 export function adbPadding(token, len) {
   const em = new Uint8Array(len).fill(0xff);
   em[0] = 0;
@@ -117,9 +117,9 @@ export function adbPadding(token, len) {
 }
 
 /**
- * Chiave RSA a 2048 bit per l'autenticazione di adb: `n`, `e`, `d` (BigInt).
- * `AdbKey.generate()` usa WebCrypto; `toJSON`/`fromJSON` per conservarla
- * (IndexedDB/OPFS nel browser).
+ * 2048-bit RSA key for adb authentication: `n`, `e`, `d` (BigInt).
+ * `AdbKey.generate()` uses WebCrypto; `toJSON`/`fromJSON` to keep it
+ * (IndexedDB/OPFS in the browser).
  */
 export class AdbKey {
   constructor({ n, e, d }) {
@@ -142,12 +142,12 @@ export class AdbKey {
     return new AdbKey(j);
   }
 
-  /** Firma del gettone di AUTH (256 byte). */
+  /** Signature of the AUTH token (256 bytes). */
   sign(token) {
     return fromBig(modPow(toBig(adbPadding(token, 256)), this.d, this.n), 256);
   }
 
-  /** La chiave pubblica nel formato di adb (`adb_keys`): base64 + nome. */
+  /** The public key in adb's format (`adb_keys`): base64 + name. */
   publicKey(name = 'vetro@browser') {
     const words = 64;
     const buf = new Uint8Array(4 + 4 + 4 * words * 2 + 4);
@@ -169,14 +169,14 @@ export class AdbKey {
   }
 }
 
-/** Verifica una firma di AdbKey.sign con la chiave pubblica (per i finti adbd dei test). */
+/** Verifies an AdbKey.sign signature with the public key (for the tests' fake adbd). */
 export function adbVerify(n, e, token, signature) {
   return modPow(toBig(signature), BigInt(e), BigInt(n)) === toBig(adbPadding(token, 256));
 }
 
-// ---- Flussi ------------------------------------------------------------------
+// ---- Streams -----------------------------------------------------------------
 
-/** Un flusso verso un servizio di adbd (OPEN). */
+/** A stream to an adbd service (OPEN). */
 export class AdbStream {
   #client;
   #queue = [];
@@ -195,19 +195,19 @@ export class AdbStream {
       this.onRefused = ko;
     });
     this.done = new Promise((ok) => (this.onClose = ok));
-    /** Chiamato con i dati arrivati (se impostato, i dati non si accumulano). */
+    /** Called with the incoming data (when set, data is not accumulated). */
     this.onData = null;
   }
 
-  /** Mette in coda byte per il servizio (a pezzi di MAX_DATA, uno alla volta). */
+  /** Queues bytes for the service (in MAX_DATA pieces, one at a time). */
   write(bytes) {
-    if (this.closed) throw new Error(`adb: flusso ${this.service} chiuso`);
+    if (this.closed) throw new Error(`adb: stream ${this.service} closed`);
     const max = this.#client.maxData;
     for (let at = 0; at < bytes.length; at += max) this.#queue.push(bytes.subarray(at, at + max));
     this.#flush();
   }
 
-  /** Vero quando tutto quello che si è scritto è stato preso dal dispositivo. */
+  /** True when everything written has been taken by the device. */
   get drained() {
     return !this.#queue.length && !this.#waitingOkay;
   }
@@ -238,7 +238,7 @@ export class AdbStream {
         this.#wakeReaders();
         break;
       case A_CLSE:
-        if (!this.remote) this.onRefused(new Error(`adb: servizio ${this.service} rifiutato`));
+        if (!this.remote) this.onRefused(new Error(`adb: service ${this.service} refused`));
         this.#end();
         break;
     }
@@ -250,7 +250,7 @@ export class AdbStream {
     for (const w of this.#drainWaiters.splice(0)) w();
   }
 
-  /** Promise risolta quando i byte scritti sono tutti arrivati al dispositivo. */
+  /** A Promise resolved when all the bytes written have reached the device. */
   drain() {
     return this.drained ? Promise.resolve() : new Promise((ok) => this.#drainWaiters.push(ok));
   }
@@ -259,7 +259,7 @@ export class AdbStream {
     for (const r of this.#readers.splice(0)) r();
   }
 
-  /** Aspetta almeno `n` byte (o la chiusura) e li toglie dal buffer. */
+  /** Waits for at least `n` bytes (or the close) and removes them from the buffer. */
   async read(n) {
     for (;;) {
       const have = this.#chunks.reduce((s, c) => s + c.length, 0);
@@ -267,14 +267,14 @@ export class AdbStream {
         const all = this.#chunks.reduce(concat, new Uint8Array());
         const take = Math.min(n, all.length);
         this.#chunks = take < all.length ? [all.slice(take)] : [];
-        if (take < n) throw new Error(`adb: flusso ${this.service} chiuso dopo ${take} di ${n} byte`);
+        if (take < n) throw new Error(`adb: stream ${this.service} closed after ${take} of ${n} bytes`);
         return all.slice(0, take);
       }
       await new Promise((ok) => this.#readers.push(ok));
     }
   }
 
-  /** Tutto fino alla chiusura del servizio. */
+  /** Everything until the service closes. */
   async readAll() {
     await this.done;
     const all = this.#chunks.reduce(concat, new Uint8Array());
@@ -300,7 +300,7 @@ export class AdbStream {
 
 // ---- Client ------------------------------------------------------------------
 
-/** Il client: un dispositivo su un trasporto. */
+/** The client: one device over one transport. */
 export class AdbClient {
   #t;
   #in = new Uint8Array();
@@ -309,15 +309,15 @@ export class AdbClient {
   #connected = null;
   #authTries = 0;
   streams = new Map();
-  /** Dal saluto del dispositivo: { kind, serial, props, features }. */
+  /** From the device's handshake: { kind, serial, props, features }. */
   banner = null;
   maxData = 4096;
-  /** Byte scambiati (per la barra di stato). */
+  /** Bytes exchanged (for the status bar). */
   stats = { sent: 0, received: 0 };
 
   /**
-   * `transport`: vedi l'intestazione. `key`: AdbKey per AUTH (senza, un
-   * dispositivo che chiede AUTH fa fallire `connect`).
+   * `transport`: see the header. `key`: AdbKey for AUTH (without it, a
+   * device asking for AUTH makes `connect` fail).
    */
   constructor(transport, { key = null, banner = 'host::features=shell_v2,cmd,stat_v2' } = {}) {
     this.#t = transport;
@@ -331,7 +331,7 @@ export class AdbClient {
     this.stats.sent += m.length;
   }
 
-  /** Manda i byte in coda e legge quelli arrivati; restituisce se ha fatto qualcosa. */
+  /** Sends the queued bytes and reads the incoming ones; returns whether it did anything. */
   pump() {
     let moved = false;
     while (this.#out.length) {
@@ -355,10 +355,10 @@ export class AdbClient {
     }
     const st = this.#t.state?.();
     if (st && (st.state === 'Closed' || st.guestEof) && !this.lost) {
-      this.lost = st.reason ?? 'chiusa';
-      this.#connected?.ko(new Error(`adb: connessione chiusa (${this.lost})`));
+      this.lost = st.reason ?? 'closed';
+      this.#connected?.ko(new Error(`adb: connection closed (${this.lost})`));
       for (const s of [...this.streams.values()]) {
-        s.onRefused(new Error('adb: connessione chiusa'));
+        s.onRefused(new Error('adb: connection closed'));
         s.handle({ command: A_CLSE, arg0: 0, arg1: s.local, data: new Uint8Array() });
       }
     }
@@ -376,7 +376,7 @@ export class AdbClient {
       case A_AUTH: {
         if (msg.arg0 !== AUTH_TOKEN) break;
         if (!this.key) {
-          this.#connected?.ko(new Error('adb: il dispositivo chiede AUTH e non c\'è una chiave'));
+          this.#connected?.ko(new Error('adb: the device asks for AUTH and there is no key'));
           break;
         }
         this.#authTries++;
@@ -392,7 +392,7 @@ export class AdbClient {
     }
   }
 
-  /** Saluto (CNXN, ed eventualmente AUTH): Promise del banner del dispositivo. */
+  /** Handshake (CNXN, and AUTH if needed): a Promise of the device banner. */
   connect() {
     if (!this.#connected) {
       let ok;
@@ -407,7 +407,7 @@ export class AdbClient {
     return this.#connected.p;
   }
 
-  /** Apre un flusso verso `service` (es. `shell:ls`): Promise dell'AdbStream. */
+  /** Opens a stream to `service` (e.g. `shell:ls`): a Promise of the AdbStream. */
   open(service) {
     const s = new AdbStream(this, this.#nextId++, service);
     this.streams.set(s.local, s);
@@ -420,9 +420,9 @@ export class AdbClient {
   }
 
   /**
-   * Esegue un comando: { stdout, stderr, exitCode } (con shell_v2 stdout e
-   * stderr separati e il codice d'uscita; senza, tutto in stdout ed
-   * exitCode null). `stdin` facoltativo (solo con shell_v2).
+   * Runs a command: { stdout, stderr, exitCode } (with shell_v2, separate
+   * stdout and stderr and the exit code; without it, everything in stdout and
+   * exitCode null). Optional `stdin` (shell_v2 only).
    */
   async shell(cmd, { stdin = null } = {}) {
     if (!this.features.includes('shell_v2')) {
@@ -464,7 +464,7 @@ export class AdbClient {
     return { stdout: join(out), stderr: join(err), exitCode };
   }
 
-  /** Copia `bytes` nel file `path` del dispositivo (servizio sync, SEND/DATA/DONE). */
+  /** Copies `bytes` to the device file `path` (sync service, SEND/DATA/DONE). */
   async push(path, bytes, { mode = 0o644, mtime = 0 } = {}) {
     const s = await this.open('sync:');
     const req = (id, payload) => {
@@ -484,7 +484,7 @@ export class AdbClient {
     const id = dec.decode(head.subarray(0, 4));
     const len = new DataView(head.buffer, head.byteOffset + 4, 4).getUint32(0, true);
     if (id !== 'OKAY') {
-      const msg = id === 'FAIL' ? dec.decode(await s.read(len)) : `risposta ${id}`;
+      const msg = id === 'FAIL' ? dec.decode(await s.read(len)) : `reply ${id}`;
       s.close();
       throw new Error(`adb push ${path}: ${msg}`);
     }
@@ -494,19 +494,19 @@ export class AdbClient {
   }
 
   /**
-   * Installa un APK: push in /data/local/tmp e `pm install -r`, poi toglie il
-   * file. Restituisce l'uscita di pm; lancia se non dice Success.
+   * Installs an APK: push to /data/local/tmp and `pm install -r`, then removes
+   * the file. Returns pm's output; throws if it does not say Success.
    */
   async install(apk, { name = 'vetro-install.apk', args = '-r' } = {}) {
     const tmp = `/data/local/tmp/${name.replace(/[^A-Za-z0-9._-]/g, '_')}`;
     await this.push(tmp, apk);
     const r = await this.shell(`pm install ${args} ${tmp}; e=$?; rm -f ${tmp}; exit $e`);
     const text = `${r.stdout}${r.stderr}`.trim();
-    if (!/\bSuccess\b/.test(text)) throw new Error(`adb install: ${text || `codice ${r.exitCode}`}`);
+    if (!/\bSuccess\b/.test(text)) throw new Error(`adb install: ${text || `exit code ${r.exitCode}`}`);
     return text;
   }
 
-  /** Come `adb devices -l`: il dispositivo di questo client. */
+  /** Like `adb devices -l`: this client's device. */
   async devices() {
     const b = this.banner ?? (await this.connect());
     let serial = b.serial;
@@ -519,7 +519,7 @@ export class AdbClient {
   }
 }
 
-/** Il banner del CNXN: `device::ro.product.name=x;...;features=a,b`. */
+/** The CNXN banner: `device::ro.product.name=x;...;features=a,b`. */
 export function parseBanner(s) {
   s = s.replace(/\0+$/, '');
   const [kind, serial, rest = ''] = s.split(':');

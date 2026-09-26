@@ -1,11 +1,11 @@
-// Client ADB di web/node/adb.mjs contro un adbd vero raggiunto via TCP
-// (per esempio l'immagine AOSP di Vetro sotto QEMU con hostfwd, o `vetro boot
-// --hostfwd`): prova manuale, non in CI (serve un Android acceso).
+// The ADB client in web/node/adb.mjs against a real adbd reached over TCP
+// (for example Vetro's AOSP image under QEMU with hostfwd, or `vetro boot
+// --hostfwd`): a manual test, not in CI (it needs a running Android).
 //
-//   node tests/web/adb-tcp.mjs HOST:PORTA [APK]
+//   node tests/web/adb-tcp.mjs HOST:PORT [APK]
 //
-// Fa devices, shell (uscita, stderr, codice), push e, con un APK, install
-// e apertura dell'attività principale (am start).
+// Runs devices, shell (output, stderr, exit code), push and, with an APK,
+// install and opening of the main activity (am start).
 
 import { connect } from 'node:net';
 import { readFileSync } from 'node:fs';
@@ -15,7 +15,7 @@ import { apkInfo } from '../../web/node/apk.mjs';
 const [hostPort, apkPath] = process.argv.slice(2);
 const [host, port] = hostPort.split(':');
 
-/** Un socket di Node con l'interfaccia di GuestSocket (send/recv/state). */
+/** A Node socket with GuestSocket's interface (send/recv/state). */
 class TcpTransport {
   #chunks = [];
   #closed = false;
@@ -48,7 +48,7 @@ const sock = connect({ host, port: Number(port) });
 await new Promise((ok, ko) => sock.once('connect', ok).once('error', ko));
 const adb = new AdbClient(new TcpTransport(sock));
 const pump = setInterval(() => adb.pump(), 2);
-const t = (p) => Promise.race([p, new Promise((_, ko) => setTimeout(() => ko(new Error('scaduto')), 120_000))]);
+const t = (p) => Promise.race([p, new Promise((_, ko) => setTimeout(() => ko(new Error('timed out')), 120_000))]);
 try {
   const banner = await t(adb.connect());
   console.log('banner:', JSON.stringify(banner));
@@ -63,7 +63,7 @@ try {
     const t0 = Date.now();
     console.log('install:', await t(adb.install(apk, { name: `${info.package}.apk` })), `${Date.now() - t0} ms`);
     const act = (await t(adb.shell(`cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER ${info.package} | tail -n 1`))).stdout.trim();
-    console.log('attività:', act);
+    console.log('activity:', act);
     console.log('am start:', JSON.stringify(await t(adb.shell(`am start -W -n ${act}`))));
   }
 } finally {

@@ -1,5 +1,5 @@
 //! Riferimento nativo dei test web (tests/web): gli stessi copioni di
-//! `boot-disk.mjs`, `devices.mjs` e `android-boot.mjs` (RAM di 3 GiB, ADR
+//! `boot-disk.mjs`, `devices.mjs` e `android-boot.mjs` (3 GiB of RAM, ADR
 //! 0028), con la stessa API di vetro-wasm
 //! compilata per l'host, l'interprete e un disco locale sempre pronto.
 //! Scrive istruzioni e log grezzo in `target/web-test/native-*.{steps,log}`:
@@ -170,8 +170,8 @@ fn devices_session(image: &[u8], initrd: &[u8]) -> u64 {
     s.save("devices")
 }
 
-/// Come android-boot.mjs: RAM di 3 GiB (su wasm32 una regione fuori
-/// dall'allocatore), fino al prompt, prima riga di /proc/meminfo, spegnimento.
+/// Like android-boot.mjs: 3 GiB of RAM (on wasm32 a region outside the
+/// allocator), up to the prompt, first line of /proc/meminfo, power off.
 fn ram3g_session(image: &[u8], initrd: &[u8]) -> u64 {
     let mut s = Session::with_ram(image, initrd, 3 << 30, |_| {});
     let at = s.until(SHELL_PROMPT, 0);
@@ -196,7 +196,7 @@ fn riferimento_nativo_dei_test_web() {
     let v = devices_session(&image, &initrd);
     let r = ram3g_session(&image, &initrd);
     eprintln!(
-        "riferimento nativo: disco {d} istruzioni, dispositivi {v} istruzioni, RAM di 3 GiB {r} istruzioni \
+        "riferimento nativo: disco {d} istruzioni, dispositivi {v} istruzioni, 3 GiB of RAM {r} instructions \
          (target/web-test/native-*)"
     );
 }

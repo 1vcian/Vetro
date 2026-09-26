@@ -96,32 +96,32 @@ export class BlobSource {
   }
 }
 
-// ---- Disco ricomposto da una mappa (M5, ADR 0028) ---------------------------
+// ---- Disk rebuilt from a map (M5, ADR 0028) ---------------------------------
 
 /**
- * Controlla una mappa di disco (`tools/aosp/web-disk.mjs`: `{ format:
+ * Checks a disk map (`tools/aosp/web-disk.mjs`: `{ format:
  * 'vetro-disk-layout', version: 1, size, files: [{ path, size, sha256 }],
- * extents: [[offset, lunghezza, file, offset nel file | parola]] }`) e la
- * prepara per `composePlan`. Estensioni ordinate, senza sovrapposizioni,
- * dentro il disco e dentro i file; file -1 = zeri, -2 = riempimento con la
- * parola a 32 bit (little endian); fuori dalle estensioni, zeri.
+ * extents: [[offset, length, file, file offset | word]] }`) and prepares it
+ * for `composePlan`. Extents sorted, non-overlapping, inside the disk and the
+ * files; file -1 = zeros, -2 = fill with the 32-bit word (little endian);
+ * outside the extents, zeros.
  */
 export function parseLayout(l) {
-  if (l?.format !== 'vetro-disk-layout' || l.version !== 1) throw new Error('mappa del disco: formato sconosciuto');
+  if (l?.format !== 'vetro-disk-layout' || l.version !== 1) throw new Error('disk map: unknown format');
   const size = l.size;
-  if (!Number.isSafeInteger(size) || size <= 0) throw new Error('mappa del disco: dimensione non valida');
+  if (!Number.isSafeInteger(size) || size <= 0) throw new Error('disk map: invalid size');
   const files = l.files ?? [];
   let end = 0;
   const starts = new Float64Array(l.extents.length);
   for (const [i, e] of l.extents.entries()) {
     const [at, len, file, off] = e;
     if (![at, len, file, off].every(Number.isSafeInteger) || len <= 0 || at < end || at + len > size) {
-      throw new Error(`mappa del disco: estensione ${i} non valida`);
+      throw new Error(`disk map: invalid extent ${i}`);
     }
     if (file >= 0) {
-      if (file >= files.length) throw new Error(`mappa del disco: estensione ${i}: file ${file} sconosciuto`);
-      if (files[file].size !== undefined && off + len > files[file].size) throw new Error(`mappa del disco: estensione ${i} oltre la fine di ${files[file].path}`);
-    } else if (file !== -1 && file !== -2) throw new Error(`mappa del disco: estensione ${i}: tipo ${file}`);
+      if (file >= files.length) throw new Error(`disk map: extent ${i}: unknown file ${file}`);
+      if (files[file].size !== undefined && off + len > files[file].size) throw new Error(`disk map: extent ${i} beyond the end of ${files[file].path}`);
+    } else if (file !== -1 && file !== -2) throw new Error(`disk map: extent ${i}: type ${file}`);
     starts[i] = at;
     end = at + len;
   }
@@ -129,14 +129,14 @@ export function parseLayout(l) {
 }
 
 /**
- * I pezzi di `[offset, offset+length)`: [{ at, length, file, fileOffset }]
- * per i byte dai file (contigui nello stesso file = un pezzo solo) e
- * [{ at, length, fill }] per i riempimenti; `at` relativo a `offset`. I
- * byte non coperti sono zeri.
+ * The pieces of `[offset, offset+length)`: [{ at, length, file, fileOffset }]
+ * for bytes from files (contiguous in the same file = a single piece) and
+ * [{ at, length, fill, shift }] for fills; `at` relative to `offset`.
+ * Uncovered bytes are zeros.
  */
 export function composePlan(layout, offset, length) {
   const { extents, starts } = layout;
-  // Prima estensione che può toccare l'intervallo.
+  // First extent that can touch the range.
   let lo = 0;
   let hi = starts.length;
   while (lo < hi) {
@@ -152,7 +152,7 @@ export function composePlan(layout, offset, length) {
     const e = Math.min(at + len, stop);
     if (s >= e || file === -1) continue;
     if (file === -2) {
-      // La parola si ripete dall'inizio dell'estensione.
+      // The word repeats from the start of the extent.
       plan.push({ at: s - offset, length: e - s, fill: off >>> 0, shift: (s - at) & 3 });
       continue;
     }
@@ -170,7 +170,7 @@ function applyFill(out, p) {
   for (let k = 0; k < p.length; k++) out[p.at + k] = word[(p.shift + k) & 3];
 }
 
-/** `length` byte da `offset` del disco con `read(file, offset, length)` sincrona. */
+/** `length` bytes from disk `offset` with a synchronous `read(file, offset, length)`. */
 export function composeRead(layout, offset, length, read) {
   const out = new Uint8Array(length);
   for (const p of composePlan(layout, offset, length)) {
@@ -181,10 +181,10 @@ export function composeRead(layout, offset, length, read) {
 }
 
 /**
- * Una sorgente ricomposta da una mappa (`tools/aosp/web-disk.mjs`): i byte
- * vengono con HTTP Range dai file della mappa (URL relativi alla mappa), i
- * buchi sono zeri. `key` (cache dei blocchi, overlay, snapshot) = URL della
- * mappa + SHA-256 del suo testo: se cambia un file cambia la mappa.
+ * A source rebuilt from a map (`tools/aosp/web-disk.mjs`): bytes come with
+ * HTTP Range from the map's files (URLs relative to the map), holes are
+ * zeros. `key` (block cache, overlay, snapshots) = the map URL + the SHA-256
+ * of its text: if a file changes, the map changes.
  */
 export class LayoutSource {
   #fetch;
@@ -207,7 +207,7 @@ export class LayoutSource {
 
   async open() {
     const res = await this.#fetch(this.url);
-    if (!res.ok) throw new Error(`${this.url}: stato ${res.status}`);
+    if (!res.ok) throw new Error(`${this.url}: status ${res.status}`);
     const text = await res.text();
     this.layout = parseLayout(JSON.parse(text));
     this.size = this.layout.size;
@@ -218,7 +218,7 @@ export class LayoutSource {
     await Promise.all(this.sources.map(async (s, i) => {
       await s.open();
       const want = this.layout.files[i].size;
-      if (want !== undefined && s.size !== want) throw new Error(`${s.url}: ${s.size} byte, la mappa ne vuole ${want}`);
+      if (want !== undefined && s.size !== want) throw new Error(`${s.url}: ${s.size} bytes, the map wants ${want}`);
     }));
     return this;
   }

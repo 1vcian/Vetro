@@ -331,8 +331,8 @@ fn bootconfig_aggiunto_alla_riga_di_comando_se_manca() {
     let vendor = vendor_v4(&[(b"V", 0, "v")], "", b"androidboot.y=2", 4096);
     let a = AndroidBoot::from_images(&boot, Some(&vendor), None, &opts).unwrap();
     assert_eq!(a.bootconfig, "androidboot.y=2\nandroidboot.x = \"1\"\n");
-    // Un parametro con una chiave della sezione del vendor la sostituisce
-    // al suo posto (ADR 0028), gli altri vanno in coda.
+    // A parameter with a key of the vendor section replaces that line in
+    // place (ADR 0028), the others are appended.
     let vendor = vendor_v4(&[(b"V", 0, "v")], "", b"androidboot.y=2\nandroidboot.z=3\n", 4096);
     let opts = BootOptions { params: "androidboot.y=nuovo androidboot.x=1".into(), ..BootOptions::default() };
     let a = AndroidBoot::from_images(&boot, Some(&vendor), None, &opts).unwrap();

@@ -553,8 +553,8 @@ pub fn assemble(
             extra.push(p);
         }
     }
-    // Un parametro con la chiave di una riga della sezione del vendor la
-    // sostituisce (ADR 0028): ripetuta, il kernel scarterebbe tutto il blocco.
+    // A parameter with the key of a line of the vendor section replaces it
+    // (ADR 0028): repeated, the kernel would discard the whole block.
     let mut text = String::new();
     let mut used = vec![false; params.len()];
     if let Some(v) = vendor {

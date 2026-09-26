@@ -62,14 +62,14 @@ fn config_bytes(m: &Machine) -> Vec<u8> {
     w.into_bytes()
 }
 
-/// Il contenuto della RAM letto a pezzi da `pull`, con l'hash del file che
-/// avanza man mano.
+/// The RAM content read in chunks from `pull`, with the file hash advancing
+/// as it goes.
 struct PullSource<'a> {
     pull: &'a mut dyn FnMut(&mut [u8]) -> usize,
     buf: Vec<u8>,
     start: usize,
     end: usize,
-    /// Byte della sezione ancora da leggere da `pull`.
+    /// Bytes of the section still to read from `pull`.
     left: u64,
     hash: &'a mut Hash64,
 }
@@ -103,7 +103,7 @@ impl crate::board::RamSource for PullSource<'_> {
     }
 }
 
-/// [`vetro_snapshot::hash64`] a pezzi, con la lunghezza totale nota prima.
+/// [`vetro_snapshot::hash64`] in pieces, with the total length known upfront.
 struct Hash64 {
     h: u64,
     carry: [u8; 8],
@@ -162,8 +162,8 @@ impl Machine {
     pub fn save(&self) -> Vec<u8> {
         let ram = self.board.borrow().ram.size() as usize;
         let mut w = Writer::with_capacity((1 << 20) + ram / 32);
-        // Il file si scrive sul posto: prima lo spazio per l'intestazione,
-        // riempito alla fine.
+        // The file is written in place: first the room for the header, filled
+        // in at the end.
         w.raw(&[0; vetro_snapshot::HEADER_LEN]);
         self.save_head(&mut w);
         let b = self.board.borrow();
@@ -175,15 +175,15 @@ impl Machine {
         file
     }
 
-    /// Lo stesso file di [`Machine::save`] senza tenerlo in memoria: il
-    /// contenuto (tutto tranne l'intestazione) va a `sink` a pezzi, in ordine,
-    /// e l'intestazione (da scrivere in testa, [`vetro_snapshot::HEADER_LEN`]
-    /// byte) è il risultato. Oltre ai pezzi, in memoria c'è solo la parte
-    /// prima della RAM (dispositivi e copy-on-write dei dischi: `reserve` è
-    /// la sua dimensione prevista, per non raddoppiare il buffer crescendo).
-    /// La RAM si comprime due volte: la prima per sapere la lunghezza, che
-    /// entra nell'hash prima di tutto il resto. Con Android nel browser uno
-    /// snapshot tenuto intero non sta nella memoria di wasm32 (ADR 0028).
+    /// The same file as [`Machine::save`] without holding it in memory: the
+    /// content (everything but the header) goes to `sink` in chunks, in order,
+    /// and the header (to be written at the start, [`vetro_snapshot::HEADER_LEN`]
+    /// bytes) is the result. Besides the chunks, only the part before the RAM
+    /// is in memory (devices and disk copy-on-write: `reserve` is its expected
+    /// size, so the buffer does not double while growing). The RAM is
+    /// compressed twice: the first time to learn the length, which enters the
+    /// hash before everything else. With Android in the browser a snapshot held
+    /// whole does not fit in wasm32 memory (ADR 0028).
     pub fn save_stream(
         &self,
         reserve: usize,
@@ -210,12 +210,12 @@ impl Machine {
             h.update(c);
             sink(c);
         });
-        assert_eq!(again, ram_len, "RAM cambiata durante il salvataggio");
+        assert_eq!(again, ram_len, "RAM changed while saving");
         self.file_header(total, h.finish())
     }
 
-    /// Intestazione del file: magia, versione, configurazione, lunghezza e
-    /// hash del contenuto.
+    /// The file header: magic, version, configuration, length and content
+    /// hash.
     fn file_header(&self, len: u64, hash: u64) -> [u8; vetro_snapshot::HEADER_LEN] {
         let mut head = [0u8; vetro_snapshot::HEADER_LEN];
         head.copy_from_slice(
@@ -226,7 +226,7 @@ impl Machine {
         head
     }
 
-    /// Le sezioni prima della RAM.
+    /// The sections before the RAM.
     fn save_head(&self, w: &mut Writer) {
         w.section(b"MACH", |w| {
             w.u64(self.steps);
@@ -274,7 +274,7 @@ impl Machine {
         Ok(())
     }
 
-    /// Le sezioni prima della RAM.
+    /// The sections before the RAM.
     fn load_head(&mut self, r: &mut Reader<'_>) -> Result<(), Error> {
         let mut s = r.section(b"MACH")?;
         self.steps = s.u64()?;
@@ -303,14 +303,14 @@ impl Machine {
         Ok(())
     }
 
-    /// Come [`Machine::load_state`] senza il file intero in memoria (ADR
-    /// 0028): `head` sono i byte del file dall'inizio fino all'intestazione
-    /// della sezione `RAM ` compresa (etichetta e lunghezza), `pull` riempie
-    /// il buffer dato con i byte successivi del file (il contenuto della RAM)
-    /// e ne restituisce il numero (0 = fine). Magia, versione e configurazione
-    /// si controllano prima di toccare la macchina (come `load_state`); la
-    /// somma di controllo si verifica mentre la RAM arriva, quindi un file
-    /// rovinato dà [`Error::Checksum`] a macchina già cambiata, da scartare.
+    /// Like [`Machine::load_state`] without the whole file in memory (ADR
+    /// 0028): `head` is the file's bytes from the start up to and including
+    /// the header of the `RAM ` section (tag and length), `pull` fills the given
+    /// buffer with the next bytes of the file (the RAM content) and returns how
+    /// many (0 = end). Magic, version and configuration are checked before the
+    /// machine is touched (as in `load_state`); the checksum is verified while
+    /// the RAM arrives, so a damaged file gives [`Error::Checksum`] with the
+    /// machine already changed, to be discarded.
     pub fn load_state_stream(
         &mut self,
         head: &[u8],
@@ -353,7 +353,7 @@ impl Machine {
             PullSource { pull, buf: vec![0; 1 << 20], start: 0, end: 0, left: ram_len, hash: &mut hash };
         self.board.borrow_mut().ram.restore_from(&mut src)?;
         if src.left != 0 || src.start != src.end {
-            return Err(Error::invalid("sezione RAM più lunga del contenuto"));
+            return Err(Error::invalid("RAM section longer than its content"));
         }
         if hash.finish() != sum {
             return Err(Error::Checksum);
@@ -563,16 +563,15 @@ pub(super) mod tests {
         }
     }
 
-    /// Il salvataggio a pezzi (`save_stream`, per il browser) dà lo stesso
-    /// file di `save`: intestazione più i pezzi nell'ordine dati, anche con
-    /// la RAM sporca oltre il MiB di un pezzo e con pezzi che spezzano le
-    /// parole dell'hash.
+    /// The chunked save (`save_stream`, for the browser) gives the same file
+    /// as `save`: header plus the chunks in the given order, also with dirty
+    /// RAM beyond one chunk's MiB and with chunks that split the hash words.
     #[test]
     fn salvataggio_a_pezzi_uguale_al_file() {
         let mut m = probe();
         run_to(&mut m, 77_777, 5_000, &mut Vec::new());
         assert_eq!(m.save_stream(0, &mut |_| {}).as_slice(), &m.save()[..vetro_snapshot::HEADER_LEN]);
-        // Una macchina con più RAM e pagine non comprimibili sparse: più pezzi da 1 MiB.
+        // A machine with more RAM and scattered incompressible pages: several 1 MiB chunks.
         let m = Machine::with_devices(&MachineConfig { ram_size: 8 << 20, ..cfg() }, &Devices::none());
         let mut k = 12345u32;
         for p in 0..400u64 {
@@ -601,9 +600,9 @@ pub(super) mod tests {
             });
             assert!(pieces > 3, "{pieces} pezzi");
             assert_eq!(head.as_slice(), &file[..vetro_snapshot::HEADER_LEN]);
-            assert!(body == file[vetro_snapshot::HEADER_LEN..], "contenuto a pezzi diverso");
+            assert!(body == file[vetro_snapshot::HEADER_LEN..], "chunked content differs");
         }
-        // L'hash a pezzi con pezzi di lunghezze qualsiasi.
+        // The chunked hash with pieces of any length.
         let data: Vec<u8> = (0..1000u32).map(|i| (i * 7 + 3) as u8).collect();
         for cut in [0, 1, 3, 7, 8, 9, 500, 999] {
             let mut h = Hash64::new(data.len() as u64);
@@ -612,20 +611,20 @@ pub(super) mod tests {
             {
                 h.update(part);
             }
-            assert_eq!(h.finish(), vetro_snapshot::hash64(&data), "taglio a {cut}");
+            assert_eq!(h.finish(), vetro_snapshot::hash64(&data), "cut at {cut}");
         }
     }
 
-    /// Il ripristino a pezzi (`load_state_stream`, per il browser) dà lo
-    /// stesso stato di `load_state`, con pezzi di ogni dimensione; i file
-    /// rovinati si rifiutano (magia, versione, configurazione a macchina
-    /// intatta; somma di controllo alla fine).
+    /// The chunked restore (`load_state_stream`, for the browser) gives the
+    /// same state as `load_state`, with chunks of any size; damaged files are
+    /// rejected (magic, version, configuration with the machine intact;
+    /// checksum at the end).
     #[test]
     fn ripristino_a_pezzi_uguale() {
         let mut m = probe();
         run_to(&mut m, 123_457, 10_000, &mut Vec::new());
         let snap = m.save();
-        // Dove comincia il contenuto della RAM: dopo le sezioni e l'intestazione di `RAM `.
+        // Where the RAM content starts: after the sections and the `RAM ` header.
         let mut at = vetro_snapshot::HEADER_LEN;
         while &snap[at..at + 4] != b"RAM " {
             at += 12 + u64::from_le_bytes(snap[at + 4..at + 12].try_into().unwrap()) as usize;
@@ -642,7 +641,7 @@ pub(super) mod tests {
                 k
             })
             .unwrap();
-            assert!(n.save() == snap, "pezzi da {piece}: stato diverso");
+            assert!(n.save() == snap, "chunks of {piece}: different state");
         }
         let mut n = probe();
         let before = n.save();
@@ -652,8 +651,8 @@ pub(super) mod tests {
         let mut bad = head.to_vec();
         bad[12] ^= 1;
         assert!(matches!(n.load_state_stream(&bad, &mut |_| 0), Err(Error::Config { .. })));
-        assert!(n.save() == before, "macchina intatta dopo un rifiuto d'intestazione");
-        // Un byte della RAM cambiato: somma di controllo sbagliata.
+        assert!(n.save() == before, "machine intact after a header rejection");
+        // One RAM byte changed: wrong checksum.
         let mut pos = head.len();
         let r = n.load_state_stream(head, &mut |buf: &mut [u8]| {
             let k = buf.len().min(snap.len() - pos);
@@ -664,8 +663,8 @@ pub(super) mod tests {
             pos += k;
             k
         });
-        assert!(r.is_err(), "RAM rovinata accettata");
-        // File troncato.
+        assert!(r.is_err(), "damaged RAM accepted");
+        // Truncated file.
         let mut pos = head.len();
         let r = probe().load_state_stream(head, &mut |buf: &mut [u8]| {
             let k = buf.len().min(snap.len() - 10 - pos);

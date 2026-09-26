@@ -147,17 +147,17 @@ adbd nel guest Android ascolta su TCP 5555 (`service.adb.tcp.port=5555`,
   CLSE) passa trasparente sulla connessione inoltrata. Come con QEMU
   (`hostfwd=tcp::5555-:5555`); l'emulatore di Android Studio usa invece
   la coppia 5554/5555 sulla console, che qui non c'è.
-- Browser (fatto, ADR 0028): il client ADB in JS di `web/node/adb.mjs`
-  sopra `GuestSocket` (`connectGuest(5555)`): messaggi da 24 byte + dati,
-  `shell,v2,raw:` (stdout, stderr, codice d'uscita), `sync:` per push,
-  install = push in `/data/local/tmp` + `pm install -r`, `devices` dal
-  banner e da `ro.serialno`. AUTH gestita (`AdbKey`: RSA 2048 da WebCrypto,
-  firma PKCS#1 v1.5 del gettone come digest SHA-1, chiave pubblica nel
-  formato di `adb_keys`), ma l'immagine userdebug di Vetro ha
-  `ro.adb.secure=0` e adbd già in TCP 5555 (ADR 0022): il saluto è un CNXN
-  diretto. Provato contro un finto adbd (`tests/web/adb.mjs`), contro adbd
-  sotto QEMU via TCP (`tests/web/adb-tcp.mjs`) e nell'app
-  (`tests/web/android-chrome.mjs`).
+- Browser (done, ADR 0028): the JS ADB client in `web/node/adb.mjs` over
+  `GuestSocket` (`connectGuest(5555)`): 24-byte messages + data,
+  `shell,v2,raw:` (stdout, stderr, exit code), `sync:` for push, install =
+  push to `/data/local/tmp` + `pm install -r`, `devices` from the banner and
+  `ro.serialno`. AUTH is handled (`AdbKey`: RSA 2048 from WebCrypto, PKCS#1
+  v1.5 signature of the token as a SHA-1 digest, public key in the
+  `adb_keys` format), but Vetro's userdebug image has `ro.adb.secure=0` and
+  adbd already on TCP 5555 (ADR 0022): the handshake is a plain CNXN. Tested
+  against a fake adbd (`tests/web/adb.mjs`), against adbd under QEMU over TCP
+  (`tests/web/adb-tcp.mjs`), against adbd in the guest from Node
+  (`tests/web/android.mjs`) and in the app (`tests/web/android-chrome.mjs`).
 
 ## Registro degli eventi (`NetEvent { at, kind }`)
 `Dhcp`, `IcmpEcho`, `TcpOpen`, `TcpEstablished`,

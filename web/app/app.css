@@ -199,7 +199,7 @@ main {
   border-color: var(--accent);
 }
 
-/* AOSP: fasi dell'avvio e adb (M5/M6) */
+/* AOSP: boot phases and adb (M5/M6) */
 #android-box {
   flex: 1 1 320px;
   min-width: 0;

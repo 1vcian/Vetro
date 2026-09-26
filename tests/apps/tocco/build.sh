@@ -1,17 +1,17 @@
 #!/bin/sh
-# Costruisce l'APK di prova tests/apps/tocco (una Activity, niente risorse)
-# con l'SDK di Android: javac, d8, aapt2, zipalign, apksigner. Chiave di
-# debug generata al volo (l'APK non si committa mai: target/apps/tocco.apk).
+# Builds the test APK tests/apps/tocco (one Activity, no resources) with the
+# Android SDK: javac, d8, aapt2, zipalign, apksigner. A debug key is generated
+# on the fly (the APK is never committed: target/apps/tocco.apk).
 #   ANDROID_HOME (default ~/Library/Android/sdk), build-tools 35.0.0,
-#   platforms/android-36 (o VETRO_ANDROID_PLATFORM), un JDK >= 11.
-# Uso: tests/apps/tocco/build.sh  -> stampa il percorso dell'APK
+#   platforms/android-36 (or VETRO_ANDROID_PLATFORM), a JDK >= 11.
+# Usage: tests/apps/tocco/build.sh  -> prints the APK path
 set -eu
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../../.." && pwd)"
 sdk="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
 bt="$sdk/build-tools/${VETRO_ANDROID_BUILD_TOOLS:-35.0.0}"
 plat="$sdk/platforms/${VETRO_ANDROID_PLATFORM:-android-36}/android.jar"
-[ -x "$bt/aapt2" ] && [ -f "$plat" ] || { echo "SDK di Android mancante ($bt, $plat)" >&2; exit 2; }
+[ -x "$bt/aapt2" ] && [ -f "$plat" ] || { echo "Android SDK missing ($bt, $plat)" >&2; exit 2; }
 out="$root/target/apps/tocco"
 rm -rf "$out"
 mkdir -p "$out/obj" "$out/dex"

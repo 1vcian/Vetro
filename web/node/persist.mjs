@@ -240,9 +240,9 @@ export class SnapshotStore {
   }
 
   /**
-   * Solo i metadati di uno snapshot completo (la lunghezza del file torna),
-   * senza leggerne i byte: per gli snapshot grandi (Android, centinaia di
-   * MiB) i byte si leggono con `readInto` direttamente dove servono.
+   * Only the metadata of a complete snapshot (the file length matches),
+   * without reading its bytes: for large snapshots (Android, hundreds of MiB)
+   * the bytes are read with `readInto` or `openReader` right where needed.
    */
   async loadMeta(key) {
     const m = await this.#read(`${key}.json`);
@@ -265,8 +265,8 @@ export class SnapshotStore {
   }
 
   /**
-   * Un lettore dello snapshot `key`: `{ size, readAt(view, offset), close() }`
-   * (sincrono, per `Machine.snapshotRestoreStream`).
+   * A reader of snapshot `key`: `{ size, readAt(view, offset), close() }`
+   * (synchronous, for `Machine.snapshotRestoreStream`).
    */
   async openReader(key) {
     if (this.#mem) {
@@ -277,13 +277,13 @@ export class SnapshotStore {
     return {
       size: h.getSize(),
       readAt: (view, at) => {
-        if (h.read(view, { at }) !== view.length) throw new Error('snapshot: lettura corta');
+        if (h.read(view, { at }) !== view.length) throw new Error('snapshot: short read');
       },
       close: () => h.close(),
     };
   }
 
-  /** Legge i byte dello snapshot `key` in `view` (lunga `meta.size`). */
+  /** Reads the bytes of snapshot `key` into `view` (`meta.size` long). */
   async readInto(key, view) {
     if (this.#mem) {
       view.set(this.#mem.get(`${key}.snap`));
@@ -291,29 +291,29 @@ export class SnapshotStore {
     }
     const h = await (await this.#dir.getFileHandle(`${key}.snap`)).createSyncAccessHandle();
     try {
-      if (h.read(view, { at: 0 }) !== view.length) throw new Error('snapshot: lettura corta');
+      if (h.read(view, { at: 0 }) !== view.length) throw new Error('snapshot: short read');
     } finally {
       h.close();
     }
   }
 
   /**
-   * Come `save`, con i byte prodotti a pezzi: `produce(write)` chiama
-   * `write(bytes, offset)` per ogni pezzo (in modo sincrono) e restituisce la
-   * lunghezza totale (vedi `Machine.snapshotSaveTo`).
+   * Like `save`, with the bytes produced in chunks: `produce(write)` calls
+   * `write(bytes, offset)` for each chunk (synchronously) and returns the
+   * total length (see `Machine.snapshotSaveTo`).
    */
   async saveStream(key, meta, produce) {
     let size;
     if (!this.#mem) {
-      // In un file nuovo, poi al posto del vecchio: se il salvataggio fallisce
-      // (memoria esaurita, pagina chiusa) lo snapshot di prima resta.
+      // Into a new file, then in place of the old one: if the save fails
+      // (memory exhausted, page closed) the previous snapshot stays.
       const fh = await this.#dir.getFileHandle(`${key}.new`, { create: true });
       if (typeof fh.move === 'function') {
         const h = await fh.createSyncAccessHandle();
         try {
           h.truncate(0);
           size = produce((b, at) => {
-            if (h.write(b, { at }) !== b.length) throw new Error('snapshot: scrittura corta in OPFS');
+            if (h.write(b, { at }) !== b.length) throw new Error('snapshot: short write to OPFS');
           });
           h.flush();
         } finally {
@@ -339,7 +339,7 @@ export class SnapshotStore {
       try {
         h.truncate(0);
         size = produce((b, at) => {
-          if (h.write(b, { at }) !== b.length) throw new Error('snapshot: scrittura corta in OPFS');
+          if (h.write(b, { at }) !== b.length) throw new Error('snapshot: short write to OPFS');
         });
         h.flush();
       } finally {

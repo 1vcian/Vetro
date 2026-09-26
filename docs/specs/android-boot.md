@@ -76,7 +76,10 @@ la firma GKI, `board_id` (letto ed esposto, non usato per scegliere).
    del vendor (senza NUL finali, con `\n` finale aggiunto se manca) seguita
    da una riga `chiave = "valore"` per ogni `androidboot.*` di
    `BootOptions::params` (apici se il valore ha virgolette; chiave ripetuta
-   nei parametri = errore). Se il testo non è vuoto: blocco
+   nei parametri = errore). A parameter with the key of a line of the
+   vendor section replaces that line in place instead of being appended
+   (ADR 0028: repeated, the kernel would discard the whole block). Se il
+   testo non è vuoto: blocco
    `testo, NUL, riempimento a NUL fino a un initrd multiplo di 4, size (le32),
    checksum (le32, somma dei byte), "#BOOTCONFIG\n"` in coda all'initrd
    (identico a `tools/bootconfig -a` del kernel), e `bootconfig` aggiunto

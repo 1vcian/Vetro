@@ -1,39 +1,40 @@
-// L'immagine AOSP di Vetro nel browser e in Node (M5, ADR 0028): le fasi
-// dell'avvio lette dalla console del guest. Non usa API di Node.
+// Vetro's AOSP image in the browser and in Node (M5, ADR 0028): the boot
+// phases read from the guest console, the home screen, the boot parameters.
+// Uses no Node API.
 //
-// Il kernel GKI scrive su ttyAMA0 e init (con `printk.devkmsg=on`) scrive in
-// kmsg: le righe qui sotto sono stabili fra un avvio e l'altro e bastano a
-// dire a che punto è la macchina. L'ordine è quello dell'avvio; una fase
-// vista implica le precedenti.
+// The GKI kernel writes to ttyAMA0 and init (with `printk.devkmsg=on`) writes
+// to kmsg: the lines below are stable from one boot to the next and are
+// enough to tell where the machine is. The order is the boot order; a phase
+// seen implies the earlier ones.
 
-/** Fasi dell'avvio: [nome, etichetta, riconoscitore della riga]. */
+/** Boot phases: [name, label, line matcher]. */
 export const PHASES = [
   ['kernel', 'kernel', /Booting Linux on physical CPU/],
-  ['init', 'init, prima fase', /Run \/init as init process/],
-  ['init2', 'init, seconda fase', /init: init second stage started/],
+  ['init', 'init, first stage', /Run \/init as init process/],
+  ['init2', 'init, second stage', /init: init second stage started/],
   ['zygote', 'zygote', /init: starting service 'zygote'/],
-  ['surfaceflinger', 'grafica (surfaceflinger)', /init: starting service 'surfaceflinger'/],
+  ['surfaceflinger', 'graphics (surfaceflinger)', /init: starting service 'surfaceflinger'/],
   ['system_server', 'system_server', /\(system_server\)/],
-  // `sys.boot_completed=1`: init mette in coda l'evento sys-boot-completed-set
-  // (azione di init.cutf_cvm.rc nell'immagine di Vetro).
-  ['booted', 'avvio finito', /\(sys\.boot_completed=1\)|sys-boot-completed-set/],
-  // Non dalla console: l'attività in primo piano diventa il launcher (prima
-  // c'è FallbackHome, "Phone is starting"). Chi ha adb chiama `mark`.
-  ['home', 'home (launcher)', null],
+  // `sys.boot_completed=1`: init queues the sys-boot-completed-set event (an
+  // action of init.cutf_cvm.rc in Vetro's image).
+  ['booted', 'boot finished', /\(sys\.boot_completed=1\)|sys-boot-completed-set/],
+  // Not from the console: the focused window becomes the launcher (before it
+  // there is FallbackHome, "Phone is starting"). Whoever has adb calls `mark`.
+  ['home', 'home screen (launcher)', null],
 ];
 
 /**
- * Parametri del bootloader per l'immagine AOSP di Vetro (ADR 0028): `nokaslr`
- * come tools/aosp/vetro.sh.
+ * Bootloader parameters for Vetro's AOSP image (ADR 0028): `nokaslr` like
+ * tools/aosp/vetro.sh.
  */
 export const ANDROID_PARAMS = 'nokaslr';
 
 /**
- * Un colore dell'app come lo mostra lo scanout. L'immagine di oggi scambia
- * rosso e blu (l'app blu 0x1565c0 arriva come (192, 101, 21): il composer
- * scrive RGBA in buffer che virtio-gpu presenta come XRGB8888; con
- * `display_framebuffer_format=bgra` non cambia, ADR 0028): i test accettano
- * i due ordini e dicono quale hanno visto.
+ * An app colour as the scanout shows it. Today's image swaps red and blue
+ * (the blue app 0x1565c0 arrives as (192, 101, 21): a buffer written as RGBA
+ * presented by virtio-gpu as XRGB8888; `display_framebuffer_format=bgra`
+ * changes nothing, ADR 0028): tests accept both orders and report which one
+ * they saw.
  */
 export function colorSeen(px, rgb, tol = 8) {
   if (!px) return null;
@@ -43,15 +44,15 @@ export function colorSeen(px, rgb, tol = 8) {
   return null;
 }
 
-/** Comando adb per l'attività in primo piano; la home c'è se contiene "launcher". */
+/** adb command for the focused window; the home screen is up if it contains "launcher". */
 export const HOME_QUERY = 'dumpsys window | grep -m1 mCurrentFocus';
 export const isHome = (out) => /launcher/i.test(out);
 
 /**
- * Colori distinti su una griglia di passo 16 di un'immagine RGBA: con il
- * launcher in primo piano lo scanout può mostrare ancora per decine di
- * secondi di guest FallbackHome (una scritta su nero, una decina di
- * colori); la home disegnata ne ha molti di più (icone, sfondo).
+ * Distinct colours on a 16-pixel grid of an RGBA image: with the launcher
+ * focused, the scanout can still show FallbackHome for tens of seconds of
+ * guest time (text on black, about ten colours); the drawn home screen has
+ * many more (icons, wallpaper).
  */
 export function gridColors(px, width, height) {
   const seen = new Set();
@@ -64,14 +65,14 @@ export function gridColors(px, width, height) {
   return seen.size;
 }
 
-/** Colori della griglia oltre i quali la home si considera disegnata. */
+/** Grid colours above which the home screen counts as drawn. */
 export const HOME_MIN_COLORS = 40;
 
-/** Segue la console e dice quando si entra in una fase nuova. */
+/** Follows the console and tells when a new phase starts. */
 export class BootProgress {
-  /** Indice dell'ultima fase vista (-1 = nessuna). */
+  /** Index of the last phase seen (-1 = none). */
   index = -1;
-  /** [{ phase, label, guestSecs }] in ordine. */
+  /** [{ phase, label, guestSecs }] in order. */
   events = [];
   #line = '';
 
@@ -80,20 +81,20 @@ export class BootProgress {
   }
 
   get label() {
-    return this.index < 0 ? 'in attesa del kernel' : PHASES[this.index][1];
+    return this.index < 0 ? 'waiting for the kernel' : PHASES[this.index][1];
   }
 
-  /** Nuovo testo della console (stringa); restituisce le fasi nuove. */
+  /** New console text (string); returns the new phases. */
   feed(text, guestSecs) {
     const out = [];
     const lines = (this.#line + text).split('\n');
     this.#line = lines.pop();
-    // Una riga lunghissima senza a capo non deve crescere per sempre.
+    // A very long line without a newline must not grow forever.
     if (this.#line.length > 4096) this.#line = this.#line.slice(-4096);
     for (const l of lines) {
       for (let k = this.index + 1; k < PHASES.length; k++) {
         if (PHASES[k][2]?.test(l)) {
-          // Le fasi saltate (righe perse) contano come viste adesso.
+          // Skipped phases (lost lines) count as seen now.
           for (let j = this.index + 1; j <= k; j++) {
             const ev = { phase: PHASES[j][0], label: PHASES[j][1], guestSecs };
             this.events.push(ev);
@@ -107,7 +108,7 @@ export class BootProgress {
     return out;
   }
 
-  /** Segna una fase vista da fuori della console (la home); restituisce le fasi nuove. */
+  /** Marks a phase seen outside the console (the home screen); returns the new phases. */
   mark(phase, guestSecs) {
     const k = PHASES.findIndex((p) => p[0] === phase);
     if (k <= this.index) return [];

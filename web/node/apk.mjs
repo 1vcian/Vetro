@@ -1,12 +1,11 @@
-// Informazioni di un APK lette nel browser (M6, ADR 0028): nome del
-// pacchetto, versione ed eventuale attività principale dal manifesto binario
-// (AXML) dentro lo ZIP. Serve a installare un APK trascinato e ad aprirlo
-// senza riga di comando. Non usa API di Node (DecompressionStream c'è nei
-// browser e in Node >= 18).
+// APK information read in the browser (M6, ADR 0028): package name, version
+// and main activity (if any) from the binary manifest (AXML) inside the ZIP.
+// Used to install a dropped APK and open it without a command line. Uses no
+// Node API (DecompressionStream exists in browsers and in Node >= 18).
 
 const dec = new TextDecoder();
 
-/** I file di uno ZIP: Map nome -> { method, compressed, size, offset }. */
+/** A ZIP's files: Map name -> { method, compressed, size, local }. */
 export function zipEntries(bytes) {
   const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let eocd = -1;
@@ -16,12 +15,12 @@ export function zipEntries(bytes) {
       break;
     }
   }
-  if (eocd < 0) throw new Error('APK: non è uno ZIP (manca la fine della directory centrale)');
+  if (eocd < 0) throw new Error('APK: not a ZIP (no end of central directory)');
   const count = v.getUint16(eocd + 10, true);
   let at = v.getUint32(eocd + 16, true);
   const out = new Map();
   for (let k = 0; k < count; k++) {
-    if (v.getUint32(at, true) !== 0x02014b50) throw new Error('APK: directory centrale rovinata');
+    if (v.getUint32(at, true) !== 0x02014b50) throw new Error('APK: damaged central directory');
     const method = v.getUint16(at + 10, true);
     const compressed = v.getUint32(at + 20, true);
     const size = v.getUint32(at + 24, true);
@@ -36,28 +35,28 @@ export function zipEntries(bytes) {
   return out;
 }
 
-/** I byte di un file dello ZIP (stored o deflate). */
+/** The bytes of a file in the ZIP (stored or deflate). */
 export async function zipRead(bytes, entry) {
   const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  if (v.getUint32(entry.local, true) !== 0x04034b50) throw new Error('APK: intestazione locale rovinata');
+  if (v.getUint32(entry.local, true) !== 0x04034b50) throw new Error('APK: damaged local header');
   const start = entry.local + 30 + v.getUint16(entry.local + 26, true) + v.getUint16(entry.local + 28, true);
   const data = bytes.subarray(start, start + entry.compressed);
   if (entry.method === 0) return data.slice();
-  if (entry.method !== 8) throw new Error(`APK: compressione ${entry.method} non gestita`);
+  if (entry.method !== 8) throw new Error(`APK: compression ${entry.method} not supported`);
   const stream = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
   const out = new Uint8Array(await new Response(stream).arrayBuffer());
-  if (out.length !== entry.size) throw new Error('APK: lunghezza decompressa sbagliata');
+  if (out.length !== entry.size) throw new Error('APK: wrong decompressed length');
   return out;
 }
 
 /**
- * Legge un XML binario di Android (AXML): restituisce gli elementi di
- * apertura in ordine, [{ name, depth, attrs: { nome: valore } }] (valori
- * stringa, o numeri per gli attributi tipizzati).
+ * Reads an Android binary XML (AXML): returns the start elements in order,
+ * [{ name, depth, attrs: { name: value } }] (string values, or numbers for
+ * typed attributes).
  */
 export function parseAxml(bytes) {
   const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  if (v.getUint16(0, true) !== 0x0003) throw new Error('manifesto: non è un XML binario');
+  if (v.getUint16(0, true) !== 0x0003) throw new Error('manifest: not a binary XML');
   let strings = [];
   const elements = [];
   let depth = 0;
@@ -66,7 +65,7 @@ export function parseAxml(bytes) {
     const type = v.getUint16(at, true);
     const hsize = v.getUint16(at + 2, true);
     const size = v.getUint32(at + 4, true);
-    if (size < 8 || at + size > bytes.length) throw new Error('manifesto: pezzo rovinato');
+    if (size < 8 || at + size > bytes.length) throw new Error('manifest: damaged chunk');
     if (type === 0x0001) strings = stringPool(bytes, v, at);
     else if (type === 0x0102) {
       const name = strings[v.getUint32(at + 20, true)];
@@ -100,7 +99,7 @@ function stringPool(bytes, v, at) {
   for (let i = 0; i < count; i++) {
     let p = base + v.getUint32(offsets + 4 * i, true);
     if (utf8) {
-      // Lunghezza in UTF-16 e poi in byte, ognuna su 1 o 2 byte.
+      // Length in UTF-16 units, then in bytes, each on 1 or 2 bytes.
       p += bytes[p] & 0x80 ? 2 : 1;
       let n = bytes[p];
       if (n & 0x80) {
@@ -123,17 +122,17 @@ function stringPool(bytes, v, at) {
 }
 
 /**
- * { package, versionName, versionCode, label, launcher } di un APK
- * (Uint8Array): `launcher` è il nome completo dell'attività con MAIN e
- * LAUNCHER, o null.
+ * { package, versionName, versionCode, label, launcher } of an APK
+ * (Uint8Array): `launcher` is the full name of the activity with MAIN and
+ * LAUNCHER, or null.
  */
 export async function apkInfo(bytes) {
   const entries = zipEntries(bytes);
   const m = entries.get('AndroidManifest.xml');
-  if (!m) throw new Error('APK: manca AndroidManifest.xml');
+  if (!m) throw new Error('APK: AndroidManifest.xml missing');
   const els = parseAxml(await zipRead(bytes, m));
   const manifest = els.find((e) => e.name === 'manifest');
-  if (!manifest?.attrs.package) throw new Error('APK: manifesto senza pacchetto');
+  if (!manifest?.attrs.package) throw new Error('APK: manifest without a package');
   const pkg = manifest.attrs.package;
   const app = els.find((e) => e.name === 'application');
   let launcher = null;
