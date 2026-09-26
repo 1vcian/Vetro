@@ -14,6 +14,7 @@ use vetro_platform::{VirtDtbConfig, VirtioDevice, map, virt_dtb};
 
 use crate::board::{Board, Env, Phys};
 use crate::boot::{self, BootError, BootPlan, RamConfig};
+use crate::hooks::{Breakpoint, GuestView, Hooks, Tracer};
 use crate::net::{self, NetLink, NetSetup, TappedFrame};
 use crate::psci::{self, Call};
 
@@ -159,6 +160,8 @@ pub struct Machine {
     rr: record::Rr,
     /// Esito dell'ultimo replay (anche finito).
     replay_status: Option<crate::record::ReplayStatus>,
+    /// Punti di aggancio dell'introspezione (ADR 0027).
+    hooks: Hooks,
 }
 
 /// CNTPCT dopo `steps` istruzioni: 62,5 MHz su 100 MHz nominali.
@@ -230,18 +233,77 @@ impl Machine {
             console: record::ConsoleTap::default(),
             rr: record::Rr::Off,
             replay_status: None,
+            hooks: Hooks::default(),
         }
     }
 
     /// Attiva (o toglie) il JIT della modalità sistema. Il risultato
     /// dell'esecuzione non cambia: stesse istruzioni, stessi interrupt negli
     /// stessi punti, stessa uscita (vedi `vetro_jit::sys`).
-    pub fn set_jit(&mut self, jit: Option<Box<dyn SysJitDyn>>) {
-        if jit.is_some() {
+    pub fn set_jit(&mut self, mut jit: Option<Box<dyn SysJitDyn>>) {
+        if let Some(j) = jit.as_mut() {
             self.rr.note_jit();
+            j.set_stops(&self.hooks.stops());
         }
         self.jit = jit;
         self.interp = Next::Jit;
+    }
+
+    // ---- Introspezione (ADR 0027) ------------------------------------------
+
+    /// Mette (o toglie) il tracciatore degli eventi dell'introspezione;
+    /// restituisce quello di prima. Non cambia l'esecuzione.
+    pub fn set_tracer(&mut self, tracer: Option<Box<dyn Tracer>>) -> Option<Box<dyn Tracer>> {
+        core::mem::replace(&mut self.hooks.tracer, tracer)
+    }
+
+    /// Il tracciatore, col suo tipo.
+    pub fn tracer_mut<T: Tracer>(&mut self) -> Option<&mut T> {
+        self.hooks.tracer_any()?.downcast_mut::<T>()
+    }
+
+    /// Accende o spegne gli eventi delle syscall di EL0
+    /// ([`crate::hooks::Event::SyscallEnter`] e `SyscallExit`).
+    pub fn trace_syscalls(&mut self, on: bool) {
+        self.hooks.syscalls = on;
+        if !on {
+            self.hooks.forget_pending();
+        }
+    }
+
+    /// Aggiunge un punto d'arresto invisibile su un indirizzo di EL0;
+    /// restituisce il suo numero. Il JIT non mette più l'indirizzo nelle
+    /// regioni.
+    pub fn add_breakpoint(&mut self, bp: Breakpoint) -> u32 {
+        let id = self.hooks.add(bp);
+        self.sync_stops();
+        id
+    }
+
+    /// Toglie un punto d'arresto: falso se non c'era.
+    pub fn remove_breakpoint(&mut self, id: u32) -> bool {
+        let found = self.hooks.remove(id);
+        self.sync_stops();
+        found
+    }
+
+    /// I punti d'arresto, con il loro numero.
+    pub fn breakpoints(&self) -> Vec<(u32, Breakpoint)> {
+        self.hooks.breakpoints()
+    }
+
+    fn sync_stops(&mut self) {
+        let stops = self.hooks.stops();
+        if let Some(j) = self.jit.as_mut() {
+            j.set_stops(&stops);
+        }
+    }
+
+    /// La macchina in sola lettura (registri e RAM), per leggere il guest
+    /// fra un quanto e l'altro.
+    pub fn with_guest<R>(&self, f: impl FnOnce(&GuestView<'_>) -> R) -> R {
+        let b = self.board.borrow();
+        f(&GuestView { cpu: &self.cpu, ram: &b.ram, steps: self.steps })
     }
 
     /// Contatori del JIT, se attivo.
@@ -605,6 +667,9 @@ impl Machine {
                 }
             }
             let old_pc = self.cpu.pc;
+            let old_el = self.cpu.sys.el;
+            let hooked = self.hooks.armed();
+            let pre = if hooked { self.hooks.pre(&self.cpu) } else { None };
             if let Some(jit) = self.jit.as_mut()
                 && jit.profiling()
             {
@@ -617,6 +682,12 @@ impl Machine {
                 self.cpu.step_system(&mut bus, &mut env)
             };
             self.steps += 1;
+            // Solo i passi che interessano: un punto d'arresto al PC, o un
+            // cambio di EL (SVC da EL0, ERET verso EL0).
+            if hooked && (pre.is_some() || old_el != self.cpu.sys.el) {
+                let b = self.board.borrow();
+                self.hooks.after(old_el, &ev, pre, &self.cpu, &b.ram, self.steps);
+            }
             if self.interp == Next::Cold {
                 // Fino al prossimo salto (o cambio di pagina, o evento).
                 let next = old_pc.wrapping_add(4);

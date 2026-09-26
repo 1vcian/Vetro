@@ -13,6 +13,8 @@ vetro-platform = { path = "../vetro-platform" }
 vetro-jit = { path = "../vetro-jit" }
 vetro-net = { path = "../vetro-net" }
 vetro-snapshot = { path = "../vetro-snapshot" }
+# Introspezione (ADR 0027): senza dipendenze, compila anche in wasm.
+vetro-analysis = { path = "../vetro-analysis" }
 
 [lints]
 workspace = true

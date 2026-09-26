@@ -21,6 +21,11 @@
 //!   il replay lo riapplica alla stessa istruzione, e [`Machine::goto`]
 //!   riporta la macchina a un'istruzione qualsiasi della registrazione.
 //!
+//! - [`hooks`] e [`introspect`]: introspezione del guest dall'esterno
+//!   (ADR 0027): syscall di EL0 e punti d'arresto invisibili osservati dal
+//!   ciclo della macchina senza cambiare l'esecuzione, e la lettura del
+//!   kernel Linux (processi, mappe, file) con `vetro-analysis`.
+//!
 //! Col JIT ([`Machine::set_jit`], ADR 0012 e 0013) i blocchi tradotti si
 //! alternano all'interprete fra un evento della piattaforma e l'altro: stesso
 //! numero di istruzioni, interrupt negli stessi punti.
@@ -34,6 +39,8 @@ pub mod android;
 mod board;
 pub mod boot;
 pub mod files;
+pub mod hooks;
+pub mod introspect;
 mod machine;
 pub mod net;
 mod psci;
@@ -41,9 +48,11 @@ pub mod record;
 
 pub use board::Board;
 pub use files::FilesClient;
+pub use hooks::{Breakpoint, Event, GuestView, SyscallEntry, Tracer};
 pub use machine::{Devices, Machine, MachineConfig, Pointer, RecordOptions, Slots, Stop};
 pub use net::{FrameDir, NetLink, NetSetup, TappedFrame};
 pub use record::{Digest, Divergence, HostNetOp, Input, Log, ReplayStatus, Reply, VsockOp};
+pub use vetro_analysis;
 pub use vetro_jit::{SysJitDyn, SysJitStats};
 pub use vetro_net;
 pub use vetro_snapshot;

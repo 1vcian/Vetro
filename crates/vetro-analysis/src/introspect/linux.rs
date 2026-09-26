@@ -10,6 +10,7 @@
 use std::cell::Cell;
 
 use super::btf::Btf;
+use super::elf::{self, ElfSym};
 use super::kallsyms::Symbols;
 use super::layout::{Layout, MissingField};
 use super::mem::{PhysMem, Space};
@@ -45,6 +46,27 @@ impl Kernel {
             }
         }
         Ok(Kernel { syms, layout, maple_types })
+    }
+
+    /// Il profilo dai file del kernel: simboli da `System.map` o, senza,
+    /// dalla tabella kallsyms dell'`Image`; tipi da un BTF staccato o,
+    /// senza, dal BTF dentro l'`Image`.
+    pub fn load(
+        image: Option<&[u8]>,
+        system_map: Option<&str>,
+        btf: Option<&[u8]>,
+    ) -> Result<Kernel, String> {
+        let syms = match (system_map, image) {
+            (Some(m), _) => Symbols::parse_system_map(m),
+            (None, Some(i)) => Symbols::from_image(i).map_err(|e| e.to_string())?,
+            (None, None) => return Err("servono System.map o l'Image del kernel".into()),
+        };
+        let btf = match (btf, image) {
+            (Some(b), _) => Btf::parse(b).map_err(|e| e.to_string())?,
+            (None, Some(i)) => Btf::find_in(i).map(|(_, b)| b).ok_or("BTF non trovato nell'Image")?,
+            (None, None) => return Err("servono il BTF o l'Image del kernel".into()),
+        };
+        Kernel::new(syms, &btf).map_err(|e| e.to_string())
     }
 }
 
@@ -637,5 +659,63 @@ impl<'a, M: PhysMem + ?Sized> Linux<'a, M> {
     /// `inode` di una `struct file`.
     pub fn file_inode(&self, file: u64) -> Option<u64> {
         self.u64(file.wrapping_add(self.l().file_inode))
+    }
+
+    /// Un modulo (programma o libreria) mappato nel processo: il percorso
+    /// che finisce con `module`, con l'indirizzo della mappatura con
+    /// offset 0 (l'intestazione ELF) e la sua `struct file`.
+    pub fn module(&self, t: &Task, module: &str) -> Option<(String, u64, u64)> {
+        self.vmas(t.mm)
+            .into_iter()
+            .filter(|v| {
+                v.file != 0 && v.pgoff == 0 && (v.name == module || v.name.ends_with(&format!("/{module}")))
+            })
+            .min_by_key(|v| v.start)
+            .map(|v| (v.name, v.start, v.file))
+    }
+
+    /// I simboli di un modulo del processo, con gli indirizzi del
+    /// processo: i dinamici letti dalla memoria del processo e, se ci sono,
+    /// quelli di `.symtab` letti dal file nella page cache (per i programmi
+    /// statici non strippati).
+    pub fn module_symbols(&self, t: &Task, module: &str) -> Vec<ElfSym> {
+        let Some((_, base, file)) = self.module(t, module) else { return Vec::new() };
+        let Some(space) = self.user_space(t.mm) else { return Vec::new() };
+        let user = |va: u64, buf: &mut [u8]| space.read(self.mem, va, buf);
+        let mut syms = elf::dynamic_symbols(&user, base);
+        if let Some(inode) = self.file_inode(file)
+            && let Some(bytes) = self.file_bytes(inode, 256 << 20)
+            && let Some(h) = elf::header(&bytes)
+        {
+            let phdrs: Vec<elf::Phdr> = (0..usize::from(h.phnum))
+                .filter_map(|i| {
+                    let o = usize::try_from(h.phoff).ok()?.checked_add(i * 56)?;
+                    elf::phdr(bytes.get(o..o + 56)?)
+                })
+                .collect();
+            let bias = elf::load_bias(&h, &phdrs, base);
+            syms.extend(elf::file_symbols(&bytes).into_iter().map(|mut s| {
+                if s.shndx != 0 {
+                    s.value = s.value.wrapping_add(bias);
+                }
+                s
+            }));
+        }
+        syms
+    }
+
+    /// L'indirizzo di una funzione `name` del modulo `module` nel processo.
+    pub fn user_symbol(&self, t: &Task, module: &str, name: &str) -> Option<u64> {
+        elf::find(&self.module_symbols(t, module), name).map(|s| s.value)
+    }
+
+    /// Il punto d'ingresso del programma del processo (`e_entry` dell'ELF
+    /// mappato per primo, più lo spostamento se PIE).
+    pub fn entry_point(&self, t: &Task, module: &str) -> Option<u64> {
+        let (_, base, _) = self.module(t, module)?;
+        let space = self.user_space(t.mm)?;
+        let user = |va: u64, buf: &mut [u8]| space.read(self.mem, va, buf);
+        let (h, phdrs) = elf::loaded_headers(&user, base)?;
+        Some(h.entry.wrapping_add(elf::load_bias(&h, &phdrs, base)))
     }
 }

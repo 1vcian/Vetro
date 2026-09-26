@@ -202,8 +202,7 @@ fn binder_stream(user: &impl VirtRead, va: u64, len: u64) -> Vec<Transaction> {
             t.data = read_n(user, t.buffer, t.data_size);
             let n = (t.offsets_size / 8).min(256);
             let raw = read_n(user, t.offsets, n * 8);
-            t.objects =
-                raw.chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().expect("8 byte"))).collect();
+            t.objects = raw.as_chunks::<8>().0.iter().map(|c| u64::from_le_bytes(*c)).collect();
             t
         })
         .collect()

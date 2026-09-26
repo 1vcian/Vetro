@@ -101,7 +101,9 @@ pub fn phdr(b: &[u8]) -> Option<Phdr> {
 
 /// Le voci di 24 byte di una tabella dei simboli con le sue stringhe.
 fn parse_syms(tab: &[u8], strs: &[u8], bias: u64) -> Vec<ElfSym> {
-    tab.chunks_exact(24)
+    tab.as_chunks::<24>()
+        .0
+        .iter()
         .filter_map(|e| {
             let name = u32_at(e, 0)? as usize;
             let info = e[4];
@@ -181,7 +183,7 @@ pub fn loaded_headers(m: &impl VirtRead, base: u64) -> Option<(ElfHeader, Vec<Ph
     let h = header(&rd(m, base, 64)?)?;
     let n = usize::from(h.phnum).min(256);
     let ph = rd(m, base.checked_add(h.phoff)?, n * 56)?;
-    let phdrs = ph.chunks_exact(56).filter_map(phdr).collect();
+    let phdrs = ph.as_chunks::<56>().0.iter().filter_map(|c| phdr(c)).collect();
     Some((h, phdrs))
 }
 
@@ -198,7 +200,7 @@ fn dynamic_symbols_inner(m: &impl VirtRead, base: u64) -> Option<Vec<ElfSym>> {
     let n = usize::try_from(dynph.memsz / 16).ok()?.min(4096);
     let dynb = rd(m, bias.wrapping_add(dynph.vaddr), n * 16)?;
     let (mut symtab, mut strtab, mut strsz, mut hash, mut gnu) = (0u64, 0u64, 0u64, 0u64, 0u64);
-    for e in dynb.chunks_exact(16) {
+    for e in dynb.as_chunks::<16>().0 {
         let tag = u64_at(e, 0)?;
         let val = u64_at(e, 8)?;
         // Il linker può aver già spostato i puntatori (glibc lo fa).
@@ -238,7 +240,7 @@ fn gnu_hash_count(m: &impl VirtRead, at: u64) -> Option<u64> {
     let bloom = u64::from(u32_at(&hdr, 8)?);
     let buckets_at = at.wrapping_add(16).wrapping_add(bloom.wrapping_mul(8));
     let buckets = rd(m, buckets_at, (nbuckets.min(1 << 20) * 4) as usize)?;
-    let last = buckets.chunks_exact(4).filter_map(|c| u32_at(c, 0)).max().unwrap_or(0);
+    let last = buckets.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).max().unwrap_or(0);
     if u64::from(last) < symoffset {
         return Some(symoffset);
     }
@@ -292,7 +294,7 @@ pub(crate) mod tests {
         b.extend_from_slice(&symtab);
         let str_off = b.len() as u64;
         b.extend_from_slice(&strtab);
-        while b.len() % 8 != 0 {
+        while !b.len().is_multiple_of(8) {
             b.push(0);
         }
         let shoff = b.len() as u64;

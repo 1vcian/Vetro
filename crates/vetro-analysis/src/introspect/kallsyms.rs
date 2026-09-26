@@ -200,8 +200,7 @@ fn find_markers(image: &[u8], table: usize) -> Vec<(usize, Vec<u32>)> {
     for pad in [0usize, 4] {
         let Some(mut k) = table.checked_sub(pad + 4) else { continue };
         let mut vals = Vec::new();
-        loop {
-            let Some(v) = u32_at(image, k) else { break };
+        while let Some(v) = u32_at(image, k) {
             if let Some(&last) = vals.last()
                 && v >= last
             {
@@ -369,7 +368,7 @@ mod tests {
     fn fake_image(syms: &[(u32, &str)], zero_base: bool) -> Vec<u8> {
         let base = 0xffff_8000_8000_0000u64;
         let mut img = vec![0u8; 0x100];
-        while img.len() % 8 != 0 {
+        while !img.len().is_multiple_of(8) {
             img.push(0);
         }
         img.extend_from_slice(&(syms.len() as u32).to_le_bytes());
@@ -383,13 +382,13 @@ mod tests {
             img.push(n.len() as u8);
             img.extend_from_slice(n.as_bytes());
         }
-        while img.len() % 8 != 0 {
+        while !img.len().is_multiple_of(8) {
             img.push(0);
         }
         for m in markers {
             img.extend_from_slice(&m.to_le_bytes());
         }
-        while img.len() % 8 != 0 {
+        while !img.len().is_multiple_of(8) {
             img.push(0);
         }
         let table = img.len();
@@ -404,19 +403,19 @@ mod tests {
             }
             img.push(0);
         }
-        while img.len() % 8 != 0 {
+        while !img.len().is_multiple_of(8) {
             img.push(0);
         }
         for o in offs {
             img.extend_from_slice(&o.to_le_bytes());
         }
-        while img.len() % 8 != 0 {
+        while !img.len().is_multiple_of(8) {
             img.push(0);
         }
         for (a, _) in syms {
             img.extend_from_slice(&a.to_le_bytes());
         }
-        while img.len() % 8 != 0 {
+        while !img.len().is_multiple_of(8) {
             img.push(0);
         }
         let base_pos = img.len();

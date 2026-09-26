@@ -220,7 +220,7 @@ pub fn interface_token(d: &[u8]) -> Option<String> {
         }
         let start = skip + 4;
         let Some(chars) = d.get(start..start + 2 * len as usize) else { continue };
-        let units: Vec<u16> = chars.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        let units: Vec<u16> = chars.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
         if units.iter().all(|&u| (0x20..0x7f).contains(&u)) && d.get(start + 2 * len as usize..).is_some() {
             return Some(String::from_utf16_lossy(&units));
         }

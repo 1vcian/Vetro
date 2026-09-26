@@ -395,6 +395,8 @@ impl Machine {
         }
         self.console = ConsoleTap { buf: Vec::new(), len: k.console_len, hash: k.console_hash };
         self.drain_console();
+        // Salto nel tempo: le syscall in corso dell'introspezione non valgono più.
+        self.hooks.forget_pending();
         let first = log.events.partition_point(|e| e.step < k.step);
         self.begin_replay(log, first);
         Ok(())

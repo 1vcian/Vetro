@@ -955,6 +955,7 @@ dependencies = [
 name = "vetro-machine"
 version = "0.0.0"
 dependencies = [
+ "vetro-analysis",
  "vetro-cpu",
  "vetro-jit",
  "vetro-mmu",
