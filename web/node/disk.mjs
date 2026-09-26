@@ -96,6 +96,143 @@ export class BlobSource {
   }
 }
 
+// ---- Disco ricomposto da una mappa (M5, ADR 0027) ---------------------------
+
+/**
+ * Controlla una mappa di disco (`tools/aosp/web-disk.mjs`: `{ format:
+ * 'vetro-disk-layout', version: 1, size, files: [{ path, size, sha256 }],
+ * extents: [[offset, lunghezza, file, offset nel file | parola]] }`) e la
+ * prepara per `composePlan`. Estensioni ordinate, senza sovrapposizioni,
+ * dentro il disco e dentro i file; file -1 = zeri, -2 = riempimento con la
+ * parola a 32 bit (little endian); fuori dalle estensioni, zeri.
+ */
+export function parseLayout(l) {
+  if (l?.format !== 'vetro-disk-layout' || l.version !== 1) throw new Error('mappa del disco: formato sconosciuto');
+  const size = l.size;
+  if (!Number.isSafeInteger(size) || size <= 0) throw new Error('mappa del disco: dimensione non valida');
+  const files = l.files ?? [];
+  let end = 0;
+  const starts = new Float64Array(l.extents.length);
+  for (const [i, e] of l.extents.entries()) {
+    const [at, len, file, off] = e;
+    if (![at, len, file, off].every(Number.isSafeInteger) || len <= 0 || at < end || at + len > size) {
+      throw new Error(`mappa del disco: estensione ${i} non valida`);
+    }
+    if (file >= 0) {
+      if (file >= files.length) throw new Error(`mappa del disco: estensione ${i}: file ${file} sconosciuto`);
+      if (files[file].size !== undefined && off + len > files[file].size) throw new Error(`mappa del disco: estensione ${i} oltre la fine di ${files[file].path}`);
+    } else if (file !== -1 && file !== -2) throw new Error(`mappa del disco: estensione ${i}: tipo ${file}`);
+    starts[i] = at;
+    end = at + len;
+  }
+  return { size, files, extents: l.extents, starts };
+}
+
+/**
+ * I pezzi di `[offset, offset+length)`: [{ at, length, file, fileOffset }]
+ * per i byte dai file (contigui nello stesso file = un pezzo solo) e
+ * [{ at, length, fill }] per i riempimenti; `at` relativo a `offset`. I
+ * byte non coperti sono zeri.
+ */
+export function composePlan(layout, offset, length) {
+  const { extents, starts } = layout;
+  // Prima estensione che può toccare l'intervallo.
+  let lo = 0;
+  let hi = starts.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (starts[mid] <= offset) lo = mid + 1;
+    else hi = mid;
+  }
+  const plan = [];
+  const stop = offset + length;
+  for (let i = Math.max(0, lo - 1); i < extents.length && extents[i][0] < stop; i++) {
+    const [at, len, file, off] = extents[i];
+    const s = Math.max(at, offset);
+    const e = Math.min(at + len, stop);
+    if (s >= e || file === -1) continue;
+    if (file === -2) {
+      plan.push({ at: s - offset, length: e - s, fill: off >>> 0 });
+      continue;
+    }
+    const fileOffset = off + (s - at);
+    const last = plan[plan.length - 1];
+    if (last && last.file === file && last.at + last.length === s - offset && last.fileOffset + last.length === fileOffset) last.length += e - s;
+    else plan.push({ at: s - offset, length: e - s, file, fileOffset });
+  }
+  return plan;
+}
+
+function applyFill(out, p) {
+  const word = new Uint8Array(4);
+  new DataView(word.buffer).setUint32(0, p.fill, true);
+  for (let k = 0; k < p.length; k++) out[p.at + k] = word[(p.at + k) & 3];
+}
+
+/** `length` byte da `offset` del disco con `read(file, offset, length)` sincrona. */
+export function composeRead(layout, offset, length, read) {
+  const out = new Uint8Array(length);
+  for (const p of composePlan(layout, offset, length)) {
+    if (p.fill !== undefined) applyFill(out, p);
+    else out.set(read(p.file, p.fileOffset, p.length), p.at);
+  }
+  return out;
+}
+
+/**
+ * Una sorgente ricomposta da una mappa (`tools/aosp/web-disk.mjs`): i byte
+ * vengono con HTTP Range dai file della mappa (URL relativi alla mappa), i
+ * buchi sono zeri. `key` (cache dei blocchi, overlay, snapshot) = URL della
+ * mappa + SHA-256 del suo testo: se cambia un file cambia la mappa.
+ */
+export class LayoutSource {
+  #fetch;
+  constructor(url, { fetch: f = (...a) => globalThis.fetch(...a) } = {}) {
+    this.url = url;
+    this.#fetch = f;
+    this.size = 0;
+    this.key = null;
+    this.sources = [];
+  }
+
+  get stats() {
+    const s = { requests: 1, bytes: 0 };
+    for (const r of this.sources) {
+      s.requests += r.stats.requests;
+      s.bytes += r.stats.bytes;
+    }
+    return s;
+  }
+
+  async open() {
+    const res = await this.#fetch(this.url);
+    if (!res.ok) throw new Error(`${this.url}: stato ${res.status}`);
+    const text = await res.text();
+    this.layout = parseLayout(JSON.parse(text));
+    this.size = this.layout.size;
+    const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+    const hex = [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, '0')).join('');
+    this.key = `layout:${this.url}|${this.size}|${hex}`;
+    this.sources = this.layout.files.map((f) => new RangeSource(new URL(f.path, this.url).href, { fetch: this.#fetch }));
+    await Promise.all(this.sources.map(async (s, i) => {
+      await s.open();
+      const want = this.layout.files[i].size;
+      if (want !== undefined && s.size !== want) throw new Error(`${s.url}: ${s.size} byte, la mappa ne vuole ${want}`);
+    }));
+    return this;
+  }
+
+  async read(offset, length) {
+    const out = new Uint8Array(length);
+    const plan = composePlan(this.layout, offset, length);
+    await Promise.all(plan.map(async (p) => {
+      if (p.fill !== undefined) applyFill(out, p);
+      else out.set(await this.sources[p.file].read(p.fileOffset, p.length), p.at);
+    }));
+    return out;
+  }
+}
+
 /** Cache dei blocchi in memoria (Node, test, o browser senza OPFS). */
 export class MemoryCache {
   #m = new Map();
