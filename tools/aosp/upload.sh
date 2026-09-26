@@ -29,11 +29,19 @@ s3() { aws --endpoint-url "$R2_ENDPOINT" "$@"; }
 if [ -z "${VETRO_AOSP_VERSION:-}" ]; then
   tag="$(sed -n 's/^manifest_tag=//p' "$a/out/build-info.txt")"
   bid="$(sed -n 's/^build_id=//p' "$a/out/build-info.txt")"
-  rev="$(git -C "$root" log -1 --format=%h -- guest/aosp tools/aosp guest/kernel/initramfs/vetro-files.c)"
-  if [ -n "$(git -C "$root" status --porcelain -- guest/aosp tools/aosp)" ]; then
-    echo "guest/aosp o tools/aosp hanno modifiche non committate: committa prima di pubblicare" >&2
-    exit 1
-  fi
+  # Il commit di Vetro da cui è stata costruita l'immagine (sync.sh ->
+  # build-info.txt), non quello del Mac al momento del caricamento. Le build
+  # vecchie senza vetro_rev usano il commit attuale, pulito.
+  rev="$(sed -n 's/^vetro_rev=//p' "$a/out/build-info.txt")"
+  case "$rev" in
+    *-dirty) echo "l'immagine è stata costruita da modifiche non committate ($rev): committa, risincronizza e ricostruisci" >&2; exit 1 ;;
+    ""|sconosciuta)
+      rev="$(git -C "$root" log -1 --format=%h -- guest/aosp tools/aosp guest/kernel/initramfs/vetro-files.c)"
+      if [ -n "$(git -C "$root" status --porcelain -- guest/aosp tools/aosp)" ]; then
+        echo "guest/aosp o tools/aosp hanno modifiche non committate: committa prima di pubblicare" >&2
+        exit 1
+      fi ;;
+  esac
   VETRO_AOSP_VERSION="${tag:-aosp}-${bid}-${rev}"
 fi
 prefix="aosp/$VETRO_AOSP_VERSION"

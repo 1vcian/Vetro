@@ -9,6 +9,19 @@ include device/google/cuttlefish/vsoc_arm64_only/BoardConfig.mk
 
 TARGET_BOOTLOADER_BOARD_NAME := vetro
 
+# Niente host "cross" (ADR 0030). Cuttlefish mette HOST_CROSS_OS := linux_musl
+# (arm64) per distribuire i suoi strumenti anche agli host arm64, e con
+# TARGET_BOARD_PLATFORM vsoc_arm64 il suo cvd_host_package entra in droidcore
+# (build/cvd-host-package.go): `m droid` compila tutto il pacchetto host una
+# seconda volta per linux_musl-arm64, che a Vetro non serve (la VM di build è
+# x86_64 e il launcher di Cuttlefish non si usa). Vuoto = nessun host cross:
+# lo stesso stato di envsetup.mk con BUILD_HOST_static, e Soong salta il
+# target (CrossHost ""). Cambia solo out/host: le immagini non dipendono dagli
+# strumenti host cross.
+HOST_CROSS_OS :=
+HOST_CROSS_ARCH :=
+HOST_CROSS_2ND_ARCH :=
+
 # Kernel GKI android15-6.6 prebuilt dal tree (lo stesso di Cuttlefish):
 # KERNEL_MODULES_PATH = kernel/prebuilts/common-modules/virtual-device/6.6/arm64,
 # SYSTEM_DLKM_SRC = kernel/prebuilts/6.6/arm64.

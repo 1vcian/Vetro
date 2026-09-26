@@ -11,6 +11,30 @@ work="$HOME/${VETRO_AOSP_WORK:-vetro-aosp}"
 product="${VETRO_AOSP_PRODUCT:-vetro_arm64}"
 p="$tree/out/target/product/$product"
 o="$work/out"
+
+# Controlli sul risultato prima di copiare (ADR 0030): se uno manca la build
+# non è quella voluta e fetch.sh si ferma.
+fail() { echo "ERRORE: $*" >&2; exit 1; }
+# CA di sviluppo: il nome <hash>.0 viene dalla patch di conscrypt.
+ca="$(sed -n 's|^+++ b/apex/ca-certificates/files/||p' "$work"/patches/external/conscrypt/*.patch)"
+[ -n "$ca" ] || fail "nessuna CA di sviluppo nelle patch di external/conscrypt"
+capex="$p/system/apex/com.android.conscrypt.capex"
+[ -f "$capex" ] || capex="$p/system/apex/com.android.conscrypt.apex"
+# apex_build_info.pb elenca i file del payload (canned_fs_config). Niente
+# `| grep -q`: con pipefail il SIGPIPE di unzip farebbe fallire il controllo.
+info="$(unzip -p "$capex" apex_build_info.pb | tr -c '[:print:]' '\n')"
+case "$info" in
+  *"/cacerts/$ca"*) ;;
+  *) fail "$ca non è nell'APEX di conscrypt ($capex)" ;;
+esac
+[ -f "$p/system/etc/security/cacerts/$ca" ] || fail "$ca non è in /system/etc/security/cacerts"
+# Marchi: overlay installati, QuickSearchBox no, sfondo e sua proprietà.
+for f in product/overlay/VetroFrameworkOverlay.apk product/overlay/VetroPackageInstallerOverlay.apk product/media/wallpaper/vetro.png; do
+  [ -f "$p/$f" ] || fail "manca /$f"
+done
+[ ! -e "$p/product/app/QuickSearchBox" ] || fail "QuickSearchBox è ancora in /product/app"
+grep -qx 'ro.config.wallpaper=/product/media/wallpaper/vetro.png' "$p/product/etc/build.prop" || fail "manca ro.config.wallpaper in product/etc/build.prop"
+grep -qx 'ro.product.system.brand=Vetro' "$p/system/build.prop" || fail "ro.product.system.brand non è Vetro"
 rm -rf "$o"
 mkdir -p "$o/props"
 for f in boot.img vendor_boot.img init_boot.img super.img userdata.img; do
@@ -24,6 +48,8 @@ done
 cp "$p/vendor_ramdisk/first_stage_ramdisk/fstab.vetro" "$o/props/" 2>/dev/null || true
 [ -f "$p/vendor_ramdisk/lib/modules/modules.load" ] && cp "$p/vendor_ramdisk/lib/modules/modules.load" "$o/props/vendor_ramdisk.modules.load"
 {
+  echo "vetro_rev=$(cat "$work/build.rev" 2>/dev/null || echo sconosciuta)"
+  echo "dev_ca=$ca"
   echo "build_id=$(sed -n 's/^BUILD_ID=//p' "$tree/build/make/core/build_id.mk")"
   echo "manifest_tag=$(cd "$tree/.repo/manifests" && git describe --tags --always 2>/dev/null || true)"
   echo "kernel=$(strings -a "$tree/kernel/prebuilts/6.6/arm64/kernel-6.6" | grep -m1 '^Linux version')"

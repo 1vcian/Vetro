@@ -27,4 +27,11 @@ if grep -h '^ro.product.cpu.abilist32=.' "$out"/out/props/*.prop; then
   echo "ERRORE: l'immagine dichiara ABI a 32 bit" >&2
   exit 1
 fi
+# Marchi e CA di sviluppo (ADR 0030; pack.sh li ha già controllati sulla VM).
+grep -h -E '^ro\.(config\.wallpaper|product\.system\.brand)=' "$out"/out/props/*.prop | sort -u
+grep -E '^(vetro_rev|dev_ca)=' "$out/out/build-info.txt"
+if [ "$(sed -n 's/^dev_ca=//p' "$out/out/build-info.txt")" != "$(openssl x509 -in "$root/guest/aosp/vendor/vetro/dev-ca/vetro-dev-ca.pem" -noout -subject_hash_old).0" ]; then
+  echo "ERRORE: la CA di sviluppo dell'immagine non è quella di guest/aosp/vendor/vetro/dev-ca" >&2
+  exit 1
+fi
 "$here/mkdisk.sh"
