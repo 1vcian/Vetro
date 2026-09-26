@@ -1,18 +1,18 @@
-# ADR 0002 — Toolchain Rust nightly fissato
+# ADR 0002 — Pinned Rust nightly toolchain
 
-- Stato: accettata (M0, 2026-09-24)
+- Status: accepted (M0, 2026-09-24)
 
-## Contesto
-I thread WASM (memoria condivisa, atomics, un Worker per core virtuale)
-richiedono di ricompilare la libreria standard con `-Z build-std` e i flag
-`+atomics,+bulk-memory`, disponibili solo su nightly.
+## Context
+WASM threads (shared memory, atomics, one Worker per virtual core)
+require rebuilding the standard library with `-Z build-std` and the flags
+`+atomics,+bulk-memory`, available only on nightly.
 
-## Decisione
-`rust-toolchain.toml` fissa `nightly-2026-09-15` con `rust-src`, `clippy`,
-`rustfmt` e il target `wasm32-unknown-unknown`. In M0 la build WASM è quella
-standard, senza atomics; `build-std` con atomics entra quando nasce il worker
-CPU (M4/M5), con un ADR dedicato ai flag.
+## Decision
+`rust-toolchain.toml` pins `nightly-2026-09-15` with `rust-src`, `clippy`,
+`rustfmt` and the `wasm32-unknown-unknown` target. In M0 the WASM build is the
+standard one, without atomics; `build-std` with atomics comes in when the CPU
+worker is born (M4/M5), with a dedicated ADR for the flags.
 
-## Conseguenze
-Build riproducibili. Aggiornare il nightly richiede un ADR (anche breve) e la
-CI verde, per non scoprire regressioni del compilatore a metà milestone.
+## Consequences
+Reproducible builds. Updating the nightly requires an ADR (even a short one) and
+green CI, so we don't discover compiler regressions in the middle of a milestone.

@@ -1,137 +1,141 @@
-# ADR 0023 — Ispettore di rete, timeline input→effetti e record & replay nel browser
+# ADR 0023 — Network inspector, input→effects timeline and record & replay in the browser
 
-- Stato: accettata (M7 e M10, parte web, 2026-09-26). Estende l'ADR 0016
-  (analisi di rete) e l'ADR 0019 (record & replay); vetro-wasm passa
-  all'ABI 8.
-- Numero: 0021 è già usato da due rami in corso (modifica di SQLite e
-  preferenze, immagine AOSP) e 0022 è probabile per il loro riordino; se al
-  momento del merge i numeri sono liberi, si può rinumerare senza toccare la
-  sostanza.
+- Status: accepted (M7 and M10, web part, 2026-09-26). Extends ADR 0016
+  (network analysis) and ADR 0019 (record & replay); vetro-wasm moves
+  to ABI 8.
+- Number: 0021 is already used by two branches in progress (SQLite and
+  preferences editing, AOSP image) and 0022 is likely for their reordering; if
+  the numbers are free at merge time, it can be renumbered without touching
+  the substance.
 
-## Contesto
-L'analisi di rete (ADR 0016) e il record & replay (ADR 0019) esistono nella
-macchina e nella CLI, ma non nella pagina. M7 chiede un ispettore di rete e
-la timeline input→effetti; M10 registrazione e replay nel browser con il
-salto a un momento e la vista di registri e memoria. Vincoli: `vetro-analysis`
-senza dipendenze e deterministico, nessun cambio a `vetro-machine`, `vetro-net`
-e al JIT (altri proprietari), la macchina gira in un Worker e la pagina non
-deve cambiare l'esecuzione guardando.
+## Context
+Network analysis (ADR 0016) and record & replay (ADR 0019) exist in the
+machine and in the CLI, but not in the page. M7 asks for a network inspector
+and the input→effects timeline; M10 recording and replay in the browser with
+jumping to a moment and the view of registers and memory. Constraints:
+`vetro-analysis` without dependencies and deterministic, no change to
+`vetro-machine`, `vetro-net` and the JIT (other owners), the machine runs in a
+Worker and the page must not change the execution by looking.
 
-## Decisione
+## Decision
 
-### Ispettore di rete in vetro-wasm
-- La `Vm` di vetro-wasm tiene la cattura: a ogni `vetro_run` porta i frame di
-  `Machine::net_tap_take` in una `Capture` (al più 64 MiB, poi conta gli
-  scartati). Accendere, svuotare e leggere non tocca il guest.
-- L'analisi è quella di `vetro_analysis::net` (rifatta solo se sono arrivati
-  frame). Lista e dettaglio passano al JS in JSON prodotto da Rust
-  (`vetro_analysis::net::view`: campi in camelCase, corpi con la resa del
-  decodificatore, la struttura per JSON/form/multipart e i byte in base64 fino
-  a 256 KiB), così la pagina non ridecodifica niente e il formato si prova in
-  Rust. HAR e pcapng sono quelli dell'ADR 0016.
-- Un solo **buffer dei risultati** per macchina (`vetro_result_ptr`): JSON,
-  HAR, pcapng, log, keyframe e registri escono tutti da lì, validi fino al
-  risultato successivo.
+### Network inspector in vetro-wasm
+- vetro-wasm's `Vm` holds the capture: on every `vetro_run` it moves the
+  frames of `Machine::net_tap_take` into a `Capture` (at most 64 MiB, then it
+  counts the dropped ones). Turning on, clearing and reading do not touch the
+  guest.
+- The analysis is that of `vetro_analysis::net` (redone only if frames have
+  arrived). List and detail pass to JS as JSON produced by Rust
+  (`vetro_analysis::net::view`: camelCase fields, bodies with the decoder's
+  rendering, the structure for JSON/form/multipart and the bytes in base64 up
+  to 256 KiB), so the page decodes nothing again and the format is tested in
+  Rust. HAR and pcapng are those of ADR 0016.
+- A single **result buffer** per machine (`vetro_result_ptr`): JSON,
+  HAR, pcapng, log, keyframes and registers all come out of it, valid until
+  the next result.
 
-### Timeline: modello in vetro-analysis, euristica dichiarata
-- `vetro_analysis::timeline`: ingressi dell'utente (`UserInput`: istruzione,
-  tipo, testo, *debole* o di comando) ed effetti (`Effect`: http, dns, tls,
-  file, console) nel **tempo del guest in µs** (`istruzioni / 100`, lo stesso
-  dei frame catturati).
-- **Attribuzione**: un effetto è dell'ultimo ingresso che lo precede entro
-  una finestra (3 s di tempo del guest, scelta dalla pagina). Per rete e file
-  contano solo gli ingressi di comando (Invio, clic, tocco, comando del
-  gestore dei file, tasto di accensione): un carattere battuto a metà riga non
-  causa una richiesta; per l'uscita della console conta anche il carattere
-  (l'eco). Allo stesso istante vale l'ordine di arrivo: l'uscita letta alla
-  fine di un quanto viene prima degli ingressi dati a quel confine. È
-  un'euristica, non causalità: il guest può fare richieste per conto suo
-  dentro la finestra. La causalità vera arriverà dai tracer di syscall e
-  Binder (M8–M9), che potranno sostituire la regola senza cambiare il modello.
-- **Ingressi**: vetro-wasm li descrive da sé dall'`Input` che passa a
-  `Machine::input` (tasti premuti, pulsanti, tocchi nuovi, righe della
-  console ricostruite da `LineEditor`, tasto di accensione, risoluzione;
-  non i movimenti, i rilasci, le risposte automatiche del terminale, vsock e
-  rete dell'host). La stessa descrizione si applica agli eventi di un log:
-  la timeline di un replay si ricostruisce dal log. I comandi del gestore dei
-  file li annota il JS (sono traffico vsock, non si riconoscono dall'`Input`);
-  le letture del pannello non sono ingressi.
-- **Effetti**: rete dalla cattura (richiesta HTTP all'inizio, domande DNS,
-  ClientHello TLS); file dagli eventi di inotify delle osservazioni del
-  gestore (li annota il Worker: creato, scritto, spostato, cancellato);
-  console quando il JS la legge (precisione: il quanto, ≤ 10 ms di tempo del
-  guest), unita finché non arriva altro.
+### Timeline: model in vetro-analysis, declared heuristic
+- `vetro_analysis::timeline`: user inputs (`UserInput`: instruction,
+  kind, text, *weak* or command) and effects (`Effect`: http, dns, tls,
+  file, console) in **guest time in µs** (`instructions / 100`, the same
+  as the captured frames).
+- **Attribution**: an effect belongs to the last input preceding it within
+  a window (3 s of guest time, chosen by the page). For network and files
+  only command inputs count (Enter, click, tap, file manager command, power
+  button): a character typed in the middle of a line does not cause a
+  request; for console output the character counts too (the echo). At the
+  same instant arrival order applies: output read at the end of a quantum
+  comes before the inputs given at that boundary. It is a heuristic, not
+  causality: the guest may make requests on its own within the window. True
+  causality will come from the syscall and Binder tracers (M8–M9), which can
+  replace the rule without changing the model.
+- **Inputs**: vetro-wasm describes them itself from the `Input` it passes to
+  `Machine::input` (pressed keys, buttons, new touches, console lines
+  reconstructed by `LineEditor`, power button, resolution; not movements,
+  releases, automatic terminal replies, vsock and host network). The same
+  description applies to the events of a log: the timeline of a replay is
+  rebuilt from the log. File manager commands are annotated by JS (they are
+  vsock traffic, they cannot be recognised from the `Input`); panel reads are
+  not inputs.
+- **Effects**: network from the capture (HTTP request at the start, DNS
+  questions, TLS ClientHello); files from the inotify events of the file
+  manager's watches (annotated by the Worker: created, written, moved,
+  deleted); console when JS reads it (precision: the quantum, ≤ 10 ms of guest
+  time), merged until something else arrives.
 
-### Record & replay nel browser
-- Registrazione e replay sono quelli della macchina (ADR 0019). Il log finito
-  (o caricato da un file) resta nella `Vm`; i **keyframe si spostano fuori**
-  uno alla volta (`vetro_log_keyframe_take`) e rientrano solo quando un
-  replay parte da loro (`vetro_log_keyframe_put`). Nel Worker vanno in OPFS
-  (`vetro-recordings/`: `kf-<i>` e `log` senza i loro byte, con lo stesso
-  `SnapshotStore` degli snapshot; prima i keyframe, poi il log), così la
-  memoria del modulo non tiene decine di snapshot da ~10 MB e la
-  registrazione sopravvive al ricaricamento della pagina.
-- Il **file scaricato** è il log completo (`Log::encode` con tutti i keyframe
-  rimessi per il tempo della codifica): basta da solo a rifare la sessione su
-  una macchina configurata allo stesso modo, e caricarlo lo riarchivia.
-- **Replay e salto** partono dal keyframe più vicino (`vetro_replay_start`);
-  il salto a un'istruzione è lo stesso avvio seguito dai soliti `vetro_run`
-  con il quanto limitato fino a lì. Non si usa `Machine::goto`: si ferma su
-  `Blocked`, mentre nel browser i dischi si servono in modo asincrono fra un
-  quanto e l'altro. Il risultato è lo stesso (confini dei quanti irrilevanti,
-  ADR 0014/0015/0019).
-- Durante il replay la pagina non manda ingressi (il Worker li scarta; la
-  macchina li ignorerebbe comunque), il client del gestore dei file è chiuso
-  (le sue operazioni sono nel log) e si riapre alla fine, niente tempo reale
-  né snapshot in cache. Alla fine: "replay identico" (`Finished`, impronta
-  uguale) o la differenza; poi la macchina continua libera.
-- Vista dello stato al punto raggiunto: `Machine::registers_text`,
-  `read_virt` (traduzione con le tabelle correnti, solo RAM, nessun effetto
-  sui dispositivi), `translate`, `read_phys`.
+### Record & replay in the browser
+- Recording and replay are those of the machine (ADR 0019). The finished log
+  (or one loaded from a file) stays in the `Vm`; the **keyframes are moved
+  out** one at a time (`vetro_log_keyframe_take`) and come back only when a
+  replay starts from them (`vetro_log_keyframe_put`). In the Worker they go to
+  OPFS (`vetro-recordings/`: `kf-<i>` and `log` without their bytes, with the
+  same `SnapshotStore` as snapshots; keyframes first, then the log), so the
+  module's memory does not hold dozens of ~10 MB snapshots and the recording
+  survives a page reload.
+- The **downloaded file** is the complete log (`Log::encode` with all the
+  keyframes put back for the duration of the encoding): on its own it is
+  enough to redo the session on a machine configured the same way, and
+  loading it archives it again.
+- **Replay and jump** start from the nearest keyframe (`vetro_replay_start`);
+  jumping to an instruction is the same start followed by the usual
+  `vetro_run` calls with the quantum limited up to there. `Machine::goto` is
+  not used: it stops on `Blocked`, while in the browser disks are served
+  asynchronously between one quantum and the next. The result is the same
+  (quantum boundaries irrelevant, ADR 0014/0015/0019).
+- During replay the page sends no inputs (the Worker drops them; the
+  machine would ignore them anyway), the file manager client is closed
+  (its operations are in the log) and reopens at the end, no real time
+  nor cached snapshots. At the end: "identical replay" (`Finished`, same
+  fingerprint) or the difference; then the machine continues freely.
+- View of the state at the point reached: `Machine::registers_text`,
+  `read_virt` (translation with the current tables, RAM only, no effect
+  on devices), `translate`, `read_phys`.
 
-### Esportazioni
-Blob e `<a download>` nella pagina: sull'app pubblicata (GitHub Pages) il
-browser scarica il file; il test in Chrome imposta il comportamento dei
-download e legge i file veri.
+### Exports
+Blob and `<a download>` in the page: on the published app (GitHub Pages) the
+browser downloads the file; the Chrome test sets the download behaviour and
+reads the real files.
 
-## Alternative scartate
-- **Timeline e decodifica in JS**: due implementazioni degli stessi formati,
-  niente test in Rust, e la regola di attribuzione non sarebbe la stessa per
-  la CLI futura.
-- **Keyframe tenuti nella memoria del modulo**: 10 MB l'uno alla shell del
-  kernel guest (e molti di più con Android), in una memoria lineare che non
-  si restringe.
-- **Keyframe scritti in OPFS durante la registrazione**: servirebbe
-  un'interfaccia nuova in `vetro-machine` (il registratore è privato). Oggi i
-  keyframe escono alla fine; si farà con i keyframe incrementali (ADR 0019).
-- **Attribuzione per processo o per flusso**: senza tracer di syscall non si
-  sa quale processo ha aperto un socket; l'euristica temporale è ciò che si
-  può fare dall'esterno oggi, dichiarata come tale.
+## Rejected alternatives
+- **Timeline and decoding in JS**: two implementations of the same formats,
+  no tests in Rust, and the attribution rule would not be the same for
+  the future CLI.
+- **Keyframes kept in module memory**: 10 MB each at the guest kernel's
+  shell (and many more with Android), in a linear memory that does not
+  shrink.
+- **Keyframes written to OPFS during recording**: it would need a new
+  interface in `vetro-machine` (the recorder is private). Today the
+  keyframes come out at the end; it will be done with incremental keyframes
+  (ADR 0019).
+- **Attribution per process or per flow**: without syscall tracers there is
+  no way to know which process opened a socket; the temporal heuristic is
+  what can be done from outside today, declared as such.
 
-## Verifica
-- `cargo test -p vetro-analysis`: `timeline` (causa entro la finestra,
-  ingressi deboli, ordine allo stesso istante, console unita, JSON, limiti,
-  righe della console, nomi dei tasti, effetti di rete dall'analisi) e
-  `net::view` (lista e dettaglio rilette dal nostro parser JSON, multipart,
+## Verification
+- `cargo test -p vetro-analysis`: `timeline` (cause within the window,
+  weak inputs, order at the same instant, merged console, JSON, limits,
+  console lines, key names, network effects from the analysis) and
+  `net::view` (list and detail reread by our JSON parser, multipart,
   protobuf).
-- `cargo test -p vetro-wasm`: descrizione degli ingressi; registrazione,
-  file del log, keyframe fuori e dentro, replay identico su un'altra
-  macchina, salto con gli stessi registri, log di un'altra macchina
-  rifiutato; cattura, HAR, pcapng e timeline dall'API.
-- `tests/web/inspector.mjs` e `tests/web/replay.mjs` (Node, kernel M3):
-  richieste di wget con corpi decodificati e attribuite al comando; replay
-  identico (console, ispettore e timeline uguali) con JIT e interprete, salto
-  con registri e memoria uguali, log ricomposto dall'archivio uguale al file.
-- `tests/web/browser-analysis.mjs` (Chrome): wget nell'ispettore con il JSON
-  decodificato e legato al comando nella timeline, scrittura di un file legata
-  al suo comando, download di log/HAR/pcapng, replay identico, salto dalla
-  timeline con registri e dump di memoria, log ricaricato e rigiocato.
+- `cargo test -p vetro-wasm`: input description; recording, log file,
+  keyframes out and in, identical replay on another machine, jump with the
+  same registers, log from another machine rejected; capture, HAR, pcapng
+  and timeline from the API.
+- `tests/web/inspector.mjs` and `tests/web/replay.mjs` (Node, M3 kernel):
+  wget requests with decoded bodies and attributed to the command; identical
+  replay (same console, inspector and timeline) with JIT and interpreter, jump
+  with the same registers and memory, log reassembled from the archive equal
+  to the file.
+- `tests/web/browser-analysis.mjs` (Chrome): wget in the inspector with the
+  decoded JSON and tied to the command in the timeline, a file write tied to
+  its command, download of log/HAR/pcapng, identical replay, jump from the
+  timeline with registers and memory dump, log reloaded and replayed.
 
-## Conseguenze
-- ABI 8: chi usa vetro-wasm aggiorna `web/node/vetro.mjs` (costanti
+## Consequences
+- ABI 8: users of vetro-wasm update `web/node/vetro.mjs` (constants
   `TIMELINE_INPUT`, `TIMELINE_EFFECT`, `RR_STATE`, `REPLAY_START`).
-- Gli effetti sui file non compaiono nella timeline di un replay (il client
-  del gestore è chiuso); rete e console sì, identici.
-- Quando arriveranno gli hook TLS (M7) e i tracer (M8–M9), le richieste in
-  chiaro diventano altri `HttpExchange` e altri effetti: la vista e la
-  timeline non cambiano forma.
+- File effects do not appear in the timeline of a replay (the file manager
+  client is closed); network and console do, identical.
+- When the TLS hooks (M7) and the tracers (M8–M9) arrive, the plaintext
+  requests become more `HttpExchange`s and more effects: the view and the
+  timeline do not change shape.

@@ -1,135 +1,135 @@
-# ADR 0020 — Gestore dei file: demone di Vetro nel guest su virtio-vsock
+# ADR 0020 — File manager: Vetro daemon in the guest over virtio-vsock
 
-- Stato: accettata (M8, base sul guest Linux, 2026-09-26). Usa virtio-vsock
-  (M5, `docs/specs/platform.md`), l'unico punto d'ingresso dell'host
-  (ADR 0019) e gli snapshot (ADR 0015).
+- Status: accepted (M8, base on the Linux guest, 2026-09-26). Uses
+  virtio-vsock (M5, `docs/specs/platform.md`), the host's single entry
+  point (ADR 0019) and snapshots (ADR 0015).
 
-## Contesto
-M8 chiede un gestore dei file dell'app in primo piano (`docs/PLAN.md`):
-albero di `/data/data/<pacchetto>`, `/data/user_de/0/<pacchetto>`,
-`/sdcard/Android/{data,media}/<pacchetto>`, aggiornato dal vivo,
-visualizzatori (testo, JSON, XML delle SharedPreferences, SQLite, immagini,
-esadecimale) e modifica con salvataggio immediato nel guest; proprietario,
-permessi e contesto SELinux conservati; ogni modifica dell'utente è un
-ingresso registrato, così il replay resta identico.
+## Context
+M8 asks for a file manager for the foreground app (`docs/PLAN.md`):
+tree of `/data/data/<package>`, `/data/user_de/0/<package>`,
+`/sdcard/Android/{data,media}/<package>`, updated live, viewers (text,
+JSON, SharedPreferences XML, SQLite, images, hex) and editing with
+immediate save into the guest; owner, permissions and SELinux context
+preserved; every user edit is a recorded input, so the replay stays
+identical.
 
-Leggere e scrivere l'immagine del disco dall'host (ext4/f2fs nel file
-dell'overlay) è escluso: con il guest acceso il kernel ha cache, journal e
-metadati in memoria, e una scrittura da fuori corrompe il file system; anche
-una lettura da fuori vede uno stato vecchio. I file vanno letti e scritti
-**dal kernel del guest**, da un processo con i privilegi necessari (root
-nell'immagine userdebug).
+Reading and writing the disk image from the host (ext4/f2fs in the overlay
+file) is ruled out: with the guest running the kernel has caches, journal
+and metadata in memory, and a write from outside corrupts the file system;
+even a read from outside sees a stale state. Files must be read and
+written **by the guest kernel**, from a process with the necessary
+privileges (root in the userdebug image).
 
-Android non c'è ancora; il guest Linux di M3 (BusyBox, initramfs) basta per
-fare e provare il meccanismo.
+Android is not there yet; the M3 Linux guest (BusyBox, initramfs) is
+enough to build and test the mechanism.
 
-## Decisione
+## Decision
 
-### Un demone di Vetro nel guest su virtio-vsock
-- `vetro-files` (`guest/kernel/initramfs/vetro-files.c`): C statico (musl
-  oggi, bionic nell'immagine Android), un solo processo con un ciclo
-  `poll()`, fino a 8 connessioni, ognuna con il suo inotify e un buffer
-  d'uscita non bloccante (un host che non legge non ferma il demone; oltre
-  8 MiB in uscita il demone smette di leggere richieste ed eventi di quella
-  connessione). Solo POSIX e header UAPI di Linux.
-- **Porta vsock fissa 5200**, in ascolto da qualsiasi CID; l'host (CID 2) si
-  collega (come adb su vsock). Se nessuno ascolta ancora (demone non
-  partito) il client riprova ogni 100 ms di tempo del guest.
-- Nel guest di M3 lo avvia `/init` quando c'è un dispositivo virtio-vsock
-  (id 19 in `/sys/bus/virtio/devices/*/device`): sotto QEMU (senza vsock)
-  non parte e il log di confronto non cambia. Nell'immagine Android sarà un
-  servizio di init (`vetro_files`, dominio SELinux proprio o `su` nella
-  userdebug); non in questo lavoro.
-- Il kernel guest ha ora `CONFIG_INOTIFY_USER` (eventi dal vivo) e
-  `CONFIG_TMPFS_XATTR` (xattr su tmpfs: i test provano che gli xattr,
-  compreso `security.selinux`, si conservano; senza LSM tmpfs lo tiene come
-  un xattr qualsiasi). La cache della CI si rinnova da sola (chiave su
-  `guest/kernel/config/**` e `guest/kernel/initramfs/**`).
+### A Vetro daemon in the guest over virtio-vsock
+- `vetro-files` (`guest/kernel/initramfs/vetro-files.c`): static C (musl
+  today, bionic in the Android image), a single process with a `poll()`
+  loop, up to 8 connections, each with its own inotify and a non-blocking
+  output buffer (a host that does not read does not stop the daemon;
+  beyond 8 MiB of pending output the daemon stops reading requests and
+  events of that connection). Only POSIX and Linux UAPI headers.
+- **Fixed vsock port 5200**, listening from any CID; the host (CID 2)
+  connects (like adb over vsock). If nobody is listening yet (daemon not
+  started) the client retries every 100 ms of guest time.
+- In the M3 guest `/init` starts it when there is a virtio-vsock device
+  (id 19 in `/sys/bus/virtio/devices/*/device`): under QEMU (without
+  vsock) it does not start and the comparison log does not change. In the
+  Android image it will be an init service (`vetro_files`, its own SELinux
+  domain or `su` in userdebug); not in this work.
+- The guest kernel now has `CONFIG_INOTIFY_USER` (live events) and
+  `CONFIG_TMPFS_XATTR` (xattrs on tmpfs: the tests prove that xattrs,
+  including `security.selinux`, are preserved; without an LSM tmpfs keeps
+  it as any other xattr). The CI cache renews itself (key on
+  `guest/kernel/config/**` and `guest/kernel/initramfs/**`).
 
-### Protocollo binario piccolo e versionato
-Dettaglio in `docs/specs/files.md`. Frame `u32 lunghezza, u8 tipo, u32 id,
-corpo` in little endian; il demone apre ogni connessione con un saluto
-(`"VTRF"`, versione 1, flag SELinux, pezzo massimo 1 MiB). Richieste: STAT,
-LIST (con i metadati di ogni voce: tipo, modo, uid, gid, dimensione, mtime,
-nlink, destinazione dei collegamenti, contesto da `security.selinux`),
-READ (a pezzi: offset e lunghezza), scrittura in tre passi
-(WOPEN/WDATA/WCOMMIT, WABORT), MKDIR, CREATE, DELETE (anche ricorsivo),
-RENAME, WATCH/UNWATCH (inotify); risposte con errno di Linux; eventi di
-inotify non richiesti. Versione nuova = numero nuovo nel saluto: il client
-rifiuta una versione che non conosce.
+### Small, versioned binary protocol
+Details in `docs/specs/files.md`. Frames `u32 length, u8 type, u32 id,
+body` in little endian; the daemon opens every connection with a greeting
+(`"VTRF"`, version 1, SELinux flag, maximum chunk 1 MiB). Requests: STAT,
+LIST (with the metadata of each entry: type, mode, uid, gid, size, mtime,
+nlink, link target, context from `security.selinux`), READ (in chunks:
+offset and length), three-step write (WOPEN/WDATA/WCOMMIT, WABORT),
+MKDIR, CREATE, DELETE (recursive too), RENAME, WATCH/UNWATCH (inotify);
+responses with Linux errno; unsolicited inotify events. New version = new
+number in the greeting: the client rejects a version it does not know.
 
-### Scrittura atomica che conserva i metadati
-- WOPEN crea un file temporaneo `.vetro-tmp.<n>.<nome>` **nella stessa
-  cartella** (stesso file system: il rename è atomico) con `O_EXCL`; i
-  WDATA ci scrivono; WCOMMIT copia sul temporaneo proprietario e gruppo
-  (`fchown`, prima di `fchmod`: chown toglie setuid/setgid), modo e **tutti
-  gli xattr** del file che sostituisce (`security.selinux` obbligatorio: se
-  non si copia la scrittura fallisce), `fsync`, `rename` sul file vero,
-  `fsync` della cartella. Chi legge il file vede il vecchio o il nuovo,
-  mai una via di mezzo; un errore in qualsiasi passo toglie il temporaneo e
-  il file vero non cambia.
-- Un collegamento simbolico resta: si sostituisce il file a cui punta.
-- Un file (o una cartella) **nuovo** prende proprietario, gruppo e contesto
-  SELinux della cartella che lo contiene, e il modo chiesto dall'host
-  (`umask` 0): è ciò che fa Android per i file di un'app, tutti con uid e
-  contesto (categorie MLS comprese) della sua cartella dei dati.
-- Gli eventi di inotify dei file temporanei non arrivano all'host: la
-  scrittura si vede come `IN_MOVED_TO` del file vero.
-- Limite noto: il rename rompe i collegamenti fisici (il file vero diventa
-  un inode nuovo), come ogni editor che salva in modo atomico.
+### Atomic write that preserves metadata
+- WOPEN creates a temporary file `.vetro-tmp.<n>.<name>` **in the same
+  directory** (same file system: the rename is atomic) with `O_EXCL`; the
+  WDATAs write into it; WCOMMIT copies onto the temporary file the owner
+  and group (`fchown`, before `fchmod`: chown clears setuid/setgid), mode
+  and **all the xattrs** of the file it replaces (`security.selinux`
+  mandatory: if it cannot be copied the write fails), `fsync`, `rename`
+  onto the real file, `fsync` of the directory. Whoever reads the file
+  sees the old or the new one, never something in between; an error at
+  any step removes the temporary file and the real file does not change.
+- A symbolic link stays: the file it points to is replaced.
+- A **new** file (or directory) takes the owner, group and SELinux
+  context of the directory that contains it, and the mode requested by the
+  host (`umask` 0): this is what Android does for an app's files, all with
+  the uid and context (MLS categories included) of its data directory.
+- inotify events of temporary files do not reach the host: the write
+  shows up as `IN_MOVED_TO` of the real file.
+- Known limit: the rename breaks hard links (the real file becomes a new
+  inode), like every editor that saves atomically.
 
-### Client dell'host in Rust, senza dipendenze
-- `vetro_machine::files` (`proto`: codifica e lettura dei frame; client
-  `FilesClient`), wasm32 senza dipendenze. Il client tocca la macchina solo
-  con `Machine::input(Input::Vsock(..))` (connessione, invio, lettura) e
-  `Machine::vsock_view` (stato e byte pronti): legge solo quando ci sono
-  byte, così il log di una sessione ferma resta vuoto.
-- Operazioni asincrone con un id e una `Completion`: una lettura lunga
-  diventa READ da 256 KiB uno dopo l'altro; una scrittura diventa
-  WOPEN + WDATA + WCOMMIT mandati insieme (il demone li serve in ordine, un
-  WDATA fallito fa fallire il WCOMMIT).
-- Le **radici da mostrare** sono un'interfaccia che il chiamante imposta
-  (`FilesClient::set_roots`, `window.vetroFiles.setRoots` nella pagina,
-  `app_roots(pacchetto)` per le cartelle di un'app): oggi a mano o dall'URL,
-  in futuro dal rilevamento dell'app in primo piano nel decoder Binder
-  (ActivityTaskManager), che non è parte di questo lavoro.
-- Esposto da `vetro-wasm` (ABI 7, `vetro_files_*`, risposte in JSON più i
-  byte letti), da `web/node/vetro.mjs` (`GuestFiles`, Promise) e da
-  `vetro boot --files-ls/--files-cat/--files-put` per i test.
+### Host client in Rust, without dependencies
+- `vetro_machine::files` (`proto`: frame encoding and decoding; client
+  `FilesClient`), wasm32 without dependencies. The client touches the
+  machine only with `Machine::input(Input::Vsock(..))` (connect, send,
+  read) and `Machine::vsock_view` (state and ready bytes): it reads only
+  when there are bytes, so the log of an idle session stays empty.
+- Asynchronous operations with an id and a `Completion`: a long read
+  becomes 256 KiB READs one after the other; a write becomes
+  WOPEN + WDATA + WCOMMIT sent together (the daemon serves them in order,
+  a failed WDATA makes the WCOMMIT fail).
+- The **roots to show** are an interface the caller sets
+  (`FilesClient::set_roots`, `window.vetroFiles.setRoots` in the page,
+  `app_roots(package)` for an app's directories): today by hand or from
+  the URL, in the future from the detection of the foreground app in the
+  Binder decoder (ActivityTaskManager), which is not part of this work.
+- Exposed by `vetro-wasm` (ABI 7, `vetro_files_*`, responses in JSON plus
+  the bytes read), by `web/node/vetro.mjs` (`GuestFiles`, Promise) and by
+  `vetro boot --files-ls/--files-cat/--files-put` for the tests.
 
-### Determinismo
-Le richieste dell'host entrano nel guest come byte del vsock host→guest, e
-passano **tutte** dall'unico punto d'ingresso `Machine::input` (ADR 0019):
-connessione, invio e lettura dell'host sono `Input::Vsock(..)` registrati
-con il numero d'istruzione. Una sessione del gestore registrata si rigioca
-identica senza client (test `files.rs`); lo stesso copione dà le stesse
-istruzioni e le stesse risposte. Il client va chiamato fra un quanto e
-l'altro (come la console), non con la macchina ferma su un disco (gli
-ingressi sarebbero rimandati: il client non fa niente in quel caso) né
-dopo lo spegnimento (un ingresso dopo l'ultima istruzione non arriverebbe
-mai al guest e il replay lo segnalerebbe come mancato).
+### Determinism
+The host's requests enter the guest as host→guest vsock bytes, and
+**all** of them go through the single entry point `Machine::input` (ADR
+0019): the host's connect, send and read are `Input::Vsock(..)` recorded
+with the instruction number. A recorded file manager session replays
+identically without a client (test `files.rs`); the same script gives the
+same instructions and the same responses. The client must be called
+between one quantum and the next (like the console), not with the machine
+stopped on a disk (the inputs would be deferred: the client does nothing
+in that case) nor after shutdown (an input after the last instruction
+would never reach the guest and the replay would report it as missed).
 
 ### Snapshot
-Connessione, crediti e byte in transito sono stato di virtio-vsock (nello
-snapshot); il client è collegamento dell'host. Un taglio a metà sessione
-con lo stesso client continua identico (test in `snapshot.rs`). Una
-sessione nuova (pagina riaperta da uno snapshot in cache) crea un client
-nuovo: al primo collegamento chiude con RST le connessioni verso la porta
-del demone rimaste nello snapshot, che nessuno leggerebbe più.
+Connection, credits and bytes in flight are virtio-vsock state (in the
+snapshot); the client is a host link. A cut in the middle of a session
+with the same client continues identically (test in `snapshot.rs`). A new
+session (page reopened from a cached snapshot) creates a new client: on
+first connect it closes with RST the connections to the daemon's port left
+in the snapshot, which nobody would read any more.
 
-## Conseguenze
-- Il gestore funziona sul guest Linux di oggi e nell'app web (pannello
-  accanto allo schermo); per Android servono il servizio di init e la
-  policy SELinux del demone, il rilevamento dell'app in primo piano e le
-  radici dei pacchetti.
-- Il demone ha i privilegi di root del guest: legge e scrive qualsiasi file
-  (è lo scopo); vale solo per le immagini userdebug di Vetro.
-- SQLite si legge nella pagina con un lettore del formato scritto da noi
-  (`web/app/sqlite.mjs`, solo lettura, senza WAL); la modifica di una riga
-  (uscita di M8) resta da fare: scriverla nel formato del file è rischioso
-  con l'app che tiene il database aperto, e andrà fatta con `sqlite3` nel
-  guest o nel demone, con un ADR. *Fatto con l'ADR 0021: SQL nel demone con
-  SQLite linkato, come il proprietario del database; lettura del WAL.*
-- Nomi di file non UTF-8 arrivano all'host con i caratteri sostituiti
-  (U+FFFD) e non si possono riaprire: limite noto, raro su Android.
-  *Superato dall'ADR 0021: nomi come byte, surrogateescape verso il JS.*
+## Consequences
+- The file manager works on today's Linux guest and in the web app (panel
+  next to the screen); for Android we need the init service and the
+  daemon's SELinux policy, the detection of the foreground app and the
+  package roots.
+- The daemon has the guest's root privileges: it reads and writes any
+  file (that is the point); this holds only for Vetro's userdebug images.
+- SQLite is read in the page with a reader of the format written by us
+  (`web/app/sqlite.mjs`, read-only, without WAL); editing a row (M8 exit)
+  remains to be done: writing it in the file format is risky with the app
+  holding the database open, and it will have to be done with `sqlite3` in
+  the guest or in the daemon, with an ADR. *Done with ADR 0021: SQL in the
+  daemon with SQLite linked in, like the database's owner; WAL reading.*
+- Non-UTF-8 file names reach the host with the characters replaced
+  (U+FFFD) and cannot be reopened: known limit, rare on Android.
+  *Superseded by ADR 0021: names as bytes, surrogateescape towards the
+  JS.*

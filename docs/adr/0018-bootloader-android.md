@@ -1,69 +1,71 @@
-# ADR 0018 — Il bootloader Android di Vetro: boot.img, vendor_boot, init_boot, bootconfig
+# ADR 0018 — Vetro's Android bootloader: boot.img, vendor_boot, init_boot, bootconfig
 
-- Stato: accettata (M5, 2026-09-25). Estende l'ADR 0008 (avvio diretto).
+- Status: accepted (M5, 2026-09-25). Extends ADR 0008 (direct boot).
 
-## Contesto
-Le immagini Android da GKI in poi (Cuttlefish, la nostra `guest/aosp`)
-non danno un `Image` e un initrd, ma `boot.img` (kernel, header v4),
-`vendor_boot.img` (ramdisk del vendor in frammenti, riga di comando del
-vendor, sezione bootconfig) e `init_boot.img` (ramdisk generico). Tra le
-immagini e il kernel c'è un bootloader (u-boot di Cuttlefish, ABL dei
-telefoni) che le combina; QEMU non lo fa: vuole `-kernel/-initrd/-append`.
-Vetro ha già l'avvio diretto con il layout di QEMU (ADR 0008) e deve restare
-confrontabile con l'oracolo.
+## Context
+Android images from GKI onwards (Cuttlefish, our `guest/aosp`) do not
+provide an `Image` and an initrd, but `boot.img` (kernel, header v4),
+`vendor_boot.img` (vendor ramdisk in fragments, vendor command line,
+bootconfig section) and `init_boot.img` (generic ramdisk). Between the
+images and the kernel there is a bootloader (Cuttlefish's u-boot, phones'
+ABL) that combines them; QEMU does not do this: it wants
+`-kernel/-initrd/-append`. Vetro already has direct boot with the QEMU
+layout (ADR 0008) and must stay comparable with the oracle.
 
-## Decisione
-- **Il bootloader è un modulo puro di `vetro-machine`**
-  (`vetro_machine::android`), davanti al caricatore di M3: produce `Image`,
-  initrd e riga di comando, poi `Machine::load_android` = `load_linux`.
-  Nessun firmware nel guest, nessun layout diverso da QEMU: gli stessi tre
-  pezzi (scritti da `vetro boot --android-dump`) vanno a
-  `qemu-system-aarch64 -kernel -initrd -append`, ed è quello il confronto con
-  l'oracolo. Nel browser il modulo gira uguale (niente dipendenze).
-- **Decompressori propri, senza dipendenze** (gzip con CRC32, LZ4 legacy e
-  frame), solo per il kernel: `vetro-machine` compila per wasm32 e il core
-  resta senza crate esterni. I ramdisk non si toccano: li apre il kernel,
-  come su un telefono.
-- **Ordine dei ramdisk:** frammenti del vendor nell'ordine della tabella,
-  saltando quelli di tipo recovery (salvo `--recovery`), poi il generico
-  (`init_boot` se c'è), senza allineamento: è l'esempio di source.android.com
-  per l'avvio normale.
-- **Parametri del bootloader** (`--append`): con `vendor_boot` v4 gli
-  `androidboot.*` vanno nel bootconfig, dopo la sezione del vendor (è dove
-  il bootloader aggiunge i parametri noti solo all'avvio), gli altri in coda
-  alla riga di comando (`boot`, `vendor`, bootloader, come u-boot). Senza v4
-  tutto sulla riga di comando. Gli `androidboot.*` già scritti nelle righe
-  di comando delle immagini si lasciano lì: sono una scelta della build
-  (la migrazione incrementale di AOSP li tiene in entrambi).
-- **`bootconfig` sulla riga di comando:** AOSP lo mette nella build
-  (`BOARD_KERNEL_CMDLINE += bootconfig`); Vetro lo aggiunge se c'è un blocco
-  e la riga non lo contiene, altrimenti gli `androidboot.*` spostati da noi
-  sparirebbero in silenzio. Il kernel guest ha `CONFIG_BOOT_CONFIG=y` senza
-  `FORCE`, come il GKI.
-- **Formato del blocco** quello di `tools/bootconfig -a` del kernel (testo,
-  NUL, riempimento all'allineamento a 4 dell'initrd, size, checksum,
-  magic): verificato byte per byte con lo strumento compilato dai sorgenti
-  del kernel guest. Valori tra virgolette (virgole, `#`, `;` resterebbero
-  altrimenti sintassi); chiavi ripetute nei parametri rifiutate (il kernel
-  scarterebbe tutto il blocco). Una chiave dei parametri che ripete una
-  chiave della sezione del vendor non si controlla: il kernel rifiuta il
-  blocco e lo dice nel log (`Failed to parse bootconfig: Value is
-  redefined`, verificato con `tools/bootconfig`).
-- **mkbootimg di AOSP come riferimento dei test**, copia non modificata in
-  `tools/mkbootimg/` a un commit fissato (blob git e sha256 nel README):
-  le immagini di prova sono quelle che produce AOSP, non quelle che
-  crediamo. Serve solo `python3`; in CI (`VETRO_REQUIRE_ORACLE=1`) la sua
-  assenza fa fallire i test.
-- **Si ignora** quello che la virt non usa: indirizzi di caricamento, DTB
-  delle immagini (Vetro genera il suo, come QEMU), `second`,
-  `recovery_dtbo`, firma GKI e AVB (niente verifica: le immagini di Vetro
-  sono userdebug con vbmeta disattivato, `m5-android-images.md`).
+## Decision
+- **The bootloader is a pure module of `vetro-machine`**
+  (`vetro_machine::android`), in front of the M3 loader: it produces
+  `Image`, initrd and command line, then `Machine::load_android` =
+  `load_linux`. No firmware in the guest, no layout different from QEMU:
+  the same three pieces (written by `vetro boot --android-dump`) go to
+  `qemu-system-aarch64 -kernel -initrd -append`, and that is the
+  comparison with the oracle. In the browser the module runs the same (no
+  dependencies).
+- **Our own decompressors, without dependencies** (gzip with CRC32, LZ4
+  legacy and frame), only for the kernel: `vetro-machine` compiles for
+  wasm32 and the core stays without external crates. The ramdisks are not
+  touched: the kernel opens them, as on a phone.
+- **Ramdisk order:** vendor fragments in table order, skipping the
+  recovery ones (unless `--recovery`), then the generic one (`init_boot`
+  if present), without alignment: this is the source.android.com example
+  for normal boot.
+- **Bootloader parameters** (`--append`): with `vendor_boot` v4 the
+  `androidboot.*` go into bootconfig, after the vendor section (that is
+  where the bootloader adds parameters known only at boot), the others at
+  the end of the command line (`boot`, `vendor`, bootloader, like u-boot).
+  Without v4 everything goes on the command line. The `androidboot.*`
+  already written in the images' command lines are left there: they are a
+  build choice (AOSP's incremental migration keeps them in both).
+- **`bootconfig` on the command line:** AOSP puts it in the build
+  (`BOARD_KERNEL_CMDLINE += bootconfig`); Vetro adds it if there is a
+  block and the line does not contain it, otherwise the `androidboot.*`
+  we moved would silently disappear. The guest kernel has
+  `CONFIG_BOOT_CONFIG=y` without `FORCE`, like GKI.
+- **Block format** that of the kernel's `tools/bootconfig -a` (text,
+  NUL, padding to the initrd's 4-byte alignment, size, checksum, magic):
+  verified byte for byte with the tool built from the guest kernel
+  sources. Values in quotes (commas, `#`, `;` would otherwise remain
+  syntax); repeated keys in the parameters rejected (the kernel would
+  discard the whole block). A parameter key that repeats a key of the
+  vendor section is not checked: the kernel rejects the block and says so
+  in the log (`Failed to parse bootconfig: Value is redefined`, verified
+  with `tools/bootconfig`).
+- **AOSP's mkbootimg as the test reference**, unmodified copy in
+  `tools/mkbootimg/` at a pinned commit (git blob and sha256 in the
+  README): the test images are those AOSP produces, not those we believe
+  it produces. Only `python3` is needed; in CI (`VETRO_REQUIRE_ORACLE=1`)
+  its absence makes the tests fail.
+- **Ignored** is whatever virt does not use: load addresses, the images'
+  DTB (Vetro generates its own, like QEMU), `second`, `recovery_dtbo`,
+  GKI signature and AVB (no verification: Vetro's images are userdebug
+  with vbmeta disabled, `m5-android-images.md`).
 
-## Conseguenze
-- `vetro boot --boot-img/--vendor-boot/--init-boot` avvia le immagini di una
-  build GKI senza passaggi a mano; `--android-dump` dà i file per QEMU.
-- Il kernel guest cambia configurazione (`BOOT_CONFIG`, `RD_LZ4`): la cache
-  di CI si rinnova da sola (chiave su `guest/kernel/config/**`), il log di
-  riferimento di QEMU è rigenerato.
-- Scegliere i frammenti del vendor per `board_id`, verificare AVB e la
-  firma GKI resta fuori: se servirà, un ADR nuovo.
+## Consequences
+- `vetro boot --boot-img/--vendor-boot/--init-boot` boots the images of a
+  GKI build without manual steps; `--android-dump` gives the files for
+  QEMU.
+- The guest kernel changes configuration (`BOOT_CONFIG`, `RD_LZ4`): the CI
+  cache renews itself (key on `guest/kernel/config/**`), the QEMU
+  reference log is regenerated.
+- Choosing vendor fragments by `board_id`, verifying AVB and the GKI
+  signature stay out: if needed, a new ADR.

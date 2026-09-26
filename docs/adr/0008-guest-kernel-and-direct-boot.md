@@ -1,64 +1,64 @@
-# ADR 0008 — Kernel guest di M3 e protocollo di avvio diretto
+# ADR 0008 — M3 guest kernel and direct boot protocol
 
-- Stato: accettata (M3, preparazione, 2026-09-24)
+- Status: accepted (M3, preparation, 2026-09-24)
 
-## Contesto
-M3 chiede un kernel Linux arm64 con initramfs fino alla shell, prima sotto
-l'oracolo (`qemu-system-aarch64 -M virt`) e poi sotto Vetro. Servono un
-kernel riproducibile, un modo per verificarlo, e un caricatore che metta
-kernel, initramfs e DTB dove li mette QEMU, così i due avvii si possono
-confrontare.
+## Context
+M3 calls for an arm64 Linux kernel with an initramfs up to the shell, first under
+the oracle (`qemu-system-aarch64 -M virt`) and then under Vetro. We need a
+reproducible kernel, a way to verify it, and a loader that places the
+kernel, initramfs and DTB where QEMU places them, so the two boots can be
+compared.
 
-## Decisione
-- **Kernel:** Linux 6.18.53 (longterm), tarball di kernel.org fissato con
-  SHA-256 in `tools/guest-kernel/build.sh`, senza patch. Build in container
-  Alpine 3.22 arm64 su un volume Docker (i sorgenti hanno nomi che
-  differiscono solo per maiuscole: APFS non li distingue). Data, utente e
-  host della build sono fissati (`KBUILD_BUILD_*`).
-- **Configurazione:** `make allnoconfig` + `guest/kernel/config/vetro.config`.
-  Lo script verifica che ogni opzione del frammento sia arrivata nella
-  `.config` e che il `savedefconfig` risultante coincida con
-  `guest/kernel/config/defconfig` (versionato): una deriva si vede in revisione.
-  Contenuto: PL011 con earlycon, PL031, GICv3, timer generico, virtio-mmio,
-  virtio-blk/net/console, devtmpfs, initramfs gzip, printk; niente moduli,
-  niente PCI (i dispositivi virtio della virt sono anche su mmio e alla
-  piattaforma di Vetro bastano quelli), niente KASLR (determinismo), niente
-  estensioni oltre ARMv8.0 (ADR 0005).
-- **SMP:** su arm64 `CONFIG_SMP` è sempre attivo; `NR_CPUS=2` (minimo
-  ammesso). Il guest gira con una CPU (`-smp 1`, default di QEMU). Il kernel
-  interroga comunque PSCI via `HVC` (versione, e `SYSTEM_OFF` per
-  `poweroff`): la piattaforma di Vetro deve rispondere a queste chiamate.
-- **Initramfs:** `usr/gen_init_cpio` del kernel con `-t 0` e `gzip -n`
-  (niente root, niente date: riproducibile), BusyBox statica di
-  `tools/guest-bins`, `/init` e `/etc/autotest.sh` in
-  `guest/kernel/initramfs/`. Marcatori: `VETRO-BOOT-OK` (avvio di `/init`),
-  `VETRO-AUTOTEST-FINE: ok` (autotest riuscito). Poi shell su `ttyAMA0`
-  (`setsid cttyhack sh`). `vetro.noautotest` e `vetro.poweroff` sulla riga
-  di comando cambiano il flusso per gli avvii scriptati.
-- **Oracolo di sistema:** `qemu-system-aarch64` nativo in CI (runner arm64),
-  su macOS `tools/guest-kernel/qemu-system-aarch64-docker.sh` con
-  un'immagine Debian trixie dedicata (`Dockerfile.qemu`, stessa base e
-  stessa versione di QEMU dell'oracolo user mode). `tools/oracle/Dockerfile`
-  resta invariato: il pacchetto di sistema pesa e serve solo a questi test.
-- **Verifica:** `tests/boot` (`vetro-boot-tests`) avvia il comando di
-  riferimento, controlla i marcatori entro `VETRO_BOOT_TIMEOUT`, scrive un
-  comando sulla console e ne legge il risultato (la shell è viva), spegne con
-  `poweroff -f`. Log di riferimento in `guest/kernel/reference/qemu-boot.log`.
-- **Caricatore** (`vetro-cli::boot`, puro): header `Image` (magic, text_offset,
-  image_size, flags; kernel big-endian e granulo 16 KiB rifiutati, la
-  Cortex-A53 non lo ha). Layout come `hw/arm/boot.c` di QEMU: kernel a
-  `0x4000_0000 + text_offset`, spostato di 2 MiB se `text_offset < 4 KiB`
-  (QEMU tiene lì il suo stub), quindi `0x4020_0000` per i kernel moderni;
-  initramfs a `base + min(ram/2, 128 MiB)` e comunque oltre la bss del
-  kernel; DTB subito dopo, allineato a 2 MiB. Ingresso: `x0` = DTB,
-  `x1..x3` = 0, PC = inizio dell'Image, EL1h, DAIF mascherati
-  (PSTATE `0x3c5`), MMU spenta. Lo stub di QEMU non si emula: i registri si
-  impostano direttamente.
+## Decision
+- **Kernel:** Linux 6.18.53 (longterm), kernel.org tarball pinned by
+  SHA-256 in `tools/guest-kernel/build.sh`, without patches. Built in an
+  Alpine 3.22 arm64 container on a Docker volume (the sources have names that
+  differ only in case: APFS does not distinguish them). Build date, user and
+  host are pinned (`KBUILD_BUILD_*`).
+- **Configuration:** `make allnoconfig` + `guest/kernel/config/vetro.config`.
+  The script checks that every option of the fragment made it into the
+  `.config` and that the resulting `savedefconfig` matches
+  `guest/kernel/config/defconfig` (versioned): any drift shows up in review.
+  Contents: PL011 with earlycon, PL031, GICv3, generic timer, virtio-mmio,
+  virtio-blk/net/console, devtmpfs, gzip initramfs, printk; no modules,
+  no PCI (the virt board's virtio devices are also on mmio and those are
+  enough for Vetro's platform), no KASLR (determinism), no
+  extensions beyond ARMv8.0 (ADR 0005).
+- **SMP:** on arm64 `CONFIG_SMP` is always on; `NR_CPUS=2` (the minimum
+  allowed). The guest runs with one CPU (`-smp 1`, QEMU's default). The kernel
+  queries PSCI via `HVC` anyway (version, and `SYSTEM_OFF` for
+  `poweroff`): Vetro's platform must answer these calls.
+- **Initramfs:** the kernel's `usr/gen_init_cpio` with `-t 0` and `gzip -n`
+  (no root, no dates: reproducible), static BusyBox from
+  `tools/guest-bins`, `/init` and `/etc/autotest.sh` in
+  `guest/kernel/initramfs/`. Markers: `VETRO-BOOT-OK` (start of `/init`),
+  `VETRO-AUTOTEST-FINE: ok` (autotest succeeded). Then a shell on `ttyAMA0`
+  (`setsid cttyhack sh`). `vetro.noautotest` and `vetro.poweroff` on the
+  command line change the flow for scripted boots.
+- **System oracle:** native `qemu-system-aarch64` in CI (arm64 runner),
+  on macOS `tools/guest-kernel/qemu-system-aarch64-docker.sh` with
+  a dedicated Debian trixie image (`Dockerfile.qemu`, same base and
+  same QEMU version as the user mode oracle). `tools/oracle/Dockerfile`
+  stays unchanged: the system package is heavy and is only needed for these tests.
+- **Verification:** `tests/boot` (`vetro-boot-tests`) runs the reference
+  command, checks the markers within `VETRO_BOOT_TIMEOUT`, writes a
+  command to the console and reads its result (the shell is alive), shuts down with
+  `poweroff -f`. Reference log in `guest/kernel/reference/qemu-boot.log`.
+- **Loader** (`vetro-cli::boot`, pure): `Image` header (magic, text_offset,
+  image_size, flags; big-endian kernels and 16 KiB granule rejected, the
+  Cortex-A53 does not have it). Layout as in QEMU's `hw/arm/boot.c`: kernel at
+  `0x4000_0000 + text_offset`, moved by 2 MiB if `text_offset < 4 KiB`
+  (QEMU keeps its stub there), hence `0x4020_0000` for modern kernels;
+  initramfs at `base + min(ram/2, 128 MiB)` and in any case past the kernel's
+  bss; DTB right after, aligned to 2 MiB. Entry: `x0` = DTB,
+  `x1..x3` = 0, PC = start of the Image, EL1h, DAIF masked
+  (PSTATE `0x3c5`), MMU off. QEMU's stub is not emulated: the registers are
+  set directly.
 
-## Conseguenze
-- Licenze: `target/guest-kernel/sources/` contiene il tarball esatto, il
-  frammento, il defconfig e gli script; per BusyBox (GPL anche lei) si indica
-  il pacchetto Alpine e l'aports corrispondente. Prima di distribuire
-  immagini va aggiunto il tarball dei sorgenti BusyBox con le patch Alpine.
-- Cambiare versione del kernel: nuovo SHA-256, `VETRO_KERNEL_UPDATE_CONFIG=1`,
-  nuovo log di riferimento (`VETRO_BOOT_UPDATE_REFERENCE=1`).
+## Consequences
+- Licenses: `target/guest-kernel/sources/` contains the exact tarball, the
+  fragment, the defconfig and the scripts; for BusyBox (GPL as well) we point to
+  the Alpine package and the corresponding aports. Before distributing
+  images, the BusyBox source tarball with the Alpine patches must be added.
+- Changing kernel version: new SHA-256, `VETRO_KERNEL_UPDATE_CONFIG=1`,
+  new reference log (`VETRO_BOOT_UPDATE_REFERENCE=1`).

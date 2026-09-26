@@ -1,128 +1,126 @@
-# ADR 0017 — Overlay copy-on-write persistente e cache degli snapshot nel browser
+# ADR 0017 — Persistent copy-on-write overlay and snapshot cache in the browser
 
-- Stato: accettata (M6, seconda parte, 2026-09-26). Estende l'ADR 0014
-  (dischi dal browser) e l'ADR 0015 (snapshot).
+- Status: accepted (M6, second part, 2026-09-26). Extends ADR 0014
+  (disks from the browser) and ADR 0015 (snapshot).
 
-## Contesto
-Le immagini dei dischi arrivano con HTTP Range e sono in sola lettura; le
-scritture del guest finivano in un `CowBackend` in memoria e si perdevano a
-ogni ricarica della pagina. M6 chiede che restino fra una sessione e
-l'altra, e che dal secondo avvio la macchina riparta da uno snapshot invece
-di riavviare il kernel. Due problemi:
+## Context
+Disk images arrive via HTTP Range and are read-only; the guest's writes
+ended up in an in-memory `CowBackend` and were lost at every page reload.
+M6 asks for them to persist from one session to the next, and for the
+machine to resume from a snapshot from the second boot on instead of
+booting the kernel again. Two problems:
 
-1. **Dove e come conservare le scritture.** Nel browser c'è OPFS
-   (`FileSystemSyncAccessHandle` nel Worker, scritture sincrone a un
-   offset); la CLI ha i file. Lo stesso formato deve andare bene per tutti e
-   due (`vetro boot --disk=base.img --overlay=FILE`).
-2. **Coerenza fra snapshot e disco.** Lo snapshot contiene la RAM, e con lei
-   la cache delle pagine e lo stato del filesystem del guest: vale solo con
-   il disco com'era nel momento del salvataggio. Se la sessione continua e
-   il guest scrive ancora, ripristinare lo snapshot della volta prima sopra
-   il disco nuovo rovina il filesystem; ripristinarlo col disco vecchio
-   perde le scritture.
+1. **Where and how to keep the writes.** In the browser there is OPFS
+   (`FileSystemSyncAccessHandle` in the Worker, synchronous writes at an
+   offset); the CLI has files. The same format must work for both
+   (`vetro boot --disk=base.img --overlay=FILE`).
+2. **Consistency between snapshot and disk.** The snapshot contains the
+   RAM, and with it the page cache and the state of the guest's
+   filesystem: it is valid only with the disk as it was at the moment of
+   the save. If the session continues and the guest writes more, restoring
+   the previous snapshot on top of the new disk corrupts the filesystem;
+   restoring it with the old disk loses the writes.
 
-## Decisione
+## Decision
 
-### Il file dell'overlay (`vetro_snapshot::overlay`)
-- Intestazione di 4 KiB (magia `VETROCOW`, versione, cluster da 4 KiB,
-  dimensione del disco, **generazione**, numero di slot, **identità della
-  base**, somma di controllo), poi slot di 16 + 4096 byte: indice del
-  cluster (o libero), controllo (`hash64` dei dati legato all'indice), dati.
-- **Un cluster, uno slot, riscritto sul posto.** Niente registro da
-  compattare: il file è grande quanto i cluster vivi. Un cluster tolto
-  (dopo un ripristino) libera il suo slot, che il prossimo cluster nuovo
-  riusa.
-- **Ordine delle scritture**: prima gli slot, poi (dopo un flush)
-  l'intestazione con generazione e numero di slot. Un'interruzione prima
-  dell'intestazione lascia gli slot nuovi fuori dal conto; uno slot scritto a
-  metà ha il controllo sbagliato e si ignora (quel cluster torna quello
-  della base); un'intestazione rovinata scarta l'overlay.
-- **Identità della base**: una stringa dell'host, confrontata esattamente,
-  più la dimensione del disco. Browser: URL, dimensione ed `ETag` (o
-  `Last-Modified`), la stessa chiave della cache dei blocchi; file scelto
-  dall'utente: nome, dimensione, data di modifica. CLI: nome del file,
-  dimensione, data di modifica in ns. Un overlay di un'altra base **si
-  scarta** (con un messaggio) e il file si riscrive da capo: applicato a
-  un'altra immagine sarebbe un filesystem rovinato. Niente hash del
-  contenuto: leggere GiB di immagine a ogni avvio non si può.
-- Il modulo non fa I/O. `Overlay::load` legge il file intero (i cluster
-  stanno comunque in memoria nel `CowBackend`) e `Overlay::update`/`sync`
-  restituiscono le scritture da fare (`Patches`: troncamento facoltativo,
-  poi coppie offset/byte), che il JS applica con
-  `FileSystemSyncAccessHandle` e la CLI con `write_at`. Il formato e
-  l'allocazione degli slot quindi sono in un posto solo, e due sessioni
-  uguali producono file uguali byte per byte.
+### The overlay file (`vetro_snapshot::overlay`)
+- 4 KiB header (magic `VETROCOW`, version, 4 KiB clusters, disk size,
+  **generation**, number of slots, **base identity**, checksum), then
+  slots of 16 + 4096 bytes: cluster index (or free), check (`hash64` of
+  the data bound to the index), data.
+- **One cluster, one slot, rewritten in place.** No log to compact: the
+  file is as large as the live clusters. A removed cluster (after a
+  restore) frees its slot, which the next new cluster reuses.
+- **Write order**: first the slots, then (after a flush) the header with
+  generation and number of slots. An interruption before the header
+  leaves the new slots out of the count; a half-written slot has the
+  wrong check and is ignored (that cluster reverts to the base's); a
+  corrupted header discards the overlay.
+- **Base identity**: a host string, compared exactly, plus the disk size.
+  Browser: URL, size and `ETag` (or `Last-Modified`), the same key as the
+  block cache; file chosen by the user: name, size, modification date.
+  CLI: file name, size, modification date in ns. An overlay of another
+  base **is discarded** (with a message) and the file is rewritten from
+  scratch: applied to another image it would be a corrupted filesystem.
+  No content hash: reading GiBs of image at every boot is not feasible.
+- The module does no I/O. `Overlay::load` reads the whole file (the
+  clusters are in memory anyway in the `CowBackend`) and
+  `Overlay::update`/`sync` return the writes to perform (`Patches`:
+  optional truncation, then offset/bytes pairs), which the JS applies with
+  `FileSystemSyncAccessHandle` and the CLI with `write_at`. So the format
+  and slot allocation are in one place only, and two identical sessions
+  produce byte-for-byte identical files.
 
-### Chi sa che cosa è cambiato
-- `CowBackend` (vetro-platform) tiene l'insieme dei cluster scritti dal
-  guest dall'ultima `take_dirty`, e dà `cluster`, `clusters`, `load_cluster`
-  (i cluster di un overlay caricato non contano come scritture). È
-  contabilità dell'host: non entra negli snapshot, e `restore_state` la
-  svuota.
-- Dopo un ripristino i cluster in memoria sono quelli dello snapshot: chi
-  persiste fa un **confronto completo** (`Overlay::sync`: riscrive i
-  cluster diversi, toglie quelli che non ci sono più, lascia gli uguali). Se
-  snapshot e file coincidono (il caso normale, vedi sotto) non scrive niente.
-- La persistenza si fa **fra un quanto e l'altro**, fuori da
-  `Machine::device`: il guest non vede niente, e il momento non cambia
-  l'esecuzione.
+### Who knows what changed
+- `CowBackend` (vetro-platform) keeps the set of clusters written by the
+  guest since the last `take_dirty`, and provides `cluster`, `clusters`,
+  `load_cluster` (the clusters of a loaded overlay do not count as
+  writes). It is host bookkeeping: it is not included in snapshots, and
+  `restore_state` clears it.
+- After a restore the clusters in memory are those of the snapshot:
+  whoever persists does a **full comparison** (`Overlay::sync`: rewrites
+  the differing clusters, removes those no longer there, leaves the equal
+  ones). If snapshot and file match (the normal case, see below) it
+  writes nothing.
+- Persistence happens **between one quantum and the next**, outside
+  `Machine::device`: the guest sees nothing, and the timing does not
+  change the execution.
 
 ### vetro-wasm, ABI 6
-`vetro_overlay_open` (contenuto del file e identità; codici `LOADED`, `NEW`,
+`vetro_overlay_open` (file content and identity; codes `LOADED`, `NEW`,
 `MISMATCH`, `CORRUPT`, `NO_DISK`), `vetro_overlay_take` / `_ptr` / `_clear`
-(le scritture codificate), `vetro_overlay_info` (generazione, cluster, slot,
-slot rovinati, lunghezza del file). `vetro_snapshot_restore` segna gli
-overlay aperti per il confronto completo. Dettagli in `docs/specs/wasm.md`.
+(the encoded writes), `vetro_overlay_info` (generation, clusters, slots,
+corrupted slots, file length). `vetro_snapshot_restore` marks the open
+overlays for the full comparison. Details in `docs/specs/wasm.md`.
 
-### Cache degli snapshot nel browser
-- **Chiave**: SHA-256 di versione del formato degli snapshot
-  (`vetro_snapshot_version`), SHA-256 di kernel e initramfs, riga di
-  comando, RAM, risoluzione, dispositivi, e per ogni disco identità della
-  base, dimensione, sola lettura. Non entrano JIT, tempo reale e dimensione
-  dei blocchi della cache (non cambiano lo stato del guest). Due file in
-  OPFS (`vetro-snapshots/<chiave>.snap` e `.json`); i metadati si scrivono
-  dopo i byte e fanno da segno di snapshot completo.
-- **Snapshot e overlay si salvano insieme**: prima gli overlay (tutte le
-  scritture del guest nel file), poi lo snapshot, con nei metadati la
-  **generazione** dell'overlay di ogni disco in quel momento.
-- **Al ripristino** lo snapshot vale solo se ogni overlay è ancora alla
-  generazione salvata. Se il disco è andato avanti dopo lo snapshot
-  (scritture della sessione dopo l'ultimo salvataggio), lo snapshot si
-  lascia stare e la macchina **si avvia da zero con l'overlay**: le
-  scritture non si perdono mai, al più si perde la ripartenza veloce, e al
-  prossimo riposo si salva uno snapshot nuovo. Lo snapshot contiene anche i
-  cluster (ADR 0015), quindi anche senza overlay persistente è coerente da
-  solo.
-- **Quando si salva**: la prima volta che il guest è **a riposo** (avvio
-  finito), poi a riposo quando la generazione degli overlay è cambiata dallo
-  snapshot, e a richiesta (pulsante "Salva stato"). A riposo = `Stop::Idle`,
-  oppure 1,5 s di tempo del guest senza uscita sulla console, senza cambi
-  dello scanout, senza ingressi e senza attività dei dischi: il kernel ha
-  sempre un timer in corso, quindi `Idle` da solo non arriva mai al prompt.
-  Non si salva alla chiusura della pagina (il Worker muore senza preavviso).
-- Col ripristino la pagina rimostra la coda della console salvata nei
-  metadati (64 KiB), senza rispondere di nuovo alle richieste del terminale
-  (`ESC[6n`): la risposta l'aveva già data la sessione salvata.
+### Snapshot cache in the browser
+- **Key**: SHA-256 of the snapshot format version
+  (`vetro_snapshot_version`), SHA-256 of kernel and initramfs, command
+  line, RAM, resolution, devices, and for each disk the base identity,
+  size, read-only flag. JIT, real time and cache block size are not
+  included (they do not change the guest state). Two files in OPFS
+  (`vetro-snapshots/<key>.snap` and `.json`); the metadata is written
+  after the bytes and serves as the mark of a complete snapshot.
+- **Snapshot and overlay are saved together**: first the overlays (all
+  the guest's writes into the file), then the snapshot, with the
+  **generation** of each disk's overlay at that moment in the metadata.
+- **On restore** the snapshot is valid only if every overlay is still at
+  the saved generation. If the disk moved on after the snapshot (session
+  writes after the last save), the snapshot is left alone and the machine
+  **boots from scratch with the overlay**: writes are never lost, at most
+  the fast resume is lost, and at the next idle a new snapshot is saved.
+  The snapshot also contains the clusters (ADR 0015), so even without a
+  persistent overlay it is self-consistent.
+- **When to save**: the first time the guest is **idle** (boot
+  finished), then when idle if the overlay generation has changed since
+  the snapshot, and on request ("Save state" button). Idle =
+  `Stop::Idle`, or 1.5 s of guest time with no console output, no scanout
+  changes, no input and no disk activity: the kernel always has a timer
+  running, so `Idle` alone never arrives at the prompt. There is no save
+  when the page closes (the Worker dies without notice).
+- On restore the page shows again the console tail saved in the metadata
+  (64 KiB), without answering the terminal's requests again (`ESC[6n`):
+  the saved session had already answered.
 
-## Conseguenze
-- Scritture del guest persistenti fra le sessioni, nel browser e nella CLI,
-  con lo stesso formato; cambiare l'immagine base scarta l'overlay.
-- Dal secondo avvio il kernel guest di M3 è pronto in 0,69 s dall'apertura
-  della pagina (ripristino 263 ms, snapshot di 11,7 MiB) contro 2,2 s da
-  zero; in Node/V8 salvataggio 117 ms e ripristino 148–353 ms di uno
-  snapshot di 10,1 MiB al prompt (`docs/progress/M6.md`).
-- Gli overlay stanno interi in memoria (nel `CowBackend`) e il file si
-  legge intero all'apertura: per Android (centinaia di MiB scritti) andrà
-  misurato; il formato permette di leggere i cluster a richiesta senza
-  cambiarlo.
-- Il riposo è euristico: un guest che scrive sempre sulla console (o
-  Android con l'animazione della home) non si salva da solo finché non si
-  calma; c'è il pulsante. Per Android si deciderà il segnale di "avvio
-  finito" (per esempio `sys.boot_completed` via adb) quando ci sarà.
-- La persistenza non è sincrona col FLUSH del guest: una scrittura già
-  confermata al guest si perde se la pagina si chiude prima del salvataggio
-  successivo (al più 1 s nel browser, un quanto nella CLI). Un'interruzione
-  a metà di una riscrittura sul posto fa tornare quel cluster a quello della
-  base (controllo sbagliato). Legare la conferma del FLUSH al salvataggio
-  vorrebbe dire fermare il guest (`Blocked`) a ogni FLUSH: da valutare con
-  Android, misurando.
+## Consequences
+- Guest writes persist across sessions, in the browser and in the CLI,
+  with the same format; changing the base image discards the overlay.
+- From the second boot the M3 guest kernel is ready in 0.69 s from page
+  open (restore 263 ms, 11.7 MiB snapshot) versus 2.2 s from scratch; in
+  Node/V8 save 117 ms and restore 148–353 ms of a 10.1 MiB snapshot at
+  the prompt (`docs/progress/M6.md`).
+- Overlays live entirely in memory (in the `CowBackend`) and the file is
+  read whole on open: for Android (hundreds of MiB written) this will have
+  to be measured; the format allows reading clusters on demand without
+  changing it.
+- Idle is heuristic: a guest that keeps writing to the console (or
+  Android with the home animation) does not save by itself until it calms
+  down; there is the button. For Android the "boot finished" signal (for
+  example `sys.boot_completed` via adb) will be decided when it is there.
+- Persistence is not synchronous with the guest's FLUSH: a write already
+  acknowledged to the guest is lost if the page closes before the next
+  save (at most 1 s in the browser, one quantum in the CLI). An
+  interruption halfway through an in-place rewrite makes that cluster
+  revert to the base's (wrong check). Tying the FLUSH acknowledgement to
+  the save would mean stopping the guest (`Blocked`) at every FLUSH: to
+  be evaluated with Android, by measuring.

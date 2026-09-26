@@ -1,188 +1,192 @@
-# ADR 0019 — Record & replay della macchina: un punto d'ingresso, un log, il salto a un'istruzione
+# ADR 0019 — Machine record & replay: one entry point, one log, jumping to an instruction
 
-- Stato: accettata (M10, nucleo, 2026-09-26). Estende l'ADR 0011
-  (`Machine::run`), l'ADR 0014 (tempo fermo sui dischi) e l'ADR 0015
+- Status: accepted (M10, core, 2026-09-26). Extends ADR 0011
+  (`Machine::run`), ADR 0014 (stopped time on disks) and ADR 0015
   (snapshot).
 
-## Contesto
-M10 chiede "replay identico con ritorno al momento esatto di una chiamata".
-La macchina è già deterministica: il tempo è il numero di istruzioni (ADR
-0011), un disco che aspetta dati ferma il tempo del guest (ADR 0014), la
-casualità offerta al guest viene dal seme della configurazione, l'RTC parte
-da un'ora fissata nella configurazione, lo stack di rete e il sinkhole
-stanno dentro la macchina e usano il tempo virtuale. Da uno snapshot si
-riparte istruzione per istruzione come se la macchina non si fosse mai
-fermata (ADR 0015).
+## Context
+M10 asks for "identical replay with return to the exact moment of a call".
+The machine is already deterministic: time is the number of instructions
+(ADR 0011), a disk waiting for data stops the guest's time (ADR 0014), the
+randomness offered to the guest comes from the configuration seed, the RTC
+starts from a time fixed in the configuration, the network stack and the
+sinkhole live inside the machine and use virtual time. From a snapshot we
+resume instruction by instruction as if the machine had never stopped
+(ADR 0015).
 
-Restano gli **ingressi dell'host**, che arrivano fra un quanto e l'altro in
-momenti che dipendono dall'host: byte della console, eventi di tastiera e
-puntatore, tasto di accensione (GPIO), ridimensionamento del display,
-operazioni dell'host su vsock, connessioni dell'host verso il guest
-(inoltro di porte, entrato su main in parallelo) e, nuovo, frame di rete
-consegnati dall'host. Finora passavano da chiusure (`Machine::device`,
-`Machine::net`, `Board::gpio_input`) che non si possono registrare.
+What remains are the **host inputs**, which arrive between one quantum and
+the next at moments that depend on the host: console bytes, keyboard and
+pointer events, power button (GPIO), display resizing, host operations on
+vsock, host connections to the guest (port forwarding, merged into main in
+parallel) and, new, network frames delivered by the host. Until now they
+went through closures (`Machine::device`, `Machine::net`,
+`Board::gpio_input`) that cannot be recorded.
 
-## Decisione
+## Decision
 
-### Un solo punto d'ingresso: `Machine::input(Input) -> Reply`
-- `Input` elenca tutto ciò che l'host può fare al guest: `Console(byte)`,
-  `Keyboard(eventi)`, `Pointer(eventi)`, `Gpio { line, level }`,
+### A single entry point: `Machine::input(Input) -> Reply`
+- `Input` lists everything the host can do to the guest: `Console(byte)`,
+  `Keyboard(events)`, `Pointer(events)`, `Gpio { line, level }`,
   `Display { scanout, width, height }`, `NetFrame(frame)`, `NetLink(bool)`,
   `Vsock(VsockOp)` (listen, unlisten, accept, connect, send, recv,
   shutdown, close, reset, release, transport reset), `HostNet(HostNetOp)`
-  (connect, send, recv, shutdown, abort, release: i metodi `Stack::host_*`).
-  Anche le **letture** dell'host (`recv` di vsock e della rete) sono
-  ingressi: liberano credito o finestra, e il guest lo vede.
-- `Reply` porta l'esito (connessione aperta, byte accettati o letti, errori
-  di vsock, `NoDevice`).
-- `console_input` e il nuovo `Machine::gpio_input` passano da `input`;
-  `vetro-cli` (`--hostfwd`) e `vetro-wasm` (tasti, puntatore, display,
-  GPIO, `vetro_net_*`) usano `input` al posto delle chiusure. Gli aiuti
-  `Input::key_events`, `move_abs_events`, `touch_events` danno gli stessi
-  eventi dei metodi di `VirtioInput` (provato confrontando lo stato salvato).
-- **Frame di rete dell'host** (`Input::NetFrame`): il collegamento di rete
-  della macchina (`NetLink`) ha una coda di frame dell'host che virtio-net
-  consegna prima di quelli dello stack. È stato del guest: entra nello
-  snapshot, e `FORMAT_VERSION` passa da 2 a 3.
-- Le chiusure restano (`device`, `gpu`, `keyboard`, `pointer`, `vsock`,
-  `net`) ma durante una registrazione ogni loro uso diventa un **evento
-  opaco** nel log: il replay si ferma lì (`Divergence::Opaque`). Per ciò che
-  non è un ingresso ci sono accessi dedicati che non si registrano:
-  `device_view`, `gpu_view`, `vsock_view`, `net_view` (sola lettura) e
-  `host_link` (dati per un disco che la macchina aspetta: ADR 0014, il tempo
-  è fermo e in replay il disco dà gli stessi dati).
+  (connect, send, recv, shutdown, abort, release: the `Stack::host_*`
+  methods). The host's **reads** (`recv` on vsock and on the network) are
+  inputs too: they free credit or window, and the guest sees it.
+- `Reply` carries the outcome (connection opened, bytes accepted or read,
+  vsock errors, `NoDevice`).
+- `console_input` and the new `Machine::gpio_input` go through `input`;
+  `vetro-cli` (`--hostfwd`) and `vetro-wasm` (keys, pointer, display,
+  GPIO, `vetro_net_*`) use `input` instead of the closures. The helpers
+  `Input::key_events`, `move_abs_events`, `touch_events` give the same
+  events as the `VirtioInput` methods (proven by comparing the saved
+  state).
+- **Host network frames** (`Input::NetFrame`): the machine's network link
+  (`NetLink`) has a queue of host frames that virtio-net delivers before
+  the stack's. It is guest state: it goes into the snapshot, and
+  `FORMAT_VERSION` goes from 2 to 3.
+- The closures remain (`device`, `gpu`, `keyboard`, `pointer`, `vsock`,
+  `net`) but during a recording every use of them becomes an **opaque
+  event** in the log: the replay stops there (`Divergence::Opaque`). For
+  what is not an input there are dedicated accessors that are not
+  recorded: `device_view`, `gpu_view`, `vsock_view`, `net_view`
+  (read-only) and `host_link` (data for a disk the machine is waiting for:
+  ADR 0014, time is stopped and in replay the disk gives the same data).
 
-### Che cosa non si registra, e perché
-- **Completamenti dei dischi asincroni**: con l'ADR 0014 la macchina non
-  esegue istruzioni finché i dati non arrivano, e la richiesta si completa
-  allo stesso numero d'istruzioni di un disco sempre pronto. Il log non ha
-  bisogno di sapere quando sono arrivati; serve solo lo stesso contenuto
-  (il disco è un collegamento, come negli snapshot).
-- **Tempo e casualità dell'host**: non ci sono. RTC e seme sono
-  configurazione (nel log, e nell'hash della configurazione).
-- **Uscite** (console, immagine dello scanout, registro di rete): si
-  ricalcolano; la console entra nei controlli.
+### What is not recorded, and why
+- **Asynchronous disk completions**: with ADR 0014 the machine does not
+  execute instructions until the data arrives, and the request completes
+  at the same instruction number as with an always-ready disk. The log
+  does not need to know when they arrived; only the same content is
+  needed (the disk is a link, as in snapshots).
+- **Host time and randomness**: there are none. RTC and seed are
+  configuration (in the log, and in the configuration hash).
+- **Outputs** (console, scanout image, network log): they are
+  recomputed; the console is part of the checks.
 
-### Ingressi con la macchina ferma su un disco
-Un ingresso che arriva mentre `run` restituisce `Stop::Blocked` si
-**rimanda** (`Reply::Deferred`) alla fine del primo quanto dopo lo sblocco,
-e si registra lì. Applicarlo subito lo metterebbe in un punto che in replay
-(con un disco pronto) non esiste: dentro la WFI interrotta dal blocco, o
-fra il servizio che ha trovato il disco non pronto e quello che lo completa.
-Vale solo durante una registrazione: senza, il comportamento resta quello
-dell'ADR 0014.
+### Inputs with the machine stopped on a disk
+An input that arrives while `run` returns `Stop::Blocked` is **deferred**
+(`Reply::Deferred`) to the end of the first quantum after the unblock, and
+recorded there. Applying it immediately would put it at a point that does
+not exist in replay (with a ready disk): inside the WFI interrupted by the
+block, or between the service that found the disk not ready and the one
+that completes it. This applies only during a recording: without one, the
+behaviour stays that of ADR 0014.
 
-### Il log
-Contenitore di `vetro-snapshot` (stessa intestazione degli snapshot, con
-magia `"VETROREC"` e versione propria `LOG_VERSION` = 1; nuovi
-`encode_container`/`decode_container`), sezioni:
-- `HEAD`: versione degli snapshot dei keyframe, `MachineConfig` (RAM, ora,
-  seme), JIT usato, intervallo dei keyframe, impronta di partenza;
-- `EVTS`: per evento il numero d'istruzione, un hash della CPU (lo stato
-  `Cpu` dello snapshot) e i byte usciti dalla console fino a lì, poi
-  l'ingresso (o l'evento opaco);
-- `KEYF`: snapshot periodici (istruzione, conto della console, snapshot);
-- `END `: impronta finale.
+### The log
+A `vetro-snapshot` container (same header as snapshots, with magic
+`"VETROREC"` and its own version `LOG_VERSION` = 1; new
+`encode_container`/`decode_container`), sections:
+- `HEAD`: snapshot version of the keyframes, `MachineConfig` (RAM, time,
+  seed), JIT used, keyframe interval, starting digest;
+- `EVTS`: per event the instruction number, a CPU hash (the snapshot's
+  `Cpu` state) and the bytes output by the console up to there, then the
+  input (or the opaque event);
+- `KEYF`: periodic snapshots (instruction, console count, snapshot);
+- `END `: final digest.
 
-L'**impronta** (`Digest`) è: istruzioni, hash della CPU, della MMU col TLB,
-della piattaforma (tutti i dispositivi con i backend interni), della RAM, e
-byte e hash (FNV-1a incrementale) della console dall'inizio. Il TLB non si
-confronta se registrazione o replay hanno usato il JIT (ADR 0013). L'uscita
-della console si conta quando la macchina la toglie dalla UART; per non
-dipendere da quando l'host legge, gli eventi usano i byte usciti **compresa**
-l'uscita ancora nella UART, e l'impronta prima porta l'uscita nel buffer
-della macchina (che `console_output` restituisce).
+The **digest** (`Digest`) is: instructions, hash of the CPU, of the MMU
+with the TLB, of the platform (all devices with their internal backends),
+of the RAM, and bytes and hash (incremental FNV-1a) of the console from the
+start. The TLB is not compared if recording or replay used the JIT (ADR
+0013). Console output is counted when the machine takes it out of the
+UART; so as not to depend on when the host reads, events use the output
+bytes **including** output still in the UART, and the digest first moves
+the output into the machine's buffer (which `console_output` returns).
 
 ### Replay
-- `start_replay(&log)` dallo stato di partenza (stesso kernel caricato o
-  stesso snapshot ripristinato: si controllano configurazione e impronta),
-  oppure `replay_from(&log, n)` dall'ultimo keyframe non oltre `n`.
-- `run(budget)` in replay taglia il quanto all'istruzione del prossimo
-  evento: lì confronta hash della CPU e byte della console, applica
-  l'ingresso e continua. Il JIT riceve come limite la fine del quanto
-  (`jit_budget`), quindi **non supera mai un evento**: nessun cambio al JIT.
-  Alla fine della registrazione confronta l'impronta: `ReplayStatus::Finished`
-  o `Diverged(...)`. Dopo la fine (o una differenza) la macchina continua
-  libera. Gli ingressi dell'host durante il replay si ignorano
-  (`Reply::Ignored`).
-- Si appoggia a una proprietà già usata dagli ADR 0014 e 0015 e ora provata
-  anche qui: **i confini dei quanti non cambiano l'esecuzione**. Un
-  ingresso applicato fra due quanti all'istruzione N dà lo stesso risultato
-  qualunque sia il quanto dell'host.
-- Un evento che la macchina oltrepassa senza fermarcisi, o una macchina che
-  si ferma da sola (spenta, inattiva) prima di un evento, è
-  `Divergence::Missed`. Inattiva sull'istruzione del prossimo evento va bene:
-  la registrazione aveva visto lo stesso `Stop::Idle` e dato l'ingresso lì.
+- `start_replay(&log)` from the starting state (same kernel loaded or
+  same snapshot restored: configuration and digest are checked), or
+  `replay_from(&log, n)` from the last keyframe not beyond `n`.
+- `run(budget)` in replay cuts the quantum at the instruction of the next
+  event: there it compares the CPU hash and console bytes, applies the
+  input and continues. The JIT receives the end of the quantum as its
+  limit (`jit_budget`), so it **never passes an event**: no change to the
+  JIT. At the end of the recording it compares the digest:
+  `ReplayStatus::Finished` or `Diverged(...)`. After the end (or a
+  difference) the machine continues freely. Host inputs during the replay
+  are ignored (`Reply::Ignored`).
+- It relies on a property already used by ADRs 0014 and 0015 and now
+  proven here too: **quantum boundaries do not change the execution**. An
+  input applied between two quanta at instruction N gives the same result
+  whatever the host's quantum.
+- An event the machine passes without stopping at it, or a machine that
+  stops by itself (powered off, idle) before an event, is
+  `Divergence::Missed`. Idle on the instruction of the next event is fine:
+  the recording had seen the same `Stop::Idle` and given the input there.
 
-### Salto a un'istruzione
-`goto(&log, n)`: `replay_from` dal keyframe più vicino e replay fino al
-primo confine con almeno `n` istruzioni (una WFI può saltare oltre, come
-per `--save-at`). Da lì `cpu`, `read_phys`, `read_virt` (traduzione con le
-tabelle correnti senza TLB, solo RAM: niente effetti sui dispositivi),
-`translate`, `registers_text`. I keyframe si prendono alla fine dei quanti,
-mai con la macchina ferma su un disco e mai dopo un evento dello stesso
-istante (gli eventi di un istante vengono dopo il suo keyframe); il primo
-alla partenza, così il log basta da solo a ripartire.
+### Jumping to an instruction
+`goto(&log, n)`: `replay_from` from the nearest keyframe and replay up to
+the first boundary with at least `n` instructions (a WFI can jump beyond,
+as for `--save-at`). From there `cpu`, `read_phys`, `read_virt`
+(translation with the current tables without the TLB, RAM only: no effects
+on devices), `translate`, `registers_text`. Keyframes are taken at the end
+of quanta, never with the machine stopped on a disk and never after an
+event at the same instant (the events of an instant come after its
+keyframe); the first at the start, so the log alone is enough to resume.
 
 ### CLI
-`vetro boot --record=FILE [--keyframes=N]`, `--replay=FILE` (dall'avvio con
-`--kernel`, da `--restore`, o dal keyframe iniziale), `--goto=N` con
-`--dump=VA:BYTE`. In replay stdin non si legge e `--hostfwd` si rifiuta
-(la rete dell'host viene dal log). Codice 0 se il replay è identico, 1 se
-diverge.
+`vetro boot --record=FILE [--keyframes=N]`, `--replay=FILE` (from boot
+with `--kernel`, from `--restore`, or from the initial keyframe),
+`--goto=N` with `--dump=VA:BYTE`. In replay stdin is not read and
+`--hostfwd` is rejected (the host network comes from the log). Exit code 0
+if the replay is identical, 1 if it diverges.
 
-## Alternative scartate
-- **Registrare alla frontiera dei backend** (frame che virtio-net riceve,
-  risposte dell'upstream): più generale per un relay futuro, ma lo stato dei
-  dispositivi in replay non sarebbe quello registrato (lo stack non
-  girerebbe), e il confronto dello stato fallirebbe. Per il relay di M7 la
-  frontiera giusta resterà l'`Upstream` di `vetro-net` (risposte da
-  registrare in ordine, perché le chiamate avvengono in tempo virtuale); non
-  serve oggi, la macchina ha solo il sinkhole.
-- **Iniettare dentro `run`** all'istruzione esatta anche a metà quanto: non
-  serve, perché tagliare il quanto all'istruzione dell'evento dà lo stesso
-  punto.
-- **Keyframe incrementali** (solo le pagine cambiate): meno spazio e meno
-  tempo, ma serve tracciare le pagine scritte anche dai blocchi del JIT.
-  Rimandato: per ora un keyframe è uno snapshot completo.
-- **Hash di tutta la macchina a ogni evento**: 1 GiB di RAM da scorrere a
-  ogni tasto. L'hash della CPU e il conto della console bastano a fermare il
-  replay al primo evento dopo un ingresso sfuggito (provato), e l'impronta
-  completa alla fine copre il resto.
+## Rejected alternatives
+- **Recording at the backend frontier** (frames virtio-net receives,
+  upstream responses): more general for a future relay, but the device
+  state in replay would not be the recorded one (the stack would not run),
+  and the state comparison would fail. For the M7 relay the right frontier
+  will remain `vetro-net`'s `Upstream` (responses to record in order,
+  because calls happen in virtual time); it is not needed today, the
+  machine has only the sinkhole.
+- **Injecting inside `run`** at the exact instruction even mid-quantum:
+  not needed, because cutting the quantum at the event's instruction gives
+  the same point.
+- **Incremental keyframes** (only changed pages): less space and less
+  time, but it requires tracking pages written by JIT blocks as well.
+  Postponed: for now a keyframe is a full snapshot.
+- **Hash of the whole machine at every event**: 1 GiB of RAM to scan at
+  every keystroke. The CPU hash and the console count are enough to stop
+  the replay at the first event after a missed input (proven), and the
+  full digest at the end covers the rest.
 
-## Verifica
-- `vetro-machine`, `record::tests`: andata e ritorno del log con ogni tipo
-  di ingresso, log rovinati o di un'altra versione rifiutati, eventi di
-  virtio-input uguali ai metodi del dispositivo.
-- `vetro-machine`, `machine::record::tests` (sonda bare-metal con eco della
-  UART, timer, IRQ, SVC, WFI): replay con quanti di 1, 7919 e 2^40
-  istruzioni e da un keyframe su una macchina vuota; `goto` a nove punti
-  (anche all'indietro) con registri e RAM dell'esecuzione registrata; un
-  byte dato alla UART senza `input` ferma il replay al primo evento dopo
-  (fallisce senza il controllo); un accesso opaco ferma il replay; log di
-  un'altra macchina o di un altro stato di partenza rifiutati; ingresso con
-  il disco in attesa rimandato e replay identico con un disco pronto.
-- `tests/boot/tests/replay.rs` (kernel guest, release): sessione con tasti
-  battuti uno alla volta, DHCP/HTTP/ping al sinkhole, un frame ICMP
-  dall'host (il guest risponde: `InEchos` da 0 a 1), tastiera virtio-input,
-  eco di 20 KB da una connessione dell'host (`nc -e cat`), `sleep`,
-  spegnimento. Registrare non cambia l'esecuzione (stessa sessione senza
-  registrazione: stesso log e stato). Replay dall'avvio con l'interprete a
-  quanti diversi e dal keyframe iniziale col JIT: stesso log, istruzioni,
-  CPU, RAM, dispositivi. `goto` a tre punti con interprete e JIT: stessi
-  registri e RAM. Log senza un tasto o senza il frame ICMP: il replay
-  diverge al primo evento dopo.
-- `crates/vetro-cli/tests/boot_replay.rs`: `--record` da stdin, `--replay`
-  in altri processi (dal keyframe, dall'avvio, col JIT) con la stessa uscita
-  e "replay identico"; `--goto`/`--dump` uguali a `Machine::goto` nel
-  processo del test; un log con un ingresso in meno dà codice 1.
+## Verification
+- `vetro-machine`, `record::tests`: log round trip with every input type,
+  corrupted logs or logs of another version rejected, virtio-input events
+  equal to the device's methods.
+- `vetro-machine`, `machine::record::tests` (bare-metal probe with UART
+  echo, timer, IRQ, SVC, WFI): replay with quanta of 1, 7919 and 2^40
+  instructions and from a keyframe on an empty machine; `goto` to nine
+  points (also backwards) with registers and RAM of the recorded run; a
+  byte given to the UART without `input` stops the replay at the first
+  event after (it fails without the check); an opaque access stops the
+  replay; logs of another machine or of another starting state rejected;
+  input with the disk waiting deferred and identical replay with a ready
+  disk.
+- `tests/boot/tests/replay.rs` (guest kernel, release): session with keys
+  typed one at a time, DHCP/HTTP/ping to the sinkhole, an ICMP frame from
+  the host (the guest answers: `InEchos` from 0 to 1), virtio-input
+  keyboard, 20 KB echo from a host connection (`nc -e cat`), `sleep`,
+  shutdown. Recording does not change the execution (same session without
+  recording: same log and state). Replay from boot with the interpreter at
+  different quanta and from the initial keyframe with the JIT: same log,
+  instructions, CPU, RAM, devices. `goto` to three points with interpreter
+  and JIT: same registers and RAM. Log without a key or without the ICMP
+  frame: the replay diverges at the first event after.
+- `crates/vetro-cli/tests/boot_replay.rs`: `--record` from stdin,
+  `--replay` in other processes (from the keyframe, from boot, with the
+  JIT) with the same output and the identical-replay message;
+  `--goto`/`--dump` equal to `Machine::goto` in the test process; a log
+  with one input fewer gives exit code 1.
 
-## Conseguenze
-- Chi aggiunge un ingresso dell'host lo aggiunge a `Input` (con la sua
-  codifica nel log e `LOG_VERSION` + 1), non come chiusura: altrimenti le
-  registrazioni che lo usano si fermano sull'evento opaco.
-- Il browser (`vetro-wasm`) passa già da `input`; registrare e rifare nel
-  browser (esportare il log, keyframe in OPFS) è lavoro della parte web.
-- Costi misurati (`docs/progress/M10.md`): registrare senza keyframe costa
-  un hash della CPU per ingresso e due impronte (inizio e fine); i keyframe
-  costano un salvataggio ciascuno (~10 MiB alla shell del kernel guest).
+## Consequences
+- Whoever adds a host input adds it to `Input` (with its encoding in the
+  log and `LOG_VERSION` + 1), not as a closure: otherwise recordings that
+  use it stop at the opaque event.
+- The browser (`vetro-wasm`) already goes through `input`; recording and
+  replaying in the browser (exporting the log, keyframes in OPFS) is work
+  for the web part.
+- Measured costs (`docs/progress/M10.md`): recording without keyframes
+  costs one CPU hash per input and two digests (start and end); keyframes
+  cost one save each (~10 MiB at the guest kernel shell).

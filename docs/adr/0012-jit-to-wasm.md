@@ -1,77 +1,77 @@
-# ADR 0012 — JIT a blocchi verso WebAssembly (M4)
+# ADR 0012 — Block JIT to WebAssembly (M4)
 
-- Stato: accettata (M4, 2026-09-25). Fissa anche la soglia di M4 lasciata
-  aperta da M3.
+- Status: accepted (M4, 2026-09-25). Also sets the M4 threshold left
+  open by M3.
 
-## Contesto
-L'interprete è corretto: M1-M3 sono verdi contro QEMU. Nativo fa circa 50
-MIPS, e nel browser sarà più lento. M4 chiede:
-- prestazioni lavorabili;
-- gli stessi test verdi col JIT;
-- nessuna differenza tra interprete e JIT sul set differenziale.
+## Context
+The interpreter is correct: M1-M3 are green against QEMU. Natively it does about 50
+MIPS, and in the browser it will be slower. M4 calls for:
+- workable performance;
+- the same tests green with the JIT;
+- no difference between interpreter and JIT on the differential set.
 
-Nel browser il codice generato deve essere WebAssembly, perché è l'unico
-codice che una pagina può creare ed eseguire. Il JIT deve comunque girare
-anche fuori dal browser, nei test e in CI.
+In the browser the generated code must be WebAssembly, because it is the only
+code a page can create and run. The JIT must still run
+outside the browser too, in tests and in CI.
 
-## Decisione
-- **Unità di traduzione: il blocco base.** È una sequenza di istruzioni già
-  decodificate da `vetro_cpu::decode`, dentro una pagina da 4 KiB. Finisce:
-  - dopo un salto, un'eccezione sincrona (SVC, BRK, HVC...) o un'istruzione
-    di sistema;
-  - prima della prima istruzione che il traduttore non copre (quella la
-    esegue l'interprete, e si riparte dal JIT dopo);
-  - dopo al massimo 64 istruzioni.
+## Decision
+- **Translation unit: the basic block.** It is a sequence of instructions already
+  decoded by `vetro_cpu::decode`, within a 4 KiB page. It ends:
+  - after a branch, a synchronous exception (SVC, BRK, HVC...) or a system
+    instruction;
+  - before the first instruction the translator does not cover (that one is
+    run by the interpreter, and the JIT resumes afterwards);
+  - after at most 64 instructions.
 
-  Ogni blocco diventa una funzione WASM esportata. Più blocchi stanno in un
-  modulo, per ammortizzare la compilazione.
-- **Un solo ABI per tutti i motori** (`docs/specs/jit.md`):
-  - lo stato della CPU sta in una struttura `JitState` in una memoria
-    lineare condivisa con l'host;
-  - gli accessi alla memoria del guest passano da funzioni importate
-    dall'host (`ld`/`st`), che fanno MMU, permessi e bus;
-  - il blocco restituisce un codice d'uscita.
+  Every block becomes an exported WASM function. Several blocks live in one
+  module, to amortise compilation.
+- **A single ABI for all engines** (`docs/specs/jit.md`):
+  - the CPU state lives in a `JitState` structure in a linear memory
+    shared with the host;
+  - accesses to guest memory go through functions imported
+    from the host (`ld`/`st`), which handle MMU, permissions and bus;
+  - the block returns an exit code.
 
-  Lo stesso modulo gira in V8 (browser e Node) e in wasmtime (test nativi).
-- **Motori, dietro il trait `vetro_jit::Engine`:**
-  - wasmtime per i test e per `vetro --jit`: crate `vetro-jit-native`,
-    l'unico con dipendenze esterne, mai nel core;
-  - JavaScript `WebAssembly` per `vetro-wasm` (browser, Node).
-- **Precisione.**
-  - Prima di ogni accesso alla memoria il blocco salva in `JitState` il PC
-    dell'istruzione e il numero di istruzioni già eseguite. Un fault a metà
-    blocco lascia quindi lo stato esattamente come l'interprete, e la
-    consegna dell'eccezione resta al codice che c'è già.
-  - Il numero di istruzioni resta l'orologio del guest (ADR 0010 e 0011): lo
-    stesso programma ha la stessa traccia di tempo con e senza JIT.
-- **Invalidazione.**
-  - I blocchi sono indicizzati per pagina: virtuale in modalità utente,
-    fisica in modalità sistema, insieme a EL e alle opzioni di traduzione.
-  - Ogni scrittura su una pagina che contiene blocchi li invalida, che venga
-    dal guest (`st`) o dal kernel emulato. Se la scrittura cade nel blocco in
-    corso, questo esce subito dopo.
-  - In modalità sistema un blocco vale solo se la traduzione VA→PA del suo
-    inizio è ancora quella con cui è stato compilato: si controlla a ogni
-    ingresso, con la cache delle traduzioni recenti della MMU.
-- **Parità.** Il set differenziale gira con interprete e con JIT, e i
-  risultati devono essere identici. Il set comprende:
-  - i programmi casuali di `vetro-diff`;
-  - i test per istruzione;
-  - BusyBox, LTP rapido e RISU;
-  - l'avvio del kernel.
+  The same module runs in V8 (browser and Node) and in wasmtime (native tests).
+- **Engines, behind the `vetro_jit::Engine` trait:**
+  - wasmtime for the tests and for `vetro --jit`: crate `vetro-jit-native`,
+    the only one with external dependencies, never in the core;
+  - JavaScript `WebAssembly` for `vetro-wasm` (browser, Node).
+- **Precision.**
+  - Before every memory access the block saves in `JitState` the PC
+    of the instruction and the number of instructions already executed. A fault in the middle of a
+    block therefore leaves the state exactly as the interpreter would, and the
+    delivery of the exception is left to the code that already exists.
+  - The number of instructions remains the guest clock (ADR 0010 and 0011): the
+    same program has the same time trace with and without the JIT.
+- **Invalidation.**
+  - Blocks are indexed by page: virtual in user mode,
+    physical in system mode, together with the EL and the translation options.
+  - Every write to a page that contains blocks invalidates them, whether it comes
+    from the guest (`st`) or from the emulated kernel. If the write falls in the block
+    currently running, the block exits right after.
+  - In system mode a block is valid only if the VA→PA translation of its
+    start is still the one it was compiled with: this is checked at every
+    entry, with the MMU's cache of recent translations.
+- **Parity.** The differential set runs with the interpreter and with the JIT, and the
+  results must be identical. The set includes:
+  - the random programs of `vetro-diff`;
+  - the per-instruction tests;
+  - BusyBox, quick LTP and RISU;
+  - the kernel boot.
 
-  Il JIT non ha un comportamento suo: ciò che non sa tradurre, lo esegue
-  l'interprete.
+  The JIT has no behaviour of its own: what it cannot translate, the
+  interpreter runs.
 
-## Soglia di M4
-L'avvio del kernel guest con lo stesso copione di `tests/boot` (fino a
-`poweroff -f`) sotto il JIT in Node (V8) deve durare al massimo quanto lo
-stesso avvio con l'interprete nativo, misurato nello stesso job della CI. Oggi
-l'interprete nativo impiega circa 2 s su M2 Pro.
+## M4 threshold
+Booting the guest kernel with the same script as `tests/boot` (up to
+`poweroff -f`) under the JIT in Node (V8) must take at most as long as the
+same boot with the native interpreter, measured in the same CI job. Today
+the native interpreter takes about 2 s on an M2 Pro.
 
-## Conseguenze
-- `vetro-cpu` espone quello che serve al traduttore (decodifica, semantica
-  delle istruzioni coperte) senza duplicarlo. Il traduttore genera WASM per
-  gruppi di istruzioni, e i gruppi non coperti restano all'interprete.
-- `UserMemory` e la `Board` segnalano le scritture sulle pagine sorvegliate.
-- La CI aggiunge i test col JIT (wasmtime) e il benchmark in Node.
+## Consequences
+- `vetro-cpu` exposes what the translator needs (decoding, semantics
+  of the covered instructions) without duplicating it. The translator generates WASM for
+  groups of instructions, and the groups not covered remain with the interpreter.
+- `UserMemory` and the `Board` report writes to watched pages.
+- CI adds the tests with the JIT (wasmtime) and the benchmark in Node.

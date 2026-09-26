@@ -1,37 +1,37 @@
 # Spec — vetro-mmu
 
-## Perimetro
-Traduzione stage 1 AArch64 del regime EL1&0 (EL0 ed EL1), livello ARMv8.0
-con i parametri della Cortex-A53 (ADR 0005). Riferimento: Arm ARM, D8
-(VMSAv8-64) e lo pseudocodice `AArch64.TranslationTableWalk`,
-`AArch64.TranslateAddressS1Off`, `AArch64.CheckPermission`: l'ordine dei
-controlli è quello dello pseudocodice, quindi la priorità fra fault diversi è
-architetturale. Niente stage 2, EL2, EL3, AArch32.
+## Scope
+AArch64 stage 1 translation of the EL1&0 regime (EL0 and EL1), ARMv8.0 level
+with the Cortex-A53 parameters (ADR 0005). Reference: Arm ARM, D8
+(VMSAv8-64) and the pseudocode `AArch64.TranslationTableWalk`,
+`AArch64.TranslateAddressS1Off`, `AArch64.CheckPermission`: the order of the
+checks is that of the pseudocode, so the priority between different faults is
+architectural. No stage 2, EL2, EL3, AArch32.
 
-Dipendenze ammesse: `vetro-cpu` (solo `Access`, `MemFault`, `Memory`), nessun
-crate esterno. Compila in `wasm32-unknown-unknown`.
+Allowed dependencies: `vetro-cpu` (only `Access`, `MemFault`, `Memory`), no
+external crates. It compiles for `wasm32-unknown-unknown`.
 
-## Interfaccia pubblica
-- `MmuRegs { sctlr, tcr, ttbr0, ttbr1, mair }`: i registri `_EL1`, scritti dal
-  sistema (MSR). Moduli `sctlr` e `tcr` con i bit usati.
-- `trait PhysMemory { read, write, read_u64 }`: memoria fisica little-endian;
-  gli errori sono `BusError::Decode` (nessuno risponde) o `BusError::Slave`.
-  `read_u64` legge i descrittori (ha un'implementazione di default).
-- `Mmu::new(pa_bits)`: `pa_bits` è PARange (`Mmu::PA_BITS_CORTEX_A53 = 40`).
-  - `translate(&mut phys, va, access, el) -> Result<Translation, Fault>`: con
-    TLB. `el` è il privilegio dell'accesso (0 per LDTR/STTR a EL1).
-  - `walk(...)`: stessa cosa senza leggere né riempire il TLB (AT, debugger).
+## Public interface
+- `MmuRegs { sctlr, tcr, ttbr0, ttbr1, mair }`: the `_EL1` registers, written
+  by the system (MSR). Modules `sctlr` and `tcr` with the bits in use.
+- `trait PhysMemory { read, write, read_u64 }`: little-endian physical memory;
+  errors are `BusError::Decode` (nobody answers) or `BusError::Slave`.
+  `read_u64` reads the descriptors (it has a default implementation).
+- `Mmu::new(pa_bits)`: `pa_bits` is PARange (`Mmu::PA_BITS_CORTEX_A53 = 40`).
+  - `translate(&mut phys, va, access, el) -> Result<Translation, Fault>`: with
+    the TLB. `el` is the privilege of the access (0 for LDTR/STTR at EL1).
+  - `walk(...)`: the same without reading or filling the TLB (AT, debugger).
   - `tlbi(TlbiOp, xt)`, `tlb()`, `tlb_mut()`, `last_fault()`.
-- `Translation`: `pa`, `level` (1-3; 0 a MMU spenta), `block_size`,
-  `perms: Option<Perms>` (AP[2:1], UXN, PXN già combinati con le tabelle),
-  `attr_index`, `mair_attr` (byte MAIR), `sh`, `ng`, `asid`; `par()` dà
-  PAR_EL1 per un AT riuscito.
-- `Fault { kind, va, access, el }`: `far()`, `esr(from_el)` (ESR_EL1 con EC
+- `Translation`: `pa`, `level` (1-3; 0 with the MMU off), `block_size`,
+  `perms: Option<Perms>` (AP[2:1], UXN, PXN already combined with the tables),
+  `attr_index`, `mair_attr` (MAIR byte), `sh`, `ng`, `asid`; `par()` gives
+  PAR_EL1 for a successful AT.
+- `Fault { kind, va, access, el }`: `far()`, `esr(from_el)` (ESR_EL1 with EC
   0x20/0x21/0x24/0x25, IL = 1, WnR, EA, DFSC/IFSC), `par()`, `mem_fault()`.
-  `from_el` è PSTATE.EL e decide "lower EL" / "same EL".
-- `FaultKind` e codici FSC:
+  `from_el` is PSTATE.EL and decides "lower EL" / "same EL".
+- `FaultKind` and FSC codes:
 
-  | Variante | FSC |
+  | Variant | FSC |
   |---|---|
   | `AddressSize(l)` | `0b0000ll` |
   | `Translation(l)` | `0b0001ll` |
@@ -40,96 +40,97 @@ crate esterno. Compila in `wasm32-unknown-unknown`.
   | `Alignment` | `0b100001` |
   | `External(_)` | `0b010000` |
   | `ExternalWalk(l, _)` | `0b0101ll` |
-  | `Unimplemented(_)` | nessuno (`None`): limite di Vetro, non fault |
+  | `Unimplemented(_)` | none (`None`): a Vetro limitation, not a fault |
 
 - `Tlb`: `flush_all`, `flush_va(va, asid)`, `flush_asid(asid)`,
   `flush_va_all_asids(va)`, `tlbi(op, xt)`, `len`.
-- `TlbiOp` (definito in `vetro_cpu::sys` e riesportato qui): VMALLE1, VAE1, ASIDE1, VAAE1, VALE1, VAALE1 e varianti IS;
-  `from_sys(op1, crn, crm, op2)` per il decoder della CPU, `is_broadcast()`.
-- `VirtMemory { mmu, phys, el }`: implementa `vetro_cpu::Memory` sopra MMU e
-  memoria fisica; `last_fault()` dà il `Fault` completo dell'ultimo accesso
-  fallito (resta anche in `Mmu::last_fault()` dopo che l'adattatore è stato
-  distrutto).
-- `MmuBus { mmu, phys }` (ADR 0009): implementa `vetro_cpu::SysBus` per la
-  modalità sistema della CPU. A ogni traduzione copia in `mmu.regs` i
-  registri che la CPU passa (`TranslationRegs`: la CPU ne è l'unica
-  proprietaria) e usa `translate_checked`; `at` usa `walk` (un abort
-  esterno sul walk diventa `AtResult::Abort`, gli altri fault vanno in PAR);
-  `tlbi` e `tlb_flush_all` agiscono sul TLB del core.
-- `Mmu::translate_checked(phys, va, access, el, aligned)`: come
-  `translate`, ma con `aligned = false` un accesso ai dati su memoria Device
-  (anche a MMU spenta) dà `FaultKind::Alignment`, dopo i fault del walk e
-  prima dei permessi (`AArch64.FirstStageTranslate`).
+- `TlbiOp` (defined in `vetro_cpu::sys` and re-exported here): VMALLE1, VAE1, ASIDE1, VAAE1, VALE1, VAALE1 and IS variants;
+  `from_sys(op1, crn, crm, op2)` for the CPU decoder, `is_broadcast()`.
+- `VirtMemory { mmu, phys, el }`: implements `vetro_cpu::Memory` on top of the
+  MMU and physical memory; `last_fault()` gives the full `Fault` of the last
+  failed access (it also stays in `Mmu::last_fault()` after the adapter has
+  been destroyed).
+- `MmuBus { mmu, phys }` (ADR 0009): implements `vetro_cpu::SysBus` for the
+  CPU's system mode. On every translation it copies into `mmu.regs` the
+  registers the CPU passes (`TranslationRegs`: the CPU is their sole
+  owner) and uses `translate_checked`; `at` uses `walk` (an external
+  abort on the walk becomes `AtResult::Abort`, the other faults go into PAR);
+  `tlbi` and `tlb_flush_all` act on the core's TLB.
+- `Mmu::translate_checked(phys, va, access, el, aligned)`: like
+  `translate`, but with `aligned = false` a data access to Device memory
+  (also with the MMU off) gives `FaultKind::Alignment`, after the walk faults
+  and before the permissions (`AArch64.FirstStageTranslate`).
 
-## Comportamento
-- SCTLR.M = 0: identità; VA (senza tag, se c'è TBI) oltre PARange → address
-  size fault di livello 0. Attributi: dati Device-nGnRnE (0x00), fetch 0xaa
-  con SCTLR.I, 0x44 senza. Il TLB non si usa.
-- Metà dello spazio: bit `AddrTop` (55 con TBI, 63 senza; il TBI si sceglie
-  col bit 55). I bit fra AddrTop e 64-TxSZ devono essere tutti uguali al
-  selettore, altrimenti translation fault di livello 0.
-- TxSZ fuori da 16..=39 si riporta al limite (CONSTRAINED UNPREDICTABLE,
-  scelta di QEMU). Livello iniziale e allineamento della prima tabella dallo
-  pseudocodice (es. 48 bit → livello 0, 39 → 1, 30 → 2; 40 bit → livello 0
-  con due voci).
-- IPS limitato a PARange; i valori riservati valgono 48 prima del limite.
-  Address size fault su base TTBR (livello 0), tabelle e uscita.
-- AF = 0 → access flag fault (niente aggiornamento hardware in v8.0). L'AF
-  viene prima dei permessi, l'address size dell'uscita prima dell'AF.
-- Permessi: AP[2:1], APTable, UXN/PXN, UXNTable/PXNTable, SCTLR.WXN; una
-  pagina scrivibile da EL0 non è eseguibile a EL1; a EL0 si può avere
-  "solo esecuzione". Il permission fault riporta il livello della foglia.
-- ASID: da TTBR1 se TCR.A1, altrimenti TTBR0; 8 bit se TCR.AS = 0.
-- EPDx blocca solo i walk: una voce già nel TLB continua a valere.
-- Granulo: TG 16 KiB e valori riservati valgono 4 KiB (la A53 non ha 16 KiB;
-  scelta IMPLEMENTATION DEFINED, la stessa di QEMU); 64 KiB → `Unimplemented`.
+## Behaviour
+- SCTLR.M = 0: identity; VA (without tag, if there is TBI) beyond PARange →
+  level 0 address size fault. Attributes: data Device-nGnRnE (0x00), fetch
+  0xaa with SCTLR.I, 0x44 without. The TLB is not used.
+- Half of the address space: bit `AddrTop` (55 with TBI, 63 without; TBI is
+  selected by bit 55). The bits between AddrTop and 64-TxSZ must all equal
+  the selector, otherwise level 0 translation fault.
+- TxSZ outside 16..=39 is clamped to the limit (CONSTRAINED UNPREDICTABLE,
+  QEMU's choice). Starting level and alignment of the first table from the
+  pseudocode (e.g. 48 bits → level 0, 39 → 1, 30 → 2; 40 bits → level 0
+  with two entries).
+- IPS limited to PARange; reserved values count as 48 before the limit.
+  Address size fault on the TTBR base (level 0), tables and output.
+- AF = 0 → access flag fault (no hardware update in v8.0). AF
+  comes before the permissions, output address size before AF.
+- Permissions: AP[2:1], APTable, UXN/PXN, UXNTable/PXNTable, SCTLR.WXN; a
+  page writable from EL0 is not executable at EL1; at EL0 one can have
+  "execute only". The permission fault reports the level of the leaf.
+- ASID: from TTBR1 if TCR.A1, otherwise TTBR0; 8 bits if TCR.AS = 0.
+- EPDx blocks only walks: an entry already in the TLB stays valid.
+- Granule: TG 16 KiB and reserved values count as 4 KiB (the A53 has no
+  16 KiB; IMPLEMENTATION DEFINED choice, the same as QEMU); 64 KiB →
+  `Unimplemented`.
 
 ## TLB
-Corrispondenza diretta, 512 slot indicizzati dal numero di pagina da 4 KiB,
-deterministica. Ogni voce ricorda il blocco intero (4 KiB, 2 MiB, 1 GiB):
-una TLBI per VA dentro un blocco toglie tutte le voci del blocco. Solo walk
-riusciti entrano nel TLB; i permessi e MAIR si rivalutano a ogni lookup
-(l'architettura permette di tenerli in cache, ricalcolarli è più semplice e
-comunque ammesso). Chiave: VA[55:0] e ASID (le voci globali valgono per ogni
-ASID). Le varianti "last level" coincidono con le altre perché non c'è cache
-dei livelli intermedi.
+Direct-mapped, 512 slots indexed by the 4 KiB page number,
+deterministic. Each entry records the whole block (4 KiB, 2 MiB, 1 GiB):
+a TLBI by VA inside a block removes all entries of the block. Only successful
+walks enter the TLB; permissions and MAIR are re-evaluated on every lookup
+(the architecture allows caching them, recomputing them is simpler and
+still allowed). Key: VA[55:0] and ASID (global entries apply to every
+ASID). The "last level" variants coincide with the others because there is
+no cache of intermediate levels.
 
-Doveri del sistema (con `MmuBus` li fa la CPU in modalità sistema):
-- dopo una scrittura di SCTLR_EL1 o TCR_EL1 chiamare `tlb_mut().flush_all()`
-  (come fa QEMU);
-- le TLBI `...IS` vanno applicate al TLB di ogni core.
+Duties of the system (with `MmuBus` the CPU does them in system mode):
+- after a write to SCTLR_EL1 or TCR_EL1 call `tlb_mut().flush_all()`
+  (as QEMU does);
+- the `...IS` TLBIs must be applied to the TLB of every core.
 
-## Limiti noti
-- Solo granulo 4 KiB; niente descrittori big-endian (SCTLR.EE = 1 →
-  `Unimplemented`). SCTLR.E0E (dati a EL0) è affare della CPU.
-- Niente FEAT_HAFDBS, PAN, TTST, LPA, HPD: sono oltre ARMv8.0.
-- Il bit Contiguous è ignorato (ammesso: è un suggerimento).
-- SCTLR.A è della CPU; il fault di allineamento su memoria Device lo dà
-  `translate_checked` quando la CPU segnala un accesso non allineato.
-- `esr` non conosce l'istruzione: ISV = 0 (come QEMU per gli abort stage 1)
-  e CM = 0 (chi esegue DC su un indirizzo lo aggiunge).
-- Accessi a cavallo di pagina: si traducono prima tutte le pagine, quindi un
-  fault di traduzione o permesso non lascia scritture parziali; un abort
-  esterno sul secondo pezzo sì. FAR = primo byte della pagina che fallisce
-  (come QEMU).
-- `VirtMemory` usa un solo privilegio per tutti gli accessi: per LDTR/STTR
-  il sistema costruisce l'adattatore con `el = 0` e passa PSTATE.EL a
+## Known limitations
+- 4 KiB granule only; no big-endian descriptors (SCTLR.EE = 1 →
+  `Unimplemented`). SCTLR.E0E (data at EL0) is the CPU's business.
+- No FEAT_HAFDBS, PAN, TTST, LPA, HPD: they are beyond ARMv8.0.
+- The Contiguous bit is ignored (allowed: it is a hint).
+- SCTLR.A belongs to the CPU; the alignment fault on Device memory is given
+  by `translate_checked` when the CPU signals a misaligned access.
+- `esr` does not know the instruction: ISV = 0 (like QEMU for stage 1
+  aborts) and CM = 0 (whoever executes DC on an address adds it).
+- Page-crossing accesses: all pages are translated first, so a
+  translation or permission fault leaves no partial writes; an external
+  abort on the second piece does. FAR = first byte of the failing page
+  (like QEMU).
+- `VirtMemory` uses a single privilege for all accesses: for LDTR/STTR
+  the system builds the adapter with `el = 0` and passes PSTATE.EL to
   `Fault::esr`.
-- PAR_EL1: NS = 1 e bit 11 = 1 come QEMU.
+- PAR_EL1: NS = 1 and bit 11 = 1 like QEMU.
 
-## Test
-`cargo test -p vetro-mmu`: tabelle costruite in una RAM di prova con
-costanti del formato VMSAv8-64 indipendenti dal codice. Coprono pagine,
-blocchi da 2 MiB e 1 GiB, TTBR1, TxSZ generici, TBI, MMU spenta, granuli,
-fault a ogni livello, AF, address size, abort esterni, permessi EL0/EL1 con
-attributi delle tabelle e WXN, codifiche ESR/FAR/PAR, ASID/nG, TLB e ogni
-TLBI, adattatore `Memory`.
-Il confronto con `qemu-system-aarch64` arriverà con l'avvio del kernel (M3).
+## Tests
+`cargo test -p vetro-mmu`: tables built in a test RAM with
+VMSAv8-64 format constants independent of the code. They cover pages,
+2 MiB and 1 GiB blocks, TTBR1, generic TxSZ, TBI, MMU off, granules,
+faults at every level, AF, address size, external aborts, EL0/EL1
+permissions with table attributes and WXN, ESR/FAR/PAR encodings, ASID/nG,
+TLB and every TLBI, `Memory` adapter.
+The comparison with `qemu-system-aarch64` will come with the kernel boot (M3).
 
 ## Snapshot (M6, ADR 0015)
 
-`Mmu` e `Tlb` implementano `vetro_snapshot::Snapshot`: registri di
-traduzione e voci del TLB (stato osservabile). Al ripristino la cache delle
-traduzioni recenti riparte vuota, le generazioni degli slot crescono e
-`Tlb::flushes` cresce (il JIT scarta la sua TLB software). PARange si
-controlla.
+`Mmu` and `Tlb` implement `vetro_snapshot::Snapshot`: translation registers
+and TLB entries (observable state). On restore the cache of recent
+translations starts empty again, the slot generations grow and
+`Tlb::flushes` grows (the JIT discards its software TLB). PARange is
+checked.

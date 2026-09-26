@@ -1,103 +1,104 @@
-# ADR 0016 — Analisi di rete: punto di cattura, pcapng, HTTP e HAR
+# ADR 0016 — Network analysis: capture point, pcapng, HTTP and HAR
 
-- Stato: accettata (M7, prima parte, 2026-09-25).
+- Status: accepted (M7, first part, 2026-09-25).
 
-## Contesto
-M7 chiede un ispettore di rete con esportazioni HAR e pcap, decodifica dei
-corpi (JSON, protobuf, form) e, per l'uscita, HTTPS in chiaro legato
-all'azione dell'utente. La parte HTTPS richiede gli hook su BoringSSL e
-Conscrypt dentro Android, che non gira ancora; tutto il resto si può fare
-oggi sul traffico del kernel guest di M3 (BusyBox), che passa dallo stack
-di `vetro-net` (ADR 0007) attraverso virtio-net.
+## Context
+M7 asks for a network inspector with HAR and pcap exports, body decoding
+(JSON, protobuf, form) and, for the exit, cleartext HTTPS tied to the
+user's action. The HTTPS part requires hooks on BoringSSL and Conscrypt
+inside Android, which does not run yet; everything else can be done today
+on the traffic of the M3 guest kernel (BusyBox), which goes through the
+`vetro-net` stack (ADR 0007) via virtio-net.
 
-Vincoli: determinismo (M10 rigioca le sessioni: tempi e ordine dei dati
-devono dipendere solo dall'esecuzione), nessuna dipendenza esterna,
-compilazione per wasm32 (l'ispettore finirà nel browser), e nessuna
-modifica alla logica di `vetro-net`, che ha un altro proprietario.
+Constraints: determinism (M10 replays sessions: timings and data order
+must depend only on the execution), no external dependencies,
+compilation for wasm32 (the inspector will end up in the browser), and no
+change to the logic of `vetro-net`, which has another owner.
 
-## Decisione
+## Decision
 
-### Punto di cattura al confine di virtio-net
-- `NetLink` (il backend di virtio-net in `vetro-machine`) copia ogni frame
-  Ethernet nei due versi, se la cattura è accesa: `FromGuest` in `send`
-  (prima di `Stack::receive`), `ToGuest` in `recv` (dopo
-  `Stack::pop_frame`). L'istante è `NetLink::now`, il tempo virtuale che la
-  macchina fissa prima di servire virtio-net (CNTPCT in microsecondi): lo
-  stesso dello stack, quindi deterministico.
-- API: `Machine::net_tap(on) -> bool` e `Machine::net_tap_take() ->
-  Vec<TappedFrame>`. Accedono al backend senza segnare i dispositivi da
-  servire (a differenza di `Machine::net`): accendere, spegnere e svuotare
-  la cattura non cambia l'esecuzione. La cattura non entra negli snapshot
-  (è osservazione, non stato del guest).
-- Il punto è lato macchina e non dentro lo stack: vede esattamente ciò che
-  vede il guest (compresi DHCP e ARP), non richiede di toccare
-  `vetro-net`, e funzionerà uguale con il relay (M7) o altri upstream.
+### Capture point at the virtio-net boundary
+- `NetLink` (the virtio-net backend in `vetro-machine`) copies every
+  Ethernet frame in both directions, if capture is on: `FromGuest` in
+  `send` (before `Stack::receive`), `ToGuest` in `recv` (after
+  `Stack::pop_frame`). The instant is `NetLink::now`, the virtual time the
+  machine sets before serving virtio-net (CNTPCT in microseconds): the
+  same as the stack's, hence deterministic.
+- API: `Machine::net_tap(on) -> bool` and `Machine::net_tap_take() ->
+  Vec<TappedFrame>`. They access the backend without marking the devices
+  to serve (unlike `Machine::net`): turning capture on, off and draining
+  it does not change the execution. Capture is not included in snapshots
+  (it is observation, not guest state).
+- The point is on the machine side and not inside the stack: it sees
+  exactly what the guest sees (including DHCP and ARP), it does not
+  require touching `vetro-net`, and it will work the same with the relay
+  (M7) or other upstreams.
 
-### `vetro-analysis::net`: tutto dai frame
-L'analisi lavora solo sui frame catturati (`Frame { at_us, dir, data }`),
-non sul registro degli eventi né sui byte del sinkhole: così è la stessa
-per qualsiasi fonte (cattura dal vivo, file pcapng riletto, in futuro il
-browser) e non dipende dai tipi di `vetro-net`.
-- **pcapng** (non pcap classico): un'interfaccia `LINKTYPE_ETHERNET` con
-  `if_tsresol` = 6 e il verso in `epb_flags` (`outbound` i frame del
-  guest). Tempo = epoca Unix + tempo del guest (epoca 0 di default: il
-  file dice "1970-01-01 00:00:01.5" per 1,5 s dopo l'accensione). Un
-  lettore nostro rilegge i file (test di andata e ritorno).
-- **Flussi TCP** ricostruiti per numero di sequenza (svolto attorno alla
-  posizione corrente: attraversa 2^32), ritrasmissioni e sovrapposizioni
-  scartate, fuori ordine in attesa (fino a 16 MiB per verso), buchi mai
-  colmati contati; ogni pezzo porta l'istante in cui è diventato
-  leggibile, da cui i tempi delle richieste. Cliente = chi manda il SYN;
-  un SYN su una quadrupla chiusa apre un flusso nuovo. **UDP** per
-  quadrupla.
-- **HTTP/1.1** (RFC 9112): pipelining, `chunked` con estensioni e
-  trailer, `Content-Length`, fino alla chiusura, niente corpo per
-  HEAD/1xx/204/304, risposte 1xx intermedie; `Content-Encoding` gzip e
-  deflate con un DEFLATE nostro (alla maniera di `puff.c`, CRC-32 e
-  Adler-32 verificati, uscita limitata a 256 MiB). Brotli e zstd non sono
-  decodificati: il corpo resta com'è e la voce lo annota.
-- **DNS** dai flussi verso la porta 53: domande, risposte (A, AAAA, nomi
-  compressi), abbinate per id; il nome risolto dà l'host delle
-  connessioni e la fase `dns` della prima richiesta verso quell'indirizzo.
-- **Corpi**: JSON (parser nostro che conserva ordine e numeri come
-  scritti), form urlencoded, multipart (con decodifica ricorsiva delle
-  parti), protobuf senza schema sul filo come `protoc --decode_raw` (un
-  campo a lunghezza delimitata è un messaggio se lo è e non è testo
-  stampabile, poi stringa UTF-8, poi byte), gRPC non compresso. Scelta dal
-  `Content-Type`, altrimenti dal contenuto.
-- **Ispettore**: `NetworkAnalysis::from_frames` → flussi, scambi DNS,
-  richieste HTTP con corpo decodificato e `Timings` (le fasi dell'HAR:
-  blocked, dns, connect, send, wait, receive; la somma è il totale),
-  flussi TLS con lo SNI del ClientHello. `requests()` dà le righe della
-  lista.
-- **HAR 1.2**: una voce per richiesta; `content.text` decodificato (base64
-  se non UTF-8), resa dei decodificatori nei `comment`, `_encoding` per il
-  corpo binario di una richiesta (HAR non ha `encoding` in `postData`),
-  `status: 0` senza risposta, `connection` = indice del flusso.
+### `vetro-analysis::net`: everything from frames
+The analysis works only on captured frames (`Frame { at_us, dir, data }`),
+not on the event log nor on the sinkhole bytes: this way it is the same
+for any source (live capture, re-read pcapng file, the browser in the
+future) and does not depend on the `vetro-net` types.
+- **pcapng** (not classic pcap): one `LINKTYPE_ETHERNET` interface with
+  `if_tsresol` = 6 and the direction in `epb_flags` (`outbound` for the
+  guest's frames). Time = Unix epoch + guest time (epoch 0 by default: the
+  file says "1970-01-01 00:00:01.5" for 1.5 s after power-on). Our own
+  reader re-reads the files (round-trip tests).
+- **TCP flows** reconstructed by sequence number (unwrapped around the
+  current position: it crosses 2^32), retransmissions and overlaps
+  discarded, out-of-order data held (up to 16 MiB per direction), holes
+  never filled counted; each piece carries the instant it became
+  readable, from which the request timings come. Client = whoever sends
+  the SYN; a SYN on a closed 4-tuple opens a new flow. **UDP** by
+  4-tuple.
+- **HTTP/1.1** (RFC 9112): pipelining, `chunked` with extensions and
+  trailers, `Content-Length`, until close, no body for HEAD/1xx/204/304,
+  intermediate 1xx responses; `Content-Encoding` gzip and deflate with
+  our own DEFLATE (in the manner of `puff.c`, CRC-32 and Adler-32
+  verified, output capped at 256 MiB). Brotli and zstd are not decoded:
+  the body stays as is and the entry notes it.
+- **DNS** from flows to port 53: questions, answers (A, AAAA, compressed
+  names), matched by id; the resolved name gives the host of the
+  connections and the `dns` phase of the first request to that address.
+- **Bodies**: JSON (our own parser that preserves order and numbers as
+  written), urlencoded form, multipart (with recursive decoding of the
+  parts), schemaless protobuf on the wire like `protoc --decode_raw` (a
+  length-delimited field is a message if it is one and is not printable
+  text, then a UTF-8 string, then bytes), uncompressed gRPC. Chosen from
+  the `Content-Type`, otherwise from the content.
+- **Inspector**: `NetworkAnalysis::from_frames` → flows, DNS exchanges,
+  HTTP requests with decoded body and `Timings` (the HAR phases:
+  blocked, dns, connect, send, wait, receive; the sum is the total),
+  TLS flows with the SNI from the ClientHello. `requests()` gives the
+  rows of the list.
+- **HAR 1.2**: one entry per request; `content.text` decoded (base64
+  if not UTF-8), decoders' output in the `comment`s, `_encoding` for the
+  binary body of a request (HAR has no `encoding` in `postData`),
+  `status: 0` with no response, `connection` = flow index.
 
-### Esposizione
-- `vetro boot --pcap FILE --har FILE --net-requests` (anche con `=`):
-  cattura accesa dall'inizio, file scritti all'uscita, lista su stderr.
-- vetro-wasm e l'app web seguiranno (stesse funzioni, già compilate per
-  wasm32).
+### Exposure
+- `vetro boot --pcap FILE --har FILE --net-requests` (also with `=`):
+  capture on from the start, files written on exit, list on stderr.
+- vetro-wasm and the web app will follow (same functions, already
+  compiled for wasm32).
 
-### Verifica con strumenti esterni
-`tools/analysis/check.sh` (immagine Docker `tools/analysis/Dockerfile`):
-`capinfos` e `tcpdump` contano i pacchetti, `tshark` decodifica richieste
-e risposte HTTP, `har-validator` 5.1.5 valida l'HAR contro lo schema HAR
-1.2, `haralyzer` lo riapre in Python. Il test `tests/boot/tests/analysis.rs`
-lo usa quando Docker c'è (`VETRO_REQUIRE_ANALYSIS_TOOLS=1` rende la sua
-assenza un errore).
+### Verification with external tools
+`tools/analysis/check.sh` (Docker image `tools/analysis/Dockerfile`):
+`capinfos` and `tcpdump` count the packets, `tshark` decodes HTTP requests
+and responses, `har-validator` 5.1.5 validates the HAR against the HAR
+1.2 schema, `haralyzer` reopens it in Python. The test
+`tests/boot/tests/analysis.rs` uses it when Docker is available
+(`VETRO_REQUIRE_ANALYSIS_TOOLS=1` makes its absence an error).
 
-## Conseguenze
-- M7 resta aperta finché non ci sono gli hook TLS in Android (BoringSSL,
-  Conscrypt), la timeline input→effetti e l'uscita sulle 10 app: questi
-  pezzi useranno lo stesso modello (`HttpExchange` arriverà anche dai
-  byte in chiaro degli hook, con gli stessi decodificatori e lo stesso
+## Consequences
+- M7 stays open until the TLS hooks in Android (BoringSSL, Conscrypt),
+  the input→effects timeline and the exit on the 10 apps are there:
+  these pieces will use the same model (`HttpExchange` will also come
+  from the hooks' cleartext bytes, with the same decoders and the same
   HAR).
-- IPv6, frammenti IPv4, HTTP/2 e HTTP/3 non sono analizzati (il guest e
-  lo stack oggi non li usano: vedi `docs/specs/net.md`); si aggiungono
-  come nuovi parser sopra gli stessi flussi.
-- La cattura tiene tutti i frame in memoria finché l'host non li prende:
-  chi la accende per sessioni lunghe deve svuotarla (`vetro boot` lo fa a
-  ogni quanto).
+- IPv6, IPv4 fragments, HTTP/2 and HTTP/3 are not analysed (the guest and
+  the stack do not use them today: see `docs/specs/net.md`); they are
+  added as new parsers on top of the same flows.
+- Capture keeps all frames in memory until the host takes them: whoever
+  turns it on for long sessions must drain it (`vetro boot` does so at
+  every quantum).

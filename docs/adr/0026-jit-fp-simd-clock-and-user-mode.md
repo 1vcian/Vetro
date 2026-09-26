@@ -1,215 +1,214 @@
-# ADR 0026 — JIT: FP/SIMD nelle regioni, orologio, concatenamento in modalità utente
+# ADR 0026 — JIT: FP/SIMD in regions, clock, chaining in user mode
 
-- Stato: accettata (M4, 2026-09-26). Estende l'ADR 0012, 0013 e 0024.
+- Status: accepted (M4, 2026-09-26). Extends ADR 0012, 0013 and 0024.
 
-## Contesto
-ART, bionic, Skia e SwiftShader usano molto la virgola mobile e SIMD.
-Dopo l'ADR 0024 le regioni traducevano solo i load/store dei registri V,
-DUP/INS/UMOV/SMOV e MOVI: ogni altra istruzione SIMD/FP chiudeva la
-regione e la eseguiva l'interprete.
+## Context
+ART, bionic, Skia and SwiftShader make heavy use of floating point and SIMD.
+After ADR 0024 regions translated only the loads/stores of V registers,
+DUP/INS/UMOV/SMOV and MOVI: every other SIMD/FP instruction closed the
+region and was executed by the interpreter.
 
-Il profilo con i contatori per classe (sotto) su `tests/linux/c/fpsimd.c`
-(conversioni, prodotti di matrici float e double, memcpy/strlen NEON, TBL,
-EXT, ADDV/UMAXV, FPCR/FPSR) mostrava:
-- il 76% delle istruzioni ancora all'interprete (31 dei 41 milioni);
-- il JIT (21 MIPS) non più veloce dell'interprete (20 MIPS).
+The profile with the per-class counters (below) on `tests/linux/c/fpsimd.c`
+(conversions, float and double matrix products, NEON memcpy/strlen, TBL,
+EXT, ADDV/UMAXV, FPCR/FPSR) showed:
+- 76% of instructions still in the interpreter (31 of the 41 million);
+- the JIT (21 MIPS) no faster than the interpreter (20 MIPS).
 
-Inoltre:
-- nell'avvio del kernel le letture di CNTVCT uscivano dalle regioni
-  (17 mila);
-- in modalità utente ogni regione era una chiamata a wasmtime (27 milioni
-  per `gzip`), e le esclusive restavano all'interprete (6% delle uscite di
+In addition:
+- in the kernel boot, CNTVCT reads exited the regions
+  (17 thousand);
+- in user mode every region was a call into wasmtime (27 million
+  for `gzip`), and exclusives stayed in the interpreter (6% of the exits of
   `awk`).
 
-La semantica FP dell'interprete (`vetro_cpu::simd::fp`) è software, bit per
-bit come l'Arm. Il WASM ha l'IEEE 754 con arrotondamento al pari più
-vicino, ma:
-- non ha i flag;
-- non fissa i bit dei NaN;
-- non ha la FMA;
-- non guarda la minuscolità prima dell'arrotondamento, come fa l'Arm per
+The interpreter's FP semantics (`vetro_cpu::simd::fp`) is software, bit for
+bit like Arm. WASM has IEEE 754 with round to nearest even, but:
+- it has no flags;
+- it does not fix the NaN bits;
+- it has no FMA;
+- it does not check tininess before rounding, as Arm does for
   UFC.
 
-## Decisione
+## Decision
 
-### Misura: contatori per classe
-`vetro_jit::profile` conta per classe le istruzioni che l'interprete esegue
-col JIT attivo, distinguendo quelle che il JIT saprebbe tradurre (codice
-freddo) da quelle che mancano. Le classi SIMD/FP sono fini: classe, opcode,
-U, Q, dimensione. Si attiva con `VETRO_JIT_PROFILE=1` in `vetro run` e in
-`vetro boot` (`JitConfig::profile`, `SysJitConfig::profile`). Conta anche
-le istruzioni eseguite da `env.simd`.
+### Measurement: per-class counters
+`vetro_jit::profile` counts, per class, the instructions the interpreter
+executes with the JIT active, distinguishing those the JIT could translate
+(cold code) from those that are missing. The SIMD/FP classes are fine-grained:
+class, opcode, U, Q, size. It is enabled with `VETRO_JIT_PROFILE=1` in
+`vetro run` and in `vetro boot` (`JitConfig::profile`, `SysJitConfig::profile`).
+It also counts the instructions executed by `env.simd`.
 
-### `env.simd`: l'interprete dentro la regione
-Ogni istruzione SIMD/FP senza memoria (intera, FP, crittografica) si
-traduce. Quelle senza una forma in linea chiamano `rt.simd` → `env.simd`
-(`vetro_jit::helper`): l'interprete (`vetro_cpu::simd::exec_dp`) la esegue
-sui registri V, FPCR e FPSR di `JitState`, senza uscire dalla regione.
-- La semantica è quella dell'interprete per costruzione.
-- Registri generali e NZCV restano nelle variabili della regione: chi chiama
-  passa il registro generale letto e NZCV, e riceve il registro scritto o
-  il nuovo NZCV (`helper::io`).
-- `JitState` porta FPCR e FPSR (offset 424 e 428, prima riempimento).
-- vetro-wasm esporta `vetro_jit_simd` (ABI 11).
-- Una CPU d'appoggio per thread; si copiano i 512 byte dei registri V.
+### `env.simd`: the interpreter inside the region
+Every SIMD/FP instruction without memory (integer, FP, cryptographic) is
+translated. Those without an inline form call `rt.simd` → `env.simd`
+(`vetro_jit::helper`): the interpreter (`vetro_cpu::simd::exec_dp`) executes it
+on the V registers, FPCR and FPSR of `JitState`, without leaving the region.
+- The semantics is the interpreter's by construction.
+- General registers and NZCV stay in the region's variables: the caller
+  passes the general register read and NZCV, and receives the written
+  register or the new NZCV (`helper::io`).
+- `JitState` carries FPCR and FPSR (offsets 424 and 428, previously padding).
+- vetro-wasm exports `vetro_jit_simd` (ABI 11).
+- One scratch CPU per thread; the 512 bytes of the V registers are copied.
 
-### SIMD intero in linea con WASM SIMD
-Solo le forme esatte per costruzione, con la semantica di
-`vetro_cpu::simd::int` (con Q = 0 la metà alta è zero):
-- logiche, BSL/BIT/BIF;
-- somme e differenze, confronti, min/max, [SU]ABD/[SU]ABA, MUL/MLA/MLS,
-  URHADD;
+### Inline integer SIMD with WASM SIMD
+Only the forms that are exact by construction, with the semantics of
+`vetro_cpu::simd::int` (with Q = 0 the upper half is zero):
+- logical, BSL/BIT/BIF;
+- additions and differences, comparisons, min/max, [SU]ABD/[SU]ABA,
+  MUL/MLA/MLS, URHADD;
 - ADDP, [SU]MAXP/[SU]MINP;
 - ABS/NEG, CNT, NOT, REV, [SU]ADDLP/[SU]ADALP, XTN;
-- riduzioni (ADDV, [SU]MAXV, [SU]MINV, [SU]ADDLV);
-- shift per immediato (SHL, [SU]SHR, [SU]SRA, [SU]SHLL, SHRN);
-- ZIP/UZP/TRN, EXT, TBL/TBX (con `swizzle`: indice - 16k per la tabella k).
+- reductions (ADDV, [SU]MAXV, [SU]MINV, [SU]ADDLV);
+- shifts by immediate (SHL, [SU]SHR, [SU]SRA, [SU]SHLL, SHRN);
+- ZIP/UZP/TRN, EXT, TBL/TBX (with `swizzle`: index - 16k for table k).
 
-Le saturanti [SU]Q{ADD,SUB} a 8 e 16 bit, SQXTN e SQXTUN usano le
-saturanti del WASM e scrivono FPSR.QC se una corsia differisce dal
-risultato modulare o dal troncamento: c'è saturazione esattamente quando
-differiscono.
+The saturating [SU]Q{ADD,SUB} at 8 and 16 bits, SQXTN and SQXTUN use WASM's
+saturating operations and write FPSR.QC if a lane differs from the modular
+result or from the truncation: there is saturation exactly when they
+differ.
 
-### Virgola mobile: percorsi veloci nel runtime
-FMOV, FABS, FNEG e FCSEL (scalari) e FABS/FNEG vettoriali sono in linea:
-sono bit, anche sui NaN.
+### Floating point: fast paths in the runtime
+FMOV, FABS, FNEG and FCSEL (scalar) and vector FABS/FNEG are inline:
+they are bits, even on NaNs.
 
-Le altre operazioni hanno una funzione del runtime `rt.fp<k>`. La regione
-la chiama con la parola dell'istruzione; la funzione legge i registri da
-`JitState` e calcola col WASM. Scrive il risultato solo se è sicuramente
-quello dell'interprete, cioè se valgono tutte queste condizioni:
+The other operations have a runtime function `rt.fp<k>`. The region
+calls it with the instruction word; the function reads the registers from
+`JitState` and computes with WASM. It writes the result only if it is
+certainly the interpreter's, that is if all these conditions hold:
 - FPCR = 0;
-- nessun NaN in ingresso o in uscita;
-- nessun infinito da trabocco;
-- per prodotti, quozienti, FMA e conversioni che restringono, un
-  risultato normale e maggiore del più piccolo normale (l'Arm segnala UFC
-  guardando la minuscolità prima dell'arrotondamento);
-- IXC già a 1 in FPSR (flag cumulativo), oppure un risultato esatto
-  verificato in modo esatto:
-  - TwoSum per le somme;
-  - in singola, prodotto, quoziente e radice ricontrollati in doppia;
-  - conversioni: il valore arrotondato uguale all'ingresso.
+- no NaN in input or output;
+- no infinity from overflow;
+- for products, quotients, FMA and narrowing conversions, a
+  normal result greater than the smallest normal (Arm signals UFC
+  by checking tininess before rounding);
+- IXC already 1 in FPSR (cumulative flag), or an exact result
+  verified exactly:
+  - TwoSum for additions;
+  - in single precision, product, quotient and square root rechecked in double;
+  - conversions: the rounded value equal to the input.
 
-Se una condizione manca, la funzione chiama `env.simd`.
+If a condition is missing, the function calls `env.simd`.
 
-Sono coperte:
-- scalari: FADD/FSUB/FMUL/FDIV/FMAX/FMIN/FMAXNM/FMINNM/FNMUL, FSQRT,
-  FMADD e varianti, FCMP/FCMPE, FCVT fra S e D, FRINT[NPMZAIX],
+Covered:
+- scalar: FADD/FSUB/FMUL/FDIV/FMAX/FMIN/FMAXNM/FMINNM/FNMUL, FSQRT,
+  FMADD and variants, FCMP/FCMPE, FCVT between S and D, FRINT[NPMZAIX],
   SCVTF/UCVTF, FCVT[NPMZA][SU];
-- vettoriali: le stesse binarie, FMLA/FMLS e FMUL/FMLA/FMLS per elemento,
-  FADDP, FABD, FCMEQ/FCMGE/FCMGT (anche con zero), FSQRT,
+- vector: the same binary ones, FMLA/FMLS and by-element FMUL/FMLA/FMLS,
+  FADDP, FABD, FCMEQ/FCMGE/FCMGT (also with zero), FSQRT,
   FCVT[NPMZA][SU], SCVTF/UCVTF, FCVTL/FCVTN.
 
-La FMA:
-- in singola si calcola in doppia: il prodotto è esatto, la somma si
-  arrotonda "a dispari" (TwoSum, poi il bit basso) e poi al pari in
-  singola. È l'arrotondamento corretto della FMA (Boldo e Melquiond).
-- in doppia è l'algoritmo "Emulation of FMA" di Boldo e Melquiond (IEEE TC
-  2008):
-  1. prodotto esatto di Dekker con lo spezzamento di Veltkamp;
+The FMA:
+- in single precision is computed in double: the product is exact, the sum
+  is rounded "to odd" (TwoSum, then the low bit) and then to even in
+  single. This is the correct rounding of the FMA (Boldo and Melquiond).
+- in double precision it is the "Emulation of FMA" algorithm by Boldo and
+  Melquiond (IEEE TC 2008):
+  1. Dekker's exact product with Veltkamp splitting;
   2. TwoSum;
-  3. somma degli errori arrotondata a dispari;
-  4. somma finale.
+  3. sum of the errors rounded to odd;
+  4. final sum.
 
-  Vale senza trabocchi né minuscoli, garantiti dagli esponenti: fattori in
-  [2^-400, 2^400), addendo zero o in [2^-800, 2^800).
+  It holds without overflows or tiny values, guaranteed by the exponents:
+  factors in [2^-400, 2^400), addend zero or in [2^-800, 2^800).
 
-Un modulo di regioni importa solo le `rt.fp<k>` che usa (importarle tutte
-costava ~1,5 KB per modulo, 1,5 MB nell'avvio in V8).
+A region module imports only the `rt.fp<k>` it uses (importing them all
+cost ~1.5 KB per module, 1.5 MB in the boot in V8).
 
-### Load/store SIMD
-- LD1/ST1 di 1-4 registri, LD1R, LD1/ST1 di una corsia, LD2..LD4/ST2..ST4
-  (strutture multiple, permutazioni con due livelli di `shuffle`).
-- Accessi da 8 o 16 byte invece che per elemento: stessi byte. Se un
-  accesso largo fallisce e quelli per elemento no (allineamento), l'uscita
-  per fault lascia decidere all'interprete.
-- I load leggono tutto prima di scrivere i registri.
-- Gli store scrivono in ordine: rifatti dall'interprete dopo un fault,
-  riscrivono gli stessi byte.
+### SIMD loads/stores
+- LD1/ST1 of 1-4 registers, LD1R, single-lane LD1/ST1, LD2..LD4/ST2..ST4
+  (multiple structures, permutations with two levels of `shuffle`).
+- 8- or 16-byte accesses instead of per-element: same bytes. If a
+  wide access fails and the per-element ones do not (alignment), the fault
+  exit lets the interpreter decide.
+- Loads read everything before writing the registers.
+- Stores write in order: redone by the interpreter after a fault,
+  they rewrite the same bytes.
 
-### CNTPCT/CNTVCT nelle regioni
-`JitState` porta `time_base` (istruzioni della macchina all'inizio della
-corsa del dispatcher), CNTVOFF e `time_ok`. La regione calcola
-`counter(time_base + passi)` come `Machine::counter`: CNTPCT = s / 8 × 5 +
+### CNTPCT/CNTVCT in regions
+`JitState` carries `time_base` (machine instructions at the start of the
+dispatcher run), CNTVOFF and `time_ok`. The region computes
+`counter(time_base + steps)` like `Machine::counter`: CNTPCT = s / 8 × 5 +
 (s mod 8) × 5 / 8, CNTVCT = CNTPCT − CNTVOFF.
-- La macchina dà l'orologio prima di ogni corsa (`SysJitDyn::set_time`);
-  senza, la regione esce e legge l'interprete.
-- A EL0 si traduce solo con CNTKCTL_EL1.EL0PCTEN/EL0VCTEN a 1. I due bit
-  entrano nei parametri della regione e nel contesto della cache dei salti
-  (`ctx = epoca << 7 | parametri`).
+- The machine provides the clock before every run (`SysJitDyn::set_time`);
+  without it, the region exits and the interpreter reads it.
+- At EL0 it is translated only with CNTKCTL_EL1.EL0PCTEN/EL0VCTEN at 1. The
+  two bits enter the region parameters and the branch cache context
+  (`ctx = epoch << 7 | parameters`).
 
-### Modalità utente: concatenamento ed esclusive
-`JitCpu` usa la tabella del motore e il dispatcher della modalità sistema.
-- Ogni spazio d'indirizzamento ha un contesto per la cache dei salti. Il
-  contesto cambia quando le pagine dello spazio si invalidano: le voci di
-  uno spazio restano buone quando lo scheduler ci torna.
-- Le voci mancanti le scrive l'host (`Host::resolve`) se la regione è già
-  compilata.
-- LDXR/STXR e varianti si traducono anche in modalità utente, col monitor in
-  `JitState` (`from_cpu`/`to_cpu` lo copiano).
+### User mode: chaining and exclusives
+`JitCpu` uses the engine's table and the system mode dispatcher.
+- Each address space has a context for the branch cache. The
+  context changes when the space's pages are invalidated: the entries of
+  a space remain good when the scheduler returns to it.
+- Missing entries are written by the host (`Host::resolve`) if the region
+  is already compiled.
+- LDXR/STXR and variants are translated in user mode too, with the monitor
+  in `JitState` (`from_cpu`/`to_cpu` copy it).
 
-### Secondo livello: no
-Si è provato un secondo livello per le regioni calde:
-- un contatore per regione in una variabile globale del modulo;
-- all'n-esimo ingresso l'host ricompila la regione con fino a 256
-  istruzioni, e la cache dei salti riparte.
+### Second tier: no
+A second tier for hot regions was tried:
+- a counter per region in a module global variable;
+- on the n-th entry the host recompiles the region with up to 256
+  instructions, and the branch cache restarts.
 
-Misure in V8 (kernel M3 + BusyBox, comandi nel guest al secondo giro, avvio
-di `tests/boot`):
+Measurements in V8 (M3 kernel + BusyBox, commands in the guest on the second
+round, boot of `tests/boot`):
 
-| | avvio | moduli | `awk` FP | ciclo di shell |
+| | boot | modules | FP `awk` | shell loop |
 |---|---|---|---|---|
-| senza secondo livello | 1,61-1,68 s | 10,1 MB | 270 MIPS | 220 MIPS |
-| secondo livello a 2000 ingressi | 1,76-1,80 s | 11,0 MB | 269 MIPS | 231 MIPS |
-| secondo livello a 200 ingressi | 1,98 s | 13,4 MB | 283 MIPS | 224 MIPS |
-| tutte le regioni da 256 | 1,68 s | 12,0 MB | 318 MIPS | 245 MIPS |
+| without second tier | 1.61-1.68 s | 10.1 MB | 270 MIPS | 220 MIPS |
+| second tier at 2000 entries | 1.76-1.80 s | 11.0 MB | 269 MIPS | 231 MIPS |
+| second tier at 200 entries | 1.98 s | 13.4 MB | 283 MIPS | 224 MIPS |
+| all regions of 256 | 1.68 s | 12.0 MB | 318 MIPS | 245 MIPS |
 
-Al più +5% a regime, per un avvio più lento del 6-18%: il profilo non lo
-giustifica, e il codice non entra.
-- Il guadagno delle regioni grandi viene dalle transizioni fra regioni
-  tiepide, non dalle poche regioni calde.
-- Regioni più grandi per tutti (+11-18% sul codice ramificato, +19% di byte
-  compilati) restano una scelta da rifare con un carico Android vero.
+At most +5% at steady state, for a boot slower by 6-18%: the profile does not
+justify it, and the code does not go in.
+- The gain of large regions comes from transitions between lukewarm
+  regions, not from the few hot regions.
+- Larger regions for everyone (+11-18% on branchy code, +19% of compiled
+  bytes) remain a choice to revisit with a real Android workload.
 
-## Verifica
-- `tests/linux/c/fpsimd.c` (`tests/linux/tests/fpsimd.rs`) contro QEMU, con
-  l'interprete e col JIT.
+## Verification
+- `tests/linux/c/fpsimd.c` (`tests/linux/tests/fpsimd.rs`) against QEMU, with
+  the interpreter and with the JIT.
 - `vetro-jit-native/tests/parity.rs`:
-  - registri V, FPCR e FPSR casuali con valori speciali;
-  - programmi per tre quarti SIMD/FP, anche load/store dei registri V;
-  - coppie esclusive in modalità utente;
-  - concatenamento dopo l'invalidazione di una pagina.
+  - random V registers, FPCR and FPSR with special values;
+  - programs three-quarters SIMD/FP, including V register loads/stores;
+  - exclusive pairs in user mode;
+  - chaining after a page invalidation.
 - `vetro-jit-native/tests/fp_limits.rs`:
-  - ogni istruzione con un percorso veloce su 470 mila combinazioni di
-    valori speciali, FPCR e FPSR;
-  - FMA casuali;
-  - il doppio arrotondamento che l'arrotondamento a dispari evita (in
-    singola e in doppia);
-  - il prodotto minuscolo arrotondato al più piccolo normale;
-  - i percorsi veloci usati davvero (`helper::calls` non cresce).
-- `sys_parity.rs`: MRS CNTPCT/CNTVCT, CNTKCTL casuale, orologio a volte
-  assente.
-- `tests/diff`: i programmi casuali SIMD/FP col JIT (come prima), più
-  `random_fp_fast_paths_match_qemu` (semi `fpfast-`: valori normali, FPCR a
-  zero, IXC a 1 metà delle volte) contro QEMU.
-- Ogni percorso veloce ha un errore introdotto apposta che un test trova:
-  - somma senza TwoSum, soglia del minuscolo, arrotondamento a dispari;
-  - BIT come BIF, QC mai scritto, MAXP come MINP;
-  - permutazioni di LD2..LD4/ST2..ST4, offset di LD1 multiplo, indice di
-    LD1 di una corsia;
-  - contatore senza l'indice dell'istruzione;
-  - contesto non cambiato dopo un'invalidazione, monitor non ricopiato.
-- Durante il lavoro il test che conta le chiamate a `env.simd` ha trovato un
-  errore vero: IXC combinato con AND come 0x10 invece che come booleano, e
-  il percorso veloce con IXC a 1 non scattava mai.
+  - every instruction with a fast path on 470 thousand combinations of
+    special values, FPCR and FPSR;
+  - random FMAs;
+  - the double rounding that rounding to odd avoids (in
+    single and double precision);
+  - the tiny product rounded to the smallest normal;
+  - the fast paths actually used (`helper::calls` does not grow).
+- `sys_parity.rs`: MRS CNTPCT/CNTVCT, random CNTKCTL, clock sometimes
+  absent.
+- `tests/diff`: the random SIMD/FP programs with the JIT (as before), plus
+  `random_fp_fast_paths_match_qemu` (seeds `fpfast-`: normal values, FPCR at
+  zero, IXC at 1 half the time) against QEMU.
+- Every fast path has a deliberately introduced bug that a test finds:
+  - sum without TwoSum, tininess threshold, rounding to odd;
+  - BIT as BIF, QC never written, MAXP as MINP;
+  - permutations of LD2..LD4/ST2..ST4, offset of multiple LD1, index of
+    single-lane LD1;
+  - counter without the instruction index;
+  - context not changed after an invalidation, monitor not copied back.
+- During the work the test that counts the calls to `env.simd` found a
+  real bug: IXC combined with AND as 0x10 instead of as a boolean, and
+  the fast path with IXC at 1 never triggered.
 
-## Conseguenze
-- vetro-wasm ABI 11 (`vetro_jit_simd`); `JitState` di 992 byte (FPCR,
-  FPSR, orologio); `docs/specs/jit.md` e `docs/specs/wasm.md` aggiornate.
-- `vetro-cpu` esporta:
+## Consequences
+- vetro-wasm ABI 11 (`vetro_jit_simd`); `JitState` of 992 bytes (FPCR,
+  FPSR, clock); `docs/specs/jit.md` and `docs/specs/wasm.md` updated.
+- `vetro-cpu` exports:
   - `simd::exec_dp`;
-  - i tipi `simd::MovKind` e `simd::Post`.
-- `SysJitDyn` ha `set_time` e i metodi del profilo; `Machine` li usa.
-- In modalità utente il limite è ora la memoria: ogni load/store è una
-  chiamata all'host (`UserMemory`). Il passo successivo è una TLB software
-  con la memoria del guest nella memoria del motore.
+  - the types `simd::MovKind` and `simd::Post`.
+- `SysJitDyn` has `set_time` and the profile methods; `Machine` uses them.
+- In user mode the limit is now memory: every load/store is a
+  call to the host (`UserMemory`). The next step is a software TLB
+  with the guest memory in the engine's memory.

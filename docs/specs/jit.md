@@ -1,212 +1,212 @@
-# JIT verso WASM: ABI e interfacce (ADR 0012, ADR 0013, ADR 0024, ADR 0026)
+# JIT to WASM: ABI and interfaces (ADR 0012, ADR 0013, ADR 0024, ADR 0026)
 
-## Regioni
-L'unità di traduzione è la **regione** (ADR 0024): i blocchi base di una
-pagina da 4 KiB raggiungibili da un ingresso `pc` con salti diretti (presi e
-non presi, anche all'indietro), al più `MAX_REGION` = 64 istruzioni. Un
-blocco base finisce con un salto (anche condizionato), una SVC, prima di
-un'istruzione non tradotta, dell'inizio di un altro blocco, della fine della
-pagina o dopo `MAX_BLOCK` = 64 istruzioni. I salti fra blocchi della regione
-restano nella funzione; ogni altro salto (indiretto, fuori pagina, fuori
-regione) è un'uscita con `NEXT`.
+## Regions
+The unit of translation is the **region** (ADR 0024): the basic blocks of a
+4 KiB page reachable from an entry `pc` through direct branches (taken and
+not taken, backwards too), at most `MAX_REGION` = 64 instructions. A
+basic block ends with a branch (conditional too), an SVC, before
+an untranslated instruction, the start of another block, the end of the
+page, or after `MAX_BLOCK` = 64 instructions. Branches between blocks of the
+region stay inside the function; every other branch (indirect, off-page, out
+of the region) is an exit with `NEXT`.
 
-Ogni blocco base con almeno un'istruzione eseguita è un **ingresso** della
-regione (indice < 64): chi chiama la funzione scrive l'indice in
-`JitState::entry`. Un `pc` che è un blocco base di una regione già compilata
-usa quella regione invece di tradurne un'altra.
+Every basic block with at least one executed instruction is an **entry** of
+the region (index < 64): the caller of the function writes the index into
+`JitState::entry`. A `pc` that is a basic block of an already compiled region
+uses that region instead of translating another one.
 
-## Moduli generati
-Un modulo contiene una o più regioni. Importa `env.mem` (la memoria lineare
-con `JitState`) e le funzioni del **runtime** `rt.<nome>` (tabella sotto):
-quelle fisse tutte e nello stesso ordine (indici 0..43), poi solo i percorsi
-veloci `rt.fp<k>` che le sue regioni usano, nell'ordine del primo uso.
-Esporta `b<N>: (state: i32) -> i32` per ogni regione `N`. Il risultato:
+## Generated modules
+A module contains one or more regions. It imports `env.mem` (the linear memory
+with `JitState`) and the **runtime** functions `rt.<name>` (table below):
+all the fixed ones, in the same order (indices 0..43), then only the fast
+paths `rt.fp<k>` that its regions use, in order of first use.
+It exports `b<N>: (state: i32) -> i32` for each region `N`. The result:
 
-| Codice | Significato |
+| Code | Meaning |
 |---|---|
-| 0 `NEXT` | regione finita, `pc` è la prossima istruzione |
-| 1 `FAULT` | un accesso è fallito (o, in modalità sistema, deve farlo l'interprete: MMIO, SP non allineato, esclusiva non allineata, Q a cavallo di pagina...): `pc` e `steps` sono quelli dell'istruzione, i registri come dopo le istruzioni precedenti; il dettaglio lo tiene l'host |
-| 2 `STOP` | fermati dopo l'istruzione corrente (scrittura su codice sorvegliato): `pc` è la successiva |
-| 3 `SVC` | la regione finisce con SVC: `pc` punta all'istruzione (l'host la esegue con l'interprete). BRK e HVC chiudono il blocco *prima* di sé con `NEXT` |
-| 4 `YIELD` | (modalità sistema) MSR DAIF/DAIFClr ha smascherato interrupt: `pc` è l'istruzione successiva, l'host ricontrolla gli interrupt prima di continuare |
+| 0 `NEXT` | region finished, `pc` is the next instruction |
+| 1 `FAULT` | an access failed (or, in system mode, the interpreter must do it: MMIO, unaligned SP, unaligned exclusive, Q straddling a page...): `pc` and `steps` are those of the instruction, the registers as after the preceding instructions; the host keeps the details |
+| 2 `STOP` | stop after the current instruction (write to watched code): `pc` is the next one |
+| 3 `SVC` | the region ends with SVC: `pc` points to the instruction (the host executes it with the interpreter). BRK and HVC close the block *before* themselves with `NEXT` |
+| 4 `YIELD` | (system mode) MSR DAIF/DAIFClr unmasked interrupts: `pc` is the next instruction, the host rechecks interrupts before continuing |
 
-Ogni blocco base, prima di iniziare, controlla che `steps + passi del blocco
-<= limit`, altrimenti esce con `NEXT` al suo inizio: il numero di istruzioni
-resta esatto anche nei cicli dentro la regione.
+Every basic block, before starting, checks that `steps + block steps
+<= limit`, otherwise it exits with `NEXT` at its start: the instruction count
+stays exact even in loops inside the region.
 
-### Il runtime (`translate::runtime`)
-Un modulo compilato una volta per motore (`Engine::runtime`): importa
-`env.mem`, `env.ld`, `env.st`, `env.vsync`, `env.simd` ed esporta:
+### The runtime (`translate::runtime`)
+A module compiled once per engine (`Engine::runtime`): it imports
+`env.mem`, `env.ld`, `env.st`, `env.vsync`, `env.simd` and exports:
 
-| Funzione | Tipo | Significato |
+| Function | Type | Meaning |
 |---|---|---|
 | `save` | `(state, pc0: i64, steps: i64, packed: i32)` | `pc = pc0 + (packed & 0xfff)`, `steps = steps + (packed >> 12)` in `JitState` |
-| `ld_slow`, `st_slow` | `(state, va, size, [valore,] pc0, steps, packed) -> (valore, fault)` / `-> esito` | `save`, poi `env.ld`/`env.st` |
-| `nzcv` | `(k, a, b, r, vecchio) -> i32` | NZCV dei flag pigri (`state::lazy_nzcv`) |
-| `ld<el>_<n>`, `st<el>_<n>` | come sopra, senza `size` | TLB software dell'EL per gli accessi allineati, poi quella per i non allineati, poi l'host |
-| `ldp<el>_<n>`, `stp<el>_<n>`, `ldp_slow`, `stp_slow` | coppie a `va` e `va + n` | il secondo accesso non si fa se il primo fallisce; un load in coppia non restituisce nulla se uno dei due fallisce |
-| `ldq<el>`, `stq<el>`, `ldq_slow`, `stq_slow` | accessi Q (16 byte) come due da 8 | a cavallo di pagina: `FAULT` senza scrivere nulla; allineati a 8 ma non a 16 (modalità sistema): metà con `SIZE_PART_OF_MISALIGNED` |
-| `ldu<el>`, `stu<el>` | metà da 8 byte di un Q non allineato a 16 | TLB dei non allineati, poi l'host |
-| `finish` | `(state, codice, pc, steps) -> codice` | fine di una regione con un codice diverso da `NEXT` |
-| `vsync` | `(state)` | se `v_valid` = 0, `env.vsync(state)` |
-| `simd` | `(state, parola: i32, x: i64, nzcv: i32) -> i64` | `env.simd` (ADR 0026) |
-| `fp<k>` | `(state, parola)` (`-> i32` NZCV per FCMP, `-> i64` per FCVT verso un intero; SCVTF/UCVTF: `(state, parola, x: i64)`) | percorso veloce FP dell'istruzione `parola` (tabella in `translate::fp`): scrive il risultato se sicuramente uguale all'interprete (FPCR = 0, niente NaN, niente minuscoli o trabocchi, IXC già a 1 o risultato esatto), altrimenti `env.simd` |
+| `ld_slow`, `st_slow` | `(state, va, size, [value,] pc0, steps, packed) -> (value, fault)` / `-> outcome` | `save`, then `env.ld`/`env.st` |
+| `nzcv` | `(k, a, b, r, old) -> i32` | NZCV from the lazy flags (`state::lazy_nzcv`) |
+| `ld<el>_<n>`, `st<el>_<n>` | as above, without `size` | software TLB of the EL for aligned accesses, then the one for unaligned accesses, then the host |
+| `ldp<el>_<n>`, `stp<el>_<n>`, `ldp_slow`, `stp_slow` | pairs at `va` and `va + n` | the second access is not done if the first fails; a pair load returns nothing if either fails |
+| `ldq<el>`, `stq<el>`, `ldq_slow`, `stq_slow` | Q accesses (16 bytes) as two of 8 | straddling a page: `FAULT` without writing anything; aligned to 8 but not to 16 (system mode): halves with `SIZE_PART_OF_MISALIGNED` |
+| `ldu<el>`, `stu<el>` | 8-byte half of a Q not aligned to 16 | unaligned TLB, then the host |
+| `finish` | `(state, code, pc, steps) -> code` | end of a region with a code other than `NEXT` |
+| `vsync` | `(state)` | if `v_valid` = 0, `env.vsync(state)` |
+| `simd` | `(state, word: i32, x: i64, nzcv: i32) -> i64` | `env.simd` (ADR 0026) |
+| `fp<k>` | `(state, word)` (`-> i32` NZCV for FCMP, `-> i64` for FCVT to an integer; SCVTF/UCVTF: `(state, word, x: i64)`) | FP fast path of the instruction `word` (table in `translate::fp`): writes the result if it is certainly equal to the interpreter's (FPCR = 0, no NaN, no denormals or overflows, IXC already 1 or exact result), otherwise `env.simd` |
 
-I percorsi lenti salvano `pc` e `steps` dell'istruzione prima di chiamare
-l'host (la spec li vuole salvati durante `ld`/`st`): per `FAULT` la regione
-esce senza riscriverli.
+The slow paths save the instruction's `pc` and `steps` before calling
+the host (the spec wants them saved during `ld`/`st`): for `FAULT` the region
+exits without rewriting them.
 
-### Import dell'host
-| Import | Tipo | Significato |
+### Host imports
+| Import | Type | Meaning |
 |---|---|---|
-| `env.ld` | `(state: i32, va: i64, size: i32) -> i64` | lettura di 1/2/4/8 byte, estesa a zero; in caso di fault scrive 1 in `exit_detail` e restituisce 0 |
-| `env.st` | `(state: i32, va: i64, size: i32, value: i64) -> i32` | scrittura; 0, oppure 1 se la regione deve fermarsi: `exit_detail` = 1 per un fault, 2 per una scrittura su una pagina con blocchi (STOP). `size` = 64 (modalità sistema) è DC ZVA: azzera i 64 byte allineati a `va` |
-| `env.vsync` | `(state: i32)` | copia V0..V31 della `Cpu` in `JitState::v` e mette `v_valid` = 1 |
-| `env.simd` | `(state: i32, parola: i32, x: i64, nzcv: i32) -> i64` | esegue con l'interprete l'istruzione SIMD/FP senza memoria `parola` su V, FPCR, FPSR di `JitState` (`v_valid` = 1); `x` è il registro generale letto, `nzcv` i flag (FCCMP, FCSEL); restituisce il registro generale scritto o NZCV (bit 31:28), altrimenti 0 (`vetro_jit::helper`) |
+| `env.ld` | `(state: i32, va: i64, size: i32) -> i64` | read of 1/2/4/8 bytes, zero-extended; on a fault it writes 1 to `exit_detail` and returns 0 |
+| `env.st` | `(state: i32, va: i64, size: i32, value: i64) -> i32` | write; 0, or 1 if the region must stop: `exit_detail` = 1 for a fault, 2 for a write to a page with blocks (STOP). `size` = 64 (system mode) is DC ZVA: zeroes the 64 bytes aligned to `va` |
+| `env.vsync` | `(state: i32)` | copies V0..V31 of the `Cpu` into `JitState::v` and sets `v_valid` = 1 |
+| `env.simd` | `(state: i32, word: i32, x: i64, nzcv: i32) -> i64` | executes with the interpreter the memory-less SIMD/FP instruction `word` on the V, FPCR, FPSR of `JitState` (`v_valid` = 1); `x` is the general register read, `nzcv` the flags (FCCMP, FCSEL); returns the general register written or NZCV (bits 31:28), otherwise 0 (`vetro_jit::helper`) |
 
-`size` con il bit `SIZE_PART_OF_MISALIGNED` (0x80): metà di un accesso da 16
-byte non allineato a 16; l'host la tratta come non allineata (SCTLR_EL1.A,
-memoria Device), come l'interprete tratta l'accesso intero.
+`size` with the `SIZE_PART_OF_MISALIGNED` bit (0x80): half of a 16-byte
+access not aligned to 16; the host treats it as unaligned (SCTLR_EL1.A,
+Device memory), as the interpreter treats the whole access.
 
-### Il dispatcher (modalità sistema)
-Un modulo a parte importa `env.mem`, `env.tbl` (tabella `funcref` di
-`TABLE_SIZE` = 2¹⁸ voci) ed `env.resolve: (state: i32) -> i32`, ed esporta
-`b0: (state: i32) -> i32`. In ciclo: cerca `pc` nella cache dei salti
-(`area::JC`, indice `(pc >> 2) & 8191`); se la voce è di un altro `pc` o di un
-altro `ctx` chiama `env.resolve` (1 = l'host ha scritto la voce, 0 = torna
-con `NEXT`); se `steps + passi massimi dell'ingresso > limit` torna con
-`NEXT`; altrimenti scrive l'ingresso in `JitState::entry` e chiama la regione
-(`call_indirect` sulla voce della tabella) e continua finché la regione
-restituisce `NEXT`. Restituisce il codice d'uscita dell'ultima regione.
+### The dispatcher (system mode)
+A separate module imports `env.mem`, `env.tbl` (a `funcref` table of
+`TABLE_SIZE` = 2¹⁸ entries) and `env.resolve: (state: i32) -> i32`, and exports
+`b0: (state: i32) -> i32`. In a loop: it looks up `pc` in the jump cache
+(`area::JC`, index `(pc >> 2) & 8191`); if the entry belongs to another `pc` or
+another `ctx` it calls `env.resolve` (1 = the host wrote the entry, 0 = return
+with `NEXT`); if `steps + maximum steps of the entry > limit` it returns with
+`NEXT`; otherwise it writes the entry into `JitState::entry` and calls the region
+(`call_indirect` on the table entry) and continues as long as the region
+returns `NEXT`. It returns the exit code of the last region.
 
-Le regioni non importano la tabella: ce le mette il motore
-(`Engine::place`). V8 dà a ogni istanza che importa una tabella una sua
-tabella di dispatch grande quanto quella.
+Regions do not import the table: the engine puts them there
+(`Engine::place`). V8 gives every instance that imports a table its own
+dispatch table as large as that table.
 
 ## `JitState`
-Struttura `#[repr(C)]` in `vetro_jit::state`, a un indirizzo allineato a 16
-byte scelto dall'host (`state` è l'indirizzo assoluto nella memoria `env.mem`):
+A `#[repr(C)]` struct in `vetro_jit::state`, at a 16-byte aligned address
+chosen by the host (`state` is the absolute address in the `env.mem` memory):
 
-| Offset | Campo | Tipo |
+| Offset | Field | Type |
 |---|---|---|
 | 0 | `x[0..31]` | 31 × u64 |
 | 248 | `sp` | u64 |
 | 256 | `pc` | u64 |
-| 264 | `steps` | u64: istruzioni eseguite, aggiornato come nell'interprete |
-| 272 | `nzcv` | u32, bit 31:28 come `Cpu::nzcv` (vale se `fk` = 0) |
-| 276 | `exit_detail` | u32: 0 all'ingresso (lo azzera l'host), 1 fault, 2 STOP |
-| 280 | `el` | u32, livello di eccezione (0 in modalità utente) |
-| 284 | `ctx` | u32: contesto della cache dei salti (modalità sistema) |
-| 288 | `limit` | u64: passi massimi della corsa |
+| 264 | `steps` | u64: instructions executed, updated as in the interpreter |
+| 272 | `nzcv` | u32, bits 31:28 like `Cpu::nzcv` (valid if `fk` = 0) |
+| 276 | `exit_detail` | u32: 0 on entry (the host clears it), 1 fault, 2 STOP |
+| 280 | `el` | u32, exception level (0 in user mode) |
+| 284 | `ctx` | u32: jump cache context (system mode) |
+| 288 | `limit` | u64: maximum steps of the run |
 | 296 | `tpidr_el0` | u64 |
 | 304 | `tpidrro_el0` | u64 |
 | 312 | `tpidr_el1` | u64 |
-| 320 | `sp_el0` | u64: SP_EL0 quando non è lo SP in uso (EL1, SPSel = 1) |
-| 328 | `tcr` | u64: TCR_EL1 (solo lettura) |
-| 336 | `dczid` | u64: DCZID_EL0 per l'EL corrente (solo lettura) |
-| 344 | `mon_addr` | u64: monitor esclusivo, indirizzo |
-| 352 | `mon_lo`, `mon_hi` | 2 × u64: valore letto (128 bit) |
-| 368 | `mon_valid` | u32: 1 se il monitor è attivo |
-| 372 | `mon_bytes` | u32: byte dell'accesso esclusivo |
-| 376 | `entry` | u32: blocco base d'ingresso della regione chiamata |
-| 380 | `daif` | u32: PSTATE.DAIF (bit 9:6) |
-| 384 | `elr_el1`, `spsr_el1` | 2 × u64 (MRS/MSR a EL1) |
-| 400 | `esr_el1`, `far_el1` | 2 × u64 (solo MRS a EL1) |
-| 416 | `v_valid` | u32: 1 se `v` ha i registri della `Cpu` |
-| 420 | `fk` | u32: tipo dei flag pigri (0 = NZCV in `nzcv`) |
-| 424 | `fpcr` | u32: FPCR (le regioni lo leggono) |
-| 428 | `fpsr` | u32: FPSR (flag cumulativi: le regioni e `env.simd` li scrivono) |
-| 432 | `v[0..32]` | 32 × 16 byte: V0..V31 (metà bassa, poi alta) |
-| 944 | `fa`, `fb`, `fr` | 3 × u64: operandi e risultato dei flag pigri |
-| 968 | `time_base` | u64: (modalità sistema) istruzioni della macchina all'inizio della corsa: CNTPCT di un'istruzione è `counter(time_base + steps + indice)` |
+| 320 | `sp_el0` | u64: SP_EL0 when it is not the SP in use (EL1, SPSel = 1) |
+| 328 | `tcr` | u64: TCR_EL1 (read-only) |
+| 336 | `dczid` | u64: DCZID_EL0 for the current EL (read-only) |
+| 344 | `mon_addr` | u64: exclusive monitor, address |
+| 352 | `mon_lo`, `mon_hi` | 2 × u64: value read (128 bits) |
+| 368 | `mon_valid` | u32: 1 if the monitor is active |
+| 372 | `mon_bytes` | u32: bytes of the exclusive access |
+| 376 | `entry` | u32: entry basic block of the called region |
+| 380 | `daif` | u32: PSTATE.DAIF (bits 9:6) |
+| 384 | `elr_el1`, `spsr_el1` | 2 × u64 (MRS/MSR at EL1) |
+| 400 | `esr_el1`, `far_el1` | 2 × u64 (MRS only, at EL1) |
+| 416 | `v_valid` | u32: 1 if `v` holds the `Cpu` registers |
+| 420 | `fk` | u32: kind of lazy flags (0 = NZCV in `nzcv`) |
+| 424 | `fpcr` | u32: FPCR (regions read it) |
+| 428 | `fpsr` | u32: FPSR (cumulative flags: regions and `env.simd` write them) |
+| 432 | `v[0..32]` | 32 × 16 bytes: V0..V31 (low half, then high) |
+| 944 | `fa`, `fb`, `fr` | 3 × u64: operands and result of the lazy flags |
+| 968 | `time_base` | u64: (system mode) machine instructions at the start of the run: the CNTPCT of an instruction is `counter(time_base + steps + index)` |
 | 976 | `cntvoff` | u64: CNTVCT = CNTPCT - `cntvoff` |
-| 984 | `time_ok` | u32: 1 se `time_base` e `cntvoff` valgono per la corsa (altrimenti MRS del contatore esce) |
-| 988 | — | riempimento fino a 992 |
+| 984 | `time_ok` | u32: 1 if `time_base` and `cntvoff` are valid for the run (otherwise MRS of the counter exits) |
+| 988 | — | padding up to 992 |
 
-I campi da 284 in poi (tranne `ctx`, `limit`, il monitor, `entry`,
-`v_valid`, `fk`, `fpcr`, `fpsr`, `v`, `fa`, `fb`, `fr`, usati anche in
-modalità utente) servono alla modalità sistema. Prima di una corsa l'host
-copia in `JitState` i campi della `Cpu` (`from_cpu`, `from_cpu_sys`:
-`v_valid` = 0 e `fk` = 0, i registri V non si copiano), e dopo li ricopia
-indietro (`to_cpu`, `to_cpu_sys`: V solo se `v_valid`, NZCV calcolato dai
-flag pigri con `state::lazy_nzcv`, FPSR e il monitor). Per le regioni concatenate
-resta valida la copia in `JitState`.
+The fields from 284 on (except `ctx`, `limit`, the monitor, `entry`,
+`v_valid`, `fk`, `fpcr`, `fpsr`, `v`, `fa`, `fb`, `fr`, also used in
+user mode) serve system mode. Before a run the host
+copies the `Cpu` fields into `JitState` (`from_cpu`, `from_cpu_sys`:
+`v_valid` = 0 and `fk` = 0, the V registers are not copied), and afterwards copies them
+back (`to_cpu`, `to_cpu_sys`: V only if `v_valid`, NZCV computed from the
+lazy flags with `state::lazy_nzcv`, FPSR and the monitor). For chained regions
+the copy in `JitState` stays valid.
 
-**Flag pigri.** Un'istruzione che scrive NZCV (ADDS/SUBS/CMP/CMN, ANDS/TST)
-lascia il tipo in `fk` (1 somma 64, 2 differenza 64, 3 somma 32, 4
-differenza 32, 5 logica 64, 6 logica 32), gli operandi in `fa`, `fb` e il
-risultato in `fr` (troncati a 32 bit per i tipi a 32). I salti condizionati
-e CSEL/CCMP con i flag di tipo noto nel blocco base calcolano la condizione
-dagli operandi; altrimenti `rt.nzcv`. Le regioni passano i flag pigri alla
-successiva così come sono.
+**Lazy flags.** An instruction that writes NZCV (ADDS/SUBS/CMP/CMN, ANDS/TST)
+leaves the kind in `fk` (1 add 64, 2 subtract 64, 3 add 32, 4
+subtract 32, 5 logical 64, 6 logical 32), the operands in `fa`, `fb` and the
+result in `fr` (truncated to 32 bits for the 32-bit kinds). Conditional branches
+and CSEL/CCMP with flags of a kind known within the basic block compute the condition
+from the operands; otherwise `rt.nzcv`. Regions pass the lazy flags on to the
+next one as they are.
 
-### Area della modalità sistema (`vetro_jit::state::area`)
-Offset dall'inizio di `JitState`:
+### System mode area (`vetro_jit::state::area`)
+Offsets from the start of `JitState`:
 
-| Offset | Contenuto |
+| Offset | Contents |
 |---|---|
-| 1024 | cache dei salti: 8192 voci da 16 byte `{pc: u64, ctx: u32, w: u32}`, `w = ingresso << 26 \| slot << 8 \| passi massimi dell'ingresso` |
-| 132096 | TLB software degli accessi allineati: 4 tabelle (EL0 lettura, EL0 scrittura, EL1 lettura, EL1 scrittura) di 512 voci da 16 byte `{tag: u64, addend: u64}`, indice `(va >> 12) & 511` |
-| 164864 | TLB degli accessi non allineati: 4 tabelle come sopra (`area::tlb_u`) |
+| 1024 | jump cache: 8192 entries of 16 bytes `{pc: u64, ctx: u32, w: u32}`, `w = entry << 26 \| slot << 8 \| maximum steps of the entry` |
+| 132096 | software TLB for aligned accesses: 4 tables (EL0 read, EL0 write, EL1 read, EL1 write) of 512 entries of 16 bytes `{tag: u64, addend: u64}`, index `(va >> 12) & 511` |
+| 164864 | TLB for unaligned accesses: 4 tables as above (`area::tlb_u`) |
 
-Un accesso allineato di `n` byte a `va` usa la voce se `tag == va & (!0xfff
-| (n - 1))`; uno non allineato usa la TLB dei non allineati se `tag == va &
-!0xfff` e non sconfina nella pagina successiva. L'indirizzo nella memoria
-del motore è `(va + addend) mod 2³²`. `tag = 0x800` è una voce vuota. Una
-voce della TLB dei non allineati c'è solo dopo un accesso non allineato
-riuscito (memoria Normal, SCTLR_EL1.A = 0). Area totale: 197632 byte.
+An aligned access of `n` bytes at `va` uses the entry if `tag == va & (!0xfff
+| (n - 1))`; an unaligned one uses the unaligned TLB if `tag == va &
+!0xfff` and it does not spill into the next page. The address in the engine's
+memory is `(va + addend) mod 2³²`. `tag = 0x800` is an empty entry. An
+entry of the unaligned TLB exists only after a successful unaligned access
+(Normal memory, SCTLR_EL1.A = 0). Total area: 197632 bytes.
 
-`ctx` = epoca << 7 | parametri della regione (EL, TBI0, TBI1, SPSel, FP e,
-a EL0, CNTKCTL_EL1.EL0PCTEN/EL0VCTEN): una voce della cache dei salti vale
-solo per gli stessi parametri. In modalità utente (`JitCpu`, ADR 0026) la
-stessa cache dei salti e lo stesso dispatcher, con `ctx` = il contesto dello
-spazio d'indirizzamento, nuovo a ogni invalidazione delle sue pagine.
+`ctx` = epoch << 7 | region parameters (EL, TBI0, TBI1, SPSel, FP and,
+at EL0, CNTKCTL_EL1.EL0PCTEN/EL0VCTEN): a jump cache entry is valid
+only for the same parameters. In user mode (`JitCpu`, ADR 0026) the
+same jump cache and the same dispatcher, with `ctx` = the context of the
+address space, new at every invalidation of its pages.
 
-## Trait
+## Traits
 ```rust
 pub trait Engine {
     type Module;
-    /// Installa il modulo di runtime: i suoi export diventano gli import
-    /// `rt.*` dei moduli compilati dopo (anche dopo `reset`).
+    /// Installs the runtime module: its exports become the `rt.*`
+    /// imports of the modules compiled afterwards (also after `reset`).
     fn runtime(&mut self, wasm: &[u8]) -> Result<(), String>;
-    /// Compila un modulo WASM generato dal traduttore.
+    /// Compiles a WASM module generated by the translator.
     fn compile(&mut self, wasm: &[u8]) -> Result<Self::Module, String>;
-    /// Esegue la regione `index` del modulo sullo stato all'indirizzo
-    /// `state` della memoria condivisa; `ld`/`st`/`resolve`/`vsync`
-    /// chiamano `host`.
+    /// Runs region `index` of the module on the state at address
+    /// `state` of the shared memory; `ld`/`st`/`resolve`/`vsync`
+    /// call `host`.
     fn run(&mut self, m: &Self::Module, index: u32, state: u32, host: &mut dyn Host) -> u32;
-    /// La memoria condivisa (dove sta `JitState`).
+    /// The shared memory (where `JitState` lives).
     fn memory(&mut self) -> &mut [u8];
-    /// Mette `b0..b<count-1>` del modulo nelle voci `base..` di `env.tbl`.
+    /// Puts `b0..b<count-1>` of the module into entries `base..` of `env.tbl`.
     fn place(&mut self, m: &Self::Module, count: u32, base: u32);
-    /// Libera tutti i moduli (e la tabella; il runtime resta).
+    /// Frees all modules (and the table; the runtime stays).
     fn reset(&mut self) {}
-    /// Almeno `bytes` byte in `memory()`. Default: controlla.
+    /// At least `bytes` bytes in `memory()`. Default: checks.
     fn reserve(&mut self, bytes: usize);
-    /// Indirizzo in `env.mem` di `len` byte dell'host da `p`, se i blocchi li
-    /// raggiungono (browser: sempre; wasmtime: se stanno nella sua memoria).
+    /// Address in `env.mem` of `len` host bytes from `p`, if the blocks can
+    /// reach them (browser: always; wasmtime: if they are inside its memory).
     fn host_address(&mut self, p: *const u8, len: usize) -> Option<u32> { None }
 }
 
 pub trait Host {
     fn ld(&mut self, mem: &mut [u8], va: u64, size: u32) -> Result<u64, ()>;
-    /// Ok(true) = fermati dopo questa istruzione.
+    /// Ok(true) = stop after this instruction.
     fn st(&mut self, mem: &mut [u8], va: u64, size: u32, value: u64) -> Result<bool, ()>;
-    /// `env.resolve`: vero se l'host ha scritto la voce della cache dei
-    /// salti per il `pc` di `JitState`. Default falso.
+    /// `env.resolve`: true if the host wrote the jump cache entry
+    /// for the `pc` of `JitState`. Default false.
     fn resolve(&mut self, mem: &mut [u8]) -> bool { false }
-    /// `env.vsync`: V0..V31 della `Cpu` nel `JitState` a `state`.
+    /// `env.vsync`: V0..V31 of the `Cpu` into the `JitState` at `state`.
     fn vsync(&mut self, mem: &mut [u8], state: u32);
 }
 ```
-`mem` è la memoria del motore (`Engine::memory`): l'host vi scrive la TLB
-software, la cache dei salti e i registri V.
+`mem` is the engine's memory (`Engine::memory`): the host writes the software
+TLB, the jump cache and the V registers into it.
 
-### Modalità sistema (`vetro_jit::sys`)
+### System mode (`vetro_jit::sys`)
 ```rust
 pub trait SysPhys: PhysMemory {
-    fn ram_read(&mut self, pa: u64, buf: &mut [u8]) -> bool;          // solo RAM, senza effetti
-    fn ram_write(&mut self, pa: u64, data: &[u8]) -> Option<bool>;    // Some(true): pagina sorvegliata toccata
+    fn ram_read(&mut self, pa: u64, buf: &mut [u8]) -> bool;          // RAM only, no side effects
+    fn ram_write(&mut self, pa: u64, data: &[u8]) -> Option<bool>;    // Some(true): watched page touched
     fn watch_code(&mut self, page: u64) -> bool;
     fn is_watched(&self, page: u64) -> bool;
     fn take_code_dirty(&mut self, out: &mut Vec<u64>);
@@ -215,75 +215,75 @@ pub trait SysPhys: PhysMemory {
 
 impl<E: Engine> SysJit<E> {
     pub fn new(engine: E, cfg: SysJitConfig) -> Self;
-    /// Solo regioni tradotte, al più `budget` passi.
+    /// Translated regions only, at most `budget` steps.
     pub fn run(&mut self, cpu: &mut Cpu, mmu: &mut Mmu, phys: &mut dyn SysPhys, budget: u64) -> SysRun;
-    /// L'orologio della prossima `run` (MRS CNTPCT/CNTVCT nelle regioni).
+    /// The clock of the next `run` (MRS CNTPCT/CNTVCT in the regions).
     pub fn set_time(&mut self, c: Clock);
 }
 pub struct Clock { pub steps: u64, pub cntvoff: u64 }
 pub struct SysRun { pub steps: u64, pub next: Next }
-pub enum Next { Jit, One, Cold }   // dopo: JIT, un passo dell'interprete, interprete fino al prossimo salto
+pub enum Next { Jit, One, Cold }   // then: JIT, one interpreter step, interpreter up to the next branch
 ```
-Il chiamante (`Machine::run`) non chiama `run` quando l'interprete
-prenderebbe un interrupt, con PSTATE.IL o con PC non allineato, e non
-concede più passi di quelli fino al prossimo evento della piattaforma. Dopo
-`YIELD` `run` torna con `Next::Jit`: il chiamante ricontrolla gli interrupt.
-`SysJitDyn` è lo stesso come oggetto (per `Machine::set_jit`), con
-`set_time` e il profilo per classe (`profiling`, `profile_step`,
-`profile`). Soglia di default: 64 ingressi prima di tradurre. La macchina
-chiama `set_time` prima di ogni `run`.
+The caller (`Machine::run`) does not call `run` when the interpreter
+would take an interrupt, with PSTATE.IL or with an unaligned PC, and does not
+grant more steps than those up to the next platform event. After
+`YIELD`, `run` returns with `Next::Jit`: the caller rechecks interrupts.
+`SysJitDyn` is the same as a trait object (for `Machine::set_jit`), with
+`set_time` and the per-class profile (`profiling`, `profile_step`,
+`profile`). Default threshold: 64 entries before translating. The machine
+calls `set_time` before every `run`.
 
-### Modalità utente (`vetro_jit::JitCpu`)
-Come la modalità sistema dall'ADR 0026: le regioni nella tabella del motore
-(`Engine::place`, un modulo per regione), il dispatcher e la cache dei salti
-nell'area dopo `JitState` (`Engine::reserve`). `Host::resolve` scrive le
-voci mancanti per le regioni già compilate dello spazio.
+### User mode (`vetro_jit::JitCpu`)
+Like system mode since ADR 0026: regions in the engine's table
+(`Engine::place`, one module per region), the dispatcher and the jump cache
+in the area after `JitState` (`Engine::reserve`). `Host::resolve` writes the
+missing entries for the already compiled regions of the address space.
 
-## Copertura
-Si traducono:
-- aritmetica e logica (immediata, registro, estesa, con carry, coi flag),
-  MOVZ/MOVN/MOVK, ADR/ADRP, bitfield, EXTR, CCMP/CCMN, CSEL e varianti,
-  RBIT/REV/CLZ/CLS, divisioni e shift variabili, moltiplicazioni, CRC32;
-- MRS/MSR NZCV; tutti i salti;
-- LDR/STR interi (immediato, pre/post, registro, letterale), LDP/STP/LDPSW,
+## Coverage
+Translated:
+- arithmetic and logic (immediate, register, extended, with carry, with flags),
+  MOVZ/MOVN/MOVK, ADR/ADRP, bitfield, EXTR, CCMP/CCMN, CSEL and variants,
+  RBIT/REV/CLZ/CLS, divisions and variable shifts, multiplications, CRC32;
+- MRS/MSR NZCV; all branches;
+- integer LDR/STR (immediate, pre/post, register, literal), LDP/STP/LDPSW,
   LDAR/STLR;
-- SIMD (ADR 0024): LDR/STR di registri B/H/S/D/Q (immediato, pre/post,
-  registro), LDP/STP di S/D/Q, DUP (elemento e generale), INS, UMOV/SMOV,
-  MOVI/MVNI/ORR/BIC immediati (in modalità sistema solo con CPACR_EL1.FPEN
-  che le permette all'EL);
-- SIMD/FP (ADR 0026): ogni istruzione senza memoria (intera, FP,
-  crittografica): in linea le forme esatte del SIMD intero (anche le
-  saturanti con QC) e FMOV/FABS/FNEG/FCSEL, coi percorsi veloci `rt.fp<k>`
-  l'aritmetica FP comune, le altre con `env.simd`; LD1/ST1 di 1-4 registri,
-  LD1R, LD1/ST1 di una corsia, LD2..LD4/ST2..ST4;
-- LDXR/STXR e varianti anche in modalità utente (ADR 0026);
-- solo in modalità sistema: DC ZVA, MRS di CNTPCT_EL0/CNTVCT_EL0 (a EL0 se
-  CNTKCTL_EL1 li permette; senza orologio escono),
-  MRS/MSR di TPIDR_EL0, TPIDRRO_EL0 (MSR solo a EL1), TPIDR_EL1 e SP_EL0
-  (a EL1; SP_EL0 con SPSel = 1), MRS di TCR_EL1, DCZID_EL0, CurrentEL (a
-  EL1); a EL1 anche MRS/MSR di DAIF, ELR_EL1, SPSR_EL1, MRS di ESR_EL1 e
+- SIMD (ADR 0024): LDR/STR of B/H/S/D/Q registers (immediate, pre/post,
+  register), LDP/STP of S/D/Q, DUP (element and general), INS, UMOV/SMOV,
+  immediate MOVI/MVNI/ORR/BIC (in system mode only with CPACR_EL1.FPEN
+  allowing them at the EL);
+- SIMD/FP (ADR 0026): every memory-less instruction (integer, FP,
+  cryptographic): inline the exact forms of integer SIMD (including the
+  saturating ones with QC) and FMOV/FABS/FNEG/FCSEL, common FP arithmetic
+  with the `rt.fp<k>` fast paths, the others with `env.simd`; LD1/ST1 of 1-4
+  registers, LD1R, single-lane LD1/ST1, LD2..LD4/ST2..ST4;
+- LDXR/STXR and variants in user mode too (ADR 0026);
+- system mode only: DC ZVA, MRS of CNTPCT_EL0/CNTVCT_EL0 (at EL0 if
+  CNTKCTL_EL1 allows them; without a clock they exit),
+  MRS/MSR of TPIDR_EL0, TPIDRRO_EL0 (MSR only at EL1), TPIDR_EL1 and SP_EL0
+  (at EL1; SP_EL0 with SPSel = 1), MRS of TCR_EL1, DCZID_EL0, CurrentEL (at
+  EL1); at EL1 also MRS/MSR of DAIF, ELR_EL1, SPSR_EL1, MRS of ESR_EL1 and
   FAR_EL1, MSR DAIFSet/DAIFClr.
 
-Restano all'interprete: LDR letterale dei registri V, le strutture singole
-interlacciate (LD2..LD4 di una corsia, LD2R..LD4R), gli altri registri di
-sistema (anche FPCR/FPSR), SVC/BRK/HVC, ERET, e in modalità sistema anche
-WFI, LDTR/STTR e le manutenzioni delle cache a EL0. La copertura cresce solo con test di parità.
+Left to the interpreter: literal LDR of V registers, interleaved single
+structures (single-lane LD2..LD4, LD2R..LD4R), the other system
+registers (FPCR/FPSR included), SVC/BRK/HVC, ERET, and in system mode also
+WFI, LDTR/STTR and cache maintenance at EL0. Coverage grows only with parity tests.
 
-## Note dall'implementazione
-- **Memoria importata.** `env.mem` si dichiara secondo la configurazione
-  (`MemoryImport`): nel browser con i thread serve una memoria condivisa
-  (`shared`).
-- **Sorveglianza del codice in modalità utente.** Sta in `UserMemory`:
-  `space_id` distingue gli spazi d'indirizzamento, `watch_code(page)` segna
-  le pagine tradotte, `take_code_dirty()` restituisce quelle scritte da store,
-  `poke`, mmap, munmap, mprotect, mremap e dalla crescita dello stack.
-  Dettagli in `crates/vetro-jit/src/driver.rs`. Le mappature sono a pagine
-  intere (come Linux): le due metà di un accesso Q nella stessa pagina hanno
-  gli stessi permessi.
-- **Sorveglianza in modalità sistema.** Sta in `vetro_machine::Ram` (bitmap
-  per pagina fisica): ogni scrittura fisica passa da lì.
-- **Coda comune.** Tutte le uscite di una regione saltano a una coda che
-  riscrive i registri scritti dalla regione (caricati all'ingresso anche se
-  non letti), i flag pigri, `pc`, `steps` e il codice.
-- **Nel browser** il dispatcher si chiama da Rust come un puntatore a
-  funzione nella tabella di vetro-wasm (`docs/specs/wasm.md`).
+## Implementation notes
+- **Imported memory.** `env.mem` is declared according to the configuration
+  (`MemoryImport`): in the browser with threads a shared memory
+  (`shared`) is needed.
+- **Code watching in user mode.** It lives in `UserMemory`:
+  `space_id` distinguishes address spaces, `watch_code(page)` marks
+  translated pages, `take_code_dirty()` returns those written by stores,
+  `poke`, mmap, munmap, mprotect, mremap and stack growth.
+  Details in `crates/vetro-jit/src/driver.rs`. Mappings are whole
+  pages (like Linux): the two halves of a Q access in the same page have
+  the same permissions.
+- **Watching in system mode.** It lives in `vetro_machine::Ram` (bitmap
+  per physical page): every physical write goes through there.
+- **Common tail.** All exits of a region jump to a tail that
+  writes back the registers written by the region (loaded on entry even if
+  not read), the lazy flags, `pc`, `steps` and the code.
+- **In the browser** the dispatcher is called from Rust as a function pointer
+  in vetro-wasm's table (`docs/specs/wasm.md`).

@@ -1,35 +1,35 @@
-# ADR 0025 — CI selettiva in base ai file cambiati
+# ADR 0025 — Selective CI based on changed files
 
-Stato: accettato (2026-09-26)
+Status: accepted (2026-09-26)
 
-## Contesto
-Il giro completo della CI dura circa 50 minuti: LTP completo due volte
-(interprete e JIT) sul runner arm64, avvio del kernel sotto QEMU e sotto
-Vetro, kselftest (circa 20 minuti da soli), test web e sito. Una modifica a
-un file JavaScript o a un documento non tocca niente di quello che LTP o i
-kselftest verificano, ma li rifaceva tutti; anche la pubblicazione del sito
-aspettava quei 50 minuti.
+## Context
+The full CI run takes about 50 minutes: full LTP twice (interpreter and
+JIT) on the arm64 runner, kernel boot under QEMU and under Vetro,
+kselftest (about 20 minutes on their own), web tests and site. A change to
+a JavaScript file or to a document touches nothing of what LTP or the
+kselftests verify, but it redid them all; the site publication also waited
+for those 50 minutes.
 
-## Decisione
-Un job `changes` (tools/ci-changes.sh) confronta il push con il commit
-precedente (o la PR con la sua base) e decide quali job servono:
-- `native`, `wasm`: codice Rust, test Rust, toolchain;
-- `linux`: CPU, MMU, JIT, vetro-cli (syscall Linux), test linux/diff/isa,
-  LTP, RISU, binari guest, oracolo;
-- `boot`: qualunque crate, tests/boot, kernel guest e i suoi strumenti;
-  i kselftest solo se cambia il kernel guest (configurazione, initramfs,
-  kselftest, script di costruzione);
-- job `boot` ridotto (kernel dalla cache, WebAssembly in Node, test web) se
-  cambia solo la parte web;
-- `pages`/`deploy`: ciò che finisce nel sito; si pubblica se nessun job è
-  fallito (quelli saltati non bloccano).
-Tutto gira comunque: ogni notte (schedule), a mano (workflow_dispatch), sul
-primo push di un branch, se cambia la CI stessa, o con `[ci full]` nel
-messaggio di commit.
+## Decision
+A `changes` job (tools/ci-changes.sh) compares the push with the previous
+commit (or the PR with its base) and decides which jobs are needed:
+- `native`, `wasm`: Rust code, Rust tests, toolchain;
+- `linux`: CPU, MMU, JIT, vetro-cli (Linux syscalls), linux/diff/isa tests,
+  LTP, RISU, guest binaries, oracle;
+- `boot`: any crate, tests/boot, guest kernel and its tools;
+  the kselftests only if the guest kernel changes (configuration, initramfs,
+  kselftest, build scripts);
+- reduced `boot` job (kernel from cache, WebAssembly in Node, web tests) if
+  only the web part changes;
+- `pages`/`deploy`: what ends up in the site; it is published if no job
+  failed (skipped ones do not block).
+Everything runs anyway: every night (schedule), by hand (workflow_dispatch), on
+the first push of a branch, if the CI itself changes, or with `[ci full]` in
+the commit message.
 
-## Conseguenze
-- La regola d'oro resta: una milestone si chiude su un giro completo verde
-  (quello notturno o uno con `[ci full]`), non su uno parziale.
-- Il rischio è una dipendenza non prevista fra aree: il giro notturno lo
-  scopre entro un giorno. Le categorie sono larghe apposta (per esempio ogni
-  crate fa scattare `boot`).
+## Consequences
+- The golden rule stands: a milestone is closed on a green full run
+  (the nightly one or one with `[ci full]`), not on a partial one.
+- The risk is an unforeseen dependency between areas: the nightly run
+  finds it within a day. The categories are deliberately broad (for example
+  every crate triggers `boot`).

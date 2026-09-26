@@ -1,24 +1,24 @@
-# ADR 0003 — Oracolo QEMU e ELF di test generati in Rust
+# ADR 0003 — QEMU oracle and test ELFs generated in Rust
 
-- Stato: accettata (M0, 2026-09-24)
+- Status: accepted (M0, 2026-09-24)
 
-## Contesto
-Il confronto con QEMU è l'oracolo principale. QEMU user mode
-(`qemu-aarch64`) e RISU esistono solo su Linux; la macchina di sviluppo è
-macOS arm64, la CI è Ubuntu x86_64. Non vogliamo dipendere da un
-cross-compilatore per i test di base.
+## Context
+Comparison with QEMU is the main oracle. QEMU user mode
+(`qemu-aarch64`) and RISU exist only on Linux; the development machine is
+macOS arm64, CI is Ubuntu x86_64. We don't want to depend on a
+cross-compiler for the basic tests.
 
-## Decisione
-- I binari di test minimi si generano in Rust (`vetro-diff::elf` e
-  `vetro-diff::a64`): ELF64 statico con un segmento PT_LOAD. Nessun toolchain
-  esterno per l'oracolo di base.
-- L'oracolo si trova con `VETRO_QEMU_AARCH64` oppure `qemu-aarch64` nel PATH.
-  Su macOS `tools/oracle/qemu-aarch64-docker.sh` lo esegue in un container
-  Debian con `qemu-user`.
-- Senza oracolo i test stampano `SKIP` e passano; con
-  `VETRO_REQUIRE_ORACLE=1` falliscono. La CI imposta sempre la variabile.
+## Decision
+- The minimal test binaries are generated in Rust (`vetro-diff::elf` and
+  `vetro-diff::a64`): a static ELF64 with one PT_LOAD segment. No external
+  toolchain for the basic oracle.
+- The oracle is found via `VETRO_QEMU_AARCH64` or `qemu-aarch64` in the PATH.
+  On macOS `tools/oracle/qemu-aarch64-docker.sh` runs it in a Debian
+  container with `qemu-user`.
+- Without an oracle the tests print `SKIP` and pass; with
+  `VETRO_REQUIRE_ORACLE=1` they fail. CI always sets the variable.
 
-## Conseguenze
-Lo sviluppo su macOS senza Docker resta possibile, ma nessun lavoro si
-dichiara chiuso senza un giro con l'oracolo obbligatorio. RISU (M1) seguirà
-lo stesso schema: nativo in CI, container su macOS.
+## Consequences
+Development on macOS without Docker remains possible, but no work is
+declared closed without a run with the mandatory oracle. RISU (M1) will follow
+the same scheme: native in CI, container on macOS.

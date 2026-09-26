@@ -1,156 +1,156 @@
-# ADR 0024 — JIT a regioni: codice compatto, flag pigri, SIMD, runtime condiviso
+# ADR 0024 — Region JIT: compact code, lazy flags, SIMD, shared runtime
 
-- Stato: accettata (M4, mantenimento, 2026-09-26). Estende l'ADR 0012 e
-  l'ADR 0013.
+- Status: accepted (M4, maintenance, 2026-09-26). Extends ADR 0012 and
+  ADR 0013.
 
-## Contesto
-Android chiede centinaia di MIPS sostenuti nel browser. Prima di questo
-lavoro l'avvio del kernel guest (284,8 M istruzioni con l'initramfs di oggi,
-di cui circa la metà tempo saltato nelle WFI) durava 1,91 s col JIT in V8;
-a regime, nel guest, `sha256sum` andava a ~575 MIPS, `gzip` a ~360 e un
-ciclo di shell (ash, sistema e utente mescolati) a ~109.
+## Context
+Android asks for hundreds of sustained MIPS in the browser. Before this
+work the guest kernel boot (284.8 M instructions with today's initramfs,
+about half of it time skipped in WFI) took 1.91 s with the JIT in V8;
+at steady state, in the guest, `sha256sum` ran at ~575 MIPS, `gzip` at ~360
+and a shell loop (ash, system and user mixed) at ~109.
 
-Le misure (profilo di V8, `sample` di macOS, contatori; numeri in
-`docs/progress/M4.md`) hanno mostrato dove va il tempo:
-- **compilazione**: nel thread principale di V8 la validazione dei moduli e
-  la compilazione pigra di Liftoff al primo uso di ogni funzione prendevano
-  il 25% dell'avvio (il 37% con le prime regioni, più grandi). Il costo è
-  proporzionale ai byte: ~1,1 KB di WASM per blocco, 150-370 byte per istruzione
-  nelle istruzioni di memoria (percorso lento in linea). TurboFan, sui
-  thread di fondo, ha un costo più che lineare nella dimensione delle
-  funzioni e nel numero di valori vivi (allocazione dei registri);
-- **uscite verso l'interprete**: nel codice utente di BusyBox (musl) ~590
-  mila uscite su poche istruzioni SIMD (LDR/STR/LDP/STP di registri Q, DUP,
-  INS, UMOV, MOVI: `memcpy`/`memset`), con frammentazione delle regioni e
-  interpretazione a freddo dopo ognuna; nel kernel ~110 mila uscite su
+The measurements (V8 profile, macOS `sample`, counters; numbers in
+`docs/progress/M4.md`) showed where the time goes:
+- **compilation**: on V8's main thread, module validation and Liftoff's lazy
+  compilation on the first use of each function took 25% of the boot (37%
+  with the first, larger, regions). The cost is proportional to the bytes:
+  ~1.1 KB of WASM per block, 150-370 bytes per instruction for memory
+  instructions (inline slow path). TurboFan, on the background threads, has a
+  more than linear cost in function size and in the number of live values
+  (register allocation);
+- **exits to the interpreter**: in BusyBox (musl) user code ~590
+  thousand exits on a few SIMD instructions (LDR/STR/LDP/STP of Q registers,
+  DUP, INS, UMOV, MOVI: `memcpy`/`memset`), with region fragmentation and
+  cold interpretation after each one; in the kernel ~110 thousand exits on
   MRS/MSR DAIF, MSR DAIFSet/DAIFClr, ELR/SPSR/ESR/FAR;
-- **dispatch**: a regime ~17 istruzioni per chiamata di regione; il ciclo del
-  dispatcher costa poco, costano prologo e coda della regione (registri,
-  flag) e le chiamate per ogni accesso alla memoria.
+- **dispatch**: at steady state ~17 instructions per region call; the
+  dispatcher loop costs little, what costs is the region's prologue and tail
+  (registers, flags) and the calls for every memory access.
 
-## Decisione
+## Decision
 
-### Regioni al posto dei blocchi
-- L'unità è la **regione**: i blocchi base di una pagina raggiungibili
-  dall'ingresso con salti diretti, presi e non presi, anche all'indietro, al
-  più 64 istruzioni. Nella funzione: un `loop` con un `br_table`
-  sull'indice del prossimo blocco base; il blocco successivo in memoria si
-  raggiunge senza salti. Ogni blocco base controlla prima di iniziare che i
-  suoi passi stiano nel limite, altrimenti esce al suo inizio: il numero di
-  istruzioni resta esatto nei cicli, e quindi interrupt, tempo e punti di
-  arresto del replay (ADR 0019) non cambiano.
-- **Ingressi multipli.** Ogni blocco base con passi è un ingresso (indice
-  in 6 bit nella voce della cache dei salti, scritto in `JitState::entry` dal
-  dispatcher): un `pc` già dentro una regione compilata non ne fa tradurre
-  un'altra, che duplicherebbe il codice.
-- **64 istruzioni, niente ritorni delle chiamate.** Regioni da 256
-  istruzioni danno +10% a regime ma +40% di CPU di compilazione (TurboFan);
-  seguire anche l'indirizzo di ritorno dopo BL/BLR porta i byte da 31 a 53
-  MB e l'avvio da 2,0 a 4,1 s. Il limite si rivaluta quando la
-  compilazione costerà meno (per esempio con un secondo livello).
+### Regions instead of blocks
+- The unit is the **region**: the basic blocks of a page reachable from the
+  entry through direct branches, taken and not taken, also backwards, at
+  most 64 instructions. In the function: a `loop` with a `br_table`
+  on the index of the next basic block; the next block in memory is
+  reached without branches. Each basic block checks before starting that
+  its steps fit in the limit, otherwise it exits at its start: the
+  instruction count stays exact in loops, so interrupts, time and replay
+  stop points (ADR 0019) do not change.
+- **Multiple entries.** Every basic block with steps is an entry (6-bit
+  index in the branch cache entry, written to `JitState::entry` by the
+  dispatcher): a `pc` already inside a compiled region does not cause
+  another one to be translated, which would duplicate the code.
+- **64 instructions, no call returns.** 256-instruction regions give +10% at
+  steady state but +40% of compilation CPU (TurboFan); also following the
+  return address after BL/BLR takes the bytes from 31 to 53 MB and the boot
+  from 2.0 to 4.1 s. The limit will be reassessed when compilation costs less
+  (for example with a second tier).
 
-### Codice compatto
-- **Runtime condiviso.** I percorsi lenti, le coppie, gli accessi Q e non
-  allineati, il calcolo di NZCV, la fine della regione e la copia dei
-  registri SIMD stanno in un modulo di runtime compilato una volta
-  (`translate::runtime`, `Engine::runtime`): le regioni lo importano come
-  `rt.*` (in V8 una chiamata diretta fra istanze). Definiti in ogni modulo
-  costavano 1,4 KB e 20 compilazioni pigre per modulo.
-- Il **percorso veloce della TLB** degli accessi allineati resta in linea
-  (+10% a regime rispetto alla chiamata, a costo di qualche byte); il resto
-  è una chiamata.
-- **Uscite corte**: per FAULT `pc` e `steps` li ha già salvati il percorso
-  lento; `NEXT` e `done = 0` sono il valore iniziale delle locali; la coda
-  scrive `pc`/`steps` senza chiamate per `NEXT` e chiama `rt.finish` per
-  gli altri codici (STOP dopo uno store: `pc` salvato + 4).
-- Forme dirette per ADD/SUB senza flag, MOV, UBFM/SBFM (LSL, LSR, ASR,
-  UBFX, SBFX, UBFIZ, SBFIZ), indirizzi con offset; l'allineamento di SP si
-  controlla una volta per blocco base finché SP non cambia in modo da
-  poterlo perdere.
-- Risultato: 66 byte per istruzione nel campione di istruzioni tipiche del
-  kernel del test `codice_compatto` (~130 prima), 10,1 MB di moduli per
-  l'avvio contro 14,9 MB.
+### Compact code
+- **Shared runtime.** The slow paths, pairs, Q and unaligned accesses, NZCV
+  computation, region end and SIMD register copying live in a runtime module
+  compiled once (`translate::runtime`, `Engine::runtime`): regions import it
+  as `rt.*` (in V8 a direct call between instances). Defined in every module
+  they cost 1.4 KB and 20 lazy compilations per module.
+- The **TLB fast path** of aligned accesses stays inline (+10% at steady
+  state compared to the call, at the cost of a few bytes); the rest is a
+  call.
+- **Short exits**: for FAULT, `pc` and `steps` have already been saved by
+  the slow path; `NEXT` and `done = 0` are the initial value of the locals;
+  the tail writes `pc`/`steps` without calls for `NEXT` and calls
+  `rt.finish` for the other codes (STOP after a store: saved `pc` + 4).
+- Direct forms for ADD/SUB without flags, MOV, UBFM/SBFM (LSL, LSR, ASR,
+  UBFX, SBFX, UBFIZ, SBFIZ), addresses with offset; SP alignment is checked
+  once per basic block as long as SP does not change in a way that could
+  lose it.
+- Result: 66 bytes per instruction in the sample of typical kernel
+  instructions of the `codice_compatto` test (~130 before), 10.1 MB of
+  modules for the boot versus 14.9 MB.
 
-### Flag pigri
-- ADDS/SUBS/CMP/CMN/ANDS/TST lasciano tipo, operandi e risultato (in locali
-  dentro la regione, in `JitState` fra una regione e l'altra: `fk`, `fa`,
-  `fb`, `fr`). B.cond, CSEL e CCMP calcolano la condizione dagli operandi se
-  il tipo è noto nel blocco base (`cmp; b.ne` diventa un confronto);
-  altrimenti `rt.nzcv`. L'host ricava NZCV con `state::lazy_nzcv` (la stessa
-  formula) quando ricopia lo stato nella `Cpu`.
+### Lazy flags
+- ADDS/SUBS/CMP/CMN/ANDS/TST leave kind, operands and result (in locals
+  inside the region, in `JitState` between one region and the next: `fk`,
+  `fa`, `fb`, `fr`). B.cond, CSEL and CCMP compute the condition from the
+  operands if the kind is known in the basic block (`cmp; b.ne` becomes a
+  comparison); otherwise `rt.nzcv`. The host derives NZCV with
+  `state::lazy_nzcv` (the same formula) when it copies the state back into
+  the `Cpu`.
 
-### SIMD, DAIF e registri delle eccezioni nelle regioni
-- LDR/STR di registri B/H/S/D/Q, LDP/STP di S/D/Q, DUP, INS, UMOV/SMOV,
-  MOVI/MVNI/ORR/BIC immediati. I registri V stanno in `JitState` e ci
-  arrivano solo quando serve: la prima regione della corsa che li usa chiama
-  `rt.vsync` → `env.vsync` (l'host copia `Cpu::v`, `v_valid` = 1), e chi
-  ricopia lo stato nella `Cpu` riporta i registri se `v_valid`. Nessun costo
-  per le corse senza SIMD.
-- Un accesso Q è due accessi da 8 con le regole dell'accesso intero di
-  `SysMem::access`: a cavallo di pagina FAULT (l'interprete traduce tutte le
-  pagine prima di scrivere: niente scritture parziali); allineato a 8 ma non
-  a 16, in modalità sistema, le metà vanno all'host marcate come non
-  allineate (`SIZE_PART_OF_MISALIGNED`: SCTLR_EL1.A, memoria Device).
-- **TLB dei non allineati**: una seconda TLB software, riempita solo dopo un
-  accesso non allineato riuscito (quindi memoria Normal e SCTLR_EL1.A a 0),
-  per gli accessi non allineati che restano nella pagina. Svuotata come
-  l'altra.
-- In modalità sistema le istruzioni SIMD si traducono solo se CPACR_EL1.FPEN
-  le permette all'EL (parametro `fp` della regione); i parametri della
-  regione (EL, TBI, SPSel, FP) entrano anche nel contesto della cache dei
-  salti (prima solo EL: una voce poteva valere con SPSel diverso).
-- A EL1: MRS/MSR DAIF, ELR_EL1, SPSR_EL1, MRS ESR_EL1, FAR_EL1, MSR
-  DAIFSet/DAIFClr. Un MSR che smaschera (un bit di DAIF da 1 a 0) esce con
-  il nuovo codice `YIELD` dopo l'istruzione: `SysJit::run` torna al
-  chiamante, che ricontrolla gli interrupt prima dell'istruzione
-  successiva, come l'interprete.
+### SIMD, DAIF and exception registers in regions
+- LDR/STR of B/H/S/D/Q registers, LDP/STP of S/D/Q, DUP, INS, UMOV/SMOV,
+  immediate MOVI/MVNI/ORR/BIC. The V registers live in `JitState` and get
+  there only when needed: the first region of the run that uses them calls
+  `rt.vsync` → `env.vsync` (the host copies `Cpu::v`, `v_valid` = 1), and
+  whoever copies the state back into the `Cpu` brings the registers back if
+  `v_valid`. No cost for runs without SIMD.
+- A Q access is two 8-byte accesses with the rules of the integer access of
+  `SysMem::access`: across a page FAULT (the interpreter translates all the
+  pages before writing: no partial writes); aligned to 8 but not to 16, in
+  system mode, the halves go to the host marked as unaligned
+  (`SIZE_PART_OF_MISALIGNED`: SCTLR_EL1.A, Device memory).
+- **Unaligned TLB**: a second software TLB, filled only after a successful
+  unaligned access (hence Normal memory and SCTLR_EL1.A at 0), for unaligned
+  accesses that stay within the page. Flushed like the other one.
+- In system mode SIMD instructions are translated only if CPACR_EL1.FPEN
+  allows them at the EL (region parameter `fp`); the region parameters (EL,
+  TBI, SPSel, FP) also enter the branch cache context (before only EL: an
+  entry could be valid with a different SPSel).
+- At EL1: MRS/MSR DAIF, ELR_EL1, SPSR_EL1, MRS ESR_EL1, FAR_EL1, MSR
+  DAIFSet/DAIFClr. An MSR that unmasks (a DAIF bit from 1 to 0) exits with
+  the new code `YIELD` after the instruction: `SysJit::run` returns to the
+  caller, which rechecks interrupts before the next instruction, like the
+  interpreter.
 
 ### Host
-- Il codice freddo (nessuna variante, sotto la soglia) non traduce il
-  `pc` con la MMU: basta contarlo.
-- Soglia di default 64 ingressi (16 prima): meno codice tiepido compilato;
-  misurato 16/32/64/128, 64 il migliore nell'avvio.
+- Cold code (no variant, below the threshold) does not translate the
+  `pc` with the MMU: counting it is enough.
+- Default threshold 64 entries (16 before): less lukewarm code compiled;
+  measured 16/32/64/128, 64 the best for the boot.
 
-### Non fatto, e perché
-- **Concatenamento diretto fra moduli** (tail call): il dispatcher è già
-  WebAssembly e non torna al JS; il suo ciclo è una piccola parte del costo
-  per regione (prologo, coda e chiamate contano di più). `return_call`
-  esiste in V8 e wasmtime, ma il guadagno atteso è piccolo rispetto al
-  rischio di un altro ABI: resta come possibilità, da misurare.
-- **Compilazione in un Worker o asincrona**: in V8 la compilazione pigra di
-  Liftoff avviene comunque al primo uso nel thread principale;
-  `WebAssembly.compile` asincrono sposterebbe solo la validazione (~8% del
-  thread principale) e richiede che il ciclo di esecuzione ceda al ciclo
-  degli eventi. Il determinismo non è un ostacolo: interprete e JIT danno
-  lo stesso stato architetturale (stesse istruzioni, stesso log, verificato
-  dai test di parità e dall'avvio), quindi finché un modulo non è pronto il
-  codice gira nell'interprete e il risultato non dipende da quando la
-  compilazione finisce; cambierebbero solo i contatori del JIT. Da fare con
-  un secondo livello (regioni calde ricompilate più grandi) quando conviene.
-- **Modalità utente**: `JitCpu` chiama ancora il motore per ogni regione
-  (niente dispatcher) e ogni accesso passa da `UserMemory`: il prossimo
-  guadagno lì è il concatenamento, non il traduttore.
+### Not done, and why
+- **Direct chaining between modules** (tail call): the dispatcher is already
+  WebAssembly and does not return to JS; its loop is a small part of the
+  per-region cost (prologue, tail and calls count more). `return_call`
+  exists in V8 and wasmtime, but the expected gain is small compared to the
+  risk of another ABI: it remains a possibility, to be measured.
+- **Compilation in a Worker or asynchronous**: in V8 Liftoff's lazy
+  compilation happens anyway on first use on the main thread;
+  asynchronous `WebAssembly.compile` would only move validation (~8% of the
+  main thread) and requires the execution loop to yield to the event loop.
+  Determinism is not an obstacle: interpreter and JIT give the same
+  architectural state (same instructions, same log, verified by the parity
+  tests and by the boot), so until a module is ready the code runs in the
+  interpreter and the result does not depend on when compilation finishes;
+  only the JIT counters would change. To be done with a second tier (hot
+  regions recompiled larger) when worthwhile.
+- **User mode**: `JitCpu` still calls the engine for every region
+  (no dispatcher) and every access goes through `UserMemory`: the next
+  gain there is chaining, not the translator.
 
-## Verifica
-- `vetro-jit-native/tests/parity.rs` e `sys_parity.rs` (programmi casuali in
-  modalità utente e sistema, ora con SIMD, DAIF, ELR/SPSR, UMA casuale): un
-  errore introdotto apposta viene trovato in ognuno dei punti nuovi (flag
-  pigri nell'host, MOVI, metà di un Q, Q allineato a 8 su memoria Device,
-  TLB dei non allineati riempita da accessi allineati).
-- Test mirati: Q a cavallo di pagina (modalità utente, memoria uguale
-  all'interprete), accesso non allineato che sconfina da una pagina nella
-  TLB dei non allineati a una non mappata (modalità sistema), YIELD dopo
-  DAIFClr (e niente uscita per DAIFSet o per un bit già a zero), regioni con
-  cicli e dimensione del codice (`codice_compatto`).
-- Avvio del kernel col JIT su wasmtime e su V8 (`tools/wasm-boot.sh --jit`):
-  stesse istruzioni e stesso log dell'interprete; replay e snapshot col JIT;
-  tests/linux con `VETRO_JIT=1`; tests/diff e tests/isa con l'oracolo.
+## Verification
+- `vetro-jit-native/tests/parity.rs` and `sys_parity.rs` (random programs in
+  user and system mode, now with SIMD, DAIF, ELR/SPSR, random UMA): a
+  deliberately introduced bug is found at each of the new points (lazy flags
+  in the host, MOVI, half of a Q, Q aligned to 8 on Device memory,
+  unaligned TLB filled by aligned accesses).
+- Targeted tests: Q across a page (user mode, memory equal to the
+  interpreter), an unaligned access crossing from a page in the unaligned TLB
+  into an unmapped one (system mode), YIELD after DAIFClr (and no exit for
+  DAIFSet or for a bit already at zero), regions with loops and code size
+  (`codice_compatto`).
+- Kernel boot with the JIT on wasmtime and on V8 (`tools/wasm-boot.sh --jit`):
+  same instructions and same log as the interpreter; replay and snapshot with
+  the JIT; tests/linux with `VETRO_JIT=1`; tests/diff and tests/isa with the
+  oracle.
 
-## Conseguenze
-- ABI del JIT (`docs/specs/jit.md`): `JitState` a 976 byte (ingresso, DAIF,
-  ELR/SPSR/ESR/FAR, registri V, flag pigri), area della modalità sistema da
-  1024 con la TLB dei non allineati, voce della cache dei salti con
-  l'ingresso, codice `YIELD`, import `rt.*`, `env.vsync`,
-  `Engine::runtime`, `Host::vsync`. vetro-wasm passa all'ABI 10
-  (`vetro_jit.runtime`, `vetro_jit_vsync`, `yields`).
-- `vetro-cpu` esporta `simd::{CopyOp, MovImmOp}` (solo i nomi dei tipi).
+## Consequences
+- JIT ABI (`docs/specs/jit.md`): `JitState` at 976 bytes (entry, DAIF,
+  ELR/SPSR/ESR/FAR, V registers, lazy flags), system mode area of
+  1024 with the unaligned TLB, branch cache entry with the entry, `YIELD`
+  code, `rt.*` imports, `env.vsync`, `Engine::runtime`, `Host::vsync`.
+  vetro-wasm moves to ABI 10 (`vetro_jit.runtime`, `vetro_jit_vsync`,
+  `yields`).
+- `vetro-cpu` exports `simd::{CopyOp, MovImmOp}` (only the type names).

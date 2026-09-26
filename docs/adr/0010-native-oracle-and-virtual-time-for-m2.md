@@ -1,72 +1,72 @@
-# ADR 0010 — LTP di M2: ambiente dell'oracolo, oracolo nativo dove QEMU sbaglia, tempo virtuale
+# ADR 0010 — M2 LTP: oracle environment, native oracle where QEMU is wrong, virtual time
 
-- Stato: accettata (M2, 2026-09-25). Precisa il criterio di uscita di M2 e
-  integra l'ADR 0003 (oracolo QEMU).
+- Status: accepted (M2, 2026-09-25). Refines the M2 exit criterion and
+  supplements ADR 0003 (QEMU oracle).
 
-## Contesto
-Il criterio di M2 confronta una selezione di test LTP eseguiti su Vetro e su
-`qemu-aarch64 -cpu cortex-a53`: stesso codice d'uscita, stessi conteggi di
-TPASS/TFAIL/TBROK/TCONF. Sul job linux della CI (host arm64) sono emersi tre
-problemi che non riguardano la correttezza di Vetro:
+## Context
+The M2 criterion compares a selection of LTP tests run on Vetro and on
+`qemu-aarch64 -cpu cortex-a53`: same exit code, same counts of
+TPASS/TFAIL/TBROK/TCONF. On the CI linux job (arm64 host) three
+problems emerged that do not concern Vetro's correctness:
 
-1. QEMU user mode passa all'host molte richieste: `uname -r`, le CPU di
-   `sched_getaffinity`, i limiti di risorse. Molti test LTP decidono cosa
-   provare in base alla versione del kernel o al numero di CPU, quindi
-   Vetro e QEMU eseguivano test diversi.
-2. Su alcuni test QEMU si discosta dal kernel Linux: `futex_waitv` e
-   `F_CREATED_QUERY` non implementati, ordine dei controlli di `mmap`, flag di
-   `clone`, eccetera. Imitare questi errori sarebbe un passo indietro nella
-   fedeltà.
-3. Il tempo virtuale di Vetro contava un nanosecondo per istruzione. Un
-   `alarm(5)` costava 5·10⁹ istruzioni, e un ciclo fatto di sole syscall
-   (che sull'host costano microsecondi reali ma poche istruzioni) non faceva
-   quasi avanzare il tempo.
+1. QEMU user mode passes many requests through to the host: `uname -r`, the CPUs of
+   `sched_getaffinity`, resource limits. Many LTP tests decide what to
+   try based on the kernel version or the number of CPUs, so
+   Vetro and QEMU were running different tests.
+2. On some tests QEMU departs from the Linux kernel: `futex_waitv` and
+   `F_CREATED_QUERY` not implemented, the order of `mmap` checks, `clone`
+   flags, and so on. Imitating these errors would be a step backwards in
+   fidelity.
+3. Vetro's virtual time counted one nanosecond per instruction. An
+   `alarm(5)` cost 5·10⁹ instructions, and a loop made only of syscalls
+   (which on the host cost real microseconds but few instructions) barely
+   advanced time.
 
-## Decisione
-- **Ambiente dell'oracolo.** L'harness LTP chiede a QEMU, con BusyBox, la
-  versione del kernel (`uname -r`) e le CPU disponibili (`nproc`), e le passa
-  a Vetro (`Config::release`, `Config::cpus`). I valori predefiniti di Vetro
-  restano fissi (una CPU, `6.6.0-vetro`), perché l'esecuzione sia
-  riproducibile e perché nel browser non c'è un host da imitare.
-- **Oracolo nativo dove QEMU sbaglia.** `tools/ltp/qemu-divergent.txt`
-  elenca i test su cui QEMU differisce da Linux, ciascuno con l'esito nativo,
-  quello di QEMU e il motivo. Ogni voce è verificata eseguendo il binario in
-  nativo e sotto QEMU nello stesso ambiente, da utente non privilegiato. Per
-  questi test l'oracolo è l'esecuzione nativa del binario statico su un host
-  Linux aarch64 (il job linux della CI); sugli altri host sono saltati, con un
-  avviso. Il kernel reale è un oracolo più forte di QEMU: l'eccezione non
-  indebolisce la regola "QEMU è l'oracolo", la rende più stretta dove QEMU
-  non basta.
-- **Oracolo ripetuto.** Vetro è deterministico, l'oracolo no: i test di
-  temporizzazione (`nanosleep01`, `futex_wait05`, ecc.) misurano tempi reali
-  e su un host carico QEMU a volte li sbaglia. Se l'esito dell'oracolo è
-  diverso da quello di Vetro, l'harness lo riesegue fino a due volte e basta
-  che una delle esecuzioni coincida. L'esito di Vetro non si ripete mai. I
-  test che misurano tempi reali (`tools/ltp/timing.txt`, quelli della
-  libreria `tst_timer_test`) girano da soli, dopo la fase in parallelo.
-- **Limiti dell'host.** Vetro usa un descrittore dell'host per ogni file del
-  guest, quindi alza il proprio limite soft (`raise_fd_limit`). L'oracolo
-  riceve il limite originale, perché QEMU lo passa al guest.
-- **Esito di QEMU.** QEMU stampa "uncaught target signal" anche quando muore
-  un processo figlio del test, cosa attesa in molti casi. Il segnale conta
-  solo se il processo principale non è uscito normalmente.
-- **Esclusioni.** `tools/ltp/skip.txt` resta per i test che non si possono
-  confrontare, ciascuno con il motivo (per ora `fork14`, che chiede 16 TB di
-  spazio virtuale).
-- **Tempo virtuale.** 10 ns per istruzione (una CPU nominale da 100 MHz,
-  vicina alla velocità reale dell'interprete) e 1 µs per syscall (il costo
-  tipico su un kernel vero). Resta deterministico, perché dipende solo dalla
-  sequenza eseguita.
+## Decision
+- **Oracle environment.** The LTP harness asks QEMU, with BusyBox, for the
+  kernel version (`uname -r`) and the available CPUs (`nproc`), and passes them
+  to Vetro (`Config::release`, `Config::cpus`). Vetro's default values
+  stay fixed (one CPU, `6.6.0-vetro`), so that execution is
+  reproducible and because in the browser there is no host to imitate.
+- **Native oracle where QEMU is wrong.** `tools/ltp/qemu-divergent.txt`
+  lists the tests on which QEMU differs from Linux, each with the native outcome,
+  QEMU's outcome and the reason. Every entry is verified by running the binary
+  natively and under QEMU in the same environment, as an unprivileged user. For
+  these tests the oracle is the native execution of the static binary on a
+  Linux aarch64 host (the CI linux job); on other hosts they are skipped, with a
+  warning. The real kernel is a stronger oracle than QEMU: the exception does not
+  weaken the rule "QEMU is the oracle", it makes it stricter where QEMU
+  is not enough.
+- **Repeated oracle.** Vetro is deterministic, the oracle is not: the
+  timing tests (`nanosleep01`, `futex_wait05`, etc.) measure real time
+  and on a loaded host QEMU sometimes gets them wrong. If the oracle's outcome
+  differs from Vetro's, the harness reruns it up to two times and it is enough
+  for one of the runs to match. Vetro's outcome is never repeated. The
+  tests that measure real time (`tools/ltp/timing.txt`, those of the
+  `tst_timer_test` library) run alone, after the parallel phase.
+- **Host limits.** Vetro uses one host descriptor for every guest
+  file, so it raises its own soft limit (`raise_fd_limit`). The oracle
+  receives the original limit, because QEMU passes it to the guest.
+- **QEMU outcome.** QEMU prints "uncaught target signal" even when a
+  child process of the test dies, which is expected in many cases. The signal counts
+  only if the main process did not exit normally.
+- **Exclusions.** `tools/ltp/skip.txt` remains for the tests that cannot be
+  compared, each with its reason (for now `fork14`, which asks for 16 TB of
+  virtual space).
+- **Virtual time.** 10 ns per instruction (a nominal 100 MHz CPU,
+  close to the interpreter's real speed) and 1 µs per syscall (the
+  typical cost on a real kernel). It stays deterministic, because it depends only on the
+  executed sequence.
 
-## Conseguenze
-- Il criterio di M2 è: tutti i test della selezione LTP, esclusi quelli di
-  `skip.txt` con motivo, hanno lo stesso esito su Vetro e sull'oracolo (QEMU,
-  o il nativo per quelli di `qemu-divergent.txt`) nel job linux della CI.
-- Le due liste sono parte del criterio: aggiungere una voce richiede la
-  verifica nativo/QEMU e il motivo, e va rivisto a ogni aggiornamento di QEMU.
-- Limite dell'oracolo ripetuto: se l'oracolo è instabile su un test, Vetro
-  può coincidere con un suo esito raro e passare lo stesso. Si accetta per i
-  soli casi di tempi reali; un test che diverge sempre resta un fallimento.
-- Le costanti di tempo sono visibili ai programmi, ad esempio nel numero di
-  giri di un ciclo che dura un secondo. Cambiarle cambia le tracce, ma non la
-  correttezza.
+## Consequences
+- The M2 criterion is: all the tests of the LTP selection, excluding those in
+  `skip.txt` with a reason, have the same outcome on Vetro and on the oracle (QEMU,
+  or native for those in `qemu-divergent.txt`) in the CI linux job.
+- The two lists are part of the criterion: adding an entry requires the
+  native/QEMU verification and the reason, and must be reviewed at every QEMU update.
+- Limit of the repeated oracle: if the oracle is unstable on a test, Vetro
+  can match one of its rare outcomes and pass anyway. This is accepted for
+  real-time cases only; a test that always diverges remains a failure.
+- The time constants are visible to programs, for example in the number of
+  iterations of a loop that lasts one second. Changing them changes the traces, but not
+  correctness.

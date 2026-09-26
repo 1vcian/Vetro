@@ -1,122 +1,120 @@
-# ADR 0021 — Modifica dei database SQLite e delle SharedPreferences dal gestore dei file
+# ADR 0021 — Editing SQLite databases and SharedPreferences from the file manager
 
-- Stato: accettata (M8, sul guest Linux, 2026-09-26). Estende l'ADR 0020
-  (demone `vetro-files` su virtio-vsock); protocollo in `docs/specs/files.md`
-  (versione 2).
+- Status: accepted (M8, on the Linux guest, 2026-09-26). Extends ADR 0020
+  (`vetro-files` daemon over virtio-vsock); protocol in
+  `docs/specs/files.md` (version 2).
 
-## Contesto
-L'uscita di M8 chiede che una modifica fatta dal pannello (un valore nelle
-SharedPreferences e **una riga di un database SQLite**) sia letta dall'app
-dopo il riavvio dell'attività. Con l'ADR 0020 il pannello legge i database
-con un lettore del formato scritto da noi (`web/app/sqlite.mjs`), solo
-lettura e senza il WAL, e le SharedPreferences si modificano solo come
-testo XML.
+## Context
+The M8 exit asks that an edit made from the panel (a value in the
+SharedPreferences and **a row of an SQLite database**) be read by the app
+after the activity restarts. With ADR 0020 the panel reads databases with
+a reader of the format written by us (`web/app/sqlite.mjs`), read-only and
+without the WAL, and SharedPreferences can be edited only as XML text.
 
-Un database di un'app è quasi sempre **aperto** mentre lo si guarda: Android
-apre i database in WAL (`journal_mode=WAL`, predefinito da Android 9), con i
-file `-wal` e `-shm` accanto e i lock POSIX sui byte del file e della
-memoria condivisa. Riscrivere le pagine del file dall'host (o con una
-scrittura atomica del demone, che sostituisce l'inode) ignorerebbe lock,
-WAL e cache delle pagine dell'app: l'app continuerebbe a leggere il WAL e
-la sua memoria, o corromperebbe il database alla prossima scrittura.
+An app's database is almost always **open** while you look at it: Android
+opens databases in WAL (`journal_mode=WAL`, the default since Android 9),
+with the `-wal` and `-shm` files next to it and POSIX locks on the bytes of
+the file and of the shared memory. Rewriting the file's pages from the host
+(or with an atomic write by the daemon, which replaces the inode) would
+ignore the app's locks, WAL and page cache: the app would keep reading the
+WAL and its memory, or would corrupt the database at its next write.
 
-## Decisione
+## Decision
 
-### SQL nel guest con il motore SQLite vero
-- Nuova richiesta **SQL** (tipo 14) del demone: percorso del database, SQL
-  (una o più istruzioni), parametri legati (`NULL`, intero a 64 bit, reale,
-  testo, BLOB, per posizione `?N`), numero di righe cambiate atteso e flag
-  (sola lettura). La risposta porta il codice di SQLite e il suo messaggio,
-  righe cambiate, ultimo rowid inserito, colonne e righe dell'ultima
-  istruzione che ne restituisce (al più 10000 righe e 16 MiB).
-- Il demone esegue il SQL con **SQLite linkato staticamente** (sorgente
-  *amalgamation* ufficiale 3.53.4, sha256 fissato in
-  `tools/guest-kernel/build.sh`, dominio pubblico), quindi con lock POSIX,
-  journal di rollback o WAL, `-shm` e checkpoint esattamente come l'app:
-  una scrittura dell'host è una transazione come quelle dell'app.
-- L'esecuzione avviene in un **processo figlio con uid e gid del
-  proprietario del file** del database (`setgroups(0)`, `setresgid`,
-  `setresuid`): i file `-wal`, `-shm` e `-journal` che SQLite crea hanno il
-  proprietario dell'app (un `-shm` di root renderebbe il database
-  illeggibile all'app). Dopo l'esecuzione il demone porta su quei file
-  anche il contesto SELinux del database se è diverso (su Android il
-  processo del demone non ha le categorie MLS dell'app). Il figlio usa
-  `busy_timeout` di 2 s: se l'app tiene la scrittura più a lungo la
-  richiesta fallisce con `SQLITE_BUSY` e niente cambia.
-- Tutte le istruzioni di una richiesta stanno in **una transazione**
-  (`BEGIN IMMEDIATE` … `COMMIT`); con un numero di righe cambiate atteso
-  (il pannello chiede sempre 1) una differenza fa `ROLLBACK` ed errore: un
-  `UPDATE … WHERE rowid = ?` su una riga che l'app ha tolto nel frattempo
-  non tocca niente. Le righe contate sono quelle cambiate direttamente
-  dalle istruzioni (non dai trigger).
-- Il demone aspetta il figlio (ciclo `poll()` fermo per la durata della
-  transazione, al più il `busy_timeout` più il lavoro): accettabile per un
-  gestore interattivo, le altre connessioni ripartono subito dopo.
-- Il database deve esistere (niente database nuovi creati per errore): un
-  percorso che non c'è risponde `ENOENT`, una cartella `EISDIR`, un file
-  speciale `EINVAL`.
-- Nel guest di prova `sqlite3` è un collegamento a `vetro-files`
-  (programma multi-chiamata come BusyBox: con `argv[0]` `sqlite3` parte la
-  shell ufficiale `shell.c` dello stesso sorgente), così una sola copia del
-  motore sta nell'initramfs. Nell'immagine Android (userdebug) il demone si
-  compila con bionic dallo stesso sorgente, senza la shell: `sqlite3` c'è
-  già nelle build userdebug.
+### SQL in the guest with the real SQLite engine
+- New **SQL** request (type 14) of the daemon: database path, SQL (one or
+  more statements), bound parameters (`NULL`, 64-bit integer, real, text,
+  BLOB, by position `?N`), expected number of changed rows and flags
+  (read-only). The response carries SQLite's code and its message, changed
+  rows, last inserted rowid, columns and rows of the last statement that
+  returns any (at most 10000 rows and 16 MiB).
+- The daemon executes the SQL with **statically linked SQLite** (official
+  *amalgamation* source 3.53.4, sha256 pinned in
+  `tools/guest-kernel/build.sh`, public domain), hence with POSIX locks,
+  rollback journal or WAL, `-shm` and checkpoints exactly like the app:
+  a write from the host is a transaction like the app's.
+- Execution happens in a **child process with the uid and gid of the
+  owner of the database file** (`setgroups(0)`, `setresgid`,
+  `setresuid`): the `-wal`, `-shm` and `-journal` files that SQLite
+  creates have the app's owner (a root-owned `-shm` would make the
+  database unreadable to the app). After execution the daemon also applies
+  the database's SELinux context to those files if it differs (on Android
+  the daemon's process does not have the app's MLS categories). The child
+  uses a `busy_timeout` of 2 s: if the app holds the write lock longer the
+  request fails with `SQLITE_BUSY` and nothing changes.
+- All the statements of a request are in **one transaction**
+  (`BEGIN IMMEDIATE` … `COMMIT`); with an expected number of changed rows
+  (the panel always asks for 1) a difference causes `ROLLBACK` and an
+  error: an `UPDATE … WHERE rowid = ?` on a row the app has removed in the
+  meantime touches nothing. The rows counted are those changed directly by
+  the statements (not by triggers).
+- The daemon waits for the child (`poll()` loop stalled for the duration
+  of the transaction, at most the `busy_timeout` plus the work):
+  acceptable for an interactive manager, the other connections resume
+  right after.
+- The database must exist (no new databases created by mistake): a path
+  that does not exist answers `ENOENT`, a directory `EISDIR`, a special
+  file `EINVAL`.
+- In the test guest `sqlite3` is a link to `vetro-files` (a multi-call
+  program like BusyBox: with `argv[0]` `sqlite3` the official shell
+  `shell.c` from the same source starts), so a single copy of the engine
+  lives in the initramfs. In the Android image (userdebug) the daemon is
+  compiled with bionic from the same source, without the shell: `sqlite3`
+  is already in userdebug builds.
 
-Scartate: scrivere le pagine dall'host o con la scrittura atomica (vedi
-sopra); invocare la shell `sqlite3` del guest con il SQL come testo
-(quoting dei valori fragile, niente BLOB, uscita da interpretare, e sul
-guest Linux la shell andrebbe aggiunta comunque); un motore SQLite in
-WebAssembly nella pagina (lavorerebbe su una copia del file, stessi
-problemi della scrittura dall'host).
+Rejected: writing the pages from the host or with the atomic write (see
+above); invoking the guest's `sqlite3` shell with the SQL as text (fragile
+value quoting, no BLOBs, output to be parsed, and on the Linux guest the
+shell would have to be added anyway); an SQLite engine in WebAssembly in
+the page (it would work on a copy of the file, same problems as writing
+from the host).
 
-### Lettura: il visualizzatore legge anche il WAL
-La lettura resta passiva (nessun lock, nessun processo nel guest): il
-pannello legge il file del database e il suo `-wal` e il lettore
-(`sqlite.mjs`) ricostruisce l'ultima istantanea confermata come fa SQLite
-al recupero: intestazione del WAL, *salt* e checksum cumulativi dei frame,
-per ogni pagina l'ultimo frame valido fino all'ultimo frame di commit, che
-dà anche il numero di pagine del database. Il `-shm` non serve. Le due
-letture non sono atomiche: se l'app fa un checkpoint in mezzo, l'evento di
-inotify del file (o del `-wal`) fa rileggere il database. Scartato il
-checkpoint prima di leggere: scriverebbe nel database dell'app a ogni
-apertura.
+### Reading: the viewer also reads the WAL
+Reading stays passive (no locks, no process in the guest): the panel reads
+the database file and its `-wal` and the reader (`sqlite.mjs`)
+reconstructs the last committed snapshot as SQLite does on recovery: WAL
+header, cumulative *salt* and checksums of the frames, for each page the
+last valid frame up to the last commit frame, which also gives the number
+of pages of the database. The `-shm` is not needed. The two reads are not
+atomic: if the app checkpoints in between, the inotify event of the file
+(or of the `-wal`) makes the database be re-read. Rejected: checkpointing
+before reading, which would write into the app's database at every open.
 
-### SharedPreferences: tabella modificabile, XML di Android
-Il pannello legge l'XML (`<map>` con `string`, `int`, `long`, `float`,
-`boolean`, `set` di `string`, `null`) con un lettore XML piccolo scritto da
-noi (senza DOM, provabile in Node), mostra una tabella con tipo, nome e
-valore modificabili, righe da aggiungere e togliere, e valida i valori
-come li rilegge Android (`Integer.parseInt`, `Long.parseLong`,
-`Float.parseFloat`, `true`/`false`). Il salvataggio riscrive il file nel
-formato di `XmlUtils.writeMapXml` con `FastXmlSerializer` (intestazione
-`<?xml version='1.0' encoding='utf-8' standalone='yes' ?>`, rientro di 4
-spazi, `<int name="n" value="1" />`, gli stessi caratteri protetti) con la
-scrittura atomica già esistente del demone (proprietario, modo e contesto
-SELinux conservati). Un file scritto da Android e riletto senza modifiche
-dà gli stessi byte. L'app rilegge il file quando ricarica le preferenze
-(riavvio del processo o dell'attività, come chiede l'uscita di M8): una
-scrittura mentre l'app ha le preferenze in memoria viene sovrascritta alla
-sua prossima `apply()`, limite noto di ogni modifica esterna.
+### SharedPreferences: editable table, Android XML
+The panel reads the XML (`<map>` with `string`, `int`, `long`, `float`,
+`boolean`, `set` of `string`, `null`) with a small XML reader written by
+us (no DOM, testable in Node), shows a table with editable type, name and
+value, rows to add and remove, and validates values the way Android reads
+them back (`Integer.parseInt`, `Long.parseLong`, `Float.parseFloat`,
+`true`/`false`). Saving rewrites the file in the format of
+`XmlUtils.writeMapXml` with `FastXmlSerializer` (header
+`<?xml version='1.0' encoding='utf-8' standalone='yes' ?>`, 4-space
+indentation, `<int name="n" value="1" />`, the same escaped characters)
+with the daemon's existing atomic write (owner, mode and SELinux context
+preserved). A file written by Android and read back without changes gives
+the same bytes. The app re-reads the file when it reloads its preferences
+(restart of the process or of the activity, as the M8 exit asks): a write
+while the app holds the preferences in memory is overwritten at its next
+`apply()`, a known limit of every external edit.
 
-### Nomi di file non UTF-8
-Nel protocollo i nomi sono già byte. Il client Rust tiene percorsi, nomi e
-destinazioni dei collegamenti come byte (`Vec<u8>`) e non più come
-`String` con i caratteri sostituiti. Verso JavaScript si usa la
-rappresentazione *surrogateescape* (PEP 383): un byte che non fa parte di
-UTF-8 valido diventa il surrogato solitario `U+DC80 + (byte - 0x80)`, in
-JSON `\udcXX`; il JS rimanda i percorsi a vetro-wasm come byte con la
-codifica inversa (`web/node/vetro.mjs`), così un nome qualsiasi fa andata e
-ritorno. Il pannello mostra quei byte come `\xNN`. Un nome valido in UTF-8
-non contiene mai surrogati (UTF-8 non li codifica), quindi la
-rappresentazione non è ambigua.
+### Non-UTF-8 file names
+In the protocol names are already bytes. The Rust client keeps paths,
+names and link targets as bytes (`Vec<u8>`) and no longer as a `String`
+with replaced characters. Towards JavaScript the *surrogateescape*
+representation (PEP 383) is used: a byte that is not part of valid UTF-8
+becomes the lone surrogate `U+DC80 + (byte - 0x80)`, in JSON `\udcXX`; the
+JS sends paths back to vetro-wasm as bytes with the inverse encoding
+(`web/node/vetro.mjs`), so any name round-trips. The panel shows those
+bytes as `\xNN`. A valid UTF-8 name never contains surrogates (UTF-8 does
+not encode them), so the representation is unambiguous.
 
-## Conseguenze
-- Versione 2 del protocollo (richiesta SQL); il client accetta demoni di
-  versione 1 e 2 (con la 1 la richiesta SQL risponde `ENOSYS`).
-- ABI di vetro-wasm 9: operazione SQL, percorsi come byte (non più
-  rifiutati se non UTF-8), nomi in surrogateescape.
-- L'initramfs cresce di circa 1 MiB (SQLite nel demone); il demone ha
-  bisogno di `fork` e dei privilegi per cambiare utente (root nel guest).
-- Su Android servono ancora il servizio di init del demone e la sua policy
-  SELinux (ADR 0020); il contesto del processo figlio resta quello del
-  demone, e i file che crea prendono il contesto del database.
+## Consequences
+- Protocol version 2 (SQL request); the client accepts daemons of version
+  1 and 2 (with 1 the SQL request answers `ENOSYS`).
+- vetro-wasm ABI 9: SQL operation, paths as bytes (no longer rejected if
+  not UTF-8), names in surrogateescape.
+- The initramfs grows by about 1 MiB (SQLite in the daemon); the daemon
+  needs `fork` and the privileges to change user (root in the guest).
+- On Android the daemon's init service and its SELinux policy are still
+  needed (ADR 0020); the child process's context stays the daemon's, and
+  the files it creates take the database's context.

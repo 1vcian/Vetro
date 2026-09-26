@@ -44,9 +44,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Toolchain (da rust-toolchain.toml)
+      - name: Toolchain (from rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
-      - name: Oracolo QEMU
+      - name: QEMU oracle
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-user
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
@@ -59,7 +59,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Toolchain (da rust-toolchain.toml)
+      - name: Toolchain (from rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --target wasm32-unknown-unknown --workspace --exclude vetro-cli --exclude vetro-diff --exclude vetro-isa-tests --exclude vetro-linux-tests --exclude vetro-jit-native
@@ -74,14 +74,14 @@ jobs:
       VETRO_REQUIRE_GUEST_BINS: "1"
     steps:
       - uses: actions/checkout@v4
-      - name: Toolchain (da rust-toolchain.toml)
+      - name: Toolchain (from rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
-      - name: Oracolo QEMU
+      - name: QEMU oracle
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-user
       - uses: Swatinem/rust-cache@v2
-      - name: Binari guest
+      - name: Guest binaries
         run: tools/guest-bins/build.sh
-      - name: RISU (immagini e tracce di QEMU)
+      - name: RISU (QEMU images and traces)
         run: tools/risu/build.sh
       - name: LTP (build)
         run: tools/ltp/build.sh
@@ -89,7 +89,7 @@ jobs:
         env:
           VETRO_LTP_FULL: "1"
       # M4: the same tests with the JIT (threshold 0: every block is translated at once).
-      - name: Test Linux col JIT
+      - name: Linux tests with the JIT
         run: cargo test --release -p vetro-linux-tests
         env:
           VETRO_LTP_FULL: "1"
@@ -117,10 +117,10 @@ jobs:
       VETRO_REQUIRE_ANALYSIS_TOOLS: "1"
     steps:
       - uses: actions/checkout@v4
-      - name: Toolchain (da rust-toolchain.toml)
+      - name: Toolchain (from rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
       # qemu-user: syscall oracle in the introspection test (ADR 0027).
-      - name: Oracolo QEMU (sistema e utente)
+      - name: QEMU oracle (system and user)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-system-arm qemu-user
       - uses: Swatinem/rust-cache@v2
       - uses: actions/cache@v4
@@ -138,14 +138,14 @@ jobs:
         run: test -f target/guest-bins/busybox || tools/guest-bins/build.sh
       # kselftest.sh uses the sources extracted by build.sh in the Docker volume:
       # they are built together, and cached together.
-      - name: Kernel guest, initramfs e kselftest
+      - name: Guest kernel, initramfs and kselftest
         run: |
           set -o pipefail
           test -f target/guest-kernel/initramfs-kselftest.cpio.gz \
             || { tools/guest-kernel/build.sh && tools/guest-kernel/kselftest.sh; } 2>&1 | tee boot-build.log
       # Job logs can only be read when authenticated: on failure the
       # last lines become annotations, visible from the public API.
-      - name: Avvio sotto QEMU e sotto Vetro
+      - name: Boot under QEMU and under Vetro
         if: needs.changes.outputs.boot == 'true'
         run: |
           set -o pipefail
@@ -153,7 +153,7 @@ jobs:
       # M4 (ADR 0013): the same boot with the system-mode JIT
       # (wasmtime) must give the same instructions and the same log, byte for
       # byte, as the interpreter (the test runs both and compares them).
-      - name: Avvio sotto Vetro col JIT
+      - name: Boot under Vetro with the JIT
         if: needs.changes.outputs.boot == 'true'
         run: |
           set -o pipefail
@@ -168,7 +168,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Avvio in WebAssembly (Node), col JIT, e tempi
+      - name: Boot in WebAssembly (Node), with the JIT, and timings
         run: |
           set -o pipefail
           tools/wasm-boot.sh --jit 2>&1 | tee wasm-boot.log
@@ -176,7 +176,7 @@ jobs:
       # M5: the web app and the vetro-wasm device API in Node: disk
       # via HTTP Range (same instructions and same log as a local disk),
       # framebuffer and inputs; the app in headless Chrome if the runner has it.
-      - name: App web (Node, Chrome headless se c'è)
+      - name: Web app (Node, headless Chrome if available)
         run: |
           set -o pipefail
           tools/web-test.sh 2>&1 | tee web-test.log
@@ -198,7 +198,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Toolchain (da rust-toolchain.toml)
+      - name: Toolchain (from rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - uses: actions/cache/restore@v4
@@ -209,11 +209,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Sito
+      - name: Site
         run: |
           set -o pipefail
           tools/pages/build.sh 2>&1 | tee pages-build.log
-      - name: Sito nel browser
+      - name: Site in the browser
         run: |
           set -o pipefail
           node tests/web/pages.mjs 2>&1 | tee pages-test.log

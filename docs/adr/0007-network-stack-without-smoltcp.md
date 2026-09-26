@@ -1,61 +1,61 @@
-# ADR 0007 — Stack di rete lato host scritto in casa; smoltcp solo nei test
+# ADR 0007 — Host-side network stack written in-house; smoltcp only in tests
 
-- Stato: accettata (preparazione M3, 2026-09-24)
+- Status: accepted (M3 preparation, 2026-09-24)
 
-## Contesto
-Il guest parla con virtio-net; dall'altra parte del cavo serve un gateway
-virtuale che risponda ad ARP/DHCP/ICMP e che **termini** ogni connessione
-TCP e ogni flusso UDP del guest verso qualsiasi destinazione (come
-slirp/libslirp in QEMU), consegnandone i dati a un backend: il sinkhole
-(tutto finto e registrato) o il relay WebSocket (M7, perché il browser non
-apre socket). Vincoli: compila in `wasm32-unknown-unknown`, è deterministico
-(tempo solo come parametro, nessuna casualità non seminata: serve al replay
-di M10), e il suo stato dovrà entrare negli snapshot (M6).
+## Context
+The guest talks to virtio-net; on the other end of the cable we need a virtual
+gateway that answers ARP/DHCP/ICMP and that **terminates** every TCP connection
+and every UDP flow from the guest towards any destination (like
+slirp/libslirp in QEMU), handing their data to a backend: the sinkhole
+(everything fake and recorded) or the WebSocket relay (M7, because the browser
+does not open sockets). Constraints: it compiles to `wasm32-unknown-unknown`, it
+is deterministic (time only as a parameter, no unseeded randomness: needed for
+the replay of M10), and its state will have to go into snapshots (M6).
 
-L'alternativa naturale è `smoltcp` (0BSD, no_std, compila in WASM, maturo).
+The natural alternative is `smoltcp` (0BSD, no_std, compiles to WASM, mature).
 
-## Decisione
-Lo stack è scritto in `crates/vetro-net`, senza dipendenze. `smoltcp` entra
-solo come **dev-dependency**, e solo il suo modulo `wire`, come parser
-indipendente che valida ogni frame prodotto nei test (checksum IPv4, TCP,
-UDP, ICMP; DHCP e DNS decodificati da un'altra implementazione).
+## Decision
+The stack is written in `crates/vetro-net`, with no dependencies. `smoltcp`
+comes in only as a **dev-dependency**, and only its `wire` module, as an
+independent parser that validates every frame produced in the tests (IPv4, TCP,
+UDP, ICMP checksums; DHCP and DNS decoded by a different implementation).
 
-Motivi per non usare smoltcp nel crate:
-- **Terminazione "a qualsiasi indirizzo".** smoltcp è fatto per essere un
-  host con i suoi indirizzi e socket in ascolto. Per fare slirp bisogna
-  intercettare ogni SYN verso un IP arbitrario, creare al volo un socket in
-  ascolto su quella quadrupla prima di consegnargli il pacchetto, usare
-  `any_ip` e rotte finte, e gestire a parte DHCP server (smoltcp ha solo il
-  client), ARP per gli indirizzi del gateway e i flussi UDP. Si finisce a
-  scrivere comunque metà dello stack attorno a lui.
-- **Snapshot e replay.** Lo stato delle connessioni (numeri di sequenza,
-  buffer, timer) dovrà essere serializzato negli snapshot (M6) e ripetuto
-  identico (M10). Con strutture nostre è un `derive`; i socket di smoltcp
-  hanno campi privati e buffer presi in prestito.
-- **Registro eventi e attribuzione.** Il motore di analisi vuole eventi
-  esatti (byte nuovi per verso, mai contati due volte; apertura, chiusura e
-  motivo; domande e risposte DNS) con il tempo virtuale: più semplice
-  emetterli dove nasce il dato.
-- **Controllo di flusso verso un upstream asincrono.** L'upstream decide
-  quanti byte accettare (`tcp_write` restituisce il numero): la finestra
-  annunciata al guest segue direttamente la contropressione del relay.
+Reasons for not using smoltcp in the crate:
+- **Termination "at any address".** smoltcp is designed to be a
+  host with its own addresses and listening sockets. To do slirp you have to
+  intercept every SYN towards an arbitrary IP, create on the fly a socket
+  listening on that 4-tuple before handing it the packet, use
+  `any_ip` and fake routes, and separately handle a DHCP server (smoltcp has
+  only the client), ARP for the gateway's addresses and UDP flows. You end up
+  writing half the stack around it anyway.
+- **Snapshot and replay.** The connection state (sequence numbers,
+  buffers, timers) will have to be serialised into snapshots (M6) and replayed
+  identically (M10). With our own structures it is a `derive`; smoltcp's
+  sockets have private fields and borrowed buffers.
+- **Event log and attribution.** The analysis engine wants exact
+  events (new bytes per direction, never counted twice; open, close and
+  reason; DNS queries and answers) with virtual time: simpler to
+  emit them where the data originates.
+- **Flow control towards an asynchronous upstream.** The upstream decides
+  how many bytes to accept (`tcp_write` returns the number): the window
+  advertised to the guest directly follows the relay's backpressure.
 
-Il TCP scritto qui è volutamente piccolo e lecito per la RFC 9293: niente
-window scaling/SACK/timestamp (non annunciati nel SYN-ACK, quindi il guest
-non li usa), segmenti fuori ordine scartati con ACK duplicato, ACK immediati,
-RTO della RFC 6298 in tempo virtuale con Karn e raddoppio (annullato da un
-ACK di dati nuovi), go-back-N al timeout, fast retransmit, Reno, sonde a
-finestra zero, ACK di sfida della RFC 5961.
+The TCP written here is deliberately small and compliant with RFC 9293: no
+window scaling/SACK/timestamps (not advertised in the SYN-ACK, so the guest
+does not use them), out-of-order segments dropped with a duplicate ACK,
+immediate ACKs, RFC 6298 RTO in virtual time with Karn and doubling (cancelled
+by an ACK of new data), go-back-N on timeout, fast retransmit, Reno, zero-window
+probes, RFC 5961 challenge ACKs.
 
-## Conseguenze
-- Nessuna dipendenza a runtime: il build WASM non cambia.
-- La correttezza del TCP è nostra responsabilità: la coprono i test del
-  crate (handshake, ritrasmissioni, finestre, FIN/RST, trasferimento in
-  entrambi i versi su un cavo che perde il 20% dei frame) e, da M3, il
-  kernel Linux vero come guest.
-- Throughput limitato dalla finestra di 64 KiB senza scaling: sul cavo
-  virtuale (RTT di microsecondi) basta; se non basterà, lo si misura e si
-  aggiunge il window scaling con un ADR.
-- Dev-dependency: `smoltcp` 0.14 (0BSD) con `managed` (0BSD), `heapless`,
-  `hash32`, `stable_deref_trait`, `bitflags`, `cfg-if` (MIT/Apache-2.0) e
-  `byteorder` (Unlicense/MIT). Nessuna entra nei binari distribuiti.
+## Consequences
+- No runtime dependencies: the WASM build does not change.
+- TCP correctness is our responsibility: it is covered by the crate's
+  tests (handshake, retransmissions, windows, FIN/RST, transfer in
+  both directions over a cable that loses 20% of frames) and, from M3, the
+  real Linux kernel as guest.
+- Throughput limited by the 64 KiB window without scaling: on the
+  virtual cable (RTT of microseconds) it is enough; if it is not, we measure it
+  and add window scaling with an ADR.
+- Dev-dependency: `smoltcp` 0.14 (0BSD) with `managed` (0BSD), `heapless`,
+  `hash32`, `stable_deref_trait`, `bitflags`, `cfg-if` (MIT/Apache-2.0) and
+  `byteorder` (Unlicense/MIT). None of them goes into the distributed binaries.

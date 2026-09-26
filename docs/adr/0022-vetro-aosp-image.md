@@ -1,194 +1,207 @@
-# ADR 0022 — L'immagine AOSP 15 di Vetro: device vetro_arm64 derivato da Cuttlefish
+# ADR 0022 — Vetro's AOSP 15 image: vetro_arm64 device derived from Cuttlefish
 
-- Stato: accettata (M5, 2026-09-26). Usa ADR 0005 (ISA), 0008 e 0018
-  (avvio diretto e bootloader Android), 0020 (gestore dei file), 0004
-  (licenze). Ricerca: `docs/research/m5-android-images.md`,
-  `docs/research/m5-gki-boot.md`. Dettagli: `docs/specs/guest-image.md`.
+- Status: accepted (M5, 2026-09-26). Uses ADR 0005 (ISA), 0008 and 0018
+  (direct boot and Android bootloader), 0020 (file manager), 0004
+  (licences). Research: `docs/research/m5-android-images.md`,
+  `docs/research/m5-gki-boot.md`. Details: `docs/specs/guest-image.md`.
 
-## Contesto
-M5 chiede la home di Android nel browser. Le immagini pre-costruite non
-vanno: quella dell'emulatore SDK non si ridistribuisce e compone solo via
-gfxstream/goldfish (surfaceflinger abortisce sulla virt, sotto QEMU come
-sotto Vetro); quelle di Cuttlefish cercano i dischi su virtio-pci; il GSI
-è solo system. Serve un'immagine nostra, costruita da AOSP 15, che parta
-sulla macchina virt di Vetro e di QEMU (GICv3, Cortex-A53, virtio-mmio,
-niente PCI) con il bootloader di ADR 0018, e che porti microG.
+## Context
+M5 asks for the Android home screen in the browser. Prebuilt images do
+not work: the SDK emulator's cannot be redistributed and composes only via
+gfxstream/goldfish (surfaceflinger aborts on virt, under QEMU as under
+Vetro); Cuttlefish's look for their disks on virtio-pci; the GSI is
+system only. We need our own image, built from AOSP 15, that boots on the
+Vetro and QEMU virt machine (GICv3, Cortex-A53, virtio-mmio, no PCI) with
+the bootloader of ADR 0018, and that ships microG.
 
-## Decisione
+## Decision
 
-### Base: prodotto nostro `vetro_arm64` sopra `vsoc_arm64_only`
-- `guest/aosp/device/vetro/vetro_arm64` include il `BoardConfig.mk` di
-  `device/google/cuttlefish/vsoc_arm64_only` e il vendor del telefono
-  Cuttlefish (`shared/phone/device_vendor.mk`): HAL virtuali già pensati
-  per una VM, SwiftShader, minigbm, HWC ranchu, KeyMint e Gatekeeper
-  software. Cambia solo quello che la virt richiede. Un fork completo di
-  Cuttlefish costerebbe ogni aggiornamento di AOSP; il device minimo da zero
-  vorrebbe riscrivere decine di HAL.
-- Solo 64 bit (`core_64_bit_only.mk`, armv8-a, `TARGET_CPU_VARIANT :=
-  cortex-a53`): la CPU di Vetro non ha AArch32. Niente
-  `packages/modules/Virtualization` (non c'è KVM).
-- Tag AOSP `android-15.0.0_r36`, target `vetro_arm64-bp1a-userdebug`
-  (`bp1a` è la release config del tag; `trunk_staging` accenderebbe flag in
-  sviluppo). Build solo sulla VM Linux x86_64 dedicata (`tools/aosp`), mai
-  in CI.
-- Marchio: `PRODUCT_BRAND/MANUFACTURER := Vetro`, modello "Vetro arm64",
-  numero di serie `VETRO00001`. Il prodotto non si presenta come Android né
-  come Google; i nomi di pacchetto di microG (`com.google.android.gms`,
-  `com.android.vending`) sono identificatori tecnici imposti dalla
-  compatibilità, e le app si chiamano "microG Services" e "microG Companion".
+### Base: our own `vetro_arm64` product on top of `vsoc_arm64_only`
+- `guest/aosp/device/vetro/vetro_arm64` includes the `BoardConfig.mk` of
+  `device/google/cuttlefish/vsoc_arm64_only` and the Cuttlefish phone
+  vendor (`shared/phone/device_vendor.mk`): virtual HALs already designed
+  for a VM, SwiftShader, minigbm, HWC ranchu, software KeyMint and
+  Gatekeeper. Only what virt requires changes. A full fork of Cuttlefish
+  would cost every AOSP update; a minimal device from scratch would mean
+  rewriting dozens of HALs.
+- 64-bit only (`core_64_bit_only.mk`, armv8-a, `TARGET_CPU_VARIANT :=
+  cortex-a53`): Vetro's CPU has no AArch32. No
+  `packages/modules/Virtualization` (there is no KVM).
+- AOSP tag `android-15.0.0_r36`, target `vetro_arm64-bp1a-userdebug`
+  (`bp1a` is the tag's release config; `trunk_staging` would turn on
+  in-development flags). Build only on the dedicated Linux x86_64 VM
+  (`tools/aosp`), never in CI.
+- Branding: `PRODUCT_BRAND/MANUFACTURER := Vetro`, model "Vetro arm64",
+  serial number `VETRO00001`. The product does not present itself as
+  Android nor as Google; microG's package names (`com.google.android.gms`,
+  `com.android.vending`) are technical identifiers imposed by
+  compatibility, and the apps are called "microG Services" and "microG
+  Companion".
 
-### Kernel e prima fase
-- Kernel GKI android15-6.6 prebuilt del tree (`kernel/prebuilts/6.6/arm64`,
-  `6.6.57-android15-8-g8b48c9979699-ab12748506`), moduli di
-  `kernel/prebuilts/common-modules/virtual-device/6.6/arm64`: gli stessi di
-  Cuttlefish, non ricompilati.
-- `virtio_mmio.ko` nel vendor_ramdisk, accanto a quelli che Cuttlefish ci
-  mette già (virtio_blk, virtio_net, virtio-gpu, virtio_input,
-  virtio_console, vmw_vsock_virtio_transport, virtio-rng, …): Cuttlefish lo
-  carica solo nella seconda fase perché usa PCI; sulla virt senza di lui la
-  prima fase non vede il disco. vsock è nel kernel.
-- `androidboot.boot_devices` elenca tutti i 32 slot virtio-mmio della virt
-  (`a000000.virtio_mmio` … `a003e00.virtio_mmio`): il disco si trova in
-  qualunque slot finisca, con o senza vsock, sotto QEMU e sotto Vetro.
-- I parametri che su Cuttlefish mette il launcher (`assemble_cvd`,
-  `qemu_manager.cpp` con `--gpu_mode=guest_swiftshader`) stanno nella
-  sezione bootconfig del vendor_boot (`BOARD_BOOTCONFIG`): né il bootloader
-  di Vetro né QEMU devono aggiungere niente. Slot A, `force_normal_boot=1`,
+### Kernel and first stage
+- Prebuilt GKI android15-6.6 kernel from the tree
+  (`kernel/prebuilts/6.6/arm64`,
+  `6.6.57-android15-8-g8b48c9979699-ab12748506`), modules from
+  `kernel/prebuilts/common-modules/virtual-device/6.6/arm64`: the same as
+  Cuttlefish, not recompiled.
+- `virtio_mmio.ko` in the vendor_ramdisk, next to those Cuttlefish already
+  puts there (virtio_blk, virtio_net, virtio-gpu, virtio_input,
+  virtio_console, vmw_vsock_virtio_transport, virtio-rng, …): Cuttlefish
+  loads it only in the second stage because it uses PCI; on virt without
+  it the first stage does not see the disk. vsock is built into the
+  kernel.
+- `androidboot.boot_devices` lists all 32 virtio-mmio slots of virt
+  (`a000000.virtio_mmio` … `a003e00.virtio_mmio`): the disk is found in
+  whatever slot it ends up in, with or without vsock, under QEMU and under
+  Vetro.
+- The parameters that on Cuttlefish the launcher sets (`assemble_cvd`,
+  `qemu_manager.cpp` with `--gpu_mode=guest_swiftshader`) are in the
+  vendor_boot bootconfig section (`BOARD_BOOTCONFIG`): neither Vetro's
+  bootloader nor QEMU has to add anything. Slot A, `force_normal_boot=1`,
   `verifiedbootstate=orange`.
 
-### Dischi
-- Un solo disco GPT (`tools/aosp/mkdisk.sh`): `misc`, `frp`, `metadata`
-  (ext4 vuoto), `super` (partizioni logiche system, system_ext, product,
-  system_dlkm, vendor, odm, vendor_dlkm, odm_dlkm) e `userdata` (f2fs vuoto
-  della build; vold lo cifra al primo avvio). La prima fase trova le
-  partizioni per nome GPT.
-- fstab nostro (`fstab.vetro`, `androidboot.fstab_suffix=vetro`): le stesse
-  voci di `fstab.cf.f2fs.hctr2` senza flag `avb`, senza condivisioni
-  virtiofs e scheda SD.
-- **AVB/vbmeta disattivato**: il fstab non chiede dm-verity, il bootloader di
-  Vetro non legge vbmeta (ADR 0018), la build userdebug è "orange". La build
-  produce comunque vbmeta firmato con le chiavi di test: non si usa.
+### Disks
+- A single GPT disk (`tools/aosp/mkdisk.sh`): `misc`, `frp`, `metadata`
+  (empty ext4), `super` (logical partitions system, system_ext, product,
+  system_dlkm, vendor, odm, vendor_dlkm, odm_dlkm) and `userdata` (the
+  build's empty f2fs; vold encrypts it on first boot). The first stage
+  finds partitions by GPT name.
+- Our own fstab (`fstab.vetro`, `androidboot.fstab_suffix=vetro`): the
+  same entries as `fstab.cf.f2fs.hctr2` without the `avb` flag, without
+  virtiofs shares and SD card.
+- **AVB/vbmeta disabled**: the fstab does not ask for dm-verity, Vetro's
+  bootloader does not read vbmeta (ADR 0018), the userdebug build is
+  "orange". The build still produces a vbmeta signed with the test keys:
+  it is not used.
 
-### Cosa di Cuttlefish si toglie o si ferma (dalle prove sotto QEMU)
-- **Luci e OEM lock** (`LOCAL_ENABLE_LIGHT/OEMLOCK := false` prima di
-  ereditare il vendor): i loro HAL parlano con l'host e abortiscono, ma sono
-  dichiarati nella VINTF, e system_server li aspetta per sempre
-  (`LightsService` su `ILights/default`): senza toglierli il boot si ferma
-  prima di `activity`.
-- **HAL e servizi che abortiscono o escono senza host** (UWB, Thread,
-  ConfirmationUI, NFC, `bt_socket`, `seriallogging`): `init.vetro.rc` li
-  ferma al primo passaggio a `restarting`. A ciclo costavano un tombstone
-  ogni pochi secondi e `flags_health_check`: il carico medio del guest
-  scendeva da ~30 e il primo avvio metteva il doppio.
-- **Odex nelle partizioni** (`BOARD_USES_SYSTEM_OTHER_ODEX :=`): Cuttlefish
-  li mette in `system_other` (slot B) e li copia in `/data` al primo avvio;
-  il nostro disco ha solo lo slot A, e senza odex ArtService ricompilava ogni
-  app al primo avvio (sys.boot_completed da ~1300 a 476 s di guest sotto
-  QEMU).
-- **Niente schermata di blocco** (`ro.lockscreen.disable.default=true`).
+### What of Cuttlefish is removed or stopped (from the tests under QEMU)
+- **Lights and OEM lock** (`LOCAL_ENABLE_LIGHT/OEMLOCK := false` before
+  inheriting the vendor): their HALs talk to the host and abort, but they
+  are declared in the VINTF, and system_server waits for them forever
+  (`LightsService` on `ILights/default`): without removing them the boot
+  stops before `activity`.
+- **HALs and services that abort or exit without a host** (UWB, Thread,
+  ConfirmationUI, NFC, `bt_socket`, `seriallogging`): `init.vetro.rc`
+  stops them the first time they go to `restarting`. Looping, they cost a
+  tombstone every few seconds and `flags_health_check`: the guest's load
+  average dropped from ~30 and the first boot took twice as long.
+- **Odex in the partitions** (`BOARD_USES_SYSTEM_OTHER_ODEX :=`):
+  Cuttlefish puts them in `system_other` (slot B) and copies them to
+  `/data` on first boot; our disk has only slot A, and without odex
+  ArtService recompiled every app on first boot (sys.boot_completed from
+  ~1300 to 476 s of guest time under QEMU).
+- **No lock screen** (`ro.lockscreen.disable.default=true`).
 
-### Grafica
-- SwiftShader (Vulkan "pastel") con ANGLE per GLES 3.1, gralloc minigbm,
-  HWC ranchu con composizione nel guest sul DRM di virtio-gpu 2D, gli stessi
-  valori di Cuttlefish in `guest_swiftshader`. Niente gfxstream né virgl:
-  la GPU di Vetro è 2D (su WebGPU nel browser). Densità 240, schermo quello
-  di virtio-gpu (1280x800 per default).
-- Senza animazione d'avvio e senza procedura guidata
-  (`enable_bootanimation=0`, `setupwizard_mode=DISABLED`),
-  `hw_timeout_multiplier=50` per una CPU emulata lenta.
+### Graphics
+- SwiftShader (Vulkan "pastel") with ANGLE for GLES 3.1, minigbm gralloc,
+  HWC ranchu with in-guest composition on the virtio-gpu 2D DRM, the same
+  values as Cuttlefish in `guest_swiftshader`. No gfxstream nor virgl:
+  Vetro's GPU is 2D (on WebGPU in the browser). Density 240, screen that
+  of virtio-gpu (1280x800 by default).
+- No boot animation and no setup wizard (`enable_bootanimation=0`,
+  `setupwizard_mode=DISABLED`), `hw_timeout_multiplier=50` for a slow
+  emulated CPU.
 
-### Sicurezza, adb, SELinux
-- **adbd su TCP 5555 senza autorizzazione (`ro.adb.secure=0`) SOLO nella
-  build di sviluppo userdebug**: Cuttlefish fa lo stesso. Una build per
-  utenti deve togliere `ro.adb.secure=0` e usare le chiavi adb. L'host ci
-  arriva con `--hostfwd=tcp::5555-:5555` (Vetro) o l'inoltro di QEMU.
-- KeyMint e Gatekeeper software nel guest (`rust_nonsecure`, `nonsecure`):
-  su Cuttlefish stanno sull'host, che qui non c'è.
-- SELinux permissivo (`androidboot.selinux=permissive`, solo userdebug)
-  finché la policy non copre i percorsi virtio-mmio: primo passo in
-  `sepolicy/file_contexts` (sysfs di rete e blocchi come i percorsi PCI di
-  Cuttlefish); obiettivo enforcing con i rifiuti registrati nei primi avvii.
-- eth0 resta eth0 e la gestisce EthernetService con DHCP
-  (`ro.vendor.disable_rename_eth0=1`): niente Wi-Fi simulato né OpenWRT
-  dell'host di Cuttlefish.
+### Security, adb, SELinux
+- **adbd on TCP 5555 without authorization (`ro.adb.secure=0`) ONLY in
+  the userdebug development build**: Cuttlefish does the same. A build
+  for users must remove `ro.adb.secure=0` and use adb keys. The host
+  reaches it with `--hostfwd=tcp::5555-:5555` (Vetro) or QEMU's port
+  forwarding.
+- Software KeyMint and Gatekeeper in the guest (`rust_nonsecure`,
+  `nonsecure`): on Cuttlefish they live on the host, which is not there
+  here.
+- SELinux permissive (`androidboot.selinux=permissive`, userdebug only)
+  until the policy covers the virtio-mmio paths: first step in
+  `sepolicy/file_contexts` (network and block sysfs like Cuttlefish's PCI
+  paths); the goal is enforcing, with the denials logged in the first
+  boots.
+- eth0 stays eth0 and EthernetService manages it with DHCP
+  (`ro.vendor.disable_rename_eth0=1`): no simulated Wi-Fi nor
+  Cuttlefish's host OpenWRT.
 
 ### ART
-- `dalvik.vm.isa.arm64.variant=cortex-a53` (da `TARGET_CPU_VARIANT`),
-  controllato da `tools/aosp/fetch.sh` sugli artefatti: con a55 o varianti
-  più nuove il JIT genererebbe LSE e FP16, che la CPU di Vetro non ha
-  (ADR 0005). Niente ABI a 32 bit (controllato anche questo).
-- Una CPU e 2–3 GiB di RAM (`androidboot.ddr_size=3072MB`, `vetro boot
+- `dalvik.vm.isa.arm64.variant=cortex-a53` (from `TARGET_CPU_VARIANT`),
+  checked by `tools/aosp/fetch.sh` on the artifacts: with a55 or newer
+  variants the JIT would generate LSE and FP16, which Vetro's CPU does not
+  have (ADR 0005). No 32-bit ABI (this is checked too).
+- One CPU and 2–3 GiB of RAM (`androidboot.ddr_size=3072MB`, `vetro boot
   --mem=3072`, QEMU `-m 3G`).
 
 ### microG
-- GmsCore e Companion, release ufficiale `v0.3.16.252432` di
-  github.com/microg/GmsCore (Apache 2.0), scaricati sulla VM con sha256
-  fissato (`guest/aosp/vendor/vetro/microg/microg.lock`), mai committati.
-  App privilegiate prebuilt in `/product/priv-app`, con l'allowlist dei
-  permessi privilegiati generata da `aapt2 dump permissions`, i permessi di
-  runtime di default e l'esenzione dal risparmio energetico.
-- Presigned: le due APK hanno targetSdk 29 e firma v1, la build scomprime dex
-  e librerie JNI e la firma v1 resta valida (le app della partizione di
-  sistema si verificano senza la protezione contro la rimozione di v2).
-- **Spoofing della firma limitato a microG** in `frameworks/base`
-  (`guest/aosp/patches/frameworks/base/0001-…patch`, applicata da
-  `tools/aosp/remote/prepare.sh`): permesso `FAKE_PACKAGE_SIGNATURE`
-  (`signature|privileged`, `@hide`), e in `ComputerEngine.generatePackageInfo`
-  la firma del meta-data `fake-signature` sostituisce quella vera solo se il
-  pacchetto è `com.google.android.gms` o `com.android.vending`, è firmato con
-  il certificato di microG (SHA-256 `9bd06727…d14165`, verificato sulle
-  release), chiede il permesso e l'ha ottenuto. Nessun'altra app può
-  fingersi un'altra: è la variante "restricted" di LineageOS, più stretta.
+- GmsCore and Companion, official release `v0.3.16.252432` from
+  github.com/microg/GmsCore (Apache 2.0), downloaded on the VM with a
+  pinned sha256 (`guest/aosp/vendor/vetro/microg/microg.lock`), never
+  committed. Prebuilt privileged apps in `/product/priv-app`, with the
+  privileged permissions allowlist generated by `aapt2 dump permissions`,
+  the default runtime permissions and the battery-saving exemption.
+- Presigned: the two APKs have targetSdk 29 and a v1 signature, the build
+  uncompresses dex and JNI libraries and the v1 signature stays valid
+  (system partition apps are verified without v2's stripping
+  protection).
+- **Signature spoofing limited to microG** in `frameworks/base`
+  (`guest/aosp/patches/frameworks/base/0001-…patch`, applied by
+  `tools/aosp/remote/prepare.sh`): `FAKE_PACKAGE_SIGNATURE` permission
+  (`signature|privileged`, `@hide`), and in
+  `ComputerEngine.generatePackageInfo` the signature from the
+  `fake-signature` meta-data replaces the real one only if the package is
+  `com.google.android.gms` or `com.android.vending`, is signed with
+  microG's certificate (SHA-256 `9bd06727…d14165`, verified on the
+  releases), requests the permission and has been granted it. No other app
+  can pretend to be another: it is LineageOS's "restricted" variant,
+  stricter.
 
-### Gestore dei file
-- Il demone `vetro-files` (ADR 0020) entra in `/vendor/bin`, compilato con
-  bionic dallo stesso sorgente `guest/kernel/initramfs/vetro-files.c`
-  (`tools/aosp/sync.sh` lo copia nel tree: nessuna copia in `guest/aosp`).
-  Servizio di init `vetro_files` avviato a `post-fs-data` solo con
-  `ro.debuggable=1`, `oneshot` (senza vsock esce e non si riavvia a ciclo).
-- Dominio SELinux proprio `vetro_files` (`init_daemon_domain`, socket vsock
-  permessi), **permissivo solo nelle build userdebug/eng**: deve leggere e
-  scrivere i dati di ogni app come root, cosa che nessuna regola ristretta
-  concede senza scontrarsi con i neverallow di AOSP. In una build user il
-  dominio resta confinato e init non lo avvia.
+### File manager
+- The `vetro-files` daemon (ADR 0020) goes into `/vendor/bin`, compiled
+  with bionic from the same source `guest/kernel/initramfs/vetro-files.c`
+  (`tools/aosp/sync.sh` copies it into the tree: no copy in
+  `guest/aosp`). Init service `vetro_files` started at `post-fs-data`
+  only with `ro.debuggable=1`, `oneshot` (without vsock it exits and does
+  not restart in a loop).
+- Its own SELinux domain `vetro_files` (`init_daemon_domain`, vsock
+  sockets allowed), **permissive only in userdebug/eng builds**: it must
+  read and write every app's data as root, which no restricted rule grants
+  without clashing with AOSP's neverallows. In a user build the domain
+  stays confined and init does not start it.
 
-### Artefatti e licenze
-- `tools/aosp/fetch.sh` porta sul Mac `boot.img`, `vendor_boot.img`,
-  `init_boot.img`, `super.img`, `userdata.img` con `SHA256SUMS` e
-  `build-info.txt` (tag, BUILD_ID, kernel, commit dei progetti);
-  `tools/aosp/upload.sh` li pubblica su Cloudflare R2 in
-  `aosp/<tag>-<BUILD_ID>-<commit di Vetro>/` con `manifest.json` (sha256,
-  dimensioni). Una versione pubblicata non cambia. Mai binari in git.
-- Solo artefatti ridistribuibili: AOSP (Apache 2.0, con parti GPL/LGPL),
-  microG (Apache 2.0). `tools/aosp/gpl-sources.sh` prepara i sorgenti
-  esatti del kernel (kernel/common al commit della stringa di versione,
-  moduli virtual-device al loro commit) e dei progetti AOSP GPL/LGPL, più
-  il manifest di repo fissato e le patch di Vetro: si pubblicano insieme
-  alle immagini.
-- I file del device e le configurazioni sono codice di Vetro (PolyForm
-  Noncommercial 1.0.0, ADR 0004); per Soong `legacy_notice`, perché la
-  licenza non ha un tipo SPDX nel build system.
+### Artifacts and licences
+- `tools/aosp/fetch.sh` brings to the Mac `boot.img`, `vendor_boot.img`,
+  `init_boot.img`, `super.img`, `userdata.img` with `SHA256SUMS` and
+  `build-info.txt` (tag, BUILD_ID, kernel, project commits);
+  `tools/aosp/upload.sh` publishes them to Cloudflare R2 under
+  `aosp/<tag>-<BUILD_ID>-<Vetro commit>/` with `manifest.json` (sha256,
+  sizes). A published version does not change. Never binaries in git.
+- Only redistributable artifacts: AOSP (Apache 2.0, with GPL/LGPL parts),
+  microG (Apache 2.0). `tools/aosp/gpl-sources.sh` prepares the exact
+  sources of the kernel (kernel/common at the commit of the version
+  string, virtual-device modules at their commit) and of the GPL/LGPL AOSP
+  projects, plus the pinned repo manifest and Vetro's patches: they are
+  published together with the images.
+- The device files and configurations are Vetro code (PolyForm
+  Noncommercial 1.0.0, ADR 0004); for Soong `legacy_notice`, because the
+  licence has no SPDX type in the build system.
 
-## Alternative scartate
-- **Immagini Cuttlefish così come sono**, con un host PCIe ECAM in Vetro:
-  resta possibile (ADR futuro), ma richiede u-boot o un launcher, e AVB.
-- **Immagine ranchu dell'emulatore ricostruita** con composizione software:
-  goldfish in ogni HAL, nessun vantaggio su Cuttlefish.
-- **Kernel 6.18 di M3**: mancano binder, eBPF, dm-verity, e la ABI dei
-  moduli GKI.
-- **Spoofing della firma generale** (qualsiasi app con il permesso):
-  inutilmente largo; bastano due pacchetti con un certificato noto.
+## Rejected alternatives
+- **Cuttlefish images as they are**, with a PCIe ECAM host in Vetro:
+  still possible (future ADR), but it requires u-boot or a launcher, and
+  AVB.
+- **Rebuilt ranchu emulator image** with software composition: goldfish
+  in every HAL, no advantage over Cuttlefish.
+- **M3's 6.18 kernel**: it lacks binder, eBPF, dm-verity, and the GKI
+  module ABI.
+- **General signature spoofing** (any app with the permission):
+  needlessly broad; two packages with a known certificate are enough.
 
-## Conseguenze
-- L'immagine si ricostruisce con `tools/aosp/build.sh start|wait`,
-  `tools/aosp/fetch.sh`, e si avvia con `tools/aosp/qemu.sh` (oracolo) e
-  `tools/aosp/vetro.sh`, con gli stessi dispositivi negli stessi slot.
-- Aggiornare AOSP = cambiare tag, rifare `repo sync`, controllare che la
-  patch di `frameworks/base` si applichi (`prepare.sh` si ferma se no).
-- Aggiornare microG = nuovo `microg.lock` e allowlist rigenerata.
-- Marchi nella UI di AOSP (barra "Google" di Launcher3, robot,
-  `ro.product.system.*`): preparati nell'ADR 0030 (overlay, sfondo,
-  QuickSearchBox tolto), in attesa della build.
-- Da fare: SELinux enforcing, virtio-rng deterministico in Vetro (il modulo
-  è già nella prima fase), adb su canale virtio per il browser, disco
-  via HTTP Range (M6).
+## Consequences
+- The image is rebuilt with `tools/aosp/build.sh start|wait`,
+  `tools/aosp/fetch.sh`, and booted with `tools/aosp/qemu.sh` (oracle) and
+  `tools/aosp/vetro.sh`, with the same devices in the same slots.
+- Updating AOSP = change the tag, redo `repo sync`, check that the
+  `frameworks/base` patch applies (`prepare.sh` stops if not).
+- Updating microG = new `microg.lock` and regenerated allowlist.
+- Trademarks in the AOSP UI (Launcher3's "Google" bar, robot,
+  `ro.product.system.*`): prepared in ADR 0030 (overlay, wallpaper,
+  QuickSearchBox removed), awaiting the build.
+- To do: SELinux enforcing, deterministic virtio-rng in Vetro (the module
+  is already in the first stage), adb over a virtio channel for the
+  browser, disk via HTTP Range (M6).

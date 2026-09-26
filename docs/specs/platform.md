@@ -1,319 +1,319 @@
 # Spec — vetro-platform
 
-## Perimetro
-Dispositivi della piattaforma `virt` per M3 (modalità sistema): bus MMIO,
-GICv3, timer generico, UART PL011, RTC PL031, trasporto virtio-mmio con
-virtio-blk, virtio-net e virtio-console, device tree. Per M5: virtio-gpu 2D,
-virtio-input (tastiera, tablet, touchscreen), virtio-vsock e GPIO PL061
-con il tasto di spegnimento (`gpio-keys`, visto dal GKI di Android). La mappa ricalca `qemu-system-aarch64 -M virt`, così kernel e
-device tree si confrontano con QEMU senza adattamenti. Una sola CPU.
+## Scope
+Devices of the `virt` platform for M3 (system mode): MMIO bus,
+GICv3, generic timer, PL011 UART, PL031 RTC, virtio-mmio transport with
+virtio-blk, virtio-net and virtio-console, device tree. For M5: virtio-gpu 2D,
+virtio-input (keyboard, tablet, touchscreen), virtio-vsock and PL061 GPIO
+with the power key (`gpio-keys`, seen by Android's GKI). The map mirrors `qemu-system-aarch64 -M virt`, so kernel and
+device tree can be compared with QEMU without adjustments. A single CPU.
 
-## Mappa della memoria (`map.rs`)
-| Regione | Base | Dimensione | Interrupt (INTID) |
+## Memory map (`map.rs`)
+| Region | Base | Size | Interrupt (INTID) |
 |---|---|---|---|
-| GICD (distributore) | `0x0800_0000` | `0x1_0000` | — |
-| GICR (redistributore, CPU 0: frame RD + SGI) | `0x080A_0000` | `0x2_0000` | — |
-| UART PL011 | `0x0900_0000` | `0x1000` | SPI 1 (33), livello |
-| RTC PL031 | `0x0901_0000` | `0x1000` | SPI 2 (34), livello |
-| GPIO PL061 | `0x0903_0000` | `0x1000` | SPI 7 (39), livello |
-| virtio-mmio, 32 slot | `0x0A00_0000` + k·`0x200` | `0x200` | SPI 16+k (48+k), fronte |
-| RAM | `0x4000_0000` | configurabile | — |
+| GICD (distributor) | `0x0800_0000` | `0x1_0000` | — |
+| GICR (redistributor, CPU 0: RD + SGI frames) | `0x080A_0000` | `0x2_0000` | — |
+| UART PL011 | `0x0900_0000` | `0x1000` | SPI 1 (33), level |
+| RTC PL031 | `0x0901_0000` | `0x1000` | SPI 2 (34), level |
+| GPIO PL061 | `0x0903_0000` | `0x1000` | SPI 7 (39), level |
+| virtio-mmio, 32 slots | `0x0A00_0000` + k·`0x200` | `0x200` | SPI 16+k (48+k), edge |
+| RAM | `0x4000_0000` | configurable | — |
 
-Timer generico: PPI 27 (virtuale), PPI 30 (fisico non sicuro); nel device
-tree compaiono anche 29 (fisico sicuro) e 26 (hypervisor), mai pilotati.
-La RAM non passa dal bus MMIO: la gestisce la memoria della CPU/MMU.
+Generic timer: PPI 27 (virtual), PPI 30 (non-secure physical); the device
+tree also lists 29 (secure physical) and 26 (hypervisor), never driven.
+RAM does not go through the MMIO bus: the CPU/MMU memory handles it.
 
-## Interfaccia pubblica
+## Public interface
 - `trait MmioDevice: Any { read(&mut self, offset, size) -> u64; write(&mut self, offset, size, value) }`:
-  `offset` relativo alla base della regione, `size` 1/2/4/8, valori nei bit
-  bassi. `Any` serve al downcast lato host.
-- `Bus`: `map(base, size, nome, Box<dyn MmioDevice>) -> Result<DeviceId, BusError>`
-  (rifiuta sovrapposizioni e intervalli vuoti), `read(addr, size) -> Option<u64>`,
-  `write(addr, size, value) -> bool`. `None`/`false` = nessun dispositivo
-  copre tutto l'accesso: la CPU in M3 lo trasforma in abort esterno.
-  `device::<T>(id)` / `device_mut::<T>(id)` per l'accesso tipizzato.
+  `offset` relative to the region base, `size` 1/2/4/8, values in the low
+  bits. `Any` is for downcasting on the host side.
+- `Bus`: `map(base, size, name, Box<dyn MmioDevice>) -> Result<DeviceId, BusError>`
+  (rejects overlaps and empty ranges), `read(addr, size) -> Option<u64>`,
+  `write(addr, size, value) -> bool`. `None`/`false` = no device
+  covers the whole access: the CPU in M3 turns it into an external abort.
+  `device::<T>(id)` / `device_mut::<T>(id)` for typed access.
 - `Pl011`: `push_input(&[u8])`, `output()`, `take_output()`,
   `pending_input()`, `irq_level()`.
 - `Pl031`: `new(now_secs)`, `set_time(now_secs)`, `count()`,
   `seconds_to_alarm()`, `irq_level()`.
-- `Pl061`: `new()`, `set_input(linea, livello)` (ingressi pilotati
-  dall'host), `outputs()`, `irq_level()`; `pl061::POWER_KEY_LINE` = 3.
-- `GenericTimer` (`cntfrq`, `cntvoff`, canali `phys` e `virt`):
-  `cntp_ctl/cval/tval`, `cntv_ctl/cval/tval` e relativi `set_*`, tutti col
-  valore di CNTPCT passato dall'esterno; `irq_lines(cntpct)` restituisce
-  `[(27, livello), (30, livello)]`; `next_deadline(cntpct)` il prossimo
-  valore di CNTPCT a cui una linea sale.
-- `Gic`: MMIO (distributore e redistributore) come `MmioDevice` su un'unica
-  regione `GICD_BASE .. GICR_BASE + 0x2_0000` (`gic::MMIO_SIZE`), il buco
-  in mezzo è RAZ/WI. Linee: `set_irq_level(intid, livello)`,
-  `set_spi_level(spi, livello)`, `send_sgi(intid)`. Uscita: `irq_line()`.
-  Registri di sistema, da chiamare da MRS/MSR:
+- `Pl061`: `new()`, `set_input(line, level)` (inputs driven
+  by the host), `outputs()`, `irq_level()`; `pl061::POWER_KEY_LINE` = 3.
+- `GenericTimer` (`cntfrq`, `cntvoff`, `phys` and `virt` channels):
+  `cntp_ctl/cval/tval`, `cntv_ctl/cval/tval` and the matching `set_*`, all
+  with the CNTPCT value passed in from outside; `irq_lines(cntpct)` returns
+  `[(27, level), (30, level)]`; `next_deadline(cntpct)` the next
+  CNTPCT value at which a line goes high.
+- `Gic`: MMIO (distributor and redistributor) as an `MmioDevice` on a single
+  region `GICD_BASE .. GICR_BASE + 0x2_0000` (`gic::MMIO_SIZE`); the hole
+  in between is RAZ/WI. Lines: `set_irq_level(intid, level)`,
+  `set_spi_level(spi, level)`, `send_sgi(intid)`. Output: `irq_line()`.
+  System registers, to be called from MRS/MSR:
   `read_iar1`, `write_eoir1`, `write_dir`, `read_hppir1`, `read/write_pmr`,
   `read/write_ctlr`, `read/write_igrpen1`, `read/write_sre`,
   `read/write_bpr1`, `read_rpr`, `read/write_ap1r0`, `write_sgi1r`.
-- `Virt`: bus già montato + `timer`; `gic_mut()`, `uart_mut()`, `rtc_mut()`,
-  `gpio_mut()`; `update_irqs(cntpct)` porta al GIC le linee di timer, UART,
-  RTC, GPIO e dei 32
-  slot virtio; `irq_line()`. Virtio: `attach_virtio(slot, Box<dyn VirtioDevice>)`,
-  `attach_virtio_next(dev) -> slot` (slot libero più alto, come QEMU: il primo
-  dispositivo va nello slot 31), `virtio(slot)` / `virtio_mut(slot)` ->
-  `VirtioMmio`, `service_virtio(&mut dyn GuestRam)`. Errori: `VirtioSlotError`
+- `Virt`: bus already mounted + `timer`; `gic_mut()`, `uart_mut()`, `rtc_mut()`,
+  `gpio_mut()`; `update_irqs(cntpct)` brings the timer, UART,
+  RTC, GPIO lines and those of the 32
+  virtio slots to the GIC; `irq_line()`. Virtio: `attach_virtio(slot, Box<dyn VirtioDevice>)`,
+  `attach_virtio_next(dev) -> slot` (highest free slot, like QEMU: the first
+  device goes in slot 31), `virtio(slot)` / `virtio_mut(slot)` ->
+  `VirtioMmio`, `service_virtio(&mut dyn GuestRam)`. Errors: `VirtioSlotError`
   (`NoSuchSlot`, `Occupied`, `Full`).
 - Virtio (`virtio/`):
   - `trait GuestRam { read(&self, addr, &mut [u8]); write(&mut self, addr, &[u8]) }`
-    -> `Result<(), RamError>`: la RAM del guest per il DMA, su indirizzi
-    fisici; `GuestRamExt` aggiunge le letture/scritture LE; `VecRam` è una
-    RAM contigua in un `Vec`.
-  - `VirtioMmio`: il trasporto (`MmioDevice`), `empty()` o `new(dev)`,
+    -> `Result<(), RamError>`: the guest RAM for DMA, on physical
+    addresses; `GuestRamExt` adds LE reads/writes; `VecRam` is a
+    contiguous RAM in a `Vec`.
+  - `VirtioMmio`: the transport (`MmioDevice`), `empty()` or `new(dev)`,
     `set_device`, `device_as[_mut]::<T>()`, `service(&mut dyn GuestRam)`,
     `irq_level()`, `signal_config_change()`, `status()`,
     `interrupt_status()`, `last_error()`, `without_features(mask)`.
-  - `trait VirtioDevice: Any`: `device_id`, `features` (solo i bit del
-    dispositivo), `queue_max_sizes`, `read_config`/`write_config`,
+  - `trait VirtioDevice: Any`: `device_id`, `features` (device bits
+    only), `queue_max_sizes`, `read_config`/`write_config`,
     `negotiate(features) -> bool`, `reset`, `service(&mut ServiceCtx)`,
-    `save_state`/`restore_state` (snapshot, obbligatori: ADR 0015,
+    `save_state`/`restore_state` (snapshots, mandatory: ADR 0015,
     `docs/specs/snapshot.md`).
-    `ServiceCtx` espone code, RAM, feature negoziate e `config_changed()`.
-  - `Virtqueue`: `pop` -> `DescChain` (buffer leggibili e scrivibili, con
-    `read`/`write`/`read_to_vec` su spazio contiguo), `push_used`,
+    `ServiceCtx` exposes queues, RAM, negotiated features and `config_changed()`.
+  - `Virtqueue`: `pop` -> `DescChain` (readable and writable buffers, with
+    `read`/`write`/`read_to_vec` over contiguous space), `push_used`,
     `available`, `rewind`.
   - `VirtioBlk::new(Box<dyn BlockBackend>, VirtioBlkConfig)`;
     `trait BlockBackend: Any { size, read_only, read_sectors, write_sectors, flush, save_state, restore_state }`
-    (gli ultimi due vuoti di default: il backend è un collegamento; `MemBackend`
-    e `CowBackend` salvano i dati scritti dal guest)
-    (settori da 512, `BlockError::{Io, OutOfRange, ReadOnly, NotReady}`);
-    `MemBackend` (in memoria, anche in sola lettura) e `CowBackend<B>`
-    (copy-on-write a cluster da 4 KiB sopra una base usata solo in lettura).
+    (the last two empty by default: the backend is a link; `MemBackend`
+    and `CowBackend` save the data written by the guest)
+    (512-byte sectors, `BlockError::{Io, OutOfRange, ReadOnly, NotReady}`);
+    `MemBackend` (in memory, also read-only) and `CowBackend<B>`
+    (copy-on-write in 4 KiB clusters over a base used read-only).
   - `VirtioNet::new(Box<dyn NetBackend>, mac)`, `with_mrg_rxbuf`,
     `set_link_up`, `rx_dropped`; `trait NetBackend: Any { send(&[u8]); recv() -> Option<Vec<u8>>; save_state; restore_state }`
-    con frame ethernet nudi; `QueueNet` in memoria.
+    with bare Ethernet frames; `QueueNet` in memory.
   - `VirtioConsole::new(Box<dyn ConsoleBackend>)`;
     `trait ConsoleBackend: Any { write(&[u8]); read(&mut [u8]) -> usize; save_state; restore_state }`;
-    `BufferConsole` in memoria.
+    `BufferConsole` in memory.
   - `VirtioGpu::new(Box<dyn DisplayBackend>, GpuConfig)` (`gpu.rs`):
     `GpuConfig { scanouts, width, height, edid, monitor: EdidInfo, max_hostmem }`,
-    default 1 scanout 1280x800 con EDID e 256 MiB (come QEMU);
-    `set_display(scanout, w, h)` (ridimensionamento chiesto dall'host),
+    default 1 scanout 1280x800 with EDID and 256 MiB (like QEMU);
+    `set_display(scanout, w, h)` (resize requested by the host),
     `frame(scanout) -> Option<Frame>`, `cursor(scanout)`, `set_backend`,
     `resource_count`, `hostmem`, `backend_as[_mut]::<T>()`.
     `trait DisplayBackend: Any { update(scanout, &Frame, dirty: Rect); disable(scanout); cursor(scanout, &Cursor) }`;
-    `Frame { width, height, stride, format: PixelFormat, data }` con
-    `rgba(x, y)`; `PixelFormat` (gli 8 formati 2D, `to_rgba`); `MemDisplay`
-    (in memoria, RGBA, `pixel(scanout, x, y)`).
-  - `edid::generate(&EdidInfo, size) -> Vec<u8>` (`edid.rs`): l'EDID del
-    monitor virtuale, byte per byte quello di QEMU; `EdidInfo` (produttore,
-    nome, seriale, dimensioni, modo preferito, limiti, refresh).
+    `Frame { width, height, stride, format: PixelFormat, data }` with
+    `rgba(x, y)`; `PixelFormat` (the 8 2D formats, `to_rgba`); `MemDisplay`
+    (in memory, RGBA, `pixel(scanout, x, y)`).
+  - `edid::generate(&EdidInfo, size) -> Vec<u8>` (`edid.rs`): the EDID of the
+    virtual monitor, byte for byte QEMU's; `EdidInfo` (manufacturer,
+    name, serial, dimensions, preferred mode, limits, refresh).
   - `VirtioInput::new(InputConfig)` (`input.rs`): `inject(&[InputEvent])`,
     `key(code, down)`, `move_abs(x, y)`, `touch(slot, Option<(x, y)>)`,
     `pending`, `dropped`, `leds`, `take_status`, `config`.
-    `InputConfig::keyboard()`, `tablet()`, `multitouch()` (i profili di
-    QEMU) o costruito con `new(nome)`, `serial`, `devids`, `props`,
-    `events(tipo, codici, min_len)`, `abs(asse, AbsInfo)`.
-    `InputEvent { ty, code, value }`; costanti `EV_*`, `BTN_*`, `ABS_*`, `LED_*`.
-  - `VirtioVsock::new(guest_cid)` (`vsock.rs`), l'host (CID 2) dentro il
-    dispositivo: `listen(port)`, `unlisten`, `accept(port) -> Option<VsockConn>`,
+    `InputConfig::keyboard()`, `tablet()`, `multitouch()` (QEMU's
+    profiles) or built with `new(name)`, `serial`, `devids`, `props`,
+    `events(ty, codes, min_len)`, `abs(axis, AbsInfo)`.
+    `InputEvent { ty, code, value }`; constants `EV_*`, `BTN_*`, `ABS_*`, `LED_*`.
+  - `VirtioVsock::new(guest_cid)` (`vsock.rs`), the host (CID 2) inside the
+    device: `listen(port)`, `unlisten`, `accept(port) -> Option<VsockConn>`,
     `connect(guest_port) -> VsockConn`, `send(c, &[u8])`, `recv(c, max)`,
     `available`, `unsent`, `eof`, `shutdown_send`, `close`, `reset`,
     `release`, `state(c) -> Option<VsockState>`, `connections`,
     `transport_reset`, `guest_cid`, `dropped`.
     `VsockConn { host_port, guest_port }`; `VsockState::{Connecting,
     Connected, Closing, Closed}`; `VsockError::{NotFound, Closed, PortInUse}`.
-  - I dispositivi si raggiungono con `virtio_mut(slot)?.device_as_mut::<T>()`
-    e i backend con `backend_as_mut::<T>()`.
-- `vetro-machine` monta i dispositivi di M5: `Devices { gpu: Option<GpuConfig>,
-  keyboard, pointer: Option<Pointer>, vsock_cid: Option<u64> }` con
-  `Machine::with_devices(&MachineConfig, &Devices)` (`Machine::new` usa
-  `Devices::default()`: GPU 1280x800, tastiera, tablet, niente vsock;
-  `Devices::none()` è la macchina di M3). Ordine di montaggio fisso
-  (GPU, tastiera, puntatore, vsock), ciascuno nello slot libero più alto:
-  31, 30, 29, 28 come i `-device` di QEMU. `Machine::slots()`,
-  `Machine::gpu/keyboard/pointer/vsock(|d| ...)` e `Machine::device::<T>(slot, f)`
-  danno all'host il dispositivo e lo segnano da servire prima della
-  prossima istruzione. Da M10 gli ingressi dell'host passano da
-  `Machine::input` (ADR 0019, `docs/specs/replay.md`): le chiusure durante
-  una registrazione sono eventi opachi; le letture usano
-  `Machine::device_view`/`gpu_view`/`vsock_view`, i dati di un disco atteso
-  `Machine::host_link`. `Devices` sta fuori da `MachineConfig` perché
-  `vetro-wasm` costruisce `MachineConfig` elencando i campi.
+  - Devices are reached with `virtio_mut(slot)?.device_as_mut::<T>()`
+    and backends with `backend_as_mut::<T>()`.
+- `vetro-machine` mounts the M5 devices: `Devices { gpu: Option<GpuConfig>,
+  keyboard, pointer: Option<Pointer>, vsock_cid: Option<u64> }` with
+  `Machine::with_devices(&MachineConfig, &Devices)` (`Machine::new` uses
+  `Devices::default()`: GPU 1280x800, keyboard, tablet, no vsock;
+  `Devices::none()` is the M3 machine). Fixed mounting order
+  (GPU, keyboard, pointer, vsock), each in the highest free slot:
+  31, 30, 29, 28 like QEMU's `-device`s. `Machine::slots()`,
+  `Machine::gpu/keyboard/pointer/vsock(|d| ...)` and `Machine::device::<T>(slot, f)`
+  give the host the device and mark it to be serviced before the
+  next instruction. From M10 on, host inputs go through
+  `Machine::input` (ADR 0019, `docs/specs/replay.md`): closures during
+  a recording are opaque events; reads use
+  `Machine::device_view`/`gpu_view`/`vsock_view`, the data of an awaited disk
+  `Machine::host_link`. `Devices` sits outside `MachineConfig` because
+  `vetro-wasm` builds `MachineConfig` by listing its fields.
 - `FdtBuilder`: `begin_node`, `end_node`, `prop_u32`, `prop_u64`,
   `prop_u32_list`, `prop_u64_list`, `prop_str`, `prop_strs`, `prop_bytes`,
   `prop_empty`, `reserve_memory`, `boot_cpuid`, `finish() -> Result<Vec<u8>, FdtError>`.
-  Formato DTB v17 (last_comp 16), stringhe deduplicate.
-- `virt_dtb(&VirtDtbConfig) -> Vec<u8>`: memoria, cpus (`enable-method =
-  "psci"`), psci (`arm,psci-1.0`, metodo `hvc` di default), timer
-  (`arm,armv8-timer`), GIC (`arm,gic-v3`), clock fisso 24 MHz, PL011, PL031,
-  PL061 (phandle 3) con `gpio-keys/poweroff` (linea 3, KEY_POWER, come
-  QEMU), 32 virtio-mmio, `chosen` con `bootargs`, `stdout-path = "/pl011@9000000"`
-  e initrd opzionale.
+  DTB format v17 (last_comp 16), deduplicated strings.
+- `virt_dtb(&VirtDtbConfig) -> Vec<u8>`: memory, cpus (`enable-method =
+  "psci"`), psci (`arm,psci-1.0`, `hvc` method by default), timer
+  (`arm,armv8-timer`), GIC (`arm,gic-v3`), fixed 24 MHz clock, PL011, PL031,
+  PL061 (phandle 3) with `gpio-keys/poweroff` (line 3, KEY_POWER, like
+  QEMU), 32 virtio-mmio, `chosen` with `bootargs`, `stdout-path = "/pl011@9000000"`
+  and optional initrd.
 
-## Scelte e limiti
-- **GICv3**: un solo stato di sicurezza (GICD_CTLR.DS = 1) e ARE = 1, entrambi
-  RAO/WI. **Solo gruppo 1 non sicuro**: IGROUPR si memorizza ma un interrupt
-  in gruppo 0 non viene mai segnalato (niente FIQ); IGRPMODR/NSACR RAZ/WI.
-  Niente LPI/ITS. 256 SPI (ITLinesNumber = 8, IDbits = 9). Interfaccia CPU
-  a 5 bit di priorità (PRIbits = 4) come QEMU: PMR maschera `0xF8`, BPR1
-  minimo 3. ICC_CTLR_EL1.CBPR è RAZ/WI (BPR0 non modellato); EOImode
-  scrivibile (con EOImode = 1 serve ICC_DIR_EL1). SGI1R: con una CPU conta
-  solo affinità 0.0.0 e bit 0 della TargetList. GICR_WAKER fa l'handshake
-  ma non blocca la consegna. Selezione: priorità numericamente più bassa,
-  a parità l'INTID più basso; consegna se IGRPEN1, priorità < PMR e
-  priorità di gruppo < priorità in esecuzione. SPI instradati alla CPU 0
-  se IROUTER ha affinità 0.0.0.0 o IRM = 1.
-- **PL011**: trasmissione istantanea anche con UART spenta (earlycon), come
-  QEMU; ricezione solo con UARTEN e RXE, altrimenti i byte restano nella
-  coda dell'host. RX a soglia 1 (come QEMU), IFLS solo memorizzato; TXRIS si
-  alza a ogni scrittura in DR e scende con ICR. FIFO RX da 16 con FEN,
-  da 1 senza. Loopback (CR.LBE) supportato.
-- **PL031**: CR legge sempre 1; qualunque scrittura in ICR azzera
-  l'interrupt; l'allarme scatta quando DR raggiunge MR avanzando o subito
-  se MR = DR dopo una scrittura di MR o LR (come QEMU).
-- **PL061** (come `hw/gpio/pl061.c` nella virt di QEMU): 8 linee, quelle
-  non pilotate valgono 0 (`pulldowns = 0xff`); DATA con maschera nei bit
-  9:2 dell'offset, scrive solo le uscite; interrupt come `pl061_update`
-  (fronte: IBE o IEV sul cambio di un ingresso; livello: RIS si riaccende
-  finché attivo; IC azzera); linea = RIS & IE. Accessi fino a 4 byte (Linux
-  usa `readb`/`writeb`); niente registri Luminary. L'host preme il tasto con
-  `Machine::gpio_input(3, true/false)` di `vetro-machine` (cioè
-  `Machine::input(Input::Gpio { .. })`, registrato per il replay), che segna
-  le linee da aggiornare prima della prossima istruzione.
-- **Timer**: ISTATUS = ENABLE && contatore >= CVAL (senza segno), 0 con
-  ENABLE spento; TVAL a 32 bit con segno (come QEMU). CNTFRQ di default
-  62,5 MHz.
-- **virtio-mmio** (versione 2, virtio 1.2 §4.2.2): VendorID `0x554D4551`
-  come QEMU; registri sotto 0x100 solo a 32 bit allineati, i registri di
-  sola scrittura si leggono 0; feature del trasporto VERSION_1
-  (obbligatoria: senza, FEATURES_OK non resta in Status), INDIRECT_DESC,
-  EVENT_IDX; niente memoria condivisa (SHMLen/SHMBase = -1). La RAM non
-  passa dal bus: QueueNotify non fa lavoro, lo fa `service`, che il motore
-  chiama dopo gli accessi MMIO agli slot virtio e periodicamente (dati in
-  arrivo dai backend), prima di `update_irqs`. Niente lavoro prima di
-  DRIVER_OK. Linea di interrupt = `InterruptStatus != 0`, dichiarata a
-  fronte di salita nel DTB come QEMU. Un errore nelle code (catena
-  invalida, accesso fuori RAM, richiesta malformata) porta a
-  DEVICE_NEEDS_RESET con interrupt di configurazione e ferma il dispositivo
-  fino al reset.
-- **Virtqueue split** (§2.7): QueueNum deve essere potenza di 2 e le aree
-  allineate (16/2/4), altrimenti QueueReady resta 0. Scrivibili dopo
-  leggibili; catene al massimo lunghe quanto la tabella; INDIRECT solo
-  negoziato e solo sul descrittore di testa (NEXT su di esso ignorato, come
-  QEMU), vietato dentro una tabella. EVENT_IDX completo: il dispositivo
-  pubblica avail_event dopo ogni estrazione e notifica secondo
-  `vring_need_event` su used_event; senza EVENT_IDX rispetta
+## Choices and limits
+- **GICv3**: a single security state (GICD_CTLR.DS = 1) and ARE = 1, both
+  RAO/WI. **Non-secure group 1 only**: IGROUPR is stored but an interrupt
+  in group 0 is never signalled (no FIQ); IGRPMODR/NSACR RAZ/WI.
+  No LPI/ITS. 256 SPIs (ITLinesNumber = 8, IDbits = 9). CPU interface
+  with 5 priority bits (PRIbits = 4) like QEMU: PMR mask `0xF8`, BPR1
+  minimum 3. ICC_CTLR_EL1.CBPR is RAZ/WI (BPR0 not modelled); EOImode
+  writable (with EOImode = 1, ICC_DIR_EL1 is needed). SGI1R: with one CPU only
+  affinity 0.0.0 and bit 0 of the TargetList count. GICR_WAKER does the handshake
+  but does not block delivery. Selection: numerically lowest priority,
+  ties broken by lowest INTID; delivered if IGRPEN1, priority < PMR and
+  group priority < running priority. SPIs routed to CPU 0
+  if IROUTER has affinity 0.0.0.0 or IRM = 1.
+- **PL011**: instantaneous transmission even with the UART disabled (earlycon), like
+  QEMU; reception only with UARTEN and RXE, otherwise bytes stay in the
+  host queue. RX threshold 1 (like QEMU), IFLS only stored; TXRIS goes
+  high on every write to DR and goes low with ICR. RX FIFO of 16 with FEN,
+  of 1 without. Loopback (CR.LBE) supported.
+- **PL031**: CR always reads 1; any write to ICR clears
+  the interrupt; the alarm fires when DR reaches MR while advancing, or immediately
+  if MR = DR after a write to MR or LR (like QEMU).
+- **PL061** (like `hw/gpio/pl061.c` in QEMU's virt): 8 lines, those
+  not driven read 0 (`pulldowns = 0xff`); DATA with the mask in bits
+  9:2 of the offset, writes only the outputs; interrupts like `pl061_update`
+  (edge: IBE or IEV on an input change; level: RIS comes back on
+  while active; IC clears); line = RIS & IE. Accesses up to 4 bytes (Linux
+  uses `readb`/`writeb`); no Luminary registers. The host presses the key with
+  `vetro-machine`'s `Machine::gpio_input(3, true/false)` (that is,
+  `Machine::input(Input::Gpio { .. })`, recorded for replay), which marks
+  the lines to update before the next instruction.
+- **Timer**: ISTATUS = ENABLE && counter >= CVAL (unsigned), 0 with
+  ENABLE off; TVAL 32-bit signed (like QEMU). Default CNTFRQ
+  62.5 MHz.
+- **virtio-mmio** (version 2, virtio 1.2 §4.2.2): VendorID `0x554D4551`
+  like QEMU; registers below 0x100 only 32-bit aligned, write-only
+  registers read as 0; transport features VERSION_1
+  (mandatory: without it, FEATURES_OK does not stay in Status), INDIRECT_DESC,
+  EVENT_IDX; no shared memory (SHMLen/SHMBase = -1). RAM does not
+  go through the bus: QueueNotify does no work, `service` does it, which the engine
+  calls after MMIO accesses to virtio slots and periodically (incoming data
+  from the backends), before `update_irqs`. No work before
+  DRIVER_OK. Interrupt line = `InterruptStatus != 0`, declared as
+  rising edge in the DTB like QEMU. An error in the queues (invalid
+  chain, access outside RAM, malformed request) leads to
+  DEVICE_NEEDS_RESET with a configuration interrupt and stops the device
+  until reset.
+- **Split virtqueue** (§2.7): QueueNum must be a power of 2 and the areas
+  aligned (16/2/4), otherwise QueueReady stays 0. Writable after
+  readable; chains at most as long as the table; INDIRECT only
+  when negotiated and only on the head descriptor (NEXT on it ignored, like
+  QEMU), forbidden inside a table. Full EVENT_IDX: the device
+  publishes avail_event after each pop and notifies according to
+  `vring_need_event` on used_event; without EVENT_IDX it honours
   VRING_AVAIL_F_NO_INTERRUPT.
-- **virtio-blk**: feature SIZE_MAX, SEG_MAX, BLK_SIZE, FLUSH e RO se il
-  backend o la configurazione sono in sola lettura; code da 256, seg_max
-  254 (come QEMU), size_max 1 MiB, blk_size 512. IN/OUT/FLUSH/GET_ID, il
-  resto UNSUPP; accessi fuori capacità o non multipli di 512 e scritture in
-  sola lettura: IOERR. I/O a pezzi da 64 KiB. `BlockError::NotReady` lascia
-  la richiesta in sospeso e la riprova al `service` successivo (per i dischi
-  scaricati a pezzi di M5). Con una richiesta in sospeso `Machine::run`
-  restituisce `Stop::Blocked` senza eseguire istruzioni finché l'host non
-  consegna i dati (ADR 0014): il tempo del guest non dipende dalla rete.
-- **virtio-net**: MAC, STATUS, MRG_RXBUF (disattivabile); niente offload,
-  coda di controllo né multiqueue. Header di 12 byte a zero tranne
-  num_buffers. Il backend si interroga solo con buffer liberi e link su;
-  con MRG_RXBUF un frame che non entra aspetta altri buffer, senza si
-  scarta. TX oltre 64 KiB + header: errore della coda.
-- **virtio-console**: una porta, senza MULTIPORT (code 0 rx e 1 tx),
-  EMERG_WRITE offerta; max_nr_ports = 1.
-- **virtio-gpu** (§5.7, come QEMU 10.0 `virtio-gpu-device` senza virgl):
-  code 64 (controllo) e 16 (cursore); feature EDID; config events_read,
-  events_clear (scrittura che azzera), num_scanouts, num_capsets = 0.
-  Comandi GET_DISPLAY_INFO, GET_EDID, RESOURCE_CREATE_2D/UNREF,
+- **virtio-blk**: features SIZE_MAX, SEG_MAX, BLK_SIZE, FLUSH and RO if the
+  backend or the configuration are read-only; queues of 256, seg_max
+  254 (like QEMU), size_max 1 MiB, blk_size 512. IN/OUT/FLUSH/GET_ID, the
+  rest UNSUPP; accesses beyond capacity or not multiples of 512 and writes to
+  read-only: IOERR. I/O in 64 KiB pieces. `BlockError::NotReady` leaves
+  the request pending and retries it at the next `service` (for the disks
+  downloaded in pieces in M5). With a pending request `Machine::run`
+  returns `Stop::Blocked` without executing instructions until the host
+  delivers the data (ADR 0014): guest time does not depend on the network.
+- **virtio-net**: MAC, STATUS, MRG_RXBUF (can be disabled); no offload,
+  control queue or multiqueue. 12-byte header zeroed except
+  num_buffers. The backend is polled only with free buffers and link up;
+  with MRG_RXBUF a frame that does not fit waits for more buffers, without it it is
+  dropped. TX beyond 64 KiB + header: queue error.
+- **virtio-console**: one port, without MULTIPORT (queues 0 rx and 1 tx),
+  EMERG_WRITE offered; max_nr_ports = 1.
+- **virtio-gpu** (§5.7, like QEMU 10.0 `virtio-gpu-device` without virgl):
+  queues 64 (control) and 16 (cursor); EDID feature; config events_read,
+  events_clear (write-to-clear), num_scanouts, num_capsets = 0.
+  Commands GET_DISPLAY_INFO, GET_EDID, RESOURCE_CREATE_2D/UNREF,
   SET_SCANOUT, RESOURCE_FLUSH, TRANSFER_TO_HOST_2D,
-  RESOURCE_ATTACH/DETACH_BACKING, UPDATE/MOVE_CURSOR; errori e controlli
-  di QEMU (id 0 o doppio, formato, `max_hostmem`, rettangoli fuori dalla
-  risorsa, scanout sotto 16x16, backing mancante o doppio, più di 16384
-  voci, voci fuori RAM; capset, 3D e UUID ERR_UNSPEC; blob
-  ERR_INVALID_PARAMETER). Fence: flag, fence_id e ctx_id riportati, già
-  segnalato (esecuzione sincrona). Risorse nella memoria dell'host (stride
-  = larghezza x 4, come pixman); TRANSFER come QEMU (un colpo se copre
-  tutta la larghezza, altrimenti riga per riga da offset + stride x riga;
-  ciò che il backing non copre resta invariato). SET_SCANOUT manda subito
-  l'immagine intera al backend, FLUSH solo l'intersezione con ogni scanout
-  che mostra la risorsa, UNREF e SET_SCANOUT 0 lo spengono. Cursore:
-  immagine copiata solo da risorse 64x64. `set_display` = evento DISPLAY
-  con interrupt di configurazione. Differenze da QEMU, solo su input che
-  Linux non manda: comando più corto della sua struttura →
-  ERR_INVALID_PARAMETER (QEMU risponde OK senza eseguire o blocca la coda).
-  Risoluzione di default 1280x800, quella di QEMU, perché il test di avvio
-  confronta i modi con QEMU; Android sceglierà la sua con `GpuConfig`
-  (es. 1080x1920 verticale) e `set_display`.
-- **EDID**: generatore equivalente a hw/display/edid-generate.c di QEMU
-  (produttore RHT, "QEMU Monitor", modi standard/stabiliti/CTA, descrittore
-  dettagliato con tempi proporzionali e 75 Hz, DisplayID oltre 4096 punti);
-  verificato byte per byte con l'EDID letto dal guest sotto QEMU. Nome,
-  produttore e seriale si cambiano con `EdidInfo` (profili dispositivo, M10).
-- **virtio-input** (§5.8): code 64 (eventi, stato), nessuna feature;
-  configurazione a finestra select/subsel (voce assente: tutto 0, come
-  QEMU). Profili identici a `virtio-keyboard-device` (159 tasti, EV_REP,
-  LED num/caps/scroll), `virtio-tablet-device` (ABS_X/Y 0..32767, pulsanti,
-  rotella) e `virtio-multitouch-device` (MT slot 0..10, INPUT_PROP_DIRECT) di
-  QEMU 10.0 e 8.2, verificati con EVIOCG* e /proc/bus/input/devices nel
-  guest. Eventi prima di DRIVER_OK scartati (come QEMU); poi consegnati a
-  rapporti interi (fino a SYN_REPORT) solo con buffer per tutto il
-  rapporto: QEMU scarta il rapporto, Vetro lo tiene (al più 4096 eventi,
-  poi scarta rapporti interi e conta). Coda di stato: EV_LED aggiorna
-  `leds`, lunghezza used 0 (QEMU mette i byte letti).
-- **virtio-vsock** (§5.10): code 128 (rx, tx, eventi), feature STREAM,
-  config guest_cid (default 3). L'host è il dispositivo stesso (CID 2):
-  REQUEST verso porta in ascolto → RESPONSE e coda di accept, altrimenti
-  RST; pacchetti senza connessione o non stream → RST; CID sbagliati o
-  lunghezze invalide scartati. Credito come Linux: l'host non supera
-  `buf_alloc - (tx_cnt - fwd_cnt)` del guest, annuncia 256 KiB, manda
-  CREDIT_UPDATE quando consuma e il guest vede meno di 64 KiB liberi o su
-  CREDIT_REQUEST. SHUTDOWN completo del guest → RST; chiusura dell'host:
-  SHUTDOWN dopo gli ultimi dati (anche se chiesta prima della RESPONSE).
-  Pacchetti fino a 64 KiB e al buffer rx del guest. Ordine deterministico:
-  pacchetti di controllo in ordine di nascita, poi dati per (porta host,
-  porta guest); porte locali da 49152 in sequenza. TRANSPORT_RESET su
-  richiesta (snapshot, M6). Non confrontato con QEMU: `vhost-vsock-device`
-  vuole `/dev/vhost-vsock`, assente in Docker Desktop e nei runner.
+  RESOURCE_ATTACH/DETACH_BACKING, UPDATE/MOVE_CURSOR; QEMU's errors and checks
+  (id 0 or duplicate, format, `max_hostmem`, rectangles outside the
+  resource, scanout below 16x16, missing or duplicate backing, more than 16384
+  entries, entries outside RAM; capset, 3D and UUID ERR_UNSPEC; blob
+  ERR_INVALID_PARAMETER). Fence: flag, fence_id and ctx_id echoed back, already
+  signalled (synchronous execution). Resources in host memory (stride
+  = width x 4, like pixman); TRANSFER like QEMU (one shot if it covers
+  the full width, otherwise row by row from offset + stride x row;
+  what the backing does not cover stays unchanged). SET_SCANOUT sends the whole
+  image to the backend immediately, FLUSH only the intersection with each scanout
+  showing the resource, UNREF and SET_SCANOUT 0 turn it off. Cursor:
+  image copied only from 64x64 resources. `set_display` = DISPLAY event
+  with a configuration interrupt. Differences from QEMU, only on input that
+  Linux does not send: command shorter than its structure →
+  ERR_INVALID_PARAMETER (QEMU answers OK without executing or stalls the queue).
+  Default resolution 1280x800, QEMU's, because the boot test
+  compares modes with QEMU; Android will choose its own with `GpuConfig`
+  (e.g. 1080x1920 portrait) and `set_display`.
+- **EDID**: generator equivalent to QEMU's hw/display/edid-generate.c
+  (manufacturer RHT, "QEMU Monitor", standard/established/CTA modes, detailed
+  descriptor with proportional timings and 75 Hz, DisplayID beyond 4096 pixels);
+  verified byte for byte against the EDID read by the guest under QEMU. Name,
+  manufacturer and serial can be changed with `EdidInfo` (device profiles, M10).
+- **virtio-input** (§5.8): queues 64 (events, status), no features;
+  select/subsel windowed configuration (missing entry: all 0, like
+  QEMU). Profiles identical to `virtio-keyboard-device` (159 keys, EV_REP,
+  num/caps/scroll LEDs), `virtio-tablet-device` (ABS_X/Y 0..32767, buttons,
+  wheel) and `virtio-multitouch-device` (MT slots 0..10, INPUT_PROP_DIRECT) of
+  QEMU 10.0 and 8.2, verified with EVIOCG* and /proc/bus/input/devices in the
+  guest. Events before DRIVER_OK dropped (like QEMU); afterwards delivered as
+  whole reports (up to SYN_REPORT) only with buffers for the whole
+  report: QEMU drops the report, Vetro keeps it (at most 4096 events,
+  then it drops whole reports and counts them). Status queue: EV_LED updates
+  `leds`, used length 0 (QEMU puts the bytes read).
+- **virtio-vsock** (§5.10): queues 128 (rx, tx, events), STREAM feature,
+  config guest_cid (default 3). The host is the device itself (CID 2):
+  REQUEST to a listening port → RESPONSE and accept queue, otherwise
+  RST; packets without a connection or not stream → RST; wrong CIDs or
+  invalid lengths dropped. Credit like Linux: the host does not exceed the guest's
+  `buf_alloc - (tx_cnt - fwd_cnt)`, advertises 256 KiB, sends
+  CREDIT_UPDATE when it consumes and the guest sees less than 64 KiB free, or on
+  CREDIT_REQUEST. Full SHUTDOWN from the guest → RST; host close:
+  SHUTDOWN after the last data (even if requested before the RESPONSE).
+  Packets up to 64 KiB and to the guest's rx buffer. Deterministic order:
+  control packets in order of creation, then data by (host port,
+  guest port); local ports from 49152 in sequence. TRANSPORT_RESET on
+  request (snapshots, M6). Not compared with QEMU: `vhost-vsock-device`
+  needs `/dev/vhost-vsock`, absent in Docker Desktop and on the runners.
 
-## Invarianti
-- Nessuna dipendenza da `std::fs`, `std::process`, thread, né crate
-  esterni: compila in `wasm32-unknown-unknown`. I dispositivi virtio
-  parlano con l'esterno solo tramite i trait dei backend, `GuestRam` e
-  l'API host dei dispositivi (input, vsock, `set_display`), che il motore
-  chiama dall'unico punto registrabile.
-- **Determinismo**: nessun dispositivo legge l'orologio dell'host; il tempo
-  (CNTPCT, secondi dell'RTC) e l'input della UART entrano solo come
-  argomenti, dall'unico punto registrabile del motore; lo stesso vale per i
-  backend virtio (frame, byte della console, dati del disco), che il motore
-  implementa sopra quel punto.
-- Le regioni del bus non si sovrappongono; un accesso a cavallo della fine
-  di una regione non raggiunge nessun dispositivo.
+## Invariants
+- No dependency on `std::fs`, `std::process`, threads, or external
+  crates: compiles to `wasm32-unknown-unknown`. Virtio devices
+  talk to the outside only through the backend traits, `GuestRam` and
+  the devices' host API (input, vsock, `set_display`), which the engine
+  calls from the single recordable point.
+- **Determinism**: no device reads the host clock; time
+  (CNTPCT, RTC seconds) and UART input enter only as
+  arguments, from the engine's single recordable point; the same holds for the
+  virtio backends (frames, console bytes, disk data), which the engine
+  implements on top of that point.
+- Bus regions do not overlap; an access straddling the end
+  of a region reaches no device.
 
-## Test
-`cargo test -p vetro-platform`: test unitari per modulo (bus, PL011, PL031, PL061,
-timer, GIC, virtio, FDT con parser minimo del DTB, piattaforma montata).
-GPU, input e vsock hanno test con il driver di prova (comandi ed errori,
-formati, backing a pezzi, fence, cursore, ridimensionamento, reset; profili
-di input contro i valori letti sotto QEMU, rapporti interi, coda piena,
-LED; handshake, rifiuti, credito, chiusure, reset del trasporto,
-determinismo); l'EDID è confrontato con i 256 byte letti sotto QEMU.
-Con il kernel guest (`cargo test --release -p vetro-boot-tests`):
-- `vetro.rs`: l'avvio con GPU, tastiera e tablet dà lo stesso log di QEMU
-  con gli stessi `-device` (`QEMU_MACHINE`), compreso l'autotest che esegue
-  `vetro-dev drm` (modi, dumb buffer, modeset, DIRTYFB, cursore), l'EDID da
-  sysfs, `/proc/bus/input/devices` e le capacità evdev, e con virtio-net
-  (in QEMU `-netdev user`) DHCP, rotte, DNS configurato e ping a gateway e
+## Tests
+`cargo test -p vetro-platform`: unit tests per module (bus, PL011, PL031, PL061,
+timer, GIC, virtio, FDT with a minimal DTB parser, mounted platform).
+GPU, input and vsock have tests with the test driver (commands and errors,
+formats, backing in pieces, fences, cursor, resizing, reset; input
+profiles against the values read under QEMU, whole reports, full queue,
+LEDs; handshake, rejections, credit, closes, transport reset,
+determinism); the EDID is compared with the 256 bytes read under QEMU.
+With the guest kernel (`cargo test --release -p vetro-boot-tests`):
+- `vetro.rs`: booting with GPU, keyboard and tablet gives the same log as QEMU
+  with the same `-device`s (`QEMU_MACHINE`), including the self-test that runs
+  `vetro-dev drm` (modes, dumb buffer, modeset, DIRTYFB, cursor), the EDID from
+  sysfs, `/proc/bus/input/devices` and the evdev capabilities, and with virtio-net
+  (in QEMU `-netdev user`) DHCP, routes, configured DNS and ping to gateway and
   DNS;
-- `net.rs` (solo Vetro): la rete del guest con lo stack di `vetro-net` e il
-  sinkhole (vedi `docs/specs/net.md`);
-- `devices.rs` (solo Vetro, con vsock): l'host confronta ogni pixel dello
-  scanout con il motivo disegnato dal guest e il cursore, inietta tasti e
-  movimenti letti dal guest con evdev, vede il LED acceso dal guest, e
-  scambia dati vsock nei due versi (300 KB verso il guest, oltre il suo
-  credito; 200 KB di eco); due esecuzioni danno lo stesso log e le stesse
-  istruzioni;
-- `files.rs` (solo Vetro, con vsock, M8): il demone del gestore dei file
-  `vetro-files`, che `/init` avvia quando c'è virtio-vsock, e il client
-  dell'host (`docs/specs/files.md`, ADR 0020).
-I test virtio usano un driver di prova (`virtio/testdrv.rs`) che fa ciò che
-fa Linux su una RAM finta: negoziazione, setup delle code, catene dirette e
-indirette, notifiche, used ring con aggiornamento di used_event,
-interrupt; un test lo fa passare dal bus di `Virt` fino all'INTID nel GIC.
-Il DTB prodotto è stato decompilato anche con `dtc -I dtb -O dts` senza
-errori (verifica manuale, non in CI). Il confronto con QEMU arriva in M3,
-avviando lo stesso kernel su entrambi.
+- `net.rs` (Vetro only): the guest network with the `vetro-net` stack and the
+  sinkhole (see `docs/specs/net.md`);
+- `devices.rs` (Vetro only, with vsock): the host compares every pixel of the
+  scanout with the pattern drawn by the guest and the cursor, injects keys and
+  movements read by the guest with evdev, sees the LED turned on by the guest, and
+  exchanges vsock data in both directions (300 KB towards the guest, beyond its
+  credit; 200 KB of echo); two runs give the same log and the same
+  instructions;
+- `files.rs` (Vetro only, with vsock, M8): the file manager daemon
+  `vetro-files`, which `/init` starts when virtio-vsock is present, and the
+  host client (`docs/specs/files.md`, ADR 0020).
+The virtio tests use a test driver (`virtio/testdrv.rs`) that does what
+Linux does on a fake RAM: negotiation, queue setup, direct and
+indirect chains, notifications, used ring with used_event updates,
+interrupts; one test takes it through the `Virt` bus all the way to the INTID in the GIC.
+The produced DTB was also decompiled with `dtc -I dtb -O dts` without
+errors (manual check, not in CI). The comparison with QEMU comes in M3,
+booting the same kernel on both.
