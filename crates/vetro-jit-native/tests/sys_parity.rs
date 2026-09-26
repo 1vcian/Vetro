@@ -56,7 +56,7 @@ const HANDLER: [u32; 4] = [
 
 /// Istruzioni di sistema (registri Rt = x0, Rn = x1, Rs = w2, Rt2 = x3:
 /// il generatore li cambia a caso).
-const SYSTEM: [u32; 30] = [
+const SYSTEM: [u32; 40] = [
     0xd53bd040, // mrs x0, TPIDR_EL0
     0xd51bd040, // msr TPIDR_EL0, x0
     0xd53bd060, // mrs x0, TPIDRRO_EL0
@@ -87,6 +87,17 @@ const SYSTEM: [u32; 30] = [
     0xd508871f, // tlbi vmalle1
     0xd50342df, // msr DAIFSet, #0x2
     0xd50b7e20, // dc civac, x0
+    // ADR 0024: DAIF, ELR/SPSR/ESR/FAR a EL1 nei blocchi.
+    0xd53b4220, // mrs x0, DAIF
+    0xd51b4220, // msr DAIF, x0
+    0xd50342ff, // msr DAIFClr, #0x2
+    0xd5034fdf, // msr DAIFSet, #0xf
+    0xd5384020, // mrs x0, ELR_EL1
+    0xd5184020, // msr ELR_EL1, x0
+    0xd5384000, // mrs x0, SPSR_EL1
+    0xd5184000, // msr SPSR_EL1, x0
+    0xd5385200, // mrs x0, ESR_EL1
+    0xd5386000, // mrs x0, FAR_EL1
 ];
 
 /// Coppie esclusive con lo stesso indirizzo in x1 (perché lo store possa
@@ -312,7 +323,13 @@ fn setup(seed: u64) -> (Cpu, Vec<u8>) {
             put(&mut ram, l3 + 8 * i, &(pa | VALID_PAGE | AF | SH_INNER | a).to_le_bytes());
         }
     }
-    let sys = SysTarget { el: if el0 { 0 } else { 1 }, tbi0: rng.below(2) == 0, tbi1: false, spsel: !el0 };
+    let sys = SysTarget {
+        el: if el0 { 0 } else { 1 },
+        tbi0: rng.below(2) == 0,
+        tbi1: false,
+        spsel: !el0,
+        fp: true,
+    };
     // Programma: istruzioni casuali, di sistema, coppie esclusive.
     let mut prog = Vec::with_capacity(PROG_LEN);
     while prog.len() < PROG_LEN {
@@ -347,7 +364,7 @@ fn setup(seed: u64) -> (Cpu, Vec<u8>) {
     }
     s.ttbr0_el1 = l1;
     let mut sctlr_v = s.sctlr_el1 | sctlr::M | sctlr::DZE | sctlr::UCI;
-    for bit in [sctlr::A, sctlr::SA, sctlr::SA0] {
+    for bit in [sctlr::A, sctlr::SA, sctlr::SA0, sctlr::UMA] {
         match rng.below(3) {
             0 => sctlr_v |= bit,
             1 => sctlr_v &= !bit,
@@ -515,6 +532,11 @@ fn sistema_interprete_e_jit_identici() {
         let (got, s) = run_jit(cpu, &ram, seed);
         if got != want {
             let first_diff = got.events.iter().zip(&want.events).position(|(a, b)| a != b);
+            let around = |e: &[(u64, SysEvent)]| {
+                let i = first_diff.unwrap_or(e.len()).saturating_sub(1);
+                format!("{:?}", &e[i.min(e.len())..(i + 3).min(e.len())])
+            };
+            eprintln!("eventi vicini: interprete {}\nJIT {}", around(&want.events), around(&got.events));
             panic!(
                 "seme {seed}: interprete e JIT diversi (VETRO_JIT_SYS_PARITY_SEED={seed} \
                  VETRO_JIT_SYS_PARITY_CASES=1)\nprimo evento diverso: {first_diff:?}\n\
@@ -543,6 +565,7 @@ fn sistema_interprete_e_jit_identici() {
         total.epochs += s.epochs;
         total.tlb_flushes += s.tlb_flushes;
         total.tlb_fills += s.tlb_fills;
+        total.yields += s.yields;
     }
     eprintln!("{cases} programmi, {exceptions} eccezioni; JIT: {total:?}");
     // La prova vale solo se il JIT ha lavorato davvero, anche nei casi
@@ -550,4 +573,91 @@ fn sistema_interprete_e_jit_identici() {
     assert!(total.jit_steps > cases * STEP_LIMIT / 10, "troppo pochi passi nei blocchi: {total:?}");
     assert!(total.faults > 0 && total.stops > 0 && total.invalidated_pages > 0, "{total:?}");
     assert!(total.tlb_fills > 0 && total.svcs > 0 && total.resolves > 0, "{total:?}");
+    // MSR DAIF/DAIFClr che smascherano (ADR 0024).
+    assert!(total.yields > 0, "{total:?}");
+}
+
+/// TLB degli accessi non allineati (ADR 0024): una pagina Normal riempita da
+/// un accesso non allineato riuscito non deve far passare un accesso non
+/// allineato che sconfina nella pagina successiva, non mappata: lì
+/// l'interprete dà il fault. Anche un Q allineato a 8 ma non a 16 su
+/// memoria Device va all'interprete (fault di allineamento).
+#[test]
+fn tlb_non_allineata_non_sconfina() {
+    // (pagina corrente, pagina successiva) cercate nelle tabelle di un caso.
+    let l3 = TABLES + 0x2000;
+    let pte = |ram: &[u8], i: u64| {
+        let o = (l3 + 8 * i - RAM_BASE) as usize;
+        u64::from_le_bytes(ram[o..o + 8].try_into().unwrap())
+    };
+    let mut checked = 0;
+    for seed in 0..400 {
+        let (mut cpu, mut ram) = setup(seed);
+        if cpu.sys.el != 1 {
+            continue;
+        }
+        // Normal RW seguita da una pagina non mappata.
+        let normal = |d: u64| d & 3 == VALID_PAGE && d & (1 << 2) == ATTR_NORMAL && d & (0b10 << 6) == 0;
+        let Some(i) = (1..511).find(|&i| normal(pte(&ram, i)) && pte(&ram, i + 1) == 0) else { continue };
+        let page = DATA + i * 0x1000;
+        // ldr x0, [x1]; ldr x0, [x2]; b . (tools/a64asm.sh)
+        let prog = [0xf9400020u32, 0xf9400040, 0x14000000];
+        let o = (START - RAM_BASE) as usize;
+        for (k, w) in prog.iter().enumerate() {
+            ram[o + 4 * k..o + 4 * k + 4].copy_from_slice(&w.to_le_bytes());
+        }
+        cpu.sys.sctlr_el1 &= !sctlr::A;
+        cpu.x[1] = page + 1;
+        cpu.x[2] = page + 0xffd;
+        let want = run_interp(cpu.clone(), ram.clone());
+        let (got, _) = run_jit(cpu, &ram, seed);
+        assert!(!want.events.is_empty(), "l'accesso a cavallo deve dare un fault");
+        assert_eq!(got, want, "seme {seed}");
+        checked += 1;
+        if checked == 8 {
+            break;
+        }
+    }
+    assert!(checked > 0, "nessun caso adatto");
+}
+
+/// MSR DAIFClr che smaschera un interrupt (ADR 0024): il blocco esce con
+/// YIELD subito dopo l'istruzione, così la macchina ricontrolla gli
+/// interrupt al confine giusto (lo stesso dell'interprete). DAIFSet, e
+/// DAIFClr di un bit già a zero, non escono.
+#[test]
+fn daifclr_esce_dopo_l_istruzione() {
+    let seed = (0..100).find(|&s| setup(s).0.sys.el == 1).expect("un caso a EL1");
+    let (mut cpu, mut ram) = setup(seed);
+    let prog = [
+        0xd5034fdfu32, // msr DAIFSet, #0xf
+        0xd50342ff,    // msr DAIFClr, #0x2
+        0x91000400,    // add x0, x0, #1
+        0xd50342ff,    // msr DAIFClr, #0x2 (I già a 0)
+        0x91000400,    // add x0, x0, #1
+        0x14000000,    // b .
+    ];
+    let o = (START - RAM_BASE) as usize;
+    for (k, w) in prog.iter().enumerate() {
+        ram[o + 4 * k..o + 4 * k + 4].copy_from_slice(&w.to_le_bytes());
+    }
+    let mut engine = NativeEngine::new();
+    vetro_jit::Engine::reserve(&mut engine, RAM_IN_ENGINE + RAM_LEN);
+    let cfg = SysJitConfig { hot_threshold: 0, batch: 1, ..Default::default() };
+    let mut jit = SysJit::new(engine, cfg);
+    let base = vetro_jit::Engine::memory(jit.engine())[RAM_IN_ENGINE..].as_mut_ptr();
+    let mut phys = TestPhys { ram: base, watched: vec![false; RAM_LEN >> 12], dirty: Vec::new() };
+    phys.bytes().copy_from_slice(&ram);
+    let mut mmu = Mmu::new(Mmu::PA_BITS_CORTEX_A53);
+    let x0 = cpu.x[0];
+    let r = jit.run(&mut cpu, &mut mmu, &mut phys, 100);
+    assert_eq!((r.steps, r.next), (2, Next::Jit), "YIELD dopo DAIFClr");
+    assert_eq!(cpu.pc, START + 8);
+    assert_eq!(cpu.sys.daif, 0x340, "D, A, F mascherati, I no");
+    assert_eq!(jit.stats().yields, 1);
+    // Il resto fino al limite: nessun'altra uscita.
+    let r = jit.run(&mut cpu, &mut mmu, &mut phys, 10);
+    assert_eq!((r.steps, r.next), (10, Next::Jit));
+    assert_eq!(cpu.x[0], x0.wrapping_add(2));
+    assert_eq!(jit.stats().yields, 1);
 }

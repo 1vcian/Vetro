@@ -285,7 +285,7 @@ async function start(c) {
     times.total = performance.now() - t0;
     post({ type: 'cold', times });
   }
-  if (c.jit) m.setJit(16, 16);
+  if (c.jit) m.setJit();
   if (c.files) openFiles();
   if (c.net) m.capture(true);
   try {

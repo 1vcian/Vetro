@@ -16,12 +16,17 @@
 //! Così l'orologio (il numero di istruzioni) e i punti in cui arrivano gli
 //! interrupt sono identici all'interprete.
 //!
-//! # Blocchi
-//! - Un blocco si cerca per (`pc`, EL, TBI0, TBI1) e vale per l'indirizzo
-//!   fisico da cui è stato letto: a ogni ingresso dall'host si ritraduce
-//!   `pc` con la MMU (per un fetch, con i permessi di EL: la stessa
-//!   traduzione dell'interprete, cache delle traduzioni recenti compresa) e
-//!   si usa il blocco di quella pagina fisica.
+//! # Regioni (ADR 0024)
+//! - Una regione si cerca per (`pc`, EL, TBI0, TBI1, SPSel, FP) e vale per
+//!   l'indirizzo fisico da cui è stata letta: a ogni ingresso dall'host si
+//!   ritraduce `pc` con la MMU (per un fetch, con i permessi di EL: la
+//!   stessa traduzione dell'interprete, cache delle traduzioni recenti
+//!   compresa) e si usa la regione di quella pagina fisica. Il codice freddo
+//!   (sotto la soglia) non si traduce nemmeno.
+//! - Ogni blocco base di una regione compilata è anche un suo ingresso: un
+//!   `pc` già dentro una regione non ne fa tradurre un'altra.
+//! - MSR DAIF/DAIFClr che smascherano interrupt fanno uscire con `YIELD`:
+//!   `run` torna al chiamante, che ricontrolla gli interrupt.
 //! - Ogni pagina fisica con blocchi è sorvegliata ([`SysPhys::watch_code`]):
 //!   qualunque scrittura (CPU, DMA dei dispositivi, caricamento) la segna
 //!   sporca, e i suoi blocchi si scartano prima della corsa successiva. Uno
@@ -34,13 +39,17 @@
 //! blocco al successivo senza tornare all'host, finché la cache dei salti
 //! ([`area::JC`]) ha una voce per il nuovo `pc` con il contesto corrente. Le
 //! voci le scrive solo l'host, dopo aver verificato la traduzione del
-//! fetch; il contesto (`ctx`) è EL più un'epoca che cambia con i registri
-//! di traduzione, con ogni TLBI e con ogni invalidazione di blocchi.
+//! fetch; il contesto (`ctx`) è un'epoca che cambia con i registri di
+//! traduzione, con ogni TLBI e con ogni invalidazione di blocchi, più i
+//! parametri della regione (EL, TBI, SPSel, FP).
 //!
 //! # TLB software
 //! I blocchi leggono e scrivono la RAM direttamente quando la pagina è
-//! nella TLB software ([`area::tlb`]) del loro EL e l'accesso è allineato;
-//! altrimenti chiamano `ld`/`st`. L'host riempie la TLB solo dopo un
+//! nella TLB software ([`area::tlb`]) del loro EL e l'accesso è allineato,
+//! o nella TLB dei non allineati ([`area::tlb_u`], riempita solo dopo un
+//! accesso non allineato riuscito: memoria Normal e SCTLR_EL1.A a 0) e
+//! l'accesso resta nella pagina; altrimenti chiamano `ld`/`st`. L'host
+//! riempie la TLB solo dopo un
 //! accesso riuscito (stessi permessi, stessa pagina), solo per pagine di
 //! RAM che il motore raggiunge ([`Engine::host_address`]) e, per le
 //! scritture, solo per pagine senza blocchi. La svuota con i registri di
@@ -55,15 +64,15 @@ use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::rc::Rc;
 
-use vetro_cpu::sys::{AccessReq, SysBus, TranslationRegs, sctlr};
-use vetro_cpu::{Access, Cpu, decode};
+use vetro_cpu::sys::{AccessReq, SysBus, TranslationRegs, cpacr, sctlr};
+use vetro_cpu::{Access, Cpu};
 use vetro_mmu::{BusError, Mmu, MmuBus, PhysMemory, tcr};
 
 use crate::engine::{Engine, Host, TABLE_SIZE};
 use crate::state::{self, JitState, area, off};
-use crate::translate::{self, Block, Kind, MAX_BLOCK, SysTarget, ZVA_BYTES};
+use crate::translate::{self, MAX_REGION, Region, SysTarget, ZVA_BYTES};
 use crate::wasm::MemoryImport;
-use crate::{FAULT, NEXT, STOP, SVC};
+use crate::{FAULT, NEXT, STOP, SVC, YIELD};
 
 /// La memoria fisica vista dal JIT della modalità sistema.
 pub trait SysPhys: PhysMemory {
@@ -133,7 +142,7 @@ pub struct SysJitConfig {
 impl Default for SysJitConfig {
     fn default() -> Self {
         SysJitConfig {
-            hot_threshold: 16,
+            hot_threshold: 64,
             batch: 16,
             memory: MemoryImport { min: 1, shared_max: None },
             state_addr: 16,
@@ -165,6 +174,8 @@ pub struct SysJitStats {
     pub svcs: u64,
     /// Uscite per store su codice.
     pub stops: u64,
+    /// Uscite dopo aver smascherato interrupt (`YIELD`).
+    pub yields: u64,
     /// Nuove epoche del concatenamento e svuotamenti della TLB software.
     pub epochs: u64,
     pub tlb_flushes: u64,
@@ -223,21 +234,35 @@ type FastMap<K, V> = HashMap<K, V, BuildHasherDefault<U64Hasher>>;
 type Key = (u64, u8);
 
 fn flags(sys: SysTarget) -> u8 {
-    sys.el | (sys.tbi0 as u8) << 1 | (sys.tbi1 as u8) << 2 | (sys.spsel as u8) << 3
+    sys.el | (sys.tbi0 as u8) << 1 | (sys.tbi1 as u8) << 2 | (sys.spsel as u8) << 3 | (sys.fp as u8) << 4
 }
 
 /// I parametri di traduzione per lo stato corrente della CPU.
 pub fn target(cpu: &Cpu) -> SysTarget {
     let t = cpu.sys.tcr_el1;
-    SysTarget { el: cpu.sys.el, tbi0: t & tcr::TBI0 != 0, tbi1: t & tcr::TBI1 != 0, spsel: cpu.sys.spsel }
+    // CPACR_EL1.FPEN come `Cpu::fp_trapped`: 11 nessuna trap, 01 solo EL0.
+    let fp = match cpu.sys.cpacr_el1 >> cpacr::FPEN_SHIFT & 3 {
+        0b11 => true,
+        0b01 => cpu.sys.el == 1,
+        _ => false,
+    };
+    SysTarget { el: cpu.sys.el, tbi0: t & tcr::TBI0 != 0, tbi1: t & tcr::TBI1 != 0, spsel: cpu.sys.spsel, fp }
 }
 
+/// Un ingresso di una regione compilata.
 struct Compiled<M> {
     _module: Rc<M>,
     /// Voce della tabella.
     slot: u32,
+    /// Passi massimi del blocco base d'ingresso.
     max_steps: u8,
+    /// Indice del blocco base d'ingresso (`JitState::entry`).
+    bb: u8,
 }
+
+/// Gli ingressi di una regione compilata: (indirizzo, ingresso); il primo
+/// è l'inizio della regione.
+type Entries<M> = Rc<[(u64, Rc<Compiled<M>>)]>;
 
 /// Un blocco per una pagina fisica: compilato, o `None` se la prima
 /// istruzione non si traduce.
@@ -263,7 +288,7 @@ struct Pending {
     key: Key,
     pa: u64,
     words: Vec<u32>,
-    block: Block,
+    block: Region,
 }
 
 enum Look<M> {
@@ -282,7 +307,7 @@ struct Cache<M> {
     /// Moduli compilati per (chiave, istruzioni): lo stesso codice allo
     /// stesso indirizzo virtuale (un'altra pagina fisica, un altro
     /// processo) non si ricompila.
-    compiled: HashMap<(Key, Vec<u32>), Rc<Compiled<M>>>,
+    compiled: HashMap<(Key, Vec<u32>), Entries<M>>,
     pending: Vec<Pending>,
     /// Richieste di blocchi in attesa dall'ultima compilazione.
     pending_hits: usize,
@@ -296,8 +321,10 @@ struct Cache<M> {
 
 impl<M> Cache<M> {
     /// Contesto delle voci della cache dei salti valide adesso per `el`.
-    fn ctx(&self, el: u8) -> u32 {
-        self.epoch << 1 | el as u32
+    /// Contesto delle voci della cache dei salti valide adesso per i
+    /// parametri `fl` ([`flags`]: EL, TBI, SPSel, FP).
+    fn ctx(&self, fl: u8) -> u32 {
+        self.epoch << 5 | fl as u32
     }
 
     /// Cerca il blocco di `pc` per la pagina fisica da cui la CPU lo
@@ -317,6 +344,23 @@ impl<M> Cache<M> {
         if !pc.is_multiple_of(4) {
             return Look::One;
         }
+        // Codice freddo (nessuna variante e sotto la soglia): la traduzione
+        // del fetch non serve. Conta come prima (l'interprete eseguirà
+        // comunque le stesse istruzioni, anche se il fetch fallisce).
+        let threshold = self.hot_threshold;
+        match self.blocks.get_mut(&(pc, fl)) {
+            None if !count => return Look::Cold,
+            Some(e) if e.variants.is_empty() && !count => return Look::Cold,
+            None if threshold > 1 => {
+                self.blocks.insert((pc, fl), Entry { seen: 1, variants: Vec::new() });
+                return Look::Cold;
+            }
+            Some(e) if e.variants.is_empty() && e.seen.saturating_add(1) < threshold => {
+                e.seen += 1;
+                return Look::Cold;
+            }
+            _ => {}
+        }
         let pa = {
             let mut ram = RamOnly(phys);
             let mut bus = MmuBus::new(mmu, &mut ram);
@@ -325,7 +369,6 @@ impl<M> Cache<M> {
                 Err(_) => return Look::One,
             }
         };
-        let threshold = self.hot_threshold;
         let e = match self.blocks.get_mut(&(pc, fl)) {
             Some(e) => e,
             None if count => self.blocks.entry((pc, fl)).or_default(),
@@ -348,7 +391,28 @@ impl<M> Cache<M> {
         let e = self.at + area::JC as usize + ((pc >> 2) & (area::JC_ENTRIES as u64 - 1)) as usize * 16;
         mem[e..e + 8].copy_from_slice(&pc.to_le_bytes());
         mem[e + 8..e + 12].copy_from_slice(&ctx.to_le_bytes());
-        mem[e + 12..e + 16].copy_from_slice(&(c.slot << 8 | c.max_steps as u32).to_le_bytes());
+        let w = (c.bb as u32) << 26 | c.slot << 8 | c.max_steps as u32;
+        mem[e + 12..e + 16].copy_from_slice(&w.to_le_bytes());
+    }
+
+    /// Registra gli ingressi di una regione di `key` alla pagina fisica di
+    /// `pa`: l'inizio sempre, gli altri blocchi base solo dove non c'è già
+    /// un blocco compilato (niente codice duplicato per i ritorni e i salti
+    /// dentro la regione).
+    fn record_entries(&mut self, key: Key, pa: u64, entries: &Entries<M>) {
+        for (i, (epc, c)) in entries.iter().enumerate() {
+            let k = (*epc, key.1);
+            let epa = pa.wrapping_add(epc.wrapping_sub(key.0));
+            if i > 0
+                && self
+                    .blocks
+                    .get(&k)
+                    .is_some_and(|e| e.variants.iter().any(|v| v.pa == epa && v.block.is_some()))
+            {
+                continue;
+            }
+            self.record(k, epa, Some(c.clone()));
+        }
     }
 
     fn record(&mut self, key: Key, pa: u64, block: Option<Rc<Compiled<M>>>) {
@@ -381,6 +445,8 @@ struct SysHost<'a, M> {
     cache: &'a mut Cache<M>,
     mmu: &'a mut Mmu,
     phys: &'a mut dyn SysPhys,
+    /// I registri SIMD/FP della `Cpu` (per `vsync`).
+    v: &'a [u128; 32],
     regs: TranslationRegs,
     el: u8,
     fl: u8,
@@ -390,9 +456,14 @@ struct SysHost<'a, M> {
 impl<M> SysHost<'_, M> {
     /// Traduzione di un accesso ai dati di `size` byte (1, 2, 4, 8, o
     /// [`ZVA_BYTES`] per DC ZVA).
-    fn translate(&mut self, va: u64, size: u32, access: Access) -> Result<u64, ()> {
+    /// Restituisce anche se l'accesso era allineato.
+    fn translate(&mut self, va: u64, size: u32, access: Access) -> Result<(u64, bool), ()> {
+        // Metà di un accesso da 16 byte non allineato a 16 (`SIZE_PART_OF_MISALIGNED`):
+        // i permessi e l'allineamento sono quelli dell'accesso intero.
+        let part = size & translate::SIZE_PART_OF_MISALIGNED != 0;
+        let size = size & !translate::SIZE_PART_OF_MISALIGNED;
         let zva = size == ZVA_BYTES;
-        let aligned = !zva && va & (size as u64 - 1) == 0;
+        let aligned = !zva && !part && va & (size as u64 - 1) == 0;
         // Come `SysMem::access`: big-endian non implementato, allineamento
         // con SCTLR_EL1.A (non per DC ZVA). A cavallo di pagina:
         // all'interprete.
@@ -405,11 +476,14 @@ impl<M> SysHost<'_, M> {
         }
         let mut ram = RamOnly(&mut *self.phys);
         let mut bus = MmuBus::new(&mut *self.mmu, &mut ram);
-        bus.translate(&self.regs, va, AccessReq { access, el: self.el, aligned }).map_err(|_| ())
+        let pa = bus.translate(&self.regs, va, AccessReq { access, el: self.el, aligned }).map_err(|_| ())?;
+        Ok((pa, aligned))
     }
 
-    /// Voce della TLB software per la pagina di `va` (tradotta in `pa`).
-    fn fill(&mut self, mem: &mut [u8], va: u64, pa: u64, write: bool) {
+    /// Voci della TLB software per la pagina di `va` (tradotta in `pa`):
+    /// dopo un accesso riuscito non allineato (`aligned` falso) la pagina è
+    /// Normal e SCTLR_EL1.A è 0, e vale anche per quelli non allineati.
+    fn fill(&mut self, mem: &mut [u8], va: u64, pa: u64, write: bool, aligned: bool) {
         let Some((base, addr, len)) = self.ram else { return };
         let page = pa & !0xfff;
         if page < base || page + 0x1000 > base + len || (write && self.phys.is_watched(pa >> 12)) {
@@ -417,28 +491,32 @@ impl<M> SysHost<'_, M> {
         }
         let host = addr as u64 + (page - base);
         let vpage = va & !0xfff;
-        let e = self.cache.at
-            + area::tlb(self.el, write) as usize
-            + ((va >> 12) & (area::TLB_ENTRIES as u64 - 1)) as usize * 16;
-        mem[e..e + 8].copy_from_slice(&vpage.to_le_bytes());
-        mem[e + 8..e + 16].copy_from_slice(&host.wrapping_sub(vpage).to_le_bytes());
+        let idx = ((va >> 12) & (area::TLB_ENTRIES as u64 - 1)) as usize * 16;
+        let tables = [Some(area::tlb(self.el, write)), (!aligned).then(|| area::tlb_u(self.el, write))];
+        for t in tables.into_iter().flatten() {
+            let e = self.cache.at + t as usize + idx;
+            mem[e..e + 8].copy_from_slice(&vpage.to_le_bytes());
+            mem[e + 8..e + 16].copy_from_slice(&host.wrapping_sub(vpage).to_le_bytes());
+        }
         self.cache.stats.tlb_fills += 1;
     }
 }
 
 impl<M> Host for SysHost<'_, M> {
     fn ld(&mut self, mem: &mut [u8], va: u64, size: u32) -> Result<u64, ()> {
-        let pa = self.translate(va, size, Access::Read)?;
+        let (pa, aligned) = self.translate(va, size, Access::Read)?;
+        let size = size & !translate::SIZE_PART_OF_MISALIGNED;
         let mut b = [0u8; 8];
         if !self.phys.ram_read(pa, &mut b[..size as usize]) {
             return Err(());
         }
-        self.fill(mem, va, pa, false);
+        self.fill(mem, va, pa, false, aligned);
         Ok(u64::from_le_bytes(b))
     }
 
     fn st(&mut self, mem: &mut [u8], va: u64, size: u32, value: u64) -> Result<bool, ()> {
-        let pa = self.translate(va, size, Access::Write)?;
+        let (pa, aligned) = self.translate(va, size, Access::Write)?;
+        let size = size & !translate::SIZE_PART_OF_MISALIGNED;
         if size == ZVA_BYTES {
             return self.phys.ram_write(pa, &[0u8; ZVA_BYTES as usize]).ok_or(());
         }
@@ -446,10 +524,14 @@ impl<M> Host for SysHost<'_, M> {
             None => Err(()),
             Some(true) => Ok(true),
             Some(false) => {
-                self.fill(mem, va, pa, true);
+                self.fill(mem, va, pa, true, aligned);
                 Ok(false)
             }
         }
+    }
+
+    fn vsync(&mut self, mem: &mut [u8], state: u32) {
+        state::vsync_in(mem, state as usize, self.v);
     }
 
     /// Voce mancante della cache dei salti per `pc` di `JitState`: se il
@@ -475,6 +557,7 @@ impl<E: Engine> SysJit<E> {
         assert!(cfg.state_addr.is_multiple_of(16), "JitState va allineato a 16 byte");
         assert!(cfg.batch >= 1);
         engine.reserve(cfg.state_addr as usize + area::SIZE as usize);
+        engine.runtime(&translate::runtime(cfg.memory)).expect("runtime del JIT rifiutato dal motore");
         let mut j = SysJit {
             engine,
             cfg,
@@ -526,9 +609,11 @@ impl<E: Engine> SysJit<E> {
                 if writes_only && !write {
                     continue;
                 }
-                let t = at + area::tlb(el, write) as usize;
-                for i in 0..area::TLB_ENTRIES as usize {
-                    m[t + i * 16..t + i * 16 + 8].copy_from_slice(&area::TLB_INVALID.to_le_bytes());
+                for table in [area::tlb(el, write), area::tlb_u(el, write)] {
+                    let t = at + table as usize;
+                    for i in 0..area::TLB_ENTRIES as usize {
+                        m[t + i * 16..t + i * 16 + 8].copy_from_slice(&area::TLB_INVALID.to_le_bytes());
+                    }
                 }
             }
         }
@@ -539,7 +624,7 @@ impl<E: Engine> SysJit<E> {
     fn new_epoch(&mut self) {
         self.cache.epoch += 1;
         self.cache.stats.epochs += 1;
-        if self.cache.epoch >= 1 << 30 {
+        if self.cache.epoch >= 1 << 26 {
             let at = self.cache.at + area::JC as usize;
             self.engine.memory()[at..at + area::JC_ENTRIES as usize * 16].fill(0);
             self.cache.epoch = 1;
@@ -644,7 +729,7 @@ impl<E: Engine> SysJit<E> {
                 self.compile_dispatcher();
             }
             // L'epoca può essere cambiata (compilazione, azzeramento).
-            let ctx = self.cache.ctx(el);
+            let ctx = self.cache.ctx(fl);
             let m = self.engine.memory();
             self.cache.install_jc(m, pc, ctx, &c);
             if !in_jit {
@@ -660,7 +745,8 @@ impl<E: Engine> SysJit<E> {
                 state::write_u32(m, at, off::EXIT_DETAIL, 0);
             }
             let code = {
-                let mut host = SysHost { cache: &mut self.cache, mmu, phys, regs, el, fl, ram: self.ram };
+                let v = &cpu.v;
+                let mut host = SysHost { cache: &mut self.cache, mmu, phys, v, regs, el, fl, ram: self.ram };
                 let d = self.dispatcher.as_ref().expect("dispatcher compilato");
                 self.engine.run(d, 0, self.cfg.state_addr, &mut host)
             };
@@ -684,6 +770,11 @@ impl<E: Engine> SysJit<E> {
                 SVC => {
                     self.cache.stats.svcs += 1;
                     break Next::One;
+                }
+                YIELD => {
+                    // Interrupt smascherati: decide il chiamante (`jit_budget`).
+                    self.cache.stats.yields += 1;
+                    break Next::Jit;
                 }
                 other => panic!("codice d'uscita del dispatcher sconosciuto: {other}"),
             }
@@ -714,54 +805,26 @@ impl<E: Engine> SysJit<E> {
             self.compile_pending();
             return self.compiled_block(key, pa);
         }
-        let mut words = Vec::new();
-        let mut insns = Vec::new();
-        let mut a = pc;
-        while insns.len() < MAX_BLOCK && a >> 12 == pc >> 12 {
+        let found = translate::discover(pc, Some(sys), MAX_REGION, |a| {
             let mut w = [0u8; 4];
-            if !phys.ram_read(pa + (a - pc), &mut w) {
-                break;
-            }
-            let w = u32::from_le_bytes(w);
-            let insn = decode(w);
-            match translate::kind_in(&insn, Some(sys)) {
-                Kind::Unsupported => break,
-                Kind::Svc => {
-                    if !insns.is_empty() {
-                        words.push(w);
-                        insns.push(insn);
-                    }
-                    break;
-                }
-                Kind::Branch => {
-                    words.push(w);
-                    insns.push(insn);
-                    break;
-                }
-                Kind::Linear => {
-                    words.push(w);
-                    insns.push(insn);
-                }
-            }
-            a = a.wrapping_add(4);
-        }
+            phys.ram_read(pa.wrapping_add(a.wrapping_sub(pc)), &mut w).then(|| u32::from_le_bytes(w))
+        });
         let page = pa >> 12;
         let was_watched = phys.is_watched(page);
-        if insns.is_empty() || !phys.watch_code(page) {
+        let Some((block, words)) = found.filter(|_| phys.watch_code(page)) else {
             self.cache.record(key, pa, None);
             return Err(Next::One);
-        }
+        };
         if !was_watched {
             // Niente scritture dirette su una pagina che ora ha blocchi.
             self.flush_tlb(true);
         }
-        if let Some(c) = self.cache.compiled.get(&(key, words.clone())) {
-            let c = c.clone();
+        if let Some(es) = self.cache.compiled.get(&(key, words.clone())) {
+            let es = es.clone();
             self.cache.stats.reused += 1;
-            self.cache.record(key, pa, Some(c.clone()));
-            return Ok(c);
+            self.cache.record_entries(key, pa, &es);
+            return Ok(es[0].1.clone());
         }
-        let block = Block { pc, insns, sys: Some(sys) };
         self.cache.pending.push(Pending { key, pa, words, block });
         if self.cache.pending.len() < self.cfg.batch {
             // I blocchi in attesa restano sorvegliati: una scrittura li
@@ -792,7 +855,7 @@ impl<E: Engine> SysJit<E> {
         if self.cache.next_slot + n > TABLE_SIZE {
             self.reset();
         }
-        let blocks: Vec<Block> = self.cache.pending.iter().map(|p| p.block.clone()).collect();
+        let blocks: Vec<Region> = self.cache.pending.iter().map(|p| p.block.clone()).collect();
         let wasm = translate::module(&blocks, self.cfg.memory);
         let module = match self.engine.compile(&wasm) {
             Ok(m) => m,
@@ -813,14 +876,23 @@ impl<E: Engine> SysJit<E> {
         let module = Rc::new(module);
         let pending = std::mem::take(&mut self.cache.pending);
         for (i, p) in pending.into_iter().enumerate() {
-            let c = Rc::new(Compiled {
-                _module: module.clone(),
-                slot: base + i as u32,
-                max_steps: p.block.max_steps() as u8,
-            });
+            let slot = base + i as u32;
+            let first = p.block.entry_index();
+            let mut es: Vec<(u64, Rc<Compiled<E::Module>>)> = p
+                .block
+                .entries()
+                .into_iter()
+                .map(|(epc, bb, max)| {
+                    let c = Compiled { _module: module.clone(), slot, max_steps: max as u8, bb: bb as u8 };
+                    (epc, Rc::new(c))
+                })
+                .collect();
+            let at = es.iter().position(|e| e.1.bb as u32 == first).expect("ingresso della regione");
+            es.swap(0, at);
+            let es: Entries<E::Module> = es.into();
             self.cache.stats.blocks += 1;
-            self.cache.compiled.insert((p.key, p.words), c.clone());
-            self.cache.record(p.key, p.pa, Some(c));
+            self.cache.compiled.insert((p.key, p.words), es.clone());
+            self.cache.record_entries(p.key, p.pa, &es);
         }
     }
 

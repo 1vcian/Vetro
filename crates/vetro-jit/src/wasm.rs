@@ -21,6 +21,7 @@ pub mod op {
     pub const END: u8 = 0x0b;
     pub const BR: u8 = 0x0c;
     pub const BR_IF: u8 = 0x0d;
+    pub const BR_TABLE: u8 = 0x0e;
     pub const RETURN: u8 = 0x0f;
     pub const CALL: u8 = 0x10;
     pub const CALL_INDIRECT: u8 = 0x11;
@@ -45,12 +46,21 @@ pub mod op {
     pub const I32_EQZ: u8 = 0x45;
     pub const I32_EQ: u8 = 0x46;
     pub const I32_NE: u8 = 0x47;
+    pub const I32_LT_S: u8 = 0x48;
+    pub const I32_GT_S: u8 = 0x4a;
+    pub const I32_LE_U: u8 = 0x4d;
+    pub const I32_GE_S: u8 = 0x4e;
+    pub const I32_GE_U: u8 = 0x4f;
     pub const I64_EQZ: u8 = 0x50;
     pub const I64_EQ: u8 = 0x51;
     pub const I64_NE: u8 = 0x52;
+    pub const I64_LT_S: u8 = 0x53;
     pub const I64_LT_U: u8 = 0x54;
+    pub const I64_GT_S: u8 = 0x55;
     pub const I64_GT_U: u8 = 0x56;
     pub const I64_LE_U: u8 = 0x58;
+    pub const I64_GE_S: u8 = 0x59;
+    pub const I64_GE_U: u8 = 0x5a;
 
     pub const I32_CLZ: u8 = 0x67;
     pub const I32_ADD: u8 = 0x6a;
@@ -226,6 +236,17 @@ impl Func {
     pub fn br_if(&mut self, depth: u32) -> &mut Self {
         self.code.push(op::BR_IF);
         uleb(&mut self.code, depth as u64);
+        self
+    }
+    /// `br_table`: salta all'etichetta `labels[i]` (i32 in cima allo
+    /// stack), o a `default` se `i` è fuori.
+    pub fn br_table(&mut self, labels: &[u32], default: u32) -> &mut Self {
+        self.code.push(op::BR_TABLE);
+        uleb(&mut self.code, labels.len() as u64);
+        for &l in labels {
+            uleb(&mut self.code, l as u64);
+        }
+        uleb(&mut self.code, default as u64);
         self
     }
     pub fn call(&mut self, f: u32) -> &mut Self {

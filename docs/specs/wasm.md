@@ -20,7 +20,7 @@ memoria lineare (due macchine da 1 GiB) arrivano negativi.
 
 ## Export
 
-Versione: `vetro_abi_version() -> u32`, oggi **8**. Cambia a ogni modifica
+Versione: `vetro_abi_version() -> u32`, oggi **10**. Cambia a ogni modifica
 incompatibile delle firme o dei codici qui sotto; il caricatore JS
 (`web/node/vetro.mjs`) la controlla.
 
@@ -46,6 +46,11 @@ incompatibile delle firme o dei codici qui sotto; il caricatore JS
   `vetro_translate`, `vetro_read_phys`; ADR 0023). Gli ingressi di
   tastiera, puntatore, console, GPIO e risoluzione si annotano nella
   timeline (l'esecuzione non cambia).
+- 9 (M8): SQL del gestore dei file e percorsi come byte (ADR 0021).
+- 10 (M4): JIT a regioni (ADR 0024): import `vetro_jit.runtime` (il modulo
+  di runtime `rt.*` dei moduli generati), export `vetro_jit_vsync`
+  (`env.vsync` del runtime), contatore `yields` in fondo a
+  `vetro_jit_stats`.
 
 ### Memoria
 
@@ -73,7 +78,7 @@ pratica: prendere la vista dopo ogni chiamata che può allocare.
 | `vetro_message_ptr` / `vetro_message_len` | `(vm) -> *const u8` / `usize` | ultimo messaggio UTF-8: errore di caricamento o `what` di un'istruzione non implementata. Vale fino alla chiamata successiva sulla macchina |
 | `vetro_unimplemented_pc` / `vetro_unimplemented_raw` | `(vm) -> u64` / `u32` | PC e codifica dell'ultima istruzione non implementata |
 | `vetro_machine_set_jit` | `(vm, hot_threshold: u32, batch: u32)` | attiva il JIT della modalità sistema (ADR 0013) sul motore JS: ingressi prima di tradurre un blocco, blocchi per modulo (0 = 1). Il risultato non cambia, solo la velocità |
-| `vetro_jit_stats` | `(vm, out: *mut u64, cap: usize) -> usize` | contatori del JIT (`SysJitStats`, nell'ordine dei campi) in `out`; restituisce quanti (0 senza JIT) |
+| `vetro_jit_stats` | `(vm, out: *mut u64, cap: usize) -> usize` | contatori del JIT (`SysJitStats`: `jit_steps`, `runs`, `resolves`, `calls`, `blocks`, `modules`, `reused`, `invalidated_pages`, `faults`, `svcs`, `stops`, `epochs`, `tlb_flushes`, `tlb_fills`, `resets`, `yields`) in `out`; restituisce quanti (0 senza JIT) |
 
 Codici di `vetro_load_linux`: 0 riuscito; 1 il caricatore ha rifiutato i file
 (motivo nel messaggio); 2 riga di comando non UTF-8.
@@ -349,6 +354,7 @@ costanti `TIMELINE_INPUT`, `TIMELINE_EFFECT`, `RR_STATE`, `REPLAY_START`;
 | `vetro_jit_ld` | `(state: usize, va: u64, size: u32) -> u64` | `env.ld` dei moduli generati (spec `jit.md`) |
 | `vetro_jit_st` | `(state: usize, va: u64, size: u32, value: u64) -> u32` | `env.st` dei moduli generati |
 | `vetro_jit_resolve` | `(state: usize) -> u32` | `env.resolve` del dispatcher |
+| `vetro_jit_vsync` | `(state: usize)` | `env.vsync` del runtime: V0..V31 della `Cpu` nel `JitState` (ABI 10) |
 | `__indirect_function_table` | tabella | la tabella delle funzioni di vetro-wasm, esportata ed estendibile (`build.rs`): il JS vi mette il dispatcher, che Rust chiama come un puntatore a funzione |
 | `vetro_jit_selftest` | `(wasm: *const u8, len: usize) -> u64` | prova del giro completo con un modulo di prova (sotto) |
 
@@ -360,6 +366,7 @@ Il JS li fornisce all'istanziazione (`web/node/vetro.mjs`):
 |---|---|---|
 | `vetro_host.panic` | `(ptr: *const u8, len: usize)` | messaggio UTF-8 di un panic, subito prima della trappola `unreachable` |
 | `vetro_jit.compile` | `(ptr: *const u8, len: usize) -> i32` | compila e istanzia un modulo generato; indice ≥ 0, o < 0 se rifiutato |
+| `vetro_jit.runtime` | `(ptr: *const u8, len: usize) -> i32` | compila e istanzia il modulo di runtime (con `env.mem`, `env.ld`, `env.st`, `env.vsync`); i suoi export sono gli import `rt.*` dei moduli compilati dopo, anche dopo `reset`; 0, o < 0 se rifiutato (ABI 10) |
 | `vetro_jit.entry` | `(module: i32, index: u32) -> u32` | mette l'export `b<index>` del modulo in una voce nuova di `__indirect_function_table` e la restituisce: `JsEngine::run` la chiama come un puntatore a funzione, senza passare da JS |
 | `vetro_jit.place` | `(module: i32, count: u32, base: u32)` | mette `b0..b<count-1>` del modulo nella tabella dei blocchi (`env.tbl` del dispatcher) dalla voce `base` |
 | `vetro_jit.reset` | `()` | scarta tutte le istanze e ricrea la tabella dei blocchi |
@@ -372,13 +379,16 @@ ADR 0012: nel browser il codice generato lo compila ed esegue l'API
 
 - `web/node/jit-engine.mjs`, classe `JitEngine`, l'equivalente JS del trait
   `vetro_jit::Engine` di `jit.md`:
+  - `runtime(bytes)`: istanzia il modulo di runtime con `env.mem`,
+    `env.ld`/`env.st`/`env.vsync` = `vetro_jit_ld`/`vetro_jit_st`/
+    `vetro_jit_vsync`, e ne tiene gli export per gli import `rt.*`;
   - `compile(bytes)`: `new WebAssembly.Module(bytes)` e subito
-    `new WebAssembly.Instance(module, { env: { mem, tbl, ld, st, resolve } })`,
+    `new WebAssembly.Instance(module, { env: { mem, tbl, ld, st, resolve }, rt })`,
     con `env.mem` = `memory` di vetro-wasm, `env.tbl` = la tabella dei
-    blocchi (la importa solo il dispatcher) e `env.ld`/`env.st`/`env.resolve`
-    = `vetro_jit_ld`/`vetro_jit_st`/`vetro_jit_resolve`. Un export di
-    un'istanza passato come import di un'altra è chiamato da V8
-    direttamente, senza passare dal JS;
+    blocchi (la importa solo il dispatcher), `env.ld`/`env.st`/`env.resolve`
+    = `vetro_jit_ld`/`vetro_jit_st`/`vetro_jit_resolve` e `rt` = gli export
+    del runtime. Un export di un'istanza passato come import di un'altra è
+    chiamato da V8 direttamente, senza passare dal JS;
   - `place`, `entry`, `reset` come gli import qui sopra;
   - la memoria condivisa è la memoria lineare di vetro-wasm;
   - `imports()`: gli import `vetro_jit.*`; `attach(exports)` dopo

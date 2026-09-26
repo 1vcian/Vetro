@@ -2,7 +2,8 @@
 //!
 //! - [`wasm`]: encoder minimo di moduli WebAssembly;
 //! - [`state`]: [`JitState`], lo stato condiviso con i blocchi;
-//! - [`translate`]: da istruzioni decodificate a funzioni WASM;
+//! - [`translate`]: da regioni di istruzioni decodificate a funzioni WASM,
+//!   il modulo di runtime e il dispatcher (ADR 0024);
 //! - [`engine`]: i trait [`Engine`] e [`Host`] (ABI in docs/specs/jit.md);
 //! - [`driver`]: [`JitCpu`], che in modalità utente alterna blocchi tradotti
 //!   e passi dell'interprete, con cache e invalidazione;
@@ -29,3 +30,7 @@ pub const NEXT: u32 = 0;
 pub const FAULT: u32 = 1;
 pub const STOP: u32 = 2;
 pub const SVC: u32 = 3;
+/// Il blocco ha smascherato interrupt (MSR DAIF/DAIFClr): `pc` è
+/// l'istruzione successiva e l'host deve ricontrollare gli interrupt prima
+/// di continuare (modalità sistema, ADR 0024).
+pub const YIELD: u32 = 4;

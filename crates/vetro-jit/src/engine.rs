@@ -19,6 +19,11 @@ pub const TABLE_SIZE: u32 = 1 << 18;
 /// quanto quella) e `env.resolve`.
 pub trait Engine {
     type Module;
+    /// Installa il modulo di runtime (`translate::runtime`, ADR 0024): il
+    /// motore lo istanzia con gli import `env.*` e ne offre gli export come
+    /// import `rt.<nome>` a tutti i moduli compilati dopo. Resta installato
+    /// anche dopo [`reset`](Self::reset) (il motore lo reistanzia se serve).
+    fn runtime(&mut self, wasm: &[u8]) -> Result<(), String>;
     /// Compila un modulo WASM generato dal traduttore.
     fn compile(&mut self, wasm: &[u8]) -> Result<Self::Module, String>;
     /// Esegue il blocco `index` del modulo sullo stato all'indirizzo
@@ -68,5 +73,13 @@ pub trait Host {
     /// continua), falso se il dispatcher deve tornare all'host con `NEXT`.
     fn resolve(&mut self, _mem: &mut [u8]) -> bool {
         false
+    }
+    /// `env.vsync` (ADR 0024): copia i registri SIMD/FP della `Cpu` nel
+    /// `JitState` all'indirizzo `state` di `mem` e mette `v_valid` = 1
+    /// ([`crate::state::vsync_in`]). La chiama la prima regione della corsa
+    /// che usa i registri SIMD; chi ricopia lo stato nella `Cpu` riporta
+    /// anche i registri se `v_valid`.
+    fn vsync(&mut self, _mem: &mut [u8], _state: u32) {
+        unreachable!("questo host non ha registri SIMD");
     }
 }

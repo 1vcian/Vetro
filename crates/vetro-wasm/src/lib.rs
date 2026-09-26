@@ -71,7 +71,10 @@ use display::WebDisplay;
 /// `vetro_replay_*`, `vetro_rr_status`, lettura dello stato, buffer dei
 /// risultati; ADR 0023).
 /// 9: SQL del gestore dei file e percorsi come byte (ADR 0021).
-pub const ABI_VERSION: u32 = 9;
+/// 10: JIT a regioni (ADR 0024): import `vetro_jit.runtime` (modulo di
+/// runtime `rt.*`), export `vetro_jit_vsync`, contatore `yields` in fondo a
+/// `vetro_jit_stats`.
+pub const ABI_VERSION: u32 = 10;
 
 /// Allineamento dei buffer di [`vetro_alloc`] (basta per `JitState`).
 const ALLOC_ALIGN: usize = 16;
@@ -635,6 +638,7 @@ pub unsafe extern "C" fn vetro_jit_stats(vm: *const Vm, out: *mut u64, cap: usiz
         s.tlb_flushes,
         s.tlb_fills,
         s.resets,
+        s.yields,
     ];
     let n = v.len().min(cap);
     if n > 0 {

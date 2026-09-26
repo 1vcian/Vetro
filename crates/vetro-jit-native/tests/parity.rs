@@ -250,6 +250,9 @@ struct Limited {
 
 impl Engine for Limited {
     type Module = NativeModule;
+    fn runtime(&mut self, wasm: &[u8]) -> Result<(), String> {
+        self.inner.runtime(wasm)
+    }
     fn compile(&mut self, wasm: &[u8]) -> Result<NativeModule, String> {
         if self.used == self.cap {
             return Err("pieno".into());
@@ -364,4 +367,75 @@ fn budget_is_exact() {
     // 9 istruzioni per giro, 8 add.
     let adds = (total / 9) * 8 + (total % 9).min(8);
     assert_eq!(cpu.x[0], adds);
+}
+
+/// Accessi Q (16 byte) a cavallo di pagina (ADR 0024): l'interprete
+/// controlla tutto l'accesso prima di scrivere, il JIT (due metà da 8) deve
+/// lasciare la stessa memoria. Senza il controllo di `q_checks` la prima
+/// metà di STR Q resta scritta e il test fallisce.
+#[test]
+fn q_a_cavallo_di_pagina_come_interprete() {
+    let words = [
+        0x3d800020u32, // str q0, [x1]
+        0x3dc00062,    // ldr q2, [x3]
+        0xad000480,    // stp q0, q1, [x4]
+        0x14000000,    // b .
+    ];
+    let setup = |x1: u64, x3: u64, x4: u64| {
+        let mut mem = UserMemory::new();
+        let mut code = Vec::new();
+        for w in words {
+            code.extend_from_slice(&w.to_le_bytes());
+        }
+        mem.map(CODE, code, Perm::RX).unwrap();
+        // Una pagina scrivibile seguita da una di sola lettura.
+        mem.map(DATA, vec![0x11; 0x1000], Perm::RW).unwrap();
+        mem.map(DATA + 0x1000, vec![0x22; 0x1000], Perm::R).unwrap();
+        let mut cpu = Cpu::new();
+        cpu.pc = CODE;
+        cpu.v[0] = 0x0f0e_0d0c_0b0a_0908_0706_0504_0302_0100;
+        cpu.v[1] = 0x1f1e_1d1c_1b1a_1918_1716_1514_1312_1110;
+        cpu.v[2] = u128::MAX;
+        (cpu.x[1], cpu.x[3], cpu.x[4]) = (x1, x3, x4);
+        (cpu, mem)
+    };
+    let dump = |mem: &mut UserMemory| {
+        let mut b = vec![0u8; 0x2000];
+        mem.read(DATA, &mut b).unwrap();
+        b
+    };
+    // (x1, x3, x4): STR Q che sconfina nella pagina RO; STR riuscito e LDR
+    // a cavallo (leggibile); STP Q col secondo Q che sconfina.
+    let cases = [
+        (DATA + 0xff8, DATA, DATA),
+        (DATA + 0x100, DATA + 0xff8, DATA + 0xfe0),
+        (DATA + 0x108, DATA + 0x10, DATA + 0xfe8),
+    ];
+    for (x1, x3, x4) in cases {
+        let (mut cpu_i, mut mem_i) = setup(x1, x3, x4);
+        let mut ev_i = Vec::new();
+        for _ in 0..4 {
+            if let Err(e) = cpu_i.step(&mut mem_i) {
+                ev_i.push(e);
+                break;
+            }
+        }
+        let (mut cpu_j, mut mem_j) = setup(x1, x3, x4);
+        let mut jit =
+            JitCpu::new(NativeEngine::new(), JitConfig { hot_threshold: 0, ..JitConfig::default() });
+        let mut ev_j = Vec::new();
+        let mut n = 0;
+        while n < 4 {
+            let (k, r) = jit.run(&mut cpu_j, &mut mem_j, 4 - n);
+            n += k;
+            if let Err(e) = r {
+                ev_j.push(e);
+                break;
+            }
+        }
+        assert_eq!(ev_j, ev_i, "caso {x1:#x} {x3:#x} {x4:#x}");
+        assert_eq!(cpu_j, cpu_i, "caso {x1:#x} {x3:#x} {x4:#x}");
+        assert!(dump(&mut mem_j) == dump(&mut mem_i), "memoria diversa: caso {x1:#x} {x3:#x} {x4:#x}");
+        assert!(jit.stats.jit_steps > 0 || jit.stats.faults > 0);
+    }
 }

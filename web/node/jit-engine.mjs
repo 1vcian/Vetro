@@ -27,6 +27,7 @@ export class JitEngine {
   #vetro = null; // export dell'istanza di vetro-wasm
   #table = null;
   #instances = new Map(); // indice -> export del modulo generato
+  #rt = {}; // export del modulo di runtime (import `rt.*` dei moduli)
   #next = 0;
   /** Moduli compilati, byte e azzeramenti, per i benchmark. */
   stats = { modules: 0, bytes: 0, resets: 0, compileMs: 0 };
@@ -48,6 +49,7 @@ export class JitEngine {
     const module = new WebAssembly.Module(bytes);
     const instance = new WebAssembly.Instance(module, {
       env: { mem: v.memory, tbl: this.#tbl(), ld: v.vetro_jit_ld, st: v.vetro_jit_st, resolve: v.vetro_jit_resolve },
+      rt: this.#rt,
     });
     this.stats.compileMs += performance.now() - t0;
     const id = this.#next++;
@@ -55,6 +57,19 @@ export class JitEngine {
     this.stats.modules++;
     this.stats.bytes += bytes.length;
     return id;
+  }
+
+  /**
+   * Installa il modulo di runtime (ADR 0024): i suoi export diventano gli
+   * import `rt.*` dei moduli compilati dopo; resta anche dopo `reset`.
+   */
+  runtime(bytes) {
+    const v = this.#vetro;
+    const module = new WebAssembly.Module(bytes);
+    const instance = new WebAssembly.Instance(module, {
+      env: { mem: v.memory, ld: v.vetro_jit_ld, st: v.vetro_jit_st, vsync: v.vetro_jit_vsync },
+    });
+    this.#rt = instance.exports;
   }
 
   /** Esegue il blocco `b<index>` del modulo `id` sul JitState all'indirizzo `state`. */
@@ -103,6 +118,16 @@ export class JitEngine {
           return this.compile(bytes);
         } catch (e) {
           console.error(`vetro_jit.compile: ${e}`);
+          return -1;
+        }
+      },
+      runtime: (ptr, len) => {
+        const bytes = new Uint8Array(this.#vetro.memory.buffer, ptr >>> 0, len).slice();
+        try {
+          this.runtime(bytes);
+          return 0;
+        } catch (e) {
+          console.error(`vetro_jit.runtime: ${e}`);
           return -1;
         }
       },

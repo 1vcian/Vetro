@@ -4,7 +4,7 @@
 
 import { JitEngine } from './jit-engine.mjs';
 
-export const ABI_VERSION = 9;
+export const ABI_VERSION = 10;
 /** Codici di vetro_run. */
 export const STOP = ['Budget', 'PowerOff', 'Reset', 'Idle', 'Unimplemented', 'Blocked'];
 
@@ -795,7 +795,7 @@ export class Machine {
    * prima di tradurre un blocco, `batch` blocchi per modulo. Il risultato
    * non cambia, solo la velocità.
    */
-  setJit(threshold = 16, batch = 16) {
+  setJit(threshold = 64, batch = 16) {
     this.#x.vetro_machine_set_jit(this.#vm, threshold, batch);
   }
 
@@ -803,7 +803,7 @@ export class Machine {
   jitStats() {
     const x = this.#x;
     const names = ['jitSteps', 'runs', 'resolves', 'calls', 'blocks', 'modules', 'reused', 'invalidatedPages', 'faults',
-      'svcs', 'stops', 'epochs', 'tlbFlushes', 'tlbFills', 'resets'];
+      'svcs', 'stops', 'epochs', 'tlbFlushes', 'tlbFills', 'resets', 'yields'];
     const p = x.vetro_alloc(8 * names.length) >>> 0;
     const n = x.vetro_jit_stats(this.#vm, p, names.length);
     const v = new BigUint64Array(x.memory.buffer, p, names.length);

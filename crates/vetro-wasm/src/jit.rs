@@ -72,6 +72,12 @@ impl JsEngine {
 impl Engine for JsEngine {
     type Module = JsModule;
 
+    fn runtime(&mut self, wasm: &[u8]) -> Result<(), String> {
+        // SAFETY: import del JS, legge `wasm` durante la chiamata.
+        let r = unsafe { js::runtime(wasm.as_ptr(), wasm.len()) };
+        if r < 0 { Err(format!("il motore JS ha rifiutato il runtime ({r})")) } else { Ok(()) }
+    }
+
     fn compile(&mut self, wasm: &[u8]) -> Result<JsModule, String> {
         // SAFETY: import del JS, legge `wasm` durante la chiamata.
         let id = unsafe { js::compile(wasm.as_ptr(), wasm.len()) };
@@ -189,6 +195,14 @@ pub unsafe extern "C" fn vetro_jit_resolve(_state: usize) -> u32 {
     with_host(|h, mem| h.resolve(mem)) as u32
 }
 
+/// `env.vsync` del runtime: i registri SIMD/FP della `Cpu` nel `JitState`
+/// all'indirizzo (assoluto) `state`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_jit_vsync(state: usize) {
+    let base = MEM.get() as usize;
+    with_host(|h, mem| h.vsync(mem, (state - base) as u32))
+}
+
 unsafe fn set_exit_detail(state: usize, v: u32) {
     let p = (state + off::EXIT_DETAIL as usize) as *mut u32;
     // SAFETY: `state` punta a un `JitState` allineato a 16 (contratto).
@@ -201,6 +215,9 @@ mod js {
     unsafe extern "C" {
         /// Compila un modulo generato; indice >= 0, o < 0 se rifiutato.
         pub fn compile(ptr: *const u8, len: usize) -> i32;
+        /// Installa il modulo di runtime (import `rt.*` dei moduli); 0, o
+        /// < 0 se rifiutato.
+        pub fn runtime(ptr: *const u8, len: usize) -> i32;
         /// Mette l'export `b<index>` del modulo in una voce nuova della
         /// tabella delle funzioni di vetro-wasm; restituisce la voce.
         pub fn entry(module: i32, index: u32) -> u32;
@@ -232,6 +249,9 @@ mod js {
 #[cfg(not(target_arch = "wasm32"))]
 mod js {
     pub unsafe fn compile(_ptr: *const u8, _len: usize) -> i32 {
+        -1
+    }
+    pub unsafe fn runtime(_ptr: *const u8, _len: usize) -> i32 {
         -1
     }
     pub unsafe fn entry(_module: i32, _index: u32) -> u32 {

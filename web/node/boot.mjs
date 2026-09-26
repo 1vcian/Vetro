@@ -42,7 +42,7 @@ const wasmPath = opt('--wasm', join(root, 'target/wasm32-unknown-unknown/release
 const kernelDir = opt('--kernel', join(root, 'target/guest-kernel'));
 const expectSteps = opt('--expect-steps', null);
 const jit = args.includes('--jit');
-const jitThreshold = Number(opt('--jit-threshold', '16'));
+const jitThreshold = Number(opt('--jit-threshold', '64'));
 const jitBatch = Number(opt('--jit-batch', '16'));
 
 class Fail extends Error {}

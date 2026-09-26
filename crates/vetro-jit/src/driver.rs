@@ -32,11 +32,11 @@ use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::rc::Rc;
 
-use vetro_cpu::{Cpu, Exception, Memory, UserMemory, decode};
+use vetro_cpu::{Cpu, Exception, Memory, UserMemory};
 
 use crate::engine::{Engine, Host};
 use crate::state::{self, JitState, off};
-use crate::translate::{self, Block, Kind, MAX_BLOCK};
+use crate::translate::{self, MAX_REGION};
 use crate::wasm::MemoryImport;
 use crate::{FAULT, NEXT, STOP, SVC};
 
@@ -112,11 +112,18 @@ impl Hasher for U64Hasher {
 
 type FastMap<V> = HashMap<u64, V, BuildHasherDefault<U64Hasher>>;
 
+/// Un ingresso di una regione compilata.
 struct Compiled<M> {
     module: Rc<M>,
     index: u32,
+    /// Passi massimi del blocco base d'ingresso.
     max_steps: u64,
+    /// Indice del blocco base d'ingresso (`JitState::entry`).
+    bb: u32,
 }
+
+/// Gli ingressi di una regione compilata; il primo è il suo inizio.
+type Entries<M> = Rc<[(u64, Rc<Compiled<M>>)]>;
 
 enum Entry<M> {
     /// Visto `n` volte, non ancora compilato.
@@ -164,7 +171,7 @@ pub struct JitCpu<E: Engine> {
     cfg: JitConfig,
     spaces: FastMap<Space<E::Module>>,
     /// Moduli già compilati, per (pc, parole del blocco).
-    compiled: HashMap<BlockKey, Rc<Compiled<E::Module>>>,
+    compiled: HashMap<BlockKey, Entries<E::Module>>,
     tick: u64,
     pub stats: JitStats,
 }
@@ -172,6 +179,8 @@ pub struct JitCpu<E: Engine> {
 /// `Host` sopra la memoria utente.
 struct MemHost<'a> {
     mem: &'a mut UserMemory,
+    /// I registri SIMD/FP della `Cpu` (per `vsync`).
+    v: &'a [u128; 32],
 }
 
 impl Host for MemHost<'_> {
@@ -187,11 +196,16 @@ impl Host for MemHost<'_> {
         self.mem.write(va, &value.to_le_bytes()[..size as usize]).map_err(|_| ())?;
         Ok(self.mem.code_dirty())
     }
+
+    fn vsync(&mut self, mem: &mut [u8], state: u32) {
+        state::vsync_in(mem, state as usize, self.v);
+    }
 }
 
 impl<E: Engine> JitCpu<E> {
-    pub fn new(engine: E, cfg: JitConfig) -> Self {
+    pub fn new(mut engine: E, cfg: JitConfig) -> Self {
         assert!(cfg.state_addr.is_multiple_of(16), "JitState va allineato a 16 byte");
+        engine.runtime(&translate::runtime(cfg.memory)).expect("runtime del JIT rifiutato dal motore");
         JitCpu {
             engine,
             cfg,
@@ -268,20 +282,24 @@ impl<E: Engine> JitCpu<E> {
             {
                 let m = self.engine.memory();
                 if !in_jit {
-                    JitState::from_cpu(cpu).store(m, at);
+                    let mut s = JitState::from_cpu(cpu);
+                    s.limit = budget - done;
+                    s.store(m, at);
                     in_jit = true;
                 } else {
                     state::write_u64(m, at, off::STEPS, 0);
+                    state::write_u64(m, at, off::LIMIT, budget - done);
                     state::write_u32(m, at, off::EXIT_DETAIL, 0);
                 }
+                state::write_u32(m, at, off::ENTRY, c.bb);
                 let code = {
-                    let mut host = MemHost { mem };
+                    let mut host = MemHost { mem, v: &cpu.v };
                     self.engine.run(&c.module, c.index, self.cfg.state_addr, &mut host)
                 };
                 let m = self.engine.memory();
                 let steps = state::read_u64(m, at, off::STEPS);
                 jit_pc = state::read_u64(m, at, off::PC);
-                debug_assert!(steps <= c.max_steps);
+                debug_assert!(steps <= budget - done);
                 done += steps;
                 self.stats.jit_steps += steps;
                 self.stats.block_runs += 1;
@@ -378,15 +396,22 @@ impl<E: Engine> JitCpu<E> {
 
     /// Traduce e installa il blocco di `pc` (o lo segna non traducibile).
     fn install(&mut self, id: u64, pc: u64, mem: &mut UserMemory) -> Option<Rc<Compiled<E::Module>>> {
-        let c = self.translate(pc, mem);
+        let es = self.translate(pc, mem);
         // Dopo un azzeramento del motore lo spazio va ricreato.
         let s = self.space(id);
-        match c {
-            Some(c) => {
-                s.blocks.insert(pc, Entry::Hot(c.clone()));
-                s.pages.entry(pc >> 12).or_default().push(pc);
+        match es {
+            Some(es) => {
+                // L'inizio, e gli altri blocchi base dove non c'è già un
+                // blocco compilato.
+                for (i, (epc, c)) in es.iter().enumerate() {
+                    if i > 0 && matches!(s.blocks.get(epc), Some(Entry::Hot(_))) {
+                        continue;
+                    }
+                    s.blocks.insert(*epc, Entry::Hot(c.clone()));
+                    s.pages.entry(pc >> 12).or_default().push(*epc);
+                }
                 mem.watch_code(pc >> 12);
-                Some(c)
+                Some(es[0].1.clone())
             }
             None => {
                 s.blocks.insert(pc, Entry::NoBlock);
@@ -396,50 +421,18 @@ impl<E: Engine> JitCpu<E> {
     }
 
     /// Legge, decodifica e compila il blocco che inizia a `pc`.
-    fn translate(&mut self, pc: u64, mem: &mut UserMemory) -> Option<Rc<Compiled<E::Module>>> {
-        if !pc.is_multiple_of(4) {
-            return None;
-        }
-        let page = pc >> 12;
-        let mut words = Vec::new();
-        let mut insns = Vec::new();
-        let mut a = pc;
-        while insns.len() < MAX_BLOCK && a >> 12 == page {
+    fn translate(&mut self, pc: u64, mem: &mut UserMemory) -> Option<Entries<E::Module>> {
+        let (block, words) = translate::discover(pc, None, MAX_REGION, |a| {
             if !mem.is_private(a) {
-                break;
+                return None;
             }
-            let Ok(w) = mem.fetch(a) else { break };
-            let insn = decode(w);
-            match translate::kind(&insn) {
-                Kind::Unsupported => break,
-                Kind::Svc => {
-                    if !insns.is_empty() {
-                        words.push(w);
-                        insns.push(insn);
-                    }
-                    break;
-                }
-                Kind::Branch => {
-                    words.push(w);
-                    insns.push(insn);
-                    break;
-                }
-                Kind::Linear => {
-                    words.push(w);
-                    insns.push(insn);
-                }
-            }
-            a = a.wrapping_add(4);
-        }
-        if insns.is_empty() {
-            return None;
-        }
+            mem.fetch(a).ok()
+        })?;
         let key = (pc, words);
-        if let Some(c) = self.compiled.get(&key) {
+        if let Some(es) = self.compiled.get(&key) {
             self.stats.reused += 1;
-            return Some(c.clone());
+            return Some(es.clone());
         }
-        let block = Block { pc, insns, sys: None };
         let wasm = translate::module(std::slice::from_ref(&block), self.cfg.memory);
         let module = match self.engine.compile(&wasm) {
             Ok(m) => m,
@@ -454,8 +447,19 @@ impl<E: Engine> JitCpu<E> {
             }
         };
         self.stats.compiled += 1;
-        let c = Rc::new(Compiled { module: Rc::new(module), index: 0, max_steps: block.max_steps() });
-        self.compiled.insert(key, c.clone());
-        Some(c)
+        let module = Rc::new(module);
+        let first = block.entry_index();
+        let mut es: Vec<(u64, Rc<Compiled<E::Module>>)> = block
+            .entries()
+            .into_iter()
+            .map(|(epc, bb, max_steps)| {
+                (epc, Rc::new(Compiled { module: module.clone(), index: 0, max_steps, bb }))
+            })
+            .collect();
+        let at = es.iter().position(|e| e.1.bb == first).expect("ingresso della regione");
+        es.swap(0, at);
+        let es: Entries<E::Module> = es.into();
+        self.compiled.insert(key, es.clone());
+        Some(es)
     }
 }

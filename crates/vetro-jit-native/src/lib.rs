@@ -27,6 +27,8 @@ pub struct NativeEngine {
     memory: Memory,
     table: Table,
     linker: Linker<Ctx>,
+    /// Il modulo di runtime (`rt.*`), da reistanziare dopo `reset`.
+    runtime: Option<wasmtime::Module>,
 }
 
 /// Modulo compilato e istanziato: una funzione per blocco.
@@ -58,7 +60,7 @@ impl NativeEngine {
         config.cranelift_opt_level(wasmtime::OptLevel::Speed);
         let engine = wasmtime::Engine::new(&config).expect("configurazione di wasmtime");
         let (store, memory, table, linker) = Self::store(&engine);
-        NativeEngine { store, memory, table, linker }
+        NativeEngine { store, memory, table, linker, runtime: None }
     }
 
     /// Store nuovo con la sua memoria e gli import `env.*`.
@@ -110,6 +112,13 @@ impl NativeEngine {
             )
             .expect("env.st");
         linker
+            .func_wrap("env", "vsync", move |mut caller: Caller<'_, Ctx>, state: i32| {
+                // SAFETY: chiamata solo da un blocco eseguito da `run`.
+                let h = unsafe { host(&caller) };
+                h.vsync(memory.data_mut(&mut caller), state as u32)
+            })
+            .expect("env.vsync");
+        linker
             .func_wrap("env", "resolve", move |mut caller: Caller<'_, Ctx>, _state: i32| -> i32 {
                 // SAFETY: chiamata solo dal dispatcher eseguito da `run`.
                 let h = unsafe { host(&caller) };
@@ -133,8 +142,23 @@ impl Default for NativeEngine {
     }
 }
 
+impl NativeEngine {
+    /// Istanzia il runtime nello store e ne offre gli export come `rt.*`.
+    fn link_runtime(&mut self) -> Result<(), String> {
+        let Some(m) = &self.runtime else { return Ok(()) };
+        let inst = self.linker.instantiate(&mut self.store, m).map_err(|e| format!("{e:#}"))?;
+        self.linker.instance(&mut self.store, "rt", inst).map_err(|e| format!("{e:#}"))?;
+        Ok(())
+    }
+}
+
 impl Engine for NativeEngine {
     type Module = NativeModule;
+
+    fn runtime(&mut self, wasm: &[u8]) -> Result<(), String> {
+        self.runtime = Some(wasmtime::Module::new(self.store.engine(), wasm).map_err(|e| format!("{e:#}"))?);
+        self.link_runtime()
+    }
 
     fn compile(&mut self, wasm: &[u8]) -> Result<NativeModule, String> {
         let module = wasmtime::Module::new(self.store.engine(), wasm).map_err(|e| format!("{e:#}"))?;
@@ -199,5 +223,6 @@ impl Engine for NativeEngine {
         self.memory = memory;
         self.table = table;
         self.linker = linker;
+        self.link_runtime().expect("runtime del JIT");
     }
 }
