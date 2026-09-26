@@ -1,4 +1,4 @@
-# JIT verso WASM: ABI e interfacce (ADR 0012, ADR 0013, ADR 0024)
+# JIT verso WASM: ABI e interfacce (ADR 0012, ADR 0013, ADR 0024, ADR 0026)
 
 ## Regioni
 L'unità di traduzione è la **regione** (ADR 0024): i blocchi base di una
@@ -17,9 +17,10 @@ usa quella regione invece di tradurne un'altra.
 
 ## Moduli generati
 Un modulo contiene una o più regioni. Importa `env.mem` (la memoria lineare
-con `JitState`) e le funzioni del **runtime** `rt.<nome>` (tabella sotto),
-tutte e nello stesso ordine. Esporta `b<N>: (state: i32) -> i32` per ogni
-regione `N`. Il risultato:
+con `JitState`) e le funzioni del **runtime** `rt.<nome>` (tabella sotto):
+quelle fisse tutte e nello stesso ordine (indici 0..43), poi solo i percorsi
+veloci `rt.fp<k>` che le sue regioni usano, nell'ordine del primo uso.
+Esporta `b<N>: (state: i32) -> i32` per ogni regione `N`. Il risultato:
 
 | Codice | Significato |
 |---|---|
@@ -35,7 +36,7 @@ resta esatto anche nei cicli dentro la regione.
 
 ### Il runtime (`translate::runtime`)
 Un modulo compilato una volta per motore (`Engine::runtime`): importa
-`env.mem`, `env.ld`, `env.st`, `env.vsync` ed esporta:
+`env.mem`, `env.ld`, `env.st`, `env.vsync`, `env.simd` ed esporta:
 
 | Funzione | Tipo | Significato |
 |---|---|---|
@@ -48,6 +49,8 @@ Un modulo compilato una volta per motore (`Engine::runtime`): importa
 | `ldu<el>`, `stu<el>` | metà da 8 byte di un Q non allineato a 16 | TLB dei non allineati, poi l'host |
 | `finish` | `(state, codice, pc, steps) -> codice` | fine di una regione con un codice diverso da `NEXT` |
 | `vsync` | `(state)` | se `v_valid` = 0, `env.vsync(state)` |
+| `simd` | `(state, parola: i32, x: i64, nzcv: i32) -> i64` | `env.simd` (ADR 0026) |
+| `fp<k>` | `(state, parola)` (`-> i32` NZCV per FCMP, `-> i64` per FCVT verso un intero; SCVTF/UCVTF: `(state, parola, x: i64)`) | percorso veloce FP dell'istruzione `parola` (tabella in `translate::fp`): scrive il risultato se sicuramente uguale all'interprete (FPCR = 0, niente NaN, niente minuscoli o trabocchi, IXC già a 1 o risultato esatto), altrimenti `env.simd` |
 
 I percorsi lenti salvano `pc` e `steps` dell'istruzione prima di chiamare
 l'host (la spec li vuole salvati durante `ld`/`st`): per `FAULT` la regione
@@ -59,6 +62,7 @@ esce senza riscriverli.
 | `env.ld` | `(state: i32, va: i64, size: i32) -> i64` | lettura di 1/2/4/8 byte, estesa a zero; in caso di fault scrive 1 in `exit_detail` e restituisce 0 |
 | `env.st` | `(state: i32, va: i64, size: i32, value: i64) -> i32` | scrittura; 0, oppure 1 se la regione deve fermarsi: `exit_detail` = 1 per un fault, 2 per una scrittura su una pagina con blocchi (STOP). `size` = 64 (modalità sistema) è DC ZVA: azzera i 64 byte allineati a `va` |
 | `env.vsync` | `(state: i32)` | copia V0..V31 della `Cpu` in `JitState::v` e mette `v_valid` = 1 |
+| `env.simd` | `(state: i32, parola: i32, x: i64, nzcv: i32) -> i64` | esegue con l'interprete l'istruzione SIMD/FP senza memoria `parola` su V, FPCR, FPSR di `JitState` (`v_valid` = 1); `x` è il registro generale letto, `nzcv` i flag (FCCMP, FCSEL); restituisce il registro generale scritto o NZCV (bit 31:28), altrimenti 0 (`vetro_jit::helper`) |
 
 `size` con il bit `SIZE_PART_OF_MISALIGNED` (0x80): metà di un accesso da 16
 byte non allineato a 16; l'host la tratta come non allineata (SCTLR_EL1.A,
@@ -110,17 +114,22 @@ byte scelto dall'host (`state` è l'indirizzo assoluto nella memoria `env.mem`):
 | 400 | `esr_el1`, `far_el1` | 2 × u64 (solo MRS a EL1) |
 | 416 | `v_valid` | u32: 1 se `v` ha i registri della `Cpu` |
 | 420 | `fk` | u32: tipo dei flag pigri (0 = NZCV in `nzcv`) |
-| 424 | — | riempimento |
+| 424 | `fpcr` | u32: FPCR (le regioni lo leggono) |
+| 428 | `fpsr` | u32: FPSR (flag cumulativi: le regioni e `env.simd` li scrivono) |
 | 432 | `v[0..32]` | 32 × 16 byte: V0..V31 (metà bassa, poi alta) |
 | 944 | `fa`, `fb`, `fr` | 3 × u64: operandi e risultato dei flag pigri |
-| 968 | — | riempimento fino a 976 |
+| 968 | `time_base` | u64: (modalità sistema) istruzioni della macchina all'inizio della corsa: CNTPCT di un'istruzione è `counter(time_base + steps + indice)` |
+| 976 | `cntvoff` | u64: CNTVCT = CNTPCT - `cntvoff` |
+| 984 | `time_ok` | u32: 1 se `time_base` e `cntvoff` valgono per la corsa (altrimenti MRS del contatore esce) |
+| 988 | — | riempimento fino a 992 |
 
-I campi da 284 in poi (tranne `entry`, `v_valid`, `fk`, `v`, `fa`, `fb`,
-`fr`, usati anche in modalità utente) servono alla modalità sistema. Prima
-di una corsa l'host copia in `JitState` i campi della `Cpu` (`from_cpu`,
-`from_cpu_sys`: `v_valid` = 0 e `fk` = 0, i registri V non si copiano), e
-dopo li ricopia indietro (`to_cpu`, `to_cpu_sys`: V solo se `v_valid`, NZCV
-calcolato dai flag pigri con `state::lazy_nzcv`). Per le regioni concatenate
+I campi da 284 in poi (tranne `ctx`, `limit`, il monitor, `entry`,
+`v_valid`, `fk`, `fpcr`, `fpsr`, `v`, `fa`, `fb`, `fr`, usati anche in
+modalità utente) servono alla modalità sistema. Prima di una corsa l'host
+copia in `JitState` i campi della `Cpu` (`from_cpu`, `from_cpu_sys`:
+`v_valid` = 0 e `fk` = 0, i registri V non si copiano), e dopo li ricopia
+indietro (`to_cpu`, `to_cpu_sys`: V solo se `v_valid`, NZCV calcolato dai
+flag pigri con `state::lazy_nzcv`, FPSR e il monitor). Per le regioni concatenate
 resta valida la copia in `JitState`.
 
 **Flag pigri.** Un'istruzione che scrive NZCV (ADDS/SUBS/CMP/CMN, ANDS/TST)
@@ -147,8 +156,11 @@ del motore è `(va + addend) mod 2³²`. `tag = 0x800` è una voce vuota. Una
 voce della TLB dei non allineati c'è solo dopo un accesso non allineato
 riuscito (memoria Normal, SCTLR_EL1.A = 0). Area totale: 197632 byte.
 
-`ctx` = epoca << 5 | parametri della regione (EL, TBI0, TBI1, SPSel, FP):
-una voce della cache dei salti vale solo per gli stessi parametri.
+`ctx` = epoca << 7 | parametri della regione (EL, TBI0, TBI1, SPSel, FP e,
+a EL0, CNTKCTL_EL1.EL0PCTEN/EL0VCTEN): una voce della cache dei salti vale
+solo per gli stessi parametri. In modalità utente (`JitCpu`, ADR 0026) la
+stessa cache dei salti e lo stesso dispatcher, con `ctx` = il contesto dello
+spazio d'indirizzamento, nuovo a ogni invalidazione delle sue pagine.
 
 ## Trait
 ```rust
@@ -205,7 +217,10 @@ impl<E: Engine> SysJit<E> {
     pub fn new(engine: E, cfg: SysJitConfig) -> Self;
     /// Solo regioni tradotte, al più `budget` passi.
     pub fn run(&mut self, cpu: &mut Cpu, mmu: &mut Mmu, phys: &mut dyn SysPhys, budget: u64) -> SysRun;
+    /// L'orologio della prossima `run` (MRS CNTPCT/CNTVCT nelle regioni).
+    pub fn set_time(&mut self, c: Clock);
 }
+pub struct Clock { pub steps: u64, pub cntvoff: u64 }
 pub struct SysRun { pub steps: u64, pub next: Next }
 pub enum Next { Jit, One, Cold }   // dopo: JIT, un passo dell'interprete, interprete fino al prossimo salto
 ```
@@ -213,8 +228,16 @@ Il chiamante (`Machine::run`) non chiama `run` quando l'interprete
 prenderebbe un interrupt, con PSTATE.IL o con PC non allineato, e non
 concede più passi di quelli fino al prossimo evento della piattaforma. Dopo
 `YIELD` `run` torna con `Next::Jit`: il chiamante ricontrolla gli interrupt.
-`SysJitDyn` è lo stesso come oggetto (per `Machine::set_jit`). Soglia di
-default: 64 ingressi prima di tradurre.
+`SysJitDyn` è lo stesso come oggetto (per `Machine::set_jit`), con
+`set_time` e il profilo per classe (`profiling`, `profile_step`,
+`profile`). Soglia di default: 64 ingressi prima di tradurre. La macchina
+chiama `set_time` prima di ogni `run`.
+
+### Modalità utente (`vetro_jit::JitCpu`)
+Come la modalità sistema dall'ADR 0026: le regioni nella tabella del motore
+(`Engine::place`, un modulo per regione), il dispatcher e la cache dei salti
+nell'area dopo `JitState` (`Engine::reserve`). `Host::resolve` scrive le
+voci mancanti per le regioni già compilate dello spazio.
 
 ## Copertura
 Si traducono:
@@ -228,15 +251,23 @@ Si traducono:
   registro), LDP/STP di S/D/Q, DUP (elemento e generale), INS, UMOV/SMOV,
   MOVI/MVNI/ORR/BIC immediati (in modalità sistema solo con CPACR_EL1.FPEN
   che le permette all'EL);
-- solo in modalità sistema: LDXR/STXR e varianti (anche a coppie), DC ZVA,
+- SIMD/FP (ADR 0026): ogni istruzione senza memoria (intera, FP,
+  crittografica): in linea le forme esatte del SIMD intero (anche le
+  saturanti con QC) e FMOV/FABS/FNEG/FCSEL, coi percorsi veloci `rt.fp<k>`
+  l'aritmetica FP comune, le altre con `env.simd`; LD1/ST1 di 1-4 registri,
+  LD1R, LD1/ST1 di una corsia, LD2..LD4/ST2..ST4;
+- LDXR/STXR e varianti anche in modalità utente (ADR 0026);
+- solo in modalità sistema: DC ZVA, MRS di CNTPCT_EL0/CNTVCT_EL0 (a EL0 se
+  CNTKCTL_EL1 li permette; senza orologio escono),
   MRS/MSR di TPIDR_EL0, TPIDRRO_EL0 (MSR solo a EL1), TPIDR_EL1 e SP_EL0
   (a EL1; SP_EL0 con SPSel = 1), MRS di TCR_EL1, DCZID_EL0, CurrentEL (a
   EL1); a EL1 anche MRS/MSR di DAIF, ELR_EL1, SPSR_EL1, MRS di ESR_EL1 e
   FAR_EL1, MSR DAIFSet/DAIFClr.
 
-Restano all'interprete: le altre istruzioni SIMD/FP, gli altri registri di
-sistema, SVC/BRK/HVC, ERET, e in modalità sistema anche WFI, LDTR/STTR e le
-manutenzioni delle cache a EL0. La copertura cresce solo con test di parità.
+Restano all'interprete: LDR letterale dei registri V, le strutture singole
+interlacciate (LD2..LD4 di una corsia, LD2R..LD4R), gli altri registri di
+sistema (anche FPCR/FPSR), SVC/BRK/HVC, ERET, e in modalità sistema anche
+WFI, LDTR/STTR e le manutenzioni delle cache a EL0. La copertura cresce solo con test di parità.
 
 ## Note dall'implementazione
 - **Memoria importata.** `env.mem` si dichiara secondo la configurazione
