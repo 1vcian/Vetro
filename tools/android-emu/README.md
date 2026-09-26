@@ -1,6 +1,6 @@
 # Immagine dell'emulatore Android 15 sotto QEMU e sotto Vetro (M5)
 
-Esperimento di M5 (`docs/research/m5-avvio-gki.md`): fin dove arriva il
+Esperimento di M5 (`docs/research/m5-gki-boot.md`): fin dove arriva il
 kernel GKI android15-6.6 dell'emulatore SDK sulla macchina di Vetro, sotto
 `qemu-system-aarch64 -M virt` e sotto `vetro boot`, con la stessa
 configurazione.

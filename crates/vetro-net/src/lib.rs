@@ -15,7 +15,7 @@
 //! iniziali derivano da `NetConfig::seed`, le tabelle sono `BTreeMap`.
 //! Stesse chiamate con stessi argomenti producono gli stessi frame e lo stesso
 //! registro degli eventi. Interfaccia e invarianti in `docs/specs/net.md`,
-//! scelte in `docs/adr/0007-stack-di-rete-senza-smoltcp.md`.
+//! scelte in `docs/adr/0007-network-stack-without-smoltcp.md`.
 
 pub mod dhcp;
 pub mod dns;

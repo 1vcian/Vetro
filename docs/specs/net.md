@@ -140,7 +140,7 @@ Piattaforme:
 
 ## Come adb userà l'inoltro (M5/M6)
 adbd nel guest Android ascolta su TCP 5555 (`service.adb.tcp.port=5555`,
-`docs/research/m5-immagini-android.md`).
+`docs/research/m5-android-images.md`).
 - Nativo: `vetro boot … --hostfwd=tcp:127.0.0.1:5555-:5555`, poi
   `adb connect 127.0.0.1:5555` con l'adb vero dell'host: il protocollo ADB
   (CNXN, AUTH con la chiave RSA di `~/.android/adbkey`, OPEN/WRTE/OKAY/

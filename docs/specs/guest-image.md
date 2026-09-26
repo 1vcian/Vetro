@@ -1,7 +1,7 @@
 # Spec — l'immagine AOSP di Vetro (`guest/aosp`, `tools/aosp`)
 
-Decisioni: ADR 0022; CA di sviluppo, marchi e build: ADR 0030. Ricerca: `docs/research/m5-immagini-android.md`,
-`docs/research/m5-avvio-gki.md`. Bootloader: ADR 0018,
+Decisioni: ADR 0022; CA di sviluppo, marchi e build: ADR 0030. Ricerca: `docs/research/m5-android-images.md`,
+`docs/research/m5-gki-boot.md`. Bootloader: ADR 0018,
 `docs/specs/android-boot.md`.
 
 ## Perimetro

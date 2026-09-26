@@ -2,7 +2,7 @@
 //! come /dev/vda (primo disco, slot virtio-mmio 31), lo legge, ci scrive, e il
 //! file resta intatto (copy-on-write in memoria, come `snapshot=on` di QEMU).
 //! È il meccanismo con cui si avvia l'immagine dell'emulatore Android
-//! (`tools/android-emu`, `docs/research/m5-avvio-gki.md`).
+//! (`tools/android-emu`, `docs/research/m5-gki-boot.md`).
 //!
 //! In release (`cargo test --release -p vetro-cli`): in debug l'interprete è
 //! troppo lento e il test si salta.

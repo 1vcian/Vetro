@@ -2,8 +2,8 @@
 
 - Stato: accettata (M5, 2026-09-26). Usa ADR 0005 (ISA), 0008 e 0018
   (avvio diretto e bootloader Android), 0020 (gestore dei file), 0004
-  (licenze). Ricerca: `docs/research/m5-immagini-android.md`,
-  `docs/research/m5-avvio-gki.md`. Dettagli: `docs/specs/guest-image.md`.
+  (licenze). Ricerca: `docs/research/m5-android-images.md`,
+  `docs/research/m5-gki-boot.md`. Dettagli: `docs/specs/guest-image.md`.
 
 ## Contesto
 M5 chiede la home di Android nel browser. Le immagini pre-costruite non

@@ -127,7 +127,7 @@ d'abort nel tombstone: `abort+168` in libc con la stessa catena Rust).
 ## Cosa manca per andare oltre
 - **Grafica:** l'immagine dell'emulatore vuole gfxstream + goldfish; con
   una virtio-gpu 2D non compone. Serve l'immagine nostra (fork di
-  `vsoc_arm64_only`, `m5-immagini-android.md`) con SwiftShader +
+  `vsoc_arm64_only`, `m5-android-images.md`) con SwiftShader +
   drm_hwcomposer + minigbm sulla virtio-gpu 2D di Vetro, o un'immagine
   ranchu con la composizione software (`ro.hardware.egl=swiftshader`,
   HWC su DRM). Non è un difetto di Vetro: QEMU si ferma nello stesso punto.
@@ -138,7 +138,7 @@ d'abort nel tombstone: `abort+168` in libc con la stessa catena Rust).
   solo all'immagine SDK, non a quella nostra.
 - **PMU** (`armv8_pmuv3`): serve a simpleperf/perfetto, non all'avvio.
 - **PCIe (ECAM)** per le immagini Cuttlefish senza modifiche: vedi
-  `m5-immagini-android.md`, da decidere con un ADR.
+  `m5-android-images.md`, da decidere con un ADR.
 - **Velocità:** a circa 50 MIPS reali il primo zygote arriva dopo 4–5 minuti;
   il JIT di sistema (M4, in corso) è il prossimo moltiplicatore.
 

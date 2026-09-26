@@ -2,7 +2,7 @@
 # Vetro arm64: scheda derivata da Cuttlefish arm64 solo 64 bit
 # (device/google/cuttlefish/vsoc_arm64_only), adattata alla macchina virt
 # di Vetro e di QEMU (virtio-mmio, niente PCI, niente host Cuttlefish).
-# Scelte e motivi: docs/adr/0022-immagine-aosp-di-vetro.md.
+# Scelte e motivi: docs/adr/0022-vetro-aosp-image.md.
 #
 
 include device/google/cuttlefish/vsoc_arm64_only/BoardConfig.mk

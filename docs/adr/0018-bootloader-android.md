@@ -57,7 +57,7 @@ confrontabile con l'oracolo.
 - **Si ignora** quello che la virt non usa: indirizzi di caricamento, DTB
   delle immagini (Vetro genera il suo, come QEMU), `second`,
   `recovery_dtbo`, firma GKI e AVB (niente verifica: le immagini di Vetro
-  sono userdebug con vbmeta disattivato, `m5-immagini-android.md`).
+  sono userdebug con vbmeta disattivato, `m5-android-images.md`).
 
 ## Conseguenze
 - `vetro boot --boot-img/--vendor-boot/--init-boot` avvia le immagini di una
