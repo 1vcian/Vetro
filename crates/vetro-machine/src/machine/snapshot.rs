@@ -143,7 +143,11 @@ impl Machine {
     /// La RAM si comprime due volte: la prima per sapere la lunghezza, che
     /// entra nell'hash prima di tutto il resto. Con Android nel browser uno
     /// snapshot tenuto intero non sta nella memoria di wasm32 (ADR 0028).
-    pub fn save_stream(&self, reserve: usize, sink: &mut dyn FnMut(&[u8])) -> [u8; vetro_snapshot::HEADER_LEN] {
+    pub fn save_stream(
+        &self,
+        reserve: usize,
+        sink: &mut dyn FnMut(&[u8]),
+    ) -> [u8; vetro_snapshot::HEADER_LEN] {
         let mut w = Writer::with_capacity(reserve.max(1 << 20));
         self.save_head(&mut w);
         let b = self.board.borrow();
@@ -173,7 +177,9 @@ impl Machine {
     /// hash del contenuto.
     fn file_header(&self, len: u64, hash: u64) -> [u8; vetro_snapshot::HEADER_LEN] {
         let mut head = [0u8; vetro_snapshot::HEADER_LEN];
-        head.copy_from_slice(&vetro_snapshot::encode_file(self.config_hash(), &[])[..vetro_snapshot::HEADER_LEN]);
+        head.copy_from_slice(
+            &vetro_snapshot::encode_file(self.config_hash(), &[])[..vetro_snapshot::HEADER_LEN],
+        );
         head[20..28].copy_from_slice(&len.to_le_bytes());
         head[28..36].copy_from_slice(&hash.to_le_bytes());
         head
@@ -471,7 +477,12 @@ pub(super) mod tests {
                     k as u8
                 })
                 .collect();
-            assert!(m.board.borrow_mut().ram.write(vetro_platform::map::RAM_BASE + 0x8_0000 + p * 4096 * 3, &page));
+            assert!(
+                m.board
+                    .borrow_mut()
+                    .ram
+                    .write(vetro_platform::map::RAM_BASE + 0x8_0000 + p * 4096 * 3, &page)
+            );
         }
         let file = m.save();
         for reserve in [0, 1 << 22] {
@@ -489,7 +500,9 @@ pub(super) mod tests {
         let data: Vec<u8> = (0..1000u32).map(|i| (i * 7 + 3) as u8).collect();
         for cut in [0, 1, 3, 7, 8, 9, 500, 999] {
             let mut h = Hash64::new(data.len() as u64);
-            for part in [&data[..cut], &data[cut..cut.max(cut + 5).min(1000)], &data[cut.max(cut + 5).min(1000)..]] {
+            for part in
+                [&data[..cut], &data[cut..cut.max(cut + 5).min(1000)], &data[cut.max(cut + 5).min(1000)..]]
+            {
                 h.update(part);
             }
             assert_eq!(h.finish(), vetro_snapshot::hash64(&data), "taglio a {cut}");

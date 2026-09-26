@@ -528,7 +528,7 @@ test('fasi dell\'avvio di Android (BootProgress)', () => {
   eq(p.feed('init: processing action (persist.sys.zram_enabled=1 && sys-boot-completed-set) from (x)\n', 585).map((e) => e.phase), ['booted'], 'avvio finito');
   eq([p.phase, p.label, p.events.length, p.events.at(-1).guestSecs], ['booted', 'avvio finito', PHASES.length - 1, 585], 'fine dell\'avvio');
   // La home la segna chi ha adb (attività in primo piano).
-  check(isHome('  mResumedActivity: ActivityRecord{1 u0 com.android.launcher3/.uioverlay.QuickstepLauncher t5}') && !isHome('mResumedActivity: ActivityRecord{2 u0 com.android.settings/.FallbackHome t1}'), 'home riconosciuta dal launcher');
+  check(isHome('  mCurrentFocus=Window{5d2 u0 com.android.launcher3/com.android.launcher3.uioverlay.QuickstepLauncher}') && !isHome('  mCurrentFocus=Window{a1 u0 com.android.settings/com.android.settings.FallbackHome}'), 'home riconosciuta dal launcher');
   eq(p.mark('home', 1600).map((e) => e.phase), ['home'], 'home segnata');
   eq(p.mark('home', 1700).length, 0, 'home già segnata');
   eq([p.phase, p.events.length], ['home', PHASES.length], 'stato finale');

@@ -541,30 +541,44 @@ pub fn assemble(
     // Parametri del bootloader: androidboot.* nel bootconfig se c'è.
     let has_bootconfig = vendor.is_some_and(|v| v.header_version >= 4);
     let mut extra = Vec::new();
-    let mut lines = String::new();
-    let mut keys: Vec<&str> = Vec::new();
+    let mut params: Vec<(&str, String)> = Vec::new();
     for p in bootconfig::split_cmdline(&opts.params) {
         if has_bootconfig && p.starts_with("androidboot.") {
             let key = bootconfig::key_value(p).0;
-            if keys.contains(&key) {
+            if params.iter().any(|(k, _)| *k == key) {
                 return Err(AndroidError::Bootconfig(format!("{key} ripetuto nei parametri")));
             }
-            keys.push(key);
-            lines.push_str(&bootconfig::param_line(p).map_err(AndroidError::Bootconfig)?);
+            params.push((key, bootconfig::param_line(p).map_err(AndroidError::Bootconfig)?));
         } else {
             extra.push(p);
         }
     }
+    // Un parametro con la chiave di una riga della sezione del vendor la
+    // sostituisce (ADR 0028): ripetuta, il kernel scarterebbe tutto il blocco.
     let mut text = String::new();
+    let mut used = vec![false; params.len()];
     if let Some(v) = vendor {
         let section = v.bootconfig;
         let section = &section[..section.iter().rposition(|&b| b != 0).map_or(0, |p| p + 1)];
-        text.push_str(&String::from_utf8_lossy(section));
-        if !text.is_empty() && !text.ends_with('\n') {
-            text.push('\n');
+        for line in String::from_utf8_lossy(section).lines() {
+            let key = line.split('=').next().unwrap_or("").trim();
+            match params.iter().position(|(k, _)| *k == key) {
+                Some(i) if !key.is_empty() => {
+                    text.push_str(&params[i].1);
+                    used[i] = true;
+                }
+                _ => {
+                    text.push_str(line);
+                    text.push('\n');
+                }
+            }
         }
     }
-    text.push_str(&lines);
+    for (i, (_, line)) in params.iter().enumerate() {
+        if !used[i] {
+            text.push_str(line);
+        }
+    }
 
     let mut parts: Vec<&str> = Vec::new();
     for s in [boot.cmdline.as_str(), vendor.map_or("", |v| v.cmdline.as_str())] {

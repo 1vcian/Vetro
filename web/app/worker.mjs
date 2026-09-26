@@ -86,7 +86,7 @@ import { Recording } from '../node/recording.mjs';
 import { BlobSource, DiskFeeder, LayoutSource, MemoryCache, OpfsCache, RangeSource } from '../node/disk.mjs';
 import { AdbClient } from '../node/adb.mjs';
 import { apkInfo } from '../node/apk.mjs';
-import { BootProgress, HOME_QUERY, isHome } from '../node/android.mjs';
+import { ANDROID_PARAMS, BootProgress, HOME_QUERY, isHome } from '../node/android.mjs';
 import { DiskOverlay, fromBase64, opfsFile, sha256Hex, SnapshotStore, snapshotKey, staleReason, toBase64 } from '../node/persist.mjs';
 
 const QUANTUM = 1_000_000;
@@ -400,7 +400,7 @@ async function prepareAndroid(c) {
   return {
     manifest,
     images,
-    params: c.android.params ?? 'nokaslr',
+    params: c.android.params ?? ANDROID_PARAMS,
     progress: new BootProgress(),
     bootedNs: null,
     homeNs: null,

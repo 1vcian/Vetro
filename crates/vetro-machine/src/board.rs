@@ -181,8 +181,10 @@ impl Ram {
         const FLUSH: usize = 1 << 20;
         let len = self.bytes.len;
         let page = |i: usize| self.bytes.get(i * PAGE, (len - i * PAGE).min(PAGE));
-        let present: Vec<u32> =
-            (0..len.div_ceil(PAGE)).filter(|&i| !vetro_snapshot::is_zero(page(i))).map(|i| i as u32).collect();
+        let present: Vec<u32> = (0..len.div_ceil(PAGE))
+            .filter(|&i| !vetro_snapshot::is_zero(page(i)))
+            .map(|i| i as u32)
+            .collect();
         let mut out = Vec::with_capacity(FLUSH + 2 * PAGE);
         out.extend_from_slice(&(len as u64).to_le_bytes());
         out.extend_from_slice(&(present.len() as u64).to_le_bytes());

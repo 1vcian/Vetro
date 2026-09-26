@@ -528,7 +528,10 @@ impl Vm {
     /// Snapshot a pezzi ([`Machine::save_stream`]): il contenuto va a
     /// `sink`, l'intestazione è il risultato. Il buffer della parte prima
     /// della RAM si dimensiona sul copy-on-write dei dischi.
-    pub fn save_state_stream(&mut self, sink: &mut dyn FnMut(&[u8])) -> [u8; vetro_machine::vetro_snapshot::HEADER_LEN] {
+    pub fn save_state_stream(
+        &mut self,
+        sink: &mut dyn FnMut(&[u8]),
+    ) -> [u8; vetro_machine::vetro_snapshot::HEADER_LEN] {
         let cow: usize = (0..self.disks.len() as u32).map(|i| self.disk_dirty_clusters(i)).sum();
         self.m.save_stream(cow * (4096 + 13) + (16 << 20), sink)
     }

@@ -22,8 +22,18 @@ export const PHASES = [
   ['home', 'home (launcher)', null],
 ];
 
+/**
+ * Parametri del bootloader per l'immagine AOSP di Vetro (ADR 0028):
+ * `nokaslr` come tools/aosp/vetro.sh, e lo scanout in BGRA. L'immagine dice
+ * `display_framebuffer_format=rgba`, ma il driver virtio-gpu del kernel crea
+ * i buffer "dumb" dello scanout sempre XRGB8888 (in memoria B, G, R, X): con
+ * rgba l'app blu 0x1565c0 arriva allo schermo come (192, 101, 21). Il
+ * bootloader di Vetro sostituisce la riga del vendor_boot.
+ */
+export const ANDROID_PARAMS = 'nokaslr androidboot.hardware.hwcomposer.display_framebuffer_format=bgra';
+
 /** Comando adb per l'attività in primo piano; la home c'è se contiene "launcher". */
-export const HOME_QUERY = 'dumpsys activity activities | grep -m1 mResumedActivity';
+export const HOME_QUERY = 'dumpsys window | grep -m1 mCurrentFocus';
 export const isHome = (out) => /launcher/i.test(out);
 
 /** Segue la console e dice quando si entra in una fase nuova. */

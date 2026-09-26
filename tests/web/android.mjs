@@ -12,6 +12,7 @@
 //   --log=FILE         console del guest (default target/aosp/node-android.log)
 //   --save=FILE        salva lo snapshot quando la home è a schermo (tempi e dimensione)
 //   --restore=FILE     riparte da uno snapshot di --save (stessa RAM) invece di avviare
+//   --params=RIGA      parametri del bootloader (default ANDROID_PARAMS di web/node/android.mjs)
 //   --apk=FILE         APK da installare (default target/apps/tocco.apk, da
 //                      tests/apps/tocco/build.sh)
 //
@@ -29,7 +30,7 @@ import { DEV } from '../../web/node/vetro.mjs';
 import { AdbClient } from '../../web/node/adb.mjs';
 import { apkInfo } from '../../web/node/apk.mjs';
 import { DiskFeeder, MemoryCache } from '../../web/node/disk.mjs';
-import { BootProgress } from '../../web/node/android.mjs';
+import { ANDROID_PARAMS, BootProgress, HOME_QUERY } from '../../web/node/android.mjs';
 import { Fail, loadVetro, root } from './lib.mjs';
 
 if (process.env.VETRO_ANDROID !== '1') {
@@ -50,6 +51,7 @@ const logPath = arg('log', join(root, 'target/aosp/node-android.log'));
 const aosp = join(root, 'target/aosp');
 const savePath = arg('save', null);
 const restorePath = arg('restore', null);
+const params = arg('params', ANDROID_PARAMS);
 const apkPath = arg('apk', join(root, 'target/apps/tocco.apk'));
 
 /** Una sorgente di disco da un file locale (solo Node). */
@@ -97,14 +99,14 @@ async function main() {
     progress.feed('sys-boot-completed-set\n', Number(m.guestNs) / 1e9);
   } else {
     const read = (f) => new Uint8Array(readFileSync(join(aosp, 'out', f)));
-    const desc = m.loadAndroid({ boot: read('boot.img'), vendorBoot: read('vendor_boot.img'), initBoot: read('init_boot.img'), params: 'nokaslr' });
+    const desc = m.loadAndroid({ boot: read('boot.img'), vendorBoot: read('vendor_boot.img'), initBoot: read('init_boot.img'), params });
     console.log(`vetro: ${desc.split(';')[0]}`);
   }
   if (jit) m.setJit();
   const t0 = performance.now();
   let log = '';
   let lastReport = 0;
-  let saved = !!restorePath;
+  let saved = false;
   // Dopo l'avvio: il copione di adb e del tocco, a passi fra un quanto e l'altro.
   let flow = null;
   let bootedNs = null;
@@ -144,6 +146,7 @@ async function main() {
       lastReport = now;
       report('stato');
       await writeFile(logPath, log);
+      screenshot(m, 'node-live.png', true);
     }
     if (flow?.wantSave && !saved) {
       saved = true;
@@ -188,11 +191,10 @@ function center(m) {
 const near = (a, b) => a && a.every((v, i) => Math.abs(v - b[i]) <= 8);
 /** Tiene acceso lo schermo della macchina virtuale e lo risveglia (lo stesso comando del Worker). */
 const WAKE = 'svc power stayon true; settings put system screen_off_timeout 2147483647; input keyevent KEYCODE_WAKEUP; wm dismiss-keyguard';
-/** L'attività in primo piano (lo stesso comando del Worker). */
-const HOME_QUERY = 'dumpsys activity activities | grep -m1 mResumedActivity';
+
 
 /** Lo scanout in un PNG in target/aosp (per guardarlo). */
-function screenshot(m, name) {
+function screenshot(m, name, quiet = false) {
   const size = m.displaySize();
   const px = m.displayPixels();
   if (!size || !px) return;
@@ -227,7 +229,7 @@ function screenshot(m, name) {
   ihdr[9] = 6;
   const png = Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
   writeFileSync(join(aosp, name), png);
-  console.log(`schermata: target/aosp/${name}`);
+  if (!quiet) console.log(`schermata: target/aosp/${name}`);
 }
 const BLU = [0x15, 0x65, 0xc0];
 const ARANCIONE = [0xef, 0x6c, 0x00];
@@ -279,6 +281,7 @@ function homeFlow(m, t0, save) {
     for (;;) {
       top = (await adb.shell(HOME_QUERY)).stdout.trim();
       if (/launcher/i.test(top)) break;
+      if (process.env.VETRO_ANDROID_DEBUG) console.log(`in primo piano: ${JSON.stringify(top)} (${(Number(m.guestNs) / 1e9).toFixed(0)} s di guest)`);
       await waitGuest('attesa della home', () => false, 5).catch(() => {});
       if (m.guestNs - b0 > 3000_000_000_000n) throw new Fail(`home non arrivata: ${top}`);
     }

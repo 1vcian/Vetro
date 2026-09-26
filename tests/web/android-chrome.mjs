@@ -137,7 +137,7 @@ async function session(chrome, profile, url, first) {
     misure.tocco_ms = Date.now() - tt;
     console.log(`tocco ricevuto dall'app: il centro è arancione dopo ${secs(misure.tocco_ms)} s`);
     await screenshot(page, 'chrome-app-2.png');
-    const top = await page.eval("window.vetroAndroid.shell('dumpsys activity activities | grep -m1 mResumedActivity')");
+    const top = await page.eval("window.vetroAndroid.shell('dumpsys window | grep -m1 mCurrentFocus')");
     check(top.stdout.includes('it.vetro.tocco'), `attività in primo piano: ${top.stdout}`);
     misure.snapshot_app = await page.waitFor('snapshot dopo l\'installazione', async () => (await page.state()).snapshots.find((x) => x.why === 'app installata'), 10 * 60_000);
     console.log(`snapshot dopo l'installazione: ${(misure.snapshot_app.size / 2 ** 20).toFixed(0)} MiB in ${(misure.snapshot_app.saveMs + misure.snapshot_app.writeMs).toFixed(0)} ms`);
