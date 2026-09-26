@@ -95,6 +95,6 @@ Add three lines to `docs/progress/Mx.md`: done, missing, blocked.
 
 Our code: PolyForm Noncommercial 1.0.0 (`LICENSE.md`, see ADR 0004): no
 commercial use by third parties; the owner keeps the right to offer
-commercial licences (see "Sustainability" in `docs/PLAN.md`). The Linux
+commercial licences (see "Product track" in `docs/PLAN.md`). The Linux
 kernel is GPL-2.0: for every distributed image the sources of the kernel used
 are published too.

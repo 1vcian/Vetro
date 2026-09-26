@@ -136,45 +136,96 @@ Safari mobile; qualsiasi componente cloud obbligatorio.
 - **Uscita:** replay identico con ritorno al momento esatto di una chiamata;
   30 app superano i flussi base; criteri 1.0 soddisfatti.
 
-## Sustainability and monetisation (planned, post-1.0 track)
+## Product track: open core, server and plans (decided 2026-09-26)
 
-Status: direction agreed with the owner (2026-09-26); decisions still to be
-taken through ADRs. Until then everything is developed in the open, in
-English, aiming at international visibility.
+The owner's direction: this repository becomes **private** (the full
+product), and a new **public open-source repository** carries the community
+edition. A server provides accounts, plans and the paid features. Domain:
+**vetro.lol** (the owner is buying it). Everything is in English.
 
-**Model: open core.**
-- *Community (free):* the emulator, Vetro in the browser with our Android
-  image, snapshots, basic network capture and the file manager.
-- *Pro (subscription):* the advanced analysis features — HTTPS in clear
-  text (TLS hooks), Binder decoder and privacy inspector, ART introspection
-  and Frida-like scripting, record & replay with jump-to-event, reports and
-  exports, curated app sets and device profiles.
-- *Team / Enterprise:* on-premise or self-hosted builds, custom images,
-  shared sessions and reports, support and SLAs.
+### Repositories
 
-**Constraints to resolve first (each one an ADR):**
-1. *Licensing.* Our code is PolyForm Noncommercial: third parties can't use
-   it commercially, and the owner can sell commercial licences (dual
-   licensing). Decide whether Pro features stay in this repository (legal
-   enforcement only) or live in a separate closed module/repository.
-2. *Enforcement.* Everything runs client-side in the browser, so a pure
-   client-side paywall is easy to bypass. Paid value should lean on things
-   that need a service: prebuilt and updated images and snapshots, cloud
-   storage of sessions, team sharing, report generation, curated app
-   corpora, support.
-3. *Contributions.* A CLA (or copyright assignment) is needed before
-   accepting outside contributions, otherwise dual licensing breaks.
-4. *Third-party licences.* GPL (kernel) and Apache (AOSP, microG) obligations
-   stay the same in every edition; no Google trademarks in the product.
-5. *Name and responsible use.* Trademark search for "Vetro"; an acceptable
-   use policy (security research, privacy auditing, app developers testing
-   their own apps).
-6. *Payments and accounts.* Provider, pricing research against comparable
-   tools (commercial mobile-analysis platforms, security tooling
-   subscriptions), and a minimal account system.
+| Repository | Visibility | Contents |
+|---|---|---|
+| `vetro` (this one, renamed e.g. `vetro-pro`) | private | everything: core, Pro analysis modules, server, infrastructure, AOSP build |
+| `vetro` (new) | public, open source | core emulator (CPU, MMU, JIT, platform, machine, net, snapshot), community web app, Android image build scripts, docs |
 
-**When:** after M8 (the Pro features exist by then), with the licensing ADR
-before accepting external contributions.
+- The public repository is **generated from the private one** (an export
+  script with an allow-list of paths and a clean history), not maintained by
+  hand, so the two never drift. Public contributions come back through the
+  same script, under a CLA.
+- Licence of the public repo: an OSI licence (to be decided by ADR:
+  **AGPL-3.0** protects against someone hosting it as a competing service;
+  Apache-2.0 maximises adoption). Pro code stays proprietary.
+- GPL (kernel) and Apache (AOSP, microG) obligations apply to every edition.
+
+### Architecture split (needs an ADR before code)
+
+- A **plugin boundary** in the core: capture, tracing hooks and introspection
+  primitives stay open; the high-level Pro analyses (TLS plaintext, Binder
+  decoding and privacy inspector, ART introspection, scripting, replay
+  jump-to-event UI, reports) become separate crates and a separate WebAssembly
+  module.
+- The Pro module is **downloaded after login**, served by the server with a
+  signed, expiring licence token. The client can be cracked like any
+  client-side code, so the real value sits in the service (below), and
+  licence terms cover the rest.
+
+### Server (vetro.lol)
+
+| Host | Role |
+|---|---|
+| `vetro.lol` | landing page, pricing, docs |
+| `app.vetro.lol` | the web app (with COOP/COEP headers, which also unlocks WASM threads/multi-core) |
+| `api.vetro.lol` | accounts, auth, plans, licence tokens, sessions, team sharing, reports |
+| `assets.vetro.lol` | images, prebuilt snapshots and Pro modules (Cloudflare R2 behind a custom domain) |
+
+- Suggested stack, cheap and close to what we already use: Cloudflare (DNS,
+  Pages for the site and app with custom headers, Workers + D1/Durable Objects
+  for the API, R2 for assets). Alternative: a small VPS for the API.
+- Payments through a merchant of record (Paddle or Lemon Squeezy) so EU VAT
+  is handled for us; Stripe if we prefer to handle VAT ourselves.
+- Auth: email magic link plus GitHub/Google login; teams with roles.
+- Privacy by design: emulation and analysis stay in the user's browser;
+  the server stores only what the user explicitly saves or shares.
+
+### Plans (starting hypothesis, to validate with pricing research)
+
+| Plan | Price (hypothesis) | For whom | Includes |
+|---|---|---|---|
+| **Free** | €0 | curious users, students | Vetro in the browser with our Android image, APK drag and drop, basic network capture, file manager, local snapshots |
+| **Pro** | ~€15/month (≈€150/year) | security researchers, privacy auditors, app developers | HTTPS in clear text, Binder/privacy inspector, ART and scripting, replay with jump-to-event, HAR/pcap/JSON reports, cloud-saved sessions, always-updated images and prebuilt snapshots |
+| **Team** | ~€40/user/month | agencies, QA and security teams | Pro + shared sessions and reports, team workspace, device profiles, curated app sets, priority support |
+| **Enterprise** | on request | companies, regulated environments | self-hosted/on-premise build, custom images and profiles, SSO, SLA, commercial licence |
+
+Possible extras: an education discount, a free Pro trial, pay-per-report for
+one-off audits.
+
+### Phases
+
+1. **B1 — Preparation (now, no user-visible change):** licence ADR, plugin
+   boundary ADR, export script for the public repo, trademark search for
+   "Vetro", acceptable use policy, CLA text.
+2. **B2 — Domain and hosting:** vetro.lol on Cloudflare DNS; site and app on
+   Cloudflare Pages with COOP/COEP; R2 on `assets.vetro.lol`. GitHub Pages is
+   retired (it's only free for public repositories).
+3. **B3 — Public repository:** first export, CI on public runners, README
+   and docs for contributors.
+4. **B4 — Server and plans:** API (accounts, teams, licence tokens), payment
+   provider, Pro module delivery, cloud sessions.
+5. **B5 — Launch:** landing page, pricing page, docs, launch after M8 (Pro
+   features working on real apps).
+
+### Before making this repository private
+
+- **CI cost:** GitHub Actions is free and unlimited only for public
+  repositories. Private repositories get a monthly minute quota, and the
+  arm64 runners used by the `linux` and `boot` jobs are billed. Options: keep
+  the heavy CI on the public repository (the core lives there), self-hosted
+  runners (for example the build VM), or a paid plan.
+- **GitHub Pages** needs a paid plan on private repositories: move the site
+  to Cloudflare Pages first (phase B2).
+- R2 artifacts and the build VM are unaffected.
 
 ## Squadra di agenti
 
