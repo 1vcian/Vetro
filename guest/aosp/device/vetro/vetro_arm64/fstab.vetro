@@ -1,0 +1,32 @@
+# fstab di Vetro (androidboot.fstab_suffix=vetro). Stesse partizioni e
+# stesse opzioni di fstab.cf.f2fs.hctr2 di Cuttlefish, senza AVB (nessun
+# flag avb: niente dm-verity, vbmeta disattivato, ADR 0022) e senza le
+# condivisioni virtiofs e la scheda SD. Le partizioni stanno in un solo
+# disco GPT (tools/aosp/fetch.sh) su uno degli slot virtio-mmio elencati in
+# androidboot.boot_devices; /dev/block/by-name/* viene dai nomi GPT.
+#
+# Partizioni logiche in super (slot A)
+system /system erofs ro wait,logical,first_stage_mount,slotselect
+system /system ext4 noatime,ro,errors=panic wait,logical,first_stage_mount,slotselect
+# Partizioni fisiche tranne system
+/dev/block/by-name/userdata /data f2fs nodev,noatime,nosuid,inlinecrypt,reserve_root=32768 latemount,wait,check,quota,formattable,keydirectory=/metadata/vold/metadata_encryption,fileencryption=aes-256-xts:aes-256-hctr2:inlinecrypt_optimized,fscompress,checkpoint=fs
+/dev/block/by-name/userdata /data ext4 nodev,noatime,nosuid,errors=panic latemount,wait,check,quota,keydirectory=/metadata/vold/metadata_encryption,fileencryption=aes-256-xts:aes-256-hctr2:inlinecrypt_optimized,fscompress,checkpoint=fs
+/dev/block/by-name/metadata /metadata ext4 nodev,noatime,nosuid wait,check,formattable,first_stage_mount
+/dev/block/by-name/misc /misc emmc defaults defaults
+# Partizioni logiche tranne system
+odm /odm erofs ro wait,logical,first_stage_mount,slotselect
+odm /odm ext4 noatime,ro,errors=panic wait,logical,first_stage_mount,slotselect
+product /product erofs ro wait,logical,first_stage_mount,slotselect,nofail
+product /product ext4 noatime,ro,errors=panic wait,logical,first_stage_mount,slotselect,nofail
+system_ext /system_ext erofs ro wait,logical,first_stage_mount,slotselect,nofail
+system_ext /system_ext ext4 noatime,ro,errors=panic wait,logical,first_stage_mount,slotselect,nofail
+vendor /vendor erofs ro wait,logical,first_stage_mount,slotselect
+vendor /vendor ext4 noatime,ro,errors=panic wait,logical,first_stage_mount,slotselect
+vendor_dlkm /vendor_dlkm erofs ro wait,logical,first_stage_mount,slotselect
+vendor_dlkm /vendor_dlkm ext4 noatime,ro,errors=panic wait,logical,first_stage_mount,slotselect
+odm_dlkm /odm_dlkm erofs ro wait,logical,first_stage_mount,slotselect
+odm_dlkm /odm_dlkm ext4 noatime,ro,errors=panic wait,logical,first_stage_mount,slotselect
+system_dlkm /system_dlkm erofs ro wait,logical,first_stage_mount,slotselect
+system_dlkm /system_dlkm ext4 noatime,ro,errors=panic wait,logical,first_stage_mount,slotselect
+# ZRAM
+/dev/block/zram0 none swap defaults zramsize=75%

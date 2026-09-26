@@ -1,0 +1,36 @@
+# init della scheda Vetro arm64, dopo init.cutf_cvm.rc di Cuttlefish.
+
+on early-init
+    # Per i log di avvio confrontabili con QEMU (tools/aosp/compare).
+    write /dev/kmsg "VETRO: init della scheda vetro_arm64"
+
+on property:sys.boot_completed=1
+    # Livello 2: dopo l'avvio la console stampa solo i messaggi sotto il 4.
+    write /dev/kmsg "<2>VETRO: sys.boot_completed=1"
+    # Schermo sempre acceso (alimentazione "collegata"): su una CPU emulata
+    # lenta lo spegnimento per inattività arriva prima che la home sia
+    # disegnata, e l'analisi vuole lo schermo visibile.
+    exec_background - system system -- /system/bin/settings put global stay_on_while_plugged_in 7
+
+# Servizi di Cuttlefish che senza il suo host (vsock, /dev/hvcN, simulatori)
+# escono o abortiscono subito e init riavvierebbe ogni 5 s, con un tombstone a
+# ogni crash (su una CPU emulata lenta si mangiano gran parte del tempo) e
+# flags_health_check a ogni giro. Al primo riavvio si fermano: restano
+# avviabili a richiesta (servicemanager) ma non girano più a ciclo.
+on property:init.svc.vendor.uwb_hal=restarting
+    stop vendor.uwb_hal
+
+on property:init.svc.vendor.threadnetwork_hal=restarting
+    stop vendor.threadnetwork_hal
+
+on property:init.svc.vendor.confirmationui_default=restarting
+    stop vendor.confirmationui_default
+
+on property:init.svc.nfc_hal_service=restarting
+    stop nfc_hal_service
+
+on property:init.svc.bt_socket=restarting
+    stop bt_socket
+
+on property:init.svc.seriallogging=restarting
+    stop seriallogging

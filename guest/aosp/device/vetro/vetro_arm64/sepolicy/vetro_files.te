@@ -1,0 +1,18 @@
+# Demone del gestore dei file di Vetro (guest/kernel/initramfs/vetro-files.c,
+# ADR 0020 e 0022): ascolta su virtio-vsock (porta 5200) e legge e scrive i
+# file del guest per conto dell'host, come root.
+type vetro_files, domain;
+type vetro_files_exec, exec_type, vendor_file_type, file_type;
+
+init_daemon_domain(vetro_files)
+
+# Il socket in ascolto e le connessioni dell'host.
+allow vetro_files self:vsock_socket { create_socket_perms_no_ioctl listen accept };
+
+# Deve poter leggere e scrivere qualunque file dell'utente (dati delle app,
+# /sdcard) conservando proprietario, modo e contesto: nessuna regola
+# ristretta lo copre senza scontrarsi con i neverallow di system/sepolicy.
+# Il dominio è quindi permissivo, e solo nelle build di sviluppo; in una
+# build user resta confinato alle regole qui sopra (e init non lo avvia:
+# vetro-files.rc lo lega a ro.debuggable=1).
+userdebug_or_eng(`permissive vetro_files;')

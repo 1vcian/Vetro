@@ -1,0 +1,15 @@
+// Demone del gestore dei file di Vetro (ADR 0020, 0022). Il sorgente è
+// guest/kernel/initramfs/vetro-files.c del repository di Vetro: lo copia qui
+// tools/aosp/sync.sh (non si duplica in guest/aosp).
+
+cc_binary {
+    name: "vetro-files",
+    srcs: ["vetro-files.c"],
+    vendor: true,
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-Wno-unused-parameter",
+    ],
+    init_rc: ["vetro-files.rc"],
+}

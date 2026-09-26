@@ -1,0 +1,11 @@
+# Moduli del vendor_dlkm da non caricare nella seconda fase (dlkm_loader).
+# Quelli di Cuttlefish (shared/modules_aarch64.blocklist):
+blocklist dummy-cpufreq.ko
+# ptp_kvm.ko si carica solo con l'hypervisor KVM
+blocklist ptp_kvm.ko
+blocklist vkms.ko
+# Dispositivi goldfish dell'emulatore SDK: la virt non li ha.
+blocklist goldfish_address_space.ko
+blocklist goldfish_battery.ko
+blocklist goldfish_pipe.ko
+blocklist goldfish_sync.ko
