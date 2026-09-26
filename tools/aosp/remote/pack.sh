@@ -18,7 +18,7 @@ for f in boot.img vendor_boot.img init_boot.img super.img userdata.img; do
 done
 # Proprietà per i controlli sul Mac (variante ISA di ART, fingerprint...).
 for part in system vendor product system_ext odm; do
-  [ -f "$p/$part/build.prop" ] && cp "$p/$part/build.prop" "$o/props/$part.build.prop"
+  for f in "$p/$part/build.prop" "$p/$part/etc/build.prop"; do [ -f "$f" ] && cp "$f" "$o/props/$part.build.prop"; done
 done
 [ -f "$p/system/etc/build.prop" ] && cp "$p/system/etc/build.prop" "$o/props/system.etc.build.prop"
 cp "$p/vendor_ramdisk/first_stage_ramdisk/fstab.vetro" "$o/props/" 2>/dev/null || true

@@ -27,6 +27,11 @@ PRODUCT_VENDOR_PROPERTIES += \
 PRODUCT_SYSTEM_EXT_PROPERTIES += \
     ro.adb.secure=0
 
+# Niente schermata di blocco al primo avvio (LockSettingsService): si arriva
+# dritti alla home, come serve all'analisi.
+PRODUCT_PRODUCT_PROPERTIES += \
+    ro.lockscreen.disable.default=true
+
 # ART: CPU di Vetro = Cortex-A53, ARMv8.0 + CRC32 + crypto (ADR 0005).
 # TARGET_CPU_VARIANT := cortex-a53 (BoardConfig di Cuttlefish) fa scrivere
 # alla build dalvik.vm.isa.arm64.variant=cortex-a53 e features=default in
