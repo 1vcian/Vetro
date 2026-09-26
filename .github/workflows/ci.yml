@@ -119,8 +119,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Toolchain (da rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
-      - name: Oracolo QEMU (sistema)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-system-arm
+      # qemu-user: oracolo delle syscall nel test di introspezione (ADR 0027).
+      - name: Oracolo QEMU (sistema e utente)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-system-arm qemu-user
       - uses: Swatinem/rust-cache@v2
       - uses: actions/cache@v4
         with:

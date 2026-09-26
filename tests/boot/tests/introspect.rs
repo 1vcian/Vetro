@@ -359,8 +359,17 @@ fn check_oracle(records: &[SyscallRecord]) {
         std::fs::metadata(repo_root().join("guest/kernel/initramfs/autotest.sh")).unwrap().len() as i64;
     assert_eq!(sends, [size, 0], "sendfile: tutto il file, poi 0");
     assert_eq!(open.ret, Some(3));
-    let Some(qemu) = std::env::var_os("VETRO_QEMU_AARCH64") else {
-        skip_or_fail("VETRO_REQUIRE_ORACLE", "oracolo delle syscall: manca VETRO_QEMU_AARCH64");
+    // Come tests/diff/src/qemu.rs: la variabile, altrimenti qemu-aarch64 nel PATH.
+    let qemu = std::env::var_os("VETRO_QEMU_AARCH64").map(std::path::PathBuf::from).or_else(|| {
+        std::env::split_paths(&std::env::var_os("PATH")?)
+            .map(|d| d.join("qemu-aarch64"))
+            .find(|p| p.is_file())
+    });
+    let Some(qemu) = qemu else {
+        skip_or_fail(
+            "VETRO_REQUIRE_ORACLE",
+            "oracolo delle syscall: qemu-aarch64 assente (VETRO_QEMU_AARCH64 o PATH)",
+        );
         return;
     };
     let root = repo_root();
