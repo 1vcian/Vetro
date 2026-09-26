@@ -7,6 +7,10 @@
 #                       ADR 0020) con SQLite linkato (ADR 0021); è anche
 #                       /bin/sqlite3 (multi-chiamata, shell ufficiale)
 #   config, System.map  configurazione completa e simboli (per il debug)
+#   vmlinux.btf         tipi del kernel (BTF staccato) per l'introspezione
+#                       dall'esterno (ADR 0027): stessa configurazione più
+#                       DEBUG_INFO in una cartella a parte, poi pahole; il
+#                       kernel che si avvia resta quello senza debug
 #   sources/            sorgenti esatti usati (GPL-2.0, vedi CLAUDE.md)
 #   VERSIONS            versioni di kernel, compilatore e BusyBox
 # La compilazione gira in un container Alpine arm64 (nativo su Apple Silicon e
@@ -128,6 +132,28 @@ docker run --rm --platform linux/arm64 \
   strip "$out/vetro-files"
   cp "$obj/arch/arm64/boot/Image" "$obj/.config" "$obj/System.map" "$out/"
   mv "$out/.config" "$out/config"
+
+  # Tipi del kernel per l introspezione (ADR 0027). Il kernel di prova non ha
+  # CONFIG_DEBUG_INFO_BTF (vorrebbe BPF_SYSCALL, che cambia il kernel): si
+  # compila vmlinux con la stessa .config più DEBUG_INFO (che non cambia la
+  # disposizione delle strutture) e pahole ne estrae il BTF staccato.
+  echo "==> BTF staccato (vmlinux.btf)"
+  btfobj=/build/obj-btf-$KVER
+  mkdir -p "$btfobj"
+  cp "$obj/.config" "$btfobj/.config"
+  # DEBUG_KERNEL apre il menu del debug: le opzioni che accenderebbe da sé
+  # (DEBUG_MISC, RCU_TRACE) restano spente.
+  printf "%s\n" CONFIG_DEBUG_KERNEL=y CONFIG_DEBUG_INFO_DWARF5=y \
+    "# CONFIG_DEBUG_MISC is not set" "# CONFIG_RCU_TRACE is not set" >> "$btfobj/.config"
+  make -s -C "$src" O="$btfobj" olddefconfig 2>/dev/null
+  # Oltre alle opzioni spente, solo quelle delle informazioni di debug.
+  if diff "$obj/.config" "$btfobj/.config" | grep -E "^[<>] CONFIG_" \
+    | grep -vE "^> CONFIG_(DEBUG_KERNEL|DEBUG_INFO|DEBUG_INFO_[A-Z0-9_]*|PAHOLE_HAS_[A-Z0-9_]*)=y$"; then
+    echo "la configurazione del BTF cambia opzioni che non sono di debug"
+    exit 1
+  fi
+  make -s -C "$src" O="$btfobj" -j"$(nproc)" vmlinux
+  pahole --btf_encode_detached="$out/vmlinux.btf" "$btfobj/vmlinux"
 
   echo "==> initramfs"
   sed "s|^\(file [^ ]*\) \([^ ]*\)|\1 /src/\2|" /src/guest/kernel/initramfs/files.list \

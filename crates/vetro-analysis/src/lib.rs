@@ -6,6 +6,7 @@
 //! [`timeline`] input→effetti (ADR 0023). Hook TLS, Binder e ART arrivano
 //! con M7–M9.
 
+pub mod introspect;
 pub mod net;
 pub mod syscall;
 pub mod timeline;
