@@ -65,6 +65,13 @@ run(async () => {
   const kb = Number(/MemTotal:\s+(\d+) kB/.exec(s.text(at, end))?.[1]);
   check(kb > 2.9 * 2 ** 20, `MemTotal ${kb} kB con 3 GiB di RAM`);
   const snap = s.m.snapshotSave();
+  // A pezzi (vetro_snapshot_save_stream + import vetro_host.snapshot_write): lo stesso file.
+  const parts = [];
+  const total = s.m.snapshotSaveTo((bytes, at) => parts.push([at, bytes.slice()]));
+  const streamed = new Uint8Array(total);
+  for (const [at, bytes] of parts) streamed.set(bytes, at);
+  check(total === snap.length && Buffer.compare(Buffer.from(streamed), Buffer.from(snap)) === 0, `snapshot a pezzi diverso (${total} contro ${snap.length} byte)`);
+  check(parts.length > 2, `snapshot in ${parts.length} pezzi`);
   const cut = s.log.length;
   const cutSteps = s.m.steps;
   await s.poweroff(end);

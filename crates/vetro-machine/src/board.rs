@@ -172,6 +172,45 @@ impl Ram {
         h ^ (h >> 31)
     }
 
+    /// Il contenuto della sezione `RAM ` di uno snapshot (formato di
+    /// [`vetro_snapshot::compress`]) a pezzi di al più 1 MiB, in ordine:
+    /// nessun buffer grande quanto lo snapshot (ADR 0028). Due chiamate danno
+    /// gli stessi byte.
+    pub fn save_chunks(&self, emit: &mut dyn FnMut(&[u8])) {
+        const PAGE: usize = vetro_snapshot::BLOCK;
+        const FLUSH: usize = 1 << 20;
+        let len = self.bytes.len;
+        let page = |i: usize| self.bytes.get(i * PAGE, (len - i * PAGE).min(PAGE));
+        let present: Vec<u32> =
+            (0..len.div_ceil(PAGE)).filter(|&i| !vetro_snapshot::is_zero(page(i))).map(|i| i as u32).collect();
+        let mut out = Vec::with_capacity(FLUSH + 2 * PAGE);
+        out.extend_from_slice(&(len as u64).to_le_bytes());
+        out.extend_from_slice(&(present.len() as u64).to_le_bytes());
+        let mut scratch = Vec::with_capacity(PAGE + PAGE / 8);
+        let mut table = vetro_snapshot::lz::Table::new();
+        for i in present {
+            let block = page(i as usize);
+            out.extend_from_slice(&u64::from(i).to_le_bytes());
+            scratch.clear();
+            vetro_snapshot::lz::compress(block, &mut scratch, &mut table);
+            if scratch.len() < block.len() {
+                out.push(1);
+                out.extend_from_slice(&(scratch.len() as u32).to_le_bytes());
+                out.extend_from_slice(&scratch);
+            } else {
+                out.push(0);
+                out.extend_from_slice(block);
+            }
+            if out.len() >= FLUSH {
+                emit(&out);
+                out.clear();
+            }
+        }
+        if !out.is_empty() {
+            emit(&out);
+        }
+    }
+
     /// Vero se le due RAM hanno gli stessi byte.
     pub fn same_bytes(&self, other: &Ram) -> bool {
         self.size() == other.size() && self.chunks().zip(other.chunks()).all(|(a, b)| a == b)
@@ -267,33 +306,9 @@ impl Ram {
 /// RAM di prima.
 impl vetro_snapshot::Snapshot for Ram {
     /// Lo stesso formato di [`vetro_snapshot::compress`] sulla RAM intera,
-    /// scritto pagina per pagina.
+    /// scritto pagina per pagina ([`Ram::save_chunks`]).
     fn save(&self, w: &mut vetro_snapshot::Writer) {
-        const PAGE: usize = vetro_snapshot::BLOCK;
-        let len = self.bytes.len;
-        let page = |i: usize| self.bytes.get(i * PAGE, (len - i * PAGE).min(PAGE));
-        let present: Vec<u32> = (0..len.div_ceil(PAGE))
-            .filter(|&i| !vetro_snapshot::is_zero(page(i)))
-            .map(|i| i as u32)
-            .collect();
-        w.u64(len as u64);
-        w.u64(present.len() as u64);
-        let mut scratch = Vec::with_capacity(PAGE + PAGE / 8);
-        let mut table = vetro_snapshot::lz::Table::new();
-        for i in present {
-            let block = page(i as usize);
-            w.u64(u64::from(i));
-            scratch.clear();
-            vetro_snapshot::lz::compress(block, &mut scratch, &mut table);
-            if scratch.len() < block.len() {
-                w.u8(1);
-                w.u32(scratch.len() as u32);
-                w.raw(&scratch);
-            } else {
-                w.u8(0);
-                w.raw(block);
-            }
-        }
+        self.save_chunks(&mut |c| w.raw(c));
     }
 
     /// Come [`vetro_snapshot::decompress_into`] sulla RAM intera. Le pagine

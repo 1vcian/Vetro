@@ -62,6 +62,51 @@ fn config_bytes(m: &Machine) -> Vec<u8> {
     w.into_bytes()
 }
 
+/// [`vetro_snapshot::hash64`] a pezzi, con la lunghezza totale nota prima.
+struct Hash64 {
+    h: u64,
+    carry: [u8; 8],
+    n: usize,
+}
+
+impl Hash64 {
+    const P: u64 = 0x0000_0100_0000_01b3;
+
+    fn new(total: u64) -> Self {
+        Hash64 { h: 0xcbf2_9ce4_8422_2325 ^ total, carry: [0; 8], n: 0 }
+    }
+
+    fn update(&mut self, mut data: &[u8]) {
+        if self.n > 0 {
+            let k = (8 - self.n).min(data.len());
+            self.carry[self.n..self.n + k].copy_from_slice(&data[..k]);
+            self.n += k;
+            data = &data[k..];
+            if self.n < 8 {
+                return;
+            }
+            self.h = (self.h ^ u64::from_le_bytes(self.carry)).wrapping_mul(Self::P).rotate_left(23);
+            self.n = 0;
+        }
+        let (words, rest) = data.as_chunks::<8>();
+        for c in words {
+            self.h = (self.h ^ u64::from_le_bytes(*c)).wrapping_mul(Self::P).rotate_left(23);
+        }
+        self.carry[..rest.len()].copy_from_slice(rest);
+        self.n = rest.len();
+    }
+
+    fn finish(self) -> u64 {
+        let mut h = self.h;
+        for &b in &self.carry[..self.n] {
+            h = (h ^ u64::from(b)).wrapping_mul(Self::P);
+        }
+        h = (h ^ (h >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        h = (h ^ (h >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        h ^ (h >> 31)
+    }
+}
+
 impl Machine {
     /// Hash della configurazione: RAM, ora iniziale, seme, dispositivi e
     /// occupazione degli slot virtio. Uno snapshot si applica solo a una
@@ -77,9 +122,65 @@ impl Machine {
         let ram = self.board.borrow().ram.size() as usize;
         let mut w = Writer::with_capacity((1 << 20) + ram / 32);
         // Il file si scrive sul posto: prima lo spazio per l'intestazione,
-        // riempito alla fine. Con Android (centinaia di MiB) una copia del
-        // contenuto in più non starebbe nella memoria di wasm32 (ADR 0028).
+        // riempito alla fine.
         w.raw(&[0; vetro_snapshot::HEADER_LEN]);
+        self.save_head(&mut w);
+        let b = self.board.borrow();
+        w.section(b"RAM ", |w| w.put(&b.ram));
+        drop(b);
+        let mut file = w.into_bytes();
+        let (head, payload) = file.split_at_mut(vetro_snapshot::HEADER_LEN);
+        head.copy_from_slice(&self.file_header(payload.len() as u64, vetro_snapshot::hash64(payload)));
+        file
+    }
+
+    /// Lo stesso file di [`Machine::save`] senza tenerlo in memoria: il
+    /// contenuto (tutto tranne l'intestazione) va a `sink` a pezzi, in ordine,
+    /// e l'intestazione (da scrivere in testa, [`vetro_snapshot::HEADER_LEN`]
+    /// byte) è il risultato. Oltre ai pezzi, in memoria c'è solo la parte
+    /// prima della RAM (dispositivi e copy-on-write dei dischi: `reserve` è
+    /// la sua dimensione prevista, per non raddoppiare il buffer crescendo).
+    /// La RAM si comprime due volte: la prima per sapere la lunghezza, che
+    /// entra nell'hash prima di tutto il resto. Con Android nel browser uno
+    /// snapshot tenuto intero non sta nella memoria di wasm32 (ADR 0028).
+    pub fn save_stream(&self, reserve: usize, sink: &mut dyn FnMut(&[u8])) -> [u8; vetro_snapshot::HEADER_LEN] {
+        let mut w = Writer::with_capacity(reserve.max(1 << 20));
+        self.save_head(&mut w);
+        let b = self.board.borrow();
+        let mut ram_len = 0u64;
+        b.ram.save_chunks(&mut |c| ram_len += c.len() as u64);
+        let total = w.len() as u64 + 12 + ram_len;
+        let mut h = Hash64::new(total);
+        h.update(w.as_bytes());
+        sink(w.as_bytes());
+        drop(w);
+        let mut sec = [0u8; 12];
+        sec[..4].copy_from_slice(b"RAM ");
+        sec[4..].copy_from_slice(&ram_len.to_le_bytes());
+        h.update(&sec);
+        sink(&sec);
+        let mut again = 0u64;
+        b.ram.save_chunks(&mut |c| {
+            again += c.len() as u64;
+            h.update(c);
+            sink(c);
+        });
+        assert_eq!(again, ram_len, "RAM cambiata durante il salvataggio");
+        self.file_header(total, h.finish())
+    }
+
+    /// Intestazione del file: magia, versione, configurazione, lunghezza e
+    /// hash del contenuto.
+    fn file_header(&self, len: u64, hash: u64) -> [u8; vetro_snapshot::HEADER_LEN] {
+        let mut head = [0u8; vetro_snapshot::HEADER_LEN];
+        head.copy_from_slice(&vetro_snapshot::encode_file(self.config_hash(), &[])[..vetro_snapshot::HEADER_LEN]);
+        head[20..28].copy_from_slice(&len.to_le_bytes());
+        head[28..36].copy_from_slice(&hash.to_le_bytes());
+        head
+    }
+
+    /// Le sezioni prima della RAM.
+    fn save_head(&self, w: &mut Writer) {
         w.section(b"MACH", |w| {
             w.u64(self.steps);
             w.opt_u64(self.timer_deadline);
@@ -95,16 +196,6 @@ impl Machine {
         w.section(b"MMU ", |w| w.put(&self.mmu));
         let b = self.board.borrow();
         w.section(b"PLAT", |w| w.put(&b.virt));
-        w.section(b"RAM ", |w| w.put(&b.ram));
-        drop(b);
-        let mut file = w.into_bytes();
-        let (head, payload) = file.split_at_mut(vetro_snapshot::HEADER_LEN);
-        head.copy_from_slice(
-            &vetro_snapshot::encode_file(self.config_hash(), &[])[..vetro_snapshot::HEADER_LEN],
-        );
-        head[20..28].copy_from_slice(&(payload.len() as u64).to_le_bytes());
-        head[28..36].copy_from_slice(&vetro_snapshot::hash64(payload).to_le_bytes());
-        file
     }
 
     /// Porta la macchina nello stato di `bytes` (da [`Machine::save`]).
@@ -356,6 +447,52 @@ pub(super) mod tests {
             run_to(&mut m, from, 5_000, &mut out);
             step_until(&mut m, &mut out, 20_000, pred);
             check_cut(&m, out, &r, what);
+        }
+    }
+
+    /// Il salvataggio a pezzi (`save_stream`, per il browser) dà lo stesso
+    /// file di `save`: intestazione più i pezzi nell'ordine dati, anche con
+    /// la RAM sporca oltre il MiB di un pezzo e con pezzi che spezzano le
+    /// parole dell'hash.
+    #[test]
+    fn salvataggio_a_pezzi_uguale_al_file() {
+        let mut m = probe();
+        run_to(&mut m, 77_777, 5_000, &mut Vec::new());
+        assert_eq!(m.save_stream(0, &mut |_| {}).as_slice(), &m.save()[..vetro_snapshot::HEADER_LEN]);
+        // Una macchina con più RAM e pagine non comprimibili sparse: più pezzi da 1 MiB.
+        let m = Machine::with_devices(&MachineConfig { ram_size: 8 << 20, ..cfg() }, &Devices::none());
+        let mut k = 12345u32;
+        for p in 0..400u64 {
+            let page: Vec<u8> = (0..4096)
+                .map(|_| {
+                    k ^= k << 13;
+                    k ^= k >> 17;
+                    k ^= k << 5;
+                    k as u8
+                })
+                .collect();
+            assert!(m.board.borrow_mut().ram.write(vetro_platform::map::RAM_BASE + 0x8_0000 + p * 4096 * 3, &page));
+        }
+        let file = m.save();
+        for reserve in [0, 1 << 22] {
+            let mut body = Vec::new();
+            let mut pieces = 0;
+            let head = m.save_stream(reserve, &mut |c| {
+                pieces += 1;
+                body.extend_from_slice(c)
+            });
+            assert!(pieces > 3, "{pieces} pezzi");
+            assert_eq!(head.as_slice(), &file[..vetro_snapshot::HEADER_LEN]);
+            assert!(body == file[vetro_snapshot::HEADER_LEN..], "contenuto a pezzi diverso");
+        }
+        // L'hash a pezzi con pezzi di lunghezze qualsiasi.
+        let data: Vec<u8> = (0..1000u32).map(|i| (i * 7 + 3) as u8).collect();
+        for cut in [0, 1, 3, 7, 8, 9, 500, 999] {
+            let mut h = Hash64::new(data.len() as u64);
+            for part in [&data[..cut], &data[cut..cut.max(cut + 5).min(1000)], &data[cut.max(cut + 5).min(1000)..]] {
+                h.update(part);
+            }
+            assert_eq!(h.finish(), vetro_snapshot::hash64(&data), "taglio a {cut}");
         }
     }
 

@@ -235,19 +235,18 @@ async function saveSnapshot(why) {
     why,
   };
   if (android) meta.progress = android.progress.events;
-  // I byte restano nella memoria del modulo e vanno in OPFS da lì: con
-  // Android sono centinaia di MiB (ADR 0028).
+  // A pezzi, direttamente in OPFS: con Android sono centinaia di MiB, che
+  // interi non starebbero nella memoria del modulo (ADR 0028).
   const t0 = performance.now();
-  let saveMs = 0;
-  let size = 0;
+  let writeMs = 0;
   const memory = m.memoryBytes;
-  await m.snapshotSaveWith(async (view) => {
-    saveMs = performance.now() - t0;
-    size = view.length;
-    await store.save(snapKey, meta, view);
-  });
+  const size = await store.saveStream(snapKey, meta, (write) => m.snapshotSaveTo((b, at) => {
+    const tw = performance.now();
+    write(b, at);
+    writeMs += performance.now() - tw;
+  }));
+  const saveMs = performance.now() - t0 - writeMs;
   lastSnapshot = meta;
-  const writeMs = performance.now() - t0 - saveMs;
   post({ type: 'snapshot', why, steps: Number(m.steps), size, saveMs, writeMs, generations: meta.generations, memory: Math.max(memory, m.memoryBytes) });
 }
 

@@ -525,6 +525,14 @@ impl Vm {
         self.m.save()
     }
 
+    /// Snapshot a pezzi ([`Machine::save_stream`]): il contenuto va a
+    /// `sink`, l'intestazione è il risultato. Il buffer della parte prima
+    /// della RAM si dimensiona sul copy-on-write dei dischi.
+    pub fn save_state_stream(&mut self, sink: &mut dyn FnMut(&[u8])) -> [u8; vetro_machine::vetro_snapshot::HEADER_LEN] {
+        let cow: usize = (0..self.disks.len() as u32).map(|i| self.disk_dirty_clusters(i)).sum();
+        self.m.save_stream(cow * (4096 + 13) + (16 << 20), sink)
+    }
+
     /// Ripristina uno snapshot su questa macchina, che dev'essere
     /// configurata come quella salvata (stessi dispositivi e dischi, già
     /// aggiunti con gli stessi parametri). Il display riceve subito
@@ -594,6 +602,8 @@ mod host {
     unsafe extern "C" {
         /// Messaggio UTF-8 di un panic, subito prima della trappola.
         pub fn panic(ptr: *const u8, len: usize);
+        /// Un pezzo di uno snapshot di `vetro_snapshot_save_stream`.
+        pub fn snapshot_write(ptr: *const u8, len: usize);
     }
 }
 
@@ -1210,6 +1220,39 @@ pub unsafe extern "C" fn vetro_snapshot_save(vm: *mut Vm) -> usize {
     vm.snapshot.len()
 }
 
+/// Snapshot a pezzi (ABI 12, ADR 0028), per gli snapshot che non stanno
+/// interi nella memoria del modulo (Android): il contenuto va al JS con
+/// l'import `vetro_host.snapshot_write(ptr, len)`, un pezzo alla volta e in
+/// ordine (da scrivere dopo l'intestazione, all'offset
+/// `vetro_snapshot::HEADER_LEN`); l'intestazione resta nel buffer di
+/// [`vetro_snapshot_ptr`]. Restituisce la lunghezza del file intero. Sul
+/// target nativo (test) i pezzi finiscono nel buffer dopo l'intestazione.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_snapshot_save_stream(vm: *mut Vm) -> u64 {
+    // SAFETY: `vm` viene da `vetro_machine_new`.
+    let vm = unsafe { &mut *vm };
+    let mut total = vetro_machine::vetro_snapshot::HEADER_LEN as u64;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let head = vm.save_state_stream(&mut |c| {
+            total += c.len() as u64;
+            // SAFETY: import di `vetro_host`, legge `c` durante la chiamata.
+            unsafe { host::snapshot_write(c.as_ptr(), c.len()) };
+        });
+        vm.snapshot = head.to_vec();
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let mut body = Vec::new();
+        let head = vm.save_state_stream(&mut |c| {
+            total += c.len() as u64;
+            body.extend_from_slice(c);
+        });
+        vm.snapshot = [head.as_slice(), &body].concat();
+    }
+    total
+}
+
 /// I byte dell'ultimo [`vetro_snapshot_save`] (nullo se non ce n'è).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_snapshot_ptr(vm: *const Vm) -> *const u8 {
@@ -1539,6 +1582,11 @@ mod tests {
             let snap = bytes(vetro_snapshot_ptr(a), n).to_vec();
             vetro_snapshot_clear(a);
             assert!(vetro_snapshot_ptr(a).is_null());
+            // A pezzi (ABI 12): lo stesso file.
+            let total = vetro_snapshot_save_stream(a) as usize;
+            assert_eq!(total, n);
+            assert!(bytes(vetro_snapshot_ptr(a), total) == snap.as_slice(), "snapshot a pezzi diverso");
+            vetro_snapshot_clear(a);
 
             let b = new();
             assert_eq!(vetro_snapshot_restore(b, snap.as_ptr(), snap.len()), restore::OK);

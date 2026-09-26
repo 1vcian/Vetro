@@ -278,6 +278,36 @@ export class SnapshotStore {
     }
   }
 
+  /**
+   * Come `save`, con i byte prodotti a pezzi: `produce(write)` chiama
+   * `write(bytes, offset)` per ogni pezzo (in modo sincrono) e restituisce la
+   * lunghezza totale (vedi `Machine.snapshotSaveTo`).
+   */
+  async saveStream(key, meta, produce) {
+    await this.#remove(`${key}.json`);
+    let size;
+    if (this.#mem) {
+      const parts = [];
+      size = produce((b, at) => parts.push([at, b.slice()]));
+      const all = new Uint8Array(size);
+      for (const [at, b] of parts) all.set(b, at);
+      this.#mem.set(`${key}.snap`, all);
+    } else {
+      const h = await opfsFile(this.#dir, `${key}.snap`);
+      try {
+        h.truncate(0);
+        size = produce((b, at) => {
+          if (h.write(b, { at }) !== b.length) throw new Error('snapshot: scrittura corta in OPFS');
+        });
+        h.flush();
+      } finally {
+        h.close();
+      }
+    }
+    await this.#write(`${key}.json`, new TextEncoder().encode(JSON.stringify({ ...meta, size })));
+    return size;
+  }
+
   /** Salva i byte, poi i metadati (con `size`). */
   async save(key, meta, bytes) {
     await this.#remove(`${key}.json`);

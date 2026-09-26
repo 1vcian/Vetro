@@ -22,7 +22,7 @@
 // quello dell'app (blu), un tocco sul touchscreen lo fa diventare arancione.
 
 import { open, stat, writeFile } from 'node:fs/promises';
-import { existsSync, readFileSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { DEV } from '../../web/node/vetro.mjs';
 import { AdbClient } from '../../web/node/adb.mjs';
@@ -148,10 +148,11 @@ async function main() {
       saved = true;
       report('prima dello snapshot');
       const ts = performance.now();
-      const snap = m.snapshotSave();
+      const fh = openSync(savePath, 'w');
+      const size = m.snapshotSaveTo((b, at) => writeSync(fh, b, 0, b.length, at));
+      closeSync(fh);
       const saveMs = performance.now() - ts;
-      await writeFile(savePath, snap);
-      console.log(`snapshot: ${mib(snap.length)} MiB (${snap.length} byte) in ${saveMs.toFixed(0)} ms, a ${m.steps} istruzioni`);
+      console.log(`snapshot: ${mib(size)} MiB (${size} byte) in ${saveMs.toFixed(0)} ms (a pezzi, scrittura compresa), a ${m.steps} istruzioni, memoria del modulo ${mib(m.memoryBytes)} MiB`);
       report('dopo lo snapshot');
     }
     if (until === 'boot' && progress.phase === 'booted') break;

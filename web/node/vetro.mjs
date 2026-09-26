@@ -41,6 +41,10 @@ export const INOTIFY = {
 
 const utf8 = new TextDecoder();
 const toUtf8 = new TextEncoder();
+/** Byte dell'intestazione di uno snapshot (vetro_snapshot::HEADER_LEN). */
+export const SNAPSHOT_HEADER_LEN = 36;
+/** Dove vanno i pezzi di vetro_snapshot_save_stream (import vetro_host.snapshot_write). */
+let snapshotSink = null;
 
 /**
  * Byte di un percorso del guest da una stringa in *surrogateescape* (ADR
@@ -189,6 +193,10 @@ export async function instantiate(wasmBytes) {
       panic: (ptr, len) => {
         const msg = utf8.decode(new Uint8Array(exports.memory.buffer, ptr >>> 0, len));
         console.error(`vetro-wasm: panic: ${msg}`);
+      },
+      snapshot_write: (ptr, len) => {
+        if (!snapshotSink) throw new Error('vetro_host.snapshot_write fuori da Machine.snapshotSaveTo');
+        snapshotSink(ptr >>> 0, len >>> 0);
       },
     },
     vetro_jit: jit.imports(),
@@ -450,20 +458,31 @@ export class Machine {
   }
 
   /**
-   * Snapshot senza copiarlo nel JS: `use(view)` riceve la vista sui byte
-   * nella memoria del modulo (da non usare dopo il ritorno) e può scriverli
-   * altrove (OPFS); restituisce quello che restituisce `use`. Con Android lo
-   * snapshot è di centinaia di MiB: una copia in più conta (ADR 0028).
+   * Snapshot a pezzi (ABI 12, ADR 0028), senza tenerlo intero né nella
+   * memoria del modulo né nel JS: `write(bytes, offset)` (sincrona: si
+   * chiama da dentro vetro-wasm) riceve i pezzi del file in ordine, poi
+   * l'intestazione a offset 0; `bytes` è una vista da non tenere dopo il
+   * ritorno. Restituisce la lunghezza del file. Con Android lo snapshot è di
+   * centinaia di MiB e intero non starebbe nei 4 GiB di wasm32.
    */
-  async snapshotSaveWith(use) {
+  snapshotSaveTo(write) {
     const x = this.#x;
-    const n = x.vetro_snapshot_save(this.#vm) >>> 0;
-    const ptr = x.vetro_snapshot_ptr(this.#vm) >>> 0;
+    let at = SNAPSHOT_HEADER_LEN;
+    snapshotSink = (ptr, len) => {
+      write(new Uint8Array(x.memory.buffer, ptr, len), at);
+      at += len;
+    };
+    let total;
     try {
-      return await use(new Uint8Array(x.memory.buffer, ptr, n));
+      total = Number(x.vetro_snapshot_save_stream(this.#vm));
     } finally {
-      x.vetro_snapshot_clear(this.#vm);
+      snapshotSink = null;
     }
+    const head = new Uint8Array(x.memory.buffer, x.vetro_snapshot_ptr(this.#vm) >>> 0, SNAPSHOT_HEADER_LEN).slice();
+    x.vetro_snapshot_clear(this.#vm);
+    write(head, 0);
+    if (at !== total) throw new Error(`snapshot a pezzi: ${at} byte invece di ${total}`);
+    return total;
   }
 
   /**
