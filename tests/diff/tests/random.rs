@@ -14,7 +14,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use vetro_diff::harness::{Program, compare, run_qemu, run_vetro, run_vetro_jit};
 use vetro_diff::qemu;
-use vetro_diff::random::{Case, generate_focused, generate_fp_focused, generate_with};
+use vetro_diff::random::{Case, generate_focused, generate_fp_fast, generate_fp_focused, generate_with};
 
 const BODY_LEN: usize = 48;
 
@@ -49,6 +49,19 @@ fn random_simd_programs_match_qemu() {
 #[test]
 fn random_fp_focused_match_qemu() {
     run_with("random_fp_focused_match_qemu", "fp-", env_u64("VETRO_DIFF_FP_CASES", 600), generate_fp_focused);
+}
+
+/// Programmi brevi di virgola mobile nelle condizioni dei percorsi veloci
+/// del JIT (valori normali, FPCR a zero, IXC a 1 metà delle volte; ADR
+/// 0026): JIT, interprete e QEMU identici.
+#[test]
+fn random_fp_fast_paths_match_qemu() {
+    run_with(
+        "random_fp_fast_paths_match_qemu",
+        "fpfast-",
+        env_u64("VETRO_DIFF_FP_CASES", 600),
+        generate_fp_fast,
+    );
 }
 
 /// Programmi brevi di istruzioni crittografiche (AES, SHA1, SHA256).

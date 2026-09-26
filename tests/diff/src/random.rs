@@ -676,6 +676,22 @@ pub fn generate_focused(seed: u64, pick: impl Fn(&str) -> bool) -> Case {
     Case { seed, program, undefined_tail: None }
 }
 
+/// Programma breve di istruzioni FP (come [`generate_fp_focused`]) su
+/// valori per lo più normali, con FPCR quasi sempre a zero e FPSR.IXC a 1
+/// metà delle volte: le condizioni dei percorsi veloci del JIT (ADR 0026),
+/// che così si confrontano con QEMU e non solo con l'interprete.
+pub fn generate_fp_fast(seed: u64) -> Case {
+    let mut case = generate_fp_focused(seed ^ 0x0fa5_7000_0000_0000);
+    let mut rng = Rng::new(seed ^ 0xfa57_0000_0000_0000);
+    for v in case.program.v.iter_mut() {
+        *v = rng.fp_vector();
+    }
+    case.program.fpcr = if rng.chance(3, 4) { 0 } else { (rng.below(32) as u32) << 22 };
+    case.program.fpsr = if rng.chance(1, 2) { 0x10 } else { 0 };
+    case.seed = seed;
+    case
+}
+
 /// Come [`generate`], con le classi SIMD/FP se `simd`.
 pub fn generate_with(seed: u64, body_len: usize, simd: bool) -> Case {
     let mut rng = Rng::new(seed);
