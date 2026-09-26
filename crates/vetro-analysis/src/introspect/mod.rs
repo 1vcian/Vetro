@@ -13,20 +13,28 @@
 //! - [`linux`]: processi, thread, mappe, file aperti, page cache;
 //! - [`elf`]: simboli dello spazio utente (file o memoria);
 //! - [`strace`]: syscall tracciate e decodificate;
-//! - [`binder`]: comandi e transazioni di `BINDER_WRITE_READ`.
+//! - [`binder`]: comandi e transazioni di `BINDER_WRITE_READ`;
+//! - [`parcel`], [`aidl`], [`ipc`], [`privacy`]: decoder Binder di M8
+//!   (intestazione del Parcel, nomi dei metodi AIDL dell'immagine, chiamate
+//!   con mittente e destinatario, accessi sensibili).
 //!
 //! Interfaccia: `docs/specs/introspection.md`.
 
+pub mod aidl;
 pub mod binder;
 pub mod btf;
 pub mod elf;
+pub mod ipc;
 pub mod kallsyms;
 pub mod layout;
 pub mod linux;
 pub mod mem;
+pub mod parcel;
+pub mod privacy;
 pub mod strace;
 
 pub use btf::Btf;
+pub use ipc::{BinderCall, BinderLog, Party};
 pub use kallsyms::{KSym, Symbols};
 pub use layout::Layout;
 pub use linux::{CpuRegs, Kernel, Linux, OpenFile, Task, Vma};

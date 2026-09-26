@@ -35,6 +35,7 @@
 //! passo del livello user mode, ADR 0010). Una WFI senza interrupt pronti
 //! salta direttamente alla prossima scadenza del timer.
 
+pub mod analysis;
 pub mod android;
 mod board;
 pub mod boot;

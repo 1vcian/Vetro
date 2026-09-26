@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]
-//! vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--save-on=TESTO:FILE [--save-delay=S] [--exit-after-save]] [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=ISTRUZIONE [--dump=VA:BYTE]]] [--vsock] [--files-ls=PERCORSO]... [--files-cat=PERCORSO]... [--files-put=PERCORSO:FILE]...
+//! vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--save-on=TESTO:FILE [--save-delay=S] [--exit-after-save]] [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=ISTRUZIONE [--dump=VA:BYTE]]] [--vsock] [--files-ls=PERCORSO]... [--files-cat=PERCORSO]... [--files-put=PERCORSO:FILE]... [--kernel-profile=FILE [--system-map=FILE] [--kernel-btf=FILE]] [--binder-log=FILE]
 //! ```
 //!
 //! `boot` avvia la macchina virt (M3) con la console PL011 su stdin/stdout.
@@ -103,7 +103,7 @@ fn usage() -> ExitCode {
         "uso: vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]"
     );
     eprintln!(
-        "     vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--save-on=TESTO:FILE [--save-delay=S] [--exit-after-save]] [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=ISTRUZIONE [--dump=VA:BYTE]]] [--vsock] [--files-ls=PERCORSO]... [--files-cat=PERCORSO]... [--files-put=PERCORSO:FILE]..."
+        "     vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--save-on=TESTO:FILE [--save-delay=S] [--exit-after-save]] [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=ISTRUZIONE [--dump=VA:BYTE]]] [--vsock] [--files-ls=PERCORSO]... [--files-cat=PERCORSO]... [--files-put=PERCORSO:FILE]... [--kernel-profile=FILE [--system-map=FILE] [--kernel-btf=FILE]] [--binder-log=FILE]"
     );
     ExitCode::from(2)
 }
@@ -219,7 +219,11 @@ fn boot(args: &[String]) -> ExitCode {
     let mut capture = vetro_cli::netcap::NetCapture::default();
     let mut vsock = false;
     let mut file_cmds: Vec<FileCmd> = Vec::new();
+    let mut analysis = vetro_cli::analysis::AnalysisOptions::default();
     for a in &join_values(&vetro_cli::netcap::join_values(args)) {
+        if analysis.parse(a) {
+            continue;
+        }
         match a.as_str() {
             "--recovery" => {
                 recovery = true;
@@ -543,6 +547,10 @@ fn boot(args: &[String]) -> ExitCode {
         eprintln!("vetro: --pcap, --har e --net-requests richiedono la rete (--net)");
         return ExitCode::from(2);
     }
+    if let Err(e) = analysis.install(&mut m, boot_img.as_deref().or(kernel.as_deref())) {
+        eprintln!("vetro: {e}");
+        return ExitCode::from(2);
+    }
     if let Some(l) = &log {
         let path = replay.as_deref().unwrap_or_default();
         if let Some(n) = goto {
@@ -808,6 +816,13 @@ fn boot(args: &[String]) -> ExitCode {
             }
         }
     };
+    match analysis.finish(&mut m) {
+        Ok(lines) => lines.iter().for_each(|l| eprintln!("vetro: {l}")),
+        Err(e) => {
+            eprintln!("vetro: {e}");
+            return ExitCode::from(2);
+        }
+    }
     if capture.wanted() {
         capture.collect(&mut m);
         match capture.finish() {

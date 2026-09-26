@@ -112,13 +112,7 @@ impl SyscallRecord {
         match self.nr {
             200 | 203 => self.sockaddr = read_sockaddr(user, a[1], a[2]),
             206 if a[4] != 0 => self.sockaddr = read_sockaddr(user, a[4], a[5]),
-            29 if a[1] == BINDER_WRITE_READ => {
-                if let Some(bwr) = read_bwr(user, a[2]) {
-                    let start = bwr.write_buffer.wrapping_add(bwr.write_consumed);
-                    let len = bwr.write_size.saturating_sub(bwr.write_consumed);
-                    self.binder = binder_stream(user, start, len);
-                }
-            }
+            29 if a[1] == BINDER_WRITE_READ => self.binder = binder_sent(user, a[2]),
             _ => {}
         }
     }
@@ -130,11 +124,7 @@ impl SyscallRecord {
         match self.nr {
             // read, pread64, recvfrom: i dati letti.
             63 | 67 | 207 if ret > 0 => self.data = read_n(user, a[1], ret as u64),
-            29 if a[1] == BINDER_WRITE_READ && ret == 0 => {
-                if let Some(bwr) = read_bwr(user, a[2]) {
-                    self.binder.extend(binder_stream(user, bwr.read_buffer, bwr.read_consumed));
-                }
-            }
+            29 if a[1] == BINDER_WRITE_READ && ret == 0 => self.binder.extend(binder_received(user, a[2])),
             _ => {}
         }
     }
@@ -179,6 +169,21 @@ pub fn read_cstr(user: &impl VirtRead, va: u64, max: usize) -> Option<Vec<u8>> {
         at = at.wrapping_add(k as u64);
     }
     Some(out)
+}
+
+/// Le transazioni inviate da `ioctl(fd, BINDER_WRITE_READ, arg)` (da
+/// leggere all'ingresso).
+pub fn binder_sent(user: &impl VirtRead, arg: u64) -> Vec<Transaction> {
+    let Some(bwr) = read_bwr(user, arg) else { return Vec::new() };
+    let start = bwr.write_buffer.wrapping_add(bwr.write_consumed);
+    binder_stream(user, start, bwr.write_size.saturating_sub(bwr.write_consumed))
+}
+
+/// Le transazioni ricevute da `ioctl(fd, BINDER_WRITE_READ, arg)` (da
+/// leggere all'uscita riuscita).
+pub fn binder_received(user: &impl VirtRead, arg: u64) -> Vec<Transaction> {
+    let Some(bwr) = read_bwr(user, arg) else { return Vec::new() };
+    binder_stream(user, bwr.read_buffer, bwr.read_consumed)
 }
 
 fn read_bwr(user: &impl VirtRead, va: u64) -> Option<WriteRead> {
