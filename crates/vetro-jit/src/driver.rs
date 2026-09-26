@@ -27,6 +27,16 @@
 //!   ricompila nulla.
 //! - Un blocco si compila dopo `hot_threshold` esecuzioni del suo inizio
 //!   con l'interprete (0 = subito, per i test di parità).
+//!
+//! # Concatenamento (ADR 0026)
+//! Come in modalità sistema: le regioni stanno nella tabella del motore
+//! (`Engine::place`) e il dispatcher (`translate::dispatcher`) passa
+//! dall'una all'altra con la cache dei salti in `JitState` (`area::JC`),
+//! senza tornare all'host. Una voce vale per il contesto dello spazio
+//! d'indirizzamento (`Space::ctx`), che cambia a ogni invalidazione delle
+//! sue pagine: le voci di uno spazio restano buone quando lo scheduler ci
+//! torna. Le voci mancanti le scrive l'host (`Host::resolve`) se la regione
+//! è già compilata.
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
@@ -34,9 +44,9 @@ use std::rc::Rc;
 
 use vetro_cpu::{Cpu, Exception, Memory, UserMemory};
 
-use crate::engine::{Engine, Host};
+use crate::engine::{Engine, Host, TABLE_SIZE};
 use crate::profile::Profile;
-use crate::state::{self, JitState, off};
+use crate::state::{self, JitState, area, off};
 use crate::translate::{self, MAX_REGION};
 use crate::wasm::MemoryImport;
 use crate::{FAULT, NEXT, STOP, SVC};
@@ -85,6 +95,8 @@ pub struct JitStats {
     pub stops: u64,
     /// Azzeramenti del motore (tutto il codice compilato scartato).
     pub resets: u64,
+    /// Voci della cache dei salti chieste dal dispatcher all'host.
+    pub resolves: u64,
 }
 
 /// Esito della ricerca di un blocco.
@@ -125,12 +137,23 @@ type FastMap<V> = HashMap<u64, V, BuildHasherDefault<U64Hasher>>;
 
 /// Un ingresso di una regione compilata.
 struct Compiled<M> {
-    module: Rc<M>,
-    index: u32,
+    _module: Rc<M>,
+    /// Voce della tabella del motore.
+    slot: u32,
     /// Passi massimi del blocco base d'ingresso.
     max_steps: u64,
     /// Indice del blocco base d'ingresso (`JitState::entry`).
     bb: u32,
+}
+
+/// Voce della cache dei salti (`area::JC`): `pc` → regione, valida per
+/// `ctx` (formato di `docs/specs/jit.md`).
+fn install_jc<M>(mem: &mut [u8], at: usize, pc: u64, ctx: u32, c: &Compiled<M>) {
+    let e = at + area::JC as usize + ((pc >> 2) & (area::JC_ENTRIES as u64 - 1)) as usize * 16;
+    mem[e..e + 8].copy_from_slice(&pc.to_le_bytes());
+    mem[e + 8..e + 12].copy_from_slice(&ctx.to_le_bytes());
+    let w = c.bb << 26 | c.slot << 8 | c.max_steps as u32;
+    mem[e + 12..e + 16].copy_from_slice(&w.to_le_bytes());
 }
 
 /// Gli ingressi di una regione compilata; il primo è il suo inizio.
@@ -149,11 +172,13 @@ struct Space<M> {
     /// Pagina → inizi dei blocchi compilati che vi stanno.
     pages: FastMap<Vec<u64>>,
     last_use: u64,
+    /// Contesto delle voci della cache dei salti di questo spazio.
+    ctx: u32,
 }
 
 impl<M> Space<M> {
-    fn new() -> Self {
-        Space { blocks: FastMap::default(), pages: FastMap::default(), last_use: 0 }
+    fn new(ctx: u32) -> Self {
+        Space { blocks: FastMap::default(), pages: FastMap::default(), last_use: 0, ctx }
     }
 
     fn invalidate(&mut self, page: u64) -> bool {
@@ -187,16 +212,26 @@ pub struct JitCpu<E: Engine> {
     pub stats: JitStats,
     /// Istruzioni dell'interprete per classe, se `cfg.profile`.
     pub profile: Option<Profile>,
+    /// Il dispatcher (compilato alla prima corsa e dopo ogni azzeramento).
+    dispatcher: Option<E::Module>,
+    /// Prossima voce libera della tabella del motore.
+    next_slot: u32,
+    /// Ultimo contesto assegnato a uno spazio.
+    ctx_seq: u32,
 }
 
 /// `Host` sopra la memoria utente.
-struct MemHost<'a> {
+struct MemHost<'a, M> {
     mem: &'a mut UserMemory,
     /// I registri SIMD/FP della `Cpu` (per `vsync`).
     v: &'a [u128; 32],
+    /// Lo spazio della corsa (per `resolve`) e l'indirizzo di `JitState`.
+    space: &'a Space<M>,
+    at: usize,
+    resolves: &'a mut u64,
 }
 
-impl Host for MemHost<'_> {
+impl<M> Host for MemHost<'_, M> {
     #[inline]
     fn ld(&mut self, _mem: &mut [u8], va: u64, size: u32) -> Result<u64, ()> {
         let mut b = [0u8; 8];
@@ -213,12 +248,30 @@ impl Host for MemHost<'_> {
     fn vsync(&mut self, mem: &mut [u8], state: u32) {
         state::vsync_in(mem, state as usize, self.v);
     }
+
+    /// Voce mancante della cache dei salti: se la regione di `pc` è già
+    /// compilata in questo spazio, la scrive col contesto della corsa.
+    fn resolve(&mut self, mem: &mut [u8]) -> bool {
+        let pc = state::read_u64(mem, self.at, off::PC);
+        *self.resolves += 1;
+        match self.space.blocks.get(&pc) {
+            Some(Entry::Hot(c)) => {
+                let ctx = state::read_u32(mem, self.at, off::CTX);
+                install_jc(mem, self.at, pc, ctx, c);
+                true
+            }
+            _ => false,
+        }
+    }
 }
 
 impl<E: Engine> JitCpu<E> {
     pub fn new(mut engine: E, cfg: JitConfig) -> Self {
         assert!(cfg.state_addr.is_multiple_of(16), "JitState va allineato a 16 byte");
+        engine.reserve(cfg.state_addr as usize + area::SIZE as usize);
         engine.runtime(&translate::runtime(cfg.memory)).expect("runtime del JIT rifiutato dal motore");
+        let at = cfg.state_addr as usize;
+        engine.memory()[at..at + area::SIZE as usize].fill(0);
         JitCpu {
             engine,
             cfg,
@@ -230,6 +283,9 @@ impl<E: Engine> JitCpu<E> {
                 crate::helper::profile(true);
                 Profile::default()
             }),
+            dispatcher: None,
+            next_slot: 0,
+            ctx_seq: 0,
         }
     }
 
@@ -243,13 +299,42 @@ impl<E: Engine> JitCpu<E> {
             return;
         }
         let dirty = mem.take_code_dirty();
+        let mut any = false;
         if let Some(s) = self.spaces.get_mut(&space) {
             for p in dirty {
                 if s.invalidate(p) {
                     self.stats.invalidated_pages += 1;
+                    any = true;
                 }
             }
         }
+        if any {
+            // Le voci della cache dei salti di questo spazio non valgono più.
+            let ctx = self.next_ctx();
+            if let Some(s) = self.spaces.get_mut(&space) {
+                s.ctx = ctx;
+            }
+        }
+    }
+
+    /// Contesto nuovo per le voci della cache dei salti. Allo scadere dei
+    /// valori la cache si svuota e si riparte (gli spazi prendono contesti
+    /// nuovi).
+    fn next_ctx(&mut self) -> u32 {
+        if self.ctx_seq == u32::MAX {
+            let at = self.cfg.state_addr as usize;
+            let jc = at + area::JC as usize;
+            self.engine.memory()[jc..jc + area::JC_ENTRIES as usize * 16].fill(0);
+            self.ctx_seq = 0;
+            let ids: Vec<u64> = self.spaces.keys().copied().collect();
+            for id in ids {
+                self.ctx_seq += 1;
+                let c = self.ctx_seq;
+                self.spaces.get_mut(&id).expect("spazio").ctx = c;
+            }
+        }
+        self.ctx_seq += 1;
+        self.ctx_seq
     }
 
     fn space(&mut self, id: u64) -> &mut Space<E::Module> {
@@ -261,7 +346,11 @@ impl<E: Engine> JitCpu<E> {
             }
         }
         let tick = self.tick;
-        let s = self.spaces.entry(id).or_insert_with(Space::new);
+        if !self.spaces.contains_key(&id) {
+            let ctx = self.next_ctx();
+            self.spaces.insert(id, Space::new(ctx));
+        }
+        let s = self.spaces.get_mut(&id).expect("appena inserito");
         s.last_use = tick;
         s
     }
@@ -304,21 +393,37 @@ impl<E: Engine> JitCpu<E> {
             if let Some(c) = &hot
                 && c.max_steps <= budget - done
             {
+                if self.dispatcher.is_none() {
+                    if in_jit {
+                        JitState::load(self.engine.memory(), at).to_cpu(cpu);
+                        in_jit = false;
+                    }
+                    self.compile_dispatcher();
+                    // La compilazione può aver azzerato il motore (e gli
+                    // spazi): si cerca di nuovo.
+                    self.space(id);
+                    continue;
+                }
+                let ctx = self.spaces.get(&id).expect("spazio della corsa").ctx;
                 let m = self.engine.memory();
+                install_jc(m, at, pc, ctx, c);
                 if !in_jit {
                     let mut s = JitState::from_cpu(cpu);
                     s.limit = budget - done;
+                    s.ctx = ctx;
                     s.store(m, at);
                     in_jit = true;
                 } else {
                     state::write_u64(m, at, off::STEPS, 0);
                     state::write_u64(m, at, off::LIMIT, budget - done);
+                    state::write_u32(m, at, off::CTX, ctx);
                     state::write_u32(m, at, off::EXIT_DETAIL, 0);
                 }
-                state::write_u32(m, at, off::ENTRY, c.bb);
                 let code = {
-                    let mut host = MemHost { mem, v: &cpu.v };
-                    self.engine.run(&c.module, c.index, self.cfg.state_addr, &mut host)
+                    let space = self.spaces.get(&id).expect("spazio della corsa");
+                    let mut host = MemHost { mem, v: &cpu.v, space, at, resolves: &mut self.stats.resolves };
+                    let d = self.dispatcher.as_ref().expect("dispatcher compilato");
+                    self.engine.run(d, 0, self.cfg.state_addr, &mut host)
                 };
                 let m = self.engine.memory();
                 let steps = state::read_u64(m, at, off::STEPS);
@@ -386,8 +491,26 @@ impl<E: Engine> JitCpu<E> {
     fn reset(&mut self) {
         self.spaces.clear();
         self.compiled.clear();
+        self.dispatcher = None;
+        self.next_slot = 0;
         self.engine.reset();
+        let at = self.cfg.state_addr as usize;
+        self.engine.reserve(at + area::SIZE as usize);
+        self.engine.memory()[at..at + area::SIZE as usize].fill(0);
+        self.ctx_seq = 0;
         self.stats.resets += 1;
+    }
+
+    fn compile_dispatcher(&mut self) {
+        let wasm = translate::dispatcher(self.cfg.memory);
+        let d = match self.engine.compile(&wasm) {
+            Ok(d) => d,
+            Err(_) => {
+                self.reset();
+                self.engine.compile(&wasm).expect("dispatcher del JIT rifiutato dal motore")
+            }
+        };
+        self.dispatcher = Some(d);
     }
 
     fn interp_step(&mut self, id: u64, cpu: &mut Cpu, mem: &mut UserMemory) -> Result<(), Exception> {
@@ -464,6 +587,9 @@ impl<E: Engine> JitCpu<E> {
             return Some(es.clone());
         }
         let wasm = translate::module(std::slice::from_ref(&block), self.cfg.memory);
+        if self.next_slot + 1 > TABLE_SIZE {
+            self.reset();
+        }
         let module = match self.engine.compile(&wasm) {
             Ok(m) => m,
             Err(_) => {
@@ -477,13 +603,17 @@ impl<E: Engine> JitCpu<E> {
             }
         };
         self.stats.compiled += 1;
+        // Nella tabella del dispatcher (dopo un eventuale azzeramento).
+        let slot = self.next_slot;
+        self.engine.place(&module, 1, slot);
+        self.next_slot += 1;
         let module = Rc::new(module);
         let first = block.entry_index();
         let mut es: Vec<(u64, Rc<Compiled<E::Module>>)> = block
             .entries()
             .into_iter()
             .map(|(epc, bb, max_steps)| {
-                (epc, Rc::new(Compiled { module: module.clone(), index: 0, max_steps, bb }))
+                (epc, Rc::new(Compiled { _module: module.clone(), slot, max_steps, bb }))
             })
             .collect();
         let at = es.iter().position(|e| e.1.bb == first).expect("ingresso della regione");

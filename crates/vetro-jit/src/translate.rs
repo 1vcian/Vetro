@@ -91,6 +91,9 @@ pub fn kind(insn: &Insn) -> Kind {
         | Insn::LdStPair { .. }
         | Insn::LoadAcquire { .. }
         | Insn::StoreRelease { .. }
+        // Esclusive col monitor in JitState (anche in modalità utente, ADR
+        // 0026).
+        | Insn::Exclusive { .. }
         | Insn::BCond { .. }
         | Insn::Cbz { .. }
         | Insn::Tbz { .. } => Linear,
@@ -210,7 +213,7 @@ pub fn kind_in(insn: &Insn, sys: Option<SysTarget>) -> Kind {
             // Trap di CPACR_EL1.FPEN: all'interprete.
             Insn::Simd(_) if !s.fp => return Kind::Unsupported,
             Insn::CacheMaint if s.el == 0 => return Kind::Unsupported,
-            Insn::Exclusive { .. } | Insn::DcZva { .. } => return Kind::Linear,
+            Insn::DcZva { .. } => return Kind::Linear,
             // DAIFSet/DAIFClr a EL1 (DAIFClr esce con YIELD).
             Insn::MsrImm { field: PstateField::DaifSet | PstateField::DaifClr, .. } if s.el == 1 => {
                 return Kind::Linear;

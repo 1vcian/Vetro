@@ -166,6 +166,10 @@ pub mod area {
 
 impl JitState {
     pub fn from_cpu(cpu: &Cpu) -> Self {
+        let (mon_valid, mon_bytes, mon_addr, mon_lo, mon_hi) = match cpu.monitor {
+            Some(m) => (1, m.bytes, m.addr, m.value as u64, (m.value >> 64) as u64),
+            None => (0, 0, 0, 0, 0),
+        };
         JitState {
             x: cpu.x,
             sp: cpu.sp,
@@ -173,6 +177,11 @@ impl JitState {
             nzcv: cpu.nzcv,
             fpcr: cpu.fpcr,
             fpsr: cpu.fpsr,
+            mon_addr,
+            mon_lo,
+            mon_hi,
+            mon_valid,
+            mon_bytes,
             ..Default::default()
         }
     }
@@ -184,6 +193,11 @@ impl JitState {
         cpu.sp = self.sp;
         cpu.pc = self.pc;
         cpu.fpsr = self.fpsr;
+        cpu.monitor = (self.mon_valid != 0).then_some(Monitor {
+            addr: self.mon_addr,
+            bytes: self.mon_bytes,
+            value: self.mon_lo as u128 | (self.mon_hi as u128) << 64,
+        });
         cpu.nzcv = lazy_nzcv(self.fk, self.fa, self.fb, self.fr, self.nzcv);
         if self.v_valid != 0 {
             for (d, s) in cpu.v.iter_mut().zip(&self.v) {
@@ -196,10 +210,6 @@ impl JitState {
     pub fn from_cpu_sys(cpu: &Cpu) -> Self {
         let s = &cpu.sys;
         let dzp = s.el == 0 && s.sctlr_el1 & sctlr::DZE == 0;
-        let (mon_valid, mon_bytes, mon_addr, mon_lo, mon_hi) = match cpu.monitor {
-            Some(m) => (1, m.bytes, m.addr, m.value as u64, (m.value >> 64) as u64),
-            None => (0, 0, 0, 0, 0),
-        };
         JitState {
             el: s.el as u32,
             tpidr_el0: cpu.tpidr_el0,
@@ -208,11 +218,6 @@ impl JitState {
             sp_el0: s.sp_el[0],
             tcr: s.tcr_el1,
             dczid: id::DCZID_BS | (dzp as u64) << 4,
-            mon_addr,
-            mon_lo,
-            mon_hi,
-            mon_valid,
-            mon_bytes,
             daif: s.daif,
             elr_el1: s.elr_el1,
             spsr_el1: s.spsr_el1,
@@ -236,11 +241,6 @@ impl JitState {
         if cpu.sys.el == 1 && cpu.sys.spsel {
             cpu.sys.sp_el[0] = self.sp_el0;
         }
-        cpu.monitor = (self.mon_valid != 0).then_some(Monitor {
-            addr: self.mon_addr,
-            bytes: self.mon_bytes,
-            value: self.mon_lo as u128 | (self.mon_hi as u128) << 64,
-        });
     }
 
     /// Scrive la struttura in `mem` a partire da `at` (little-endian, come

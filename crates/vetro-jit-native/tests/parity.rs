@@ -85,6 +85,14 @@ fn random_insn(rng: &mut Rng, simd: bool) -> u32 {
     }
 }
 
+/// Coppie esclusive (codifiche da tools/a64asm.sh): in modalità utente il
+/// JIT le traduce col monitor in `JitState` (ADR 0026).
+const EXCLUSIVE_PAIRS: [(u32, u32); 3] = [
+    (0xc85f7c20, 0xc8027c20), // ldxr x0, [x1] ; stxr w2, x0, [x1]
+    (0xc87f0c20, 0xc8220c20), // ldxp x0, x3, [x1] ; stxp w2, x0, x3, [x1]
+    (0x085f7c20, 0x48027c20), // ldxrb w0, [x1] ; stxrh w2, w0, [x1]
+];
+
 /// Programma casuale del seme `seed`; con `simd` tre istruzioni su quattro
 /// sono SIMD/FP (ADR 0026).
 fn setup_with(seed: u64, simd: bool) -> (Cpu, UserMemory) {
@@ -92,8 +100,20 @@ fn setup_with(seed: u64, simd: bool) -> (Cpu, UserMemory) {
     let mut mem = UserMemory::new();
     let mut code = vec![0u8; CODE_LEN];
     let off = (START - CODE) as usize;
-    for i in 0..PROG_LEN {
-        let w = random_insn(&mut rng, simd);
+    let mut prog = Vec::with_capacity(PROG_LEN);
+    while prog.len() < PROG_LEN {
+        if prog.len() + 3 <= PROG_LEN && rng.below(24) == 0 {
+            // LDXR, un'istruzione qualsiasi, STXR sulla stessa base.
+            let (ld, st) = EXCLUSIVE_PAIRS[rng.below(EXCLUSIVE_PAIRS.len() as u64) as usize];
+            let rn = [1, 5, 9][rng.below(3) as usize];
+            prog.push(with_field(ld, 5, 5, rn));
+            prog.push(random_insn(&mut rng, simd));
+            prog.push(with_field(st, 5, 5, rn));
+        } else {
+            prog.push(random_insn(&mut rng, simd));
+        }
+    }
+    for (i, w) in prog.iter().enumerate() {
         code[off + 4 * i..off + 4 * i + 4].copy_from_slice(&w.to_le_bytes());
     }
     // Codice scrivibile: gli store possono cadere sul programma.
@@ -357,6 +377,12 @@ impl Engine for Limited {
     fn memory(&mut self) -> &mut [u8] {
         self.inner.memory()
     }
+    fn place(&mut self, m: &NativeModule, count: u32, base: u32) {
+        self.inner.place(m, count, base)
+    }
+    fn reserve(&mut self, bytes: usize) {
+        self.inner.reserve(bytes)
+    }
     fn reset(&mut self) {
         self.used = 0;
         self.inner.reset();
@@ -529,4 +555,35 @@ fn q_a_cavallo_di_pagina_come_interprete() {
         assert!(dump(&mut mem_j) == dump(&mut mem_i), "memoria diversa: caso {x1:#x} {x3:#x} {x4:#x}");
         assert!(jit.stats.jit_steps > 0 || jit.stats.faults > 0);
     }
+}
+
+/// Concatenamento (ADR 0026): dopo che il kernel emulato riscrive la pagina
+/// di una regione, il dispatcher non deve più entrarci da una voce vecchia
+/// della cache dei salti (il contesto dello spazio cambia). A salta a B
+/// (altra pagina) e B ad A: la voce di A resta nella cache anche quando la
+/// corsa riparte da B.
+#[test]
+fn concatenamento_dopo_invalidazione() {
+    // Codifiche da tools/a64asm.sh.
+    const MOV1: u32 = 0xd2800020; // movz x0, #1
+    const MOV2: u32 = 0xd2800040; // movz x0, #2
+    const A_TO_B: u32 = 0x140003ff; // b .+0xffc
+    const B_TO_A: u32 = 0x17fffc00; // b .-0x1000
+    let mut code = vec![0u8; 0x2000];
+    code[0..4].copy_from_slice(&MOV1.to_le_bytes());
+    code[4..8].copy_from_slice(&A_TO_B.to_le_bytes());
+    code[0x1000..0x1004].copy_from_slice(&B_TO_A.to_le_bytes());
+    let mut mem = UserMemory::new();
+    mem.map(CODE, code, Perm::RWX).unwrap();
+    let mut cpu = Cpu::new();
+    cpu.pc = CODE + 0x1000;
+    let mut jit = JitCpu::new(NativeEngine::new(), JitConfig { hot_threshold: 0, ..JitConfig::default() });
+    assert_eq!(jit.run(&mut cpu, &mut mem, 100), (100, Ok(())));
+    assert_eq!(cpu.x[0], 1);
+    assert!(jit.stats.block_runs < 10, "le regioni si concatenano: {:?}", jit.stats);
+    mem.poke(CODE, &MOV2.to_le_bytes()).unwrap();
+    cpu.pc = CODE + 0x1000;
+    cpu.x[0] = 0;
+    assert_eq!(jit.run(&mut cpu, &mut mem, 100), (100, Ok(())));
+    assert_eq!(cpu.x[0], 2, "la regione vecchia di A non gira più");
 }
