@@ -51,9 +51,11 @@ fn with_field(w: u32, lo: u32, width: u32, v: i64) -> u32 {
 /// dei salti e dei load letterali riportati vicino.
 fn random_insn(rng: &mut Rng, simd: bool) -> u32 {
     if simd && rng.below(4) != 0 {
-        // Classi SIMD/FP (bit 27:25 = x111), anche i load/store.
+        // Classi SIMD/FP (bit 27:25 = x111) e, una volta su otto,
+        // load/store dei registri V (bit 27:25 = 110).
+        let class = if rng.below(8) == 0 { 6 } else { 7 };
         loop {
-            let w = (rng.next() as u32 & !(7 << 25)) | 7 << 25;
+            let w = (rng.next() as u32 & !(7 << 25)) | class << 25;
             if matches!(decode(w), Insn::Simd(_)) {
                 return w;
             }
@@ -124,10 +126,13 @@ fn setup_with(seed: u64, simd: bool) -> (Cpu, UserMemory) {
     cpu.pc = START;
     cpu.sp = DATA + DATA_LEN as u64 / 2;
     cpu.nzcv = (rng.below(16) as u32) << 28;
+    // Coi programmi SIMD più basi valide: i load/store non finiscano il
+    // programma al primo accesso.
+    let data_ptrs = if simd { 5 } else { 2 };
     for x in cpu.x.iter_mut() {
         *x = match rng.below(8) {
-            0..=2 => DATA + rng.below(DATA_LEN as u64 - 0x2000) + 0x1000,
-            3 => START + 4 * rng.below(PROG_LEN as u64),
+            k if k <= data_ptrs => DATA + rng.below(DATA_LEN as u64 - 0x2000) + 0x1000,
+            3 | 6 => START + 4 * rng.below(PROG_LEN as u64),
             4 => rng.below(64),
             5 => (rng.below(64) as i64 - 32) as u64,
             _ => rng.next(),

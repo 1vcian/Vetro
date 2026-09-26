@@ -103,11 +103,10 @@ pub fn kind(insn: &Insn) -> Kind {
         // SIMD (ADR 0024): load/store di registri V singoli e in coppia,
         // DUP/INS/UMOV/SMOV, MOVI/MVNI/ORR/BIC immediati.
         Insn::Simd(SimdInsn::Mem(VecMemInsn::Reg { .. } | VecMemInsn::Pair { .. })) => Linear,
-        // LD1/ST1 di uno o più registri interi, LD1R, LD1/ST1 di una corsia
-        // (ADR 0026); le strutture interlacciate (LD2..LD4) no.
-        Insn::Simd(SimdInsn::Mem(
-            VecMemInsn::Multi { selem: 1, .. } | VecMemInsn::Single { selem: 1, .. },
-        )) => Linear,
+        // LD1/ST1 di uno o più registri interi, LD1R, LD1/ST1 di una corsia,
+        // LD2..LD4/ST2..ST4 di strutture multiple (ADR 0026); le strutture
+        // singole interlacciate (LD2 di una corsia, LD2R...) no.
+        Insn::Simd(SimdInsn::Mem(VecMemInsn::Multi { .. } | VecMemInsn::Single { selem: 1, .. })) => Linear,
         // Tutte le istruzioni SIMD/FP senza memoria (ADR 0026): quelle
         // senza una forma in linea le esegue l'interprete dalla regione
         // (`env.simd`, [`crate::helper`]).

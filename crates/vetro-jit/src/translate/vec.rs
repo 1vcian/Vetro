@@ -711,6 +711,10 @@ impl Tx {
         }
         let mut store = false;
         match m {
+            VecMemInsn::Multi { load, q, selem, esize, rt, .. } if selem > 1 => {
+                store = !load;
+                self.vec_interleaved(load, q, selem as u32, esize as u32 / 8, rt, base, addr);
+            }
             VecMemInsn::Multi { load, q, rpt, rt, .. } => {
                 let bpr = if q { 16 } else { 8 };
                 store = !load;
@@ -803,6 +807,111 @@ impl Tx {
         }
         if store {
             self.stop_after(&[0]);
+        }
+    }
+
+    /// LD2..LD4/ST2..ST4 (strutture multiple, `selem` registri da `rt`,
+    /// elementi di `eb` byte): la memoria in blocchi da 16 byte (o 8), e i
+    /// registri ne sono le permutazioni (con Q = 0 metà registro): il byte
+    /// `j` dell'elemento `e` del registro `s` sta all'offset
+    /// `(e × selem + s) × eb + j`. Load: tutti gli accessi, poi i registri;
+    /// store: i blocchi in ordine, in `t32(0)` se uno chiede STOP.
+    #[allow(clippy::too_many_arguments)]
+    fn vec_interleaved(&mut self, load: bool, q: bool, selem: u32, eb: u32, rt: u8, base: u32, addr: u32) {
+        let bpr = if q { 16 } else { 8 };
+        let total = selem * bpr;
+        let chunks = total.div_ceil(16);
+        let chunk_l = |c: u32| L_V0 + 2 + c;
+        let reg = |s: u32| ((rt as u32 + s) % 32) as u8;
+        // Sorgente del byte `j` (0..16) di un risultato fatto di pezzi da 16
+        // byte: `src(j)` = (pezzo, byte nel pezzo), o None (byte da azzerare).
+        // Due livelli di shuffle: coppie di pezzi, poi le due coppie.
+        let gather =
+            |t: &mut Tx, piece: &dyn Fn(u32) -> u32, n: u32, src: &dyn Fn(usize) -> Option<(u32, u32)>| {
+                let pairs = n.div_ceil(2);
+                for p in 0..pairs {
+                    let (a, b) = (2 * p, (2 * p + 1).min(n - 1));
+                    t.f.local_get(piece(a)).local_get(piece(b));
+                    t.f.shuffle(core::array::from_fn(|j| match src(j) {
+                        Some((c, k)) if c / 2 == p => ((c % 2) * 16 + k) as u8,
+                        _ => 0,
+                    }));
+                }
+                if pairs == 2 {
+                    t.f.shuffle(core::array::from_fn(|j| match src(j) {
+                        Some((c, _)) if c / 2 == 1 => (16 + j) as u8,
+                        _ => j as u8,
+                    }));
+                }
+            };
+        if load {
+            // Blocchi da 16 byte (l'ultimo da 8 con Q = 0 e selem dispari).
+            for c in 0..chunks {
+                self.f.local_get(base);
+                if c > 0 {
+                    self.f.i64_const((16 * c) as i64).op(op::I64_ADD);
+                }
+                self.f.local_set(addr);
+                if 16 * (c + 1) <= total {
+                    self.ld_q(addr);
+                    self.f.local_set(t64(3)).local_set(t64(5));
+                } else {
+                    self.ld(addr, 8);
+                    self.f.local_set(t64(5)).i64_const(0).local_set(t64(3));
+                }
+                self.f.v128_const(0, 0).local_get(t64(5)).lane(v::I64X2_REPLACE_LANE, 0);
+                self.f.local_get(t64(3)).lane(v::I64X2_REPLACE_LANE, 1).local_set(chunk_l(c));
+            }
+            // Registro s: il byte j (j < bpr) viene dall'offset
+            // ((j / eb) × selem + s) × eb + j % eb.
+            for s in 0..selem {
+                let src = |j: usize| -> Option<(u32, u32)> {
+                    let j = j as u32;
+                    (j < bpr).then(|| {
+                        let off = ((j / eb) * selem + s) * eb + j % eb;
+                        (off / 16, off % 16)
+                    })
+                };
+                gather(self, &chunk_l, chunks, &src);
+                self.f.local_set(L_V0 + 1);
+                // Il registro dopo tutti i load (in L_V0 + 2 + chunks + s non
+                // c'è posto: si scrive alla fine, dai pezzi ancora intatti).
+                self.vst_begin();
+                self.f.local_get(L_V0 + 1);
+                self.vst_end(reg(s), q);
+            }
+        } else {
+            self.f.i32_const(0).local_set(t32(0));
+            // I registri nei temporanei, poi i blocchi.
+            for s in 0..selem {
+                self.vld(reg(s));
+                self.f.local_set(L_V0 + 2 + s);
+            }
+            for c in 0..chunks {
+                // Byte j del blocco c: offset o = 16c + j, elemento m = o / eb
+                // del registro m % selem, byte (m / selem) × eb + o % eb.
+                let src = |j: usize| -> Option<(u32, u32)> {
+                    let o = 16 * c + j as u32;
+                    (o < total).then(|| {
+                        let m = o / eb;
+                        (m % selem, (m / selem) * eb + o % eb)
+                    })
+                };
+                gather(self, &|s| L_V0 + 2 + s, selem, &src);
+                self.f.local_tee(L_V0).lane(v::I64X2_EXTRACT_LANE, 0).local_set(t64(7));
+                self.f.local_get(L_V0).lane(v::I64X2_EXTRACT_LANE, 1).local_set(t64(3));
+                self.f.local_get(base);
+                if c > 0 {
+                    self.f.i64_const((16 * c) as i64).op(op::I64_ADD);
+                }
+                self.f.local_set(addr);
+                if 16 * (c + 1) <= total {
+                    self.st_q(addr, t64(7), t64(3), Some(1));
+                } else {
+                    self.st(addr, 8, t64(7), Some(1));
+                }
+                self.f.local_get(t32(0)).local_get(t32(1)).op(op::I32_OR).local_set(t32(0));
+            }
         }
     }
 
