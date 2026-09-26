@@ -47,6 +47,26 @@ export function colorSeen(px, rgb, tol = 8) {
 export const HOME_QUERY = 'dumpsys window | grep -m1 mCurrentFocus';
 export const isHome = (out) => /launcher/i.test(out);
 
+/**
+ * Colori distinti su una griglia di passo 16 di un'immagine RGBA: con il
+ * launcher in primo piano lo scanout può mostrare ancora per decine di
+ * secondi di guest FallbackHome (una scritta su nero, una decina di
+ * colori); la home disegnata ne ha molti di più (icone, sfondo).
+ */
+export function gridColors(px, width, height) {
+  const seen = new Set();
+  for (let y = 0; y < height; y += 16) {
+    for (let x = 0; x < width; x += 16) {
+      const o = (y * width + x) * 4;
+      seen.add((px[o] << 16) | (px[o + 1] << 8) | px[o + 2]);
+    }
+  }
+  return seen.size;
+}
+
+/** Colori della griglia oltre i quali la home si considera disegnata. */
+export const HOME_MIN_COLORS = 40;
+
 /** Segue la console e dice quando si entra in una fase nuova. */
 export class BootProgress {
   /** Indice dell'ultima fase vista (-1 = nessuna). */

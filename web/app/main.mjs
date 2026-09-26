@@ -391,7 +391,7 @@ function onAndroidMessage(msg) {
       androidState.phases.push({ phase: msg.phase, label: msg.label, guestSecs: msg.guestSecs, wallMs: msg.wallMs });
       renderPhases();
       if (msg.phase === 'home') {
-        androidState.home = { guestSecs: msg.guestSecs, wallMs: msg.wallMs, activity: msg.detail };
+        androidState.home = { guestSecs: msg.guestSecs, wallMs: msg.wallMs, activity: msg.detail, colors: msg.colors, focusGuestSecs: msg.focusGuestSecs };
         $('boot-info').textContent += ` · home a ${msg.guestSecs.toFixed(0)} s di guest, ${(msg.wallMs / 60000).toFixed(1)} min reali`;
         setStatus('home a schermo: tra poco lo stato si salva (dal prossimo avvio si riparte da qui)');
       } else if (msg.phase !== 'booted') setStatus(`avvio: ${msg.label} (${msg.guestSecs.toFixed(0)} s di guest)`);

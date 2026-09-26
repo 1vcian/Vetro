@@ -86,7 +86,7 @@ import { Recording } from '../node/recording.mjs';
 import { BlobSource, DiskFeeder, LayoutSource, MemoryCache, OpfsCache, RangeSource } from '../node/disk.mjs';
 import { AdbClient } from '../node/adb.mjs';
 import { apkInfo } from '../node/apk.mjs';
-import { ANDROID_PARAMS, BootProgress, HOME_QUERY, isHome } from '../node/android.mjs';
+import { ANDROID_PARAMS, BootProgress, gridColors, HOME_MIN_COLORS, HOME_QUERY, isHome } from '../node/android.mjs';
 import { DiskOverlay, fromBase64, opfsFile, sha256Hex, SnapshotStore, snapshotKey, staleReason, toBase64 } from '../node/persist.mjs';
 
 const QUANTUM = 1_000_000;
@@ -97,8 +97,10 @@ const PERSIST_MS = 1000;
 const REST_NS = 1_500_000_000n;
 /** Coda della console tenuta per lo snapshot (la pagina la rimostra). */
 const CONSOLE_TAIL = 64 * 1024;
-/** Tempo del guest dopo la home prima dello snapshot di Android (5 s: si disegna). */
+/** Tempo del guest dopo la home disegnata prima dello snapshot di Android. */
 const ANDROID_HOME_NS = 5_000_000_000n;
+/** Al più tanto tempo del guest dal launcher in primo piano alla home disegnata. */
+const HOME_DRAW_NS = 300_000_000_000n;
 /** Ogni quanto (tempo del guest) si chiede ad adb se la home è a schermo. */
 const HOME_POLL_NS = 5_000_000_000n;
 /** Se la home non arriva entro tanto dopo sys.boot_completed, lo snapshot si salva lo stesso. */
@@ -339,7 +341,7 @@ async function start(c) {
       for (const ev of restored.meta.progress ?? []) android.progress.events.push(ev);
       android.progress.index = android.progress.events.length - 1;
       android.bootedNs = m.guestNs;
-      if (android.progress.phase === 'home') android.homeNs = m.guestNs;
+      if (android.progress.phase === 'home') android.homeNs = android.focusNs = m.guestNs;
       android.savedBoot = true;
     }
     times.total = performance.now() - t0;
@@ -404,6 +406,8 @@ async function prepareAndroid(c) {
     progress: new BootProgress(),
     bootedNs: null,
     homeNs: null,
+    focusNs: null,
+    focusDetail: '',
     homePollNs: 0n,
     homeQuery: false,
     savedBoot: false,
@@ -500,13 +504,25 @@ function androidTick() {
     a.adbRetryNs = m.guestNs + ADB_RETRY_NS;
     post({ type: 'adb-status', state: 'waiting', error: `connessione chiusa (${why})` });
   }
-  // La home: l'attività in primo piano diventa il launcher.
-  if (a.adbReady && a.homeNs === null && !a.homeQuery && !a.busy && m.guestNs >= a.homePollNs) {
+  // La home: l'attività in primo piano diventa il launcher, e lo scanout la
+  // mostra (prima può restare FallbackHome per decine di secondi di guest).
+  if (a.focusNs !== null && a.homeNs === null) {
+    const size = m.displaySize();
+    const px = size && m.displayPixels();
+    const colors = px ? gridColors(px, size.width, size.height) : 0;
+    if (colors >= HOME_MIN_COLORS || m.guestNs - a.focusNs >= HOME_DRAW_NS) {
+      a.homeNs = m.guestNs;
+      for (const ev of a.progress.mark('home', Number(m.guestNs) / 1e9)) {
+        post({ type: 'progress', ...ev, wallMs: performance.now() - startT0, detail: a.focusDetail, colors, focusGuestSecs: Number(a.focusNs) / 1e9 });
+      }
+    }
+  }
+  if (a.adbReady && a.focusNs === null && !a.homeQuery && !a.busy && m.guestNs >= a.homePollNs) {
     a.homeQuery = true;
     a.adb.shell(HOME_QUERY).then((r) => {
-      if (isHome(r.stdout) && a.homeNs === null) {
-        a.homeNs = m.guestNs;
-        for (const ev of a.progress.mark('home', Number(m.guestNs) / 1e9)) post({ type: 'progress', ...ev, wallMs: performance.now() - startT0, detail: r.stdout.trim() });
+      if (isHome(r.stdout) && a.focusNs === null) {
+        a.focusNs = m.guestNs;
+        a.focusDetail = r.stdout.trim();
       }
     }).catch(() => {}).finally(() => {
       a.homeQuery = false;

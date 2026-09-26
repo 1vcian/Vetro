@@ -15,7 +15,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { BlobSource, composePlan, composeRead, DiskFeeder, LayoutSource, MemoryCache, parseLayout, RangeSource } from '../../web/node/disk.mjs';
-import { BootProgress, isHome, PHASES } from '../../web/node/android.mjs';
+import { BootProgress, gridColors, isHome, PHASES } from '../../web/node/android.mjs';
 import { apkInfo, parseAxml, zipEntries } from '../../web/node/apk.mjs';
 import { parseRange, serve } from '../../tools/web-serve.mjs';
 import { absAxis, BUTTONS, evdevCode } from '../../web/app/keymap.mjs';
@@ -532,6 +532,11 @@ test('fasi dell\'avvio di Android (BootProgress)', () => {
   eq(p.mark('home', 1600).map((e) => e.phase), ['home'], 'home segnata');
   eq(p.mark('home', 1700).length, 0, 'home già segnata');
   eq([p.phase, p.events.length], ['home', PHASES.length], 'stato finale');
+  // Home disegnata: colori distinti sulla griglia.
+  const img = new Uint8Array(64 * 32 * 4);
+  eq(gridColors(img, 64, 32), 1, 'schermo nero: un colore');
+  for (let i = 0; i < 64 * 32; i++) img.set([i & 255, (i >> 3) & 255, 7], i * 4);
+  eq(gridColors(img, 64, 32), 8, 'griglia di passo 16: 4x2 campioni');
 });
 
 test('APK: ZIP e manifesto binario (testdata/tocco-manifest.axml)', async () => {

@@ -40,6 +40,8 @@ const BOOT_LIMIT_MS = Number(process.env.VETRO_ANDROID_BOOT_MINUTES ?? 240) * 60
 const out = join(root, 'target/aosp');
 const misure = { inizio: new Date().toISOString() };
 const secs = (ms) => (ms / 1000).toFixed(1);
+/** Lo stato di AOSP nella pagina (anche prima che main.mjs sia caricato). */
+const ANDROID_STATE = "window.vetroAndroid ? window.vetroAndroid.state() : { phases: [], adb: { state: 'none' } }";
 
 /** PNG del canvas (dataURL) su file. */
 async function screenshot(page, name) {
@@ -70,25 +72,25 @@ async function session(chrome, profile, url, first) {
       // Fasi dell'avvio, fino a sys.boot_completed.
       let seen = 0;
       await page.waitFor('sys.boot_completed', async () => {
-        const st = await page.eval('window.vetroAndroid.state()');
+        const st = await page.eval(ANDROID_STATE);
         for (const p of st.phases.slice(seen)) console.log(`fase: ${p.label} a ${p.guestSecs.toFixed(0)} s di guest, ${secs(p.wallMs)} s reali`);
         seen = st.phases.length;
-        const s = await page.eval('window.vetroState');
+        const s = await page.eval('window.vetroState ?? {}');
         if (s.stopped) throw new Fail(`macchina ferma: ${JSON.stringify(s.stopped)}`);
         return st.booted;
       }, BOOT_LIMIT_MS);
-      const st = await page.eval('window.vetroAndroid.state()');
+      const st = await page.eval(ANDROID_STATE);
       misure.fasi = st.phases;
       misure.boot_completed = st.booted;
       console.log(`avvio finito: ${st.booted.guestSecs.toFixed(0)} s di guest, ${secs(st.booted.wallMs)} s reali`);
-      const home = await page.waitFor('home (launcher)', async () => (await page.eval('window.vetroAndroid.state()')).home, BOOT_LIMIT_MS);
+      const home = await page.waitFor('home (launcher)', async () => (await page.eval(ANDROID_STATE)).home, BOOT_LIMIT_MS);
       misure.home = home;
-      console.log(`home: ${home.guestSecs.toFixed(0)} s di guest, ${secs(home.wallMs)} s reali (${home.activity})`);
-      const snap = await page.waitFor('snapshot dopo l\'avvio', async () => (await page.state()).snapshots[0], 30 * 60_000);
+      console.log(`home disegnata: ${home.guestSecs.toFixed(0)} s di guest, ${secs(home.wallMs)} s reali (launcher in primo piano a ${home.focusGuestSecs?.toFixed(0)} s, ${home.colors} colori; ${home.activity})`);
+      const snap = await page.waitFor('snapshot dopo l\'avvio', async () => (await page.state())?.snapshots[0], 30 * 60_000);
       misure.snapshot_avvio = snap;
       console.log(`snapshot: ${(snap.size / 2 ** 20).toFixed(0)} MiB, salvataggio ${snap.saveMs.toFixed(0)} ms, scrittura OPFS ${snap.writeMs.toFixed(0)} ms, memoria del modulo ${(snap.memory / 2 ** 20).toFixed(0)} MiB`);
       const adb = await page.waitFor('adb collegato', async () => {
-        const a = (await page.eval('window.vetroAndroid.state()')).adb;
+        const a = (await page.eval(ANDROID_STATE)).adb;
         return a.state === 'ready' ? a : null;
       }, 10 * 60_000);
       console.log(`adb: ${JSON.stringify(adb.devices)}`);
@@ -102,9 +104,9 @@ async function session(chrome, profile, url, first) {
       return;
     }
     // Secondo avvio: dallo snapshot.
-    const boot = await page.waitFor('ripristino', async () => (await page.state()).boot, 5 * 60_000);
+    const boot = await page.waitFor('ripristino', async () => (await page.state())?.boot, 5 * 60_000);
     check(boot.mode === 'snapshot', `secondo avvio da ${boot.mode}, non dallo snapshot`);
-    const frame = await page.waitFor('primo fotogramma', async () => (await page.state()).firstFrame, 60_000);
+    const frame = await page.waitFor('primo fotogramma', async () => (await page.state())?.firstFrame, 60_000);
     misure.ripristino = { pronto_ms: boot.ms, primo_fotogramma_ms: frame, apertura_ms: Date.now() - t0, times: boot.times, size: boot.size, memoria: boot.memory };
     console.log(`secondo avvio dallo snapshot: pronto in ${secs(boot.ms)} s dall'apertura della pagina (lettura ${boot.times.readSnapshot?.toFixed(0)} ms, ripristino ${boot.times.restore?.toFixed(0)} ms), primo fotogramma a ${secs(frame)} s`);
     await new Promise((ok) => setTimeout(ok, 3000));
@@ -112,7 +114,7 @@ async function session(chrome, profile, url, first) {
     misure.home_2 = await page.eval(SCREEN);
     check(misure.home_2.colors > 20, `home dopo il ripristino: schermo quasi uniforme (${misure.home_2.colors} colori)`);
     // adb dopo il ripristino, poi l'APK.
-    await page.waitFor('adb collegato dopo il ripristino', async () => (await page.eval('window.vetroAndroid.state()')).adb.state === 'ready', 10 * 60_000);
+    await page.waitFor('adb collegato dopo il ripristino', async () => (await page.eval(ANDROID_STATE)).adb.state === 'ready', 10 * 60_000);
     const devices = await page.eval('window.vetroAndroid.devices()');
     check(devices[0]?.serial === 'VETRO00001', `adb devices: ${JSON.stringify(devices)}`);
     const sh = await page.eval("window.vetroAndroid.shell('getprop sys.boot_completed; getprop ro.product.model')");
@@ -140,7 +142,7 @@ async function session(chrome, profile, url, first) {
     await screenshot(page, 'chrome-app-2.png');
     const top = await page.eval("window.vetroAndroid.shell('dumpsys window | grep -m1 mCurrentFocus')");
     check(top.stdout.includes('it.vetro.tocco'), `attività in primo piano: ${top.stdout}`);
-    misure.snapshot_app = await page.waitFor('snapshot dopo l\'installazione', async () => (await page.state()).snapshots.find((x) => x.why === 'app installata'), 10 * 60_000);
+    misure.snapshot_app = await page.waitFor('snapshot dopo l\'installazione', async () => (await page.state())?.snapshots.find((x) => x.why === 'app installata'), 10 * 60_000);
     console.log(`snapshot dopo l'installazione: ${(misure.snapshot_app.size / 2 ** 20).toFixed(0)} MiB in ${(misure.snapshot_app.saveMs + misure.snapshot_app.writeMs).toFixed(0)} ms`);
   } finally {
     await Promise.race([cdp.send('Browser.close').catch(() => {}), new Promise((ok) => setTimeout(ok, 3000))]);
@@ -162,19 +164,28 @@ run(async () => {
   if (!process.env.VETRO_ANDROID_MANIFEST) check(existsSync(join(out, 'out/web/disk.json')), 'target/aosp/out/web/disk.json mancante: node tools/aosp/web-disk.mjs');
   const url = `${srv.url}/app/?os=android&autostart=1&manifest=${encodeURIComponent(manifest)}`;
   misure.manifest = manifest;
-  const profile = mkdtempSync(join(tmpdir(), 'vetro-android-chrome-'));
+  // VETRO_ANDROID_PROFILE: profilo di Chrome da tenere (con lo snapshot in
+  // OPFS); VETRO_ANDROID_SKIP_BOOT=1 salta il primo avvio e riparte dallo
+  // snapshot che c'è già.
+  const keep = process.env.VETRO_ANDROID_PROFILE;
+  const profile = keep ?? mkdtempSync(join(tmpdir(), 'vetro-android-chrome-'));
+  if (keep) mkdirSync(keep, { recursive: true });
+  let ok = false;
   try {
-    await session(chrome, profile, url, true);
+    if (process.env.VETRO_ANDROID_SKIP_BOOT !== '1') await session(chrome, profile, url, true);
     await session(chrome, profile, url, false);
+    ok = true;
   } finally {
     misure.fine = new Date().toISOString();
     writeFileSync(join(out, 'chrome-misure.json'), JSON.stringify(misure, null, 2));
     console.log('misure: target/aosp/chrome-misure.json');
     await srv.close();
-    try {
-      rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
-    } catch (e) {
-      console.log(`avviso: profilo di Chrome non cancellato (${profile}): ${e.message}`);
-    }
+    if (!keep && ok) {
+      try {
+        rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+      } catch (e) {
+        console.log(`avviso: profilo di Chrome non cancellato (${profile}): ${e.message}`);
+      }
+    } else console.log(`profilo di Chrome tenuto: ${profile}`);
   }
 });
