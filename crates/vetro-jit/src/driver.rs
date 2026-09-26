@@ -226,7 +226,10 @@ impl<E: Engine> JitCpu<E> {
             compiled: HashMap::new(),
             tick: 0,
             stats: JitStats::default(),
-            profile: cfg.profile.then(Profile::default),
+            profile: cfg.profile.then(|| {
+                crate::helper::profile(true);
+                Profile::default()
+            }),
         }
     }
 

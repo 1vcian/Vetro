@@ -631,7 +631,10 @@ fn boot(args: &[String]) -> ExitCode {
             }
         }
         if let Some(p) = m.jit_profile() {
-            eprint!("vetro: {}", p.report(40));
+            eprintln!("vetro: {}vetro: chiamate a env.simd: {}", p.report(40), vetro_jit::helper::calls());
+            if let Some(r) = vetro_jit::helper::profile_report(20) {
+                eprint!("vetro: env.simd, {r}");
+            }
         }
     };
     // Eventi di rete già stampati (il registro si legge senza toccarlo:

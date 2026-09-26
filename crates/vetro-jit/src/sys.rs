@@ -585,7 +585,10 @@ impl<E: Engine> SysJit<E> {
             ram: None,
             ram_key: None,
             dirty: Vec::new(),
-            profile: cfg.profile.then(Profile::default),
+            profile: cfg.profile.then(|| {
+                crate::helper::profile(true);
+                Profile::default()
+            }),
         };
         j.init_area();
         j

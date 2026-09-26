@@ -93,6 +93,30 @@ thread_local! {
     /// CPU di appoggio: si copiano dentro e fuori solo registri V, FPCR,
     /// FPSR, NZCV e il registro generale letto.
     static SCRATCH: RefCell<Cpu> = RefCell::new(Cpu::new());
+    /// Chiamate a [`exec`] da questo thread.
+    static CALLS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
+}
+
+/// Chiamate a `env.simd` fatte finora da questo thread: i test verificano
+/// così che i percorsi veloci in linea e del runtime servano davvero.
+pub fn calls() -> u64 {
+    CALLS.get()
+}
+
+thread_local! {
+    /// Con [`profile`] attivo: chiamate per classe d'istruzione.
+    static PROFILE: RefCell<Option<crate::profile::Profile>> = const { RefCell::new(None) };
+}
+
+/// Conta per classe le istruzioni eseguite da `env.simd` (per le misure,
+/// `VETRO_JIT_PROFILE=1`).
+pub fn profile(on: bool) {
+    PROFILE.with_borrow_mut(|p| *p = on.then(crate::profile::Profile::default));
+}
+
+/// Resoconto delle classi più frequenti eseguite da `env.simd`.
+pub fn profile_report(n: usize) -> Option<String> {
+    PROFILE.with_borrow(|p| p.as_ref().map(|p| p.report(n)))
 }
 
 /// `env.simd(state, word, x, nzcv) -> valore`: esegue l'istruzione `word`
@@ -103,6 +127,12 @@ pub fn exec(mem: &mut [u8], at: usize, word: u32, x: u64, nzcv: u32) -> u64 {
     let Insn::Simd(i) = vetro_cpu::decode(word) else {
         panic!("env.simd con un'istruzione non SIMD: {word:#010x}");
     };
+    CALLS.set(CALLS.get() + 1);
+    PROFILE.with_borrow_mut(|p| {
+        if let Some(p) = p {
+            p.note(word, None);
+        }
+    });
     let io = io(&i);
     let st = &mut mem[at..at + off::SIZE];
     let rd32 = |st: &[u8], o: u32| u32::from_le_bytes(st[o as usize..o as usize + 4].try_into().unwrap());

@@ -99,6 +99,11 @@ pub fn kind(insn: &Insn) -> Kind {
         // SIMD (ADR 0024): load/store di registri V singoli e in coppia,
         // DUP/INS/UMOV/SMOV, MOVI/MVNI/ORR/BIC immediati.
         Insn::Simd(SimdInsn::Mem(VecMemInsn::Reg { .. } | VecMemInsn::Pair { .. })) => Linear,
+        // LD1/ST1 di uno o più registri interi, LD1R, LD1/ST1 di una corsia
+        // (ADR 0026); le strutture interlacciate (LD2..LD4) no.
+        Insn::Simd(SimdInsn::Mem(
+            VecMemInsn::Multi { selem: 1, .. } | VecMemInsn::Single { selem: 1, .. },
+        )) => Linear,
         // Tutte le istruzioni SIMD/FP senza memoria (ADR 0026): quelle
         // senza una forma in linea le esegue l'interprete dalla regione
         // (`env.simd`, [`crate::helper`]).
@@ -482,7 +487,7 @@ const L_NEXT: u32 = L_T32 + 5;
 const L_FK: u32 = L_T32 + 6;
 /// Temporanei v128 (SIMD in linea, ADR 0026).
 const L_V0: u32 = L_T32 + N_T32;
-const N_V128: u32 = 2;
+const N_V128: u32 = 6;
 
 /// Codice d'uscita interno: STOP dopo l'istruzione corrente, di cui lo
 /// store ha già salvato `pc` e `steps` (la coda li porta all'istruzione
@@ -2213,6 +2218,7 @@ impl Tx {
                     }
                 }
             }
+            VecMemInsn::Multi { .. } | VecMemInsn::Single { .. } => self.vec_struct(m),
             other => unreachable!("load/store SIMD non tradotto: {other:?}"),
         }
     }

@@ -595,6 +595,134 @@ impl Tx {
         }
     }
 
+    /// LD1/ST1 di 1-4 registri interi, LD1R, LD1/ST1 di una corsia (una
+    /// struttura: `selem` = 1), come `simd::ldst::exec`. I load leggono
+    /// tutto prima di scrivere i registri (un fault non lascia nulla di
+    /// cambiato: l'interprete rifà l'istruzione e ottiene il suo stato); gli
+    /// store scrivono in ordine (rifatti dall'interprete, riscrivono gli
+    /// stessi byte). Accessi da 8 o 16 byte invece che per elemento: stessi
+    /// byte, e dove un accesso largo fallirebbe e quelli per elemento no
+    /// (allineamento) decide l'interprete. Il writeback dopo l'ultimo
+    /// accesso.
+    pub(super) fn vec_struct(&mut self, m: VecMemInsn) {
+        use vetro_cpu::simd::Post;
+        let (rn, post) = match m {
+            VecMemInsn::Multi { rn, post, .. } | VecMemInsn::Single { rn, post, .. } => (rn, post),
+            other => unreachable!("non è una struttura: {other:?}"),
+        };
+        self.sp_check(rn);
+        let was_ok = self.sp_ok;
+        let (base, addr, newb) = (t64(4), t64(8), t64(6));
+        self.get_xsp(rn);
+        self.f.local_set(base);
+        match post {
+            Post::None => {}
+            Post::Imm(n) => {
+                self.f.local_get(base).i64_const(n as i64).op(op::I64_ADD).local_set(newb);
+            }
+            Post::Reg(rm) => {
+                self.f.local_get(base);
+                self.get_x(rm);
+                self.f.op(op::I64_ADD).local_set(newb);
+            }
+        }
+        let mut store = false;
+        match m {
+            VecMemInsn::Multi { load, q, rpt, rt, .. } => {
+                let bpr = if q { 16 } else { 8 };
+                store = !load;
+                if !load {
+                    self.f.i32_const(0).local_set(t32(0));
+                }
+                for r in 0..rpt as u32 {
+                    let reg = ((rt as u32 + r) % 32) as u8;
+                    self.f.local_get(base);
+                    if r > 0 {
+                        self.f.i64_const((r * bpr) as i64).op(op::I64_ADD);
+                    }
+                    self.f.local_set(addr);
+                    let tmp = L_V0 + 2 + r;
+                    match (load, q) {
+                        (true, true) => {
+                            self.ld_q(addr);
+                            self.f.local_set(t64(3)).local_set(t64(5));
+                            self.f.v128_const(0, 0).local_get(t64(5)).lane(v::I64X2_REPLACE_LANE, 0);
+                            self.f.local_get(t64(3)).lane(v::I64X2_REPLACE_LANE, 1).local_set(tmp);
+                        }
+                        (true, false) => {
+                            self.ld(addr, 8);
+                            self.f.local_set(t64(5));
+                            self.f.v128_const(0, 0).local_get(t64(5)).lane(v::I64X2_REPLACE_LANE, 0);
+                            self.f.local_set(tmp);
+                        }
+                        (false, true) => {
+                            self.get_v(reg, false);
+                            self.f.local_set(t64(7));
+                            self.get_v(reg, true);
+                            self.f.local_set(t64(3));
+                            self.st_q(addr, t64(7), t64(3), Some(1));
+                            self.f.local_get(t32(0)).local_get(t32(1)).op(op::I32_OR).local_set(t32(0));
+                        }
+                        (false, false) => {
+                            self.get_v(reg, false);
+                            self.f.local_set(t64(7));
+                            self.st(addr, 8, t64(7), Some(1));
+                            self.f.local_get(t32(0)).local_get(t32(1)).op(op::I32_OR).local_set(t32(0));
+                        }
+                    }
+                }
+                if load {
+                    // Tutti i load riusciti: ora i registri.
+                    for r in 0..rpt as u32 {
+                        let reg = (rt as u32 + r) % 32;
+                        self.vst_begin();
+                        self.f.local_get(L_V0 + 2 + r).v128_store(off::V + 16 * reg);
+                    }
+                }
+            }
+            VecMemInsn::Single { load, q, scale, index, replicate, rt, .. } => {
+                let bytes = 1u32 << scale;
+                if load {
+                    self.ld(base, bytes);
+                    self.f.local_set(t64(5));
+                    if replicate {
+                        self.vst_begin();
+                        self.f.local_get(t64(5));
+                        if scale < 3 {
+                            self.f.op(op::I32_WRAP_I64);
+                        }
+                        self.f.v(SPLAT[scale as usize].expect("tutte le dimensioni"));
+                        self.vst_end(rt, q);
+                    } else {
+                        self.v_insert(rt, index, 8 * bytes, t64(5));
+                    }
+                } else {
+                    store = true;
+                    self.v_elem(rt, index, 8 * bytes);
+                    self.f.local_set(t64(7));
+                    if post == Post::None {
+                        // Store unico: STOP subito dopo.
+                        self.st(base, bytes, t64(7), None);
+                        store = false;
+                    } else {
+                        self.st(base, bytes, t64(7), Some(0));
+                    }
+                }
+            }
+            _ => unreachable!(),
+        }
+        if post != Post::None {
+            self.f.local_get(newb);
+            self.set_xsp(rn);
+            if let Post::Imm(n) = post {
+                self.sp_writeback(rn, was_ok, n as i64);
+            }
+        }
+        if store {
+            self.stop_after(&[0]);
+        }
+    }
+
     /// DUP da elemento e da registro generale con v128 (i due casi più
     /// frequenti di `CopyOp`, gli altri restano in `vec_int`).
     #[allow(dead_code)]

@@ -81,6 +81,8 @@ pub mod op {
     pub const F32_DIV: u8 = 0x95;
     pub const F32_MIN: u8 = 0x96;
     pub const F32_MAX: u8 = 0x97;
+    pub const F32_COPYSIGN: u8 = 0x98;
+    pub const F64_COPYSIGN: u8 = 0xa6;
     pub const F64_ABS: u8 = 0x99;
     pub const F64_NEG: u8 = 0x9a;
     pub const F64_CEIL: u8 = 0x9b;
@@ -199,6 +201,7 @@ pub mod v {
     pub const I64X2_REPLACE_LANE: u32 = 0x1e;
     pub const F32X4_EXTRACT_LANE: u32 = 0x1f;
     pub const F64X2_EXTRACT_LANE: u32 = 0x21;
+    pub const F64X2_REPLACE_LANE: u32 = 0x22;
     pub const I8X16_EQ: u32 = 0x23;
     pub const I8X16_LT_U: u32 = 0x26;
     pub const I8X16_GT_S: u32 = 0x27;
@@ -316,6 +319,14 @@ pub mod v {
     pub const I64X2_EXTMUL_HIGH_I32X4_S: u32 = 0xdd;
     pub const I64X2_EXTMUL_LOW_I32X4_U: u32 = 0xde;
     pub const I64X2_EXTMUL_HIGH_I32X4_U: u32 = 0xdf;
+    pub const F32X4_CEIL: u32 = 0x67;
+    pub const F32X4_FLOOR: u32 = 0x68;
+    pub const F32X4_TRUNC: u32 = 0x69;
+    pub const F32X4_NEAREST: u32 = 0x6a;
+    pub const F64X2_CEIL: u32 = 0x74;
+    pub const F64X2_FLOOR: u32 = 0x75;
+    pub const F64X2_TRUNC: u32 = 0x7a;
+    pub const F64X2_NEAREST: u32 = 0x94;
     pub const F32X4_ABS: u32 = 0xe0;
     pub const F32X4_NEG: u32 = 0xe1;
     pub const F32X4_SQRT: u32 = 0xe3;

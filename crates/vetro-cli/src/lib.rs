@@ -65,7 +65,10 @@ pub fn run_elf(
     k.spawn(image, &argv, &envp, exe)?;
     let exit = k.run();
     if let Some(p) = k.jit_profile() {
-        eprint!("vetro: {}", p.report(40));
+        eprintln!("vetro: {}vetro: chiamate a env.simd: {}", p.report(40), vetro_jit::helper::calls());
+        if let Some(r) = vetro_jit::helper::profile_report(20) {
+            eprint!("vetro: env.simd, {r}");
+        }
     }
     Ok(Outcome { exit, stdout: k.stdout(), stderr: k.stderr(), steps: k.steps(), jit: k.jit_stats() })
 }

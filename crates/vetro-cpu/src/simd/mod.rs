@@ -15,7 +15,7 @@ pub mod vreg;
 pub use crypto::CryptoInsn;
 pub use fpinsn::{FpInsn, MovKind};
 pub use int::{CopyOp, IntInsn, MovImmOp};
-pub use ldst::VecMemInsn;
+pub use ldst::{Post, VecMemInsn};
 
 use crate::decode::Insn;
 

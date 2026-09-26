@@ -44,6 +44,10 @@ pub(super) enum Bin {
     MinNm,
     /// FNMUL: -(a * b).
     Nmul,
+    /// FADDP vettoriale: somme a coppie di concat(a, b).
+    Addp,
+    /// FABD vettoriale: |a - b|.
+    Abd,
 }
 
 /// Arrotondamento verso un intero.
@@ -53,6 +57,8 @@ pub(super) enum Rnd {
     Ceil,
     Floor,
     Trunc,
+    /// Al più vicino, i pari merito lontano da zero (FRINTA, FCVTAS).
+    Away,
     /// FRINTX: al pari più vicino, IXC se cambia.
     NearestX,
 }
@@ -133,6 +139,31 @@ pub(super) enum FpRt {
     VSqrt {
         d: bool,
     },
+    /// FMADD e varianti in doppia precisione (FMA emulata, Boldo e
+    /// Melquiond).
+    FmaD {
+        neg_a: bool,
+        neg_n: bool,
+    },
+    /// FMLA/FMLS vettoriali e per elemento in doppia precisione.
+    VFmaD {
+        neg: bool,
+        idx: bool,
+    },
+    /// FCVT[NPMZA][SU] vettoriali.
+    VToInt {
+        d: bool,
+        u: bool,
+        r: Rnd,
+    },
+    /// SCVTF/UCVTF vettoriali.
+    VFromInt {
+        d: bool,
+        u: bool,
+    },
+    /// FCVTL(2) e FCVTN(2) fra singola e doppia.
+    VCvtl,
+    VCvtn,
 }
 
 /// Tutte le funzioni `rt.fp<k>`, nell'ordine degli indici (da `F_FP0`).
@@ -148,19 +179,25 @@ pub(super) fn rt_ops() -> &'static [FpRt] {
             }
             v.push(FpRt::Sqrt { d });
             v.push(FpRt::Cmp { d });
-            for r in [Rnd::Nearest, Rnd::Ceil, Rnd::Floor, Rnd::Trunc, Rnd::NearestX] {
+            for r in [Rnd::Nearest, Rnd::Ceil, Rnd::Floor, Rnd::Trunc, Rnd::NearestX, Rnd::Away] {
                 v.push(FpRt::Frint { d, r });
             }
             for sf in [false, true] {
                 for u in [false, true] {
                     v.push(FpRt::FromInt { d, sf, u });
-                    for r in [Rnd::Nearest, Rnd::Ceil, Rnd::Floor, Rnd::Trunc] {
+                    for r in [Rnd::Nearest, Rnd::Ceil, Rnd::Floor, Rnd::Trunc, Rnd::Away] {
                         v.push(FpRt::ToInt { d, sf, u, r });
                     }
                 }
             }
-            for op in &bins[..8] {
+            for op in bins[..8].iter().chain(&[Bin::Addp, Bin::Abd]) {
                 v.push(FpRt::VBin { d, op: *op });
+            }
+            for u in [false, true] {
+                v.push(FpRt::VFromInt { d, u });
+                for r in [Rnd::Nearest, Rnd::Ceil, Rnd::Floor, Rnd::Trunc, Rnd::Away] {
+                    v.push(FpRt::VToInt { d, u, r });
+                }
             }
             v.push(FpRt::VIdxMul { d });
             for op in [Cmp::Eq, Cmp::Ge, Cmp::Gt] {
@@ -175,6 +212,18 @@ pub(super) fn rt_ops() -> &'static [FpRt] {
                 v.push(FpRt::Fma { neg_a, neg_n });
             }
         }
+        for neg_a in [false, true] {
+            for neg_n in [false, true] {
+                v.push(FpRt::FmaD { neg_a, neg_n });
+            }
+        }
+        for neg in [false, true] {
+            for idx in [false, true] {
+                v.push(FpRt::VFmaD { neg, idx });
+            }
+        }
+        v.push(FpRt::VCvtl);
+        v.push(FpRt::VCvtn);
         v.push(FpRt::CvtDS);
         v.push(FpRt::CvtSD);
         for neg in [false, true] {
@@ -246,9 +295,10 @@ impl Tx {
                 call(self, FpRt::CvtSD);
                 true
             }
-            FpInsn::Dp1 { ty, opcode: opcode @ (8..=11 | 14 | 15), .. } if ty <= 1 => {
+            FpInsn::Dp1 { ty, opcode: opcode @ (8..=12 | 14 | 15), .. } if ty <= 1 => {
                 let r = match opcode {
                     8 | 15 => Rnd::Nearest,
+                    12 => Rnd::Away,
                     9 => Rnd::Ceil,
                     10 => Rnd::Floor,
                     11 => Rnd::Trunc,
@@ -272,8 +322,8 @@ impl Tx {
                 call(self, FpRt::Bin { d: ty == 1, op: op_ });
                 true
             }
-            FpInsn::Dp3 { ty: 0, neg_a, neg_n, .. } => {
-                call(self, FpRt::Fma { neg_a, neg_n });
+            FpInsn::Dp3 { ty, neg_a, neg_n, .. } => {
+                call(self, if ty == 0 { FpRt::Fma { neg_a, neg_n } } else { FpRt::FmaD { neg_a, neg_n } });
                 true
             }
             FpInsn::Cmp { ty, .. } => {
@@ -305,6 +355,7 @@ impl Tx {
                     Rounding::PosInf => Rnd::Ceil,
                     Rounding::NegInf => Rnd::Floor,
                     Rounding::Zero => Rnd::Trunc,
+                    Rounding::TieAway => Rnd::Away,
                     _ => return false,
                 };
                 call(self, FpRt::ToInt { d: ty == 1, sf, u: unsigned, r });
@@ -363,9 +414,33 @@ impl Tx {
                     (false, false, 0b11000) => FpRt::VBin { d, op: Bin::MaxNm },
                     (false, true, 0b11000) => FpRt::VBin { d, op: Bin::MinNm },
                     (false, neg, 0b11001) if !d => FpRt::VFma { neg },
+                    (false, neg, 0b11001) => FpRt::VFmaD { neg, idx: false },
                     (false, false, 0b11100) => FpRt::VCmp { d, op: Cmp::Eq, zero: false, swap: false },
                     (true, false, 0b11100) => FpRt::VCmp { d, op: Cmp::Ge, zero: false, swap: false },
                     (true, true, 0b11100) => FpRt::VCmp { d, op: Cmp::Gt, zero: false, swap: false },
+                    (true, false, 0b11010) => FpRt::VBin { d, op: Bin::Addp },
+                    (true, true, 0b11010) => FpRt::VBin { d, op: Bin::Abd },
+                    _ => return false,
+                };
+                call(self, op_);
+                true
+            }
+            FpInsn::VTwoMisc { scalar: false, u, a, sz, opcode, .. }
+                if matches!(
+                    (a, opcode),
+                    (false, 0b10110 | 0b10111 | 0b11010 | 0b11011 | 0b11100 | 0b11101)
+                ) || (a && matches!(opcode, 0b11010 | 0b11011)) =>
+            {
+                let d = sz;
+                let op_ = match (u, a, opcode) {
+                    (false, false, 0b10110) if d => FpRt::VCvtn,
+                    (false, false, 0b10111) if d => FpRt::VCvtl,
+                    (_, false, 0b11010) => FpRt::VToInt { d, u, r: Rnd::Nearest },
+                    (_, true, 0b11010) => FpRt::VToInt { d, u, r: Rnd::Ceil },
+                    (_, false, 0b11011) => FpRt::VToInt { d, u, r: Rnd::Floor },
+                    (_, true, 0b11011) => FpRt::VToInt { d, u, r: Rnd::Trunc },
+                    (_, false, 0b11100) => FpRt::VToInt { d, u, r: Rnd::Away },
+                    (_, false, 0b11101) => FpRt::VFromInt { d, u },
                     _ => return false,
                 };
                 call(self, op_);
@@ -403,6 +478,8 @@ impl Tx {
                     0b1001 => FpRt::VIdxMul { d: sz },
                     0b0001 if !sz => FpRt::VIdxFma { neg: false },
                     0b0101 if !sz => FpRt::VIdxFma { neg: true },
+                    0b0001 => FpRt::VFmaD { neg: false, idx: true },
+                    0b0101 => FpRt::VFmaD { neg: true, idx: true },
                     _ => return false,
                 };
                 call(self, op_);
@@ -516,9 +593,10 @@ impl G {
         self.f.local_get(P_STATE).i32_load(off::FPCR).op(op::I32_EQZ);
     }
 
-    /// IXC già a 1 in FPSR (i32, non zero se sì).
+    /// IXC già a 1 in FPSR (i32 booleano, 0 o 1: si combina con AND).
     fn ixc(&mut self) {
-        self.f.local_get(P_STATE).i32_load(off::FPSR).i32_const(IXC).op(op::I32_AND);
+        self.f.local_get(P_STATE).i32_load(off::FPSR).i32_const(IXC.trailing_zeros() as i32);
+        self.f.op(op::I32_SHR_U).i32_const(1).op(op::I32_AND);
     }
 
     /// `env.simd` (l'interprete) con `x` e NZCV = 0; il risultato (i64)
@@ -621,6 +699,12 @@ pub(super) fn build(k: usize, simd: u32) -> Func {
         FpRt::VIdxFma { neg } => vfma(simd, neg, true),
         FpRt::VCmp { d, op, zero, swap } => vcmp(simd, d, op, zero, swap),
         FpRt::VSqrt { d } => vsqrt(simd, d),
+        FpRt::FmaD { neg_a, neg_n } => fma_d(simd, neg_a, neg_n),
+        FpRt::VFmaD { neg, idx } => vfma_d(simd, neg, idx),
+        FpRt::VToInt { d, u, r } => vto_int(simd, d, u, r),
+        FpRt::VFromInt { d, u } => vfrom_int(simd, d, u),
+        FpRt::VCvtl => vcvtl(simd),
+        FpRt::VCvtn => vcvtn(simd),
     }
 }
 
@@ -654,7 +738,7 @@ fn bin(simd: u32, d: bool, op_: Bin) -> Func {
     g.f.local_set(b);
     g.f.local_get(a).local_get(b);
     g.f.op(match op_ {
-        Bin::Add | Bin::Sub => fop(d, op::F32_ADD, op::F64_ADD),
+        Bin::Add | Bin::Sub | Bin::Addp | Bin::Abd => fop(d, op::F32_ADD, op::F64_ADD),
         Bin::Mul | Bin::Nmul => fop(d, op::F32_MUL, op::F64_MUL),
         Bin::Div => fop(d, op::F32_DIV, op::F64_DIV),
         Bin::Max | Bin::MaxNm => fop(d, op::F32_MAX, op::F64_MAX),
@@ -664,6 +748,8 @@ fn bin(simd: u32, d: bool, op_: Bin) -> Func {
     g.bits64(r, d);
     g.f.local_set(bits);
     match op_ {
+        // FADDP e FABD esistono solo vettoriali.
+        Bin::Addp | Bin::Abd => unreachable!("{op_:?} scalare"),
         Bin::Add | Bin::Sub => {
             // Finito, ed esatto (TwoSum) o con IXC già a 1. Una somma non
             // dà mai un risultato minuscolo inesatto.
@@ -798,6 +884,145 @@ fn fma_s(simd: u32, neg_a: bool, neg_n: bool) -> Func {
     g.finish()
 }
 
+/// Esponente (campo di 11 bit) dei bit f64 `x` nell'intervallo [1023 + lo,
+/// 1023 + hi) (i32 booleano): nessun trabocco né minuscolo nei passi esatti
+/// della FMA emulata.
+fn exp_in(g: &mut G, x: u32, lo: i64, hi: i64) {
+    let f = &mut g.f;
+    f.local_get(x)
+        .op(op::I64_REINTERPRET_F64)
+        .i64_const(52)
+        .op(op::I64_SHR_U)
+        .i64_const(0x7ff)
+        .op(op::I64_AND);
+    f.i64_const(1023 + lo).op(op::I64_SUB).i64_const(hi - lo).op(op::I64_LT_U);
+}
+
+/// FMA emulata in doppia (Boldo e Melquiond, "Emulation of FMA and
+/// correctly rounded sums: proved algorithms using rounding to odd", 2008):
+/// (uh, ul) = a × b esatto (Dekker, spezzamento di Veltkamp); (th, tl) =
+/// c + uh esatto (TwoSum); v = tl + ul arrotondato a dispari; z = th + v al
+/// pari. Vale senza trabocchi né minuscoli, garantiti da `exp_in` su a, b
+/// (|x| in [2^-400, 2^400)) e c (zero o in [2^-800, 2^800)). Lascia z
+/// (f64) nella variabile `z`.
+fn emulated_fma(g: &mut G, a: u32, b: u32, c: u32, z: u32) {
+    use ValType::F64;
+    let (g_, ah, al, bh, bl) = (g.local(F64), g.local(F64), g.local(F64), g.local(F64), g.local(F64));
+    let (uh, ul, th, tl, s2, e2) =
+        (g.local(F64), g.local(F64), g.local(F64), g.local(F64), g.local(F64), g.local(F64));
+    let split = (134_217_729.0f64).to_bits() as i64; // 2^27 + 1
+    let fc = |f: &mut Func, bits: i64| {
+        f.i64_const(bits).op(op::F64_REINTERPRET_I64);
+    };
+    for (x, hi, lo) in [(a, ah, al), (b, bh, bl)] {
+        let f = &mut g.f;
+        fc(f, split);
+        f.local_get(x).op(op::F64_MUL).local_set(g_);
+        f.local_get(g_).local_get(g_).local_get(x).op(op::F64_SUB).op(op::F64_SUB).local_set(hi);
+        f.local_get(x).local_get(hi).op(op::F64_SUB).local_set(lo);
+    }
+    let f = &mut g.f;
+    f.local_get(a).local_get(b).op(op::F64_MUL).local_set(uh);
+    // ul = ((ah*bh - uh) + ah*bl + al*bh) + al*bl
+    f.local_get(ah).local_get(bh).op(op::F64_MUL).local_get(uh).op(op::F64_SUB);
+    f.local_get(ah).local_get(bl).op(op::F64_MUL).op(op::F64_ADD);
+    f.local_get(al).local_get(bh).op(op::F64_MUL).op(op::F64_ADD);
+    f.local_get(al).local_get(bl).op(op::F64_MUL).op(op::F64_ADD).local_set(ul);
+    f.local_get(c).local_get(uh).op(op::F64_ADD).local_set(th);
+    two_sum(g, true, c, uh, th, tl);
+    g.f.local_get(tl).local_get(ul).op(op::F64_ADD).local_set(s2);
+    two_sum(g, true, tl, ul, s2, e2);
+    round_odd(g, s2, e2);
+    g.f.op(op::F64_REINTERPRET_I64).local_get(th).op(op::F64_ADD).local_set(z);
+}
+
+/// FMADD/FMSUB/FNMADD/FNMSUB in doppia precisione.
+fn fma_d(simd: u32, neg_a: bool, neg_n: bool) -> Func {
+    use ValType::*;
+    let mut g = G::new(simd, 2);
+    let (a, b, c, z, bits, ok) =
+        (g.local(F64), g.local(F64), g.local(F64), g.local(F64), g.local(I64), g.local(I32));
+    g.fpcr_zero();
+    g.ixc();
+    g.f.op(op::I32_AND).if_(BLOCK_EMPTY);
+    g.load(5, true);
+    if neg_n {
+        g.f.op(op::F64_NEG);
+    }
+    g.f.local_set(a);
+    g.load(16, true);
+    g.f.local_set(b);
+    g.load(10, true);
+    if neg_a {
+        g.f.op(op::F64_NEG);
+    }
+    g.f.local_set(c);
+    exp_in(&mut g, a, -400, 400);
+    exp_in(&mut g, b, -400, 400);
+    g.f.op(op::I32_AND);
+    exp_in(&mut g, c, -800, 800);
+    g.f.local_get(c).op(op::I64_REINTERPRET_F64).i64_const(i64::MAX).op(op::I64_AND).op(op::I64_EQZ);
+    g.f.op(op::I32_OR).op(op::I32_AND).if_(BLOCK_EMPTY);
+    emulated_fma(&mut g, a, b, c, z);
+    g.bits64(z, true);
+    g.f.local_tee(bits);
+    g.safe_bits(true);
+    g.f.local_set(ok);
+    g.commit(ok, |g| g.store_scalar_bits(bits));
+    g.f.end();
+    g.f.end();
+    g.fallback(false);
+    g.f.op(op::DROP);
+    g.finish()
+}
+
+/// FMLA/FMLS .2d (e per elemento): la FMA emulata corsia per corsia.
+fn vfma_d(simd: u32, neg: bool, idx: bool) -> Func {
+    use ValType::*;
+    let mut g = G::new(simd, 2);
+    let (n, m, acc, r) = (g.local(V128), g.local(V128), g.local(V128), g.local(V128));
+    let (a, b, c, z, ok) = (g.local(F64), g.local(F64), g.local(F64), g.local(F64), g.local(I32));
+    g.fpcr_zero();
+    g.ixc();
+    g.f.op(op::I32_AND).if_(BLOCK_EMPTY);
+    g.vload(5);
+    if neg {
+        g.f.v(v::F64X2_NEG);
+    }
+    g.f.local_set(n);
+    if idx {
+        elem_splat(&mut g, true);
+    } else {
+        g.vload(16);
+    }
+    g.f.local_set(m);
+    g.vload(0);
+    g.f.local_set(acc);
+    g.f.i32_const(1).local_set(ok);
+    g.f.local_get(acc).local_set(r);
+    for lane in 0..2u8 {
+        for (src, dst) in [(n, a), (m, b), (acc, c)] {
+            g.f.local_get(src).lane(v::F64X2_EXTRACT_LANE, lane).local_set(dst);
+        }
+        exp_in(&mut g, a, -400, 400);
+        exp_in(&mut g, b, -400, 400);
+        g.f.op(op::I32_AND);
+        exp_in(&mut g, c, -800, 800);
+        g.f.local_get(c).op(op::I64_REINTERPRET_F64).i64_const(i64::MAX).op(op::I64_AND).op(op::I64_EQZ);
+        g.f.op(op::I32_OR).op(op::I32_AND).local_get(ok).op(op::I32_AND).local_set(ok);
+        emulated_fma(&mut g, a, b, c, z);
+        g.bits64(z, true);
+        g.safe_bits(true);
+        g.f.local_get(ok).op(op::I32_AND).local_set(ok);
+        g.f.local_get(r).local_get(z).lane(v::F64X2_REPLACE_LANE, lane).local_set(r);
+    }
+    g.commit(ok, |g| g.store_vec(r));
+    g.f.end();
+    g.fallback(false);
+    g.f.op(op::DROP);
+    g.finish()
+}
+
 /// FSQRT scalare.
 fn sqrt(simd: u32, d: bool) -> Func {
     let ft = if d { ValType::F64 } else { ValType::F32 };
@@ -904,11 +1129,33 @@ fn cvt_sd(simd: u32) -> Func {
 
 /// Arrotondamento `r` di f32/f64 (sullo stack).
 fn round_op(g: &mut G, d: bool, r: Rnd) {
+    if r == Rnd::Away {
+        // t = trunc(x); |x - t| (esatto) >= 0.5 ? t + copysign(1, x) : t
+        // (la somma è esatta: t intero; t conserva il segno di zero).
+        let ft = if d { ValType::F64 } else { ValType::F32 };
+        let (x, t) = (g.local(ft), g.local(ft));
+        let konst = |f: &mut Func, v: f64| {
+            if d {
+                f.i64_const(v.to_bits() as i64).op(op::F64_REINTERPRET_I64);
+            } else {
+                f.i32_const((v as f32).to_bits() as i32).op(op::F32_REINTERPRET_I32);
+            }
+        };
+        let f = &mut g.f;
+        f.local_tee(x).op(fop(d, op::F32_TRUNC, op::F64_TRUNC)).local_tee(t);
+        konst(f, 1.0);
+        f.local_get(x).op(fop(d, op::F32_COPYSIGN, op::F64_COPYSIGN)).op(fop(d, op::F32_ADD, op::F64_ADD));
+        f.local_get(t);
+        f.local_get(x).local_get(t).op(fop(d, op::F32_SUB, op::F64_SUB)).op(fop(d, op::F32_ABS, op::F64_ABS));
+        konst(f, 0.5);
+        f.op(fop(d, op::F32_GE, op::F64_GE)).op(op::SELECT);
+        return;
+    }
     g.f.op(match r {
         Rnd::Nearest | Rnd::NearestX => fop(d, op::F32_NEAREST, op::F64_NEAREST),
         Rnd::Ceil => fop(d, op::F32_CEIL, op::F64_CEIL),
         Rnd::Floor => fop(d, op::F32_FLOOR, op::F64_FLOOR),
-        Rnd::Trunc => fop(d, op::F32_TRUNC, op::F64_TRUNC),
+        Rnd::Trunc | Rnd::Away => fop(d, op::F32_TRUNC, op::F64_TRUNC),
     });
 }
 
@@ -1076,13 +1323,39 @@ fn vbin(simd: u32, d: bool, op_: Bin) -> Func {
     g.vload(5);
     g.f.local_set(a);
     g.vload(16);
-    if op_ == Bin::Sub {
+    if matches!(op_, Bin::Sub | Bin::Abd) {
         g.f.v(vop(d, v::F32X4_NEG, v::F64X2_NEG));
     }
     g.f.local_set(b);
+    if op_ == Bin::Addp {
+        // a' = elementi pari, b' = dispari di concat(a, b) (con Q = 0 in
+        // singola: [a0, b0] e [a1, b1]); poi una somma.
+        let (ev, od) = (g.local(ValType::V128), g.local(ValType::V128));
+        let sh = |f: &mut Func, l: [u8; 16], dst: u32| {
+            f.local_get(a).local_get(b).shuffle(l).local_set(dst);
+        };
+        let pick = |idx: [usize; 4]| -> [u8; 16] { core::array::from_fn(|j| (idx[j / 4] * 4 + j % 4) as u8) };
+        if d {
+            sh(&mut g.f, pick([0, 1, 4, 5]), ev);
+            sh(&mut g.f, pick([2, 3, 6, 7]), od);
+        } else {
+            let (e4, o4) = (g.local(ValType::V128), g.local(ValType::V128));
+            sh(&mut g.f, pick([0, 2, 4, 6]), e4);
+            sh(&mut g.f, pick([1, 3, 5, 7]), o4);
+            sh(&mut g.f, pick([0, 4, 0, 4]), ev);
+            sh(&mut g.f, pick([1, 5, 1, 5]), od);
+            // Q = 1: e4/o4; Q = 0: ev/od.
+            for (q1, dst) in [(e4, ev), (o4, od)] {
+                g.f.local_get(q1).local_get(dst);
+                g.q();
+                g.f.op(op::SELECT).local_set(dst);
+            }
+        }
+        g.f.local_get(ev).local_set(a).local_get(od).local_set(b);
+    }
     g.f.local_get(a).local_get(b);
     g.f.v(match op_ {
-        Bin::Add | Bin::Sub => vop(d, v::F32X4_ADD, v::F64X2_ADD),
+        Bin::Add | Bin::Sub | Bin::Addp | Bin::Abd => vop(d, v::F32X4_ADD, v::F64X2_ADD),
         Bin::Mul | Bin::Nmul => vop(d, v::F32X4_MUL, v::F64X2_MUL),
         Bin::Div => vop(d, v::F32X4_DIV, v::F64X2_DIV),
         Bin::Max | Bin::MaxNm => vop(d, v::F32X4_MAX, v::F64X2_MAX),
@@ -1090,7 +1363,7 @@ fn vbin(simd: u32, d: bool, op_: Bin) -> Func {
     });
     g.f.local_set(r);
     match op_ {
-        Bin::Add | Bin::Sub => {
+        Bin::Add | Bin::Sub | Bin::Addp | Bin::Abd => {
             // Finite, ed esatte (TwoSum per corsia) o con IXC a 1.
             let (t, err) = (g.local(ValType::V128), g.local(ValType::V128));
             let (add, sub) = (vop(d, v::F32X4_ADD, v::F64X2_ADD), vop(d, v::F32X4_SUB, v::F64X2_SUB));
@@ -1120,7 +1393,220 @@ fn vbin(simd: u32, d: bool, op_: Bin) -> Func {
             g.f.op(op::I32_AND).local_set(ok);
         }
     }
+    if op_ == Bin::Abd {
+        // Il valore assoluto dopo l'arrotondamento (senza flag).
+        g.f.local_get(r).v(vop(d, v::F32X4_ABS, v::F64X2_ABS)).local_set(r);
+    }
     g.commit(ok, |g| g.store_vec(r));
+    g.f.end();
+    g.fallback(false);
+    g.f.op(op::DROP);
+    g.finish()
+}
+
+/// FCVT[NPMZA][SU] vettoriali (senza virgola fissa): arrotondamento,
+/// intervallo sul valore arrotondato, conversione saturante (qui esatta).
+fn vto_int(simd: u32, d: bool, u: bool, rnd: Rnd) -> Func {
+    use ValType::*;
+    let mut g = G::new(simd, 2);
+    let (a, t, r, ok) = (g.local(V128), g.local(V128), g.local(V128), g.local(I32));
+    g.fpcr_zero();
+    g.f.if_(BLOCK_EMPTY);
+    g.vload(5);
+    g.f.local_set(a);
+    if d {
+        // Corsia per corsia, in scalare.
+        let (x, tt) = (g.local(F64), g.local(F64));
+        g.f.i32_const(1).local_set(ok).v128_const(0, 0).local_set(r);
+        let (lo, hi): (f64, f64) = if u {
+            (0.0, 18_446_744_073_709_551_616.0)
+        } else {
+            (-9_223_372_036_854_775_808.0, 9_223_372_036_854_775_808.0)
+        };
+        for lane in 0..2u8 {
+            g.f.local_get(a).lane(v::F64X2_EXTRACT_LANE, lane).local_tee(x);
+            round_op(&mut g, true, rnd);
+            g.f.local_set(tt);
+            let f = &mut g.f;
+            f.local_get(tt).i64_const(lo.to_bits() as i64).op(op::F64_REINTERPRET_I64).op(op::F64_GE);
+            f.local_get(tt).i64_const(hi.to_bits() as i64).op(op::F64_REINTERPRET_I64).op(op::F64_LT);
+            f.op(op::I32_AND);
+            g.ixc();
+            g.f.local_get(tt).local_get(x).op(op::F64_EQ).op(op::I32_OR).op(op::I32_AND);
+            g.f.local_get(ok).op(op::I32_AND).local_set(ok);
+            g.f.local_get(r).local_get(tt);
+            g.f.sat(if u { sat::I64_TRUNC_SAT_F64_U } else { sat::I64_TRUNC_SAT_F64_S });
+            g.f.lane(v::I64X2_REPLACE_LANE, lane).local_set(r);
+        }
+    } else {
+        g.f.local_get(a);
+        vround(&mut g, false, rnd);
+        g.f.local_set(t);
+        let (lo, hi): (f32, f32) =
+            if u { (0.0, 4_294_967_296.0) } else { (-2_147_483_648.0, 2_147_483_648.0) };
+        g.f.local_get(t);
+        splat_const(&mut g, false, lo.to_bits() as u64);
+        g.f.v(v::F32X4_GE).local_get(t);
+        splat_const(&mut g, false, hi.to_bits() as u64);
+        g.f.v(v::F32X4_LT).v(v::AND);
+        all_true(&mut g, false);
+        g.ixc();
+        g.f.local_get(t).local_get(a).v(v::F32X4_EQ);
+        all_true(&mut g, false);
+        g.f.op(op::I32_OR).op(op::I32_AND).local_set(ok);
+        g.f.local_get(t)
+            .v(if u { v::I32X4_TRUNC_SAT_F32X4_U } else { v::I32X4_TRUNC_SAT_F32X4_S })
+            .local_set(r);
+    }
+    g.commit(ok, |g| g.store_vec(r));
+    g.f.end();
+    g.fallback(false);
+    g.f.op(op::DROP);
+    g.finish()
+}
+
+/// Arrotondamento vettoriale a intero (v128 sullo stack).
+fn vround(g: &mut G, d: bool, r: Rnd) {
+    if r == Rnd::Away {
+        // Come `round_op`: t + (|x - t| >= 0.5 ? copysign(1, x) : 0), con
+        // la scelta per corsia (t conserva il segno di zero).
+        let (x, t) = (g.local(ValType::V128), g.local(ValType::V128));
+        g.f.local_tee(x).v(vop(d, v::F32X4_TRUNC, v::F64X2_TRUNC)).local_set(t);
+        let one = if d { 1.0f64.to_bits() } else { 1.0f32.to_bits() as u64 };
+        let half = if d { 0.5f64.to_bits() } else { 0.5f32.to_bits() as u64 };
+        let sign = if d { 1u64 << 63 } else { 0x8000_0000 };
+        // t + copysign(1, x): il segno di x, il resto di 1.
+        g.f.local_get(t);
+        g.f.local_get(x);
+        splat_const(g, d, one);
+        splat_const(g, d, sign);
+        g.f.v(v::BITSELECT).v(vop(d, v::F32X4_ADD, v::F64X2_ADD));
+        g.f.local_get(t);
+        g.f.local_get(x).local_get(t).v(vop(d, v::F32X4_SUB, v::F64X2_SUB)).v(vop(
+            d,
+            v::F32X4_ABS,
+            v::F64X2_ABS,
+        ));
+        splat_const(g, d, half);
+        g.f.v(vop(d, v::F32X4_GE, v::F64X2_GE)).v(v::BITSELECT);
+        return;
+    }
+    g.f.v(match r {
+        Rnd::Nearest | Rnd::NearestX => vop(d, v::F32X4_NEAREST, v::F64X2_NEAREST),
+        Rnd::Ceil => vop(d, v::F32X4_CEIL, v::F64X2_CEIL),
+        Rnd::Floor => vop(d, v::F32X4_FLOOR, v::F64X2_FLOOR),
+        Rnd::Trunc | Rnd::Away => vop(d, v::F32X4_TRUNC, v::F64X2_TRUNC),
+    });
+}
+
+/// SCVTF/UCVTF vettoriali (senza virgola fissa): esatte se ogni corsia sta
+/// nella mantissa, o con IXC a 1.
+fn vfrom_int(simd: u32, d: bool, u: bool) -> Func {
+    use ValType::*;
+    let mut g = G::new(simd, 2);
+    let (a, r, ok) = (g.local(V128), g.local(V128), g.local(I32));
+    g.fpcr_zero();
+    g.f.if_(BLOCK_EMPTY);
+    g.vload(5);
+    g.f.local_set(a);
+    if d {
+        let x = g.local(I64);
+        g.f.v128_const(0, 0).local_set(r);
+        g.ixc();
+        g.f.local_set(ok);
+        for lane in 0..2u8 {
+            g.f.local_get(a).lane(v::I64X2_EXTRACT_LANE, lane).local_set(x);
+            g.f.local_get(r).local_get(x);
+            g.f.op(if u { op::F64_CONVERT_I64_U } else { op::F64_CONVERT_I64_S });
+            g.f.lane(v::F64X2_REPLACE_LANE, lane).local_set(r);
+        }
+        // tutte le corsie esatte: |x| <= 2^53
+        let mut first = true;
+        for lane in 0..2u8 {
+            g.f.local_get(a).lane(v::I64X2_EXTRACT_LANE, lane);
+            if !u {
+                g.f.i64_const(1 << 53).op(op::I64_ADD).i64_const(1 << 54);
+            } else {
+                g.f.i64_const(1 << 53);
+            }
+            g.f.op(op::I64_LE_U);
+            if !first {
+                g.f.op(op::I32_AND);
+            }
+            first = false;
+        }
+        g.f.local_get(ok).op(op::I32_OR).local_set(ok);
+    } else {
+        g.f.local_get(a).v(if u { v::F32X4_CONVERT_I32X4_U } else { v::F32X4_CONVERT_I32X4_S }).local_set(r);
+        g.ixc();
+        g.f.local_get(a);
+        if u {
+            g.f.v128_const(0x0100_0001_0100_0001, 0x0100_0001_0100_0001).v(v::I32X4_LT_U);
+        } else {
+            g.f.v128_const(0x0100_0000_0100_0000, 0x0100_0000_0100_0000).v(v::I32X4_ADD);
+            g.f.v128_const(0x0200_0001_0200_0001, 0x0200_0001_0200_0001).v(v::I32X4_LT_U);
+        }
+        all_true(&mut g, false);
+        g.f.op(op::I32_OR).local_set(ok);
+    }
+    g.commit(ok, |g| g.store_vec(r));
+    g.f.end();
+    g.fallback(false);
+    g.f.op(op::DROP);
+    g.finish()
+}
+
+/// FCVTL/FCVTL2 (da singola a doppia): esatta senza NaN.
+fn vcvtl(simd: u32) -> Func {
+    use ValType::*;
+    let mut g = G::new(simd, 2);
+    let (r, ok) = (g.local(V128), g.local(I32));
+    g.fpcr_zero();
+    g.f.if_(BLOCK_EMPTY);
+    // Metà alta con Q = 1 (FCVTL2).
+    g.vload(5);
+    g.vload(5);
+    g.f.shuffle(core::array::from_fn(|j| (8 + j % 8) as u8));
+    g.vload(5);
+    g.q();
+    g.f.op(op::SELECT).v(v::F64X2_PROMOTE_LOW_F32X4).local_tee(r);
+    g.f.local_get(r).v(v::F64X2_EQ).v(v::I64X2_ALL_TRUE).local_set(ok);
+    g.commit(ok, |g| {
+        g.vaddr(0);
+        g.f.local_get(r).v128_store(off::V);
+    });
+    g.f.end();
+    g.fallback(false);
+    g.f.op(op::DROP);
+    g.finish()
+}
+
+/// FCVTN/FCVTN2 (da doppia a singola, nella metà bassa o alta di Vd).
+fn vcvtn(simd: u32) -> Func {
+    use ValType::*;
+    let mut g = G::new(simd, 2);
+    let (a, r, ok) = (g.local(V128), g.local(V128), g.local(I32));
+    g.fpcr_zero();
+    g.f.if_(BLOCK_EMPTY);
+    g.vload(5);
+    g.f.local_tee(a).v(v::F32X4_DEMOTE_F64X2_ZERO).local_set(r);
+    // Niente NaN, e: tutte esatte (promozione uguale), o IXC a 1 e normali
+    // sicure (corsie 0 e 1).
+    g.f.local_get(a).local_get(a).v(v::F64X2_EQ).v(v::I64X2_ALL_TRUE);
+    g.f.local_get(r).v(v::F64X2_PROMOTE_LOW_F32X4).local_get(a).v(v::F64X2_EQ).v(v::I64X2_ALL_TRUE);
+    g.ixc();
+    vsafe(&mut g, false, r);
+    g.f.v128_const(0, u64::MAX).v(v::OR).v(v::I32X4_ALL_TRUE).op(op::I32_AND);
+    g.f.op(op::I32_OR).op(op::I32_AND).local_set(ok);
+    g.commit(ok, |g| {
+        // Q = 1: [Vd basso, r basso]; Q = 0: [r basso, 0].
+        g.vaddr(0);
+        g.vload(0);
+        g.f.local_get(r).shuffle(core::array::from_fn(|j| if j < 8 { j as u8 } else { (16 + j - 8) as u8 }));
+        g.f.local_get(r).v128_const(u64::MAX, 0).v(v::AND);
+        g.q();
+        g.f.op(op::SELECT).v128_store(off::V);
+    });
     g.f.end();
     g.fallback(false);
     g.f.op(op::DROP);
