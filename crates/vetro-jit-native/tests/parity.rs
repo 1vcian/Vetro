@@ -49,7 +49,16 @@ fn with_field(w: u32, lo: u32, width: u32, v: i64) -> u32 {
 
 /// Un'istruzione casuale: bit casuali filtrati dal decoder, con gli offset
 /// dei salti e dei load letterali riportati vicino.
-fn random_insn(rng: &mut Rng) -> u32 {
+fn random_insn(rng: &mut Rng, simd: bool) -> u32 {
+    if simd && rng.below(4) != 0 {
+        // Classi SIMD/FP (bit 27:25 = x111), anche i load/store.
+        loop {
+            let w = (rng.next() as u32 & !(7 << 25)) | 7 << 25;
+            if matches!(decode(w), Insn::Simd(_)) {
+                return w;
+            }
+        }
+    }
     loop {
         let mut w = rng.next() as u32;
         let insn = decode(w);
@@ -76,13 +85,15 @@ fn random_insn(rng: &mut Rng) -> u32 {
     }
 }
 
-fn setup(seed: u64) -> (Cpu, UserMemory) {
+/// Programma casuale del seme `seed`; con `simd` tre istruzioni su quattro
+/// sono SIMD/FP (ADR 0026).
+fn setup_with(seed: u64, simd: bool) -> (Cpu, UserMemory) {
     let mut rng = Rng(seed.wrapping_mul(0x2545_F491_4F6C_DD1D) ^ 0x5eed);
     let mut mem = UserMemory::new();
     let mut code = vec![0u8; CODE_LEN];
     let off = (START - CODE) as usize;
     for i in 0..PROG_LEN {
-        let w = random_insn(&mut rng);
+        let w = random_insn(&mut rng, simd);
         code[off + 4 * i..off + 4 * i + 4].copy_from_slice(&w.to_le_bytes());
     }
     // Codice scrivibile: gli store possono cadere sul programma.
@@ -221,8 +232,8 @@ fn run_jit<E: Engine>(jit: &mut JitCpu<E>, mut cpu: Cpu, mut mem: UserMemory, rn
     snapshot(events, steps, cpu, &mut mem)
 }
 
-fn describe(seed: u64) -> String {
-    let (_, mut mem) = setup(seed);
+fn describe(seed: u64, simd: bool) -> String {
+    let (_, mut mem) = setup_with(seed, simd);
     let mut s = String::new();
     for i in 0..PROG_LEN.min(80) {
         let a = START + 4 * i as u64;
@@ -274,16 +285,20 @@ fn env_u64(name: &str, default: u64) -> u64 {
 
 /// Confronta i casi `first..first+cases` su una sola istanza del JIT: anche
 /// la cache fra spazi diversi (e il riuso dei moduli) passa dal confronto.
-fn run_cases<E: Engine>(jit: &mut JitCpu<E>, first: u64, cases: u64) {
+fn run_cases<E: Engine>(jit: &mut JitCpu<E>, first: u64, cases: u64, simd: bool) {
     let mut total_steps = 0;
     for seed in first..first + cases {
-        let (cpu, mem) = setup(seed);
+        let (cpu, mem) = setup_with(seed, simd);
         let want = run_interp(cpu.clone(), mem.clone());
         let mut rng = Rng(seed ^ 0xb0d6e7);
         let got = run_jit(jit, cpu, mem, &mut rng);
         total_steps += want.steps;
         let d = diff(&want, &got);
-        assert!(d.is_empty(), "seme {seed}: interprete e JIT divergono\n{d}programma:\n{}", describe(seed));
+        assert!(
+            d.is_empty(),
+            "seme {seed}: interprete e JIT divergono\n{d}programma:\n{}",
+            describe(seed, simd)
+        );
     }
     eprintln!("{cases} programmi, {total_steps} passi; {:?}", jit.stats);
 }
@@ -293,12 +308,27 @@ fn random_programs_interpreter_equals_jit() {
     let cases = env_u64("VETRO_JIT_PARITY_CASES", 3000);
     let first = env_u64("VETRO_JIT_PARITY_SEED", 0);
     let mut jit = JitCpu::new(NativeEngine::new(), JitConfig { hot_threshold: 0, ..JitConfig::default() });
-    run_cases(&mut jit, first, cases);
+    run_cases(&mut jit, first, cases, false);
     let s = jit.stats;
     // Il confronto ha senso solo se il JIT ha lavorato davvero, e se tutte le
     // uscite sono state esercitate.
     assert!(s.jit_steps > s.interp_steps, "il JIT ha eseguito troppo poco: {s:?}");
     assert!(s.faults > 0 && s.stops > 0 && s.invalidated_pages > 0, "uscite non esercitate: {s:?}");
+}
+
+/// Programmi fatti per tre quarti di istruzioni SIMD/FP (ADR 0026): le
+/// forme in linea (SIMD intero con v128, percorsi veloci FP con le loro
+/// condizioni) e `env.simd` danno registri V, FPSR e memoria
+/// dell'interprete, con valori FP speciali, FPCR e FPSR casuali.
+/// `VETRO_JIT_SIMD_CASES` (default 3000) e `VETRO_JIT_PARITY_SEED`.
+#[test]
+fn random_simd_programs_interpreter_equals_jit() {
+    let cases = env_u64("VETRO_JIT_SIMD_CASES", 3000);
+    let first = env_u64("VETRO_JIT_PARITY_SEED", 0);
+    let mut jit = JitCpu::new(NativeEngine::new(), JitConfig { hot_threshold: 0, ..JitConfig::default() });
+    run_cases(&mut jit, first + 1_000_000, cases, true);
+    let s = jit.stats;
+    assert!(s.jit_steps > s.interp_steps, "il JIT ha eseguito troppo poco: {s:?}");
 }
 
 /// Motore che si riempie dopo `cap` moduli (come wasmtime dopo 10000
@@ -339,7 +369,7 @@ impl Engine for Limited {
 fn engine_reset_keeps_parity() {
     let engine = Limited { inner: NativeEngine::new(), cap: 40, used: 0 };
     let mut jit = JitCpu::new(engine, JitConfig { hot_threshold: 0, ..JitConfig::default() });
-    run_cases(&mut jit, 100_000, 300);
+    run_cases(&mut jit, 100_000, 300, false);
     assert!(jit.stats.resets > 5, "{:?}", jit.stats);
 }
 

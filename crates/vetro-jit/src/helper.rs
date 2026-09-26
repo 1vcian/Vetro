@@ -60,6 +60,35 @@ pub fn io(i: &SimdInsn) -> Io {
     }
 }
 
+/// V0..V31 dal formato di `JitState` (little-endian, 16 byte ciascuno).
+#[inline]
+fn copy_v_in(v: &mut [u128; 32], b: &[u8]) {
+    assert_eq!(b.len(), 512);
+    if cfg!(target_endian = "little") {
+        // SAFETY: `v` è di 512 byte; su un host little-endian un u128 ha in
+        // memoria gli stessi byte del formato di `JitState`.
+        unsafe { core::ptr::copy_nonoverlapping(b.as_ptr(), v.as_mut_ptr().cast::<u8>(), 512) };
+    } else {
+        for (r, d) in v.iter_mut().enumerate() {
+            *d = u128::from_le_bytes(b[16 * r..16 * r + 16].try_into().unwrap());
+        }
+    }
+}
+
+/// V0..V31 nel formato di `JitState`.
+#[inline]
+fn copy_v_out(b: &mut [u8], v: &[u128; 32]) {
+    assert_eq!(b.len(), 512);
+    if cfg!(target_endian = "little") {
+        // SAFETY: come in `copy_v_in`.
+        unsafe { core::ptr::copy_nonoverlapping(v.as_ptr().cast::<u8>(), b.as_mut_ptr(), 512) };
+    } else {
+        for (r, s) in v.iter().enumerate() {
+            b[16 * r..16 * r + 16].copy_from_slice(&s.to_le_bytes());
+        }
+    }
+}
+
 thread_local! {
     /// CPU di appoggio: si copiano dentro e fuori solo registri V, FPCR,
     /// FPSR, NZCV e il registro generale letto.
@@ -79,9 +108,7 @@ pub fn exec(mem: &mut [u8], at: usize, word: u32, x: u64, nzcv: u32) -> u64 {
     let rd32 = |st: &[u8], o: u32| u32::from_le_bytes(st[o as usize..o as usize + 4].try_into().unwrap());
     SCRATCH.with_borrow_mut(|cpu| {
         let v = off::V as usize;
-        for (r, d) in cpu.v.iter_mut().enumerate() {
-            *d = u128::from_le_bytes(st[v + 16 * r..v + 16 * r + 16].try_into().unwrap());
-        }
+        copy_v_in(&mut cpu.v, &st[v..v + 512]);
         cpu.fpcr = rd32(st, off::FPCR);
         cpu.fpsr = rd32(st, off::FPSR);
         cpu.nzcv = nzcv;
@@ -89,9 +116,7 @@ pub fn exec(mem: &mut [u8], at: usize, word: u32, x: u64, nzcv: u32) -> u64 {
             cpu.set_x(rn, x);
         }
         vetro_cpu::simd::exec_dp(cpu, i);
-        for (r, s) in cpu.v.iter().enumerate() {
-            st[v + 16 * r..v + 16 * r + 16].copy_from_slice(&s.to_le_bytes());
-        }
+        copy_v_out(&mut st[v..v + 512], &cpu.v);
         let f = off::FPSR as usize;
         st[f..f + 4].copy_from_slice(&cpu.fpsr.to_le_bytes());
         match io.out {

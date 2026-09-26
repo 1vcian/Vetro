@@ -9,6 +9,9 @@
 pub enum ValType {
     I32 = 0x7f,
     I64 = 0x7e,
+    F32 = 0x7d,
+    F64 = 0x7c,
+    V128 = 0x7b,
 }
 
 /// Opcode usati dal traduttore (Core spec, sezione 5.4).
@@ -46,6 +49,65 @@ pub mod op {
     pub const I32_EQZ: u8 = 0x45;
     pub const I32_EQ: u8 = 0x46;
     pub const I32_NE: u8 = 0x47;
+    pub const I32_LT_U: u8 = 0x49;
+    pub const I32_GT_U: u8 = 0x4b;
+    pub const I32_LE_S: u8 = 0x4c;
+    pub const I32_MUL: u8 = 0x6c;
+    // Virgola mobile (ADR 0026).
+    pub const F32_LOAD: u8 = 0x2a;
+    pub const F64_LOAD: u8 = 0x2b;
+    pub const F32_EQ: u8 = 0x5b;
+    pub const F32_NE: u8 = 0x5c;
+    pub const F32_LT: u8 = 0x5d;
+    pub const F32_GT: u8 = 0x5e;
+    pub const F32_LE: u8 = 0x5f;
+    pub const F32_GE: u8 = 0x60;
+    pub const F64_EQ: u8 = 0x61;
+    pub const F64_NE: u8 = 0x62;
+    pub const F64_LT: u8 = 0x63;
+    pub const F64_GT: u8 = 0x64;
+    pub const F64_LE: u8 = 0x65;
+    pub const F64_GE: u8 = 0x66;
+    pub const F32_ABS: u8 = 0x8b;
+    pub const F32_NEG: u8 = 0x8c;
+    pub const F32_CEIL: u8 = 0x8d;
+    pub const F32_FLOOR: u8 = 0x8e;
+    pub const F32_TRUNC: u8 = 0x8f;
+    pub const F32_NEAREST: u8 = 0x90;
+    pub const F32_SQRT: u8 = 0x91;
+    pub const F32_ADD: u8 = 0x92;
+    pub const F32_SUB: u8 = 0x93;
+    pub const F32_MUL: u8 = 0x94;
+    pub const F32_DIV: u8 = 0x95;
+    pub const F32_MIN: u8 = 0x96;
+    pub const F32_MAX: u8 = 0x97;
+    pub const F64_ABS: u8 = 0x99;
+    pub const F64_NEG: u8 = 0x9a;
+    pub const F64_CEIL: u8 = 0x9b;
+    pub const F64_FLOOR: u8 = 0x9c;
+    pub const F64_TRUNC: u8 = 0x9d;
+    pub const F64_NEAREST: u8 = 0x9e;
+    pub const F64_SQRT: u8 = 0x9f;
+    pub const F64_ADD: u8 = 0xa0;
+    pub const F64_SUB: u8 = 0xa1;
+    pub const F64_MUL: u8 = 0xa2;
+    pub const F64_DIV: u8 = 0xa3;
+    pub const F64_MIN: u8 = 0xa4;
+    pub const F64_MAX: u8 = 0xa5;
+    pub const F32_CONVERT_I32_S: u8 = 0xb2;
+    pub const F32_CONVERT_I32_U: u8 = 0xb3;
+    pub const F32_CONVERT_I64_S: u8 = 0xb4;
+    pub const F32_CONVERT_I64_U: u8 = 0xb5;
+    pub const F32_DEMOTE_F64: u8 = 0xb6;
+    pub const F64_CONVERT_I32_S: u8 = 0xb7;
+    pub const F64_CONVERT_I32_U: u8 = 0xb8;
+    pub const F64_CONVERT_I64_S: u8 = 0xb9;
+    pub const F64_CONVERT_I64_U: u8 = 0xba;
+    pub const F64_PROMOTE_F32: u8 = 0xbb;
+    pub const I32_REINTERPRET_F32: u8 = 0xbc;
+    pub const I64_REINTERPRET_F64: u8 = 0xbd;
+    pub const F32_REINTERPRET_I32: u8 = 0xbe;
+    pub const F64_REINTERPRET_I64: u8 = 0xbf;
     pub const I32_LT_S: u8 = 0x48;
     pub const I32_GT_S: u8 = 0x4a;
     pub const I32_LE_U: u8 = 0x4d;
@@ -98,6 +160,183 @@ pub mod op {
 
 /// Tipo di blocco di `if`: vuoto o con un risultato.
 pub const BLOCK_EMPTY: u8 = 0x40;
+
+/// Conversioni saturanti (prefisso 0xfc).
+pub mod sat {
+    pub const I32_TRUNC_SAT_F32_S: u32 = 0;
+    pub const I32_TRUNC_SAT_F32_U: u32 = 1;
+    pub const I32_TRUNC_SAT_F64_S: u32 = 2;
+    pub const I32_TRUNC_SAT_F64_U: u32 = 3;
+    pub const I64_TRUNC_SAT_F32_S: u32 = 4;
+    pub const I64_TRUNC_SAT_F32_U: u32 = 5;
+    pub const I64_TRUNC_SAT_F64_S: u32 = 6;
+    pub const I64_TRUNC_SAT_F64_U: u32 = 7;
+}
+
+/// SIMD a 128 bit (prefisso 0xfd, "fixed-width SIMD"): opcode usati dal
+/// traduttore (ADR 0026).
+pub mod v {
+    pub const LOAD: u32 = 0x00;
+    pub const LOAD8_SPLAT: u32 = 0x07;
+    pub const LOAD16_SPLAT: u32 = 0x08;
+    pub const LOAD32_SPLAT: u32 = 0x09;
+    pub const LOAD64_SPLAT: u32 = 0x0a;
+    pub const STORE: u32 = 0x0b;
+    pub const CONST: u32 = 0x0c;
+    pub const SHUFFLE: u32 = 0x0d;
+    pub const SWIZZLE: u32 = 0x0e;
+    pub const I8X16_SPLAT: u32 = 0x0f;
+    pub const I16X8_SPLAT: u32 = 0x10;
+    pub const I32X4_SPLAT: u32 = 0x11;
+    pub const I64X2_SPLAT: u32 = 0x12;
+    pub const F32X4_SPLAT: u32 = 0x13;
+    pub const F64X2_SPLAT: u32 = 0x14;
+    pub const I8X16_EXTRACT_LANE_U: u32 = 0x16;
+    pub const I16X8_EXTRACT_LANE_U: u32 = 0x19;
+    pub const I32X4_EXTRACT_LANE: u32 = 0x1b;
+    pub const I32X4_REPLACE_LANE: u32 = 0x1c;
+    pub const I64X2_EXTRACT_LANE: u32 = 0x1d;
+    pub const I64X2_REPLACE_LANE: u32 = 0x1e;
+    pub const F32X4_EXTRACT_LANE: u32 = 0x1f;
+    pub const F64X2_EXTRACT_LANE: u32 = 0x21;
+    pub const I8X16_EQ: u32 = 0x23;
+    pub const I8X16_LT_U: u32 = 0x26;
+    pub const I8X16_GT_S: u32 = 0x27;
+    pub const I8X16_GT_U: u32 = 0x28;
+    pub const I8X16_GE_S: u32 = 0x2b;
+    pub const I8X16_GE_U: u32 = 0x2c;
+    pub const I16X8_EQ: u32 = 0x2d;
+    pub const I16X8_GT_S: u32 = 0x31;
+    pub const I16X8_GT_U: u32 = 0x32;
+    pub const I16X8_GE_S: u32 = 0x35;
+    pub const I16X8_GE_U: u32 = 0x36;
+    pub const I32X4_EQ: u32 = 0x37;
+    pub const I32X4_LT_U: u32 = 0x3a;
+    pub const I32X4_GT_S: u32 = 0x3b;
+    pub const I32X4_GT_U: u32 = 0x3c;
+    pub const I32X4_GE_S: u32 = 0x3f;
+    pub const I32X4_GE_U: u32 = 0x40;
+    pub const F32X4_EQ: u32 = 0x41;
+    pub const F32X4_NE: u32 = 0x42;
+    pub const F32X4_GT: u32 = 0x44;
+    pub const F32X4_GE: u32 = 0x46;
+    pub const F64X2_EQ: u32 = 0x47;
+    pub const F64X2_NE: u32 = 0x48;
+    pub const F64X2_GT: u32 = 0x4a;
+    pub const F64X2_GE: u32 = 0x4c;
+    pub const NOT: u32 = 0x4d;
+    pub const AND: u32 = 0x4e;
+    pub const ANDNOT: u32 = 0x4f;
+    pub const OR: u32 = 0x50;
+    pub const XOR: u32 = 0x51;
+    pub const BITSELECT: u32 = 0x52;
+    pub const ANY_TRUE: u32 = 0x53;
+    pub const F32X4_DEMOTE_F64X2_ZERO: u32 = 0x5e;
+    pub const F64X2_PROMOTE_LOW_F32X4: u32 = 0x5f;
+    pub const I8X16_ABS: u32 = 0x60;
+    pub const I8X16_NEG: u32 = 0x61;
+    pub const I8X16_POPCNT: u32 = 0x62;
+    pub const I8X16_ALL_TRUE: u32 = 0x63;
+    pub const I8X16_SHL: u32 = 0x6b;
+    pub const I8X16_SHR_S: u32 = 0x6c;
+    pub const I8X16_SHR_U: u32 = 0x6d;
+    pub const I8X16_ADD: u32 = 0x6e;
+    pub const I8X16_SUB: u32 = 0x71;
+    pub const I8X16_MIN_S: u32 = 0x76;
+    pub const I8X16_MIN_U: u32 = 0x77;
+    pub const I8X16_MAX_S: u32 = 0x78;
+    pub const I8X16_MAX_U: u32 = 0x79;
+    pub const I8X16_AVGR_U: u32 = 0x7b;
+    pub const I16X8_EXTADD_PAIRWISE_I8X16_S: u32 = 0x7c;
+    pub const I16X8_EXTADD_PAIRWISE_I8X16_U: u32 = 0x7d;
+    pub const I32X4_EXTADD_PAIRWISE_I16X8_S: u32 = 0x7e;
+    pub const I32X4_EXTADD_PAIRWISE_I16X8_U: u32 = 0x7f;
+    pub const I16X8_ABS: u32 = 0x80;
+    pub const I16X8_NEG: u32 = 0x81;
+    pub const I16X8_ALL_TRUE: u32 = 0x83;
+    pub const I16X8_EXTEND_LOW_I8X16_S: u32 = 0x87;
+    pub const I16X8_EXTEND_HIGH_I8X16_S: u32 = 0x88;
+    pub const I16X8_EXTEND_LOW_I8X16_U: u32 = 0x89;
+    pub const I16X8_EXTEND_HIGH_I8X16_U: u32 = 0x8a;
+    pub const I16X8_SHL: u32 = 0x8b;
+    pub const I16X8_SHR_S: u32 = 0x8c;
+    pub const I16X8_SHR_U: u32 = 0x8d;
+    pub const I16X8_ADD: u32 = 0x8e;
+    pub const I16X8_SUB: u32 = 0x91;
+    pub const I16X8_MUL: u32 = 0x95;
+    pub const I16X8_MIN_S: u32 = 0x96;
+    pub const I16X8_MIN_U: u32 = 0x97;
+    pub const I16X8_MAX_S: u32 = 0x98;
+    pub const I16X8_MAX_U: u32 = 0x99;
+    pub const I16X8_AVGR_U: u32 = 0x9b;
+    pub const I16X8_EXTMUL_LOW_I8X16_S: u32 = 0x9c;
+    pub const I16X8_EXTMUL_HIGH_I8X16_S: u32 = 0x9d;
+    pub const I16X8_EXTMUL_LOW_I8X16_U: u32 = 0x9e;
+    pub const I16X8_EXTMUL_HIGH_I8X16_U: u32 = 0x9f;
+    pub const I32X4_ABS: u32 = 0xa0;
+    pub const I32X4_NEG: u32 = 0xa1;
+    pub const I32X4_ALL_TRUE: u32 = 0xa3;
+    pub const I32X4_EXTEND_LOW_I16X8_S: u32 = 0xa7;
+    pub const I32X4_EXTEND_HIGH_I16X8_S: u32 = 0xa8;
+    pub const I32X4_EXTEND_LOW_I16X8_U: u32 = 0xa9;
+    pub const I32X4_EXTEND_HIGH_I16X8_U: u32 = 0xaa;
+    pub const I32X4_SHL: u32 = 0xab;
+    pub const I32X4_SHR_S: u32 = 0xac;
+    pub const I32X4_SHR_U: u32 = 0xad;
+    pub const I32X4_ADD: u32 = 0xae;
+    pub const I32X4_SUB: u32 = 0xb1;
+    pub const I32X4_MUL: u32 = 0xb5;
+    pub const I32X4_MIN_S: u32 = 0xb6;
+    pub const I32X4_MIN_U: u32 = 0xb7;
+    pub const I32X4_MAX_S: u32 = 0xb8;
+    pub const I32X4_MAX_U: u32 = 0xb9;
+    pub const I32X4_EXTMUL_LOW_I16X8_S: u32 = 0xbc;
+    pub const I32X4_EXTMUL_HIGH_I16X8_S: u32 = 0xbd;
+    pub const I32X4_EXTMUL_LOW_I16X8_U: u32 = 0xbe;
+    pub const I32X4_EXTMUL_HIGH_I16X8_U: u32 = 0xbf;
+    pub const I64X2_ABS: u32 = 0xc0;
+    pub const I64X2_NEG: u32 = 0xc1;
+    pub const I64X2_ALL_TRUE: u32 = 0xc3;
+    pub const I64X2_EXTEND_LOW_I32X4_S: u32 = 0xc7;
+    pub const I64X2_EXTEND_HIGH_I32X4_S: u32 = 0xc8;
+    pub const I64X2_EXTEND_LOW_I32X4_U: u32 = 0xc9;
+    pub const I64X2_EXTEND_HIGH_I32X4_U: u32 = 0xca;
+    pub const I64X2_SHL: u32 = 0xcb;
+    pub const I64X2_SHR_S: u32 = 0xcc;
+    pub const I64X2_SHR_U: u32 = 0xcd;
+    pub const I64X2_ADD: u32 = 0xce;
+    pub const I64X2_SUB: u32 = 0xd1;
+    pub const I64X2_MUL: u32 = 0xd5;
+    pub const I64X2_EQ: u32 = 0xd6;
+    pub const I64X2_GT_S: u32 = 0xd9;
+    pub const I64X2_GE_S: u32 = 0xdb;
+    pub const I64X2_EXTMUL_LOW_I32X4_S: u32 = 0xdc;
+    pub const I64X2_EXTMUL_HIGH_I32X4_S: u32 = 0xdd;
+    pub const I64X2_EXTMUL_LOW_I32X4_U: u32 = 0xde;
+    pub const I64X2_EXTMUL_HIGH_I32X4_U: u32 = 0xdf;
+    pub const F32X4_ABS: u32 = 0xe0;
+    pub const F32X4_NEG: u32 = 0xe1;
+    pub const F32X4_SQRT: u32 = 0xe3;
+    pub const F32X4_ADD: u32 = 0xe4;
+    pub const F32X4_SUB: u32 = 0xe5;
+    pub const F32X4_MUL: u32 = 0xe6;
+    pub const F32X4_DIV: u32 = 0xe7;
+    pub const F32X4_MIN: u32 = 0xe8;
+    pub const F32X4_MAX: u32 = 0xe9;
+    pub const F64X2_ABS: u32 = 0xec;
+    pub const F64X2_NEG: u32 = 0xed;
+    pub const F64X2_SQRT: u32 = 0xef;
+    pub const F64X2_ADD: u32 = 0xf0;
+    pub const F64X2_SUB: u32 = 0xf1;
+    pub const F64X2_MUL: u32 = 0xf2;
+    pub const F64X2_DIV: u32 = 0xf3;
+    pub const F64X2_MIN: u32 = 0xf4;
+    pub const F64X2_MAX: u32 = 0xf5;
+    pub const I32X4_TRUNC_SAT_F32X4_S: u32 = 0xf8;
+    pub const I32X4_TRUNC_SAT_F32X4_U: u32 = 0xf9;
+    pub const F32X4_CONVERT_I32X4_S: u32 = 0xfa;
+    pub const F32X4_CONVERT_I32X4_U: u32 = 0xfb;
+}
 
 pub fn uleb(out: &mut Vec<u8>, mut v: u64) {
     loop {
@@ -207,6 +446,70 @@ impl Func {
             4 => self.memarg(op::I64_STORE32, 2, offset),
             _ => self.memarg(op::I64_STORE, 3, offset),
         }
+    }
+    pub fn f32_load(&mut self, offset: u32) -> &mut Self {
+        self.memarg(op::F32_LOAD, 2, offset)
+    }
+    pub fn f64_load(&mut self, offset: u32) -> &mut Self {
+        self.memarg(op::F64_LOAD, 3, offset)
+    }
+    /// Istruzione con prefisso 0xfc (conversioni saturanti, [`sat`]).
+    pub fn sat(&mut self, o: u32) -> &mut Self {
+        self.code.push(0xfc);
+        uleb(&mut self.code, o as u64);
+        self
+    }
+    /// Istruzione SIMD senza immediati ([`v`]).
+    pub fn v(&mut self, o: u32) -> &mut Self {
+        self.code.push(0xfd);
+        uleb(&mut self.code, o as u64);
+        self
+    }
+    /// `v128.load` / `v128.store` (allineamento 16 come suggerimento).
+    pub fn v128_load(&mut self, offset: u32) -> &mut Self {
+        self.v(v::LOAD);
+        uleb(&mut self.code, 4);
+        uleb(&mut self.code, offset as u64);
+        self
+    }
+    pub fn v128_store(&mut self, offset: u32) -> &mut Self {
+        self.v(v::STORE);
+        uleb(&mut self.code, 4);
+        uleb(&mut self.code, offset as u64);
+        self
+    }
+    /// `v128.load{8,16,32,64}_splat` di `bytes` byte.
+    pub fn v128_load_splat(&mut self, bytes: u32, offset: u32) -> &mut Self {
+        let (o, a) = match bytes {
+            1 => (v::LOAD8_SPLAT, 0),
+            2 => (v::LOAD16_SPLAT, 1),
+            4 => (v::LOAD32_SPLAT, 2),
+            _ => (v::LOAD64_SPLAT, 3),
+        };
+        self.v(o);
+        uleb(&mut self.code, a);
+        uleb(&mut self.code, offset as u64);
+        self
+    }
+    /// `v128.const` dai due u64 (basso, alto).
+    pub fn v128_const(&mut self, lo: u64, hi: u64) -> &mut Self {
+        self.v(v::CONST);
+        self.code.extend_from_slice(&lo.to_le_bytes());
+        self.code.extend_from_slice(&hi.to_le_bytes());
+        self
+    }
+    /// `i8x16.shuffle` con gli indici `lanes` (0..32).
+    pub fn shuffle(&mut self, lanes: [u8; 16]) -> &mut Self {
+        debug_assert!(lanes.iter().all(|&l| l < 32));
+        self.v(v::SHUFFLE);
+        self.code.extend_from_slice(&lanes);
+        self
+    }
+    /// Estrazione o sostituzione di una corsia (`o` di [`v`]).
+    pub fn lane(&mut self, o: u32, lane: u8) -> &mut Self {
+        self.v(o);
+        self.code.push(lane);
+        self
     }
     /// `call_indirect` sul tipo `ty` nella tabella 0.
     pub fn call_indirect(&mut self, ty: u32) -> &mut Self {

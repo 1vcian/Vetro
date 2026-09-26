@@ -31,6 +31,8 @@ use vetro_cpu::decode::{
 };
 use vetro_cpu::simd::{CopyOp, IntInsn, MovImmOp, SimdInsn, VecMemInsn};
 
+mod vec;
+
 /// PSTATE.{D,A,I,F} nei bit 9:6 (come `SysState::daif`).
 const DAIF_ALL: u32 = 0x3c0;
 
@@ -477,6 +479,9 @@ const L_EXIT_CODE: u32 = L_T32 + 4;
 /// Prossimo blocco base (indice) per il `br_table` della regione.
 const L_NEXT: u32 = L_T32 + 5;
 const L_FK: u32 = L_T32 + 6;
+/// Temporanei v128 (SIMD in linea, ADR 0026).
+const L_V0: u32 = L_T32 + N_T32;
+const N_V128: u32 = 2;
 
 /// Codice d'uscita interno: STOP dopo l'istruzione corrente, di cui lo
 /// store ha già salvato `pc` e `steps` (la coda li porta all'istruzione
@@ -1170,7 +1175,13 @@ pub fn function(r: &Region) -> Func {
         pro.local_get(L_STATE).i64_load(off::FR).local_set(L_FR);
     }
     pro.code.extend_from_slice(&t.f.code);
-    pro.locals = vec![(32, ValType::I64), (1, ValType::I32), (N_T64, ValType::I64), (N_T32, ValType::I32)];
+    pro.locals = vec![
+        (32, ValType::I64),
+        (1, ValType::I32),
+        (N_T64, ValType::I64),
+        (N_T32, ValType::I32),
+        (N_V128, ValType::V128),
+    ];
     pro
 }
 
@@ -2932,6 +2943,7 @@ impl Tx {
             }
             Insn::Simd(SimdInsn::Mem(m)) => self.vec_mem(m),
             Insn::Simd(SimdInsn::Int(i @ (IntInsn::Copy { .. } | IntInsn::MovImm { .. }))) => self.vec_int(i),
+            Insn::Simd(SimdInsn::Int(i)) if self.vec_int_inline(i) => {}
             Insn::Simd(s) => self.simd_helper(&s),
             other => unreachable!("istruzione non traducibile: {other:?}"),
         }
@@ -3307,6 +3319,32 @@ mod tests {
                     validate(&module(&sb, mem));
                 }
                 blocks.clear();
+            }
+        }
+    }
+
+    /// Le istruzioni SIMD/FP (in linea o con `env.simd`, ADR 0026): ogni
+    /// codifica valida produce una regione valida, da sola.
+    #[test]
+    fn simd_encodings_validate() {
+        let mut seed = 0x0bad_cafe_1234_5678u64;
+        let mut count = 0;
+        let mem = MemoryImport { min: 1, shared_max: None };
+        while count < 20000 {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            // Classi SIMD/FP: bit 27:25 = x111.
+            let w = (seed as u32 & !(7 << 25)) | 7 << 25;
+            let insn = decode(w);
+            if !matches!(insn, Insn::Simd(_)) || kind(&insn) == Kind::Unsupported {
+                continue;
+            }
+            count += 1;
+            let r = Region::linear(0x40_0000, vec![w], None);
+            let bytes = module(std::slice::from_ref(&r), mem);
+            if let Err(e) = wasmparser::Validator::new().validate_all(&bytes) {
+                panic!("{w:#010x} {insn:?}: {e}");
             }
         }
     }
