@@ -2,7 +2,7 @@
 // nessuna dipendenza npm), comune ai test nel browser (browser.mjs, pages.mjs).
 
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { Fail } from './lib.mjs';
 
 const CANDIDATES = [
@@ -116,7 +116,7 @@ export async function launch(chrome, profile) {
   const proc = spawn(chrome, [
     '--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run',
     '--no-default-browser-check', '--disable-gpu', '--window-size=1400,1000',
-  ], { stdio: ['ignore', 'ignore', 'pipe'] });
+  ], { stdio: ['ignore', 'ignore', 'pipe'], detached: true });
   const url = await new Promise((ok, ko) => {
     let err = '';
     const t = setTimeout(() => ko(new Fail(`Chrome non risponde:\n${err}`)), 30_000);
@@ -140,4 +140,30 @@ export async function openPage(cdp, url) {
   await cdp.send('Page.enable', {}, sessionId);
   await cdp.send('Page.navigate', { url }, sessionId);
   return { page, targetId };
+}
+
+/**
+ * Chiude Chrome e cancella il profilo. Prima Browser.close dal protocollo,
+ * poi SIGKILL all'intero gruppo di processi (Chrome è lanciato `detached`:
+ * i processi figli, che possono ancora scrivere nel profilo, sono nel suo
+ * gruppo). La cancellazione del profilo è pulizia: se fallisce lo si dice,
+ * ma il test non diventa rosso per questo.
+ */
+export async function closeChrome(proc, cdp, profile) {
+  const exited = proc.exitCode !== null ? Promise.resolve() : new Promise((ok) => proc.once('exit', ok));
+  await Promise.race([cdp.send('Browser.close').catch(() => {}), new Promise((ok) => setTimeout(ok, 3000))]);
+  cdp.close();
+  await Promise.race([exited, new Promise((ok) => setTimeout(ok, 5000))]);
+  try {
+    process.kill(-proc.pid, 'SIGKILL');
+  } catch {
+    // gruppo già finito
+  }
+  await exited;
+  await new Promise((ok) => setTimeout(ok, 300));
+  try {
+    rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  } catch (e) {
+    console.log(`avviso: profilo di Chrome non cancellato (${profile}): ${e.message}`);
+  }
 }

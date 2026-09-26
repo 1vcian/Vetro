@@ -12,11 +12,11 @@
 // VETRO_REQUIRE_BROWSER=1.
 
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { serve } from '../../tools/web-serve.mjs';
-import { findChrome, launch, openPage } from './chrome.mjs';
+import { closeChrome, findChrome, launch, openPage } from './chrome.mjs';
 import { check, Fail, root, run } from './lib.mjs';
 
 run(async () => {
@@ -70,11 +70,7 @@ run(async () => {
     check(req.method === 'GET' && req.path === '/prova' && req.status === 200, `ispettore: ${JSON.stringify(req)}`);
     console.log(`sito sotto /Vetro/ senza COOP/COEP: shell in ${(ms / 1000).toFixed(2)} s, la console risponde, l'ispettore vede la rete`);
   } finally {
-    cdp.close();
-    const exited = proc.exitCode !== null ? Promise.resolve() : new Promise((ok) => proc.once('exit', ok));
-    proc.kill();
-    await exited;
-    rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
     await srv.close();
+    await closeChrome(proc, cdp, profile);
   }
 });

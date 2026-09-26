@@ -30,7 +30,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync }
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { appMounts, serve } from '../../tools/web-serve.mjs';
-import { findChrome, launch, openPage } from './chrome.mjs';
+import { closeChrome, findChrome, launch, openPage } from './chrome.mjs';
 import { check, Fail, POST_JSON, root, run } from './lib.mjs';
 
 run(async () => {
@@ -169,11 +169,7 @@ run(async () => {
     console.log('log caricato dal file scaricato: replay identico');
     console.log('ispettore, timeline e record & replay nel browser: ok');
   } finally {
-    cdp.close();
-    const exited = proc.exitCode !== null ? Promise.resolve() : new Promise((ok) => proc.once('exit', ok));
-    proc.kill();
     await srv.close();
-    await Promise.race([exited, new Promise((ok) => setTimeout(ok, 5000))]);
-    rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    await closeChrome(proc, cdp, profile);
   }
 });

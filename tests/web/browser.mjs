@@ -34,12 +34,12 @@
 //   node tests/web/browser.mjs
 
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { appMounts, serve } from '../../tools/web-serve.mjs';
 import { check, Fail, root, run } from './lib.mjs';
-import { findChrome, launch, openPage } from './chrome.mjs';
+import { closeChrome, findChrome, launch, openPage } from './chrome.mjs';
 
 const SIZE = 2 * 1024 * 1024 + 4096;
 const WRITE_AT = 1048576;
@@ -251,13 +251,7 @@ run(async () => {
       `richieste Range ${ranges.length - before3}`);
     console.log('app nel browser: ok');
   } finally {
-    cdp.close();
-    // Il profilo si cancella dopo l'uscita di Chrome (che può ancora
-    // scrivere i file di OPFS mentre chiude).
-    const exited = proc.exitCode !== null ? Promise.resolve() : new Promise((ok) => proc.once('exit', ok));
-    proc.kill();
     await srv.close();
-    await Promise.race([exited, new Promise((ok) => setTimeout(ok, 5000))]);
-    rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    await closeChrome(proc, cdp, profile);
   }
 });
