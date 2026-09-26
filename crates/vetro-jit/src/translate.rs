@@ -31,6 +31,7 @@ use vetro_cpu::decode::{
 };
 use vetro_cpu::simd::{CopyOp, IntInsn, MovImmOp, SimdInsn, VecMemInsn};
 
+mod fp;
 mod vec;
 
 /// PSTATE.{D,A,I,F} nei bit 9:6 (come `SysState::daif`).
@@ -530,7 +531,7 @@ pub fn module(blocks: &[Region], memory: MemoryImport) -> Vec<u8> {
     let mut m = Module::new();
     let t_blk = m.ty(&[I32], &[I32]);
     m.import_memory("env", "mem", memory);
-    for id in 0..N_RT {
+    for id in 0..n_rt() {
         let (name, p, r) = rt_sig(id);
         let t = m.ty(&p, &r);
         assert_eq!(m.import_func("rt", &name, t), id);
@@ -576,8 +577,13 @@ const F_LDU: u32 = 38;
 const F_STU: u32 = 40;
 /// `simd(state, parola, x, nzcv) -> valore`: `env.simd` (ADR 0026).
 const F_SIMD: u32 = 42;
+/// Percorsi veloci della virgola mobile (`rt.fp<k>`, [`fp::rt_ops`]).
+const F_FP0: u32 = 43;
+
 /// Funzioni del runtime.
-const N_RT: u32 = 43;
+fn n_rt() -> u32 {
+    F_FP0 + fp::rt_ops().len() as u32
+}
 
 /// Bit di `size` per `env.ld`/`env.st`: metà di un accesso da 16 byte non
 /// allineato a 16. L'host tratta la metà come non allineata (SCTLR_EL1.A,
@@ -635,6 +641,7 @@ fn rt_sig(id: u32) -> (String, Vec<ValType>, Vec<ValType>) {
         F_STU | 41 => (format!("stu{}", id - F_STU), vec![I32, I64, I64, I64, I64, I32], vec![I32]),
         F_STQ_SLOW => ("stq_slow".into(), vec![I32, I64, I64, I64, I64, I64, I32], vec![I32]),
         F_SIMD => ("simd".into(), vec![I32, I32, I64, I32], vec![I64]),
+        _ if id >= F_FP0 && id < n_rt() => fp::rt_sig((id - F_FP0) as usize),
         _ => unreachable!("funzione del runtime sconosciuta: {id}"),
     }
 }
@@ -1018,6 +1025,11 @@ pub fn runtime(memory: MemoryImport) -> Vec<u8> {
     let mut f = Func::default();
     f.local_get(0).local_get(1).local_get(2).local_get(3).call(simd);
     def(&mut m, F_SIMD, f);
+
+    // Percorsi veloci della virgola mobile (ADR 0026).
+    for k in 0..fp::rt_ops().len() {
+        def(&mut m, F_FP0 + k as u32, fp::build(k, simd));
+    }
     m.encode()
 }
 
@@ -2944,6 +2956,7 @@ impl Tx {
             Insn::Simd(SimdInsn::Mem(m)) => self.vec_mem(m),
             Insn::Simd(SimdInsn::Int(i @ (IntInsn::Copy { .. } | IntInsn::MovImm { .. }))) => self.vec_int(i),
             Insn::Simd(SimdInsn::Int(i)) if self.vec_int_inline(i) => {}
+            Insn::Simd(SimdInsn::Fp(f)) if self.fp_inline(f) => {}
             Insn::Simd(s) => self.simd_helper(&s),
             other => unreachable!("istruzione non traducibile: {other:?}"),
         }

@@ -218,10 +218,12 @@ pub mod v {
     pub const I32X4_GE_U: u32 = 0x40;
     pub const F32X4_EQ: u32 = 0x41;
     pub const F32X4_NE: u32 = 0x42;
+    pub const F32X4_LT: u32 = 0x43;
     pub const F32X4_GT: u32 = 0x44;
     pub const F32X4_GE: u32 = 0x46;
     pub const F64X2_EQ: u32 = 0x47;
     pub const F64X2_NE: u32 = 0x48;
+    pub const F64X2_LT: u32 = 0x49;
     pub const F64X2_GT: u32 = 0x4a;
     pub const F64X2_GE: u32 = 0x4c;
     pub const NOT: u32 = 0x4d;

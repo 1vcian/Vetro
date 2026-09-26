@@ -13,7 +13,7 @@ mod ldst;
 pub mod vreg;
 
 pub use crypto::CryptoInsn;
-pub use fpinsn::FpInsn;
+pub use fpinsn::{FpInsn, MovKind};
 pub use int::{CopyOp, IntInsn, MovImmOp};
 pub use ldst::VecMemInsn;
 
