@@ -147,16 +147,17 @@ adbd nel guest Android ascolta su TCP 5555 (`service.adb.tcp.port=5555`,
   CLSE) passa trasparente sulla connessione inoltrata. Come con QEMU
   (`hostfwd=tcp::5555-:5555`); l'emulatore di Android Studio usa invece
   la coppia 5554/5555 sulla console, che qui non c'è.
-- Browser: nessun socket, quindi niente adb dell'host: servirà un client
-  ADB in JS (M5/M6) sopra `GuestSocket` (`connectGuest(5555)`), che parli
-  il protocollo ADB (messaggi da 24 byte + dati, chiave RSA generata con
-  WebCrypto e conservata in IndexedDB, `shell:`, `sync:` per push/pull,
-  `install` via `exec:cmd package install`). In alternativa un ponte
-  WebSocket verso un adb dell'host, con il relay di M7.
-- Da decidere con l'immagine vera: se adbd parte già in TCP o va attivato
-  (proprietà di sistema nell'immagine, ADR di M5), e l'autorizzazione della
-  chiave (`ro.adb.secure=0` nelle build di debug, altrimenti la chiave
-  pubblica in `/data/misc/adb/adb_keys` nell'immagine).
+- Browser (fatto, ADR 0027): il client ADB in JS di `web/node/adb.mjs`
+  sopra `GuestSocket` (`connectGuest(5555)`): messaggi da 24 byte + dati,
+  `shell,v2,raw:` (stdout, stderr, codice d'uscita), `sync:` per push,
+  install = push in `/data/local/tmp` + `pm install -r`, `devices` dal
+  banner e da `ro.serialno`. AUTH gestita (`AdbKey`: RSA 2048 da WebCrypto,
+  firma PKCS#1 v1.5 del gettone come digest SHA-1, chiave pubblica nel
+  formato di `adb_keys`), ma l'immagine userdebug di Vetro ha
+  `ro.adb.secure=0` e adbd già in TCP 5555 (ADR 0022): il saluto è un CNXN
+  diretto. Provato contro un finto adbd (`tests/web/adb.mjs`), contro adbd
+  sotto QEMU via TCP (`tests/web/adb-tcp.mjs`) e nell'app
+  (`tests/web/android-chrome.mjs`).
 
 ## Registro degli eventi (`NetEvent { at, kind }`)
 `Dhcp`, `IcmpEcho`, `TcpOpen`, `TcpEstablished`,

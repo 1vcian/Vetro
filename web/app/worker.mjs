@@ -74,10 +74,12 @@
 // - lo snapshot si salva ANDROID_HOME_NS di tempo del guest dopo
 //   sys.boot_completed (la home è disegnata), dopo l'installazione di un
 //   APK e a richiesta; niente riposo della console (Android scrive sempre).
-//   Gli overlay si salvano solo insieme allo snapshot, così alla sessione
-//   successiva lo snapshot vale sempre: le scritture dopo l'ultimo
-//   salvataggio si perdono, come tornare all'ultimo stato salvato (un avvio
-//   da zero costa decine di minuti).
+//   Lo snapshot è l'unità di persistenza: contiene anche le scritture del
+//   guest sui dischi (il copy-on-write), quindi niente overlay separato (che
+//   costerebbe centinaia di MiB in più da scrivere e da rileggere). Alla
+//   sessione successiva si riparte dall'ultimo snapshot: le scritture fatte
+//   dopo si perdono, come tornare all'ultimo stato salvato; senza snapshot
+//   si rifà il primo avvio.
 
 import { DEV, INOTIFY, INPUT, instantiate, Machine, TIMELINE_EFFECT, TIMELINE_INPUT } from '../node/vetro.mjs';
 import { Recording } from '../node/recording.mjs';
@@ -178,7 +180,9 @@ async function openDisk(d, i, sources) {
   const index = feeder.add(source, { cache, blockSize: d.blockSize, maxBlocks: d.maxBlocks ?? 0, readOnly: d.readOnly, readahead: d.readahead ?? 1 });
   status(`disco ${i}: ${d.url ?? d.layout ?? d.file.name}, ${(source.size / 2 ** 20).toFixed(1)} MiB, blocchi da ${d.blockSize >> 10} KiB`);
   overlays[index] = null;
-  if (cfg.persist && cfg.opfs && !d.readOnly) {
+  // Con Android l'unità di persistenza è lo snapshot (che contiene anche le
+  // scritture del guest): niente overlay separato (vedi in cima).
+  if (cfg.persist && cfg.opfs && !d.readOnly && !android) {
     try {
       const file = await opfsFile('vetro-overlays', `${(await sha256Hex(source.key)).slice(0, 32)}.cow`);
       const o = DiskOverlay.open(m, index, file, source.key);

@@ -20,7 +20,7 @@ memoria lineare (due macchine da 1 GiB) arrivano negativi.
 
 ## Export
 
-Versione: `vetro_abi_version() -> u32`, oggi **11**. Cambia a ogni modifica
+Versione: `vetro_abi_version() -> u32`, oggi **12**. Cambia a ogni modifica
 incompatibile delle firme o dei codici qui sotto; il caricatore JS
 (`web/node/vetro.mjs`) la controlla.
 
@@ -51,6 +51,10 @@ incompatibile delle firme o dei codici qui sotto; il caricatore JS
   di runtime `rt.*` dei moduli generati), export `vetro_jit_vsync`
   (`env.vsync` del runtime), contatore `yields` in fondo a
   `vetro_jit_stats`.
+- 11 (M4): FP/SIMD nelle regioni (ADR 0026): export `vetro_jit_simd`.
+- 12 (M5): avvio da immagini Android (`vetro_load_android`, ADR 0018 e
+  0027). Non cambia firme esistenti; la RAM può superare 2 GiB anche su
+  wasm32 (sotto, "RAM oltre 2 GiB").
 
 ### Memoria
 
@@ -82,6 +86,24 @@ pratica: prendere la vista dopo ogni chiamata che può allocare.
 
 Codici di `vetro_load_linux`: 0 riuscito; 1 il caricatore ha rifiutato i file
 (motivo nel messaggio); 2 riga di comando non UTF-8.
+
+| Export | Firma | Significato |
+|---|---|---|
+| `vetro_load_android` | `(vm, boot, boot_len, vendor_boot, vendor_boot_len, init_boot, init_boot_len, params, params_len, flags: u32) -> u32` | ABI 12: il bootloader di `vetro_machine::android` (ADR 0018) combina `boot.img` (obbligatorio), `vendor_boot.img` e `init_boot.img` (nulli o lunghi 0 = assenti) con i parametri del bootloader `params` (UTF-8; gli `androidboot.*` vanno nel bootconfig con `vendor_boot` v4, gli altri in coda alla riga di comando) e carica il risultato come `vetro_load_linux`. `flags` bit 0 = recovery. Stessi codici di `vetro_load_linux` (2 = parametri non UTF-8); riuscito, `vetro_message_*` descrive kernel, ramdisk, bootconfig e riga di comando. I buffer si possono liberare subito dopo |
+
+In JS: `Machine.loadAndroid({ boot, vendorBoot, initBoot, params, recovery })`
+restituisce la descrizione. Prova: `tests/web/android-boot.mjs`.
+
+#### RAM oltre 2 GiB (ABI 12, ADR 0027)
+
+Su wasm32 nessuna allocazione di Rust supera `isize::MAX` (2 GiB - 1): con
+`ram_size` più grande la RAM del guest è una regione contigua presa con
+`memory.grow` fuori dall'allocatore (`vetro_machine::board::Ram`), letta e
+scritta a pezzi; la regione di una macchina distrutta si riusa (azzerata)
+per la prossima. La memoria lineare arriva a 4 GiB: con 3 GiB di RAM
+restano meno di 1 GiB per tutto il resto (copy-on-write dei dischi,
+blocchi in memoria, JIT, buffer degli snapshot). Il comportamento del guest
+non cambia (stesse istruzioni del riferimento nativo, `ram3g`).
 
 Codici di `vetro_run` (`Stop` di `vetro-machine`):
 
@@ -451,7 +473,9 @@ nel Worker (`opfsFile(cartella, nome)`), `MemFile` nei test.
   `Corrupt`); `persist()` applica le scritture di `vetro_overlay_take`
   (troncamento, dati, flush, intestazione, flush) e dice se ha scritto;
   `generation`, `info`.
-- `SnapshotStore.opfs()` / `.memory()`: `save(chiave, metadati, byte)`
+- `SnapshotStore.opfs()` / `.memory()`: `loadMeta(chiave)` (metadati di uno
+  snapshot completo senza leggerne i byte) e `readInto(chiave, vista)`;
+  `save(chiave, metadati, byte)`
   scrive `<chiave>.snap` e poi `<chiave>.json` (con `size`), `load(chiave)`
   restituisce `{ meta, bytes }` solo se i metadati ci sono e la lunghezza
   torna; `remove`.
@@ -461,7 +485,10 @@ nel Worker (`opfsFile(cartella, nome)`), `MemFile` nei test.
   `toBase64`/`fromBase64` per la coda della console nei metadati.
 
 La classe `Machine` di `vetro.mjs` ha `snapshotVersion`, `snapshotSave()`
-(copia dei byte), `snapshotRestore(bytes)` (lancia un `Error` con `code`
+(copia dei byte), `snapshotSaveWith(use)` e `snapshotRestoreWith(n, fill)`
+(senza copie nel JS: la vista sui byte nella memoria del modulo va
+direttamente in OPFS e viceversa; per Android, centinaia di MiB),
+`memoryBytes`, `snapshotRestore(bytes)` (lancia un `Error` con `code`
 `BadMagic`/`Version`/`Config`/`Corrupt`), `overlayOpen(disk, identity,
 bytes)`, `overlayTake(disk)` (`{ truncate, writes: [{ at, bytes }] }` o null),
 `overlayInfo(disk)`.
@@ -490,8 +517,10 @@ server che ospita l'app dovrà mandarle, e ogni risorsa di un'altra origine
 cross-origin`. Parametri dell'URL:
 `?kernel=URL&initrd=URL&disk=URL&cmdline=...&pointer=multitouch&webgpu=1&autostart=1`,
 più `snapshot=0` (niente cache degli snapshot), `persist=0` (dischi non
-persistenti), `files=/a,/b` (radici del gestore dei file) e `nofiles=1`
-(senza gestore dei file né vsock).
+persistenti), `files=/a,/b` (radici del gestore dei file), `nofiles=1`
+(senza gestore dei file né vsock), `ram=MiB`, e per l'immagine AOSP di
+Vetro `os=android` e `manifest=URL` (default: la versione pubblicata su R2;
+`tools/web-serve.mjs` serve anche `target/aosp/out` in `/aosp/`).
 
 - `main.mjs` (thread della pagina): sceglie kernel, initramfs e disco (URL
   o file locale), opzioni (RAM, risoluzione, tablet o touchscreen, blocchi
@@ -566,6 +595,39 @@ persistenti), `files=/a,/b` (radici del gestore dei file) e `nofiles=1`
   gli overlay sono cambiati, e a richiesta. A riposo: `Idle`, o 1,5 s di
   tempo del guest senza console, scanout, ingressi né dischi.
 
+### L'immagine AOSP nell'app (M5/M6, ADR 0027)
+
+- `web/node/android.mjs`: `PHASES` e `BootProgress` (fasi dell'avvio dalla
+  console: kernel, init prima e seconda fase, zygote, surfaceflinger,
+  system_server, avvio finito = `sys-boot-completed-set`).
+- `web/node/adb.mjs`: client ADB sopra un trasporto con `send`/`recv`/
+  `state` (il `GuestSocket` verso la porta 5555 del guest): `connect`
+  (CNXN; AUTH con `AdbKey` RSA se il dispositivo la chiede), `open`,
+  `shell` (shell v2 con stdout, stderr e codice), `push` (sync), `install`
+  (push in /data/local/tmp + `pm install -r`), `devices`; `pump()` fra un
+  quanto e l'altro.
+- `web/node/apk.mjs`: `apkInfo(bytes)` = pacchetto, versione, etichetta e
+  attività principale dal manifesto binario dello ZIP.
+- `web/node/disk.mjs`: `LayoutSource(url)`, il disco ricomposto da una
+  mappa (`tools/aosp/web-disk.mjs`): estensioni verso i file sparsi
+  pubblicati (`super.img`, `userdata.img`) letti con HTTP Range,
+  riempimenti e buchi; `parseLayout`, `composePlan`, `composeRead`.
+- Worker: con `config.android` legge il manifest (hash delle immagini per
+  la chiave degli snapshot), scarica le immagini di avvio solo per un avvio
+  da zero (sha256 verificato, copia in OPFS `vetro-images/`), disco dalla
+  mappa con 64 blocchi da 1 MiB in memoria e il resto in OPFS, macchina con
+  touchscreen, rete e (se scelto) vsock; manda le fasi (`progress`,
+  `booted`), dopo `sys.boot_completed` collega il client ADB
+  (`adb-status`) e serve le richieste `adb` della pagina (`shell`,
+  `devices`, `install` con apertura via `am start -W -n`); lo snapshot si
+  salva 20 s di guest dopo la fine dell'avvio, dopo un'installazione e a
+  richiesta; niente overlay separato (lo snapshot contiene già il
+  copy-on-write).
+- Pagina: selettore "Sistema", riquadro con le fasi e i tempi, stato di
+  adb, APK trascinato sul riquadro o sullo schermo (o scelto), riga per
+  `adb shell`; `window.vetroAndroid` (`state`, `install`, `shell`,
+  `devices`) per i test.
+
 ## Test web
 
 `tools/web-test.sh [--no-jit]` (job `boot` della CI, dopo
@@ -629,6 +691,21 @@ persistenti), `files=/a,/b` (radici del gestore dei file) e `nofiles=1`
   timeline uguali), salto a un'istruzione con gli stessi registri e la
   stessa memoria a VBAR_EL1, log ricomposto uguale al file, keyframe
   alterato rifiutato;
+- `tests/web/android-boot.mjs` (M5, ABI 12): `boot.img` e `init_boot.img`
+  v4 di `mkbootimg.py` intorno al kernel M3, `vetro_load_android` su una
+  macchina da 3 GiB: istruzioni e log uguali al riferimento nativo `ram3g`
+  (`load_linux` diretto); snapshot al prompt e ripristino su una macchina
+  nuova da 3 GiB (regione riusata) con lo stesso seguito;
+- `tests/web/adb.mjs`: il client ADB contro un finto adbd (un WRTE in volo
+  per flusso, sync, shell v2 e grezza, AUTH con firma e con chiave
+  pubblica); `tests/web/adb-tcp.mjs HOST:PORTA [APK]` contro un adbd vero
+  (prova manuale);
+- lunghi, solo con `VETRO_ANDROID=1` (non in CI): `tests/web/android.mjs`
+  (Android in Node dall'avvio o da uno snapshot, fasi, memoria, snapshot,
+  adb via GuestSocket, APK di prova installato e aperto, tocco) e
+  `tests/web/android-chrome.mjs` (l'app in Chrome: primo avvio fino alla
+  home, snapshot, secondo avvio dallo snapshot misurato, APK installato
+  dalla pagina, clic sul canvas; misure in `target/aosp/chrome-misure.json`);
 - `tests/web/browser-analysis.mjs` (Chrome, come `browser.mjs`): wget
   nell'ispettore con il JSON decodificato e legato al comando nella
   timeline, scrittura di un file legata al suo comando, download veri di
