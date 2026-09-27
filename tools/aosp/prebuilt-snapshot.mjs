@@ -20,6 +20,13 @@
 //                    instead of booting: to try compaction or compression
 //   --wasm=FILE      vetro-wasm (default target/wasm32-unknown-unknown/release)
 //   --guest-limit=S  gives up after S seconds of guest time (default 4000)
+//   --settle=S       after the home screen, waits (up to S seconds of guest
+//                    time) for the guest's 1-minute load average to fall below
+//                    --settle-load (default 3): the post-boot work (package
+//                    scans, jobs, microG) is then done before the snapshot
+//                    instead of after every restore, where it makes the first
+//                    minutes sluggish (ADR 0037). The load and the busiest
+//                    processes are logged every 30 s of guest time.
 //   --profile=P      a device profile (ADR 0035): a starter id (web/app/profiles)
 //                    or a JSON file. The machine and boot parameters become
 //                    the profile's (profileMachine, profileBootParams), its adb
@@ -66,6 +73,9 @@ const compact = !flag('no-compact');
 const restorePath = arg('restore', null);
 const wasmPath = arg('wasm', join(root, 'target/wasm32-unknown-unknown/release/vetro_wasm.wasm'));
 const guestLimit = Number(arg('guest-limit', 4000));
+const settleMax = BigInt(Math.round(Number(arg('settle', 0)))) * 1_000_000_000n;
+const settleLoad = Number(arg('settle-load', 3));
+const SETTLE_POLL_NS = 30_000_000_000n;
 const level = arg('level', 'small');
 const CONSOLE_TAIL = 64 * 1024;
 const profileArg = arg('profile', null);
@@ -162,7 +172,8 @@ async function main() {
   m.setJit();
 
   // The Worker's Android logic (web/app/worker.mjs, androidTick), sequential.
-  const st = { bootedNs: restorePath ? m.guestNs : null, adb: null, ready: false, retryNs: 0n, focusNs: restorePath ? m.guestNs : null, homeNs: restorePath ? m.guestNs : null, pollNs: 0n, query: false, done: false, busy: false };
+  const st = { bootedNs: restorePath ? m.guestNs : null, adb: null, ready: false, retryNs: 0n, focusNs: restorePath ? m.guestNs : null, homeNs: restorePath ? m.guestNs : null, pollNs: 0n, query: false, done: false, busy: false,
+    calm: settleMax === 0n, settlePollNs: 0n };
   let lastReport = 0;
   const latin1 = new TextDecoder('latin1');
   for (;;) {
@@ -244,7 +255,31 @@ async function main() {
         log(`scanout ${size.width}x${size.height}: ${join(outDir, `${key}.png`)}`);
       }
     }
-    if (settled && profile && !st.checked) {
+    if (settled && !st.calm) {
+      // Waits for the post-boot work to end (--settle).
+      if (m.guestNs >= st.settlePollNs) {
+        st.busy = true;
+        st.settlePollNs = m.guestNs + SETTLE_POLL_NS;
+        st.adb.shell('cat /proc/loadavg; top -b -n 1 -m 6 | tail -n 6').then((r) => {
+          const load = Number(r.stdout.split(' ')[0]);
+          const top = r.stdout.split('\n').slice(1).map((l) => l.trim().split(/\s+/).slice(-1)[0]).filter(Boolean).join(' ');
+          const since = Number(m.guestNs - st.homeNs) / 1e9;
+          log(`settling: load ${load} at ${guestSecs.toFixed(0)} s of guest time (${since.toFixed(0)} s after the home screen): ${top}`);
+          (measures.settle ??= []).push({ guestSecs, load });
+          if (load < settleLoad) {
+            st.calm = true;
+            log(`settled: load ${load} below ${settleLoad}`);
+          } else if (m.guestNs - st.homeNs >= settleMax) {
+            st.calm = true;
+            log(`not settled after ${since.toFixed(0)} s of guest time (load ${load}): snapshot anyway`);
+          }
+        }, (e) => {
+          st.error = e;
+        }).finally(() => {
+          st.busy = false;
+        });
+      }
+    } else if (settled && profile && !st.checked) {
       // What the guest reports for the profile, before the compaction.
       st.busy = true;
       st.adb.shell(PROFILE_REPORT).then((r) => {
