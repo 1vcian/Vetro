@@ -1,0 +1,136 @@
+# Allow-list of the public repository (ADR 0034), read by tools/export/public.sh.
+#
+# One rule per line: a kind, a space, a path relative to the repository root
+# (a file, or a folder and everything under it).
+#   +  public: exported
+#   ~  transitional: private by target, still exported because a public crate
+#      or module needs it to compile (ADR 0034, "Coupling"); --strict drops it
+#   -  private: never exported (listed so that a new, unlisted path shows up
+#      as "unclassified" in the export report instead of being forgotten)
+#   !  deny pattern (extended regex): an exported text file matching it stops
+#      the export (infrastructure addresses, keys, private hostnames)
+# The longest matching path wins, so a rule on a file overrides the rule on
+# its folder. A tracked file matched by no rule is private and reported as
+# unclassified (an error with --strict).
+
+# --- Workspace --------------------------------------------------------------
++ Cargo.toml
++ Cargo.lock
++ rust-toolchain.toml
++ rustfmt.toml
++ .gitignore
++ README.md
+# Replaced by the export with the chosen licence and a new NOTICE.
+- LICENSE.md
+- NOTICE
+# Agent instructions and configuration of the private repository.
+- CLAUDE.md
+- .claude
+# CI of the private repository; the public CI is written in phase B3.
+- .github
+- tools/ci-changes.sh
+
+# --- Core emulator ----------------------------------------------------------
++ crates/vetro-cpu
++ crates/vetro-mmu
++ crates/vetro-jit
++ crates/vetro-jit-native
++ crates/vetro-platform
++ crates/vetro-snapshot
++ crates/vetro-net
++ crates/vetro-machine
++ crates/vetro-wasm
++ crates/vetro-cli
+
+# Pro analysis (TLS plaintext, Binder/privacy, kernel introspection library,
+# HTTP/HAR/inspector, timeline). Target: private. Transitional because
+# vetro-machine, vetro-wasm and vetro-cli import it (ADR 0034, "Coupling").
+~ crates/vetro-analysis
+# Pro code living inside public crates (to move out, ADR 0034).
+~ crates/vetro-machine/src/analysis.rs
+~ crates/vetro-machine/src/tls.rs
+~ crates/vetro-machine/src/introspect.rs
+~ crates/vetro-wasm/src/analysis.rs
+~ crates/vetro-cli/src/analysis.rs
+~ crates/vetro-cli/src/netcap.rs
+~ crates/vetro-cli/tests/boot_pcap_har.rs
+
+# --- Tests ------------------------------------------------------------------
++ tests/boot
++ tests/diff
++ tests/isa
++ tests/linux
++ tests/apps
++ tests/e2e
++ tests/web
+~ tests/boot/tests/analysis.rs
+~ tests/boot/tests/introspect.rs
+~ tests/web/inspector.mjs
+~ tests/web/browser-analysis.mjs
+# The GitHub Pages site test follows tools/pages (private).
+- tests/web/pages.mjs
+
+# --- Community web app ------------------------------------------------------
++ web/app
++ web/node
++ web/src
+# Inspector, timeline and replay panels (Pro UI). main.mjs and the unit
+# tests import it.
+~ web/app/analysis.mjs
+
+# --- Guest images: build scripts and configuration --------------------------
++ guest/kernel
++ guest/aosp
++ guest/image
++ relay
+
+# --- Tools ------------------------------------------------------------------
++ tools/a64asm.sh
++ tools/ci.sh
++ tools/wasm-boot.sh
++ tools/web-serve.mjs
++ tools/web-test.sh
++ tools/oracle
++ tools/risu
++ tools/ltp
++ tools/guest-kernel
++ tools/guest-bins
++ tools/rootfs
++ tools/mkbootimg
++ tools/android-emu
++ tools/aosp
+# Readers of the HAR/pcapng exports (Pro tests).
+~ tools/analysis
+# AIDL map generator for the Binder decoder (Pro).
+- tools/aosp/aidl-map.py
+- tools/aosp/aidl-map.sh
+# Infrastructure: uploads to R2, the site, the catalog publisher, the build VM,
+# the export itself.
+- tools/aosp/upload.sh
+- tools/aosp/upload-snapshot.sh
+- tools/aosp/upload-web.sh
+- tools/catalog
+- tools/pages
+- tools/remote
+- tools/export
+
+# --- Docs -------------------------------------------------------------------
++ docs/adr
++ docs/specs
++ docs/research
++ docs/assets
++ docs/legal/CLA.md
++ docs/legal/acceptable-use.md
+# Product plan (pricing, server), work diaries, trademark strategy, this ADR.
+- docs/PLAN.md
+- docs/progress
+- docs/legal/trademark.md
+- docs/adr/0034-public-repository-licence-and-boundary.md
+
+# --- Deny patterns ----------------------------------------------------------
+# The build VM's address.
+! 34\.154\.15\.143
+# Private keys.
+! -----BEGIN ([A-Z]+ )?PRIVATE KEY-----
+# R2/S3 write credentials written out as values (the names alone are fine).
+! (R2|AWS)_SECRET_ACCESS_KEY=[A-Za-z0-9/+]{20}

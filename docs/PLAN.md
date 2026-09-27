@@ -253,6 +253,18 @@ one-off audits.
 1. **B1 — Preparation (now, no user-visible change):** licence ADR, plugin
    boundary ADR, export script for the public repo, trademark search for
    "Vetro", acceptable use policy, CLA text.
+   *Status (2026-09-27):* ADR 0034 (licence and open/closed boundary)
+   **proposed, decision by the owner** (proposal: AGPL-3.0-only + CLA).
+   Export script `tools/export/public.sh` with the allow-list
+   `tools/export/allow.txt` done: the non-strict export builds and passes
+   its tests on the build VM (except 14 busybox oracle cases that fail the
+   same way in the unexported tree: the VM lacks binfmt_misc for
+   qemu-aarch64, see `docs/progress/product.md`); `--strict` still fails on 17 links from public
+   to private code (Pro analysis in `vetro-machine`, `vetro-wasm`,
+   `vetro-cli`, the web app), to cut in B3 with the plan in ADR 0034.
+   Drafts in `docs/legal/`: CLA, acceptable use policy, trademark note
+   (all to be checked by a professional; the clearance search itself is
+   still to do). Still open: the plugin boundary ADR.
 2. **B2 — Domain and hosting:** vetro.lol on Cloudflare DNS; site and app on
    Cloudflare Pages with COOP/COEP; R2 on `assets.vetro.lol`. GitHub Pages is
    retired (it's only free for public repositories).
