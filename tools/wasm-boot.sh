@@ -5,7 +5,8 @@
 #   1. native interpreter (cargo test --release -p vetro-boot-tests --test vetro);
 #   2. interpreter compiled to wasm, in Node/V8 (web/node/boot.mjs);
 #   3. with --jit, also the system-mode JIT in Node/V8
-#      (web/node/boot.mjs --jit, ADR 0013).
+#      (web/node/boot.mjs --jit, ADR 0013), and again with the modules
+#      compiled in a Worker (--jit-background, ADR 0038).
 # The counted instructions and the console log must be identical (the
 # machine is deterministic, with or without the JIT). Prints the timings.
 #
@@ -73,6 +74,16 @@ if [ "$jit" -eq 1 ]; then
   jit_ms=$(sed -n 's/^VETRO-NODE-BOOT .*ms=\([0-9]*\).*/\1/p' target/guest-kernel/node-boot-jit.out)
   cmp target/guest-kernel/vetro-boot.log target/guest-kernel/node-boot-jit.log \
     || { echo "ERROR: the console log with the JIT in Node differs from the native one" >&2; exit 1; }
+  # ADR 0038: modules compiled in a Worker, same instructions and log.
+  echo "==> boot with the JIT in Node, modules compiled in a Worker (ADR 0038)"
+  status=0
+  node web/node/boot.mjs --wasm "$wasm" --jit --jit-background --expect-steps "$steps" > target/guest-kernel/node-boot-jit-bg.out \
+    || status=$?
+  cat target/guest-kernel/node-boot-jit-bg.out
+  [ "$status" -eq 0 ] || exit "$status"
+  bg_ms=$(sed -n 's/^VETRO-NODE-BOOT .*ms=\([0-9]*\).*/\1/p' target/guest-kernel/node-boot-jit-bg.out)
+  cmp target/guest-kernel/vetro-boot.log target/guest-kernel/node-boot-jit.log \
+    || { echo "ERROR: the console log with background JIT compilation differs from the native one" >&2; exit 1; }
 fi
 
 echo "==> timings (same $steps instructions, same log; from load to power-off)"
@@ -80,6 +91,7 @@ echo "    native interpreter:  ${native_s} s"
 echo "    interpreter in V8:   $(node -p "($node_ms / 1000).toFixed(2)") s"
 if [ "$jit" -eq 1 ]; then
   echo "    JIT in V8:           $(node -p "($jit_ms / 1000).toFixed(2)") s"
+  echo "    JIT, Worker compile: $(node -p "($bg_ms / 1000).toFixed(2)") s"
   # M4 threshold: the JIT in V8 no slower than the native interpreter.
   if [ "$(node -p "$jit_ms / 1000 <= $native_s")" != true ]; then
     echo "ERROR: the JIT in V8 ($(node -p "($jit_ms / 1000).toFixed(2)") s) is slower than the native interpreter (${native_s} s)" >&2
