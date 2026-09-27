@@ -116,6 +116,10 @@ cat > "$out/index.html" <<'EOF'
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Vetro</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="app/icons/icon-32.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="app/icons/icon-192.png">
+  <link rel="apple-touch-icon" href="app/icons/icon-180.png">
+  <meta property="og:image" content="app/icons/icon-512.png">
   <style>
     body { font: 16px/1.5 system-ui, sans-serif; max-width: 42rem; margin: 3rem auto; padding: 0 1rem; color: #1b1b1b; background: #fafafa; }
     a.button { display: inline-block; padding: .6rem 1.2rem; background: #1b1b1b; color: #fff; border-radius: .4rem; text-decoration: none; }
@@ -123,7 +127,7 @@ cat > "$out/index.html" <<'EOF'
   </style>
 </head>
 <body>
-  <h1>Vetro</h1>
+  <h1><img src="app/icons/icon-192.png" alt="" width="96" height="96" style="vertical-align:middle;margin-right:.5rem">Vetro</h1>
   <p>A full ARM64 system emulator written in Rust, running in your browser as
   WebAssembly: its own AArch64 CPU (interpreter and JIT to WebAssembly) on a
   copy of QEMU's <code>virt</code> board.</p>

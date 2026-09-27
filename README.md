@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/assets/vetro-icon.png" alt="Vetro" width="160"></p>
+
 # Vetro
 
 **A complete arm64 Android system, emulated inside a browser tab — with an
