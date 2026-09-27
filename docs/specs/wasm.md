@@ -177,7 +177,9 @@ Il giro con un disco via rete:
 
 | Export | Firma | Significato |
 |---|---|---|
-| `vetro_snapshot_version` | `() -> u32` | versione del formato degli snapshot (oggi 2): da mettere nella chiave della cache, così uno snapshot di un'altra versione non si prova nemmeno |
+| `vetro_snapshot_version` | `() -> u32` | snapshot format version (4 today): it goes into cache keys, so a snapshot of another version is not even tried |
+| `vetro_snapshot_config_hash` | `(vm) -> u64` | ABI 13 (ADR 0031): the machine configuration hash its snapshots carry in their header (RAM, devices, disks, virtio slots); read after the disks are added, for snapshot keys (the prebuilt Android snapshot) |
+| `vetro_snapshot_set_level` | `(vm, level: u32) -> u32` | ABI 13 (ADR 0031): compression of the next saves, 0 = fast (default), 1 = small (`lzh` frames: several times slower to save, about a third smaller, for downloaded snapshots). Restoring accepts both. Returns 1 for an unknown level (nothing changes) |
 | `vetro_snapshot_save` | `(vm) -> usize` | salva la macchina intera in un buffer interno e ne restituisce la lunghezza. Prima leggere la console: l'uscita già tolta alla UART e non consegnata al JS non entra |
 | `vetro_snapshot_ptr` | `(vm) -> *const u8` | i byte dell'ultimo salvataggio (nullo se non ce n'è), validi fino al prossimo salvataggio, a `vetro_snapshot_clear` o a `vetro_machine_free` |
 | `vetro_snapshot_clear` | `(vm)` | libera il buffer |
@@ -641,6 +643,44 @@ R2; `tools/web-serve.mjs` also serves `target/aosp/out` at `/aosp/`).
   status, APK dropped on the panel or on the screen (or chosen), an
   `adb shell` line; `window.vetroAndroid` (`state`, `install`, `shell`,
   `devices`) for tests.
+- Shared with the tools (`web/node/android.mjs`): `ANDROID_MACHINE` (2048 MiB,
+  1280x800, touchscreen, network, vsock), `ANDROID_DISK`, `machineDevices`,
+  `ANDROID_WAKE`, `ANDROID_COMPACT`, the home screen timings,
+  `DEFAULT_MANIFEST`, `androidKeyParts`.
+
+### The prebuilt Android snapshot (M6, ADR 0031)
+
+- Key (`androidKeyParts`, `web/node/prebuilt.mjs` `androidSnapshotKey`):
+  snapshot format and configuration hash of the running vetro-wasm (ABI 13),
+  RAM, screen, devices, image version, sha256 of the three boot images,
+  bootloader parameters, sha256 and size of the disk map (not its URL). The
+  app's own Android snapshots in OPFS use the same key.
+- On R2, next to the image: `aosp/<version>/snapshots/<key>.snap` (the
+  snapshot, small level) and `<key>.json`: `{ format:
+  'vetro-prebuilt-snapshot', version: 1, key, parts, size, sha256, chunk:
+  16 MiB, chunks: [sha256 of every chunk], meta: { steps, console, progress,
+  savedAt, why, prebuilt }, measures }` (`prebuiltProblem` checks it).
+- `findPrebuilt(manifestUrl, key)` → `{ info, url }` or `{ missing }` (404 =
+  none for this vetro-wasm). `downloadPrebuilt(info, url, file, { resume,
+  saveResume, onProgress, fetch, retries })`: streaming download, each chunk
+  verified before it is written, retries with a Range from the first
+  unverified chunk, `{ bytes, ms, resumedFrom, retries }`.
+  `SnapshotStore.downloadTarget(key)` → `{ file, resume, saveResume, finish,
+  close }`: the file is the snapshot itself, the resume state in
+  `<key>.part.json`, the metadata written by `finish`.
+- Worker: with no snapshot of its own for the key and `config.android.prebuilt`
+  not false, it looks up and downloads the prebuilt snapshot (messages
+  `prebuilt`: `missing`, `downloading` with `loaded`/`total`/`ms`, `done`,
+  `failed`), then restores it as usual (`restored` with `prebuilt: true`). A
+  failed download stops the start (reloading resumes it); none for the key =
+  cold boot.
+- Page: the expected size from `app/android-prebuilt.json` (written by the
+  site build, `tools/aosp/prebuilt-key.mjs`), progress bar with MiB, rate and
+  time left, a "cold boot" box (`&cold=1`); `window.vetroAndroid.state().prebuilt`.
+- Tools: `tools/aosp/prebuilt-snapshot.mjs` (makes it: the app's machine in
+  Node up to the home screen, compaction, small level), `upload-snapshot.sh`,
+  `prebuilt-key.mjs` (key of a vetro-wasm build, lookup on R2, the site's
+  hint and guard).
 
 ## Test web
 
@@ -716,13 +756,19 @@ R2; `tools/web-serve.mjs` also serves `target/aosp/out` at `/aosp/`).
   flight per stream, sync, shell v2 and raw, AUTH with a signature and with
   the public key); `tests/web/adb-tcp.mjs HOST:PORT [APK]` against a real
   adbd (manual test);
-- long, only with `VETRO_ANDROID=1` (not in CI): `tests/web/android.mjs`
-  (Android in Node from a cold boot or a snapshot, phases, memory,
-  snapshot, adb over GuestSocket, the test APK installed and opened, a touch)
-  and `tests/web/android-chrome.mjs` (the app in Chrome: first boot to the
-  home screen, snapshot, second start from the snapshot measured, APK
-  installed from the page, a click on the canvas; measurements in
-  `target/aosp/chrome-measurements.json`);
+- long, only with `VETRO_ANDROID=1`: `tests/web/android.mjs` (Android in
+  Node from a cold boot or a snapshot, phases, memory, snapshot, adb over
+  GuestSocket, the test APK installed and opened, a touch) and
+  `tests/web/android-chrome.mjs` (the app in Chrome: first boot to the home
+  screen, snapshot, second start from the snapshot measured, APK installed
+  from the page, a click on the canvas; with `VETRO_ANDROID_PREBUILT=1` the
+  first start downloads and restores the prebuilt snapshot instead, ADR 0031;
+  measurements in `target/aosp/chrome-measurements.json`). In CI: the
+  prebuilt form every night, the cold boot weekly
+  (`.github/workflows/nightly.yml`);
+- `tests/web/unit.mjs` also covers the prebuilt snapshot download (lookup,
+  404, chunks verified, a break retried with a Range, an interrupted download
+  resumed in a new session, a damaged chunk never written);
 - `tests/web/browser-analysis.mjs` (Chrome, come `browser.mjs`): wget
   nell'ispettore con il JSON decodificato e legato al comando nella
   timeline, scrittura di un file legata al suo comando, download veri di
