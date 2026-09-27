@@ -288,7 +288,7 @@ verifiable on its own:
    approach.
 
 Everything in (c) other than the JIT prototype is either already off the
-machine thread (I/O, ADR 0037's presentation) or a UX gain (parallel
+machine thread (I/O, ADR 0039's presentation) or a UX gain (parallel
 snapshot compression, worth doing after step 1, when RAM pages can be read
 from the shared memory by Workers without a copy).
 

@@ -38,8 +38,11 @@ jobs:
   # home screen (found by the key of the vetro-wasm built here, downloaded,
   # verified, restored), adb, the test APK installed through the page and
   # opened, a real click that changes the app's colour; then a second start
-  # from OPFS. It fails if R2 has no prebuilt snapshot for this vetro-wasm:
-  # regenerate it (tools/aosp/prebuilt-snapshot.mjs, upload-snapshot.sh).
+  # from OPFS (first frame in under 15 s) and three taps with the time from
+  # the press to the app's redraw. The app's default device profile (light,
+  # ADR 0039). It fails if R2 has no prebuilt snapshot for this vetro-wasm
+  # and profile: regenerate it (tools/aosp/prebuilt-snapshot.mjs
+  # --profile=light, upload-snapshot.sh).
   android:
     if: github.event.schedule != '0 4 * * 0'
     runs-on: ubuntu-24.04
@@ -68,14 +71,13 @@ jobs:
           VETRO_ANDROID: "1"
           VETRO_ANDROID_PREBUILT: "1"
           VETRO_WEB_PORT: "8080"
-          # The runner is slower than the reference Mac: the 15 s second
-          # start is measured and reported, not enforced here.
-          VETRO_ANDROID_SLOW: "1"
+          # M6's criterion is enforced: the second start's first frame in
+          # under 15 s (3.6 s on the runner with image bd09e2f, 2026-09-27).
       - if: always()
         run: |
           [ -f target/aosp/chrome-measurements.json ] && echo "::notice title=Android measurements::$(tr -d '\n' < target/aosp/chrome-measurements.json | cut -c1-3000)" || true
           if [ -s android.log ]; then
-            grep -E '^(first start|second start|APK installed|touch received|adb after)' android.log | sed 's/^/::notice title=Android::/' || true
+            grep -E '^(first start|second start|APK installed|touch received|adb after|taps after)' android.log | sed 's/^/::notice title=Android::/' || true
           fi
       - if: failure()
         run: |
@@ -122,7 +124,8 @@ jobs:
       - if: always()
         run: |
           if [ -s android-cold.log ]; then
-            grep -E '^(phase|boot finished|home screen drawn|snapshot|second start|APK installed|touch received)' android-cold.log | sed 's/^/::notice title=Android cold boot::/' || true
+            # At most 10 notices per step: the phases are in chrome-measurements.json.
+            grep -E '^(boot finished|home screen drawn|snapshot|second start|APK installed|touch received)' android-cold.log | sed 's/^/::notice title=Android cold boot::/' || true
           fi
       - if: always()
         uses: actions/upload-artifact@v4

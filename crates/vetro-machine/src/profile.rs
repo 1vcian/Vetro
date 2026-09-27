@@ -22,7 +22,8 @@ use vetro_platform::virtio::GpuConfig;
 pub const PROFILE_VERSION: u64 = 1;
 
 /// The starter profiles, in menu order: (id, JSON).
-pub const STARTERS: [(&str, &str); 4] = [
+pub const STARTERS: [(&str, &str); 5] = [
+    ("light", include_str!("../../../web/app/profiles/light.json")),
     ("default", include_str!("../../../web/app/profiles/default.json")),
     ("phone", include_str!("../../../web/app/profiles/phone.json")),
     ("small-phone", include_str!("../../../web/app/profiles/small-phone.json")),
@@ -380,7 +381,8 @@ mod tests {
 
     /// The boot parameters each starter profile gives. The same strings are
     /// checked for the browser in tests/web/unit.mjs ("device profiles").
-    const EXPECTED: [(&str, &str); 4] = [
+    const EXPECTED: [(&str, &str); 5] = [
+        ("light", "androidboot.lcd_density=180"),
         ("default", ""),
         (
             "phone",
@@ -422,6 +424,17 @@ mod tests {
         let gpu = GpuConfig::default();
         assert_eq!((gpu.width, gpu.height), (p.width, p.height));
         assert_eq!(p.android_params(), "");
+        assert!(p.adb_commands().is_empty());
+    }
+
+    #[test]
+    fn light_profile_is_the_default_layout_with_fewer_pixels() {
+        // The web app's default (ADR 0039): same dp size as the image's machine.
+        let p = starter("light").unwrap();
+        let d = starter("default").unwrap();
+        assert_eq!((p.width, p.height, p.density, p.ram_mib), (960, 600, 180, 2048));
+        assert_eq!(p.width * 160 / p.density, d.width * 160 / d.density);
+        assert_eq!(p.height * 160 / p.density, d.height * 160 / d.density);
         assert!(p.adb_commands().is_empty());
     }
 

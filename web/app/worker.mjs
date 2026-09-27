@@ -9,8 +9,10 @@
 // is what the M10 replay will play back.
 //
 // Time: the guest counts instructions (10 ns each). With `realtime` the
-// Worker does not let guest time run ahead of the real clock (it sleeps the
-// difference); without it, it goes at full speed. While a disk waits for
+// Worker does not let guest time run ahead of the real clock by more than
+// AHEAD_MS: quanta end there (a WFI stops at the end of its quantum instead
+// of jumping to its timer) and the Worker waits for the clock, woken at once
+// by an input; without it, it goes at full speed. While a disk waits for
 // data (`Blocked`) guest time is stopped (ADR 0014).
 //
 // File manager (M8, ADR 0020): with `files` the machine has virtio-vsock and
@@ -97,12 +99,43 @@ import { Recording } from '../node/recording.mjs';
 import { BlobSource, DiskFeeder, LayoutSource, MemoryCache, OpfsCache, RangeSource } from '../node/disk.mjs';
 import { AdbClient } from '../node/adb.mjs';
 import { apkInfo } from '../node/apk.mjs';
-import { ANDROID_DISK, ANDROID_HOME_NS, ANDROID_PARAMS, ANDROID_WAKE, BootProgress, GFXSTREAM_PARAMS, gridColors, HOME_DRAW_NS, HOME_MIN_COLORS, HOME_POLL_NS, HOME_QUERY, isHome, machineDevices } from '../node/android.mjs';
+import { ANDROID_DISK, ANDROID_HOME_NS, ANDROID_PARAMS, ANDROID_WAKE, ANDROID_GRAPHICS, BootProgress, GFXSTREAM_PARAMS, gridColors, HOME_DRAW_NS, HOME_MIN_COLORS, HOME_POLL_NS, HOME_QUERY, isHome, machineDevices } from '../node/android.mjs';
 import { DiskOverlay, fromBase64, opfsFile, sha256Hex, SnapshotStore, snapshotKey, staleReason, toBase64 } from '../node/persist.mjs';
 import { androidSnapshotKey, downloadPrebuilt, findPrebuilt, PREBUILT_CHUNK, prebuiltSnapUrl } from '../node/prebuilt.mjs';
 
+/** Largest quantum (instructions). */
 const QUANTUM = 1_000_000;
+/**
+ * Wall time a quantum should take: the page's messages (inputs) get in only
+ * between slices, and a slice ends after the quantum that crosses SLICE_MS.
+ * With Android in the browser the guest runs at a few tens of MIPS, so a
+ * fixed 1M-instruction quantum took 20-200 ms: quanta are sized from the
+ * measured speed instead.
+ */
+const QUANTUM_MS = 3;
 const SLICE_MS = 12;
+/**
+ * Real time: how far (ms) guest time may run ahead of the real clock. Past
+ * it the Worker waits for the clock, woken at once by an input, instead of
+ * running more quanta: a guest early by seconds would then crawl for as
+ * long after an input (one quantum per wait), which the user feels as taps
+ * doing nothing.
+ */
+const AHEAD_MS = 4;
+/** Instructions per millisecond of guest time (10 ns each). */
+const STEPS_PER_MS = 100_000;
+/** Smallest quantum, so a quantum always makes progress. */
+const MIN_QUANTUM = 20_000;
+/** Measured guest speed (instructions per ms of wall time), for QUANTUM_MS. */
+let stepsPerMs = 50_000;
+/**
+ * Automatic snapshots (after the home screen, after an install) wait until the
+ * user has not touched the machine for this long: saving stops the guest for
+ * seconds (tens on slow machines), during which a tap would do nothing.
+ */
+const SAVE_QUIET_MS = 4000;
+/** ... but no longer than this after they were requested. */
+const SAVE_DEFER_MAX_MS = 60_000;
 /** Overlays are saved at most every this many ms while the guest works. */
 const PERSIST_MS = 1000;
 /** Guest time without activity after which the guest is at rest (1.5 s). */
@@ -132,6 +165,10 @@ let snapKey = null;
 /** Metadata of the last snapshot saved or restored in this session. */
 let lastSnapshot = null;
 let saveRequested = false;
+/** When (performance.now()) the pending snapshot was requested. */
+let saveRequestedAt = 0;
+/** Last user input reaching the machine (performance.now()). */
+let lastUserInputAt = -Infinity;
 /** Why the requested snapshot is saved (for the page). */
 let saveWhy = 'requested';
 /** Android state (config.android), or null with the test kernel. */
@@ -159,8 +196,36 @@ let ignoredNotice = false;
 /** Real-time reference (reset when guest time jumps). */
 const clock = { t0: 0, g0: 0n, paused: 0 };
 
+/** Page inputs: how long they waited in the Worker before reaching the machine (ms). */
+const inputWait = { count: 0, lastMs: 0, maxMs: 0, sumMs: 0 };
+/** Absolute time (ms since the epoch), comparable with the page's. */
+const absNow = () => performance.timeOrigin + performance.now();
+
 const post = (msg, transfer = []) => postMessage(msg, transfer);
-const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
+
+/** Waits up to `ms` (Infinity: no limit), or until a message wakes the loop (`wake`). */
+function rest(ms) {
+  return new Promise((ok) => {
+    const timer = Number.isFinite(ms) ? setTimeout(ok, ms) : null;
+    wake = () => {
+      if (timer !== null) clearTimeout(timer);
+      ok();
+    };
+  }).finally(() => (wake = null));
+}
+
+// A task boundary without setTimeout's clamp (at least 4 ms once timeouts
+// nest, a quarter of every 12 ms slice): the page's messages get in, and the
+// machine goes on at once. A message to ourselves queues behind the page's
+// messages; scheduler.yield() is not used: its continuation runs ahead of
+// other tasks, so it could keep the page's inputs waiting.
+const yieldChannel = new MessageChannel();
+const yieldQueue = [];
+yieldChannel.port1.onmessage = () => yieldQueue.shift()?.();
+const yieldToEvents = () => new Promise((ok) => {
+  yieldQueue.push(ok);
+  yieldChannel.port2.postMessage(0);
+});
 const status = (text) => post({ type: 'status', text });
 
 /** The bytes of a chosen file or of a URL. */
@@ -270,11 +335,17 @@ async function saveSnapshot(why) {
   const t0 = performance.now();
   let writeMs = 0;
   const memory = m.memoryBytes;
-  const size = await store.saveStream(snapKey, meta, (write) => m.snapshotSaveTo((b, at) => {
-    const tw = performance.now();
-    write(b, at);
-    writeMs += performance.now() - tw;
-  }));
+  post({ type: 'busy', text: 'saving the machine state: the screen answers again when it is done' });
+  let size;
+  try {
+    size = await store.saveStream(snapKey, meta, (write) => m.snapshotSaveTo((b, at) => {
+      const tw = performance.now();
+      write(b, at);
+      writeMs += performance.now() - tw;
+    }));
+  } finally {
+    post({ type: 'busy', text: null });
+  }
   const saveMs = performance.now() - t0 - writeMs;
   lastSnapshot = meta;
   post({ type: 'snapshot', why, steps: Number(m.steps), size, saveMs, writeMs, generations: meta.generations, memory: Math.max(memory, m.memoryBytes) });
@@ -587,6 +658,8 @@ function androidTick() {
     adb.connect().then(async (banner) => {
       // A virtual machine in the page: the screen stays on.
       await adb.shell(ANDROID_WAKE);
+      // Lighter graphics unless the page asked for Android's own (ADR 0039).
+      await adb.shell(ANDROID_GRAPHICS[cfg.android.graphics] ?? ANDROID_GRAPHICS.light);
       // The device profile's settings kept in /data (ADR 0035): idempotent,
       // so they run again after every connection.
       for (const c of cfg.android.setup ?? []) await adb.shell(c);
@@ -640,6 +713,7 @@ function androidTick() {
     a.savedBoot = true;
     if (!lastSnapshot) {
       saveRequested = true;
+      saveRequestedAt = performance.now();
       saveWhy = homeReady ? 'home screen' : 'boot finished (home screen not seen)';
     }
   }
@@ -696,6 +770,7 @@ async function adbInstall(bytes, msg) {
   else if (info.launcher) component = `${info.package}/${info.launcher}`;
   if (store && msg.save !== false) {
     saveRequested = true;
+    saveRequestedAt = performance.now();
     saveWhy = 'app installed';
   }
   return { info, output, component, start, installMs, openMs: performance.now() - t0 - installMs };
@@ -727,7 +802,18 @@ function apply(msg) {
     ignoredNotice = true;
     return;
   }
+  if (msg.t !== undefined) {
+    // The page's timestamp is a measurement, not part of the guest input.
+    const waited = absNow() - msg.t;
+    inputWait.count++;
+    inputWait.lastMs = waited;
+    inputWait.maxMs = Math.max(inputWait.maxMs, waited);
+    inputWait.sumMs += waited;
+    msg = { ...msg };
+    delete msg.t;
+  }
   inputLog.push([Number(m.steps), msg]);
+  if (msg.type !== 'files' && msg.type !== 'resize') lastUserInputAt = performance.now();
   switch (msg.type) {
     case 'serial':
       m.consoleWrite(msg.text);
@@ -862,7 +948,7 @@ function flush() {
       const rect = m.displayTakeDirty();
       if (rect) {
         const pixels = m.displayCopy(rect);
-        post({ type: 'frame', width: size.width, height: size.height, rect, pixels }, [pixels.buffer]);
+        post({ type: 'frame', width: size.width, height: size.height, rect, pixels, at: absNow() }, [pixels.buffer]);
       }
     }
   }
@@ -996,6 +1082,8 @@ async function rr(cmd) {
 async function loop() {
   resetClock();
   const guestMs = () => Number(m.guestNs - clock.g0) / 1e6;
+  /** Guest time ahead of the real clock (ms). */
+  const aheadMs = () => guestMs() - (performance.now() - clock.t0 - clock.paused);
   let lastStats = 0;
   let lastPersist = performance.now();
   // Last guest activity (guest time) and rest already used.
@@ -1015,15 +1103,35 @@ async function loop() {
       wake = null;
       continue;
     }
-    if (inbox.length) activity();
+    const input = inbox.length > 0;
+    if (input) activity();
     while (inbox.length) apply(inbox.shift());
     pumpFiles();
-    const slice = performance.now();
     const realtime = cfg.realtime && mode === 'live';
+    // Real time: a guest ahead of the clock waits for it (at most AHEAD_MS
+    // and a quantum: a WFI stops at the end of the quantum), and an input
+    // ends the wait at once.
+    if (realtime && !input) {
+      const ahead = aheadMs();
+      if (ahead > AHEAD_MS) {
+        await rest(Math.min(ahead - AHEAD_MS, 50));
+        continue;
+      }
+    }
+    const slice = performance.now();
     let stop;
     for (;;) {
-      const budget = target === null ? QUANTUM : Math.min(QUANTUM, Number(target - m.steps));
+      const size = Math.max(MIN_QUANTUM, Math.min(QUANTUM, Math.round(stepsPerMs * QUANTUM_MS)));
+      let budget = target === null ? size : Math.min(size, Number(target - m.steps));
+      // Real time: no further than AHEAD_MS past the clock.
+      if (realtime) budget = Math.min(budget, Math.max(MIN_QUANTUM, Math.floor((AHEAD_MS - aheadMs()) * STEPS_PER_MS)));
+      const q0 = performance.now();
+      const s0 = m.steps;
       stop = budget > 0 ? m.run(budget) : 'Budget';
+      const qMs = performance.now() - q0;
+      // Speed from whole quanta that took measurable time (a WFI jump counts
+      // as fast: the next quantum corrects it).
+      if (stop === 'Budget' && qMs > 0.5) stepsPerMs = 0.7 * stepsPerMs + 0.3 * (Number(m.steps - s0) / qMs);
       if (stop === 'Blocked') {
         activity();
         const w = performance.now();
@@ -1045,7 +1153,7 @@ async function loop() {
         }
       }
       if (stop !== 'Budget' || performance.now() - slice > SLICE_MS) break;
-      if (realtime && guestMs() > performance.now() - clock.t0 - clock.paused + 20) break;
+      if (realtime && aheadMs() > AHEAD_MS) break;
     }
     if (mode === 'paused') continue;
     if (flush()) activity();
@@ -1059,13 +1167,15 @@ async function loop() {
     }
     // Snapshot: the first time the guest is at rest (boot finished), then at
     // rest if the disks have changed, or on request. Android: see androidTick.
-    const rest = !android && (stop === 'Idle' || (!rested && m.guestNs - activeNs >= REST_NS));
-    if (rest && stop !== 'Idle') {
+    const atRest = !android && (stop === 'Idle' || (!rested && m.guestNs - activeNs >= REST_NS));
+    if (atRest && stop !== 'Idle') {
       rested = true;
       if (persistOverlays()) activity();
     }
-    if (store && mode === 'live' && (saveRequested || (rest && (!lastSnapshot || String(generations()) !== String(lastSnapshot.generations))))) {
-      const why = saveRequested ? saveWhy : lastSnapshot ? 'disks changed' : 'boot finished';
+    // An automatic snapshot waits for a pause in the user's inputs (see SAVE_QUIET_MS).
+    const saveNow = saveRequested && (saveWhy === 'requested' || now - lastUserInputAt >= SAVE_QUIET_MS || now - saveRequestedAt >= SAVE_DEFER_MAX_MS);
+    if (store && mode === 'live' && (saveNow || (!saveRequested && atRest && (!lastSnapshot || String(generations()) !== String(lastSnapshot.generations))))) {
+      const why = saveNow ? saveWhy : lastSnapshot ? 'disks changed' : 'boot finished';
       saveRequested = false;
       saveWhy = 'requested';
       status(`saving the snapshot (${why})`);
@@ -1088,6 +1198,10 @@ async function loop() {
         jit: m.jitStats(),
         inputs: inputLog.length,
         memory: m.memoryBytes,
+        input: { ...inputWait },
+        quantum: Math.round(stepsPerMs * QUANTUM_MS),
+        // Guest time ahead of the real clock (ms; > 0: the guest is early).
+        aheadMs: aheadMs(),
       });
       if (mode !== 'live' || m.rrStatus().state === 'Recording') postRr();
       lastStats = now;
@@ -1097,8 +1211,8 @@ async function loop() {
     postAnalysis();
     if (stop === 'Idle' && mode === 'live') {
       status('the guest is waiting for input');
-      if (!inbox.length && !saveRequested && !control.length) await new Promise((ok) => (wake = ok));
-      wake = null;
+      // A deferred snapshot is saved once the inputs pause (SAVE_QUIET_MS).
+      if (!inbox.length && !control.length) await rest(saveRequested ? SAVE_QUIET_MS : Infinity);
       continue;
     }
     if (stop !== 'Budget') {
@@ -1106,9 +1220,9 @@ async function loop() {
       post({ type: 'stopped', reason: stop, steps: Number(m.steps) });
       return;
     }
-    // Real time: the guest does not run ahead of the clock.
-    const ahead = realtime ? guestMs() - (performance.now() - clock.t0 - clock.paused) : 0;
-    await sleep(Math.max(0, Math.min(ahead, 50)));
+    // Lets the page's messages in (inputs, reads): real time waits at the
+    // top of the loop.
+    await yieldToEvents();
   }
 }
 
@@ -1188,8 +1302,11 @@ onmessage = (e) => {
   }
   if (msg.type === 'save') {
     // Not a guest input: it is saved between two slices.
-    if (store) saveRequested = true;
-    else status('snapshot cache not active');
+    if (store) {
+      saveRequested = true;
+      saveRequestedAt = performance.now();
+      saveWhy = 'requested';
+    } else status('snapshot cache not active');
     wake?.();
     return;
   }

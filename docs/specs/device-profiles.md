@@ -80,13 +80,17 @@ snapshot (ADR 0031).
 
 | id | Screen | Density | RAM | `androidboot.*` |
 |---|---|---|---|---|
+| `light` | 960x600 | 180 | 2048 | `lcd_density=180` |
 | `default` | 1280x800 | 240 | 2048 | (none) |
 | `phone` | 720x1280 | 320 | 2048 | `lcd_density=320 serialno=VETROPHONE01 hardware.sku=phone` |
 | `small-phone` | 480x800 | 240 | 1536 | `serialno=VETROSMALL01 hardware.sku=small-phone` |
 | `tablet` | 1280x800 | 213 | 2048 | `lcd_density=213 serialno=VETROTABLET1 hardware.sku=tablet` |
 
 `phone`, `small-phone` and `tablet` also set `timezone: UTC` and a device
-name.
+name. The web app selects `light` (`DEFAULT_PROFILE`, ADR 0039); `default` is
+the image's own machine (`ANDROID_MACHINE`, `ANDROID_PARAMS`), what `vetro
+boot` uses without `--profile`. `PREBUILT_PROFILES` lists the profiles with a
+ready-made snapshot for the default image (`light`, `default`).
 
 ## Interfaces
 - Rust: `Profile::parse(&[u8]) -> Result<Profile, ProfileError>` (`field`,

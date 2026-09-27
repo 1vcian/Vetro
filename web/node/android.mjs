@@ -83,6 +83,21 @@ export function machineDevices(DEV, c) {
 /** adb command that keeps the screen on and wakes it (after connecting). */
 export const ANDROID_WAKE = 'svc power stayon true; settings put system screen_off_timeout 2147483647; input keyevent KEYCODE_WAKEUP; wm dismiss-keyguard';
 
+/**
+ * Graphics settings (ADR 0039), adb commands after connecting, kept in the
+ * guest's /data and idempotent (they run again after every connection):
+ * `light` (the app's default and the prebuilt snapshot's): no window and
+ * transition animations (full-screen frames the emulated phone draws slowly;
+ * they also lengthen opening an app), in-app animations at half their length
+ * (motion cues stay), no window blurs; `full`: Android's own values.
+ */
+export const ANDROID_GRAPHICS = {
+  light: 'settings put global window_animation_scale 0; settings put global transition_animation_scale 0; '
+    + 'settings put global animator_duration_scale 0.5; settings put global disable_window_blurs 1',
+  full: 'settings put global window_animation_scale 1; settings put global transition_animation_scale 1; '
+    + 'settings put global animator_duration_scale 1; settings put global disable_window_blurs 0',
+};
+
 /** Guest time after the home screen is drawn before the Android snapshot. */
 export const ANDROID_HOME_NS = 5_000_000_000n;
 /** At most this much guest time from the launcher being focused to the home screen drawn. */

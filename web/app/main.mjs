@@ -59,7 +59,7 @@ import { AnalysisPanels } from './analysis.mjs';
 import { ANDROID_MACHINE, ANDROID_VERSIONS, DEFAULT_MANIFEST, PHASES } from '../node/android.mjs';
 import { CatalogPanel } from './catalog.mjs';
 import { CATALOG_URL } from '../node/catalog.mjs';
-import { DEFAULT_PROFILE, parseProfile, profileAdbCommands, profileBootParams, profileUrl, STARTER_PROFILES } from '../node/profiles.mjs';
+import { DEFAULT_PROFILE, parseProfile, PREBUILT_PROFILES, profileAdbCommands, profileBootParams, profileUrl, STARTER_PROFILES } from '../node/profiles.mjs';
 
 const $ = (id) => document.getElementById(id);
 const form = $('setup');
@@ -75,6 +75,16 @@ let pointerKind = 'tablet';
 /** State visible to tests: how the machine started, saved snapshots, disks. */
 const vetroState = (window.vetroState = { boot: null, snapshots: [], disks: [], stopped: null });
 let startedAt = 0;
+/**
+ * Responsiveness as the user feels it (read by tests/web/android-chrome.mjs):
+ * frames drawn and their cost, and for each press on the screen the time to
+ * the next frame drawn (`frameMs`) and when the Worker applied it
+ * (`appliedMs`, from the Worker's stats). Times are page milliseconds.
+ */
+const perf = (vetroState.perf = { frames: 0, pixels: 0, drawMs: 0, maxDrawMs: 0, taps: [], frameLog: [] });
+const PERF_LOG = 600;
+/** Absolute time (ms since the epoch, fractional), comparable between the page and the Worker. */
+const absNow = () => performance.timeOrigin + performance.now();
 
 // ---- File manager ------------------------------------------------------------
 
@@ -200,7 +210,17 @@ function onFrame(msg) {
     $('screen-wrap').style.maxWidth = fb.height > fb.width ? `calc(85vh * ${fb.width / fb.height})` : '';
     placeCursor();
   }
+  const t = performance.now();
   renderer.draw(msg.rect, msg.pixels);
+  const now = performance.now();
+  const drawMs = now - t;
+  perf.frames++;
+  perf.pixels += msg.rect.width * msg.rect.height;
+  perf.drawMs += drawMs;
+  perf.maxDrawMs = Math.max(perf.maxDrawMs, drawMs);
+  perf.frameLog.push({ t: now, x: msg.rect.x, y: msg.rect.y, w: msg.rect.width, h: msg.rect.height, workerMs: msg.at ? absNow() - msg.at : null });
+  if (perf.frameLog.length > PERF_LOG) perf.frameLog.shift();
+  for (const tap of perf.taps) if (tap.frameMs === null) tap.frameMs = now - tap.t;
 }
 
 // Scanout off: with the test kernel the guest does not draw until a program
@@ -226,7 +246,9 @@ function onCursor(msg) {
 
 // ---- Input -----------------------------------------------------------------
 
-const send = (msg) => worker?.postMessage(msg);
+// Every input carries the page's absolute time `t`: the Worker measures how
+// long it waited before reaching the machine (not part of the guest input).
+const send = (msg) => worker?.postMessage({ ...msg, t: absNow() });
 const held = new Set();
 
 screen.addEventListener('keydown', (e) => {
@@ -255,6 +277,23 @@ function abs(e) {
   return [absAxis((e.clientX - r.left) / r.width), absAxis((e.clientY - r.top) / r.height)];
 }
 
+/**
+ * Feedback of a press drawn by the page at once: the guest may take a
+ * noticeable time to redraw (it is an emulated phone), the ripple says the
+ * press arrived.
+ */
+function ripple(e) {
+  const wrap = $('screen-wrap');
+  const r = wrap.getBoundingClientRect();
+  const dot = document.createElement('div');
+  dot.className = 'touch-ripple';
+  dot.style.left = `${e.clientX - r.left}px`;
+  dot.style.top = `${e.clientY - r.top}px`;
+  dot.addEventListener('animationend', () => dot.remove());
+  wrap.append(dot);
+  perf.ripples = (perf.ripples ?? 0) + 1;
+}
+
 // Touchscreen contacts: pointerId -> slot (0..9).
 const slots = new Map();
 function slotFor(id) {
@@ -273,6 +312,9 @@ screen.addEventListener('pointerdown', (e) => {
   screen.setPointerCapture(e.pointerId);
   e.preventDefault();
   const [x, y] = abs(e);
+  perf.taps.push({ t: performance.now(), frameMs: null });
+  if (perf.taps.length > 100) perf.taps.shift();
+  ripple(e);
   if (pointerKind === 'multitouch') {
     const slot = slotFor(e.pointerId);
     if (slot !== null) send({ type: 'touch', slot, x, y, down: true });
@@ -360,10 +402,11 @@ function applyProfile() {
   el.width.value = String(p.screen.width);
   el.height.value = String(p.screen.height);
   el.ramMiB.value = String(p.ramMiB);
-  // The ready-made snapshot note is about the default machine.
-  $('prebuilt-note').hidden = p.id !== DEFAULT_PROFILE;
-  $('profile-note').textContent = `${p.description || p.name} ` + (p.id === DEFAULT_PROFILE ? ''
-    : 'Ready-made snapshots are published for the default profile: with this one the first start is usually a cold boot ' +
+  // The ready-made snapshot note is about the profiles that have one.
+  const prebuilt = PREBUILT_PROFILES.includes(p.id);
+  $('prebuilt-note').hidden = !prebuilt;
+  $('profile-note').textContent = `${p.description || p.name} ` + (prebuilt ? ''
+    : 'Ready-made snapshots are published for the light and full-resolution profiles: with this one the first start is usually a cold boot ' +
       '(about 45 minutes), then later starts resume in seconds from the snapshot saved in the browser.');
 }
 
@@ -735,7 +778,8 @@ async function start() {
     opfs: el.opfs.checked,
     snapshot: el.snapshot.checked,
     persist: el.persist.checked,
-    android: android ? { manifest: new URL(el.manifestUrl.value.trim() || DEFAULT_MANIFEST, location.href).href, prebuilt: !el.coldBoot.checked } : null,
+    android: android ? { manifest: new URL(el.manifestUrl.value.trim() || DEFAULT_MANIFEST, location.href).href, prebuilt: !el.coldBoot.checked,
+      graphics: el.fullGraphics.checked ? 'full' : 'light' } : null,
     gpu: android && q.get('gpu') === 'webgl' ? 'webgl' : null,
   };
   if (android) {
@@ -809,6 +853,7 @@ async function start() {
         vetroState.disks = msg.disks;
         vetroState.memory = Math.max(vetroState.memory ?? 0, msg.memory ?? 0);
         vetroState.stats = msg;
+        if (msg.input) perf.input = msg.input;
         break;
       case 'restored': {
         vetroState.boot = { mode: 'snapshot', ms: performance.now() - startedAt, steps: msg.steps, size: msg.size, times: msg.times, memory: msg.memory, prebuilt: !!msg.prebuilt };
@@ -838,6 +883,11 @@ async function start() {
         break;
       case 'status':
         setStatus(msg.text);
+        break;
+      case 'busy':
+        // The Worker is saving the snapshot: the guest is stopped meanwhile.
+        $('screen-busy').textContent = msg.text ?? '';
+        $('screen-busy').hidden = !msg.text;
         break;
       case 'files-reply': {
         const p = rpcPending.get(msg.id);
@@ -917,6 +967,7 @@ for (const [param, field] of [['kernel', 'kernelUrl'], ['initrd', 'initrdUrl'], 
 }
 if (q.get('webgpu') === '1') form.elements.webgpu.checked = true;
 if (q.get('cold') === '1') form.elements.coldBoot.checked = true;
+if (q.get('graphics') === 'full') form.elements.fullGraphics.checked = true;
 if (q.get('snapshot') === '0') form.elements.snapshot.checked = false;
 if (q.get('persist') === '0') form.elements.persist.checked = false;
 if (q.get('nofiles') === '1') form.elements.files.checked = false;

@@ -9,14 +9,15 @@ menu of the setup form, before **Start**.
 
 | Profile | Screen | Density | Memory | Notes |
 |---|---|---|---|---|
-| **Default (landscape)** | 1280 x 800 | 240 dpi | 2 GiB | the only one with a ready-made snapshot today: the fastest first start |
+| **Light (landscape)** | 960 x 600 | 180 dpi | 2 GiB | selected by default: the same layout as full resolution with about half the pixels to draw, so the phone answers sooner; ready-made snapshot |
+| **Full resolution (landscape)** | 1280 x 800 | 240 dpi | 2 GiB | sharper, slower to draw; ready-made snapshot |
 | **Phone** | 720 x 1280, portrait | 320 dpi | 2 GiB | a typical 5-inch phone (360 x 640 dp) |
 | **Small phone** | 480 x 800, portrait | 240 dpi | 1.5 GiB | a small, low-memory phone (320 x 533 dp) |
 | **Tablet** | 1280 x 800, landscape | 213 dpi | 2 GiB | wide enough (600 dp) for apps to use their tablet layouts |
 
-With a profile other than the default, the **first start is a cold boot**
-of about 45 minutes, because the ready-made snapshot is published only for
-the default machine. From then on that profile resumes in seconds like any
+With a profile other than the two landscape ones, the **first start is a
+cold boot** of about 45 minutes, because ready-made snapshots are published
+only for those. From then on that profile resumes in seconds like any
 other: each profile keeps its own saved phone (see
 [Snapshots and saved data](snapshots-and-data.md)).
 
