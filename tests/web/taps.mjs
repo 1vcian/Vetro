@@ -67,10 +67,12 @@ export async function measureTaps(page, cdp, n, { limitMs = 120_000, pauseMs = 1
       return { frameMs: tap?.frameMs ?? null, centreMs: f ? f.t - tap.t : null, wait: p.input?.lastMs ?? null, ripples: p.ripples ?? 0 };
     })()`);
     const one = { frame_ms: t.frameMs, centre_ms: t.centreMs, polled_ms: polled, input_wait_ms: t.wait, ripple: t.ripples > before.ripples };
+    if (polled === null) one.centre = colour;
     taps.push(one);
     const ms = (x) => (x === null ? '-' : x.toFixed(0));
     log(`tap ${i + 1}: first frame ${ms(one.frame_ms)} ms, centre changed ${ms(one.centre_ms)} ms (pixel polled ${ms(polled)} ms), ` +
-      `waited in the Worker ${one.input_wait_ms === null ? '-' : one.input_wait_ms.toFixed(1)} ms${one.ripple ? ', ripple drawn' : ''}`);
+      `waited in the Worker ${one.input_wait_ms === null ? '-' : one.input_wait_ms.toFixed(1)} ms${one.ripple ? ', ripple drawn' : ''}` +
+      `${polled === null ? `; the centre stayed ${colour}, expected ${want}` : ''}`);
     if (polled === null) break;
     await sleep(pauseMs);
   }
