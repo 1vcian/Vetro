@@ -16,7 +16,8 @@
 // check as a cross-check; then the Home key (the launcher animation): frames
 // per second over 4 s. Results on stdout and in
 // target/aosp/responsiveness.json. VETRO_TAP_LIMIT_MS (unset: none) fails the
-// run when the median tap-to-frame time is above it.
+// run when the median tap-to-frame time is above it; VETRO_APP_QUERY adds URL
+// parameters (a device profile, `graphics=full`).
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -42,8 +43,9 @@ run(async () => {
   mkdirSync(out, { recursive: true });
   const srv = await serve({ mounts: appMounts(), port: Number(process.env.VETRO_WEB_PORT ?? 8080) });
   const manifest = process.env.VETRO_ANDROID_MANIFEST ?? DEFAULT_MANIFEST;
-  const url = `${srv.url}/app/?os=android&autostart=1&manifest=${encodeURIComponent(manifest)}`;
-  const res = { manifest, start: new Date().toISOString() };
+  // VETRO_APP_QUERY: more URL parameters, e.g. `&profile=default&graphics=full`.
+  const url = `${srv.url}/app/?os=android&autostart=1&manifest=${encodeURIComponent(manifest)}${process.env.VETRO_APP_QUERY ?? ''}`;
+  const res = { manifest, query: process.env.VETRO_APP_QUERY ?? '', start: new Date().toISOString() };
   const { proc, cdp } = await launch(chrome, process.env.VETRO_ANDROID_PROFILE);
   try {
     const t0 = Date.now();

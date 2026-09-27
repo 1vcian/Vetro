@@ -263,7 +263,8 @@ run(async () => {
   const manifest = process.env.VETRO_ANDROID_MANIFEST ?? `${srv.url}/aosp/manifest.json`;
   if (!process.env.VETRO_ANDROID_MANIFEST) check(existsSync(join(out, 'out/web/disk.json')), 'target/aosp/out/web/disk.json missing: node tools/aosp/web-disk.mjs');
   if (PREBUILT && !process.env.VETRO_ANDROID_MANIFEST) check(readdirSync(join(out, 'prebuilt')).some((f) => f.endsWith('.json')), 'target/aosp/prebuilt has no snapshot: tools/aosp/prebuilt-snapshot.mjs');
-  const url = `${srv.url}/app/?os=android&autostart=1${PREBUILT ? '' : '&cold=1'}&manifest=${encodeURIComponent(manifest)}`;
+  // VETRO_APP_QUERY: more URL parameters (a device profile, `graphics=full`).
+  const url = `${srv.url}/app/?os=android&autostart=1${PREBUILT ? '' : '&cold=1'}&manifest=${encodeURIComponent(manifest)}${process.env.VETRO_APP_QUERY ?? ''}`;
   misure.manifest = manifest;
   // VETRO_ANDROID_PROFILE: a Chrome profile to keep (with the snapshot in
   // OPFS); VETRO_ANDROID_SKIP_BOOT=1 skips the first boot and resumes from the
