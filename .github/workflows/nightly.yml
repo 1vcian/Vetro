@@ -40,7 +40,7 @@ jobs:
   # opened, a real click that changes the app's colour; then a second start
   # from OPFS (first frame in under 15 s) and three taps with the time from
   # the press to the app's redraw. The app's default device profile (light,
-  # ADR 0036). It fails if R2 has no prebuilt snapshot for this vetro-wasm
+  # ADR 0037). It fails if R2 has no prebuilt snapshot for this vetro-wasm
   # and profile: regenerate it (tools/aosp/prebuilt-snapshot.mjs
   # --profile=light, upload-snapshot.sh).
   android:

@@ -76,7 +76,7 @@ export function machineDevices(DEV, c) {
 export const ANDROID_WAKE = 'svc power stayon true; settings put system screen_off_timeout 2147483647; input keyevent KEYCODE_WAKEUP; wm dismiss-keyguard';
 
 /**
- * Graphics settings (ADR 0036), adb commands after connecting, kept in the
+ * Graphics settings (ADR 0037), adb commands after connecting, kept in the
  * guest's /data and idempotent (they run again after every connection):
  * `light` (the app's default and the prebuilt snapshot's): no window and
  * transition animations (full-screen frames the emulated phone draws slowly;

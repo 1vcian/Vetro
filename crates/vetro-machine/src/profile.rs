@@ -429,7 +429,7 @@ mod tests {
 
     #[test]
     fn light_profile_is_the_default_layout_with_fewer_pixels() {
-        // The web app's default (ADR 0036): same dp size as the image's machine.
+        // The web app's default (ADR 0037): same dp size as the image's machine.
         let p = starter("light").unwrap();
         let d = starter("default").unwrap();
         assert_eq!((p.width, p.height, p.density, p.ram_mib), (960, 600, 180, 2048));

@@ -6,7 +6,7 @@
 //   node tools/aosp/prebuilt-key.mjs [--wasm=FILE] [--manifest=URL] [--profile=ID] [--write=FILE] [--require]
 //
 // Builds the app's Android machine for a device profile (default: the one the
-// app selects, DEFAULT_PROFILE, ADR 0036; its machine and boot parameters,
+// app selects, DEFAULT_PROFILE, ADR 0037; its machine and boot parameters,
 // ANDROID_DISK) with the given vetro-wasm, without booting it, and computes
 // the key exactly as the
 // Worker does (androidSnapshotKey: snapshot format, configuration hash,

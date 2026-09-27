@@ -194,7 +194,7 @@ async function main() {
       st.adb = adb;
       adb.connect().then(async () => {
         await adb.shell(ANDROID_WAKE);
-        // The app's default graphics settings, already in the snapshot (ADR 0036).
+        // The app's default graphics settings, already in the snapshot (ADR 0037).
         await adb.shell(ANDROID_GRAPHICS.light);
         for (const c of setup) {
           const r = await adb.shell(c);

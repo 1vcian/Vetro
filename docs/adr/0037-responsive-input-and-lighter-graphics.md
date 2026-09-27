@@ -1,4 +1,4 @@
-# ADR 0036 — Responsive input and lighter graphics for Android in the app
+# ADR 0037 — Responsive input and lighter graphics for Android in the app
 
 - Status: accepted (M5/M6, 2026-09-27). Builds on ADR 0014 (disk waits and
   guest time), 0028 (AOSP in the browser), 0031 (prebuilt snapshot, nightly

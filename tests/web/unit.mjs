@@ -573,7 +573,7 @@ test('device profiles: starters, boot parameters, adb commands, rejections (ADR 
     tablet: 'androidboot.lcd_density=213 androidboot.serialno=VETROTABLET1 androidboot.hardware.sku=tablet',
   };
   eq(STARTER_PROFILES, Object.keys(expected), 'starter list');
-  eq(DEFAULT_PROFILE, 'light', 'the app\'s default profile (ADR 0036)');
+  eq(DEFAULT_PROFILE, 'light', 'the app\'s default profile (ADR 0037)');
   const light = load('light');
   eq(profileMachine(light), { ...ANDROID_MACHINE, width: 960, height: 600 }, 'light machine');
   eq(profileAdbCommands(light), [], 'light adb commands');

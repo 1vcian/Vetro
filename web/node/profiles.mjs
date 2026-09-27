@@ -30,12 +30,12 @@ export const PROFILE_VERSION = 1;
 /** Profiles shipped with the app (web/app/profiles/<id>.json), in menu order. */
 export const STARTER_PROFILES = ['light', 'default', 'phone', 'small-phone', 'tablet'];
 /**
- * The profile the app selects (ADR 0036): `light`, the image's layout at
+ * The profile the app selects (ADR 0037): `light`, the image's layout at
  * 960x600. `default` stays the image's own machine (ANDROID_MACHINE,
  * ANDROID_PARAMS), what `vetro boot` uses without --profile.
  */
 export const DEFAULT_PROFILE = 'light';
-/** Profiles with a ready-made home-screen snapshot for the default image (ADR 0031, 0036). */
+/** Profiles with a ready-made home-screen snapshot for the default image (ADR 0031, 0037). */
 export const PREBUILT_PROFILES = ['light', 'default'];
 
 /**

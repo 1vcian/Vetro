@@ -87,7 +87,7 @@ snapshot (ADR 0031).
 | `tablet` | 1280x800 | 213 | 2048 | `lcd_density=213 serialno=VETROTABLET1 hardware.sku=tablet` |
 
 `phone`, `small-phone` and `tablet` also set `timezone: UTC` and a device
-name. The web app selects `light` (`DEFAULT_PROFILE`, ADR 0036); `default` is
+name. The web app selects `light` (`DEFAULT_PROFILE`, ADR 0037); `default` is
 the image's own machine (`ANDROID_MACHINE`, `ANDROID_PARAMS`), what `vetro
 boot` uses without `--profile`. `PREBUILT_PROFILES` lists the profiles with a
 ready-made snapshot for the default image (`light`, `default`).

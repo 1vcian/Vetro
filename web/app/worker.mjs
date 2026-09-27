@@ -607,7 +607,7 @@ function androidTick() {
     adb.connect().then(async (banner) => {
       // A virtual machine in the page: the screen stays on.
       await adb.shell(ANDROID_WAKE);
-      // Lighter graphics unless the page asked for Android's own (ADR 0036).
+      // Lighter graphics unless the page asked for Android's own (ADR 0037).
       await adb.shell(ANDROID_GRAPHICS[cfg.android.graphics] ?? ANDROID_GRAPHICS.light);
       // The device profile's settings kept in /data (ADR 0035): idempotent,
       // so they run again after every connection.
