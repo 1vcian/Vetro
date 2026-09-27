@@ -1,6 +1,6 @@
 //! The 3D side of virtio-gpu (§5.7.6.8, `VIRTIO_GPU_F_VIRGL`): contexts,
 //! 3D resources, transfers and command submission are forwarded to a
-//! [`Renderer3d`] (ADR 0036: gfxstream in `vetro-gfxstream`). The device keeps
+//! [`Renderer3d`] (ADR 0037: gfxstream in `vetro-gfxstream`). The device keeps
 //! only what the virtio protocol itself defines (ids, backing, scanouts);
 //! what a 3D resource contains is the renderer's business.
 

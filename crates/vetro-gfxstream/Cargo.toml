@@ -1,6 +1,6 @@
 [package]
 name = "vetro-gfxstream"
-description = "Host side of gfxstream GLES over virtio-gpu 3D: pipes, renderControl and GLES decoding, WebGL2 op stream (ADR 0036)."
+description = "Host side of gfxstream GLES over virtio-gpu 3D: pipes, renderControl and GLES decoding, WebGL2 op stream (ADR 0037)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

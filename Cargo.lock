@@ -965,6 +965,7 @@ version = "0.0.0"
 dependencies = [
  "vetro-analysis",
  "vetro-cpu",
+ "vetro-gfxstream",
  "vetro-jit",
  "vetro-mmu",
  "vetro-net",

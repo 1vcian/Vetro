@@ -1,7 +1,7 @@
 //! A GLSL ES declaration scanner: what a program exposes (uniforms, vertex
 //! attributes, uniform blocks) computed from the shader text, so that the
 //! guest's introspection queries never depend on the host GPU's compiler
-//! (ADR 0036, determinism). Every declared uniform counts as active, which
+//! (ADR 0037, determinism). Every declared uniform counts as active, which
 //! the GLSL ES spec allows ("the uniform will be considered active" when the
 //! compiler cannot tell), in declaration order, vertex shader first.
 //!

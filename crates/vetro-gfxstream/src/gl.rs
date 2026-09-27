@@ -2,7 +2,7 @@
 //! surfaces, ColorBuffers, images, syncs) and GLES calls, turned into the
 //! WebGL2 op stream. Behaviour follows upstream's host
 //! (`RenderControl.cpp`, `FrameBuffer.cpp`, `GLESv2Decoder.cpp`); what the
-//! guest can query is answered here, deterministically (ADR 0036).
+//! guest can query is answered here, deterministically (ADR 0037).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -356,7 +356,7 @@ impl Gl {
     }
 
     /// The ColorBuffer's rectangle as guest bytes (tightly packed rows,
-    /// row 0 = texture row `y`): a readback (ADR 0036).
+    /// row 0 = texture row `y`): a readback (ADR 0037).
     pub fn cb_read(&mut self, handle: u32, x: u32, y: u32, w: u32, h: u32) -> Vec<u8> {
         let Some(cb) = self.cbs.get(&handle).cloned() else { return Vec::new() };
         if !cb.tex.transferable || w == 0 || h == 0 {

@@ -1,4 +1,4 @@
-//! virtio-gpu 2D (virtio v1.2, §5.7), without virgl or blobs.
+//! virtio-gpu (virtio v1.2, §5.7): 2D, and 3D with a renderer (no blobs).
 //!
 //! Queues: 0 = control (readable command, writable response), 1 =
 //! cursor (commands without a response). Feature offered: EDID (can be disabled).
@@ -35,7 +35,7 @@
 //! scanout (VIRTIO_GPU_EVENT_DISPLAY event with a configuration
 //! interrupt, like resizing a window in QEMU).
 //!
-//! 3D (ADR 0036), only with [`GpuConfig::virgl`]: feature VIRGL, capsets from
+//! 3D (ADR 0037), only with [`GpuConfig::virgl`]: feature VIRGL, capsets from
 //! the [`Renderer3d`], CTX_CREATE/DESTROY/ATTACH_RESOURCE/DETACH_RESOURCE,
 //! RESOURCE_CREATE_3D, TRANSFER_TO_HOST_3D/FROM_HOST_3D and SUBMIT_3D. 3D
 //! resources share the id space of 2D ones and take backing the same way;
@@ -308,8 +308,10 @@ impl DisplayBackend for MemDisplay {
     }
 }
 
-/// Device configuration.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Device configuration. `Debug` omits `virgl` when it is off: the machine's
+/// snapshot key hashes this text, and 2D machines keep their key (and their
+/// prebuilt snapshots, ADR 0031).
+#[derive(Clone, PartialEq, Eq)]
 pub struct GpuConfig {
     /// Number of scanouts (1..=16).
     pub scanouts: u32,
@@ -324,8 +326,24 @@ pub struct GpuConfig {
     /// Maximum resource memory (like QEMU's `max_hostmem`).
     pub max_hostmem: u64,
     /// Offers VIRTIO_GPU_F_VIRGL: 3D commands go to the [`Renderer3d`]
-    /// installed with [`VirtioGpu::set_renderer`] (ADR 0036).
+    /// installed with [`VirtioGpu::set_renderer`] (ADR 0037).
     pub virgl: bool,
+}
+
+impl core::fmt::Debug for GpuConfig {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut d = f.debug_struct("GpuConfig");
+        d.field("scanouts", &self.scanouts)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("edid", &self.edid)
+            .field("monitor", &self.monitor)
+            .field("max_hostmem", &self.max_hostmem);
+        if self.virgl {
+            d.field("virgl", &self.virgl);
+        }
+        d.finish()
+    }
 }
 
 impl Default for GpuConfig {

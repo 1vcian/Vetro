@@ -1,7 +1,7 @@
 //! The GL state of a guest context (host object ids), and the ops that move
 //! the WebGL2 context from one guest context's state to another's. Every
 //! guest context runs on the one WebGL2 context of the executor (WebGL has
-//! no shared contexts, ADR 0036); object state (vertex arrays, textures,
+//! no shared contexts, ADR 0037); object state (vertex arrays, textures,
 //! programs) lives in the objects themselves, so only this context-level
 //! vector is switched.
 

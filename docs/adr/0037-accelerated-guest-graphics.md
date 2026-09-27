@@ -1,11 +1,11 @@
-# ADR 0036 — Accelerated guest graphics: gfxstream GLES over virtio-gpu 3D, executed by WebGL2
+# ADR 0037 — Accelerated guest graphics: gfxstream GLES over virtio-gpu 3D, executed by WebGL2
 
 - Status: accepted (M5, 2026-09-27), first slice behind a flag (see
   "Slices"). Builds on ADR 0022/0030/0032 (the `vetro_arm64` image), 0028
   (AOSP in the browser), 0015 (snapshots), 0019 (replay inputs), 0035
   (bootconfig overrides from the host). Details: `docs/specs/gfxstream.md`,
   `docs/specs/platform.md` (virtio-gpu 3D).
-- Number: on rebase onto main, renumber if 0036 is already taken.
+- Number: on rebase onto main, renumber if 0037 is already taken.
 
 ## Context
 The image renders with SwiftShader (Vulkan "pastel") under ANGLE: every

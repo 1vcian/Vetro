@@ -56,6 +56,7 @@ pub use machine::{Devices, Machine, MachineConfig, Perf, Pointer, RecordOptions,
 pub use net::{FrameDir, NetLink, NetSetup, TappedFrame};
 pub use record::{Digest, Divergence, HostNetOp, Input, Log, ReplayStatus, Reply, VsockOp};
 pub use vetro_analysis;
+pub use vetro_gfxstream;
 pub use vetro_jit::{SysJitDyn, SysJitStats};
 pub use vetro_net;
 pub use vetro_snapshot;

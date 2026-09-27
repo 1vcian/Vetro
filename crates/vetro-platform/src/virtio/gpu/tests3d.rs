@@ -1,4 +1,4 @@
-//! virtio-gpu 3D (ADR 0036): the device side, with a renderer that records
+//! virtio-gpu 3D (ADR 0037): the device side, with a renderer that records
 //! what it receives.
 
 use super::*;

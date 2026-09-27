@@ -1,4 +1,4 @@
-//! The fixed profile the guest sees (ADR 0036, determinism): GL and EGL
+//! The fixed profile the guest sees (ADR 0037, determinism): GL and EGL
 //! strings, limits and EGL configs never come from the host GPU. The values
 //! are GLES 3.0's, within what every WebGL2 implementation offers; the page
 //! checks the host meets them before choosing the GPU path.

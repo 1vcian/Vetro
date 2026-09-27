@@ -440,6 +440,16 @@ impl<'a> VendorBoot<'a> {
     }
 }
 
+/// Boot parameters that switch the Vetro AOSP image from SwiftShader to
+/// gfxstream GLES over virtio-gpu 3D (ADR 0037): they replace the vendor
+/// bootconfig lines of the same keys (ADR 0028). Only with a machine whose
+/// GPU offers virgl (`GpuConfig::virgl`).
+pub const GFXSTREAM_PARAMS: &str = "androidboot.hardware.egl=emulation \
+androidboot.hardware.gltransport=virtio-gpu-pipe \
+androidboot.hardware.hwcomposer.mode=client \
+androidboot.hardware.hwcomposer.display_framebuffer_format=rgba \
+androidboot.opengles.version=196608";
+
 /// Bootloader choices.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BootOptions {

@@ -1,5 +1,5 @@
 // Generated from crates/vetro-gfxstream/src/exec.rs (CODES); checked by its tests.
-// Op codes of the WebGL2 op stream (ADR 0036).
+// Op codes of the WebGL2 op stream (ADR 0037).
 export const Create = 0;
 export const Delete = 1;
 export const Enable = 2;

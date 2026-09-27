@@ -92,6 +92,14 @@
 //! and method, sender and recipient) as JSON (`.json`) or as lines of
 //! text, and prints the sensitive accesses to stderr (privacy inspector).
 //!
+//! Accelerated graphics (M5, ADR 0037): `--gpu=gfxstream` gives the GPU
+//! virgl (3D) with the gfxstream host decoder (`vetro-gfxstream`) and, with
+//! `--boot-img`, adds `vetro_machine::android::GFXSTREAM_PARAMS` after
+//! `--append` (the image's EGL becomes gfxstream over virtio-gpu). Natively
+//! nothing is drawn (no WebGL: readbacks read zeros); `--gl-record=FILE`
+//! writes the WebGL2 op stream for a browser replay, and the decoder's log
+//! goes to stderr (`vetro-gl:`).
+//!
 //! Device profiles (M10, ADR 0035, `vetro_machine::profile`):
 //! `--profile=NAME` (a starter profile: `default`, `phone`, `small-phone`,
 //! `tablet`) or `--profile=FILE` (a profile JSON file) sets the RAM (an
@@ -122,7 +130,7 @@ fn usage() -> ExitCode {
         "usage: vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [args...]"
     );
     eprintln!(
-        "       vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=LINE] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORT-:GUEST_PORT]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=INSTRUCTIONS:FILE]... [--save-on=TEXT:FILE [--save-delay=S] [--exit-after-save]] [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=INSTRUCTION [--dump=VA:BYTES]]] [--vsock] [--files-ls=PATH]... [--files-cat=PATH]... [--files-put=PATH:FILE]... [--kernel-profile=FILE [--system-map=FILE] [--kernel-btf=FILE]] [--tls] [--binder-log=FILE] [--profile=NAME|FILE]"
+        "       vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=LINE] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORT-:GUEST_PORT]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=INSTRUCTIONS:FILE]... [--save-on=TEXT:FILE [--save-delay=S] [--exit-after-save]] [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=INSTRUCTION [--dump=VA:BYTES]]] [--vsock] [--files-ls=PATH]... [--files-cat=PATH]... [--files-put=PATH:FILE]... [--kernel-profile=FILE [--system-map=FILE] [--kernel-btf=FILE]] [--tls] [--binder-log=FILE] [--profile=NAME|FILE] [--gpu=gfxstream [--gl-record=FILE]]"
     );
     ExitCode::from(2)
 }
@@ -240,6 +248,7 @@ fn boot(args: &[String]) -> ExitCode {
     let mut vsock = false;
     let mut file_cmds: Vec<FileCmd> = Vec::new();
     let mut analysis = vetro_cli::analysis::AnalysisOptions::default();
+    let (mut gfxstream, mut gl_record) = (false, None::<String>);
     for a in &join_values(&vetro_cli::netcap::join_values(args)) {
         if analysis.parse(a) {
             continue;
@@ -357,6 +366,8 @@ fn boot(args: &[String]) -> ExitCode {
             Some(("--vendor-boot", v)) => vendor_boot = Some(v.to_string()),
             Some(("--init-boot", v)) => init_boot = Some(v.to_string()),
             Some(("--android-dump", v)) => android_dump = Some(v.to_string()),
+            Some(("--gpu", "gfxstream")) => gfxstream = true,
+            Some(("--gl-record", v)) => gl_record = Some(v.to_string()),
             Some(("--mem", v)) => match v.parse::<u64>() {
                 Ok(m) => {
                     cfg.ram_size = m << 20;
@@ -402,6 +413,25 @@ fn boot(args: &[String]) -> ExitCode {
         for c in p.adb_commands() {
             eprintln!("vetro:   adb shell \"{c}\"");
         }
+    }
+    // Accelerated graphics (ADR 0037): virgl on the GPU, and the boot
+    // parameters that select gfxstream in the image.
+    if gfxstream {
+        let Some(gpu) = devices.gpu.as_mut() else {
+            eprintln!("vetro: --gpu=gfxstream needs the GPU (not with --no-devices)");
+            return ExitCode::from(2);
+        };
+        gpu.virgl = true;
+        if boot_img.is_some() {
+            let params = vetro_machine::android::GFXSTREAM_PARAMS;
+            append = Some(match append.take() {
+                Some(a) if !a.trim().is_empty() => format!("{} {params}", a.trim()),
+                _ => params.to_string(),
+            });
+        }
+    } else if gl_record.is_some() {
+        eprintln!("vetro: --gl-record needs --gpu=gfxstream");
+        return ExitCode::from(2);
     }
     let android = boot_img.is_some();
     if (kernel.is_none() && !android && restore.is_none() && replay.is_none())
@@ -523,6 +553,14 @@ fn boot(args: &[String]) -> ExitCode {
         return ExitCode::from(2);
     }
     let mut m = Machine::with_devices(&cfg, &devices);
+    if gl_record.is_some() {
+        use vetro_machine::vetro_gfxstream::{Gfxstream, NullExecutor, Recorder};
+        m.gpu(|g| {
+            if let Some(r) = g.renderer_as_mut::<Gfxstream>() {
+                r.gl.exec = Box::new(Recorder::new(NullExecutor::default()));
+            }
+        });
+    }
     // Persistent overlays: (disk slot, overlay).
     let mut overlays: Vec<(u32, FileOverlay)> = Vec::new();
     for (d, ov) in &disks {
@@ -738,6 +776,7 @@ fn boot(args: &[String]) -> ExitCode {
         });
     };
     let (mut console_tail, mut save_on_at) = (Vec::<u8>::new(), None::<u64>);
+    let mut gl_seen = 0usize;
     let code = loop {
         if let Err(c) = persist(&m, &mut overlays) {
             break c;
@@ -752,6 +791,9 @@ fn boot(args: &[String]) -> ExitCode {
         let stop = m.run(budget);
         analysis.tls_service(&mut m);
         print_net(&m);
+        if gfxstream {
+            print_gl(&m, &mut gl_seen);
+        }
         if capture.wanted() {
             capture.collect(&mut m);
         }
@@ -911,7 +953,48 @@ fn boot(args: &[String]) -> ExitCode {
             l.events_len()
         );
     }
+    if gfxstream {
+        use vetro_machine::vetro_gfxstream::{Gfxstream, NullExecutor, Recorder};
+        print_gl(&m, &mut gl_seen);
+        let taken = m.gpu(|g| {
+            let r = g.renderer_as_mut::<Gfxstream>()?;
+            r.flush_ops();
+            let stats = r.gl.stats.clone();
+            let exec = std::mem::replace(&mut r.gl.exec, Box::new(NullExecutor::default()));
+            Some((stats, exec))
+        });
+        if let Some(Some((s, exec))) = taken {
+            eprintln!(
+                "vetro-gl: {} GLES calls, {} batches, {} frames presented, {} bytes read back, {} unhandled",
+                s.calls, s.batches, s.presents, s.readback_bytes, s.unhandled
+            );
+            if let Some(path) = &gl_record {
+                // The recorder is the only executor installed with --gl-record.
+                let any: Box<dyn std::any::Any> = exec;
+                if let Ok(rec) = any.downcast::<Recorder<NullExecutor>>() {
+                    if let Err(e) = std::fs::write(path, &rec.log) {
+                        eprintln!("vetro: {path}: {e}");
+                        return ExitCode::from(2);
+                    }
+                    eprintln!("vetro-gl: op stream in {path} ({} bytes)", rec.log.len());
+                }
+            }
+        }
+    }
     code
+}
+
+/// New lines of the gfxstream decoder's log (unhandled calls…).
+fn print_gl(m: &vetro_machine::Machine, seen: &mut usize) {
+    use vetro_machine::vetro_gfxstream::Gfxstream;
+    m.gpu_view(|g| {
+        if let Some(r) = g.renderer_as::<Gfxstream>() {
+            for l in r.gl.log.iter().skip(*seen) {
+                eprintln!("vetro-gl: {l}");
+            }
+            *seen = r.gl.log.len();
+        }
+    });
 }
 
 /// `boot` options that take a value: `--option value` becomes

@@ -1,4 +1,4 @@
-//! Host side of gfxstream GLES over virtio-gpu 3D (ADR 0036).
+//! Host side of gfxstream GLES over virtio-gpu 3D (ADR 0037).
 //!
 //! The guest (AOSP's `libEGL_emulation`/`libGLESv2_emulation` with
 //! `ro.boot.hardware.gltransport=virtio-gpu-pipe`) opens one virtio-gpu

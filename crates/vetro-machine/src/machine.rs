@@ -212,7 +212,14 @@ impl Machine {
             Some(board.virt.attach_virtio_next(dev).expect("32 slots are enough for the machine's devices"))
         };
         if let Some(g) = &devices.gpu {
-            slots.gpu = attach(Box::new(VirtioGpu::new(Box::new(MemDisplay::default()), g.clone())));
+            let mut gpu = VirtioGpu::new(Box::new(MemDisplay::default()), g.clone());
+            if g.virgl {
+                // gfxstream on 3D (ADR 0037). It draws nothing until the host
+                // gives it an executor (WebGL2 in the browser).
+                let exec = Box::new(vetro_gfxstream::NullExecutor::default());
+                gpu.set_renderer(Box::new(vetro_gfxstream::Gfxstream::new(exec, (g.width, g.height))));
+            }
+            slots.gpu = attach(Box::new(gpu));
         }
         if devices.keyboard {
             slots.keyboard = attach(Box::new(VirtioInput::new(InputConfig::keyboard())));

@@ -1,4 +1,4 @@
-//! The op stream the decoder hands to a [`GlExecutor`] (ADR 0036): WebGL2
+//! The op stream the decoder hands to a [`GlExecutor`] (ADR 0037): WebGL2
 //! calls with host object ids instead of guest names, executed in batches.
 //!
 //! Layout: a sequence of u32 words; each op starts with `code << 16 | n`,
@@ -186,7 +186,7 @@ pub enum Kind {
 }
 
 /// Executes batches of ops.
-pub trait GlExecutor {
+pub trait GlExecutor: core::any::Any {
     /// Runs `words` (with their `blob`); read ops write their results, in
     /// order, into `out`, which is exactly as long as they need.
     fn execute(&mut self, words: &[u32], blob: &[u8], out: &mut [u8]);
@@ -321,7 +321,7 @@ mod tests {
     fn js_codes_match() {
         let mut js = String::from(
             "// Generated from crates/vetro-gfxstream/src/exec.rs (CODES); checked by its tests.\n\
-             // Op codes of the WebGL2 op stream (ADR 0036).\n",
+             // Op codes of the WebGL2 op stream (ADR 0037).\n",
         );
         for (i, (_, name)) in CODES.iter().enumerate() {
             js.push_str(&format!("export const {name} = {i};\n"));

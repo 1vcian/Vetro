@@ -13,6 +13,8 @@ vetro-platform = { path = "../vetro-platform" }
 vetro-jit = { path = "../vetro-jit" }
 vetro-net = { path = "../vetro-net" }
 vetro-snapshot = { path = "../vetro-snapshot" }
+# Accelerated guest graphics (ADR 0037): the gfxstream host decoder.
+vetro-gfxstream = { path = "../vetro-gfxstream" }
 # Introspection (ADR 0027): no dependencies, also builds for wasm.
 vetro-analysis = { path = "../vetro-analysis" }
 
