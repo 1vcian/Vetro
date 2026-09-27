@@ -355,6 +355,9 @@ struct Compiled<M> {
 /// is the start of the region.
 type Entries<M> = Rc<[(u64, Rc<Compiled<M>>)]>;
 
+/// A module the engine is still compiling and its readiness flag.
+type Compiling<M> = (Rc<M>, Rc<Cell<bool>>);
+
 /// A block for a physical page: compiled, or `None` if the first
 /// instruction is not translated.
 struct Variant<M> {
@@ -557,7 +560,7 @@ pub struct SysJit<E: Engine> {
     ram_key: Option<(u64, usize, usize)>,
     dirty: Vec<u64>,
     /// Modules the engine is still compiling, with their flag (ADR 0038).
-    compiling: Vec<(Rc<E::Module>, Rc<Cell<bool>>)>,
+    compiling: Vec<Compiling<E::Module>>,
     profile: Option<Profile>,
     /// Clock of the next run ([`SysJit::set_time`]).
     time: Option<Clock>,
