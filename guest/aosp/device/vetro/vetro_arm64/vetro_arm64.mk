@@ -1,12 +1,12 @@
 #
 # Vetro arm64 product (phone, 64-bit only). Starts from
 # device/google/cuttlefish/vsoc_arm64_only/phone/aosp_cf.mk (AOSP 15) and
-# changes only what the Vetro machine requires: see
+# changes only what Vetro's machine needs: see
 # docs/adr/0022-vetro-aosp-image.md and docs/specs/guest-image.md.
 #
 
 #
-# Everything that goes into system (like the GSI)
+# Everything that goes in system (like the GSI)
 #
 $(call inherit-product, $(SRC_TARGET_DIR)/product/core_64_bit_only.mk)
 $(call inherit-product, $(SRC_TARGET_DIR)/product/generic_system.mk)
@@ -25,24 +25,24 @@ $(call inherit-product, $(SRC_TARGET_DIR)/product/telephony_system_ext.mk)
 $(call inherit-product, $(SRC_TARGET_DIR)/product/aosp_product.mk)
 
 #
-# vendor: the one of the Cuttlefish phone (virtual HALs, SwiftShader,
-# minigbm, HWC ranchu/drm_hwcomposer, software KeyMint and Gatekeeper).
-# No packages/modules/Virtualization: Vetro's virt has no KVM.
+# vendor: the Cuttlefish phone's (virtual HALs, SwiftShader, minigbm, ranchu
+# HWC/drm_hwcomposer, software KeyMint and Gatekeeper). No
+# packages/modules/Virtualization: Vetro's virt machine has no KVM.
 #
-# Cuttlefish HALs that talk to the host (vsock or /dev/hvcN) and, without a host,
-# abort in a loop: lights block system_server (LightsService waits for
-# ILights/default, declared in the VINTF by the APEX but never registered), the OEM
-# lock does the same for OemLockService. They are removed with the switches of
-# shared/device.mk (they apply before the inherit).
+# Cuttlefish HALs that talk to the host (vsock or /dev/hvcN) abort in a loop
+# without it: the lights block system_server (LightsService waits for
+# ILights/default, declared in the VINTF by the APEX but never registered),
+# the OEM lock does the same for OemLockService. They are removed with
+# shared/device.mk's switches (they apply before the inherit).
 LOCAL_ENABLE_LIGHT := false
 LOCAL_ENABLE_OEMLOCK := false
 $(call inherit-product, device/google/cuttlefish/shared/phone/device_vendor.mk)
 $(call inherit-product, device/google/cuttlefish/vsoc_arm64/bootloader.mk)
 
-# Our parts: fstab, init, microG.
+# Our parts: fstab, init, microG, overlays.
 $(call inherit-product, device/vetro/vetro_arm64/device.mk)
 
-# Excludes features not available on AOSP devices.
+# Excludes the features not available on AOSP devices.
 PRODUCT_COPY_FILES += \
     frameworks/native/data/etc/aosp_excluded_hardware.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/aosp_excluded_hardware.xml
 
@@ -53,8 +53,16 @@ PRODUCT_MANUFACTURER := Vetro
 PRODUCT_MODEL := Vetro arm64
 PRODUCT_MAX_PAGE_SIZE_SUPPORTED := 16384
 
+# Uncompressed APEXes (updatable_apex.mk sets true; a single-value variable,
+# so the product's own assignment wins): with .capex apexd decompresses about
+# twenty of them into /data at every first boot (tens of seconds of guest time
+# under QEMU, and ~200 MB written to /data, i.e. into the copy-on-write disk
+# overlay of the browser and its snapshot). The price is a bigger super.img,
+# which the browser reads on demand.
+PRODUCT_COMPRESSED_APEX := false
+
 # ro.product.system.*: generic_system.mk sets Android/mainline/generic (for
-# the GSI); here the system partition belongs to Vetro only (ADR 0030).
+# the GSI); here the system partition is Vetro's only (ADR 0030).
 PRODUCT_SYSTEM_NAME := vetro_arm64
 PRODUCT_SYSTEM_DEVICE := vetro_arm64
 PRODUCT_SYSTEM_BRAND := Vetro

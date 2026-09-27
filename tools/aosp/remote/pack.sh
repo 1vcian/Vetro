@@ -1,9 +1,9 @@
 #!/bin/bash
-# On the build VM (launched by tools/aosp/fetch.sh): collects in
-# ~/$WORK/out the build artifacts to bring to the Mac. Copies only: the
-# disk is assembled on the Mac (tools/aosp/mkdisk.sh), so the VM stays on as
-# little as possible. vbmeta is not needed: the fstab does not ask for AVB and
-# Vetro's bootloader (ADR 0018) and QEMU do not read it.
+# On the build VM (launched by tools/aosp/fetch.sh): collects in ~/$WORK/out
+# the build's artifacts to bring to the Mac. Only copies: the disk is composed
+# on the Mac (tools/aosp/mkdisk.sh) or next to QEMU on the VM
+# (tools/aosp/remote/qemu.sh). vbmeta isn't needed: the fstab doesn't ask for
+# AVB and Vetro's bootloader (ADR 0018) and QEMU don't read it.
 set -euo pipefail
 cd
 tree="$HOME/${VETRO_AOSP_TREE:-aosp}"
@@ -12,35 +12,49 @@ product="${VETRO_AOSP_PRODUCT:-vetro_arm64}"
 p="$tree/out/target/product/$product"
 o="$work/out"
 
-# Checks on the result before copying (ADR 0030): if one fails the build
-# is not the intended one and fetch.sh stops.
+# Checks on the result before copying (ADR 0030): if one fails the build isn't
+# the intended one and fetch.sh stops.
 fail() { echo "ERROR: $*" >&2; exit 1; }
 # Development CA: the <hash>.0 name comes from the conscrypt patch.
 ca="$(sed -n 's|^+++ b/apex/ca-certificates/files/||p' "$work"/patches/external/conscrypt/*.patch)"
 [ -n "$ca" ] || fail "no development CA in the external/conscrypt patches"
 capex="$p/system/apex/com.android.conscrypt.capex"
 [ -f "$capex" ] || capex="$p/system/apex/com.android.conscrypt.apex"
-# apex_build_info.pb lists the payload files (canned_fs_config). No
-# `| grep -q`: with pipefail unzip's SIGPIPE would make the check fail.
+# apex_build_info.pb lists the payload's files (canned_fs_config). No
+# `| grep -q`: with pipefail unzip's SIGPIPE would fail the check.
 info="$(unzip -p "$capex" apex_build_info.pb | tr -c '[:print:]' '\n')"
 case "$info" in
   *"/cacerts/$ca"*) ;;
   *) fail "$ca is not in the conscrypt APEX ($capex)" ;;
 esac
 [ -f "$p/system/etc/security/cacerts/$ca" ] || fail "$ca is not in /system/etc/security/cacerts"
-# Branding: overlays installed, no QuickSearchBox, wallpaper and its property.
-for f in product/overlay/VetroFrameworkOverlay.apk product/overlay/VetroPackageInstallerOverlay.apk product/media/wallpaper/vetro.png; do
+# Trademarks: overlays installed, no QuickSearchBox, wallpaper and its property.
+for f in product/overlay/VetroFrameworkOverlay.apk product/overlay/VetroPackageInstallerOverlay.apk product/overlay/VetroBrowserOverlay.apk product/media/wallpaper/vetro.png; do
   [ -f "$p/$f" ] || fail "/$f missing"
 done
 [ ! -e "$p/product/app/QuickSearchBox" ] || fail "QuickSearchBox is still in /product/app"
 grep -qx 'ro.config.wallpaper=/product/media/wallpaper/vetro.png' "$p/product/etc/build.prop" || fail "ro.config.wallpaper missing in product/etc/build.prop"
 grep -qx 'ro.product.system.brand=Vetro' "$p/system/build.prop" || fail "ro.product.system.brand is not Vetro"
+# First boot (docs/progress/M5.md, 2026-09-27): SystemUI, Launcher3 and
+# Settings AOT-compiled, no first-boot dexopt, uncompressed APEXes.
+for a in SystemUI Launcher3QuickStep Settings; do
+  odex="$p/system_ext/priv-app/$a/oat/arm64/$a.odex"
+  [ -f "$odex" ] || fail "$odex missing"
+  filter="$(strings -n 3 "$odex" | grep -A1 -m1 '^compiler-filter$' | tail -n1)"
+  [ "$filter" = speed ] || fail "$a.odex compiled with '$filter', not speed"
+done
+grep -qx 'pm.dexopt.first-boot=skip' "$p/system/build.prop" || fail "pm.dexopt.first-boot is not skip"
+if ls "$p"/system/apex/*.capex >/dev/null 2>&1; then fail "compressed APEXes in /system/apex"; fi
+# HWC: BGRA framebuffer (guest/aosp/patches/device/generic/goldfish-opengl).
+grep -q 'androidboot.hardware.hwcomposer.display_framebuffer_format=bgra' "$p/vendor_bootconfig.txt" 2>/dev/null ||
+  strings -a "$p/vendor_boot.img" | grep -q 'hwcomposer.display_framebuffer_format=bgra' ||
+  fail "display_framebuffer_format is not bgra in vendor_boot"
 rm -rf "$o"
 mkdir -p "$o/props"
 for f in boot.img vendor_boot.img init_boot.img super.img userdata.img; do
   cp --sparse=always "$p/$f" "$o/$f"
 done
-# Properties for the checks on the Mac (ART ISA variant, fingerprint...).
+# Properties for the checks on the Mac (ART's ISA variant, fingerprint...).
 for part in system vendor product system_ext odm; do
   for f in "$p/$part/build.prop" "$p/$part/etc/build.prop"; do [ -f "$f" ] && cp "$f" "$o/props/$part.build.prop"; done
 done
@@ -48,7 +62,7 @@ done
 cp "$p/vendor_ramdisk/first_stage_ramdisk/fstab.vetro" "$o/props/" 2>/dev/null || true
 [ -f "$p/vendor_ramdisk/lib/modules/modules.load" ] && cp "$p/vendor_ramdisk/lib/modules/modules.load" "$o/props/vendor_ramdisk.modules.load"
 {
-  echo "vetro_rev=$(cat "$work/build.rev" 2>/dev/null || echo sconosciuta)"
+  echo "vetro_rev=$(cat "$work/build.rev" 2>/dev/null || echo sconosciuta)"  # value read by upload.sh
   echo "dev_ca=$ca"
   echo "build_id=$(sed -n 's/^BUILD_ID=//p' "$tree/build/make/core/build_id.mk")"
   echo "manifest_tag=$(cd "$tree/.repo/manifests" && git describe --tags --always 2>/dev/null || true)"
@@ -57,7 +71,7 @@ cp "$p/vendor_ramdisk/first_stage_ramdisk/fstab.vetro" "$o/props/" 2>/dev/null |
   m="$tree/kernel/prebuilts/common-modules/virtual-device/6.6/arm64/virtio_mmio.ko"
   echo "modules_vermagic=$(strings -a "$m" | sed -n 's/^vermagic=//p' | head -n1)"
   echo "modules_scmversion=$(strings -a "$m" | sed -n 's/^scmversion=//p' | head -n1)"
-  for d in device/google/cuttlefish kernel/prebuilts/6.6/arm64 kernel/prebuilts/common-modules/virtual-device/6.6/arm64 frameworks/base; do
+  for d in device/google/cuttlefish device/generic/goldfish-opengl kernel/prebuilts/6.6/arm64 kernel/prebuilts/common-modules/virtual-device/6.6/arm64 frameworks/base; do
     echo "git:$d=$(git -C "$tree/$d" rev-parse HEAD)"
   done
 } > "$o/build-info.txt"

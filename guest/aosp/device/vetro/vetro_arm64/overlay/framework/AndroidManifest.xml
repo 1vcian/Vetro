@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Static framework overlay (ADR 0030): replaces the default icon of apps
-     without an icon (sym_def_app_icon, the AOSP robot) with Vetro's. -->
+<!-- Static overlay of the framework (ADR 0030): the default icon of apps
+     without one (AOSP's robot) becomes Vetro's, both as mipmap/sym_def_app_icon
+     and as drawable/sym_def_app_icon (PackageManager.getDefaultActivityIcon,
+     used by Launcher3 and by splash screens). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="vetro.overlay.framework">
     <application android:hasCode="false" />

@@ -1,0 +1,55 @@
+--- a/system/hwc3/GuestFrameComposer.cpp
++++ b/system/hwc3/GuestFrameComposer.cpp
+@@ -124,6 +124,21 @@
+ 
+ bool IsDrmFormatSupported(uint32_t drmFormat) {
+     return GetConverterForDrmFormat(drmFormat) != nullptr;
++}
++
++// Vetro: the composition result is RGBA in memory (DRM_FORMAT_ABGR8888), but
++// on virtio-gpu without 3D the host resource behind every dumb buffer is
++// B8G8R8X8 (the kernel's virtio_gpu_mode_dumb_create uses
++// DRM_FORMAT_HOST_XRGB8888, whatever format the framebuffer is added with), so
++// the host shows red and blue swapped. With
++// ro.vendor.hwcomposer.display_framebuffer_format=bgra (Cuttlefish's
++// bootconfig property, androidboot.hardware.hwcomposer.
++// display_framebuffer_format) the frame is converted to BGRA before the flush.
++bool UsesBgraFramebuffer() {
++    static const bool bgra =
++        ::android::base::GetProperty("ro.vendor.hwcomposer.display_framebuffer_format", "") ==
++        "bgra";
++    return bgra;
+ }
+ 
+ // Libyuv's convert functions only allow the combination of any rotation
+@@ -822,6 +837,13 @@
+ 
+         std::memcpy(compositionResultBufferData, clientTargetData, clientTargetPlaneSize);
+     } else {
++        // Vetro: the swapchain images keep their old frames, and the layers
++        // don't always cover the whole display (a translucent launcher before
++        // the wallpaper is drawn): what no layer covers is black, as
++        // SurfaceFlinger composes it, not what an older frame left there.
++        std::memset(compositionResultBufferData, 0,
++                    static_cast<size_t>(compositionResultBufferStride) *
++                            compositionResultBufferHeight);
+         for (Layer* layer : layers) {
+             const auto layerId = layer->getId();
+             const auto layerCompositionType = layer->getCompositionType();
+@@ -859,6 +881,16 @@
+         }
+     }
+ 
++    if (UsesBgraFramebuffer() && !noOpComposition) {
++        // In place: a per-pixel byte shuffle (swaps R and B).
++        libyuv::ABGRToARGB(compositionResultBufferData,
++                           static_cast<int>(compositionResultBufferStride),
++                           compositionResultBufferData,
++                           static_cast<int>(compositionResultBufferStride),
++                           static_cast<int>(compositionResultBufferWidth),
++                           static_cast<int>(compositionResultBufferHeight));
++    }
++
+     DEBUG_LOG("%s display:%" PRIu32 " flushing drm buffer", __FUNCTION__, displayId);
+ 
+     auto [error, fence] =

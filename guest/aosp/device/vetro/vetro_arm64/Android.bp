@@ -3,9 +3,9 @@
 soong_namespace {
 }
 
-// Vetro code and configuration: PolyForm Noncommercial 1.0.0
-// (LICENSE.md of the repository, ADR 0004). Soong has no SPDX kind for
-// this license: legacy_notice with the text alongside.
+// Vetro's code and configuration: PolyForm Noncommercial 1.0.0 (the
+// repository's LICENSE.md, ADR 0004). Soong has no SPDX kind for this
+// licence: legacy_notice with the text next to it.
 package {
     default_applicable_licenses: ["device_vetro_license"],
 }
@@ -31,26 +31,35 @@ prebuilt_etc {
     vendor_ramdisk: true,
 }
 
-// Branding (ADR 0030): static overlays in /product/overlay, resources only.
+// Trademarks (ADR 0030): static overlays in /product/overlay, resources only.
 
 runtime_resource_overlay {
-    // Default icon of apps without an icon: no robot.
+    // Default icon of the apps without one: no robot.
     name: "VetroFrameworkOverlay",
     product_specific: true,
     manifest: "overlay/framework/AndroidManifest.xml",
     resource_dirs: ["overlay/framework/res"],
-    // QuickSearchBox is the "Google" search widget that Launcher3 puts
-    // on the first page (it is the global search activity; the field uses
-    // hint_google). Without it, Launcher3 shows its neutral bar ("Search",
-    // qsb_default_view). overrides removes it from the PRODUCT_PACKAGES inherited
-    // from handheld_product.mk (main.mk, module-overrides).
+    // QuickSearchBox is the "Google" search widget that Launcher3 puts on the
+    // first page (it's the global search activity; the field uses
+    // hint_google). Without it Launcher3 shows its neutral bar ("Search",
+    // qsb_default_view). overrides removes it from the PRODUCT_PACKAGES
+    // inherited from handheld_product.mk (main.mk, module-overrides).
     overrides: ["QuickSearchBox"],
 }
 
 runtime_resource_overlay {
-    // Icon of the package installer: no robot.
+    // Package installer icon: no robot.
     name: "VetroPackageInstallerOverlay",
     product_specific: true,
     manifest: "overlay/packageinstaller/AndroidManifest.xml",
     resource_dirs: ["overlay/packageinstaller/res"],
+}
+
+runtime_resource_overlay {
+    // Browser2 icon (the WebView shell, the browser in Launcher3's hotseat):
+    // no robot.
+    name: "VetroBrowserOverlay",
+    product_specific: true,
+    manifest: "overlay/browser/AndroidManifest.xml",
+    resource_dirs: ["overlay/browser/res"],
 }

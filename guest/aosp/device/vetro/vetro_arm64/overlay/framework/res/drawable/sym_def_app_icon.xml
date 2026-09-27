@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Default activity icon (ADR 0030): PackageManager.getDefaultActivityIcon()
+     loads drawable/sym_def_app_icon, an adaptive icon whose foreground is
+     AOSP's robot (mipmap/sym_def_app_icon_foreground, PNGs). Launcher3 shows
+     it for apps without an icon and WM Shell on their splash screen. Replaced
+     by Vetro's V on the blue-green of mipmap/sym_def_app_icon; the layers are
+     inline, so the robot bitmap is no longer referenced. -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background>
+        <color android:color="#FF16505A" />
+    </background>
+    <foreground>
+        <vector
+            android:width="108dp"
+            android:height="108dp"
+            android:viewportWidth="108"
+            android:viewportHeight="108">
+            <path
+                android:fillColor="#FFFFFFFF"
+                android:fillAlpha="0.18"
+                android:pathData="M30,66L66,30L74,30L30,74Z" />
+            <path
+                android:fillColor="#FFFFFFFF"
+                android:pathData="M38,38L47,38L54,57L61,38L70,38L59,70L49,70Z" />
+        </vector>
+    </foreground>
+</adaptive-icon>

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Static overlay of Browser2 (the WebView shell, org.chromium.webview_shell;
+     ADR 0030): its icon is AOSP's robot (drawable/ic_launcher, a PNG), shown
+     in Launcher3's hotseat as the browser. Replaced by a globe on Vetro's
+     colour. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="vetro.overlay.browser">
+    <application android:hasCode="false" />
+    <overlay
+        android:targetPackage="org.chromium.webview_shell"
+        android:isStatic="true"
+        android:priority="10" />
+</manifest>
