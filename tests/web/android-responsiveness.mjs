@@ -13,8 +13,8 @@
 // real clock), VETRO_TAPS taps (default 8) at the centre of the test app, each
 // flipping its colour (blue/orange): the time from the press to the first
 // frame drawn and to the first frame that covers the centre, polled pixel
-// check as a cross-check; then the Home key (the launcher animation): time to
-// the first frame and frames per second while drawing, over 15 s. Results on stdout and in
+// check as a cross-check; then the app stopped and opened again with
+// `am start -W` (its TotalTime, wall time, frames per second while drawing). Results on stdout and in
 // target/aosp/responsiveness.json. VETRO_TAP_LIMIT_MS (unset: none) fails the
 // run when the median tap-to-frame time is above it; VETRO_APP_QUERY adds URL
 // parameters (a device profile, `graphics=full`).
@@ -33,8 +33,6 @@ if (process.env.VETRO_ANDROID !== '1' || !process.env.VETRO_ANDROID_PROFILE) {
 }
 
 const TAPS = Number(process.env.VETRO_TAPS ?? 8);
-/** How long the Home key's frames are counted. */
-const HOME_WAIT_MS = 15_000;
 const out = join(root, 'target/aosp');
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
 const PERF = `(() => { const p = window.vetroState.perf; return { frames: p.frames, pixels: p.pixels, drawMs: p.drawMs, maxDrawMs: p.maxDrawMs, input: p.input ?? null }; })()`;
@@ -93,22 +91,22 @@ run(async () => {
     res.tap_median = { frame_ms: median(res.taps.map((t) => t.frame_ms)), centre_ms: median(res.taps.map((t) => t.centre_ms)), polled_ms: median(res.taps.map((t) => t.polled_ms)) };
     console.log(`taps: median first frame ${res.tap_median.frame_ms?.toFixed(0)} ms, centre ${res.tap_median.centre_ms?.toFixed(0)} ms, polled ${res.tap_median.polled_ms} ms`);
 
-    // An animation: Home (KEY_HOMEPAGE) from the app to the launcher.
-    await page.eval("document.getElementById('screen').focus()");
+    // Opening the app again (an activity start with its window animation):
+    // the activity manager's own time, the wall time, and the frames drawn.
+    await page.waitFor('adb', async () => (await page.eval('window.vetroAndroid.state()')).adb.state === 'ready', 20 * 60_000);
+    await page.eval("window.vetroAndroid.shell('am force-stop it.vetro.tocco')");
+    await sleep(2000);
     const a0 = await page.eval(PERF);
     const ta = await page.eval('performance.now()');
-    const base = { code: 'BrowserHome', key: 'BrowserHome', windowsVirtualKeyCode: 0xac, nativeVirtualKeyCode: 0xac };
-    await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', ...base }, page.s);
-    await sleep(80);
-    await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base }, page.s);
-    await sleep(HOME_WAIT_MS);
+    const open = await page.eval("window.vetroAndroid.shell('am start -W -n it.vetro.tocco/.Main')");
+    const openWall = (await page.eval('performance.now()')) - ta;
     const a1 = await page.eval(PERF);
-    const first = await page.eval(`(() => { const f = window.vetroState.perf.frameLog.find((f) => f.t > ${ta}); return f ? f.t - ${ta} : null; })()`);
+    const total = /TotalTime: (\d+)/.exec(open.stdout);
     const busy = await page.eval(`(() => { const l = window.vetroState.perf.frameLog.filter((f) => f.t > ${ta}); return l.length > 1 ? (l.length - 1) / ((l.at(-1).t - l[0].t) / 1000) : null; })()`);
-    res.home_animation = { frames: a1.frames - a0.frames, window_ms: HOME_WAIT_MS, fps_while_drawing: busy, first_frame_ms: first,
+    res.app_open = { total_time_guest_ms: total ? Number(total[1]) : null, wall_ms: openWall, frames: a1.frames - a0.frames, fps_while_drawing: busy,
       draw_ms_mean: (a1.drawMs - a0.drawMs) / Math.max(1, a1.frames - a0.frames), max_draw_ms: a1.maxDrawMs };
-    console.log(`Home key: first frame ${first?.toFixed(0)} ms, ${res.home_animation.frames} frames in ${HOME_WAIT_MS / 1000} s (${busy?.toFixed(1)} frames/s while drawing), ` +
-      `draw ${res.home_animation.draw_ms_mean.toFixed(2)} ms per frame (max ${a1.maxDrawMs.toFixed(1)} ms)`);
+    console.log(`app opened again: TotalTime ${res.app_open.total_time_guest_ms} ms of guest time, ${(openWall / 1000).toFixed(1)} s wall (with adb), ` +
+      `${res.app_open.frames} frames (${busy?.toFixed(2)} frames/s while drawing), draw ${res.app_open.draw_ms_mean.toFixed(2)} ms per frame (max ${a1.maxDrawMs.toFixed(1)} ms)`);
     const limit = process.env.VETRO_TAP_LIMIT_MS;
     if (limit) check(res.tap_median.frame_ms <= Number(limit), `median tap-to-frame ${res.tap_median.frame_ms} ms > ${limit} ms`);
   } finally {
