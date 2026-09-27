@@ -108,6 +108,12 @@ main {
   height: auto;
   image-rendering: pixelated;
   outline: none;
+  /* The host pointer stays visible (touchscreen guests like Android draw no
+     pointer); it is hidden only while the guest draws its own cursor. */
+  cursor: crosshair;
+}
+
+#screen.guest-cursor {
   cursor: none;
 }
 

@@ -151,10 +151,12 @@ consoleEl.addEventListener('paste', (e) => {
 function placeCursor() {
   if (!cursor || !cursor.resource || !fb.width) {
     cursorCanvas.hidden = true;
+    screen.classList.remove('guest-cursor');
     return;
   }
   const k = screen.clientWidth / fb.width;
   cursorCanvas.hidden = false;
+  screen.classList.add('guest-cursor');
   cursorCanvas.style.width = `${64 * k}px`;
   cursorCanvas.style.height = `${64 * k}px`;
   cursorCanvas.style.left = `${(cursor.x - cursor.hotX) * k}px`;

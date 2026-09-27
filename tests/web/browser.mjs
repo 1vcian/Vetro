@@ -65,7 +65,7 @@ const CHECK_CANVAS = `(() => {
     if (d[o] !== e[0] || d[o + 1] !== e[1] || d[o + 2] !== e[2]) { bad++; first ??= [x, y, d[o], d[o + 1], d[o + 2]]; }
   }
   const cur = document.getElementById('cursor');
-  return { w: c.width, h: c.height, bad, first, cursor: !cur.hidden, off: !document.getElementById('screen-off').hidden };
+  return { w: c.width, h: c.height, bad, first, cursor: !cur.hidden, hostCursor: getComputedStyle(c).cursor, off: !document.getElementById('screen-off').hidden };
 })()`;
 
 run(async () => {
@@ -100,6 +100,10 @@ run(async () => {
     let t0 = Date.now();
     let { page, targetId } = await openPage(cdp, url);
     let at = await page.until('# ');
+    // No guest cursor yet: the host pointer must stay visible over the screen
+    // (touchscreen guests such as Android never draw one).
+    const hostCursor = await page.eval("getComputedStyle(document.getElementById('screen')).cursor");
+    check(hostCursor === 'crosshair', `host pointer over the screen without a guest cursor: ${hostCursor}`);
     const coldMs = Date.now() - t0;
     const boot1 = (await page.state()).boot;
     check(boot1?.mode === 'cold', `first boot: expected from scratch, ${JSON.stringify(boot1)}`);
@@ -119,7 +123,7 @@ run(async () => {
     at = await page.until('VETRO-DRM-PRONTO', at);
     const cv = await page.waitFor('pattern on the canvas', async () => {
       const r = await page.eval(CHECK_CANVAS);
-      return r.w === 1280 && r.bad === 0 && r.cursor && !r.off ? r : null;
+      return r.w === 1280 && r.bad === 0 && r.cursor && r.hostCursor === 'none' && !r.off ? r : null;
     }, 20_000).catch(async (e) => {
       throw new Fail(`${e.message}\ncanvas: ${JSON.stringify(await page.eval(CHECK_CANVAS))}`);
     });
