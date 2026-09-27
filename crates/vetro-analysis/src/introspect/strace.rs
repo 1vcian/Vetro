@@ -1,23 +1,23 @@
-//! Syscall tracciate dall'esterno in modalità sistema: il record, la
-//! decodifica di base (percorsi, descrittori, dati letti e scritti,
-//! indirizzi dei socket, transazioni binder) e la riga in stile strace.
+//! Syscalls traced from the outside in system mode: the record, the
+//! basic decoding (paths, descriptors, data read and written,
+//! socket addresses, binder transactions) and the strace-style line.
 //!
-//! La decodifica legge la memoria del processo **nel momento** della
-//! syscall: all'ingresso ciò che il programma passa (percorso, dati di
-//! `write`, flusso di scrittura binder), all'uscita ciò che il kernel ha
-//! scritto (dati di `read`, flusso di lettura binder).
+//! Decoding reads the process memory **at the moment** of the
+//! syscall: on entry what the program passes (path, `write` data,
+//! binder write stream), on exit what the kernel has
+//! written (`read` data, binder read stream).
 
 use super::binder::{self, BINDER_WRITE_READ, Transaction, WriteRead};
 use super::elf::VirtRead;
 use crate::syscall;
 
-/// Byte di dati al più conservati per record (read/write, Parcel).
+/// Maximum bytes of data kept per record (read/write, Parcel).
 pub const DATA_CAP: usize = 4096;
 
-/// Una syscall.
+/// A syscall.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SyscallRecord {
-    /// Numero d'istruzione all'ingresso (SVC) e al ritorno in EL0.
+    /// Instruction number on entry (SVC) and on return to EL0.
     pub step: u64,
     pub exit_step: Option<u64>,
     pub pid: i32,
@@ -25,27 +25,27 @@ pub struct SyscallRecord {
     pub comm: String,
     pub nr: u64,
     pub args: [u64; 6],
-    /// PC della SVC.
+    /// PC of the SVC.
     pub pc: u64,
-    /// Valore restituito (x0 al ritorno all'istruzione dopo la SVC).
+    /// Returned value (x0 on return to the instruction after the SVC).
     pub ret: Option<i64>,
-    /// Ritorno in EL0 altrove (execve riuscita, gestore di un segnale,
-    /// syscall da ripetere): il PC.
+    /// Return to EL0 elsewhere (successful execve, signal handler,
+    /// syscall to restart): the PC.
     pub diverted: Option<u64>,
-    /// Primo argomento stringa (percorso).
+    /// First string argument (path).
     pub path: Option<String>,
-    /// Percorso del descrittore del primo argomento.
+    /// Path of the descriptor in the first argument.
     pub fd_path: Option<String>,
-    /// Dati scritti (ingresso) o letti (uscita), al più [`DATA_CAP`].
+    /// Data written (entry) or read (exit), at most [`DATA_CAP`].
     pub data: Vec<u8>,
-    /// Indirizzo di `connect`/`bind`/`sendto`.
+    /// Address of `connect`/`bind`/`sendto`.
     pub sockaddr: Option<String>,
-    /// Transazioni binder di `ioctl(BINDER_WRITE_READ)`: inviate
-    /// all'ingresso, ricevute all'uscita.
+    /// Binder transactions of `ioctl(BINDER_WRITE_READ)`: sent
+    /// on entry, received on exit.
     pub binder: Vec<Transaction>,
 }
 
-/// Syscall con un descrittore come primo argomento.
+/// Syscalls with a descriptor as the first argument.
 pub fn fd_first(nr: u64) -> bool {
     matches!(nr, 23..=25 | 29 | 44 | 46 | 50 | 52 | 55 | 57 | 61..=71 | 80 | 82 | 200..=212 | 242)
 }
@@ -55,19 +55,19 @@ impl SyscallRecord {
         syscall::name(self.nr)
     }
 
-    /// Riga in stile strace: `[tid] openat(AT_FDCWD, "/etc/x", 0x0, 0x0) = 3`,
-    /// con i dettagli decodificati dopo `;`.
+    /// strace-style line: `[tid] openat(AT_FDCWD, "/etc/x", 0x0, 0x0) = 3`,
+    /// with the decoded details after `;`.
     pub fn line(&self) -> String {
         let path = self.path.clone();
         let ret = self.ret.unwrap_or(0);
         let mut s = format!("[{}] {}", self.tid, syscall::format(self.nr, &self.args, ret, |_| path.clone()));
         if self.ret.is_none() {
-            // Senza ritorno: via il " = 0" finto.
+            // No return: drop the fake " = 0".
             if let Some(i) = s.rfind(" = ") {
                 s.truncate(i);
             }
             match self.diverted {
-                Some(pc) => s += &format!(" = ? (ritorno a {pc:#x})"),
+                Some(pc) => s += &format!(" = ? (return to {pc:#x})"),
                 None => s += " = ?",
             }
         }
@@ -78,11 +78,11 @@ impl SyscallRecord {
             s += &format!(" ; addr={a}");
         }
         if !self.data.is_empty() {
-            s += &format!(" ; dati={}", escape(&self.data, 64));
+            s += &format!(" ; data={}", escape(&self.data, 64));
         }
         for t in &self.binder {
             s += &format!(
-                " ; {} target={:#x} code={:#x} flags={:#x} dati={}",
+                " ; {} target={:#x} code={:#x} flags={:#x} data={}",
                 t.command, t.target, t.code, t.flags, t.data_size
             );
             if let Some(i) = t.interface() {
@@ -92,8 +92,8 @@ impl SyscallRecord {
         s
     }
 
-    /// Decodifica all'ingresso: `user` legge la memoria del processo,
-    /// `fd_path` dà il percorso di un descrittore del processo.
+    /// Decoding on entry: `user` reads the process memory,
+    /// `fd_path` gives the path of a process descriptor.
     pub fn decode_entry(&mut self, user: &impl VirtRead, fd_path: &dyn Fn(u32) -> Option<String>) {
         let a = self.args;
         if let Some((_, kinds)) = syscall::lookup(self.nr)
@@ -105,7 +105,7 @@ impl SyscallRecord {
             self.fd_path = fd_path(a[0] as u32);
         }
         match self.nr {
-            // write, pwrite64, sendto: i dati.
+            // write, pwrite64, sendto: the data.
             64 | 68 | 206 => self.data = read_n(user, a[1], a[2]),
             _ => {}
         }
@@ -117,12 +117,12 @@ impl SyscallRecord {
         }
     }
 
-    /// Decodifica al ritorno (con `ret` già impostato).
+    /// Decoding on return (with `ret` already set).
     pub fn decode_exit(&mut self, user: &impl VirtRead) {
         let Some(ret) = self.ret else { return };
         let a = self.args;
         match self.nr {
-            // read, pread64, recvfrom: i dati letti.
+            // read, pread64, recvfrom: the data read.
             63 | 67 | 207 if ret > 0 => self.data = read_n(user, a[1], ret as u64),
             29 if a[1] == BINDER_WRITE_READ && ret == 0 => self.binder.extend(binder_received(user, a[2])),
             _ => {}
@@ -136,7 +136,7 @@ fn read_n(user: &impl VirtRead, va: u64, len: u64) -> Vec<u8> {
     if user.read_virt(va, &mut b) {
         return b;
     }
-    // Pagina per pagina: la parte leggibile.
+    // Page by page: the readable part.
     let mut out = Vec::new();
     let mut at = va;
     while out.len() < n {
@@ -151,7 +151,7 @@ fn read_n(user: &impl VirtRead, va: u64, len: u64) -> Vec<u8> {
     out
 }
 
-/// Stringa C nella memoria del processo.
+/// C string in the process memory.
 pub fn read_cstr(user: &impl VirtRead, va: u64, max: usize) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     let mut at = va;
@@ -171,16 +171,16 @@ pub fn read_cstr(user: &impl VirtRead, va: u64, max: usize) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Le transazioni inviate da `ioctl(fd, BINDER_WRITE_READ, arg)` (da
-/// leggere all'ingresso).
+/// The transactions sent by `ioctl(fd, BINDER_WRITE_READ, arg)` (to be
+/// read on entry).
 pub fn binder_sent(user: &impl VirtRead, arg: u64) -> Vec<Transaction> {
     let Some(bwr) = read_bwr(user, arg) else { return Vec::new() };
     let start = bwr.write_buffer.wrapping_add(bwr.write_consumed);
     binder_stream(user, start, bwr.write_size.saturating_sub(bwr.write_consumed))
 }
 
-/// Le transazioni ricevute da `ioctl(fd, BINDER_WRITE_READ, arg)` (da
-/// leggere all'uscita riuscita).
+/// The transactions received by `ioctl(fd, BINDER_WRITE_READ, arg)` (to be
+/// read on successful exit).
 pub fn binder_received(user: &impl VirtRead, arg: u64) -> Vec<Transaction> {
     let Some(bwr) = read_bwr(user, arg) else { return Vec::new() };
     binder_stream(user, bwr.read_buffer, bwr.read_consumed)
@@ -191,7 +191,7 @@ fn read_bwr(user: &impl VirtRead, va: u64) -> Option<WriteRead> {
     user.read_virt(va, &mut b).then(|| WriteRead::parse(&b)).flatten()
 }
 
-/// Le transazioni di un flusso binder, con i byte del Parcel.
+/// The transactions of a binder stream, with the Parcel bytes.
 fn binder_stream(user: &impl VirtRead, va: u64, len: u64) -> Vec<Transaction> {
     if len == 0 || len > 1 << 20 {
         return Vec::new();
@@ -213,7 +213,7 @@ fn binder_stream(user: &impl VirtRead, va: u64, len: u64) -> Vec<Transaction> {
         .collect()
 }
 
-/// `struct sockaddr` leggibile: `unix:/percorso`, `unix:@astratto`,
+/// Readable `struct sockaddr`: `unix:/path`, `unix:@abstract`,
 /// `10.0.2.2:80`, `[::1]:443`.
 pub fn read_sockaddr(user: &impl VirtRead, va: u64, len: u64) -> Option<String> {
     let n = len.clamp(2, 128) as usize;
@@ -224,7 +224,7 @@ pub fn read_sockaddr(user: &impl VirtRead, va: u64, len: u64) -> Option<String> 
     sockaddr(&b)
 }
 
-/// Decodifica una `struct sockaddr`.
+/// Decodes a `struct sockaddr`.
 pub fn sockaddr(b: &[u8]) -> Option<String> {
     let family = u16::from_le_bytes(b.get(..2)?.try_into().ok()?);
     match family {
@@ -248,11 +248,11 @@ pub fn sockaddr(b: &[u8]) -> Option<String> {
             let ip: [u8; 16] = b.get(8..24)?.try_into().ok()?;
             Some(format!("[{}]:{port}", std::net::Ipv6Addr::from(ip)))
         }
-        f => Some(format!("famiglia {f}")),
+        f => Some(format!("family {f}")),
     }
 }
 
-/// Byte leggibili: ASCII stampabile, il resto `\xNN`, al più `max` byte.
+/// Readable bytes: printable ASCII, the rest `\xNN`, at most `max` bytes.
 pub fn escape(b: &[u8], max: usize) -> String {
     let mut s = String::from("\"");
     for &c in b.iter().take(max) {
@@ -276,7 +276,7 @@ pub fn escape(b: &[u8], max: usize) -> String {
 mod tests {
     use super::*;
 
-    /// Memoria finta del processo da 0x1000.
+    /// Fake process memory from 0x1000.
     fn mem(img: &[u8]) -> impl Fn(u64, &mut [u8]) -> bool + '_ {
         move |va: u64, buf: &mut [u8]| {
             let Some(o) = va.checked_sub(0x1000) else { return false };
@@ -310,7 +310,7 @@ mod tests {
         let mut w = SyscallRecord { nr: 64, args: [1, 0x1100, 5, 0, 0, 0], tid: 7, ..Default::default() };
         w.decode_entry(&m, &fdp);
         w.ret = Some(5);
-        assert_eq!(w.line(), "[7] write(1, 0x1100, 5) = 5 ; fd=/dev/console ; dati=\"ciao\\n\"");
+        assert_eq!(w.line(), "[7] write(1, 0x1100, 5) = 5 ; fd=/dev/console ; data=\"ciao\\n\"");
         let mut rd =
             SyscallRecord { nr: 63, args: [0, 0x1100, 100, 0, 0, 0], ret: Some(2), ..Default::default() };
         rd.decode_exit(&m);
@@ -324,14 +324,14 @@ mod tests {
             diverted: Some(0x40_0000),
             ..Default::default()
         };
-        assert!(e.line().ends_with("= ? (ritorno a 0x400000)"), "{}", e.line());
+        assert!(e.line().ends_with("= ? (return to 0x400000)"), "{}", e.line());
         assert_eq!(sockaddr(b"\x01\x00\0abc\0").as_deref(), Some("unix:@abc"));
     }
 
     #[test]
     fn transazione_binder_all_ingresso() {
         let mut img = vec![0u8; 0x3000];
-        // bwr a 0x1000: write_size 68, consumed 0, write_buffer 0x1100.
+        // bwr at 0x1000: write_size 68, consumed 0, write_buffer 0x1100.
         img[0..8].copy_from_slice(&68u64.to_le_bytes());
         img[16..24].copy_from_slice(&0x1100u64.to_le_bytes());
         let mut t = 0x4040_6300u32.to_le_bytes().to_vec();

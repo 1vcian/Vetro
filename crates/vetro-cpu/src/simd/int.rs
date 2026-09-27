@@ -1,7 +1,7 @@
-//! AdvSIMD intero (vettoriale e scalare), ARMv8.0.
+//! Integer AdvSIMD (vector and scalar), ARMv8.0.
 //!
-//! Le operazioni in virgola mobile che condividono queste classi di codifica
-//! (FADD vettoriale, FCVTZS, FMLA indicizzato, ...) vengono inoltrate a
+//! The floating-point operations that share these encoding classes
+//! (vector FADD, FCVTZS, indexed FMLA, ...) are forwarded to
 //! `fpinsn`.
 
 use super::SimdInsn;
@@ -21,7 +21,7 @@ pub enum MovImmOp {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CopyOp {
-    /// DUP (elemento), anche scalare (`MOV Bd, Vn.B[i]`).
+    /// DUP (element), also scalar (`MOV Bd, Vn.B[i]`).
     DupElem,
     DupGen,
     InsGen,
@@ -69,7 +69,7 @@ pub enum IntInsn {
         rn: u8,
         rd: u8,
     },
-    /// ADDP scalare (Dd = somma delle due corsie a 64 bit).
+    /// Scalar ADDP (Dd = sum of the two 64-bit lanes).
     AddpScalar {
         rn: u8,
         rd: u8,
@@ -153,7 +153,7 @@ pub fn decode(w: u32) -> Insn {
     let u = bit(w, 29);
     let size = field(w, 23, 22) as u8;
 
-    // Crittografia (AES, SHA1, SHA256): valida su Cortex-A53, non ancora scritta.
+    // Cryptography (AES, SHA1, SHA256): valid on Cortex-A53, not yet written.
     if m(w, 0xFF3E_0C00, 0x4E28_0800) || m(w, 0xFF20_8C00, 0x5E00_0000) || m(w, 0xFF3E_0C00, 0x5E28_0800) {
         return super::crypto::decode(w);
     }
@@ -163,11 +163,11 @@ pub fn decode(w: u32) -> Insn {
         return Insn::Undefined;
     }
 
-    // Copie
+    // Copies
     if m(w, 0x9FE0_8400, 0x0E00_0400) || m(w, 0xDFE0_8400, 0x5E00_0400) {
         return copy(w, scalar, q, rn, rd);
     }
-    // Immediato modificato / shift per immediato (vettoriale)
+    // Modified immediate / shift by immediate (vector)
     if !scalar && m(w, 0x9F80_0400, 0x0F00_0400) {
         if field(w, 22, 19) == 0 {
             return mod_imm(w, q, rd);
@@ -180,11 +180,11 @@ pub fn decode(w: u32) -> Insn {
         }
         return shift_imm(w, true, q, u, rn, rd);
     }
-    // Elemento indicizzato
+    // Indexed element
     if m(w, 0x9F00_0400, 0x0F00_0000) || m(w, 0xDF00_0400, 0x5F00_0000) {
         return indexed(w, scalar, q, u, size, rd, rn);
     }
-    // TBL/TBX, permutazioni, EXT (solo vettoriali)
+    // TBL/TBX, permutations, EXT (vector only)
     if !scalar {
         if m(w, 0xBF20_8C00, 0x0E00_0000) {
             if size != 0 {
@@ -207,7 +207,7 @@ pub fn decode(w: u32) -> Insn {
             return ok(IntInsn::Ext { q, imm4, rm, rn, rd });
         }
     }
-    // Classi con dimensione: la parte 28:24 è 01110 (vettoriale) o 11110 (scalare).
+    // Classes with size: the 28:24 part is 01110 (vector) or 11110 (scalar).
     if field(w, 28, 24) & 0b01111 != 0b01110 {
         return Insn::Undefined;
     }
@@ -268,7 +268,7 @@ fn mod_imm(w: u32, q: bool, rd: u8) -> Insn {
     let op = bit(w, 29);
     let cmode = field(w, 15, 12);
     if bit(w, 11) {
-        return Insn::Undefined; // o2: FMOV (vettoriale, mezza precisione) richiede FP16
+        return Insn::Undefined; // o2: FMOV (vector, half precision) requires FP16
     }
     let imm8 = ((field(w, 18, 16) << 5) | field(w, 9, 5)) as u64;
     let rep = |v: u64, esize: u32| crate::bits::replicate(v, esize, 64);
@@ -345,7 +345,7 @@ fn shift_imm(w: u32, scalar: bool, q: bool, u: bool, rn: u8, rd: u8) -> Insn {
             return Insn::Undefined;
         }
         if scalar && (wide || opcode == 0b10000 && !u || opcode == 0b10001 && !u) {
-            return Insn::Undefined; // SHRN/RSHRN/SSHLL non hanno forma scalare
+            return Insn::Undefined; // SHRN/RSHRN/SSHLL have no scalar form
         }
     } else if scalar {
         let only64 = matches!(opcode, 0b00000 | 0b00010 | 0b00100 | 0b00110 | 0b01000 | 0b01010);
@@ -403,7 +403,7 @@ fn three_same(w: u32, scalar: bool, q: bool, u: bool, size: u8, rm: u8, rn: u8, 
     let s3 = size == 3;
     let valid = if scalar {
         match opcode {
-            0b00001 | 0b00101 | 0b01001 | 0b01011 => true, // SQADD, SQSUB, SQSHL, SQRSHL (e U)
+            0b00001 | 0b00101 | 0b01001 | 0b01011 => true, // SQADD, SQSUB, SQSHL, SQRSHL (and U)
             0b00110 | 0b00111 | 0b01000 | 0b01010 | 0b10000 | 0b10001 => s3,
             0b10110 => size == 1 || size == 2, // SQDMULH, SQRDMULH
             _ => false,
@@ -411,8 +411,8 @@ fn three_same(w: u32, scalar: bool, q: bool, u: bool, size: u8, rm: u8, rn: u8, 
     } else {
         let no64 = !s3;
         let base = !(s3 && !q);
-        // Le logiche (opcode 00011) usano size per scegliere l'operazione:
-        // valide anche con size = 11 e Q = 0.
+        // The logical ones (opcode 00011) use size to choose the operation:
+        // valid also with size = 11 and Q = 0.
         opcode == 0b00011
             || base
                 && match (u, opcode) {
@@ -445,7 +445,7 @@ fn three_diff(w: u32, scalar: bool, q: bool, u: bool, size: u8, rm: u8, rn: u8, 
         !u && matches!(opcode, 0b1001 | 0b1011 | 0b1101) && (size == 1 || size == 2)
     } else {
         match (u, opcode) {
-            (false, 0b1110) => size == 0 || size == 3, // PMULL (64 bit con crittografia)
+            (false, 0b1110) => size == 0 || size == 3, // PMULL (64 bits with cryptography)
             (true, 0b1110) | (_, 0b1111) => false,
             (true, 0b1001 | 0b1011 | 0b1101) => false,
             (false, 0b1001 | 0b1011 | 0b1101) => size == 1 || size == 2,
@@ -461,7 +461,7 @@ fn three_diff(w: u32, scalar: bool, q: bool, u: bool, size: u8, rm: u8, rn: u8, 
 fn two_misc(w: u32, scalar: bool, q: bool, u: bool, size: u8, rn: u8, rd: u8) -> Insn {
     let opcode = field(w, 16, 12) as u8;
     if opcode >= 0b01100 && !matches!(opcode, 0b10010..=0b10100) {
-        // 01100–01111 e 10110–11111: virgola mobile (o URECPE/URSQRTE).
+        // 01100–01111 and 10110–11111: floating point (or URECPE/URSQRTE).
         return fpinsn::decode_vec(w);
     }
     let s3 = size == 3;
@@ -510,7 +510,7 @@ fn across(w: u32, q: bool, u: bool, size: u8, opcode: u8, rn: u8, rd: u8) -> Ins
 }
 
 // ------------------------------------------------------------------
-// Esecuzione
+// Execution
 // ------------------------------------------------------------------
 
 fn sat_s(x: i128, esize: u32, qc: &mut bool) -> u64 {
@@ -542,19 +542,19 @@ fn sat_u(x: i128, esize: u32, qc: &mut bool) -> u64 {
     r as u64
 }
 
-/// Valore di un elemento come intero con o senza segno.
+/// Value of an element as a signed or unsigned integer.
 #[inline]
 fn ext(x: u64, esize: u32, signed: bool) -> i128 {
     if signed { sx(x, esize) as i128 } else { x as i128 }
 }
 
-/// Shift per registro (SSHL/USHL e varianti): `shift` è il byte basso con
-/// segno di Vm. Restituisce il valore esatto (prima della saturazione).
+/// Shift by register (SSHL/USHL and variants): `shift` is the signed low byte
+/// of Vm. Returns the exact value (before saturation).
 fn shl_reg(x: i128, shift: i8, round: bool) -> i128 {
     let s = shift as i32;
     if s >= 0 {
         if s >= 64 {
-            if x == 0 { 0 } else { x.signum() * (1i128 << 100) } // fuori scala: satura o tronca a 0
+            if x == 0 { 0 } else { x.signum() * (1i128 << 100) } // out of range: saturates or truncates to 0
         } else {
             x << s
         }
@@ -577,7 +577,7 @@ fn clz(x: u64, esize: u32) -> u64 {
 fn cls(x: u64, esize: u32) -> u64 {
     let s = sx(x, esize);
     let y = (s ^ (s >> 1)) as u64 & emask(esize);
-    // conta gli zeri iniziali di y su esize-1 bit
+    // count the leading zeros of y over esize-1 bits
     (y.leading_zeros() - (64 - esize) - 1) as u64
 }
 
@@ -705,7 +705,7 @@ pub(crate) fn exec(cpu: &mut Cpu, i: IntInsn) {
             for e in 0..n {
                 let x = match opcode & 3 {
                     1 => {
-                        // UZP: elementi pari (o dispari) di concat(b:a)
+                        // UZP: even (or odd) elements of concat(b:a)
                         let k = 2 * e + part;
                         if k < n { elem(a, k, esize) } else { elem(b, k - n, esize) }
                     }
@@ -783,7 +783,7 @@ fn three_same_exec(
         64
     };
     if opcode == 0b00011 {
-        // Operazioni logiche bit a bit sull'intero registro.
+        // Bitwise logical operations on the whole register.
         let r = match (u, size) {
             (false, 0) => a & b,
             (false, 1) => a & !b,
@@ -941,7 +941,7 @@ fn three_diff_exec(
     let mut r = 0u128;
     match opcode {
         0b0100 | 0b0110 => {
-            // ADDHN/RADDHN, SUBHN/RSUBHN: da 2*esize a esize, metà alta
+            // ADDHN/RADDHN, SUBHN/RSUBHN: from 2*esize to esize, high half
             for e in 0..n {
                 let (x, y) = (elem(a, e, big), elem(b, e, big));
                 let mut s = if opcode == 0b0100 { x.wrapping_add(y) } else { x.wrapping_sub(y) } as u128;
@@ -1003,7 +1003,7 @@ fn two_misc_exec(
     rd: u8,
     qc: &mut bool,
 ) {
-    // NOT, RBIT e CNT lavorano sempre su byte (size codifica l'operazione).
+    // NOT, RBIT and CNT always work on bytes (size encodes the operation).
     let esize = if opcode == 0b00101 { 8 } else { 8u32 << size };
     let a = cpu.v[rn as usize];
     let d = cpu.v[rd as usize];
@@ -1016,13 +1016,13 @@ fn two_misc_exec(
     };
     let signed = !u;
     let mk = emask(esize);
-    // Operazioni che restringono (XTN e simili) o allargano (SHLL).
+    // Operations that narrow (XTN and similar) or widen (SHLL).
     if matches!(opcode, 0b10010 | 0b10100) || opcode == 0b10011 && u {
         let part = if scalar { 0 } else { q as usize };
         let n = if scalar { 1 } else { 64 / esize as usize };
         let big = 2 * esize;
         if opcode == 0b10011 {
-            // SHLL: allarga e sposta di esize
+            // SHLL: widens and shifts by esize
             let mut r = 0u128;
             for e in 0..n {
                 let x = elem(a, part * n + e, esize);
@@ -1048,7 +1048,7 @@ fn two_misc_exec(
     let n = (datasize / esize) as usize;
     match opcode {
         0b00010 | 0b00110 => {
-            // [SU]ADDLP / [SU]ADALP: somma coppie adiacenti su 2*esize
+            // [SU]ADDLP / [SU]ADALP: sums adjacent pairs over 2*esize
             let big = 2 * esize;
             let mut r = 0u128;
             for e in 0..n / 2 {
@@ -1061,7 +1061,7 @@ fn two_misc_exec(
             return;
         }
         0b00000 | 0b00001 => {
-            // REV64 / REV32 / REV16: inverte gli elementi dentro contenitori
+            // REV64 / REV32 / REV16: reverses the elements within containers
             let container = match (u, opcode) {
                 (false, 0b00000) => 64,
                 (true, 0b00000) => 32,
@@ -1085,12 +1085,12 @@ fn two_misc_exec(
         let s = sx(x, esize) as i128;
         let res = match (u, opcode) {
             (false, 0b00011) => {
-                // SUQADD: Vd (con segno) + Vn (senza segno)
+                // SUQADD: Vd (signed) + Vn (unsigned)
                 let acc = sx(elem(d, e, esize), esize) as i128;
                 sat_s(acc + x as i128, esize, qc)
             }
             (true, 0b00011) => {
-                // USQADD: Vd (senza segno) + Vn (con segno)
+                // USQADD: Vd (unsigned) + Vn (signed)
                 let acc = elem(d, e, esize) as i128;
                 sat_u(acc + s, esize, qc)
             }
@@ -1169,7 +1169,7 @@ fn shift_imm_exec(
     let signed = !u;
     let mk = emask(esize);
     if matches!(opcode, 0b10000..=0b10011) {
-        // Restringimenti: esize è la dimensione di destinazione.
+        // Narrowing: esize is the destination size.
         let dst = esize;
         let src = 2 * esize;
         let n = if scalar { 1 } else { 64 / dst as usize };
@@ -1179,8 +1179,8 @@ fn shift_imm_exec(
         for e in 0..n {
             let x = elem(a, e, src);
             let src_signed = match (u, opcode) {
-                (false, 0b10000 | 0b10001) => false, // SHRN/RSHRN: indifferente, si tronca
-                (true, 0b10000 | 0b10001) => true,   // SQSHRUN/SQRSHRUN: sorgente con segno
+                (false, 0b10000 | 0b10001) => false, // SHRN/RSHRN: irrelevant, it truncates
+                (true, 0b10000 | 0b10001) => true,   // SQSHRUN/SQRSHRUN: signed source
                 (false, _) => true,                  // SQSHRN
                 (true, _) => false,                  // UQSHRN
             };
@@ -1231,7 +1231,7 @@ fn shift_imm_exec(
             (_, 0b00100) => rshift(true) as u64 & mk,
             (_, 0b00110) => acc.wrapping_add(rshift(true) as u64) & mk,
             (true, 0b01000) => {
-                // SRI: inserisce x >> shift, conserva i bit alti di Vd
+                // SRI: inserts x >> shift, keeps the high bits of Vd
                 let ins = if shift >= esize { 0 } else { mk >> shift };
                 let shifted = if shift >= 64 { 0 } else { x >> shift };
                 (acc & !ins) | (shifted & ins)

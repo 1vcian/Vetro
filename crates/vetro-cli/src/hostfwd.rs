@@ -1,21 +1,21 @@
-//! `vetro boot --hostfwd=tcp:[ADDR]:PORTA-[:]PORTA_GUEST`: inoltro di porte
-//! dall'host verso servizi TCP del guest, come `hostfwd` della rete user di
-//! QEMU (per esempio `adb connect 127.0.0.1:PORTA` verso adbd sulla 5555).
+//! `vetro boot --hostfwd=tcp:[ADDR]:PORT-[:]GUEST_PORT`: port forwarding
+//! from the host to the guest's TCP services, like `hostfwd` of QEMU's user
+//! network (for example `adb connect 127.0.0.1:PORT` to adbd on 5555).
 //!
-//! I socket veri stanno qui, nel runner nativo, non nel core: un thread per
-//! regola accetta le connessioni, un thread per connessione legge dal
-//! socket e uno ci scrive. Tutto arriva al ciclo principale su un canale
-//! ([`Input`], insieme alla console), e il ciclo lo passa allo stack di
-//! rete (`Stack::host_connect`, `host_send`, `host_recv`, …) **tra un quanto
-//! di istruzioni e l'altro**, con `Machine::input` e
-//! `Input::HostNet` (M10, ADR 0019): è lì che gli ingressi dell'host entrano
-//! nella macchina, e con `vetro boot --record` si registrano con il numero
-//! d'istruzione, come i byte della console. Il momento in cui arrivano dal
-//! socket dipende dall'host: senza registrazione due esecuzioni con
-//! `--hostfwd` non sono ripetibili, con la registrazione il replay le rifà
-//! identiche (senza connessioni `--hostfwd` non tocca la macchina). Solo le
-//! letture che trovano byte pronti diventano ingressi (`net_view` guarda
-//! prima), così il log non si riempie di letture vuote.
+//! The real sockets live here, in the native runner, not in the core: one thread per
+//! rule accepts the connections, one thread per connection reads from the
+//! socket and one writes to it. Everything reaches the main loop on a channel
+//! ([`Input`], together with the console), and the loop passes it to the network
+//! stack (`Stack::host_connect`, `host_send`, `host_recv`, …) **between one quantum
+//! of instructions and the next**, with `Machine::input` and
+//! `Input::HostNet` (M10, ADR 0019): that is where host inputs enter
+//! the machine, and with `vetro boot --record` they are recorded with the
+//! instruction number, like the console bytes. The moment they arrive from the
+//! socket depends on the host: without recording two runs with
+//! `--hostfwd` are not repeatable, with recording the replay reproduces them
+//! identically (without `--hostfwd` connections it does not touch the machine). Only
+//! reads that find bytes ready become inputs (`net_view` checks
+//! first), so the log does not fill up with empty reads.
 
 use std::collections::VecDeque;
 use std::io::{Read, Write};
@@ -28,38 +28,38 @@ use std::time::Duration;
 use vetro_machine::vetro_net::{CloseReason, ConnId, HostConnState};
 use vetro_machine::{HostNetOp, Machine, Reply};
 
-/// Un'operazione sulle connessioni dell'host, come ingresso della macchina.
+/// An operation on the host connections, as a machine input.
 fn host(m: &mut Machine, op: HostNetOp) -> Reply {
     m.input(vetro_machine::Input::HostNet(op))
 }
 
-/// Byte letti da un socket e non ancora presi dallo stack oltre i quali il
-/// thread di lettura si ferma (contropressione verso il client).
+/// Bytes read from a socket and not yet taken by the stack beyond which the
+/// reader thread stops (backpressure towards the client).
 const READ_AHEAD: usize = 1 << 20;
-/// Byte presi dallo stack e non ancora scritti sul socket oltre i quali non
-/// se ne prendono altri (la finestra del guest si chiude).
+/// Bytes taken from the stack and not yet written to the socket beyond which no
+/// more are taken (the guest's window closes).
 const WRITE_BEHIND: usize = 1 << 20;
 
-/// Una regola `--hostfwd`.
+/// A `--hostfwd` rule.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Rule {
     pub host: SocketAddrV4,
     pub guest_port: u16,
 }
 
-/// Interpreta `tcp:[ADDR]:PORTA-[IP_GUEST]:PORTA_GUEST` (la sintassi di
-/// QEMU). Senza indirizzo l'host ascolta su 127.0.0.1 (QEMU ascolta su tutte
-/// le interfacce: qui, per prudenza, solo localhost). L'indirizzo del guest,
-/// se c'è, dev'essere 10.0.2.15. `PORTA` 0 = scelta dal sistema.
+/// Parses `tcp:[ADDR]:PORT-[GUEST_IP]:GUEST_PORT` (QEMU's
+/// syntax). Without an address the host listens on 127.0.0.1 (QEMU listens on all
+/// interfaces: here, to be safe, only localhost). The guest address,
+/// if present, must be 10.0.2.15. `PORT` 0 = chosen by the system.
 pub fn parse_rule(s: &str) -> Result<Rule, String> {
-    let bad = || format!("--hostfwd={s}: atteso tcp:[ADDR]:PORTA-[IP_GUEST]:PORTA_GUEST");
+    let bad = || format!("--hostfwd={s}: expected tcp:[ADDR]:PORT-[GUEST_IP]:GUEST_PORT");
     let rest = s.strip_prefix("tcp:").ok_or_else(bad)?;
     let (host, guest) = rest.split_once('-').ok_or_else(bad)?;
     let (haddr, hport) = host.rsplit_once(':').ok_or_else(bad)?;
     let (gaddr, gport) = guest.rsplit_once(':').ok_or_else(bad)?;
     let haddr = if haddr.is_empty() { Ipv4Addr::LOCALHOST } else { haddr.parse().map_err(|_| bad())? };
     if !gaddr.is_empty() && gaddr.parse::<Ipv4Addr>() != Ok(Ipv4Addr::new(10, 0, 2, 15)) {
-        return Err(format!("--hostfwd={s}: il guest è 10.0.2.15"));
+        return Err(format!("--hostfwd={s}: the guest is 10.0.2.15"));
     }
     let hport = hport.parse::<u16>().map_err(|_| bad())?;
     let gport = gport.parse::<u16>().map_err(|_| bad())?;
@@ -69,7 +69,7 @@ pub fn parse_rule(s: &str) -> Result<Rule, String> {
     Ok(Rule { host: SocketAddrV4::new(haddr, hport), guest_port: gport })
 }
 
-/// Ingressi dell'host per il ciclo principale.
+/// Host inputs for the main loop.
 pub enum Input {
     Console(Vec<u8>),
     ConsoleClosed,
@@ -81,11 +81,11 @@ pub enum Input {
         key: u64,
         data: Vec<u8>,
     },
-    /// Il client ha chiuso il suo verso.
+    /// The client closed its direction.
     Eof {
         key: u64,
     },
-    /// Errore di lettura (di solito un RST del client).
+    /// Read error (usually an RST from the client).
     Broken {
         key: u64,
     },
@@ -93,17 +93,17 @@ pub enum Input {
 
 enum WriterMsg {
     Data(Vec<u8>),
-    /// FIN verso il client dopo i dati.
+    /// FIN to the client after the data.
     Shutdown,
-    /// RST verso il client.
+    /// RST to the client.
     Abort,
 }
 
-/// Un client collegato a una connessione verso il guest.
+/// A client attached to a connection to the guest.
 struct Bridge {
     key: u64,
     id: ConnId,
-    /// Byte del client non ancora presi dallo stack.
+    /// Client bytes not yet taken by the stack.
     pending: VecDeque<u8>,
     read_ahead: Arc<AtomicUsize>,
     write_behind: Arc<AtomicUsize>,
@@ -114,7 +114,7 @@ struct Bridge {
     shut_to_client: bool,
 }
 
-/// Le regole in ascolto e i client collegati.
+/// The listening rules and the attached clients.
 pub struct HostFwd {
     rules: Vec<Rule>,
     tx: Sender<Input>,
@@ -123,8 +123,8 @@ pub struct HostFwd {
 }
 
 impl HostFwd {
-    /// Apre i socket in ascolto; restituisce l'inoltro e gli indirizzi
-    /// effettivi (con la porta scelta se era 0).
+    /// Opens the listening sockets; returns the forwarder and the actual
+    /// addresses (with the chosen port if it was 0).
     pub fn listen(rules: &[Rule], tx: Sender<Input>) -> std::io::Result<(Self, Vec<SocketAddr>)> {
         let mut addrs = Vec::new();
         for (i, r) in rules.iter().enumerate() {
@@ -143,7 +143,7 @@ impl HostFwd {
         Ok((HostFwd { rules: rules.to_vec(), tx, bridges: Vec::new(), next_key: 1 }, addrs))
     }
 
-    /// Un ingresso di rete dal canale (gli altri non lo riguardano).
+    /// A network input from the channel (the others are not its concern).
     pub fn input(&mut self, m: &mut Machine, input: Input) {
         match input {
             Input::Accepted { rule, stream } => self.accept(m, rule, stream),
@@ -173,7 +173,7 @@ impl HostFwd {
     fn accept(&mut self, m: &mut Machine, rule: usize, stream: TcpStream) {
         let port = self.rules[rule].guest_port;
         let Reply::HostConn(Some(id)) = host(m, HostNetOp::Connect(port)) else {
-            // Senza rete (o senza porte effimere) si chiude subito.
+            // Without network (or without ephemeral ports) it is closed right away.
             return;
         };
         let _ = stream.set_nodelay(true);
@@ -202,8 +202,8 @@ impl HostFwd {
         });
     }
 
-    /// Scambi tra i client e lo stack, tra un quanto e l'altro. Tocca la
-    /// macchina (`Machine::net`) solo se c'è qualcosa da fare.
+    /// Exchanges between the clients and the stack, between one quantum and the next. It touches
+    /// the machine (`Machine::net`) only if there is something to do.
     pub fn service(&mut self, m: &mut Machine) {
         if self.bridges.is_empty() {
             return;
@@ -235,7 +235,7 @@ impl HostFwd {
     }
 }
 
-/// Scambi di un client con lo stack; falso quando la connessione è finita.
+/// Exchanges of one client with the stack; false when the connection is over.
 fn exchange(m: &mut Machine, b: &mut Bridge) -> bool {
     if b.client_broken {
         host(m, HostNetOp::Release(b.id));
@@ -278,9 +278,9 @@ fn exchange(m: &mut Machine, b: &mut Bridge) -> bool {
     }
     match info.state {
         HostConnState::Closed(reason) if info.readable == 0 => {
-            // Come slirp: chiusura ordinata anche se il guest non ha il
-            // servizio (il client vede la fine del flusso); RST se la
-            // connessione è stata interrotta.
+            // Like slirp: orderly close even if the guest does not have the
+            // service (the client sees the end of the stream); RST if the
+            // connection was aborted.
             let msg = match reason {
                 CloseReason::Normal | CloseReason::Refused => WriterMsg::Shutdown,
                 _ => WriterMsg::Abort,
@@ -298,7 +298,7 @@ fn reader(key: u64, mut s: TcpStream, tx: Sender<Input>, read_ahead: Arc<AtomicU
     loop {
         while read_ahead.load(Ordering::Acquire) >= READ_AHEAD {
             if Arc::strong_count(&read_ahead) == 1 {
-                return; // connessione già rilasciata
+                return; // connection already released
             }
             std::thread::sleep(Duration::from_millis(1));
         }
@@ -329,7 +329,7 @@ fn writer(mut s: TcpStream, rx: Receiver<WriterMsg>, write_behind: Arc<AtomicUsi
                 let ok = s.write_all(&d).is_ok();
                 write_behind.fetch_sub(d.len(), Ordering::AcqRel);
                 if !ok {
-                    // Il client se n'è andato: il lettore lo segnala.
+                    // The client went away: the reader reports it.
                     continue;
                 }
             }
@@ -342,19 +342,19 @@ fn writer(mut s: TcpStream, rx: Receiver<WriterMsg>, write_behind: Arc<AtomicUsi
             }
         }
     }
-    // Canale chiuso (connessione rilasciata dopo una chiusura ordinata): il
-    // socket si chiude qui.
+    // Channel closed (connection released after an orderly close): the
+    // socket is closed here.
     let _ = s.shutdown(Shutdown::Both);
 }
 
-/// Prepara la chiusura con RST (SO_LINGER a zero): il RST parte quando si
-/// chiudono entrambi i descrittori (questo e quello del lettore, che la
-/// chiusura del verso di lettura sveglia senza mandare nulla sul filo).
+/// Prepares the close with RST (SO_LINGER at zero): the RST goes out when
+/// both descriptors are closed (this one and the reader's, which the
+/// shutdown of the read direction wakes up without sending anything on the wire).
 fn abort(s: &TcpStream) {
     use std::os::fd::AsRawFd;
     let l = libc::linger { l_onoff: 1, l_linger: 0 };
-    // SAFETY: descrittore valido per la durata di `s`, struttura linger
-    // valida e della dimensione passata.
+    // SAFETY: descriptor valid for the lifetime of `s`, linger struct
+    // valid and of the size passed.
     unsafe {
         libc::setsockopt(
             s.as_raw_fd(),

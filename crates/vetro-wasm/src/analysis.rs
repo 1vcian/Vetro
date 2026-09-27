@@ -1,21 +1,21 @@
-//! Ispettore di rete e timeline input→effetti (ABI 8, M7, ADR 0023).
+//! Network inspector and input→effects timeline (ABI 8, M7, ADR 0023).
 //!
-//! - **Cattura**: i frame di virtio-net (`Machine::net_tap`, ADR 0016) si
-//!   raccolgono nella [`Vm`] a ogni `vetro_run` (non cambia l'esecuzione),
-//!   al più [`MAX_CAPTURE_BYTES`]; l'analisi di `vetro_analysis::net` dà la
-//!   lista delle richieste e il dettaglio in JSON
-//!   (`vetro_analysis::net::view`), l'HAR e il pcapng.
-//! - **Timeline**: gli ingressi dell'utente che passano dalle funzioni della
-//!   macchina (tasti, pulsanti, tocchi, console, tasto di accensione,
-//!   risoluzione) si annotano da soli con il numero d'istruzione
-//!   ([`Describer::describe`]); i comandi del gestore dei file e gli effetti sui file
-//!   li annota il JS (`vetro_timeline_input`, `vetro_timeline_effect`);
-//!   l'uscita della console si annota quando il JS la legge; gli effetti di
-//!   rete vengono dalla cattura. L'attribuzione è quella di
+//! - **Capture**: the virtio-net frames (`Machine::net_tap`, ADR 0016) are
+//!   collected in the [`Vm`] at every `vetro_run` (it doesn't change execution),
+//!   at most [`MAX_CAPTURE_BYTES`]; the analysis of `vetro_analysis::net` gives the
+//!   list of requests and the detail in JSON
+//!   (`vetro_analysis::net::view`), the HAR and the pcapng.
+//! - **Timeline**: the user inputs that go through the machine's
+//!   functions (keys, buttons, touches, console, power button,
+//!   resolution) annotate themselves with the instruction count
+//!   ([`Describer::describe`]); the file manager commands and the effects on files
+//!   are annotated by JS (`vetro_timeline_input`, `vetro_timeline_effect`);
+//!   the console output is annotated when JS reads it; the network
+//!   effects come from the capture. The attribution is that of
 //!   `vetro_analysis::timeline`.
 //!
-//! I risultati (JSON, HAR, pcapng) vanno nel buffer dei risultati della
-//! macchina: `vetro_result_ptr`, validi fino al prossimo risultato.
+//! The results (JSON, HAR, pcapng) go into the machine's result
+//! buffer: `vetro_result_ptr`, valid until the next result.
 
 use vetro_analysis::net::har::HarOptions;
 use vetro_analysis::net::pcapng::{self, PcapngOptions};
@@ -31,12 +31,12 @@ use vetro_platform::virtio::input::{
 
 use crate::Vm;
 
-/// Byte di frame tenuti al più nella cattura (oltre, i frame si contano e
-/// si scartano).
+/// Frame bytes kept at most in the capture (beyond that, the frames are counted and
+/// discarded).
 pub const MAX_CAPTURE_BYTES: usize = 64 << 20;
 
-/// Stato del descrittore degli ingressi: la riga della console in corso, la
-/// posizione del puntatore, i contatti attivi del touchscreen.
+/// State of the input describer: the console line in progress, the
+/// pointer position, the active touchscreen contacts.
 #[derive(Clone, Debug, Default)]
 pub struct Describer {
     line: LineEditor,
@@ -45,24 +45,24 @@ pub struct Describer {
     touching: u32,
 }
 
-/// Percentuale di un asse assoluto (0..=32767).
+/// Percentage of an absolute axis (0..=32767).
 fn pct(v: u32) -> u32 {
     (u64::from(v.min(32767)) * 100 / 32767) as u32
 }
 
 impl Describer {
-    /// Che cosa vede l'utente di un ingresso: tipo, testo, debole. `None`
-    /// per ciò che non è un'azione dell'utente (movimenti del puntatore,
-    /// rilasci, risposte automatiche del terminale, vsock, rete).
+    /// What the user sees of an input: type, text, weak. `None`
+    /// for what is not a user action (pointer movements,
+    /// releases, automatic terminal replies, vsock, network).
     pub fn describe(&mut self, input: &Input) -> Option<(InputKind, String, bool)> {
         match input {
             Input::Console(bytes) => {
                 let lines = self.line.feed(bytes);
                 if let Some(last) = lines.last() {
-                    return Some((InputKind::Console, format!("Invio: {last}"), false));
+                    return Some((InputKind::Console, format!("Enter: {last}"), false));
                 }
                 let t = printable(bytes);
-                // Le risposte del terminale (ESC[r;cR) non sono dell'utente.
+                // The terminal's replies (ESC[r;cR) are not the user's.
                 (!t.is_empty()).then_some((InputKind::Console, t, true))
             }
             Input::Keyboard(ev) => {
@@ -77,10 +77,10 @@ impl Describer {
             }
             Input::Pointer(ev) => self.pointer(ev),
             Input::Gpio { line, level: true } if *line == vetro_platform::pl061::POWER_KEY_LINE => {
-                Some((InputKind::Power, "tasto di accensione".into(), false))
+                Some((InputKind::Power, "power button".into(), false))
             }
             Input::Display { width, height, .. } => {
-                Some((InputKind::Display, format!("schermo {width}x{height}"), true))
+                Some((InputKind::Display, format!("screen {width}x{height}"), true))
             }
             _ => None,
         }
@@ -130,8 +130,8 @@ impl Describer {
 }
 
 impl Vm {
-    /// Un ingresso dell'utente: lo annota nella timeline (se è un'azione e
-    /// la macchina lo accetta) e lo passa a `Machine::input`.
+    /// A user input: annotates it in the timeline (if it is an action and
+    /// the machine accepts it) and passes it to `Machine::input`.
     pub fn user_input(&mut self, input: Input) -> Reply {
         let step = self.m.steps;
         let desc = self.describer.describe(&input);
@@ -144,7 +144,7 @@ impl Vm {
         r
     }
 
-    /// Accende o spegne la cattura; falso senza rete.
+    /// Turns the capture on or off; false without a network.
     pub fn capture_set(&mut self, on: bool) -> bool {
         if !on {
             self.collect_capture();
@@ -154,7 +154,7 @@ impl Vm {
         ok
     }
 
-    /// Porta i frame catturati dalla macchina nella cattura della `Vm`.
+    /// Brings the frames captured by the machine into the `Vm`'s capture.
     pub fn collect_capture(&mut self) {
         if !self.capture_on {
             return;
@@ -182,17 +182,17 @@ impl Vm {
         self.analysis = None;
     }
 
-    /// L'analisi della cattura (rifatta solo se sono arrivati frame).
+    /// The analysis of the capture (redone only if frames arrived).
     pub fn analysis(&mut self) -> &NetworkAnalysis {
         self.collect_capture();
         let n = self.capture.len();
         if self.analysis.as_ref().is_none_or(|(k, _)| *k != n) {
             self.analysis = Some((n, NetworkAnalysis::from_frames(self.capture.frames())));
         }
-        &self.analysis.as_ref().expect("appena calcolata").1
+        &self.analysis.as_ref().expect("just computed").1
     }
 
-    /// La timeline in JSON con gli effetti di rete della cattura.
+    /// The timeline in JSON with the network effects of the capture.
     pub fn timeline_json(&mut self, window_us: u64) -> String {
         let net = timeline::network_effects(self.analysis());
         self.timeline.to_json(&net, if window_us == 0 { DEFAULT_WINDOW_US } else { window_us })
@@ -204,47 +204,47 @@ impl Vm {
     }
 }
 
-// ---- Buffer dei risultati ----------------------------------------------------
+// ---- Result buffer -----------------------------------------------------------
 
-/// I byte dell'ultimo risultato (JSON, HAR, pcapng, log, keyframe, registri),
-/// validi fino al prossimo risultato o a [`vetro_result_clear`]; nullo se
-/// vuoto.
+/// The bytes of the last result (JSON, HAR, pcapng, log, keyframe, registers),
+/// valid until the next result or [`vetro_result_clear`]; null if
+/// empty.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_result_ptr(vm: *const Vm) -> *const u8 {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     let vm = unsafe { &*vm };
     if vm.result.is_empty() { core::ptr::null() } else { vm.result.as_ptr() }
 }
 
-/// Libera il buffer dei risultati.
+/// Frees the result buffer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_result_clear(vm: *mut Vm) {
     unsafe { vm_ref(vm) }.result = Vec::new();
 }
 
-/// La macchina da un puntatore del JS.
+/// The machine from a JS pointer.
 pub(crate) unsafe fn vm_ref<'a>(p: *mut Vm) -> &'a mut Vm {
-    // SAFETY: `p` viene da `vetro_machine_new` (contratto dell'API).
+    // SAFETY: `p` comes from `vetro_machine_new` (API contract).
     unsafe { &mut *p }
 }
 
-// ---- Cattura e ispettore -----------------------------------------------------
+// ---- Capture and inspector ----------------------------------------------------
 
-/// Accende (`on` = 1) o spegne la cattura dei frame di virtio-net. 1 fatto,
-/// 0 la macchina non ha la rete. Non cambia l'esecuzione.
+/// Turns on (`on` = 1) or off the capture of the virtio-net frames. 1 done,
+/// 0 the machine has no network. It doesn't change execution.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_capture_set(vm: *mut Vm, on: u32) -> u32 {
     unsafe { vm_ref(vm) }.capture_set(on != 0) as u32
 }
 
-/// Svuota la cattura (frame e analisi).
+/// Clears the capture (frames and analysis).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_capture_clear(vm: *mut Vm) {
     unsafe { vm_ref(vm) }.capture_clear();
 }
 
-/// Contatori della cattura in `out` (al più `cap`): accesa, frame, byte,
-/// frame scartati oltre il limite. Restituisce quanti valori.
+/// Capture counters in `out` (at most `cap`): on, frames, bytes,
+/// frames discarded beyond the limit. Returns how many values.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_capture_stats(vm: *mut Vm, out: *mut u64, cap: usize) -> usize {
     let vm = unsafe { vm_ref(vm) };
@@ -253,8 +253,8 @@ pub unsafe extern "C" fn vetro_capture_stats(vm: *mut Vm, out: *mut u64, cap: us
     unsafe { crate::write_u64s(out, cap, &v) }
 }
 
-/// La lista dell'ispettore in JSON (`view::requests_json`) nel buffer dei
-/// risultati; restituisce la lunghezza.
+/// The inspector list in JSON (`view::requests_json`) in the result
+/// buffer; returns the length.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_inspect_requests(vm: *mut Vm) -> usize {
     let vm = unsafe { vm_ref(vm) };
@@ -262,8 +262,8 @@ pub unsafe extern "C" fn vetro_inspect_requests(vm: *mut Vm) -> usize {
     vm.set_result(j.into_bytes())
 }
 
-/// Il dettaglio della richiesta `index` in JSON (`view::exchange_json`);
-/// 0 se non c'è.
+/// The detail of request `index` in JSON (`view::exchange_json`);
+/// 0 if it doesn't exist.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_inspect_request(vm: *mut Vm, index: u32) -> usize {
     let vm = unsafe { vm_ref(vm) };
@@ -271,8 +271,8 @@ pub unsafe extern "C" fn vetro_inspect_request(vm: *mut Vm, index: u32) -> usize
     vm.set_result(j.map(String::into_bytes).unwrap_or_default())
 }
 
-/// L'HAR 1.2 della cattura (`epoch_us`: microsecondi Unix del tempo 0 del
-/// guest).
+/// The HAR 1.2 of the capture (`epoch_us`: Unix microseconds of guest
+/// time 0).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_inspect_har(vm: *mut Vm, epoch_us: u64) -> usize {
     let vm = unsafe { vm_ref(vm) };
@@ -280,7 +280,7 @@ pub unsafe extern "C" fn vetro_inspect_har(vm: *mut Vm, epoch_us: u64) -> usize 
     vm.set_result(h.into_bytes())
 }
 
-/// Il pcapng della cattura (`epoch_us` come per l'HAR).
+/// The pcapng of the capture (`epoch_us` as for the HAR).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_inspect_pcapng(vm: *mut Vm, epoch_us: u64) -> usize {
     let vm = unsafe { vm_ref(vm) };
@@ -291,9 +291,9 @@ pub unsafe extern "C" fn vetro_inspect_pcapng(vm: *mut Vm, epoch_us: u64) -> usi
 
 // ---- Timeline ------------------------------------------------------------------
 
-/// Annota un ingresso dell'utente che la macchina non vede come tale (un
-/// comando del gestore dei file): tipo (`InputKind::code`), debole (1) o
-/// di comando (0), testo UTF-8. All'istruzione corrente.
+/// Annotates a user input that the machine doesn't see as such (a
+/// file manager command): type (`InputKind::code`), weak (1) or
+/// command (0), UTF-8 text. At the current instruction.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_timeline_input(
     vm: *mut Vm,
@@ -308,8 +308,8 @@ pub unsafe extern "C" fn vetro_timeline_input(
     vm.timeline.push_input(UserInput::new(step, InputKind::from_code(kind), label, weak != 0));
 }
 
-/// Annota un effetto osservato dal JS (un file cambiato: `EffectKind::code`)
-/// all'istruzione corrente. 0 se il tipo non esiste.
+/// Annotates an effect observed by JS (a changed file: `EffectKind::code`)
+/// at the current instruction. 0 if the type doesn't exist.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_timeline_effect(vm: *mut Vm, kind: u32, text: *const u8, len: usize) -> u32 {
     let vm = unsafe { vm_ref(vm) };
@@ -320,8 +320,8 @@ pub unsafe extern "C" fn vetro_timeline_effect(vm: *mut Vm, kind: u32, text: *co
     1
 }
 
-/// La timeline in JSON (`Timeline::to_json`, con gli effetti di rete della
-/// cattura) con finestra di attribuzione `window_us` (0 = 3 s).
+/// The timeline in JSON (`Timeline::to_json`, with the network effects of the
+/// capture) with attribution window `window_us` (0 = 3 s).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_timeline_json(vm: *mut Vm, window_us: u64) -> usize {
     let vm = unsafe { vm_ref(vm) };
@@ -329,8 +329,8 @@ pub unsafe extern "C" fn vetro_timeline_json(vm: *mut Vm, window_us: u64) -> usi
     vm.set_result(j.into_bytes())
 }
 
-/// Cresce quando la timeline cambia (ingressi, effetti, frame catturati):
-/// se è uguale all'ultima volta, niente da ridisegnare.
+/// Grows when the timeline changes (inputs, effects, captured frames):
+/// if it is the same as last time, nothing to redraw.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_timeline_version(vm: *mut Vm) -> u64 {
     let vm = unsafe { vm_ref(vm) };
@@ -338,7 +338,7 @@ pub unsafe extern "C" fn vetro_timeline_version(vm: *mut Vm) -> u64 {
     vm.timeline.version + vm.capture.len() as u64 + vm.capture_gen
 }
 
-/// Svuota la timeline.
+/// Clears the timeline.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_timeline_clear(vm: *mut Vm) {
     let vm = unsafe { vm_ref(vm) };
@@ -356,35 +356,35 @@ mod tests {
         let c = |b: &[u8]| Input::Console(b.to_vec());
         assert_eq!(d.describe(&c(b"w")), Some((InputKind::Console, "w".into(), true)));
         assert_eq!(d.describe(&c(b"get x")), Some((InputKind::Console, "get x".into(), true)));
-        assert_eq!(d.describe(&c(b"\r")), Some((InputKind::Console, "Invio: wget x".into(), false)));
-        assert_eq!(d.describe(&c(b"\x1b[24;80R")), None, "risposta del terminale");
+        assert_eq!(d.describe(&c(b"\r")), Some((InputKind::Console, "Enter: wget x".into(), false)));
+        assert_eq!(d.describe(&c(b"\x1b[24;80R")), None, "terminal reply");
         let k = |code, down| Input::Keyboard(Input::key_events(code, down));
         assert_eq!(d.describe(&k(30, true)), Some((InputKind::Key, "A".into(), true)));
         assert_eq!(d.describe(&k(30, false)), None);
-        assert_eq!(d.describe(&k(28, true)), Some((InputKind::Key, "Invio".into(), false)));
+        assert_eq!(d.describe(&k(28, true)), Some((InputKind::Key, "Enter".into(), false)));
         let p = |ev: Vec<InputEvent>| Input::Pointer(ev);
         assert_eq!(d.describe(&p(Input::move_abs_events(16384, 32767))), None, "movimento");
         assert_eq!(
             d.describe(&p(Input::key_events(0x110, true))),
-            Some((InputKind::Pointer, "clic sinistro (50%, 100%)".into(), false))
+            Some((InputKind::Pointer, "left click (50%, 100%)".into(), false))
         );
         assert_eq!(d.describe(&p(Input::key_events(0x110, false))), None);
         assert_eq!(
             d.describe(&p(Input::touch_events(1, Some((0, 32767))))),
             Some((InputKind::Touch, "tocco 1 (0%, 100%)".into(), false))
         );
-        assert_eq!(d.describe(&p(Input::touch_events(1, Some((10, 10))))), None, "trascinamento");
+        assert_eq!(d.describe(&p(Input::touch_events(1, Some((10, 10))))), None, "drag");
         assert_eq!(d.describe(&p(Input::touch_events(1, None))), None);
-        assert!(d.describe(&p(Input::touch_events(1, Some((10, 10))))).is_some(), "nuovo tocco");
+        assert!(d.describe(&p(Input::touch_events(1, Some((10, 10))))).is_some(), "new touch");
         let power = vetro_platform::pl061::POWER_KEY_LINE;
         assert_eq!(
             d.describe(&Input::Gpio { line: power, level: true }),
-            Some((InputKind::Power, "tasto di accensione".into(), false))
+            Some((InputKind::Power, "power button".into(), false))
         );
         assert_eq!(d.describe(&Input::Gpio { line: power, level: false }), None);
         assert_eq!(
             d.describe(&Input::Display { scanout: 0, width: 800, height: 600 }),
-            Some((InputKind::Display, "schermo 800x600".into(), true))
+            Some((InputKind::Display, "screen 800x600".into(), true))
         );
         assert_eq!(d.describe(&Input::NetLink(true)), None);
     }

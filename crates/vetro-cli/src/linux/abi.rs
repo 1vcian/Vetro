@@ -1,4 +1,4 @@
-//! Costanti e strutture dell'ABI Linux arm64 (asm-generic).
+//! Constants and structures of the arm64 Linux ABI (asm-generic).
 
 use vetro_cpu::{Memory, UserMemory};
 
@@ -36,7 +36,7 @@ pub const AT_SYMLINK_NOFOLLOW: u64 = 0x100;
 pub const AT_REMOVEDIR: u64 = 0x200;
 pub const AT_EMPTY_PATH: u64 = 0x1000;
 
-// Flag di open(2) su arm64 (diversi da x86 per O_DIRECTORY e O_NOFOLLOW).
+// open(2) flags on arm64 (different from x86 for O_DIRECTORY and O_NOFOLLOW).
 pub const O_ACCMODE: u64 = 3;
 pub const O_WRONLY: u64 = 1;
 pub const O_RDWR: u64 = 2;
@@ -53,12 +53,12 @@ pub const O_PATH: u64 = 0o10000000;
 /// __O_TMPFILE (O_TMPFILE = __O_TMPFILE | O_DIRECTORY).
 pub const O_TMPFILE: u64 = 0o20000000;
 
-/// Errore di una syscall: il valore da restituire è `-errno`.
+/// Error of a syscall: the value to return is `-errno`.
 pub type SysResult = Result<i64, i64>;
 
-/// Nanosecondi di una `struct timespec` del guest: EINVAL se `tv_sec < 0` o
-/// `tv_nsec` fuori da [0, 1e9), come Linux; i valori enormi saturano (una
-/// scadenza così lontana non arriva mai) invece di traboccare.
+/// Nanoseconds of a guest `struct timespec`: EINVAL if `tv_sec < 0` or
+/// `tv_nsec` outside [0, 1e9), like Linux; huge values saturate (a
+/// deadline that far away never arrives) instead of overflowing.
 pub fn timespec_ns(sec: u64, nsec: u64) -> Result<u64, i64> {
     let (s, n) = (sec as i64, nsec as i64);
     if s < 0 || !(0..1_000_000_000).contains(&n) {
@@ -67,7 +67,7 @@ pub fn timespec_ns(sec: u64, nsec: u64) -> Result<u64, i64> {
     Ok((s as u64).saturating_mul(1_000_000_000).saturating_add(n as u64))
 }
 
-/// Come [`timespec_ns`] per una `struct timeval` (microsecondi).
+/// Like [`timespec_ns`] for a `struct timeval` (microseconds).
 pub fn timeval_ns(sec: u64, usec: u64) -> Result<u64, i64> {
     let (s, u) = (sec as i64, usec as i64);
     if s < 0 || !(0..1_000_000).contains(&u) {
@@ -76,7 +76,7 @@ pub fn timeval_ns(sec: u64, usec: u64) -> Result<u64, i64> {
     Ok((s as u64).saturating_mul(1_000_000_000).saturating_add(u as u64 * 1000))
 }
 
-/// Converte un errore di I/O dell'host nell'errno Linux corrispondente.
+/// Converts a host I/O error into the corresponding Linux errno.
 pub fn host_errno(e: &std::io::Error) -> i64 {
     match e.raw_os_error() {
         Some(n) => linux_errno(n),
@@ -90,15 +90,15 @@ pub fn host_errno(e: &std::io::Error) -> i64 {
     }
 }
 
-/// Errno dell'host → errno Linux arm64. Su Linux sono gli stessi numeri.
+/// Host errno → arm64 Linux errno. On Linux they are the same numbers.
 #[cfg(target_os = "linux")]
 fn linux_errno(n: i32) -> i64 {
     n as i64
 }
 
-/// Errno dell'host → errno Linux arm64. Da 1 a 34 i numeri coincidono con
-/// quelli di Linux tranne 11 (EDEADLK sull'host, EAGAIN su Linux); il resto
-/// si traduce per nome.
+/// Host errno → arm64 Linux errno. From 1 to 34 the numbers match
+/// Linux's except 11 (EDEADLK on the host, EAGAIN on Linux); the rest
+/// is translated by name.
 #[cfg(not(target_os = "linux"))]
 fn linux_errno(n: i32) -> i64 {
     use libc::*;
@@ -174,8 +174,8 @@ pub fn write_u32(mem: &mut UserMemory, addr: u64, v: u32) -> Result<(), i64> {
     mem.write(addr, &v.to_le_bytes()).map_err(|_| EFAULT)
 }
 
-/// Oltre questa lunghezza un buffer del guest non può essere tutto mappato
-/// (e allocarlo potrebbe far abortire l'emulatore).
+/// Beyond this length a guest buffer cannot be entirely mapped
+/// (and allocating it could make the emulator abort).
 pub const MAX_IO: usize = 1 << 30;
 
 pub fn read_bytes(mem: &mut UserMemory, addr: u64, len: usize) -> Result<Vec<u8>, i64> {
@@ -191,7 +191,7 @@ pub fn write_bytes(mem: &mut UserMemory, addr: u64, data: &[u8]) -> Result<(), i
     mem.write(addr, data).map_err(|_| EFAULT)
 }
 
-/// Stringa C (al massimo PATH_MAX byte).
+/// C string (at most PATH_MAX bytes).
 pub fn read_cstr(mem: &mut UserMemory, addr: u64) -> Result<Vec<u8>, i64> {
     let mut out = Vec::new();
     let mut b = [0u8; 1];
@@ -207,7 +207,7 @@ pub fn read_cstr(mem: &mut UserMemory, addr: u64) -> Result<Vec<u8>, i64> {
     }
 }
 
-/// Vettore di stringhe terminato da NULL (argv, envp).
+/// NULL-terminated vector of strings (argv, envp).
 pub fn read_strv(mem: &mut UserMemory, mut addr: u64) -> Result<Vec<Vec<u8>>, i64> {
     let mut v = Vec::new();
     if addr == 0 {
@@ -226,7 +226,7 @@ pub fn read_strv(mem: &mut UserMemory, mut addr: u64) -> Result<Vec<Vec<u8>>, i6
     }
 }
 
-/// `struct stat` di arm64 (128 byte).
+/// arm64 `struct stat` (128 bytes).
 #[derive(Default, Clone, Copy, Debug)]
 pub struct Stat {
     pub dev: u64,

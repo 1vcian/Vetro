@@ -1,11 +1,11 @@
-//! Sinkhole: un upstream che non esce mai dalla macchina.
+//! Sinkhole: an upstream that never leaves the machine.
 //!
-//! Accetta (o rifiuta, per porta) ogni connessione, registra i byte che il
-//! guest manda e risponde con dati configurabili. Il DNS risolve ogni nome A
-//! verso indirizzi finti deterministici (in ordine di prima richiesta, a
-//! partire da 198.18.0.1, blocco riservato ai test di rete dalla RFC 2544) e
-//! ricorda i nomi, così ogni connessione verso un indirizzo finto è
-//! attribuita al nome che il guest aveva chiesto.
+//! It accepts (or refuses, per port) every connection, records the bytes the
+//! guest sends and answers with configurable data. The DNS resolves every A name
+//! to deterministic fake addresses (in order of first request, starting
+//! from 198.18.0.1, a block reserved for network tests by RFC 2544) and
+//! remembers the names, so every connection to a fake address is
+//! attributed to the name the guest had asked for.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::net::{Ipv4Addr, SocketAddrV4};
@@ -15,20 +15,20 @@ use crate::{ConnId, Flow, VirtualTime, dns};
 
 mod snapshot;
 
-/// Risposta configurata per le connessioni TCP verso una porta.
+/// Configured response for TCP connections to a port.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TcpReply {
-    /// Byte mandati subito dopo l'apertura (un banner, come SMTP o SSH).
+    /// Bytes sent right after opening (a banner, like SMTP or SSH).
     pub on_connect: Vec<u8>,
-    /// Byte mandati una volta, dopo il primo blocco di dati del guest.
+    /// Bytes sent once, after the guest's first block of data.
     pub on_data: Vec<u8>,
-    /// Chiude il verso verso il guest (FIN) dopo le risposte configurate:
-    /// dopo `on_data` se non è vuoto, altrimenti subito dopo `on_connect`.
+    /// Closes the direction towards the guest (FIN) after the configured responses:
+    /// after `on_data` if not empty, otherwise right after `on_connect`.
     pub close_after_reply: bool,
 }
 
 impl TcpReply {
-    /// Una risposta HTTP/1.1 minima e vuota, poi chiusura.
+    /// A minimal, empty HTTP/1.1 response, then close.
     pub fn http_empty() -> Self {
         TcpReply {
             on_connect: Vec::new(),
@@ -40,19 +40,19 @@ impl TcpReply {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SinkholeConfig {
-    /// Risposta per le porte non elencate in `tcp_by_port`.
+    /// Response for the ports not listed in `tcp_by_port`.
     pub tcp_default: TcpReply,
     pub tcp_by_port: BTreeMap<u16, TcpReply>,
-    /// Porte TCP rifiutate (il guest riceve RST, "connection refused").
+    /// Refused TCP ports (the guest gets RST, "connection refused").
     pub refused_ports: BTreeSet<u16>,
-    /// Risposta a ogni datagramma UDP non DNS (`None`: nessuna risposta).
+    /// Response to every non-DNS UDP datagram (`None`: no response).
     pub udp_reply: Option<Vec<u8>>,
-    /// Il server DNS virtuale (deve coincidere con `NetConfig::dns_ip`).
+    /// The virtual DNS server (must match `NetConfig::dns_ip`).
     pub dns_server: SocketAddrV4,
-    /// Primo indirizzo finto assegnato ai nomi.
+    /// First fake address assigned to names.
     pub fake_base: Ipv4Addr,
     pub dns_ttl: u32,
-    /// Risponde agli echo ICMP verso qualsiasi indirizzo esterno.
+    /// Answers ICMP echoes to any external address.
     pub answer_ping: bool,
 }
 
@@ -73,44 +73,44 @@ impl Default for SinkholeConfig {
     }
 }
 
-/// Una connessione TCP vista dal sinkhole.
+/// A TCP connection as seen by the sinkhole.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TcpRecord {
     pub id: ConnId,
     pub flow: Flow,
-    /// Nome DNS che aveva risolto verso `flow.remote`, se è un indirizzo finto.
+    /// DNS name that had resolved to `flow.remote`, if it is a fake address.
     pub hostname: Option<String>,
     pub refused: bool,
     pub opened_at: VirtualTime,
     pub closed_at: Option<VirtualTime>,
-    /// Chiusa con RST o timeout invece che con FIN.
+    /// Closed with RST or timeout instead of FIN.
     pub reset: bool,
-    /// Il guest ha chiuso il suo verso.
+    /// The guest has closed its direction.
     pub guest_shutdown: bool,
-    /// Tutti i byte mandati dal guest, in ordine.
+    /// All the bytes sent by the guest, in order.
     pub from_guest: Vec<u8>,
-    /// Byte consegnati allo stack verso il guest.
+    /// Bytes delivered to the stack towards the guest.
     pub to_guest: u64,
 }
 
-/// Un flusso UDP visto dal sinkhole.
+/// A UDP flow as seen by the sinkhole.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UdpRecord {
     pub id: ConnId,
     pub flow: Flow,
     pub hostname: Option<String>,
-    /// Datagrammi del guest con il loro istante.
+    /// Guest datagrams with their instant.
     pub datagrams: Vec<(VirtualTime, Vec<u8>)>,
     pub closed_at: Option<VirtualTime>,
 }
 
-/// Una domanda DNS risolta dal sinkhole.
+/// A DNS query resolved by the sinkhole.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DnsRecord {
     pub at: VirtualTime,
     pub name: String,
     pub qtype: u16,
-    /// Indirizzo finto dato in risposta (solo per le domande A).
+    /// Fake address given in the answer (only for A queries).
     pub answer: Option<Ipv4Addr>,
 }
 
@@ -143,7 +143,7 @@ impl Sinkhole {
         &self.config
     }
 
-    /// Connessioni TCP in ordine di apertura.
+    /// TCP connections in order of opening.
     pub fn tcp_connections(&self) -> impl Iterator<Item = &TcpRecord> {
         self.tcp.values()
     }
@@ -160,12 +160,12 @@ impl Sinkhole {
         &self.dns
     }
 
-    /// Nome risolto verso un indirizzo finto.
+    /// Name resolved to a fake address.
     pub fn hostname(&self, addr: Ipv4Addr) -> Option<&str> {
         self.addrs.get(&addr).map(String::as_str)
     }
 
-    /// Indirizzo finto dato a un nome (in minuscolo).
+    /// Fake address given to a name (in lower case).
     pub fn fake_addr(&self, name: &str) -> Option<Ipv4Addr> {
         self.names.get(name).copied()
     }
@@ -183,15 +183,15 @@ impl Sinkhole {
 
     fn answer_dns(&mut self, now: VirtualTime, id: ConnId, data: &[u8]) {
         let Some(q) = dns::parse_query(data) else {
-            return; // Non è una domanda: nessuna risposta, come un server vero.
+            return; // Not a query: no answer, like a real server.
         };
         let (rcode, answer) = if q.opcode != 0 {
             (dns::RCODE_NOTIMP, None)
         } else if q.qtype == dns::TYPE_A && q.qclass == dns::CLASS_IN && !q.name.is_empty() {
             (dns::RCODE_NOERROR, Some(self.resolve(&q.name)))
         } else {
-            // AAAA e altri tipi: nome esistente ma senza record, così il guest
-            // ripiega su IPv4.
+            // AAAA and other types: existing name but without records, so the guest
+            // falls back to IPv4.
             (dns::RCODE_NOERROR, None)
         };
         self.dns.push(DnsRecord { at: now, name: q.name.clone(), qtype: q.qtype, answer });
@@ -281,7 +281,7 @@ impl Upstream for Sinkhole {
         if let Some(r) = self.tcp.get_mut(&id) {
             r.guest_shutdown = true;
         }
-        // Come un server che chiude quando il client ha finito.
+        // Like a server that closes when the client has finished.
         if let Some(rt) = self.tcp_runtime.get_mut(&id) {
             rt.eof = true;
         }

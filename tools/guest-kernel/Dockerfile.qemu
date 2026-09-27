@@ -1,8 +1,8 @@
-# qemu-system-aarch64 per macOS (l'oracolo del sistema completo, M3).
-# Stessa base dell'oracolo user mode (tools/oracle/Dockerfile), quindi la
-# stessa versione di QEMU; immagine separata per non appesantire quella.
-# ipxe-qemu: la virt crea di default una scheda virtio-net PCI e QEMU vuole
-# la sua ROM (efi-virtio.rom) anche se il kernel non ha PCI.
+# qemu-system-aarch64 for macOS (the full-system oracle, M3).
+# Same base as the user-mode oracle (tools/oracle/Dockerfile), hence the
+# same QEMU version; a separate image so as not to weigh that one down.
+# ipxe-qemu: the virt machine creates a PCI virtio-net card by default and QEMU wants
+# its ROM (efi-virtio.rom) even if the kernel has no PCI.
 FROM debian:trixie-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends qemu-system-arm ipxe-qemu \

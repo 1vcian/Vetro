@@ -1,114 +1,114 @@
-# Spec — introspezione del guest dall'esterno (ADR 0027)
+# Spec — guest introspection from the outside (ADR 0027)
 
-Base comune di M7 (hook TLS), M8 (Binder) e M9 (ART/scripting): leggere il
-sistema operativo guest dalla sola memoria fisica, senza toccarlo. Codice:
-`crates/vetro-analysis/src/introspect/` (senza dipendenze, anche wasm) e
-`crates/vetro-machine/src/hooks.rs` + `introspect.rs` (agganci nel ciclo).
+Common foundation for M7 (TLS hooks), M8 (Binder) and M9 (ART/scripting): reading the
+guest operating system from physical memory alone, without touching it. Code:
+`crates/vetro-analysis/src/introspect/` (no dependencies, wasm too) and
+`crates/vetro-machine/src/hooks.rs` + `introspect.rs` (hooks in the loop).
 
 ## `vetro_analysis::introspect`
 
-### `btf` — tipi del kernel
+### `btf` — kernel types
 `Btf::parse(&[u8])` / `Btf::find_in(image) -> Option<(offset, Btf)>`
-(cerca il blob BTF nell'`Image`). `offset_of("struct", "campo.campo")`,
+(looks for the BTF blob in the `Image`). `offset_of("struct", "field.field")`,
 `struct_size`, `enum_value`, `member`, `array`, `pointee`, `size_of`.
-Salta typedef/const/volatile; risolve i campi dentro unioni e strutture
-anonime. Errori `BtfError`, nessun panic su byte arbitrari.
+Skips typedef/const/volatile; resolves fields inside anonymous unions and
+structs. Errors `BtfError`, no panic on arbitrary bytes.
 
-### `kallsyms` — simboli
-`Symbols::parse_system_map(&str)` o `Symbols::from_image(image)` (tabella
-kallsyms trovata senza simboli; RELA/RELR gestiti). `get(nome)`,
-`lookup(addr) -> (simbolo, offset)`, `iter`.
+### `kallsyms` — symbols
+`Symbols::parse_system_map(&str)` or `Symbols::from_image(image)` (kallsyms
+table found without symbols; RELA/RELR handled). `get(name)`,
+`lookup(addr) -> (symbol, offset)`, `iter`.
 
-### `mem` — memoria e traduzione
+### `mem` — memory and translation
 `PhysMem::read_phys(pa, buf)`. `Space { tcr, ttbr0, ttbr1 }`:
-`translate(mem, va)`, `read`, `u32/u64`, `cstr`; `with_user(pgd_pa)` per lo
-spazio utente. Solo granulo 4 KiB, sola lettura, nessun effetto.
-`ttbr_base(ttbr)` toglie ASID e flag.
+`translate(mem, va)`, `read`, `u32/u64`, `cstr`; `with_user(pgd_pa)` for
+user space. 4 KiB granule only, read-only, no side effects.
+`ttbr_base(ttbr)` strips ASID and flags.
 
-### `layout` — offset che servono
+### `layout` — the offsets needed
 `Layout::from_btf(&Btf) -> Result<Layout, MissingField>`: task_struct,
 mm_struct, vm_area_struct (maple tree), file/path/dentry/inode/mount, cred,
 files_struct, fs_struct, signal_struct, vm_struct/page/folio/xarray.
 
-### `linux` — il kernel visto dall'esterno
-`Kernel::load(image?, system_map?, btf?)` o `Kernel::new(syms, &btf)`.
-`Linux::new(&mem, &kernel, &CpuRegs)` (KASLR da VBAR): `processes`,
+### `linux` — the kernel seen from the outside
+`Kernel::load(image?, system_map?, btf?)` or `Kernel::new(syms, &btf)`.
+`Linux::new(&mem, &kernel, &CpuRegs)` (KASLR from VBAR): `processes`,
 `threads`, `all_threads`, `find_pid`, `task`; `vmas`/`maps`,
-`cmdline`, `files` (come /proc/<pid>/fd), `fd_file`, `file_path`, `path`;
+`cmdline`, `files` (like /proc/<pid>/fd), `fd_file`, `file_path`, `path`;
 `cached_page`/`read_file`/`file_bytes` (page cache); `module`,
-`module_symbols`, `user_symbol`, `entry_point` (simboli utente dai file in
-memoria e da .symtab nella page cache). `Task` porta pid, tgid, comm,
+`module_symbols`, `user_symbol`, `entry_point` (user symbols from the files in
+memory and from .symtab in the page cache). `Task` carries pid, tgid, comm,
 uid/euid/gid, ppid, mm, flags.
 
-### `elf` — simboli utente
-`file_symbols(&[u8])` (.symtab/.dynsym dal file), `dynamic_symbols(&mem,
-base)` (dalla memoria del processo, conteggio da DT_HASH/DT_GNU_HASH),
-`find(syms, nome)`, `header`, `phdr`, `load_bias`.
+### `elf` — user symbols
+`file_symbols(&[u8])` (.symtab/.dynsym from the file), `dynamic_symbols(&mem,
+base)` (from the process memory, count from DT_HASH/DT_GNU_HASH),
+`find(syms, name)`, `header`, `phdr`, `load_bias`.
 
-### `binder` — transazioni grezze (base di M8)
+### `binder` — raw transactions (foundation of M8)
 `BINDER_WRITE_READ`, `WriteRead::parse`, `commands(&[u8]) -> Vec<Command>`
-(divide il flusso BC/BR), `Command::transaction() -> Option<Transaction>`
-(codice, target, flag, dimensioni, indirizzi del Parcel), `interface()`
-(descrittore AIDL in testa al Parcel).
+(splits the BC/BR stream), `Command::transaction() -> Option<Transaction>`
+(code, target, flags, sizes, Parcel addresses), `interface()`
+(AIDL descriptor at the head of the Parcel).
 
-### `parcel`, `aidl`, `ipc`, `privacy` — decoder Binder (M8, ADR 0029)
-- `parcel::Parcel` legge i tipi di base (`i32`, `i64`, `String16`) e
-  `interface_header()` (intestazione `writeInterfaceToken`: strict mode,
-  work source, `SYST`/`VNDR`, descrittore); `strings16(&[u8])` tutte le
-  stringhe leggibili.
-- `aidl::method(descriptor, code) -> Option<&str>` dalla mappa
-  dell'immagine (`aidl_aosp15.tsv`, generata da `tools/aosp/aidl-map.sh`)
-  più i codici riservati di `IBinder`; `known_interface`, `table_size`.
-- `ipc::BinderCall` (mittente/destinatario come `Party` con pid, uid,
-  `package()`, interfaccia, metodo, `sensitive`) e `BinderLog` (accoppia
-  le due metà BC/BR per codice e byte del Parcel; `to_json`, `line`,
+### `parcel`, `aidl`, `ipc`, `privacy` — Binder decoders (M8, ADR 0029)
+- `parcel::Parcel` reads the basic types (`i32`, `i64`, `String16`) and
+  `interface_header()` (the `writeInterfaceToken` header: strict mode,
+  work source, `SYST`/`VNDR`, descriptor); `strings16(&[u8])` all the
+  readable strings.
+- `aidl::method(descriptor, code) -> Option<&str>` from the image's
+  map (`aidl_aosp15.tsv`, generated by `tools/aosp/aidl-map.sh`)
+  plus the reserved `IBinder` codes; `known_interface`, `table_size`.
+- `ipc::BinderCall` (sender/recipient as `Party` with pid, uid,
+  `package()`, interface, method, `sensitive`) and `BinderLog` (pairs
+  the two BC/BR halves by code and Parcel bytes; `to_json`, `line`,
   `sensitive()`).
 - `privacy::classify(descriptor, method, strings) -> Vec<Sensitive>`
-  (`Category`: posizione, contatti, registro chiamate, sms, calendario,
-  appunti, identificativi, fotocamera, microfono, account, app installate).
+  (`Category`: location, contacts, call log, sms, calendar,
+  clipboard, identifiers, camera, microphone, accounts, installed apps).
 
-### `linux::socket_endpoints` — 4-tupla di un fd (M7)
+### `linux::socket_endpoints` — 4-tuple of an fd (M7)
 `socket_endpoints(task, fd) -> Option<(SocketAddrV4, SocketAddrV4)>`
-(locale, remoto) dalla `struct sock` del kernel (offset dal BTF,
-`layout::SockLayout`; `None` se non è un socket IPv4 o il BTF non li ha).
-La usa l'hook TLS per legare `SSL*` alla connessione (via il fd di
+(local, remote) from the kernel's `struct sock` (offsets from the BTF,
+`layout::SockLayout`; `None` if it is not an IPv4 socket or the BTF lacks them).
+Used by the TLS hook to tie `SSL*` to the connection (via the fd of
 `connect`).
 
-### `strace` — syscall decodificate
-`SyscallRecord` (pid/tid, comm, nr, argomenti, ret, percorso, fd→percorso,
-dati letti/scritti, indirizzo del socket, transazioni binder). `line()` in
-stile strace; `decode_entry(&user, &fd_path)` e `decode_exit(&user)`.
+### `strace` — decoded syscalls
+`SyscallRecord` (pid/tid, comm, nr, arguments, ret, path, fd→path,
+data read/written, socket address, binder transactions). `line()` in
+strace style; `decode_entry(&user, &fd_path)` and `decode_exit(&user)`.
 
-## `vetro_machine` — agganci nel ciclo (ADR 0027)
+## `vetro_machine` — hooks in the loop (ADR 0027)
 
 - `Machine::set_tracer(Option<Box<dyn Tracer>>)`, `tracer_mut::<T>()`.
-- `Machine::trace_syscalls(bool)`: eventi `SyscallEnter`/`SyscallExit` di
+- `Machine::trace_syscalls(bool)`: `SyscallEnter`/`SyscallExit` events from
   EL0.
 - `Machine::add_breakpoint(Breakpoint { va, ttbr0 }) -> id`,
-  `remove_breakpoint(id)`, `breakpoints()`: punti d'arresto invisibili su
-  indirizzi di EL0 (col JIT gestiti da `SysJit::set_stops`).
-- `Machine::with_guest(|GuestView| ...)` e `Machine::linux(&Kernel, |Linux|
-  ...)`: leggono il guest fra due quanti.
+  `remove_breakpoint(id)`, `breakpoints()`: invisible breakpoints on
+  EL0 addresses (with the JIT handled by `SysJit::set_stops`).
+- `Machine::with_guest(|GuestView| ...)` and `Machine::linux(&Kernel, |Linux|
+  ...)`: read the guest between two quanta.
 - `Tracer::event(&Event, &GuestView)`. `Event`: `SyscallEnter(&entry)`,
   `SyscallExit { entry, ret, pc }`, `Breakpoint { id, va, regs }`.
-  `GuestView`: `cpu`, `read_phys`, `cpu_regs`, `sp_el0/1`; è `PhysMem`.
-- Pronto: `introspect::SyscallTracer` (registra syscall e punti d'arresto
-  con la decodifica di `vetro-analysis`), `BreakpointHit`.
+  `GuestView`: `cpu`, `read_phys`, `cpu_regs`, `sp_el0/1`; it is a `PhysMem`.
+- Ready-made: `introspect::SyscallTracer` (records syscalls and breakpoints
+  with the `vetro-analysis` decoding), `BreakpointHit`.
 - `analysis::{Tracers, BinderTracer, ProcessNames, kernel_profile}` (M8):
-  `Tracers` ospita più tracciatori; `BinderTracer` accoppia le transazioni
-  in `BinderLog`; `kernel_profile(file, system_map, btf)` carica il profilo
-  da un `boot.img` o da un `Image`.
-- `tls::{TlsTracer, tls_service, Func}` (M7): punti d'arresto sui simboli
-  di `libssl` per processo (risolti da `tls_service` fra due quanti),
-  cattura del chiaro di `SSL_write`/`SSL_read`/`_ex` (ritorno via LR),
-  4-tupla dal fd di `connect`; `conversations: Vec<TlsConversation>`.
+  `Tracers` hosts several tracers; `BinderTracer` pairs the transactions
+  into `BinderLog`; `kernel_profile(file, system_map, btf)` loads the profile
+  from a `boot.img` or from an `Image`.
+- `tls::{TlsTracer, tls_service, Func}` (M7): breakpoints on the `libssl`
+  symbols per process (resolved by `tls_service` between two quanta),
+  capture of the plaintext of `SSL_write`/`SSL_read`/`_ex` (return via LR),
+  4-tuple from the fd of `connect`; `conversations: Vec<TlsConversation>`.
 
-Regole: nulla scrive nel guest; l'esecuzione (istruzioni, interrupt, RAM,
-console, snapshot, log) è identica con e senza agganci, anche nel replay.
+Rules: nothing writes into the guest; execution (instructions, interrupts, RAM,
+console, snapshots, logs) is identical with and without hooks, in replay too.
 
-## Profilo dei kernel di Vetro
-- Kernel di prova (Linux 6.18, `target/guest-kernel`): `System.map` +
-  `vmlinux.btf` (BTF staccato prodotto da `tools/guest-kernel/build.sh`).
-- GKI 6.6 di Android: kallsyms e BTF stanno dentro `boot.img`
-  (`BootImage::parse` + `decompress`, poi `Symbols::from_image` e
+## Profile of Vetro's kernels
+- Test kernel (Linux 6.18, `target/guest-kernel`): `System.map` +
+  `vmlinux.btf` (detached BTF produced by `tools/guest-kernel/build.sh`).
+- Android GKI 6.6: kallsyms and BTF live inside `boot.img`
+  (`BootImage::parse` + `decompress`, then `Symbols::from_image` and
   `Btf::find_in`).

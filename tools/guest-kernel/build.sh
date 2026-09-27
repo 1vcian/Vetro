@@ -1,36 +1,36 @@
 #!/bin/sh
-# Costruisce il kernel guest di M3 e il suo initramfs in target/guest-kernel:
-#   Image               kernel Linux arm64 (formato Image, avvio diretto)
-#   initramfs.cpio.gz   BusyBox statica + /init + autotest + vetro-dev
-#   vetro-dev           prova dei dispositivi di M5 (nell'initramfs)
-#   vetro-files         demone del gestore dei file di M8 (nell'initramfs,
-#                       ADR 0020) con SQLite linkato (ADR 0021); è anche
-#                       /bin/sqlite3 (multi-chiamata, shell ufficiale)
-#   config, System.map  configurazione completa e simboli (per il debug)
-#   vmlinux.btf         tipi del kernel (BTF staccato) per l'introspezione
-#                       dall'esterno (ADR 0027): stessa configurazione più
-#                       DEBUG_INFO in una cartella a parte, poi pahole; il
-#                       kernel che si avvia resta quello senza debug
-#   sources/            sorgenti esatti usati (GPL-2.0, vedi CLAUDE.md)
-#   VERSIONS            versioni di kernel, compilatore e BusyBox
-# La compilazione gira in un container Alpine arm64 (nativo su Apple Silicon e
-# sui runner ubuntu-24.04-arm) su un volume Docker: i sorgenti del kernel
-# hanno file che differiscono solo per maiuscole, e il file system di macOS
-# non li distingue.
+# Builds the M3 guest kernel and its initramfs in target/guest-kernel:
+#   Image               arm64 Linux kernel (Image format, direct boot)
+#   initramfs.cpio.gz   static BusyBox + /init + autotest + vetro-dev
+#   vetro-dev           M5 device test program (in the initramfs)
+#   vetro-files         M8 file manager daemon (in the initramfs,
+#                       ADR 0020) with SQLite linked in (ADR 0021); it is also
+#                       /bin/sqlite3 (multi-call, the official shell)
+#   config, System.map  full configuration and symbols (for debugging)
+#   vmlinux.btf         kernel types (detached BTF) for introspection
+#                       from the outside (ADR 0027): same configuration plus
+#                       DEBUG_INFO in a separate folder, then pahole; the
+#                       kernel that boots stays the one without debug info
+#   sources/            exact sources used (GPL-2.0, see CLAUDE.md)
+#   VERSIONS            versions of kernel, compiler and BusyBox
+# The build runs in an arm64 Alpine container (native on Apple Silicon and
+# on the ubuntu-24.04-arm runners) on a Docker volume: the kernel sources
+# have files that differ only in case, and the macOS file system
+# doesn't tell them apart.
 #
-# La configurazione è `make allnoconfig` + guest/kernel/config/vetro.config.
-# Il defconfig risultante deve coincidere con guest/kernel/config/defconfig;
-# per aggiornarlo dopo aver cambiato il frammento:
+# The configuration is `make allnoconfig` + guest/kernel/config/vetro.config.
+# The resulting defconfig must match guest/kernel/config/defconfig;
+# to update it after changing the fragment:
 #   VETRO_KERNEL_UPDATE_CONFIG=1 tools/guest-kernel/build.sh
 #
-# Uso: tools/guest-kernel/build.sh
+# Usage: tools/guest-kernel/build.sh
 set -eu
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 KVER=6.18.53
 KSHA256=4d6fba95c2244b08a7b4144a4d38b9be4fb31abb5e7682ae40bb5cb11374cfe0
 KURL="https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KVER.tar.xz"
-# SQLite per vetro-files (ADR 0021): amalgamation ufficiale, dominio pubblico.
-# sha256 calcolato da noi; il SHA3-256 pubblicato da sqlite.org è
+# SQLite for vetro-files (ADR 0021): official amalgamation, public domain.
+# sha256 computed by us; the SHA3-256 published by sqlite.org is
 # 628a44cfe82c66aed1ccbbe85a562d2e33ebe64b3288981ed76285612227934e.
 SQLITE=sqlite-amalgamation-3530400
 SQLITE_SHA256=1e71ddf93849c6a6ecf58b827c0692073d2dd7ee40196158068f7b29f422e87d
@@ -40,7 +40,7 @@ VOLUME="${VETRO_GUEST_KERNEL_VOLUME:-vetro-guest-kernel-build}"
 OUT="$ROOT/target/guest-kernel"
 start=$(date +%s)
 
-# BusyBox statica: la stessa dei test di M2.
+# Static BusyBox: the same as the M2 tests.
 if [ ! -f "$ROOT/target/guest-bins/busybox" ]; then
   "$ROOT/tools/guest-bins/build.sh"
 fi
@@ -48,14 +48,14 @@ fi
 mkdir -p "$OUT/sources"
 tarball="$OUT/sources/linux-$KVER.tar.xz"
 if [ ! -f "$tarball" ]; then
-  echo "==> scarico linux-$KVER"
+  echo "==> downloading linux-$KVER"
   curl -fL --retry 3 -o "$tarball.part" "$KURL"
   mv "$tarball.part" "$tarball"
 fi
 
 sqlite_zip="$OUT/sources/$SQLITE.zip"
 if [ ! -f "$sqlite_zip" ]; then
-  echo "==> scarico $SQLITE"
+  echo "==> downloading $SQLITE"
   curl -fL --retry 3 -o "$sqlite_zip.part" "$SQLITE_URL"
   mv "$sqlite_zip.part" "$sqlite_zip"
 fi
@@ -76,50 +76,50 @@ docker run --rm --platform linux/arm64 \
   src=/build/linux-$KVER
   obj=/build/obj-$KVER
   if [ "$(cat "$src/.vetro-sha256" 2>/dev/null)" != "$KSHA256" ]; then
-    echo "==> estraggo i sorgenti"
+    echo "==> extracting the sources"
     rm -rf "$src" "$obj"
     tar -C /build -xJf "$tarball"
     echo "$KSHA256" > "$src/.vetro-sha256"
   fi
-  # Build riproducibile: niente data, utente o host della macchina.
+  # Reproducible build: no date, user or host of the machine.
   export ARCH=arm64
   export KBUILD_BUILD_TIMESTAMP="Thu Sep 24 00:00:00 UTC 2026"
   export KBUILD_BUILD_USER=vetro KBUILD_BUILD_HOST=vetro KBUILD_BUILD_VERSION=1
   frag=/src/guest/kernel/config/vetro.config
   mkdir -p "$obj"
-  echo "==> configurazione (allnoconfig + vetro.config)"
+  echo "==> configuration (allnoconfig + vetro.config)"
   make -s -C "$src" O="$obj" KCONFIG_ALLCONFIG="$frag" allnoconfig
-  # Ogni opzione del frammento deve essere arrivata nella .config.
+  # Every option of the fragment must have made it into the .config.
   missing=0
   grep -E "^CONFIG_" "$frag" | while IFS= read -r line; do
-    grep -qxF "$line" "$obj/.config" || { echo "opzione non applicata: $line"; exit 1; }
+    grep -qxF "$line" "$obj/.config" || { echo "option not applied: $line"; exit 1; }
   done || missing=1
-  [ $missing = 0 ] || { echo "il frammento non si applica: controlla le dipendenze"; exit 1; }
+  [ $missing = 0 ] || { echo "the fragment does not apply: check the dependencies"; exit 1; }
   make -s -C "$src" O="$obj" savedefconfig
   if ! cmp -s "$obj/defconfig" /src/guest/kernel/config/defconfig; then
     if [ "$UPDATE_CONFIG" = 1 ]; then
       cp "$obj/defconfig" /src/guest/kernel/config/defconfig
-      echo "==> guest/kernel/config/defconfig aggiornato"
+      echo "==> guest/kernel/config/defconfig updated"
     else
       diff -u /src/guest/kernel/config/defconfig "$obj/defconfig" || true
-      echo "defconfig diverso da guest/kernel/config/defconfig (VETRO_KERNEL_UPDATE_CONFIG=1 per aggiornarlo)"
+      echo "defconfig differs from guest/kernel/config/defconfig (VETRO_KERNEL_UPDATE_CONFIG=1 to update it)"
       exit 1
     fi
   fi
-  echo "==> compilo Image con $(nproc) processi"
+  echo "==> building Image with $(nproc) processes"
   make -s -C "$src" O="$obj" -j"$(nproc)" Image
-  # Header UAPI per i kselftest (tools/guest-kernel/kselftest.sh): si
-  # installano qui, perché i programmi di supporto del kernel in $obj sono
-  # compilati con musl e non girano nel container Debian dei kselftest.
+  # UAPI headers for the kselftests (tools/guest-kernel/kselftest.sh): they are
+  # installed here, because the kernel helper programs in $obj are
+  # built with musl and do not run in the Debian container of the kselftests.
   make -s -C "$src" O="$obj" headers
-  # Programma di prova dei dispositivi di M5: gli header di drm/ vengono dal
-  # kernel (Alpine non li ha); -idirafter lascia la precedenza a quelli di musl.
+  # M5 device test program: the drm/ headers come from the
+  # kernel (Alpine does not have them); -idirafter leaves precedence to the musl ones.
   gcc -static -O2 -Wall -Werror -idirafter "$obj/usr/include" \
     -o "$out/vetro-dev" /src/guest/kernel/initramfs/vetro-dev.c
-  # Demone del gestore dei file di M8 (ADR 0020), statico come vetro-dev,
-  # con SQLite (ADR 0021) e la sua shell (argv[0] sqlite3). Il motore senza
-  # thread né estensioni caricabili; i sorgenti di SQLite senza -Werror
-  # (non sono nostri).
+  # M8 file manager daemon (ADR 0020), static like vetro-dev,
+  # with SQLite (ADR 0021) and its shell (argv[0] sqlite3). The engine without
+  # threads or loadable extensions; the SQLite sources without -Werror
+  # (they are not ours).
   sq=/build/$SQLITE
   rm -rf "$sq"
   unzip -q -d /build "$out/sources/$SQLITE.zip"
@@ -133,28 +133,28 @@ docker run --rm --platform linux/arm64 \
   cp "$obj/arch/arm64/boot/Image" "$obj/.config" "$obj/System.map" "$out/"
   mv "$out/.config" "$out/config"
 
-  # Tipi del kernel per l introspezione (ADR 0027). Il kernel di prova non ha
-  # CONFIG_DEBUG_INFO_BTF (vorrebbe BPF_SYSCALL, che cambia il kernel): si
-  # compila vmlinux con la stessa .config più DEBUG_INFO (che non cambia la
-  # disposizione delle strutture) e pahole ne estrae il BTF staccato.
-  echo "==> BTF staccato (vmlinux.btf)"
+  # Kernel types for introspection (ADR 0027). The test kernel does not have
+  # CONFIG_DEBUG_INFO_BTF (it would want BPF_SYSCALL, which changes the kernel): we
+  # build vmlinux with the same .config plus DEBUG_INFO (which does not change the
+  # layout of the structures) and pahole extracts the detached BTF from it.
+  echo "==> detached BTF (vmlinux.btf)"
   btfobj=/build/obj-btf-$KVER
   mkdir -p "$btfobj"
   cp "$obj/.config" "$btfobj/.config"
-  # DEBUG_KERNEL apre il menu del debug: le opzioni che accenderebbe da sé
-  # (DEBUG_MISC, RCU_TRACE) restano spente.
+  # DEBUG_KERNEL opens the debug menu: the options it would turn on by itself
+  # (DEBUG_MISC, RCU_TRACE) stay off.
   printf "%s\n" CONFIG_DEBUG_KERNEL=y CONFIG_DEBUG_INFO_DWARF5=y \
     "# CONFIG_DEBUG_MISC is not set" "# CONFIG_RCU_TRACE is not set" >> "$btfobj/.config"
   make -s -C "$src" O="$btfobj" olddefconfig 2>/dev/null
-  # Oltre alle opzioni spente, solo quelle delle informazioni di debug.
+  # Besides the options turned off, only those of the debug information.
   if diff "$obj/.config" "$btfobj/.config" | grep -E "^[<>] CONFIG_" \
     | grep -vE "^> CONFIG_(DEBUG_KERNEL|DEBUG_INFO|DEBUG_INFO_[A-Z0-9_]*|PAHOLE_HAS_[A-Z0-9_]*)=y$"; then
-    echo "la configurazione del BTF cambia opzioni che non sono di debug"
+    echo "the BTF configuration changes options that are not debug options"
     exit 1
   fi
   make -s -C "$src" O="$btfobj" -j"$(nproc)" vmlinux
   pahole --btf_encode_detached="$out/vmlinux.btf" "$btfobj/vmlinux"
-  # pahole lo crea 0640 (root nel container): i test lo leggono da utente.
+  # pahole creates it 0640 (root in the container): the tests read it as a user.
   chmod 644 "$out/vmlinux.btf"
 
   echo "==> initramfs"
@@ -162,7 +162,7 @@ docker run --rm --platform linux/arm64 \
     > /build/files.list
   "$obj/usr/gen_init_cpio" -t 0 /build/files.list | gzip -n -9 > "$out/initramfs.cpio.gz"
 
-  echo "==> sorgenti per la GPL"
+  echo "==> sources for the GPL"
   cp /src/guest/kernel/config/vetro.config /src/guest/kernel/config/defconfig \
      /src/guest/kernel/initramfs/files.list /src/guest/kernel/initramfs/init \
      /src/guest/kernel/initramfs/autotest.sh /src/guest/kernel/initramfs/kselftest.sh \
@@ -175,19 +175,19 @@ docker run --rm --platform linux/arm64 \
     gcc --version | head -n1
     ld --version | head -n1
     grep -E "^busybox-static-" /src/target/guest-bins/VERSIONS || true
-    echo "$SQLITE sha256 $SQLITE_SHA256 (https://www.sqlite.org/, dominio pubblico)"
+    echo "$SQLITE sha256 $SQLITE_SHA256 (https://www.sqlite.org/, public domain)"
   } > "$out/VERSIONS"
   cp "$out/VERSIONS" "$out/sources/VERSIONS"
   {
-    echo "Sorgenti del kernel e dell initramfs di Vetro (GPL-2.0)."
-    echo "Kernel: linux-$KVER.tar.xz senza patch, configurato con"
+    echo "Sources of the Vetro kernel and initramfs (GPL-2.0)."
+    echo "Kernel: linux-$KVER.tar.xz without patches, configured with"
     echo "  make ARCH=arm64 allnoconfig KCONFIG_ALLCONFIG=vetro.config"
-    echo "  (risultato minimo: defconfig), poi make Image."
-    echo "BusyBox: binario statico del pacchetto Alpine busybox-static (versione"
-    echo "  in VERSIONS); sorgenti e patch in https://gitlab.alpinelinux.org/alpine/aports"
-    echo "  (main/busybox) al tag della release Alpine 3.22."
+    echo "  (minimal result: defconfig), then make Image."
+    echo "BusyBox: static binary of the Alpine package busybox-static (version"
+    echo "  in VERSIONS); sources and patches in https://gitlab.alpinelinux.org/alpine/aports"
+    echo "  (main/busybox) at the tag of the Alpine 3.22 release."
   } > "$out/sources/README"
 '
 end=$(date +%s)
-echo "==> fatto in $((end - start)) s"
+echo "==> done in $((end - start)) s"
 ls -l "$OUT"

@@ -1,19 +1,19 @@
-//! Programmi casuali di istruzioni intere, da confrontare con QEMU (ADR 0006).
+//! Random programs of integer instructions, to compare with QEMU (ADR 0006).
 //!
-//! Ogni istruzione nasce da bit casuali dentro la maschera della sua classe
-//! (come RISU), poi si correggono solo i campi che servono a mantenere il
-//! programma confrontabile:
-//! - x27/x28 non vengono mai scritti (x28 è la base della memoria, x27
-//!   l'indice piccolo per gli indirizzamenti a registro);
-//! - i load/store usano x28 come base e offset dentro il blocco di memoria;
-//!   dopo un writeback il valore di x28 si copia in un registro visibile e
-//!   x28 si ripristina;
-//! - i salti vanno solo in avanti, e sempre all'inizio di un'unità;
-//! - i casi CONSTRAINED UNPREDICTABLE sono esclusi.
+//! Every instruction is born from random bits inside the mask of its class
+//! (like RISU), then only the fields needed to keep the
+//! program comparable are fixed:
+//! - x27/x28 are never written (x28 is the memory base, x27
+//!   the small index for register addressing);
+//! - loads/stores use x28 as the base and offsets inside the memory block;
+//!   after a writeback the value of x28 is copied into a visible register and
+//!   x28 is restored;
+//! - branches go only forwards, and always to the start of a unit;
+//! - the CONSTRAINED UNPREDICTABLE cases are excluded.
 //!
-//! Le istruzioni che il nostro decoder considera UNDEFINED si scartano dal
-//! corpo; ma in una parte dei programmi il corpo termina con una di esse, e
-//! QEMU deve dare SIGILL.
+//! The instructions that our decoder considers UNDEFINED are discarded from the
+//! body; but in some of the programs the body ends with one of them, and
+//! QEMU must give SIGILL.
 
 use crate::harness::{BASE_PTR, BASE_REG, INDEX_REG, MEM_SIZE, Program};
 use crate::rng::Rng;
@@ -22,11 +22,11 @@ use vetro_cpu::{Insn, decode};
 pub struct Case {
     pub seed: u64,
     pub program: Program,
-    /// Il corpo termina con un'istruzione che per noi è UNDEFINED.
+    /// The body ends with an instruction that is UNDEFINED for us.
     pub undefined_tail: Option<u32>,
 }
 
-/// Classe di istruzioni: bit fissi (`value` sotto `mask`) più correzioni.
+/// Instruction class: fixed bits (`value` under `mask`) plus fixes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Class {
     AddSubImm,
@@ -52,13 +52,13 @@ pub enum Class {
     Exclusive,
     AcqRel,
     Branch,
-    /// Classe SIMD/FP di elaborazione dati: indice in `SIMD_CLASSES`.
+    /// SIMD/FP data-processing class: index into `SIMD_CLASSES`.
     Simd(usize),
-    /// Load/store SIMD con base x28.
+    /// SIMD load/store with base x28.
     SimdMem,
 }
 
-/// Classi SIMD/FP di elaborazione dati: (maschera, valore, nome).
+/// SIMD/FP data-processing classes: (mask, value, name).
 pub const SIMD_CLASSES: &[(u32, u32, &str)] = &[
     (0x5F20_7C00, 0x1E20_4000, "fp 1-source"),
     (0x5F20_0C00, 0x1E20_0800, "fp 2-source"),
@@ -119,12 +119,12 @@ const WEIGHTS: &[(Class, u64)] = &[
     (Class::SimdMem, 6),
 ];
 
-/// Peso complessivo delle classi SIMD/FP di elaborazione dati (ripartito
-/// in parti uguali tra le classi di `SIMD_CLASSES`).
+/// Total weight of the SIMD/FP data-processing classes (split
+/// equally among the classes of `SIMD_CLASSES`).
 const SIMD_WEIGHT: u64 = 60;
 
-/// Classi da cui si pesca l'istruzione UNDEFINED finale: solo bit casuali
-/// nella maschera, senza correzioni.
+/// Classes from which the final UNDEFINED instruction is drawn: only random bits
+/// in the mask, without fixes.
 const DP_CLASSES: &[(u32, u32)] = &[
     (0x1F80_0000, 0x1100_0000), // add/sub imm
     (0x1F80_0000, 0x1200_0000), // logical imm
@@ -141,22 +141,22 @@ const DP_CLASSES: &[(u32, u32)] = &[
     (0x5FE0_0000, 0x5AC0_0000), // dp 1-source
     (0x1F00_0000, 0x1B00_0000), // dp 3-source
     (0x3F20_0000, 0x3800_0000), // ld/st imm9
-    (0x3F20_0000, 0x3820_0000), // ld/st registro
+    (0x3F20_0000, 0x3820_0000), // ld/st register
     (0x3F00_0000, 0x3900_0000), // ld/st unsigned
-    (0x3E00_0000, 0x2800_0000), // ld/st coppia
-    (0x3F00_0000, 0x0800_0000), // esclusive
+    (0x3E00_0000, 0x2800_0000), // ld/st pair
+    (0x3F00_0000, 0x0800_0000), // exclusives
 ];
 
-/// Unità del corpo: i salti arrivano solo all'inizio di un'unità.
+/// Unit of the body: branches land only at the start of a unit.
 enum Unit {
     Plain(Vec<u32>),
-    /// Salto con offset da calcolare: `ahead` unità in avanti.
+    /// Branch with an offset to compute: `ahead` units forwards.
     Branch {
         raw: u32,
         kind: BranchKind,
         ahead: usize,
     },
-    /// Load da letterale: offset verso un'istruzione del corpo.
+    /// Literal load: offset towards an instruction of the body.
     Literal {
         raw: u32,
         target: u64,
@@ -181,7 +181,7 @@ fn get(w: u32, hi: u32, lo: u32) -> u32 {
     (w >> lo) & (u32::MAX >> (31 - (hi - lo)))
 }
 
-/// Registro di destinazione ammesso: tutti tranne x27 e x28.
+/// Allowed destination register: all except x27 and x28.
 fn dest_reg(rng: &mut Rng) -> u32 {
     loop {
         let r = rng.below(32) as u32;
@@ -202,7 +202,7 @@ fn accepted(w: u32) -> bool {
 
 struct Gen<'a> {
     rng: &'a mut Rng,
-    /// Includere le classi SIMD/FP.
+    /// Include the SIMD/FP classes.
     simd: bool,
 }
 
@@ -211,7 +211,7 @@ impl Gen<'_> {
         value | (self.rng.next_u32() & !mask)
     }
 
-    /// Istruzione di elaborazione dati della classe `c`, già accettata dal
+    /// Data-processing instruction of class `c`, already accepted by the
     /// decoder.
     fn dp(&mut self, c: Class) -> u32 {
         loop {
@@ -318,17 +318,17 @@ impl Gen<'_> {
                 }
                 w
             }
-            _ => unreachable!("non è una classe di elaborazione dati: {c:?}"),
+            _ => unreachable!("not a data-processing class: {c:?}"),
         };
         fix_rd(w, self.rng)
     }
 
-    /// Registro di trasferimento per un load/store: tutti tranne x27/x28.
+    /// Transfer register for a load/store: all except x27/x28.
     fn rt(&mut self) -> u32 {
         dest_reg(self.rng)
     }
 
-    /// Copia di x28 in un registro visibile, poi ripristino di x28.
+    /// Copy of x28 into a visible register, then restore of x28.
     fn capture_and_restore(&mut self, out: &mut Vec<u32>) {
         let visible = dest_reg(self.rng) % 31;
         out.push(crate::a64::mov_reg(visible, BASE_REG));
@@ -389,7 +389,7 @@ impl Gen<'_> {
         }
     }
 
-    /// LDXR…STXR con la stessa dimensione, e qualche istruzione in mezzo.
+    /// LDXR…STXR with the same size, and some instructions in between.
     fn exclusive_unit(&mut self) -> Vec<u32> {
         let pair = self.rng.chance(1, 4);
         let size = if pair { 2 + self.rng.below(2) as u32 } else { self.rng.below(4) as u32 };
@@ -418,7 +418,7 @@ impl Gen<'_> {
                 out.push(self.dp(c));
             }
         }
-        // STXR: Rs diverso da Rt, Rt2 e dalla base.
+        // STXR: Rs different from Rt, Rt2 and the base.
         let (st, st2) = (self.rt(), self.rt());
         let rs = loop {
             let r = self.rt();
@@ -503,7 +503,7 @@ impl Gen<'_> {
         }
     }
 
-    /// Istruzione SIMD/FP della classe `k`, accettata dal decoder.
+    /// SIMD/FP instruction of class `k`, accepted by the decoder.
     fn simd_dp(&mut self, k: usize) -> u32 {
         let (mask, value, _) = SIMD_CLASSES[k];
         loop {
@@ -514,13 +514,13 @@ impl Gen<'_> {
         }
     }
 
-    /// Load/store SIMD con base x28 e indirizzi dentro il blocco di memoria.
+    /// SIMD load/store with base x28 and addresses inside the memory block.
     fn simd_mem(&mut self) -> Vec<u32> {
         loop {
             let mut writeback = false;
             let w = match self.rng.below(4) {
                 0 => {
-                    // LDR/STR B/H/S/D/Q, offset senza segno
+                    // LDR/STR B/H/S/D/Q, unsigned offset
                     let mut w = self.raw(0x3F00_0000, 0x3D00_0000);
                     let scale = (get(w, 23, 23) << 2) | get(w, 31, 30);
                     if scale > 4 {
@@ -540,7 +540,7 @@ impl Gen<'_> {
                     w
                 }
                 2 => {
-                    // LD1–LD4/ST1–ST4 strutture multiple (con o senza post-indice)
+                    // LD1–LD4/ST1–ST4 multiple structures (with or without post-index)
                     let mut w = self.raw(0xBFA0_0000, 0x0C00_0000);
                     if self.rng.chance(1, 2) {
                         w |= 1 << 23;
@@ -552,7 +552,7 @@ impl Gen<'_> {
                     w
                 }
                 _ => {
-                    // Struttura singola / replica
+                    // Single structure / replicate
                     let mut w = self.raw(0xBF80_0000, 0x0D00_0000);
                     if self.rng.chance(1, 2) {
                         w |= 1 << 23;
@@ -587,7 +587,7 @@ impl Gen<'_> {
     }
 }
 
-/// Dispone le unità: calcola gli offset di salti e letterali.
+/// Lays out the units: computes the offsets of branches and literals.
 fn layout(units: Vec<Unit>) -> Vec<u32> {
     let mut starts = Vec::with_capacity(units.len() + 1);
     let mut n = 0usize;
@@ -615,8 +615,8 @@ fn layout(units: Vec<Unit>) -> Vec<u32> {
                 });
             }
             Unit::Literal { raw, target } => {
-                // Qualsiasi istruzione del corpo (per un LDR X servono 8 byte:
-                // dopo il corpo c'è comunque l'epilogo).
+                // Any instruction of the body (an LDR X needs 8 bytes:
+                // after the body there is the epilogue anyway).
                 let t = (target % len as u64) as i64;
                 let off = (t - pos as i64) as u32;
                 body.push(set(raw, 23, 5, off));
@@ -626,29 +626,29 @@ fn layout(units: Vec<Unit>) -> Vec<u32> {
     body
 }
 
-/// Genera il caso `seed` con circa `body_len` istruzioni nel corpo, solo
-/// istruzioni intere.
+/// Generates case `seed` with about `body_len` instructions in the body, only
+/// integer instructions.
 pub fn generate(seed: u64, body_len: usize) -> Case {
     generate_with(seed, body_len, false)
 }
 
-/// Programma breve di sole istruzioni SIMD/FP su registri pieni di casi
-/// speciali (NaN, infiniti, zeri con segno, denormali): per le regole fini
-/// della virgola mobile, che i programmi lunghi osservano di rado.
+/// Short program of SIMD/FP instructions only, on registers full of special
+/// cases (NaN, infinities, signed zeros, denormals): for the fine rules
+/// of floating point, which long programs rarely observe.
 pub fn generate_fp_focused(seed: u64) -> Case {
     generate_focused(seed, |name| {
         name.starts_with("fp") || name.contains("three same") || name.contains("two misc")
     })
 }
 
-/// Programma breve di istruzioni SIMD/FP scelte (3 volte su 4) tra le classi
-/// di `SIMD_CLASSES` il cui nome soddisfa `pick`.
+/// Short program of SIMD/FP instructions chosen (3 times out of 4) among the classes
+/// of `SIMD_CLASSES` whose name satisfies `pick`.
 pub fn generate_focused(seed: u64, pick: impl Fn(&str) -> bool) -> Case {
     let mut rng = Rng::new(seed ^ 0xf00d_0000_0000_0000);
     let mut body = Vec::new();
     {
         let mut g = Gen { rng: &mut rng, simd: true };
-        // Tre volte su quattro una classe con aritmetica FP.
+        // Three times out of four a class with FP arithmetic.
         let fp: Vec<usize> =
             SIMD_CLASSES.iter().enumerate().filter(|(_, c)| pick(c.2)).map(|(i, _)| i).collect();
         for _ in 0..6 {
@@ -676,10 +676,10 @@ pub fn generate_focused(seed: u64, pick: impl Fn(&str) -> bool) -> Case {
     Case { seed, program, undefined_tail: None }
 }
 
-/// Programma breve di istruzioni FP (come [`generate_fp_focused`]) su
-/// valori per lo più normali, con FPCR quasi sempre a zero e FPSR.IXC a 1
-/// metà delle volte: le condizioni dei percorsi veloci del JIT (ADR 0026),
-/// che così si confrontano con QEMU e non solo con l'interprete.
+/// Short program of FP instructions (like [`generate_fp_focused`]) on
+/// mostly normal values, with FPCR almost always zero and FPSR.IXC at 1
+/// half of the time: the conditions of the JIT's fast paths (ADR 0026),
+/// which are thus compared with QEMU and not only with the interpreter.
 pub fn generate_fp_fast(seed: u64) -> Case {
     let mut case = generate_fp_focused(seed ^ 0x0fa5_7000_0000_0000);
     let mut rng = Rng::new(seed ^ 0xfa57_0000_0000_0000);
@@ -692,7 +692,7 @@ pub fn generate_fp_fast(seed: u64) -> Case {
     case
 }
 
-/// Come [`generate`], con le classi SIMD/FP se `simd`.
+/// Like [`generate`], with the SIMD/FP classes if `simd`.
 pub fn generate_with(seed: u64, body_len: usize, simd: bool) -> Case {
     let mut rng = Rng::new(seed);
     let mut units = Vec::new();
@@ -730,7 +730,7 @@ pub fn generate_with(seed: u64, body_len: usize, simd: bool) -> Case {
         for v in program.v.iter_mut() {
             *v = rng.fp_vector();
         }
-        // FPCR: AHP, DN, FZ, RMode casuali (metà dei casi a zero).
+        // FPCR: random AHP, DN, FZ, RMode (half of the cases zero).
         program.fpcr = if rng.chance(1, 2) { 0 } else { (rng.below(32) as u32) << 22 };
         program.fpsr = if rng.chance(1, 4) { rng.next_u32() & 0x0800_009F } else { 0 };
     }
@@ -752,7 +752,7 @@ mod tests {
             let body = &c.program.body;
             let n = body.len() - c.undefined_tail.is_some() as usize;
             for &w in &body[..n] {
-                assert!(accepted(w), "seed {seed}: {w:#010x} rifiutata dal decoder");
+                assert!(accepted(w), "seed {seed}: {w:#010x} rejected by the decoder");
             }
         }
     }

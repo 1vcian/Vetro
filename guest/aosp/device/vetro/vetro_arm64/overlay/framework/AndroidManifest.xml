@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Overlay statico del framework (ADR 0030): icona predefinita delle app
-     senza icona (sym_def_app_icon, il robot di AOSP) con quella di Vetro. -->
+<!-- Static framework overlay (ADR 0030): replaces the default icon of apps
+     without an icon (sym_def_app_icon, the AOSP robot) with Vetro's. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="vetro.overlay.framework">
     <application android:hasCode="false" />

@@ -1,10 +1,10 @@
-//! `vetro boot --disk=FILE --overlay=FILE` (M6, ADR 0017): le scritture del
-//! guest sul disco si conservano nell'overlay e tornano all'avvio
-//! successivo, in un altro processo; l'immagine base non cambia; se la base
-//! cambia (qui: la data di modifica) l'overlay si scarta e il guest rilegge
-//! la base.
+//! `vetro boot --disk=FILE --overlay=FILE` (M6, ADR 0017): the guest's
+//! writes to the disk are kept in the overlay and come back at the next
+//! boot, in another process; the base image doesn't change; if the base
+//! changes (here: the modification time) the overlay is discarded and the guest rereads
+//! the base.
 //!
-//! In release (`cargo test --release -p vetro-cli`), come gli altri avvii.
+//! In release (`cargo test --release -p vetro-cli`), like the other boots.
 
 use std::process::Command;
 use std::time::Duration;
@@ -14,32 +14,31 @@ use vetro_boot_tests::{Console, SHELL_PROMPT, guest_kernel, normalize, skip_or_f
 const AT: u64 = 300_000;
 const TEXT: &str = "VETRO-OVERLAY-42";
 
-/// Avvia `vetro boot` con `args`, dà i comandi alla shell uno alla volta,
-/// spegne; restituisce il log.
+/// Starts `vetro boot` with `args`, gives the commands to the shell one at a time,
+/// powers off; returns the log.
 fn session(args: &[String], commands: &[String]) -> String {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_vetro"));
     cmd.arg("boot").args(args);
     let mut c = Console::spawn(cmd).expect("vetro boot");
-    let mut at =
-        c.wait_for(SHELL_PROMPT, 0, timeout()).unwrap_or_else(|| panic!("niente shell:\n{}", c.log()));
+    let mut at = c.wait_for(SHELL_PROMPT, 0, timeout()).unwrap_or_else(|| panic!("no shell:\n{}", c.log()));
     for command in commands {
         c.send(&format!("{command}\n"));
         at = c
             .wait_for(SHELL_PROMPT, at, timeout())
-            .unwrap_or_else(|| panic!("{command}: niente prompt:\n{}", normalize(&c.log())));
+            .unwrap_or_else(|| panic!("{command}: no prompt:\n{}", normalize(&c.log())));
     }
     c.send("poweroff -f\n");
-    assert!(c.finish(Duration::from_secs(60)), "poweroff -f non ha fermato vetro:\n{}", c.log());
+    assert!(c.finish(Duration::from_secs(60)), "poweroff -f did not stop vetro:\n{}", c.log());
     normalize(&c.log())
 }
 
 #[test]
 fn scritture_conservate_fra_due_avvii() {
     if cfg!(debug_assertions) {
-        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "avvio sotto Vetro solo in release");
+        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "boot under Vetro only in release");
     }
     let Some((image, initrd)) = guest_kernel() else {
-        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "target/guest-kernel mancante");
+        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "target/guest-kernel missing");
     };
     let dir = std::env::temp_dir().join(format!("vetro-boot-overlay-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -69,19 +68,19 @@ fn scritture_conservate_fra_due_avvii() {
             read.clone(),
         ],
     );
-    assert!(first.contains(&format!("LETTO-{TEXT}-FINE")), "scrittura non riletta:\n{first}");
-    assert!(std::fs::metadata(&ov).unwrap().len() > 4096, "overlay senza cluster");
-    assert_eq!(std::fs::read(&base).unwrap(), data, "la base non cambia");
+    assert!(first.contains(&format!("LETTO-{TEXT}-FINE")), "write not read back:\n{first}");
+    assert!(std::fs::metadata(&ov).unwrap().len() > 4096, "overlay without clusters");
+    assert_eq!(std::fs::read(&base).unwrap(), data, "the base doesn't change");
 
     let second = session(&args, std::slice::from_ref(&read));
-    assert!(second.contains(&format!("LETTO-{TEXT}-FINE")), "scrittura persa fra i due avvii:\n{second}");
+    assert!(second.contains(&format!("LETTO-{TEXT}-FINE")), "write lost between the two boots:\n{second}");
 
-    // La base cambia (stessi byte, altra data di modifica): overlay scartato.
+    // The base changes (same bytes, another modification time): overlay discarded.
     let f = std::fs::File::options().write(true).open(&base).unwrap();
     f.set_modified(std::time::SystemTime::now() + Duration::from_secs(10)).unwrap();
     drop(f);
     let third = session(&args, std::slice::from_ref(&read));
-    assert!(!third.contains(&format!("LETTO-{TEXT}-FINE")), "overlay di un'altra base applicato:\n{third}");
-    assert_eq!(std::fs::metadata(&ov).unwrap().len(), 4096, "overlay scartato: solo l'intestazione");
+    assert!(!third.contains(&format!("LETTO-{TEXT}-FINE")), "overlay of another base applied:\n{third}");
+    assert_eq!(std::fs::metadata(&ov).unwrap().len(), 4096, "overlay discarded: only the header");
     std::fs::remove_dir_all(&dir).unwrap();
 }

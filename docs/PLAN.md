@@ -1,140 +1,140 @@
-# Vetro — piano e stato
+# Vetro — plan and status
 
-Fonte: piano originale plan.docx (24/09/2026, non versionato). Questo file è la copia di lavoro: le
-milestone si segnano complete **solo** quando il comando di uscita passa in CI.
+Source: original plan plan.docx (2026-09-24, not versioned). This file is the working copy:
+milestones are marked complete **only** when the exit command passes in CI.
 
-## Visione in breve
+## Vision in brief
 
-Android 15 (API 35) arm64 da AOSP, con microG, emulato nel browser da una CPU
-ARM64 nostra (interprete + JIT verso WASM), su una piattaforma copia della
-"virt" di QEMU. L'analisi (syscall, Binder, TLS, ART) avviene dall'emulatore,
-invisibile alle app. Primo target Chrome/Edge desktop.
+Android 15 (API 35) arm64 from AOSP, with microG, emulated in the browser by our own
+ARM64 CPU (interpreter + JIT to WASM), on a platform that copies QEMU's
+"virt" board. Analysis (syscalls, Binder, TLS, ART) happens from the emulator,
+invisible to apps. First target: Chrome/Edge desktop.
 
-### Criteri di successo della 1.0
+### 1.0 success criteria
 
-- Home in meno di 15 s da snapshot in cache, su Chrome o Edge desktop.
-- APK trascinato: si installa e si usa con mouse e tastiera.
-- Set di riferimento di 30 app (20 F-Droid, 10 note senza Play Integrity):
-  avvio, login, navigazione.
-- Ogni richiesta di rete in chiaro, attribuita a processo e libreria, legata
-  sulla timeline all'azione utente.
-- Ogni accesso a dati sensibili registrato decodificando Binder.
-- Export in HAR, pcap e JSON.
+- Home screen in under 15 s from a cached snapshot, on Chrome or Edge desktop.
+- Dropped APK: it installs and is usable with mouse and keyboard.
+- Reference set of 30 apps (20 F-Droid, 10 well-known ones without Play Integrity):
+  launch, login, navigation.
+- Every network request in clear text, attributed to process and library, tied
+  on the timeline to the user action.
+- Every access to sensitive data recorded by decoding Binder.
+- Export to HAR, pcap and JSON.
 
-### Fuori perimetro 1.0
+### Out of scope for 1.0
 
-Play Store / GMS originali / Play Integrity; giochi 3D pesanti; iPhone e
-Safari mobile; qualsiasi componente cloud obbligatorio.
+Play Store / original GMS / Play Integrity; heavy 3D games; iPhone and
+mobile Safari; any mandatory cloud component.
 
-## Stato
+## Status
 
-| Milestone | Stato | Comando di uscita |
+| Milestone | Status | Exit command |
 |---|---|---|
-| M0 Impalcatura e oracolo | **completata** (CI verde, 2026-09-24) | `VETRO_REQUIRE_ORACLE=1 tools/ci.sh` |
-| M1 Interprete CPU AArch64 | **completata** (CI verde, 2026-09-24) | test per istruzione + 200 programmi casuali uguali a qemu-aarch64 (ADR 0006) |
-| M2 Syscall Linux utente | **completata** (CI verde, 2026-09-25) | 355 test LTP, BusyBox e RISU uguali all'oracolo nel job linux (ADR 0010) |
-| M3 Modalità sistema e kernel | **completata** (CI verde, 2026-09-25) | Linux 6.18 fino alla shell con log uguale a QEMU; 95 kselftest con esiti uguali (ADR 0011) |
-| M4 JIT verso WASM | **completata** (CI verde, 2026-09-26) | test M1/M2 col JIT, parità interprete-JIT, avvio col JIT in V8 3,85 s ≤ interprete nativo 4,36 s (ADR 0012, 0013) |
-| M5 Avvio di Android | **in progress** (our AOSP 15 image, ADR 0022; in Chrome, ADR 0028: home screen drawn 44.5 min after a cold start with 2 GiB, adb from the page, a dropped APK installed, opened and reacting to a click; a first visit resumes from the prebuilt snapshot on R2 instead of the 45-minute boot, ADR 0031; the Android criteria run in the nightly CI job from the prebuilt snapshot, the cold boot weekly: waiting for the first green run) | home in Chrome, adb install di un APK |
-| M6 Snapshot e installazione | **in progress** (full machine save/restore, ADR 0015; persistent disks and cached snapshots in the browser, ADR 0017; Android: chunked snapshots, second start in Chrome ready in 4.8–5.0 s, ADR 0028; snapshot format 4 with a small level and the prebuilt home-screen snapshot, ADR 0031; nightly CI job added, waiting for the first green run) | home < 15 s da snapshot, APK trascinato |
-| M7 Rete e timeline | **in corso** (cattura, pcapng, HTTP, decodificatori, HAR sul guest BusyBox, ADR 0016; ispettore di rete e timeline input→effetti nell'app web sul guest Linux, ADR 0023; introspezione del guest dall'esterno, ADR 0027; hook TLS e decoder Binder+privacy dall'esterno, ADR 0029; manca l'endpoint TLS e la prova su Android da snapshot) | 10 app con HTTPS in chiaro e legato all'azione, HAR riapribile |
-| M8 Binder e privacy | **in corso** (gestore dei file sul guest Linux: demone su vsock, client, pannello web, ADR 0020; modifica di righe SQLite con SQL nel guest, WAL, SharedPreferences in tabella, nomi non UTF-8, ADR 0021) | app di test: ogni accesso rilevato, identificativo esca tracciato, file dell'app visibili e modificabili dal vivo |
-| M9 Tracciamento codice e scripting | — | hook su metodo, dex dinamico salvato, script Frida adattato |
-| M10 Record & replay, 1.0 | **in corso** (nucleo: record & replay e salto a un'istruzione della macchina, ADR 0019; nel browser: registra, log scaricabile e ricaricabile, keyframe in OPFS, replay identico, salto con registri e memoria, ADR 0023) | replay identico, 30 app, criteri 1.0 |
+| M0 Scaffolding and oracle | **completed** (CI green, 2026-09-24) | `VETRO_REQUIRE_ORACLE=1 tools/ci.sh` |
+| M1 AArch64 CPU interpreter | **completed** (CI green, 2026-09-24) | per-instruction tests + 200 random programs identical to qemu-aarch64 (ADR 0006) |
+| M2 Linux user syscalls | **completed** (CI green, 2026-09-25) | 355 LTP tests, BusyBox and RISU identical to the oracle in the linux job (ADR 0010) |
+| M3 System mode and kernel | **completed** (CI green, 2026-09-25) | Linux 6.18 up to the shell with a log identical to QEMU; 95 kselftests with identical outcomes (ADR 0011) |
+| M4 JIT to WASM | **completed** (CI green, 2026-09-26) | M1/M2 tests with the JIT, interpreter-JIT parity, boot with the JIT in V8 3.85 s ≤ native interpreter 4.36 s (ADR 0012, 0013) |
+| M5 Android boot | **in progress** (our AOSP 15 image, ADR 0022; in Chrome, ADR 0028: home screen drawn 44.5 min after a cold start with 2 GiB, adb from the page, a dropped APK installed, opened and reacting to a click; a first visit resumes from the prebuilt snapshot on R2 instead of the 45-minute boot, ADR 0031; the Android criteria run in the nightly CI job from the prebuilt snapshot, the cold boot weekly: waiting for the first green run) | home in Chrome, adb install di un APK |
+| M6 Snapshots and installation | **in progress** (full machine save/restore, ADR 0015; persistent disks and cached snapshots in the browser, ADR 0017; Android: chunked snapshots, second start in Chrome ready in 4.8–5.0 s, ADR 0028; snapshot format 4 with a small level and the prebuilt home-screen snapshot, ADR 0031; nightly CI job added, waiting for the first green run) | home < 15 s da snapshot, APK trascinato |
+| M7 Network and timeline | **in progress** (capture, pcapng, HTTP, decoders, HAR on the BusyBox guest, ADR 0016; network inspector and input→effects timeline in the web app on the Linux guest, ADR 0023; guest introspection from the outside, ADR 0027; TLS hooks and Binder+privacy decoder from the outside, ADR 0029; missing: the TLS endpoint and the test on Android from a snapshot) | 10 apps with HTTPS in clear text and tied to the action, HAR reopenable |
+| M8 Binder and privacy | **in progress** (file manager on the Linux guest: daemon over vsock, client, web panel, ADR 0020; editing SQLite rows with SQL in the guest, WAL, SharedPreferences as a table, non-UTF-8 names, ADR 0021) | test app: every access detected, decoy identifier tracked, app files visible and editable live |
+| M9 Code tracing and scripting | — | method hook, dynamic dex saved, adapted Frida script |
+| M10 Record & replay, 1.0 | **in progress** (core: record & replay and jump to a machine instruction, ADR 0019; in the browser: record, downloadable and reloadable log, keyframes in OPFS, identical replay, jump with registers and memory, ADR 0023) | identical replay, 30 apps, 1.0 criteria |
 
-## Milestone
+## Milestones
 
-### M0 — Impalcatura e oracolo
-- **Obiettivo:** repository, CI e confronto con QEMU funzionante da subito.
-- **Consegne:** struttura del repo, CLAUDE.md, CI nativa e WASM, QEMU e RISU
-  richiamabili dai test.
-- **Uscita:** `cargo test` verde; un test che lancia QEMU e ne legge l'uscita
-  passa in CI.
+### M0 — Scaffolding and oracle
+- **Goal:** repository, CI and comparison with QEMU working from the start.
+- **Deliverables:** repo structure, CLAUDE.md, native and WASM CI, QEMU and RISU
+  callable from tests.
+- **Exit:** `cargo test` green; a test that launches QEMU and reads its output
+  passes in CI.
 
-### M1 — Interprete CPU AArch64
-- **Obiettivo:** eseguire codice ARM64 utente, lento ma corretto.
-- **Consegne:** decoder e interprete per interi, memoria, salti, condizioni;
-  caricatore di ELF statici; il runner CLI esegue un binario.
-- **Uscita:** suite per istruzione verde; su almeno 200 programmi casuali RISU
-  i registri finali coincidono con qemu-aarch64.
+### M1 — AArch64 CPU interpreter
+- **Goal:** run user ARM64 code, slow but correct.
+- **Deliverables:** decoder and interpreter for integers, memory, branches, conditions;
+  static ELF loader; the CLI runner executes a binary.
+- **Exit:** per-instruction suite green; on at least 200 random RISU programs
+  the final registers match qemu-aarch64.
 
-### M2 — Syscall Linux utente
-- **Obiettivo:** veri programmi Linux arm64 in user mode.
-- **Consegne:** gestione SVC, syscall di base (file, memoria, thread, clock)
-  mappate sull'host; primo tracer di syscall.
-- **Uscita:** selezione LTP user mode verde; BusyBox arm64 statica esegue i
-  comandi principali; log delle syscall corretto.
+### M2 — Linux user syscalls
+- **Goal:** real arm64 Linux programs in user mode.
+- **Deliverables:** SVC handling, basic syscalls (files, memory, threads, clock)
+  mapped onto the host; first syscall tracer.
+- **Exit:** user mode LTP selection green; static arm64 BusyBox runs the
+  main commands; correct syscall log.
 
-### M3 — Modalità sistema e avvio del kernel
-- **Obiettivo:** kernel Linux arm64 fino alla shell.
-- **Consegne:** EL0/EL1, MMU stage 1, GICv3, timer, UART, virtio-blk e
-  virtio-net minimi, device tree, caricatore del kernel.
-- **Uscita:** kernel con initramfs alla shell con avvio scriptato; selezione
-  kselftest verde nel guest.
+### M3 — System mode and kernel boot
+- **Goal:** arm64 Linux kernel up to the shell.
+- **Deliverables:** EL0/EL1, stage 1 MMU, GICv3, timer, UART, minimal virtio-blk and
+  virtio-net, device tree, kernel loader.
+- **Exit:** kernel with initramfs to the shell with a scripted boot; kselftest
+  selection green in the guest.
 
-### M4 — JIT verso WASM
-- **Obiettivo:** prestazioni lavorabili.
-- **Consegne:** traduzione a blocchi in moduli WASM, cache, invalidazione su
-  codice modificato, ritorno all'interprete nei casi difficili.
-- **Uscita:** test M1 e M2 verdi col JIT; avvio kernel sotto la soglia fissata
-  in M3; nessuna differenza interprete-JIT sul set differenziale.
+### M4 — JIT to WASM
+- **Goal:** workable performance.
+- **Deliverables:** block translation into WASM modules, cache, invalidation on
+  modified code, fallback to the interpreter in hard cases.
+- **Exit:** M1 and M2 tests green with the JIT; kernel boot under the threshold set
+  in M3; no interpreter-JIT difference on the differential set.
 
-### M5 — Avvio di Android
-- **Obiettivo:** home di Android nel browser.
-- **Consegne:** immagini AOSP 15 arm64; disco a blocchi via HTTP Range con
-  cache OPFS; virtio-gpu 2D su WebGPU; virtio-input; adb su canale virtio;
-  sinkhole di rete.
-- **Uscita:** home in Chrome; adb vede il dispositivo; adb install di un APK
-  semplice, l'app si apre e reagisce al tocco.
+### M5 — Android boot
+- **Goal:** Android home screen in the browser.
+- **Deliverables:** AOSP 15 arm64 images; block disk via HTTP Range with
+  OPFS cache; virtio-gpu 2D on WebGPU; virtio-input; adb over a virtio channel;
+  network sinkhole.
+- **Exit:** home in Chrome; adb sees the device; adb install of a simple
+  APK, the app opens and reacts to touch.
 
-### M6 — Snapshot e installazione
-- **Consegne:** save/restore completo; snapshot di Android avviato;
-  trascinamento APK; livello copy-on-write.
-- **Uscita:** dal secondo avvio home < 15 s; APK trascinato si installa e si
-  apre senza riga di comando.
+### M6 — Snapshots and installation
+- **Deliverables:** full save/restore; snapshot of booted Android;
+  APK drag and drop; copy-on-write layer.
+- **Exit:** from the second boot, home < 15 s; a dropped APK installs and
+  opens without a command line.
 
-### M7 — Analisi di rete e timeline
-- **Consegne:** hook TLS su BoringSSL e Conscrypt; decodifica JSON, protobuf,
-  form; ispettore di rete; timeline input→effetti; export HAR e pcap.
-- **Uscita:** su 10 app del set ogni chiamata HTTPS è in chiaro e agganciata
-  all'azione; l'HAR si riapre in un altro strumento.
+### M7 — Network analysis and timeline
+- **Deliverables:** TLS hooks on BoringSSL and Conscrypt; JSON, protobuf and
+  form decoding; network inspector; input→effects timeline; HAR and pcap export.
+- **Exit:** on 10 apps from the set every HTTPS call is in clear text and tied
+  to the action; the HAR reopens in another tool.
 
-### M8 — Binder e privacy
-- **Consegne:** decoder Binder con mappatura AIDL; ispettore privacy; dati
-  esca tracciati fino alla rete; gestore dei file dell'app in primo piano.
-- **Gestore dei file:** pannello affiancato allo schermo che segue l'app in
-  primo piano (rilevata dal decoder Binder su ActivityTaskManager) e ne mostra
-  l'albero dei file: `/sdcard/Android/data/<pacchetto>`,
-  `/sdcard/Android/media/<pacchetto>` e i dati privati
-  `/data/data/<pacchetto>` (`/data/user/0`, `/data/user_de/0`). Aggiornamento
-  dal vivo quando l'app crea o cambia file; apertura con visualizzatori per
-  testo, JSON, XML delle SharedPreferences, SQLite (tabelle), immagini ed
-  esadecimale; modifica dal vivo con salvataggio immediato nel guest.
-  Vincoli: letture e scritture passano dal kernel guest (demone di Vetro su
-  virtio-vsock con i privilegi di root dell'immagine userdebug, non accesso
-  diretto all'immagine ext4/f2fs, che con il guest acceso corromperebbe il
-  file system); proprietario, permessi e contesto SELinux del file si
-  conservano; ogni modifica dell'utente è un ingresso registrato nel punto
-  unico di M10, quindi il replay resta identico. Il meccanismo diventa un ADR
-  prima del codice.
-- **Uscita:** su un'app di test nostra ogni accesso previsto compare; un
-  identificativo esca viene rilevato quando esce in rete; il gestore mostra i
-  file che l'app di test scrive entro 1 s e una modifica fatta dal pannello
-  (un valore nelle SharedPreferences e una riga di un database SQLite) viene
-  letta dall'app dopo il riavvio dell'attività.
+### M8 — Binder and privacy
+- **Deliverables:** Binder decoder with AIDL mapping; privacy inspector; decoy
+  data tracked all the way to the network; file manager for the foreground app.
+- **File manager:** panel next to the screen that follows the foreground
+  app (detected by the Binder decoder on ActivityTaskManager) and shows
+  its file tree: `/sdcard/Android/data/<package>`,
+  `/sdcard/Android/media/<package>` and the private data
+  `/data/data/<package>` (`/data/user/0`, `/data/user_de/0`). Live
+  updates when the app creates or changes files; opening with viewers for
+  text, JSON, SharedPreferences XML, SQLite (tables), images and
+  hex; live editing with immediate save in the guest.
+  Constraints: reads and writes go through the guest kernel (a Vetro daemon on
+  virtio-vsock with the root privileges of the userdebug image, not direct
+  access to the ext4/f2fs image, which with the guest running would corrupt the
+  file system); the file's owner, permissions and SELinux context are
+  preserved; every user edit is an input recorded at the single
+  point of M10, so replay stays identical. The mechanism becomes an ADR
+  before the code.
+- **Exit:** on our own test app every expected access shows up; a
+  decoy identifier is detected when it goes out on the network; the file manager shows the
+  files the test app writes within 1 s, and an edit made from the panel
+  (a value in the SharedPreferences and a row of a SQLite database) is
+  read by the app after the activity restarts.
 
-### M9 — Tracciamento del codice e scripting
-- **Consegne:** introspezione ART dall'emulatore; tracciamento nativo con
-  simboli; rilevamento dex/librerie dinamici; API di scripting simile a Frida.
-- **Uscita:** uno script aggancia un metodo e registra le chiamate; un dex
-  caricato a runtime viene salvato; uno script Frida d'esempio gira con
-  modifiche minime.
+### M9 — Code tracing and scripting
+- **Deliverables:** ART introspection from the emulator; native tracing with
+  symbols; detection of dynamic dex/libraries; Frida-like scripting API.
+- **Exit:** a script hooks a method and records the calls; a dex
+  loaded at runtime is saved; an example Frida script runs with
+  minimal changes.
 
-### M10 — Record & replay e 1.0
-- **Consegne:** registrazione deterministica e replay; salto a un evento con
-  memoria e registri di quel momento; profili dispositivo; report; docs utente.
-- **Uscita:** replay identico con ritorno al momento esatto di una chiamata;
-  30 app superano i flussi base; criteri 1.0 soddisfatti.
+### M10 — Record & replay and 1.0
+- **Deliverables:** deterministic recording and replay; jump to an event with
+  the memory and registers of that moment; device profiles; reports; user docs.
+- **Exit:** identical replay with return to the exact moment of a call;
+  30 apps pass the basic flows; 1.0 criteria met.
 
 ## Suggested apps (owner's list, 2026-09-27; delivered through the in-page catalog)
 
@@ -264,28 +264,28 @@ one-off audits.
   to Cloudflare Pages first (phase B2).
 - R2 artifacts and the build VM are unaffected.
 
-## Squadra di agenti
+## Agent team
 
-| Agente | Cartelle | Attivo in |
+| Agent | Folders | Active in |
 |---|---|---|
-| Architetto | `docs/`, interfacce tra crate | tutte |
+| Architect | `docs/`, interfaces between crates | all |
 | CPU | `crates/vetro-cpu`, `crates/vetro-mmu`, `tests/isa` | M1–M4 |
-| JIT | `crates/vetro-jit`, `tests/diff` | M4, poi mantenimento |
-| Piattaforma | `crates/vetro-platform`, `guest/kernel`, `tests/boot` | M3, M5 |
+| JIT | `crates/vetro-jit`, `tests/diff` | M4, then maintenance |
+| Platform | `crates/vetro-platform`, `guest/kernel`, `tests/boot` | M3, M5 |
 | Guest | `guest/aosp`, `guest/image` | M5–M6 |
-| Rete | `crates/vetro-net`, `relay/` | M3, M7 |
-| Analisi | `crates/vetro-analysis`, `crates/vetro-snapshot` | M2, M7–M10 |
+| Network | `crates/vetro-net`, `relay/` | M3, M7 |
+| Analysis | `crates/vetro-analysis`, `crates/vetro-snapshot` | M2, M7–M10 |
 | Web | `web/` | M5–M10 |
-| Qualità | `tests/`, `.github/`, `tools/` | tutte |
+| Quality | `tests/`, `.github/`, `tools/` | all |
 
-Fino a M4: un solo agente per sessione. Parallelismo da M5.
+Up to M4: a single agent per session. Parallelism from M5.
 
-## Rischi principali
+## Main risks
 
-JIT con bug sottili (parità obbligatoria); boot AOSP bloccato da dispositivi
-mancanti (BusyBox → kernel → Android); prestazioni (JIT presto, snapshot);
-memoria del browser (memory64, RAM configurabile); build AOSP fragile
-(macchina dedicata, artefatti versionati); rilevamento dell'emulatore
-(profili credibili, introspezione invisibile); TLS proprietari (ricerca per
-firme); nodi legali (solo AOSP + microG, sorgenti kernel pubblicati).
-Dettaglio completo nel piano originale (plan.docx, non versionato).
+JIT with subtle bugs (parity mandatory); AOSP boot blocked by missing
+devices (BusyBox → kernel → Android); performance (JIT early, snapshots);
+browser memory (memory64, configurable RAM); fragile AOSP build
+(dedicated machine, versioned artifacts); emulator detection
+(credible profiles, invisible introspection); proprietary TLS (search by
+signatures); legal issues (AOSP + microG only, kernel sources published).
+Full detail in the original plan (plan.docx, not versioned).

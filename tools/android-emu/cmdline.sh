@@ -1,12 +1,12 @@
 #!/bin/sh
-# Riga di comando del kernel per l'immagine dell'emulatore Android 15 sulla
-# macchina di Vetro (vedi README.md). Stampata su stdout.
-# Dischi, nell'ordine della riga di comando di QEMU (il primo va nello slot
-# virtio-mmio più alto; Linux li numera per indirizzo crescente):
-#   slot 31 (a003e00) userdata.img     -> vdc, /data del fstab (vuoto: lo formatta vold)
-#   slot 30 (a003c00) encryptionkey.img -> vdb, GPT con "metadata" (il fstab lo cerca qui)
-#   slot 29 (a003a00) system.img        -> vda, GPT con "super" (partizioni logiche)
-# VETRO_ANDROID_APPEND aggiunge parametri in fondo.
+# Kernel command line for the Android 15 emulator image on the
+# Vetro machine (see README.md). Printed on stdout.
+# Disks, in the order of the QEMU command line (the first goes into the highest
+# virtio-mmio slot; Linux numbers them by increasing address):
+#   slot 31 (a003e00) userdata.img     -> vdc, /data of the fstab (empty: vold formats it)
+#   slot 30 (a003c00) encryptionkey.img -> vdb, GPT with "metadata" (the fstab looks for it here)
+#   slot 29 (a003a00) system.img        -> vda, GPT with "super" (logical partitions)
+# VETRO_ANDROID_APPEND appends parameters at the end.
 set -eu
 here="$(cd "$(dirname "$0")" && pwd)"
 img="${VETRO_ANDROID_EMU:-$here/../../target/android-emu}/arm64-v8a"

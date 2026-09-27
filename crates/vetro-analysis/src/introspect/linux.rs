@@ -1,11 +1,11 @@
-//! Il kernel Linux del guest visto dall'esterno: processi, thread, mappe
-//! di memoria, file aperti, riga di comando, pagine dei file nella page
-//! cache. Si legge solo la memoria fisica (con le tabelle delle pagine del
-//! guest): il guest non se ne accorge.
+//! The guest Linux kernel seen from the outside: processes, threads, memory
+//! mappings, open files, command line, file pages in the page
+//! cache. Only physical memory is read (through the guest page
+//! tables): the guest does not notice.
 //!
-//! Serve un [`Kernel`]: i simboli (`System.map` o kallsyms) e la
-//! disposizione delle strutture (BTF). Lo spostamento KASLR si ricava da
-//! VBAR_EL1, che il kernel punta a `vectors`.
+//! It needs a [`Kernel`]: the symbols (`System.map` or kallsyms) and the
+//! structure layout (BTF). The KASLR offset is derived from
+//! VBAR_EL1, which the kernel points at `vectors`.
 
 use std::cell::Cell;
 
@@ -15,23 +15,23 @@ use super::kallsyms::Symbols;
 use super::layout::{Layout, MissingField};
 use super::mem::{PhysMem, Space};
 
-/// Flag di `task_struct.flags`: thread del kernel.
+/// `task_struct.flags` flag: kernel thread.
 pub const PF_KTHREAD: u32 = 0x0020_0000;
 
-/// Numeri magici dei file system speciali (`include/uapi/linux/magic.h`).
+/// Magic numbers of the special file systems (`include/uapi/linux/magic.h`).
 pub const SOCKFS_MAGIC: u64 = 0x534f_434b;
 pub const PIPEFS_MAGIC: u64 = 0x5049_5045;
 pub const ANON_INODE_FS_MAGIC: u64 = 0x0904_1934;
 
-/// Limite dei cicli sulle liste (una lista rovinata non blocca).
+/// Limit on loops over lists (a corrupted list does not hang).
 const LIST_LIMIT: usize = 1 << 17;
 
-/// Il profilo di un kernel: simboli e disposizione delle strutture.
+/// The profile of a kernel: symbols and structure layout.
 #[derive(Clone, Debug)]
 pub struct Kernel {
     pub syms: Symbols,
     pub layout: Layout,
-    /// Valori di `enum maple_type` (dense, leaf_64, range_64, arange_64).
+    /// Values of `enum maple_type` (dense, leaf_64, range_64, arange_64).
     pub maple_types: [u64; 4],
 }
 
@@ -48,9 +48,9 @@ impl Kernel {
         Ok(Kernel { syms, layout, maple_types })
     }
 
-    /// Il profilo dai file del kernel: simboli da `System.map` o, senza,
-    /// dalla tabella kallsyms dell'`Image`; tipi da un BTF staccato o,
-    /// senza, dal BTF dentro l'`Image`.
+    /// The profile from the kernel files: symbols from `System.map` or, without it,
+    /// from the kallsyms table of the `Image`; types from a detached BTF or,
+    /// without it, from the BTF inside the `Image`.
     pub fn load(
         image: Option<&[u8]>,
         system_map: Option<&str>,
@@ -59,32 +59,32 @@ impl Kernel {
         let syms = match (system_map, image) {
             (Some(m), _) => Symbols::parse_system_map(m),
             (None, Some(i)) => Symbols::from_image(i).map_err(|e| e.to_string())?,
-            (None, None) => return Err("servono System.map o l'Image del kernel".into()),
+            (None, None) => return Err("need System.map or the kernel Image".into()),
         };
         let btf = match (btf, image) {
             (Some(b), _) => Btf::parse(b).map_err(|e| e.to_string())?,
-            (None, Some(i)) => Btf::find_in(i).map(|(_, b)| b).ok_or("BTF non trovato nell'Image")?,
-            (None, None) => return Err("servono il BTF o l'Image del kernel".into()),
+            (None, Some(i)) => Btf::find_in(i).map(|(_, b)| b).ok_or("BTF not found in the Image")?,
+            (None, None) => return Err("need the BTF or the kernel Image".into()),
         };
         Kernel::new(syms, &btf).map_err(|e| e.to_string())
     }
 }
 
-/// I registri della CPU che servono a leggere il kernel.
+/// The CPU registers needed to read the kernel.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CpuRegs {
     pub tcr: u64,
     pub ttbr0: u64,
     pub ttbr1: u64,
     pub vbar: u64,
-    /// Offset per CPU (`__per_cpu_offset` della CPU corrente).
+    /// Per-CPU offset (`__per_cpu_offset` of the current CPU).
     pub tpidr_el1: u64,
 }
 
-/// Un processo o thread.
+/// A process or thread.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Task {
-    /// Indirizzo della `task_struct`.
+    /// Address of the `task_struct`.
     pub addr: u64,
     pub pid: i32,
     pub tgid: i32,
@@ -95,7 +95,7 @@ pub struct Task {
     pub gid: u32,
     /// `real_parent->tgid`.
     pub ppid: i32,
-    /// `mm` (0 per i thread del kernel).
+    /// `mm` (0 for kernel threads).
     pub mm: u64,
     pub exit_state: u32,
 }
@@ -106,7 +106,7 @@ impl Task {
     }
 }
 
-/// Una regione di memoria (`vm_area_struct`).
+/// A memory region (`vm_area_struct`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Vma {
     pub addr: u64,
@@ -114,12 +114,12 @@ pub struct Vma {
     pub end: u64,
     pub flags: u64,
     pub pgoff: u64,
-    /// `struct file *` mappato (0 = anonima).
+    /// Mapped `struct file *` (0 = anonymous).
     pub file: u64,
-    /// Nome come in `/proc/<pid>/maps` (percorso, `[heap]`, `[stack]`,
-    /// `[vdso]`, `[anon:...]`), vuoto se non c'è.
+    /// Name as in `/proc/<pid>/maps` (path, `[heap]`, `[stack]`,
+    /// `[vdso]`, `[anon:...]`), empty if none.
     pub name: String,
-    /// Dispositivo (`s_dev`) e inode del file.
+    /// Device (`s_dev`) and inode of the file.
     pub dev: u32,
     pub ino: u64,
 }
@@ -130,8 +130,8 @@ pub const VM_EXEC: u64 = 4;
 pub const VM_MAYSHARE: u64 = 0x80;
 
 impl Vma {
-    /// La riga di `/proc/<pid>/maps` (senza `\n`), con lo stesso
-    /// allineamento del kernel (`show_map_vma`).
+    /// The `/proc/<pid>/maps` line (without `\n`), with the same
+    /// alignment as the kernel (`show_map_vma`).
     pub fn maps_line(&self) -> String {
         let f = self.flags;
         let mut s = format!(
@@ -158,7 +158,7 @@ impl Vma {
     }
 }
 
-/// Un file aperto.
+/// An open file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenFile {
     pub fd: u32,
@@ -170,15 +170,15 @@ pub struct OpenFile {
     pub ino: u64,
 }
 
-/// La vista del kernel su una memoria fisica.
+/// The kernel view over a physical memory.
 pub struct Linux<'a, M: PhysMem + ?Sized> {
     pub mem: &'a M,
     pub kernel: &'a Kernel,
-    /// Spazio del kernel (TTBR1) con il TTBR0 del momento.
+    /// Kernel space (TTBR1) with the current TTBR0.
     pub space: Space,
-    /// Spostamento KASLR (0 senza).
+    /// KASLR offset (0 without).
     pub slide: u64,
-    /// Indirizzo virtuale di `vmemmap` (calcolato alla prima richiesta).
+    /// Virtual address of `vmemmap` (computed on first request).
     vmemmap: Cell<Option<u64>>,
 }
 
@@ -201,7 +201,7 @@ impl<'a, M: PhysMem + ?Sized> Linux<'a, M> {
         &self.kernel.layout
     }
 
-    /// Indirizzo di un simbolo, con lo spostamento KASLR.
+    /// Address of a symbol, with the KASLR offset.
     pub fn sym(&self, name: &str) -> Option<u64> {
         self.kernel.syms.get(name).map(|a| a.wrapping_add(self.slide))
     }
@@ -222,18 +222,18 @@ impl<'a, M: PhysMem + ?Sized> Linux<'a, M> {
         self.u32(va).map(|v| v as i32)
     }
 
-    /// Stringa C del kernel.
+    /// Kernel C string.
     pub fn cstr(&self, va: u64, max: usize) -> Option<String> {
         self.space.cstr(self.mem, va, max).map(|b| String::from_utf8_lossy(&b).into_owned())
     }
 
-    /// Indirizzo fisico di un indirizzo virtuale del kernel.
+    /// Physical address of a kernel virtual address.
     pub fn phys(&self, va: u64) -> Option<u64> {
         self.space.translate(self.mem, va)
     }
 
-    /// Nodi di una `list_head` (escluso `head`), come indirizzi della
-    /// struttura che contiene il nodo a `off`.
+    /// Nodes of a `list_head` (excluding `head`), as addresses of the
+    /// structure containing the node at `off`.
     pub fn list(&self, head: u64, off: u64) -> Vec<u64> {
         let mut out = Vec::new();
         let Some(mut node) = self.u64(head) else { return out };
@@ -247,12 +247,12 @@ impl<'a, M: PhysMem + ?Sized> Linux<'a, M> {
         out
     }
 
-    /// La `task_struct` che gira sulla CPU (`__entry_task` per CPU).
+    /// The `task_struct` running on the CPU (per-CPU `__entry_task`).
     pub fn current(&self, tpidr_el1: u64) -> Option<u64> {
         self.u64(self.sym("__entry_task")?.wrapping_add(tpidr_el1))
     }
 
-    /// Legge una `task_struct`.
+    /// Reads a `task_struct`.
     pub fn task(&self, addr: u64) -> Option<Task> {
         let l = self.l();
         let mut comm = vec![0u8; l.task_comm_len as usize];
@@ -283,8 +283,8 @@ impl<'a, M: PhysMem + ?Sized> Linux<'a, M> {
         self.sym("init_task")
     }
 
-    /// I processi (capi dei gruppi di thread) in ordine di lista, senza
-    /// `swapper` (pid 0): gli stessi di `/proc`.
+    /// The processes (thread group leaders) in list order, without
+    /// `swapper` (pid 0): the same as in `/proc`.
     pub fn processes(&self) -> Vec<Task> {
         let Some(init) = self.init_task() else { return Vec::new() };
         self.list(init.wrapping_add(self.l().task_tasks), self.l().task_tasks)
@@ -294,7 +294,7 @@ impl<'a, M: PhysMem + ?Sized> Linux<'a, M> {
             .collect()
     }
 
-    /// I thread del gruppo di `leader` (lui compreso).
+    /// The threads of `leader`'s group (itself included).
     pub fn threads(&self, leader: u64) -> Vec<Task> {
         let l = self.l();
         let Some(signal) = self.u64(leader.wrapping_add(l.task_signal)) else { return Vec::new() };
@@ -304,7 +304,7 @@ impl<'a, M: PhysMem + ?Sized> Linux<'a, M> {
             .collect()
     }
 
-    /// Tutti i thread di tutti i processi.
+    /// All threads of all processes.
     pub fn all_threads(&self) -> Vec<Task> {
         self.processes().iter().flat_map(|p| self.threads(p.addr)).collect()
     }
@@ -313,19 +313,19 @@ impl<'a, M: PhysMem + ?Sized> Linux<'a, M> {
         self.all_threads().into_iter().find(|t| t.pid == pid)
     }
 
-    /// Lo spazio d'indirizzi utente di `mm` (TTBR0 = `mm->pgd`).
+    /// The user address space of `mm` (TTBR0 = `mm->pgd`).
     pub fn user_space(&self, mm: u64) -> Option<Space> {
         let pgd = self.u64(mm.wrapping_add(self.l().mm_pgd))?;
         Some(self.space.with_user(self.phys(pgd)?))
     }
 
-    /// Legge la memoria utente di `mm`.
+    /// Reads the user memory of `mm`.
     pub fn read_user(&self, mm: u64, va: u64, buf: &mut [u8]) -> bool {
         self.user_space(mm).is_some_and(|s| s.read(self.mem, va, buf))
     }
 
-    /// La riga di comando (argomenti separati da zeri, come
-    /// `/proc/<pid>/cmdline`), vuota per i thread del kernel.
+    /// The command line (arguments separated by zeros, as
+    /// `/proc/<pid>/cmdline`), empty for kernel threads.
     pub fn cmdline(&self, t: &Task) -> Option<Vec<u8>> {
         if t.mm == 0 {
             return Some(Vec::new());
@@ -338,7 +338,7 @@ impl<'a, M: PhysMem + ?Sized> Linux<'a, M> {
         self.read_user(t.mm, start, &mut b).then_some(b)
     }
 
-    /// Voci (valori non nulli) di un maple tree dalla radice `root`.
+    /// Entries (non-null values) of a maple tree from the root `root`.
     pub fn maple_entries(&self, root: u64) -> Vec<u64> {
         let mut out = Vec::new();
         let is_node = |e: u64| e & 3 == 2 && e > 4096;
@@ -386,7 +386,7 @@ impl<'a, M: PhysMem + ?Sized> Linux<'a, M> {
         }
     }
 
-    /// Le regioni di memoria di `mm`, in ordine di indirizzo.
+    /// The memory regions of `mm`, in address order.
     pub fn vmas(&self, mm: u64) -> Vec<Vma> {
         if mm == 0 {
             return Vec::new();
@@ -451,21 +451,21 @@ impl<'a, M: PhysMem + ?Sized> Linux<'a, M> {
         out
     }
 
-    /// Il testo di `/proc/<pid>/maps` di un processo.
+    /// The `/proc/<pid>/maps` text of a process.
     pub fn maps(&self, t: &Task) -> String {
         self.vmas(t.mm).iter().map(|v| v.maps_line() + "\n").collect()
     }
 
-    /// Nome di una dentry.
+    /// Name of a dentry.
     fn dentry_name(&self, d: u64) -> Option<String> {
         let l = self.l();
         let p = self.u64(d.wrapping_add(l.dentry_name + l.qstr_name))?;
         self.cstr(p, 256)
     }
 
-    /// Percorso di una `struct path` (mnt, dentry) fino alla radice
-    /// globale, come `d_path`; i file dei file system speciali come in
-    /// `/proc/<pid>/fd` (`socket:[ino]`, `pipe:[ino]`, `anon_inode:nome`).
+    /// Path of a `struct path` (mnt, dentry) up to the global
+    /// root, like `d_path`; files of special file systems as in
+    /// `/proc/<pid>/fd` (`socket:[ino]`, `pipe:[ino]`, `anon_inode:name`).
     pub fn path(&self, mnt: u64, dentry: u64) -> String {
         let l = self.l();
         let sb = self.u64(dentry.wrapping_add(l.dentry_sb)).unwrap_or(0);
@@ -510,7 +510,7 @@ impl<'a, M: PhysMem + ?Sized> Linux<'a, M> {
         s
     }
 
-    /// Percorso di una `struct file`.
+    /// Path of a `struct file`.
     pub fn file_path(&self, file: u64) -> String {
         let l = self.l();
         let mnt = self.u64(file.wrapping_add(l.file_path + l.path_mnt)).unwrap_or(0);
@@ -518,7 +518,7 @@ impl<'a, M: PhysMem + ?Sized> Linux<'a, M> {
         self.path(mnt, d)
     }
 
-    /// `struct file *` del descrittore `fd` di un task.
+    /// `struct file *` of a task's descriptor `fd`.
     pub fn fd_file(&self, task: u64, fd: u32) -> Option<u64> {
         let l = self.l();
         let files = self.u64(task.wrapping_add(l.task_files))?;
@@ -532,9 +532,9 @@ impl<'a, M: PhysMem + ?Sized> Linux<'a, M> {
         (f != 0).then_some(f)
     }
 
-    /// Estremi di un socket IPv4 del descrittore `fd`: (locale, remoto),
-    /// come `/proc/net/tcp`. `None` se non è un socket IPv4 o il BTF non
-    /// ha le strutture dei socket.
+    /// Endpoints of an IPv4 socket of descriptor `fd`: (local, remote),
+    /// as in `/proc/net/tcp`. `None` if it is not an IPv4 socket or the BTF
+    /// lacks the socket structures.
     pub fn socket_endpoints(
         &self,
         task: u64,
@@ -570,7 +570,7 @@ impl<'a, M: PhysMem + ?Sized> Linux<'a, M> {
         ))
     }
 
-    /// I file aperti di un task, come `/proc/<pid>/fd`.
+    /// The open files of a task, as in `/proc/<pid>/fd`.
     pub fn files(&self, task: u64) -> Vec<OpenFile> {
         let l = self.l();
         let mut out = Vec::new();
@@ -597,9 +597,9 @@ impl<'a, M: PhysMem + ?Sized> Linux<'a, M> {
         out
     }
 
-    /// `vmemmap` (la `struct page` del pfn 0), calibrato con la pila di un
-    /// thread (`stack_vm_area->pages[0]` e l'indirizzo fisico di
-    /// `task->stack`): senza costanti che cambiano con la versione.
+    /// `vmemmap` (the `struct page` of pfn 0), calibrated with the stack of a
+    /// thread (`stack_vm_area->pages[0]` and the physical address of
+    /// `task->stack`): no constants that change with the version.
     pub fn vmemmap(&self) -> Option<u64> {
         if let Some(v) = self.vmemmap.get() {
             return Some(v);
@@ -622,14 +622,14 @@ impl<'a, M: PhysMem + ?Sized> Linux<'a, M> {
         None
     }
 
-    /// Indirizzo fisico della pagina di `page` (una `struct page *`).
+    /// Physical address of the page of `page` (a `struct page *`).
     pub fn page_phys(&self, page: u64) -> Option<u64> {
         let pfn = page.wrapping_sub(self.vmemmap()?) / self.l().page_size;
         Some(pfn << 12)
     }
 
-    /// Pagina `index` del file di `inode` nella page cache: indirizzo
-    /// fisico, o `None` se non c'è.
+    /// Page `index` of the file of `inode` in the page cache: physical
+    /// address, or `None` if absent.
     pub fn cached_page(&self, inode: u64, index: u64) -> Option<u64> {
         let l = self.l();
         let mapping = self.u64(inode.wrapping_add(l.inode_mapping))?;
@@ -646,7 +646,7 @@ impl<'a, M: PhysMem + ?Sized> Linux<'a, M> {
             parent = node;
             e = self.u64(node.wrapping_add(l.xa_node_slots + 8 * off))?;
         }
-        // Voce "sorella" di una folio grande: rimanda allo slot del capo.
+        // "Sibling" entry of a large folio: points to the head's slot.
         if e & 3 == 2 && e < 256 << 2 && parent != 0 {
             e = self.u64(parent.wrapping_add(l.xa_node_slots + 8 * (e >> 2)))?;
         }
@@ -666,13 +666,13 @@ impl<'a, M: PhysMem + ?Sized> Linux<'a, M> {
         self.read(va, &mut b).then_some(b[0])
     }
 
-    /// Dimensione del file di `inode`.
+    /// Size of the file of `inode`.
     pub fn inode_size(&self, inode: u64) -> Option<u64> {
         self.u64(inode.wrapping_add(self.l().inode_size))
     }
 
-    /// Legge dal file di `inode` attraverso la page cache: falso se una
-    /// pagina non c'è.
+    /// Reads from the file of `inode` through the page cache: false if a
+    /// page is absent.
     pub fn read_file(&self, inode: u64, offset: u64, buf: &mut [u8]) -> bool {
         let mut done = 0usize;
         while done < buf.len() {
@@ -687,21 +687,21 @@ impl<'a, M: PhysMem + ?Sized> Linux<'a, M> {
         true
     }
 
-    /// Tutto il file di `inode` dalla page cache (al più `max` byte).
+    /// The whole file of `inode` from the page cache (at most `max` bytes).
     pub fn file_bytes(&self, inode: u64, max: u64) -> Option<Vec<u8>> {
         let size = self.inode_size(inode)?.min(max) as usize;
         let mut b = vec![0u8; size];
         self.read_file(inode, 0, &mut b).then_some(b)
     }
 
-    /// `inode` di una `struct file`.
+    /// `inode` of a `struct file`.
     pub fn file_inode(&self, file: u64) -> Option<u64> {
         self.u64(file.wrapping_add(self.l().file_inode))
     }
 
-    /// Un modulo (programma o libreria) mappato nel processo: il percorso
-    /// che finisce con `module`, con l'indirizzo della mappatura con
-    /// offset 0 (l'intestazione ELF) e la sua `struct file`.
+    /// A module (program or library) mapped in the process: the path
+    /// ending with `module`, with the address of the mapping with
+    /// offset 0 (the ELF header) and its `struct file`.
     pub fn module(&self, t: &Task, module: &str) -> Option<(String, u64, u64)> {
         self.vmas(t.mm)
             .into_iter()
@@ -712,10 +712,10 @@ impl<'a, M: PhysMem + ?Sized> Linux<'a, M> {
             .map(|v| (v.name, v.start, v.file))
     }
 
-    /// I simboli di un modulo del processo, con gli indirizzi del
-    /// processo: i dinamici letti dalla memoria del processo e, se ci sono,
-    /// quelli di `.symtab` letti dal file nella page cache (per i programmi
-    /// statici non strippati).
+    /// The symbols of a process module, with process
+    /// addresses: the dynamic ones read from the process memory and, if present,
+    /// those of `.symtab` read from the file in the page cache (for unstripped
+    /// static programs).
     pub fn module_symbols(&self, t: &Task, module: &str) -> Vec<ElfSym> {
         let Some((_, base, file)) = self.module(t, module) else { return Vec::new() };
         let Some(space) = self.user_space(t.mm) else { return Vec::new() };
@@ -742,13 +742,13 @@ impl<'a, M: PhysMem + ?Sized> Linux<'a, M> {
         syms
     }
 
-    /// L'indirizzo di una funzione `name` del modulo `module` nel processo.
+    /// The address of a function `name` of module `module` in the process.
     pub fn user_symbol(&self, t: &Task, module: &str, name: &str) -> Option<u64> {
         elf::find(&self.module_symbols(t, module), name).map(|s| s.value)
     }
 
-    /// Il punto d'ingresso del programma del processo (`e_entry` dell'ELF
-    /// mappato per primo, più lo spostamento se PIE).
+    /// The entry point of the process's program (`e_entry` of the ELF
+    /// mapped first, plus the load bias if PIE).
     pub fn entry_point(&self, t: &Task, module: &str) -> Option<u64> {
         let (_, base, _) = self.module(t, module)?;
         let space = self.user_space(t.mm)?;

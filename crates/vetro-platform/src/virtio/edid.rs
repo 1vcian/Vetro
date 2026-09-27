@@ -1,41 +1,41 @@
-//! EDID del monitor virtuale di virtio-gpu (VIRTIO_GPU_CMD_GET_EDID).
+//! EDID of the virtual monitor of virtio-gpu (VIRTIO_GPU_CMD_GET_EDID).
 //!
-//! Stesso contenuto del generatore di QEMU (hw/display/edid-generate.c),
-//! così il guest vede lo stesso monitor e la stessa lista di modi: EDID 1.4
-//! con un blocco base, un'estensione CTA-861 (DTA) e, per schermi oltre
-//! 4096 punti o con clock oltre 655 MHz, un'estensione DisplayID 1.3 con il
-//! modo preferito. Il blocco base contiene:
-//! - produttore "RHT", modello 0x1234, settimana 42 del 2014 (come QEMU);
-//! - ingresso digitale a 8 bit per canale (DisplayPort), gamma 2,2, sRGB;
-//! - modi standard e stabiliti dalla tabella di QEMU (fino a `max`), più
-//!   un descrittore "standard timings 3" e i modi CTA a 50/60 Hz;
-//! - il modo preferito come descrittore dettagliato, con tempi inventati
-//!   in proporzione alla risoluzione (margini 25%/3%/35% in orizzontale,
-//!   0,5%/0,5%/3,5% in verticale) e refresh di default 75 Hz;
-//! - limiti 50-125 Hz, 30-160 kHz, 2550 MHz e il nome del monitor.
+//! Same contents as QEMU's generator (hw/display/edid-generate.c),
+//! so the guest sees the same monitor and the same list of modes: EDID 1.4
+//! with a base block, a CTA-861 extension (DTA) and, for screens over
+//! 4096 pixels or with a clock over 655 MHz, a DisplayID 1.3 extension with the
+//! preferred mode. The base block contains:
+//! - manufacturer "RHT", model 0x1234, week 42 of 2014 (like QEMU);
+//! - digital input with 8 bits per channel (DisplayPort), gamma 2.2, sRGB;
+//! - standard and established modes from QEMU's table (up to `max`), plus
+//!   a "standard timings 3" descriptor and the CTA modes at 50/60 Hz;
+//! - the preferred mode as a detailed descriptor, with timings invented
+//!   in proportion to the resolution (margins 25%/3%/35% horizontally,
+//!   0.5%/0.5%/3.5% vertically) and a default refresh of 75 Hz;
+//! - limits 50-125 Hz, 30-160 kHz, 2550 MHz and the monitor name.
 //!
-//! La verifica è il test `come_qemu`: i 256 byte letti dal guest sotto QEMU
-//! (`/sys/class/drm/card0-Virtual-1/edid`) per 1280x800.
+//! The check is the `come_qemu` test: the 256 bytes read by the guest under QEMU
+//! (`/sys/class/drm/card0-Virtual-1/edid`) for 1280x800.
 
-/// Parametri del monitor.
+/// Monitor parameters.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EdidInfo {
-    /// Codice PNP del produttore (tre lettere maiuscole).
+    /// PNP code of the manufacturer (three capital letters).
     pub vendor: [u8; 3],
-    /// Nome del monitor (al più 12 caratteri nel descrittore).
+    /// Monitor name (at most 12 characters in the descriptor).
     pub name: String,
-    /// Numero di serie (testo; il campo numerico è il suo valore decimale).
+    /// Serial number (text; the numeric field is its decimal value).
     pub serial: Option<String>,
-    /// Dimensioni fisiche; 0 = derivate da 100 DPI.
+    /// Physical size; 0 = derived from 100 DPI.
     pub width_mm: u16,
     pub height_mm: u16,
-    /// Modo preferito.
+    /// Preferred mode.
     pub prefx: u32,
     pub prefy: u32,
-    /// Risoluzione massima dei modi elencati (0 = nessun limite).
+    /// Maximum resolution of the listed modes (0 = no limit).
     pub maxx: u32,
     pub maxy: u32,
-    /// Refresh del modo preferito in mHz (0 = 75000).
+    /// Refresh of the preferred mode in mHz (0 = 75000).
     pub refresh_mhz: u32,
 }
 
@@ -56,8 +56,8 @@ impl Default for EdidInfo {
     }
 }
 
-/// Un modo della tabella: dove si dichiara (byte e bit dei modi stabiliti,
-/// bit del descrittore "standard timings 3", codice CTA).
+/// A mode of the table: where it is declared (byte and bit of the established modes,
+/// bit of the "standard timings 3" descriptor, CTA code).
 struct Mode {
     x: u32,
     y: u32,
@@ -70,16 +70,16 @@ const fn m(x: u32, y: u32, established: Option<(usize, u8)>, xtra3: Option<(usiz
     Mode { x, y, established, xtra3, cta }
 }
 
-/// La tabella dei modi, nell'ordine in cui QEMU li dichiara.
+/// The table of modes, in the order QEMU declares them.
 const MODES: &[Mode] = &[
-    // Modi CTA a 50 Hz.
+    // CTA modes at 50 Hz.
     m(5120, 2160, None, None, 125),
     m(4096, 2160, None, None, 101),
     m(3840, 2160, None, None, 96),
     m(2560, 1080, None, None, 89),
     m(2048, 1152, None, None, 0),
     m(1920, 1080, None, None, 31),
-    // Modi CTA a 60 Hz.
+    // CTA modes at 60 Hz.
     m(3840, 2160, None, None, 97),
     // Standard timings 3 (60 Hz).
     m(1920, 1200, None, Some((10, 0)), 0),
@@ -94,7 +94,7 @@ const MODES: &[Mode] = &[
     m(1792, 1344, None, Some((10, 5)), 0),
     m(1440, 1050, None, Some((8, 1)), 0),
     m(1360, 768, None, Some((8, 7)), 0),
-    // Modi stabiliti (60 Hz).
+    // Established modes (60 Hz).
     m(1024, 768, Some((36, 3)), None, 0),
     m(800, 600, Some((35, 0)), None, 0),
     m(640, 480, Some((35, 5)), None, 0),
@@ -107,7 +107,7 @@ struct Timings {
     yfront: u32,
     ysync: u32,
     yblank: u32,
-    /// In unità da 10 kHz.
+    /// In units of 10 kHz.
     clock: u64,
 }
 
@@ -124,7 +124,7 @@ fn timings(refresh_mhz: u32, x: u32, y: u32) -> Timings {
     }
 }
 
-/// Somma di controllo: `b[len]` rende nulla la somma di `b[..=len]`.
+/// Checksum: `b[len]` makes the sum of `b[..=len]` zero.
 fn checksum(b: &mut [u8], len: usize) {
     let sum = b[..len].iter().fold(0u8, |a, &v| a.wrapping_add(v));
     if sum != 0 {
@@ -132,8 +132,8 @@ fn checksum(b: &mut [u8], len: usize) {
     }
 }
 
-/// Modo standard di 2 byte; `None` se il rapporto non è 16:10, 4:3, 5:4,
-/// 16:9 o la larghezza non si rappresenta.
+/// 2-byte standard mode; `None` if the ratio is not 16:10, 4:3, 5:4,
+/// 16:9 or the width can't be represented.
 fn std_mode(x: u32, y: u32) -> Option<[u8; 2]> {
     let aspect = if x * 10 == y * 16 {
         0
@@ -186,8 +186,8 @@ fn desc_timing(d: &mut [u8], t: &Timings, x: u32, y: u32, xmm: u32, ymm: u32) {
     d[17] = 0x18;
 }
 
-/// Coordinata di cromaticità a 10 bit (come il C di QEMU: float per 1024,
-/// più 0,5 in double, troncato).
+/// 10-bit chromaticity coordinate (like QEMU's C: float times 1024,
+/// plus 0.5 in double, truncated).
 fn to_10bit(v: f32) -> u32 {
     (f64::from(v * 1024.0) + 0.5) as u32
 }
@@ -201,9 +201,9 @@ fn colorspace(e: &mut [u8], c: [f32; 8]) {
     }
 }
 
-/// Prossimo descrittore da 18 byte dopo quello a `desc` (offset nel
-/// buffer): i quattro del blocco base, poi quelli dell'estensione CTA dopo
-/// i suoi blocchi di dati.
+/// Next 18-byte descriptor after the one at `desc` (offset in the
+/// buffer): the four of the base block, then those of the CTA extension after
+/// its data blocks.
 fn desc_next(e: &[u8], has_dta: bool, desc: Option<usize>) -> Option<usize> {
     let d = desc?;
     if d + 36 < 127 {
@@ -220,8 +220,8 @@ fn desc_next(e: &[u8], has_dta: bool, desc: Option<usize>) -> Option<usize> {
     None
 }
 
-/// Genera l'EDID in un buffer di `size` byte (1024 per virtio-gpu): 128
-/// byte, 256 con l'estensione CTA (size >= 256), 384 con DisplayID.
+/// Generates the EDID in a buffer of `size` bytes (1024 for virtio-gpu): 128
+/// bytes, 256 with the CTA extension (size >= 256), 384 with DisplayID.
 pub fn generate(info: &EdidInfo, size: usize) -> Vec<u8> {
     let mut e = vec![0u8; size.max(128)];
     let refresh = if info.refresh_mhz == 0 { 75_000 } else { info.refresh_mhz };
@@ -270,12 +270,12 @@ pub fn generate(info: &EdidInfo, size: usize) -> Vec<u8> {
         desc_timing(&mut e[54..72], &t, px, py, wmm, hmm);
         desc = desc_next(&e, has_dta, desc);
     }
-    let xtra3 = desc.expect("c'è sempre posto per il secondo descrittore");
+    let xtra3 = desc.expect("there is always room for the second descriptor");
     desc_type(&mut e[xtra3..], 0xf7);
     e[xtra3 + 5] = 10;
     desc = desc_next(&e, has_dta, desc);
 
-    // Modi: stabiliti, standard (8 posti da 38 a 53), standard timings 3, CTA.
+    // Modes: established, standard (8 slots from 38 to 53), standard timings 3, CTA.
     let mut std = 38;
     for mode in MODES {
         if (info.maxx != 0 && mode.x > info.maxx) || (info.maxy != 0 && mode.y > info.maxy) {
@@ -303,7 +303,7 @@ pub fn generate(info: &EdidInfo, size: usize) -> Vec<u8> {
         std += 2;
     }
 
-    // Limiti del monitor.
+    // Monitor limits.
     if let Some(d) = desc {
         desc_type(&mut e[d..], 0xfd);
         e[d + 5..d + 12].copy_from_slice(&[50, 125, 30, 160, (2550 / 10) as u8, 0x01, b'\n']);
@@ -348,7 +348,7 @@ pub fn generate(info: &EdidInfo, size: usize) -> Vec<u8> {
     e
 }
 
-/// `atoi` di C: cifre decimali iniziali (con segno), il resto si ignora.
+/// C's `atoi`: leading decimal digits (with sign), the rest is ignored.
 fn atoi(s: &str) -> u32 {
     let s = s.trim_start();
     let (neg, digits) = match s.as_bytes().first() {
@@ -363,7 +363,7 @@ fn atoi(s: &str) -> u32 {
     if neg { v.wrapping_neg() } else { v }
 }
 
-/// Lunghezza dell'EDID nel buffer (128 per blocco), 0 se non è un EDID.
+/// Length of the EDID in the buffer (128 per block), 0 if it is not an EDID.
 pub fn size(e: &[u8]) -> usize {
     if e.len() < 128 || e[0] != 0 || e[1] != 0xff {
         return 0;
@@ -375,8 +375,8 @@ pub fn size(e: &[u8]) -> usize {
 mod tests {
     use super::*;
 
-    /// `od -An -tx1 /sys/class/drm/card0-Virtual-1/edid` nel guest sotto
-    /// QEMU 10.0 e 8.2 (`-device virtio-gpu-device`, 1280x800 di default).
+    /// `od -An -tx1 /sys/class/drm/card0-Virtual-1/edid` in the guest under
+    /// QEMU 10.0 and 8.2 (`-device virtio-gpu-device`, 1280x800 by default).
     const QEMU_1280X800: &str = "
  00 ff ff ff ff ff ff 00 49 14 34 12 00 00 00 00
  2a 18 01 04 a5 20 14 78 06 ee 91 a3 54 4c 99 26
@@ -417,7 +417,7 @@ mod tests {
             for blk in e[..n].chunks(128) {
                 assert_eq!(blk.iter().fold(0u8, |a, &b| a.wrapping_add(b)), 0, "{x}x{y}");
             }
-            // Il descrittore dettagliato ha 12 bit: oltre 4096 va in DisplayID.
+            // The detailed descriptor has 12 bits: over 4096 it goes into DisplayID.
             assert_eq!(n == 384, x >= 4096 || y >= 4096, "{x}x{y}");
         }
         assert_eq!(size(&generate(&EdidInfo::default(), 128)), 128);
@@ -435,11 +435,11 @@ mod tests {
         };
         let e = generate(&info, 256);
         assert_eq!(u32::from_le_bytes(e[12..16].try_into().unwrap()), 1234);
-        // Nome troncato a 12 caratteri, seriale nel primo descrittore CTA.
+        // Name truncated to 12 characters, serial in the first CTA descriptor.
         let name = e.windows(13).any(|w| w == b"Vetro Displa\n");
         assert!(name);
         assert!(e[128..].windows(8).any(|w| w == b"1234abc\n"));
-        // Con max 1024x768 restano solo i modi fino a quella risoluzione.
+        // With max 1024x768 only the modes up to that resolution remain.
         assert_eq!(e[35], 0x21);
         assert_eq!(e[36], 0x08);
         assert!(e[38..54].chunks(2).all(|s| s == [1, 1]));

@@ -1,95 +1,96 @@
-# `vetro-wasm`: la macchina in WebAssembly (M4, dispositivi in M5)
+# `vetro-wasm`: the machine in WebAssembly (M4, devices in M5)
 
-`crates/vetro-wasm` compila `vetro_machine::Machine` per
-`wasm32-unknown-unknown` e la espone a JavaScript con un'API C (`extern "C"`,
-`#[unsafe(no_mangle)]`). Niente wasm-bindgen né altre dipendenze: al confine
-passano solo interi e puntatori nella memoria lineare del modulo (export
-`memory`). Lo stesso modulo gira in Node e nel browser.
+`crates/vetro-wasm` compiles `vetro_machine::Machine` for
+`wasm32-unknown-unknown` and exposes it to JavaScript through a C API
+(`extern "C"`, `#[unsafe(no_mangle)]`). No wasm-bindgen and no other
+dependencies: only integers and pointers into the module's linear memory
+(export `memory`) cross the boundary. The same module runs in Node and in the
+browser.
 
-Costruzione:
+Build:
 
 ```sh
 cargo build --release --target wasm32-unknown-unknown -p vetro-wasm
 # -> target/wasm32-unknown-unknown/release/vetro_wasm.wasm
 ```
 
-Tipi WASM: `usize` e i puntatori sono `i32` (in JS `number`), `u64` è `i64`
-(in JS `BigInt`), `u32` è `i32` (in JS `number`; per i valori sopra 2³¹ usare
-`>>> 0`). Anche i puntatori vanno letti con `>>> 0`: con più di 2 GiB di
-memoria lineare (due macchine da 1 GiB) arrivano negativi.
+WASM types: `usize` and pointers are `i32` (in JS `number`), `u64` is `i64`
+(in JS `BigInt`), `u32` is `i32` (in JS `number`; for values above 2³¹ use
+`>>> 0`). Pointers too must be read with `>>> 0`: with more than 2 GiB of
+linear memory (two 1 GiB machines) they come out negative.
 
-## Export
+## Exports
 
-Versione: `vetro_abi_version() -> u32`, oggi **12**. Cambia a ogni modifica
-incompatibile delle firme o dei codici qui sotto; il caricatore JS
-(`web/node/vetro.mjs`) la controlla.
+Version: `vetro_abi_version() -> u32`, currently **12**. It changes with every
+incompatible change to the signatures or codes below; the JS loader
+(`web/node/vetro.mjs`) checks it.
 
-- 2 (M4): JIT della modalità sistema (`vetro_machine_set_jit`, import
+- 2 (M4): system-mode JIT (`vetro_machine_set_jit`, imports
   `vetro_jit.entry/place/reset`).
-- 3 (M5): dispositivi (`vetro_machine_new_with`), display di virtio-gpu,
-  virtio-input, GPIO, dischi virtio-blk con i dati dal JS, codice
-  d'arresto 5 `Blocked`. `vetro_machine_new` resta, con i dispositivi di
-  default; la GPU di vetro-wasm mostra su `WebDisplay` (RGBA) invece di
-  `MemDisplay` (al guest non cambia niente: stesse istruzioni).
-- 4 (M6): snapshot della macchina (`vetro_snapshot_*`, ADR 0015).
-- 5 (M5): connessioni TCP dal JS verso i servizi del guest (`vetro_net_*`,
-  inoltro di porte come `hostfwd` di QEMU; la base di adb nel browser).
-- 6 (M6): overlay copy-on-write persistente dei dischi (`vetro_overlay_*`,
-  ADR 0017); `vetro_snapshot_restore` segna gli overlay per il confronto
-  completo.
-- 7 (M8): virtio-vsock (bit `VSOCK` di `vetro_machine_new_with`) e gestore
-  dei file (`vetro_files_*`, ADR 0020, `docs/specs/files.md`).
-- 8 (M7, M10): ispettore di rete, timeline input→effetti, record & replay
+- 3 (M5): devices (`vetro_machine_new_with`), virtio-gpu display,
+  virtio-input, GPIO, virtio-blk disks with data from JS, stop code 5
+  `Blocked`. `vetro_machine_new` remains, with the default devices; the
+  vetro-wasm GPU shows on `WebDisplay` (RGBA) instead of `MemDisplay`
+  (nothing changes for the guest: same instructions).
+- 4 (M6): machine snapshots (`vetro_snapshot_*`, ADR 0015).
+- 5 (M5): TCP connections from JS to guest services (`vetro_net_*`,
+  port forwarding like QEMU's `hostfwd`; the basis of adb in the browser).
+- 6 (M6): persistent copy-on-write disk overlay (`vetro_overlay_*`,
+  ADR 0017); `vetro_snapshot_restore` marks the overlays for a full
+  comparison.
+- 7 (M8): virtio-vsock (bit `VSOCK` of `vetro_machine_new_with`) and file
+  manager (`vetro_files_*`, ADR 0020, `docs/specs/files.md`).
+- 8 (M7, M10): network inspector, input→effects timeline, record & replay
   (`vetro_result_*`, `vetro_capture_*`, `vetro_inspect_*`,
   `vetro_timeline_*`, `vetro_record_*`, `vetro_rr_status`, `vetro_log_*`,
   `vetro_replay_start`, `vetro_registers_text`, `vetro_read_virt`,
-  `vetro_translate`, `vetro_read_phys`; ADR 0023). Gli ingressi di
-  tastiera, puntatore, console, GPIO e risoluzione si annotano nella
-  timeline (l'esecuzione non cambia).
-- 9 (M8): SQL del gestore dei file e percorsi come byte (ADR 0021).
-- 10 (M4): JIT a regioni (ADR 0024): import `vetro_jit.runtime` (il modulo
-  di runtime `rt.*` dei moduli generati), export `vetro_jit_vsync`
-  (`env.vsync` del runtime), contatore `yields` in fondo a
+  `vetro_translate`, `vetro_read_phys`; ADR 0023). Keyboard, pointer,
+  console, GPIO and resolution inputs are annotated in the timeline
+  (execution does not change).
+- 9 (M8): file manager SQL and paths as bytes (ADR 0021).
+- 10 (M4): region JIT (ADR 0024): import `vetro_jit.runtime` (the runtime
+  module `rt.*` of the generated modules), export `vetro_jit_vsync`
+  (the runtime's `env.vsync`), counter `yields` at the end of
   `vetro_jit_stats`.
-- 11 (M4): FP/SIMD nelle regioni (ADR 0026): export `vetro_jit_simd`.
+- 11 (M4): FP/SIMD in regions (ADR 0026): export `vetro_jit_simd`.
 - 12 (M5, M6): booting from Android images (`vetro_load_android`, ADR 0018
   and 0028), chunked snapshots (`vetro_snapshot_save_stream`,
   `vetro_snapshot_restore_stream`, imports `vetro_host.snapshot_write` and
   `snapshot_read`). Existing signatures are unchanged; the RAM may exceed
   2 GiB on wasm32 too (below, "RAM beyond 2 GiB").
 
-### Memoria
+### Memory
 
-| Export | Firma | Significato |
+| Export | Signature | Meaning |
 |---|---|---|
-| `vetro_alloc` | `(len: usize) -> *mut u8` | buffer di `len` byte allineato a 16; nullo se `len == 0` o se la memoria non basta |
-| `vetro_free` | `(ptr: *mut u8, len: usize)` | libera un buffer di `vetro_alloc` con la stessa `len` |
+| `vetro_alloc` | `(len: usize) -> *mut u8` | buffer of `len` bytes aligned to 16; null if `len == 0` or if memory runs out |
+| `vetro_free` | `(ptr: *mut u8, len: usize)` | frees a `vetro_alloc` buffer with the same `len` |
 
-Un'allocazione può far crescere la memoria (`memory.grow`): da quel momento il
-vecchio `memory.buffer` è staccato, e ogni `Uint8Array` va ricreata. In
-pratica: prendere la vista dopo ogni chiamata che può allocare.
+An allocation can grow the memory (`memory.grow`): from that moment the old
+`memory.buffer` is detached, and every `Uint8Array` must be recreated. In
+practice: take the view after every call that may allocate.
 
-### Macchina
+### Machine
 
-| Export | Firma | Significato |
+| Export | Signature | Meaning |
 |---|---|---|
-| `vetro_machine_new` | `(ram_size: u64, now_secs: u64, seed: u64) -> *mut Vm` | nuova macchina. 0 in un campo = valore di `MachineConfig::default` (1 GiB, ora e seme fissi dei test nativi) |
-| `vetro_machine_free` | `(vm)` | la distrugge |
-| `vetro_load_linux` | `(vm, image, image_len, initrd, initrd_len, cmdline, cmdline_len) -> u32` | come `Machine::load_linux`; `initrd` nullo o lungo 0 = nessuno; `cmdline` UTF-8. I buffer si possono liberare subito dopo |
-| `vetro_run` | `(vm, budget: u64) -> u32` | esegue al più `budget` istruzioni (`Machine::run`) |
-| `vetro_steps` | `(vm) -> u64` | istruzioni eseguite (l'orologio del guest, ADR 0011) |
-| `vetro_guest_ns` | `(vm) -> u64` | tempo del guest in ns (10 ns per istruzione) |
-| `vetro_console_read` | `(vm, dst: *mut u8, cap: usize) -> usize` | copia e consuma al più `cap` byte dell'uscita della PL011; 0 = niente di nuovo. Il resto resta per la chiamata successiva |
-| `vetro_console_write` | `(vm, src: *const u8, len: usize)` | accoda byte in ingresso, come dalla tastiera |
-| `vetro_message_ptr` / `vetro_message_len` | `(vm) -> *const u8` / `usize` | ultimo messaggio UTF-8: errore di caricamento o `what` di un'istruzione non implementata. Vale fino alla chiamata successiva sulla macchina |
-| `vetro_unimplemented_pc` / `vetro_unimplemented_raw` | `(vm) -> u64` / `u32` | PC e codifica dell'ultima istruzione non implementata |
-| `vetro_machine_set_jit` | `(vm, hot_threshold: u32, batch: u32)` | attiva il JIT della modalità sistema (ADR 0013) sul motore JS: ingressi prima di tradurre un blocco, blocchi per modulo (0 = 1). Il risultato non cambia, solo la velocità |
-| `vetro_jit_stats` | `(vm, out: *mut u64, cap: usize) -> usize` | contatori del JIT (`SysJitStats`: `jit_steps`, `runs`, `resolves`, `calls`, `blocks`, `modules`, `reused`, `invalidated_pages`, `faults`, `svcs`, `stops`, `epochs`, `tlb_flushes`, `tlb_fills`, `resets`, `yields`) in `out`; restituisce quanti (0 senza JIT) |
+| `vetro_machine_new` | `(ram_size: u64, now_secs: u64, seed: u64) -> *mut Vm` | new machine. 0 in a field = value from `MachineConfig::default` (1 GiB, fixed time and seed of the native tests) |
+| `vetro_machine_free` | `(vm)` | destroys it |
+| `vetro_load_linux` | `(vm, image, image_len, initrd, initrd_len, cmdline, cmdline_len) -> u32` | like `Machine::load_linux`; `initrd` null or 0 long = none; `cmdline` UTF-8. The buffers can be freed right after |
+| `vetro_run` | `(vm, budget: u64) -> u32` | executes at most `budget` instructions (`Machine::run`) |
+| `vetro_steps` | `(vm) -> u64` | instructions executed (the guest clock, ADR 0011) |
+| `vetro_guest_ns` | `(vm) -> u64` | guest time in ns (10 ns per instruction) |
+| `vetro_console_read` | `(vm, dst: *mut u8, cap: usize) -> usize` | copies and consumes at most `cap` bytes of PL011 output; 0 = nothing new. The rest stays for the next call |
+| `vetro_console_write` | `(vm, src: *const u8, len: usize)` | queues input bytes, as if from the keyboard |
+| `vetro_message_ptr` / `vetro_message_len` | `(vm) -> *const u8` / `usize` | last UTF-8 message: load error or `what` of an unimplemented instruction. Valid until the next call on the machine |
+| `vetro_unimplemented_pc` / `vetro_unimplemented_raw` | `(vm) -> u64` / `u32` | PC and encoding of the last unimplemented instruction |
+| `vetro_machine_set_jit` | `(vm, hot_threshold: u32, batch: u32)` | enables the system-mode JIT (ADR 0013) on the JS engine: entries before a block is translated, blocks per module (0 = 1). The result does not change, only the speed |
+| `vetro_jit_stats` | `(vm, out: *mut u64, cap: usize) -> usize` | JIT counters (`SysJitStats`: `jit_steps`, `runs`, `resolves`, `calls`, `blocks`, `modules`, `reused`, `invalidated_pages`, `faults`, `svcs`, `stops`, `epochs`, `tlb_flushes`, `tlb_fills`, `resets`, `yields`) in `out`; returns how many (0 without JIT) |
 
-Codici di `vetro_load_linux`: 0 riuscito; 1 il caricatore ha rifiutato i file
-(motivo nel messaggio); 2 riga di comando non UTF-8.
+`vetro_load_linux` codes: 0 success; 1 the loader rejected the files
+(reason in the message); 2 command line not UTF-8.
 
-| Export | Firma | Significato |
+| Export | Signature | Meaning |
 |---|---|---|
 | `vetro_load_android` | `(vm, boot, boot_len, vendor_boot, vendor_boot_len, init_boot, init_boot_len, params, params_len, flags: u32) -> u32` | ABI 12: the bootloader in `vetro_machine::android` (ADR 0018) combines `boot.img` (required), `vendor_boot.img` and `init_boot.img` (null or 0 long = absent) with the bootloader parameters `params` (UTF-8; `androidboot.*` go into the bootconfig with a v4 `vendor_boot`, the others at the end of the command line) and loads the result like `vetro_load_linux`. `flags` bit 0 = recovery. Same codes as `vetro_load_linux` (2 = parameters not UTF-8); on success `vetro_message_*` describes kernel, ramdisks, bootconfig and command line. The buffers can be freed right after |
 
@@ -107,264 +108,262 @@ the next one. Linear memory stops at 4 GiB: with 3 GiB of RAM less than
 snapshot buffers). The guest's behaviour does not change (same instructions
 as the native reference, `ram3g`).
 
-Codici di `vetro_run` (`Stop` di `vetro-machine`):
+`vetro_run` codes (`Stop` of `vetro-machine`):
 
-| Codice | `Stop` |
+| Code | `Stop` |
 |---|---|
-| 0 | `Budget`: quanto esaurito, si può continuare |
+| 0 | `Budget`: quantum exhausted, execution can continue |
 | 1 | `PowerOff` |
 | 2 | `Reset` |
-| 3 | `Idle`: il guest aspetta un ingresso |
-| 4 | `Unimplemented` (dettagli in `vetro_unimplemented_*` e nel messaggio) |
-| 5 | `Blocked`: un disco aspetta blocchi dal JS (`vetro_disk_wanted`); il tempo del guest è fermo (ADR 0014) |
+| 3 | `Idle`: the guest is waiting for input |
+| 4 | `Unimplemented` (details in `vetro_unimplemented_*` and in the message) |
+| 5 | `Blocked`: a disk is waiting for blocks from JS (`vetro_disk_wanted`); guest time is stopped (ADR 0014) |
 
-La macchina è deterministica: lo stesso kernel, initramfs, riga di comando e
-ingresso (agli stessi numeri di istruzione) danno la stessa uscita e lo stesso
-conteggio che in nativo. `tools/wasm-boot.sh` lo verifica.
+The machine is deterministic: the same kernel, initramfs, command line and
+input (at the same instruction numbers) give the same output and the same
+count as native. `tools/wasm-boot.sh` verifies this.
 
-### Dispositivi (ABI 3)
+### Devices (ABI 3)
 
-| Export | Firma | Significato |
+| Export | Signature | Meaning |
 |---|---|---|
-| `vetro_machine_new_with` | `(ram_size: u64, now_secs: u64, seed: u64, devices: u32, width: u32, height: u32) -> *mut Vm` | come `vetro_machine_new`, con i dispositivi scelti: bit `GPU` 1, `KEYBOARD` 2, `TABLET` 4, `MULTITOUCH` 8 (vince su `TABLET`), `NET` 16 (virtio-net con `vetro-net` e il sinkhole, `NetSetup::default`), `VSOCK` 32 (virtio-vsock, CID 3, ABI 7); 23 = `Devices::default`. `width`x`height`: risoluzione iniziale dello scanout 0 (0 = 1280x800). Slot come `Devices` (GPU 31, tastiera 30, puntatore 29, rete 28; i dischi dopo) |
-| `vetro_display_size` | `(vm, scanout: u32) -> u64` | `(larghezza << 32) \| altezza`; 0 se spento o senza GPU |
-| `vetro_display_ptr` | `(vm, scanout) -> *const u8` | pixel RGBA (4 byte, righe da `larghezza * 4`), nullo se spento. Valido fino alla prossima `vetro_run` |
-| `vetro_display_updates` | `(vm, scanout) -> u64` | contatore degli aggiornamenti (immagine o spegnimento): se non cambia, niente da ridisegnare |
-| `vetro_display_take_dirty` | `(vm, scanout, out: *mut u32) -> u32` | unione dei rettangoli cambiati dall'ultima chiamata: scrive `x, y, w, h` e restituisce 1; 0 = niente. Dopo un cambio di dimensione, l'intero scanout |
-| `vetro_display_resize` | `(vm, scanout, width, height) -> u32` | risoluzione chiesta dall'host (`VirtioGpu::set_display`, evento al driver); 0 senza GPU. È un ingresso |
-| `vetro_cursor_state` | `(vm, scanout, out: *mut u32) -> u32` | 6 valori: risorsa (0 = nascosto), x, y, hot_x, hot_y, numero di cambi; 0 senza GPU |
-| `vetro_cursor_image` | `(vm, scanout) -> *const u8` | cursore 64x64 RGBA, nullo se non c'è |
-| `vetro_input_key` | `(vm, code: u32, down: u32) -> u32` | tasto Linux `KEY_*` con SYN_REPORT; 0 se non c'è la tastiera |
-| `vetro_input_abs` | `(vm, x: u32, y: u32) -> u32` | posizione del tablet (0..=32767 per asse) con SYN_REPORT |
-| `vetro_input_button` | `(vm, code, down) -> u32` | pulsante del puntatore (`BTN_LEFT` 0x110, `BTN_RIGHT` 0x111, `BTN_MIDDLE` 0x112) |
-| `vetro_input_touch` | `(vm, slot, x, y, down) -> u32` | contatto del touchscreen (protocollo B, tracking id = slot); `down` 0 lo toglie |
-| `vetro_input_events` | `(vm, device: u32, events: *const u32, count: usize) -> u32` | eventi evdev grezzi (`tipo, codice, valore` come tre `u32`) su tastiera (0) o puntatore (1); i SYN_REPORT li mette chi chiama (es. la rotella: `EV_REL REL_WHEEL ±1`) |
-| `vetro_input_leds` | `(vm) -> u32` | LED accesi dal guest (bit `LED_*`) |
-| `vetro_gpio_input` | `(vm, line: u32, level: u32)` | linea d'ingresso del PL061 (`Board::gpio_input`); la 3 è il tasto di accensione (`gpio-keys`, KEY_POWER): premuto = 1, rilasciato = 0 |
+| `vetro_machine_new_with` | `(ram_size: u64, now_secs: u64, seed: u64, devices: u32, width: u32, height: u32) -> *mut Vm` | like `vetro_machine_new`, with the chosen devices: bits `GPU` 1, `KEYBOARD` 2, `TABLET` 4, `MULTITOUCH` 8 (wins over `TABLET`), `NET` 16 (virtio-net with `vetro-net` and the sinkhole, `NetSetup::default`), `VSOCK` 32 (virtio-vsock, CID 3, ABI 7); 23 = `Devices::default`. `width`x`height`: initial resolution of scanout 0 (0 = 1280x800). Slots as in `Devices` (GPU 31, keyboard 30, pointer 29, network 28; disks after) |
+| `vetro_display_size` | `(vm, scanout: u32) -> u64` | `(width << 32) \| height`; 0 if off or without a GPU |
+| `vetro_display_ptr` | `(vm, scanout) -> *const u8` | RGBA pixels (4 bytes, rows of `width * 4`), null if off. Valid until the next `vetro_run` |
+| `vetro_display_updates` | `(vm, scanout) -> u64` | update counter (image or power-off): if it does not change, nothing to redraw |
+| `vetro_display_take_dirty` | `(vm, scanout, out: *mut u32) -> u32` | union of the rectangles changed since the last call: writes `x, y, w, h` and returns 1; 0 = nothing. After a size change, the whole scanout |
+| `vetro_display_resize` | `(vm, scanout, width, height) -> u32` | resolution requested by the host (`VirtioGpu::set_display`, event to the driver); 0 without a GPU. It is an input |
+| `vetro_cursor_state` | `(vm, scanout, out: *mut u32) -> u32` | 6 values: resource (0 = hidden), x, y, hot_x, hot_y, number of changes; 0 without a GPU |
+| `vetro_cursor_image` | `(vm, scanout) -> *const u8` | 64x64 RGBA cursor, null if there is none |
+| `vetro_input_key` | `(vm, code: u32, down: u32) -> u32` | Linux key `KEY_*` with SYN_REPORT; 0 if there is no keyboard |
+| `vetro_input_abs` | `(vm, x: u32, y: u32) -> u32` | tablet position (0..=32767 per axis) with SYN_REPORT |
+| `vetro_input_button` | `(vm, code, down) -> u32` | pointer button (`BTN_LEFT` 0x110, `BTN_RIGHT` 0x111, `BTN_MIDDLE` 0x112) |
+| `vetro_input_touch` | `(vm, slot, x, y, down) -> u32` | touchscreen contact (protocol B, tracking id = slot); `down` 0 removes it |
+| `vetro_input_events` | `(vm, device: u32, events: *const u32, count: usize) -> u32` | raw evdev events (`type, code, value` as three `u32`) on keyboard (0) or pointer (1); the caller adds the SYN_REPORTs (e.g. the wheel: `EV_REL REL_WHEEL ±1`) |
+| `vetro_input_leds` | `(vm) -> u32` | LEDs lit by the guest (bits `LED_*`) |
+| `vetro_gpio_input` | `(vm, line: u32, level: u32)` | PL061 input line (`Board::gpio_input`); line 3 is the power key (`gpio-keys`, KEY_POWER): pressed = 1, released = 0 |
 | `vetro_power_key_line` | `() -> u32` | 3 |
 
-Gli ingressi (tasti, puntatore, tocco, console, GPIO, risoluzione)
-arrivano al guest prima della prossima istruzione eseguita: sono gli eventi
-da registrare per il replay (M10). Le letture (display, cursore, LED,
-contatori) non toccano la macchina: il momento in cui la pagina le fa non
-cambia l'esecuzione.
+Inputs (keys, pointer, touch, console, GPIO, resolution) reach the guest
+before the next executed instruction: they are the events to record for
+replay (M10). Reads (display, cursor, LEDs, counters) do not touch the
+machine: when the page performs them does not change the execution.
 
-### Dischi (ABI 3, ADR 0014)
+### Disks (ABI 3, ADR 0014)
 
-| Export | Firma | Significato |
+| Export | Signature | Meaning |
 |---|---|---|
-| `vetro_disk_add` | `(vm, size: u64, block_size: u32, max_blocks: u32, flags: u32) -> i32` | disco virtio-blk di `size` byte (arrotondati per difetto a 512, come QEMU per i raw) con i dati dal JS a blocchi allineati di `block_size` byte (potenza di due, >= 512); al più `max_blocks` blocchi in memoria (0 = nessun limite; oltre, si tolgono i più vecchi). `flags`: 1 = sola lettura per il guest; senza, le scritture del guest vanno in un livello copy-on-write in memoria (cluster da 4 KiB). Restituisce l'indice del disco o -1 (motivo nel messaggio). Nel primo slot libero dall'alto; da chiamare prima di `vetro_run` |
-| `vetro_disk_add_mem` | `(vm, data: *const u8, len: usize, flags: u32) -> i32` | disco col contenuto già in memoria (copiato), sempre pronto; stessi arrotondamento, `flags` e copy-on-write |
-| `vetro_disk_wanted` | `(vm, out: *mut u64, cap: usize) -> usize` | blocchi chiesti dal guest, coppie `(disco, blocco)` in `out` (al più `cap`); ogni blocco compare una volta sola finché non arriva o fallisce |
-| `vetro_disk_fill` | `(vm, disk: u32, block: u64, data: *const u8, len: usize) -> u32` | consegna un blocco (`len` = `block_size`, o il resto per l'ultimo); anche non chiesto (lettura anticipata). 0 ok, 1 disco sconosciuto (o in memoria), 2 blocco fuori dal disco, 3 lunghezza sbagliata |
-| `vetro_disk_fail` | `(vm, disk, block: u64) -> u32` | il blocco non si può avere: la richiesta che lo aspetta finisce con IOERR |
-| `vetro_disk_stats` | `(vm, disk, out: *mut u64, cap: usize) -> usize` | dimensione, dimensione del blocco, blocchi in memoria, letture mancate, blocchi consegnati, tolti, falliti, cluster copy-on-write scritti; 0 = disco sconosciuto |
+| `vetro_disk_add` | `(vm, size: u64, block_size: u32, max_blocks: u32, flags: u32) -> i32` | virtio-blk disk of `size` bytes (rounded down to 512, like QEMU for raw images) with data from JS in aligned blocks of `block_size` bytes (power of two, >= 512); at most `max_blocks` blocks in memory (0 = no limit; beyond that, the oldest are evicted). `flags`: 1 = read-only for the guest; without it, guest writes go to an in-memory copy-on-write layer (4 KiB clusters). Returns the disk index or -1 (reason in the message). In the first free slot from the top; to be called before `vetro_run` |
+| `vetro_disk_add_mem` | `(vm, data: *const u8, len: usize, flags: u32) -> i32` | disk with its content already in memory (copied), always ready; same rounding, `flags` and copy-on-write |
+| `vetro_disk_wanted` | `(vm, out: *mut u64, cap: usize) -> usize` | blocks requested by the guest, `(disk, block)` pairs in `out` (at most `cap`); each block appears only once until it arrives or fails |
+| `vetro_disk_fill` | `(vm, disk: u32, block: u64, data: *const u8, len: usize) -> u32` | delivers a block (`len` = `block_size`, or the remainder for the last one); also unrequested (read-ahead). 0 ok, 1 unknown disk (or in-memory), 2 block outside the disk, 3 wrong length |
+| `vetro_disk_fail` | `(vm, disk, block: u64) -> u32` | the block cannot be obtained: the request waiting for it ends with IOERR |
+| `vetro_disk_stats` | `(vm, disk, out: *mut u64, cap: usize) -> usize` | size, block size, blocks in memory, missed reads, blocks delivered, evicted, failed, copy-on-write clusters written; 0 = unknown disk |
 
-Il giro con un disco via rete:
+The round trip with a network disk:
 
-1. `vetro_run` restituisce 5 (`Blocked`): una richiesta del guest tocca
-   blocchi assenti. Nessuna istruzione è stata eseguita dopo la richiesta,
-   e altre `vetro_run` restituiscono subito 5 finché i dati mancano.
-2. Il JS legge `vetro_disk_wanted`, procura i blocchi (cache OPFS, poi
-   HTTP Range o `File`) e li consegna con `vetro_disk_fill`.
-3. La `vetro_run` successiva ripete la richiesta e la completa allo stesso
-   numero di istruzioni che con un disco locale; il resto dell'esecuzione è
-   identico. Per confrontare esecuzioni, chi chiama continua il quanto fino
-   al suo confine prima di guardare la console o dare ingressi
+1. `vetro_run` returns 5 (`Blocked`): a guest request touches missing
+   blocks. No instruction has been executed after the request, and further
+   `vetro_run` calls return 5 immediately while the data is missing.
+2. JS reads `vetro_disk_wanted`, obtains the blocks (OPFS cache, then
+   HTTP Range or `File`) and delivers them with `vetro_disk_fill`.
+3. The next `vetro_run` repeats the request and completes it at the same
+   instruction number as with a local disk; the rest of the execution is
+   identical. To compare executions, the caller continues the quantum up to
+   its boundary before looking at the console or giving inputs
    (`tests/web/lib.mjs`, `Session.quantum`).
 
 ### Snapshot (ABI 4, ADR 0015, `docs/specs/snapshot.md`)
 
-| Export | Firma | Significato |
+| Export | Signature | Meaning |
 |---|---|---|
 | `vetro_snapshot_version` | `() -> u32` | snapshot format version (4 today): it goes into cache keys, so a snapshot of another version is not even tried |
 | `vetro_snapshot_config_hash` | `(vm) -> u64` | ABI 13 (ADR 0031): the machine configuration hash its snapshots carry in their header (RAM, devices, disks, virtio slots); read after the disks are added, for snapshot keys (the prebuilt Android snapshot) |
 | `vetro_snapshot_set_level` | `(vm, level: u32) -> u32` | ABI 13 (ADR 0031): compression of the next saves, 0 = fast (default), 1 = small (`lzh` frames: several times slower to save, about a third smaller, for downloaded snapshots). Restoring accepts both. Returns 1 for an unknown level (nothing changes) |
-| `vetro_snapshot_save` | `(vm) -> usize` | salva la macchina intera in un buffer interno e ne restituisce la lunghezza. Prima leggere la console: l'uscita già tolta alla UART e non consegnata al JS non entra |
-| `vetro_snapshot_ptr` | `(vm) -> *const u8` | i byte dell'ultimo salvataggio (nullo se non ce n'è), validi fino al prossimo salvataggio, a `vetro_snapshot_clear` o a `vetro_machine_free` |
-| `vetro_snapshot_clear` | `(vm)` | libera il buffer |
+| `vetro_snapshot_save` | `(vm) -> usize` | saves the whole machine into an internal buffer and returns its length. Read the console first: output already taken from the UART and not delivered to JS is not included |
+| `vetro_snapshot_ptr` | `(vm) -> *const u8` | the bytes of the last save (null if there is none), valid until the next save, `vetro_snapshot_clear` or `vetro_machine_free` |
+| `vetro_snapshot_clear` | `(vm)` | frees the buffer |
 | `vetro_snapshot_restore_stream` | `(vm, head: *const u8, head_len: usize) -> u32` | ABI 12: restore without the whole file in memory: `head` = the file's bytes up to and including the header of the `RAM ` section; the RAM content is requested from the import `vetro_host.snapshot_read(ptr, cap) -> bytes written` (0 = end). Same codes as `vetro_snapshot_restore`; the checksum is verified at the end (`CORRUPT` = discard the machine). After a restore with a buffer as large as the snapshot, memory stayed high and fragmented and the next save found no contiguous space |
 | `vetro_snapshot_save_stream` | `(vm) -> u64` | ABI 12: the same file as `vetro_snapshot_save` in chunks, without holding it whole in memory (Android): the content's chunks go to the import `vetro_host.snapshot_write(ptr, len)` in order (to be written from offset 36 on), the header (36 bytes) stays in the `vetro_snapshot_ptr` buffer. Returns the file length. Besides the chunks (1 MiB) only the part before the RAM is in memory (devices and disk copy-on-write); the RAM is compressed twice (its length enters the hash) |
-| `vetro_snapshot_restore` | `(vm, data: *const u8, len: usize) -> u32` | ripristina; il buffer si può liberare subito dopo. Codici: 0 `OK`, 1 `BAD_MAGIC` (non è uno snapshot), 2 `VERSION` (altro formato), 3 `CONFIG` (macchina configurata diversamente), 4 `CORRUPT` (rovinato o incoerente: la macchina va scartata); motivo nel messaggio. Con 1, 2 e 3 la macchina non cambia |
+| `vetro_snapshot_restore` | `(vm, data: *const u8, len: usize) -> u32` | restores; the buffer can be freed right after. Codes: 0 `OK`, 1 `BAD_MAGIC` (not a snapshot), 2 `VERSION` (other format), 3 `CONFIG` (machine configured differently), 4 `CORRUPT` (damaged or inconsistent: the machine must be discarded); reason in the message. With 1, 2 and 3 the machine does not change |
 
-Per ripristinare si costruisce la macchina con gli stessi parametri di
-`vetro_machine_new_with` (RAM, ora, seme, dispositivi, risoluzione), si
-aggiungono gli stessi dischi nello stesso ordine e con gli stessi parametri
-(`vetro_disk_add` / `vetro_disk_add_mem`: dimensione, blocco, flag), si
-attiva il JIT se si vuole (il risultato non cambia), poi
-`vetro_snapshot_restore`. Che cosa è **stato** (nello snapshot) e che cosa
-è **collegamento** (lo ricrea il JS):
+To restore, build the machine with the same parameters of
+`vetro_machine_new_with` (RAM, time, seed, devices, resolution), add the
+same disks in the same order and with the same parameters
+(`vetro_disk_add` / `vetro_disk_add_mem`: size, block, flags), enable the
+JIT if desired (the result does not change), then call
+`vetro_snapshot_restore`. What is **state** (in the snapshot) and what is
+**wiring** (recreated by JS):
 
-| Nello snapshot | Collegamento |
+| In the snapshot | Wiring |
 |---|---|
-| CPU, MMU (TLB compreso), RAM, orologio, timer, GIC, UART (FIFO, uscita non letta dalla UART), RTC, GPIO | il modulo WASM e il motore JIT (blocchi rifatti da capo) |
-| trasporti e code virtio, richieste in volo, stato di GPU (risorse e pixel), input, rete (stack e sinkhole), vsock | `WebDisplay`: riceve subito immagine e cursore ripristinati (`vetro_display_updates` cambia) |
-| livello copy-on-write dei dischi (le scritture del guest) | i dati dei dischi (`HostDisk`, HTTP Range, OPFS): dopo il ripristino i blocchi si chiedono di nuovo con `BLOCKED` come all'avvio; la dimensione si controlla |
-| (niente altro: anche il contenuto di `vetro_disk_add_mem` è una base in sola lettura sotto il copy-on-write) | il contenuto dei dischi in memoria (`vetro_disk_add_mem`), controllato con un hash; l'uscita della console già consegnata al JS; gli ingressi non ancora dati |
+| CPU, MMU (TLB included), RAM, clock, timer, GIC, UART (FIFO, output not yet read from the UART), RTC, GPIO | the WASM module and the JIT engine (blocks rebuilt from scratch) |
+| virtio transports and queues, in-flight requests, GPU state (resources and pixels), input, network (stack and sinkhole), vsock | `WebDisplay`: immediately receives the restored image and cursor (`vetro_display_updates` changes) |
+| disk copy-on-write layer (guest writes) | disk data (`HostDisk`, HTTP Range, OPFS): after the restore the blocks are requested again with `BLOCKED` as at boot; the size is checked |
+| (nothing else: even the content of `vetro_disk_add_mem` is a read-only base under the copy-on-write) | the content of in-memory disks (`vetro_disk_add_mem`), checked with a hash; console output already delivered to JS; inputs not yet given |
 
-Se i dischi hanno un overlay persistente (sotto), `vetro_overlay_open` va
-chiamata **prima** di `vetro_snapshot_restore`; dopo il ripristino la
-prossima `vetro_overlay_take` confronta tutti i cluster con il file e scrive
-solo quelli diversi.
+If the disks have a persistent overlay (below), `vetro_overlay_open` must be
+called **before** `vetro_snapshot_restore`; after the restore the next
+`vetro_overlay_take` compares all clusters with the file and writes only the
+ones that differ.
 
-### Overlay persistente dei dischi (ABI 6, ADR 0017)
+### Persistent disk overlay (ABI 6, ADR 0017)
 
-Le scritture del guest su un disco con copy-on-write (`vetro_disk_add` o
-`vetro_disk_add_mem` senza `READ_ONLY`) si conservano in un file tenuto dal
-JS (OPFS), nel formato di `vetro_snapshot::overlay` (lo stesso di `vetro
-boot --overlay`, `docs/specs/snapshot.md`). Rust decide che cosa scrivere e
-dove; il JS legge il file all'apertura e applica le scritture.
+Guest writes to a copy-on-write disk (`vetro_disk_add` or
+`vetro_disk_add_mem` without `READ_ONLY`) are kept in a file held by JS
+(OPFS), in the `vetro_snapshot::overlay` format (the same as `vetro
+boot --overlay`, `docs/specs/snapshot.md`). Rust decides what to write and
+where; JS reads the file when opening it and applies the writes.
 
-| Export | Firma | Significato |
+| Export | Signature | Meaning |
 |---|---|---|
-| `vetro_overlay_open` | `(vm, disk: u32, identity: *const u8, identity_len: usize, data: *const u8, data_len: usize) -> u32` | apre l'overlay del disco dal contenuto del file (`data_len` 0 se non c'è) per l'immagine base `identity` (UTF-8: URL, dimensione, ETag); i cluster letti entrano nel copy-on-write. Prima di `vetro_run` e di `vetro_snapshot_restore`. Codici: 0 `LOADED`, 1 `NEW` (file vuoto), 2 `MISMATCH` (overlay di un'altra base o dimensione: scartato), 3 `CORRUPT` (illeggibile: scartato), 4 `NO_DISK` (disco sconosciuto o in sola lettura); motivo nel messaggio. Con 2 e 3 la prossima `take` tronca il file |
-| `vetro_overlay_take` | `(vm, disk) -> usize` | prepara le scritture che portano il file allo stato del copy-on-write (i cluster scritti dal guest dall'ultima volta, o tutti dopo un ripristino) e ne restituisce la lunghezza; 0 = niente da scrivere. Codifica: u64 lunghezza a cui troncare prima (`u64::MAX` = no), u32 numero di scritture, poi per ognuna u64 offset, u32 lunghezza, byte (LE). In ordine: l'intestazione (offset 0) è l'ultima, da scrivere dopo un flush dei dati. Fra due `vetro_run` qualsiasi: non tocca il guest |
-| `vetro_overlay_ptr` | `(vm) -> *const u8` | i byte dell'ultima `take` (nullo se vuota), validi fino alla prossima `take`, a `vetro_overlay_clear` o a `vetro_machine_free` |
-| `vetro_overlay_clear` | `(vm)` | libera il buffer |
-| `vetro_overlay_info` | `(vm, disk, out: *mut u64, cap: usize) -> usize` | generazione (cresce a ogni `take` che scrive qualcosa), cluster nel file, slot nel file, slot rovinati trovati all'apertura, lunghezza del file; 0 = disco senza overlay |
+| `vetro_overlay_open` | `(vm, disk: u32, identity: *const u8, identity_len: usize, data: *const u8, data_len: usize) -> u32` | opens the disk's overlay from the file content (`data_len` 0 if there is none) for the base image `identity` (UTF-8: URL, size, ETag); the clusters read go into the copy-on-write. Before `vetro_run` and `vetro_snapshot_restore`. Codes: 0 `LOADED`, 1 `NEW` (empty file), 2 `MISMATCH` (overlay of another base or size: discarded), 3 `CORRUPT` (unreadable: discarded), 4 `NO_DISK` (unknown or read-only disk); reason in the message. With 2 and 3 the next `take` truncates the file |
+| `vetro_overlay_take` | `(vm, disk) -> usize` | prepares the writes that bring the file to the copy-on-write state (the clusters written by the guest since last time, or all of them after a restore) and returns their length; 0 = nothing to write. Encoding: u64 length to truncate to first (`u64::MAX` = no), u32 number of writes, then for each u64 offset, u32 length, bytes (LE). In order: the header (offset 0) is last, to be written after a flush of the data. Between any two `vetro_run` calls: it does not touch the guest |
+| `vetro_overlay_ptr` | `(vm) -> *const u8` | the bytes of the last `take` (null if empty), valid until the next `take`, `vetro_overlay_clear` or `vetro_machine_free` |
+| `vetro_overlay_clear` | `(vm)` | frees the buffer |
+| `vetro_overlay_info` | `(vm, disk, out: *mut u64, cap: usize) -> usize` | generation (grows with every `take` that writes something), clusters in the file, slots in the file, damaged slots found when opening, file length; 0 = disk without overlay |
 
-### Rete: connessioni verso il guest (ABI 5)
+### Network: connections to the guest (ABI 5)
 
-Il JS apre connessioni TCP verso una porta del guest (10.0.2.15), che le
-vede arrivare dal gateway 10.0.2.2 da una porta effimera (49152, 49153, …),
-come con `-netdev user,hostfwd=…` di QEMU. È lo stesso
-`Stack::host_connect` di `vetro boot --hostfwd` (`docs/specs/net.md`). Serve
-una macchina con la rete (bit `NET`) e un guest che ha già fatto il DHCP.
-L'id della connessione è un `u64` (> 0, in JS `BigInt`).
+JS opens TCP connections to a guest port (10.0.2.15), which sees them
+arrive from the gateway 10.0.2.2 from an ephemeral port (49152, 49153, …),
+as with QEMU's `-netdev user,hostfwd=…`. It is the same
+`Stack::host_connect` as `vetro boot --hostfwd` (`docs/specs/net.md`). It
+needs a machine with networking (bit `NET`) and a guest that has already
+done DHCP. The connection id is a `u64` (> 0, in JS `BigInt`).
 
-| Export | Firma | Significato |
+| Export | Signature | Meaning |
 |---|---|---|
-| `vetro_net_connect` | `(vm, guest_port: u32) -> u64` | apre una connessione verso `guest_port`; il SYN parte prima della prossima istruzione. 0 senza rete o con porta 0 / > 65535 |
-| `vetro_net_send` | `(vm, conn: u64, src: *const u8, len: usize) -> usize` | mette in coda byte per il guest; restituisce quanti ne ha presi (al più 256 KiB in coda: il resto va riproposto dopo un `vetro_run`). 0 se chiusa, sconosciuta o dopo `vetro_net_shutdown` |
-| `vetro_net_recv` | `(vm, conn, dst: *mut u8, cap: usize) -> usize` | copia e consuma al più `cap` byte arrivati dal guest; 0 = niente (senza toccare la macchina) |
-| `vetro_net_shutdown` | `(vm, conn) -> u32` | chiude il verso JS→guest: FIN dopo i byte in coda. 1 fatto, 0 sconosciuta |
-| `vetro_net_abort` | `(vm, conn) -> u32` | interrompe: RST al guest |
-| `vetro_net_release` | `(vm, conn) -> u32` | dimentica la connessione (se è viva, prima la interrompe); da chiamare dopo `CLOSED` e l'ultima lettura |
-| `vetro_net_state` | `(vm, conn, out: *mut u32, cap: usize) -> u32` | stato: 0 sconosciuta (o senza rete), 1 in apertura, 2 aperta (anche durante la chiusura), 3 chiusa. In `out` (al più `cap`): motivo della chiusura (0 nessuno, 1 `Normal`, 2 `GuestReset`, 3 `RemoteReset`, 4 `Refused` = nessuno in ascolto nel guest, 5 `Timeout`), byte leggibili, spazio per `vetro_net_send`, fine del flusso dal guest (1 = il guest ha chiuso e tutto è stato letto), byte in coda non ancora presi dal guest. Non tocca la macchina |
+| `vetro_net_connect` | `(vm, guest_port: u32) -> u64` | opens a connection to `guest_port`; the SYN leaves before the next instruction. 0 without networking or with port 0 / > 65535 |
+| `vetro_net_send` | `(vm, conn: u64, src: *const u8, len: usize) -> usize` | queues bytes for the guest; returns how many it took (at most 256 KiB queued: the rest must be offered again after a `vetro_run`). 0 if closed, unknown or after `vetro_net_shutdown` |
+| `vetro_net_recv` | `(vm, conn, dst: *mut u8, cap: usize) -> usize` | copies and consumes at most `cap` bytes that arrived from the guest; 0 = nothing (without touching the machine) |
+| `vetro_net_shutdown` | `(vm, conn) -> u32` | closes the JS→guest direction: FIN after the queued bytes. 1 done, 0 unknown |
+| `vetro_net_abort` | `(vm, conn) -> u32` | aborts: RST to the guest |
+| `vetro_net_release` | `(vm, conn) -> u32` | forgets the connection (if it is alive, aborts it first); to be called after `CLOSED` and the last read |
+| `vetro_net_state` | `(vm, conn, out: *mut u32, cap: usize) -> u32` | state: 0 unknown (or without networking), 1 opening, 2 open (also while closing), 3 closed. In `out` (at most `cap`): close reason (0 none, 1 `Normal`, 2 `GuestReset`, 3 `RemoteReset`, 4 `Refused` = nobody listening in the guest, 5 `Timeout`), readable bytes, space for `vetro_net_send`, end of stream from the guest (1 = the guest closed and everything has been read), queued bytes not yet taken by the guest. It does not touch the machine |
 
-I byte si muovono mentre la macchina esegue: chi chiama alterna `vetro_run`
-e `send`/`recv`, come per la console. Aprire, scrivere, leggere byte pronti,
-chiudere e interrompere sono ingressi (arrivano al guest prima della
-prossima istruzione, da registrare per il replay di M10); `vetro_net_state`
-e una `vetro_net_recv` senza byte pronti non cambiano l'esecuzione.
+Bytes move while the machine executes: the caller alternates `vetro_run`
+and `send`/`recv`, as for the console. Opening, writing, reading ready bytes,
+closing and aborting are inputs (they reach the guest before the next
+instruction, to be recorded for M10 replay); `vetro_net_state` and a
+`vetro_net_recv` without ready bytes do not change the execution.
 
-In JS: `Machine.connectGuest(port)` restituisce un `GuestSocket`
-(`web/node/vetro.mjs`) con `send(bytes)`, `recv()`, `shutdown()`,
-`abort()`, `release()` e `state()` (`{ state, reason, readable, writable,
-guestEof, unsent }`, nomi in `NET_STATE` e `NET_REASON`). Prova:
-`tests/web/hostfwd.mjs` (in `tools/web-test.sh`): `nc -l -e cat` nel
-guest, eco di 200 KB dal JS, chiusura, porta senza servizio, stesse
-istruzioni con e senza JIT e in due esecuzioni.
+In JS: `Machine.connectGuest(port)` returns a `GuestSocket`
+(`web/node/vetro.mjs`) with `send(bytes)`, `recv()`, `shutdown()`,
+`abort()`, `release()` and `state()` (`{ state, reason, readable, writable,
+guestEof, unsent }`, names in `NET_STATE` and `NET_REASON`). Test:
+`tests/web/hostfwd.mjs` (in `tools/web-test.sh`): `nc -l -e cat` in the
+guest, echo of 200 KB from JS, close, port without a service, same
+instructions with and without JIT and in two executions.
 
-### Gestore dei file (ABI 7, ADR 0020; ABI 9, ADR 0021; `docs/specs/files.md`)
+### File manager (ABI 7, ADR 0020; ABI 9, ADR 0021; `docs/specs/files.md`)
 
-Il client di `vetro_machine::files` verso il demone `vetro-files` del guest
-(porta vsock 5200). Serve il bit `VSOCK`.
+The client of `vetro_machine::files` for the guest's `vetro-files` daemon
+(vsock port 5200). It needs the `VSOCK` bit.
 
-| Export | Firma | Significato |
+| Export | Signature | Meaning |
 |---|---|---|
-| `vetro_files_open` | `(vm, port: u32) -> u32` | crea il client (porta 0 = 5200), al posto di quello che c'era; 1 fatto, 0 senza vsock. Dopo `vetro_load_linux` o `vetro_snapshot_restore`: le connessioni al demone rimaste nello snapshot si chiudono al primo `pump` |
-| `vetro_files_close` | `(vm)` | chiude la connessione e toglie il client |
-| `vetro_files_status` | `(vm, out: *mut u32, cap: usize) -> u32` | 0 nessun client, 1 in collegamento (o in attesa di riprovare), 2 collegato. In `out`: operazioni non finite, saluti ricevuti (cresce a ogni ricollegamento: le osservazioni vanno rifatte), pezzo massimo e flag del saluto (bit 0 SELinux). Non tocca la macchina |
-| `vetro_files_request` | `(vm, op: u32, a: *const u8, a_len, b: *const u8, b_len, x: u64, y: u64) -> u32` | chiede un'operazione sul percorso `a` (byte del guest, anche non UTF-8, dall'ABI 9; vuoto = rifiutata): 1 `STAT`, 2 `LIST`, 3 `READ` (`x` offset, `y` byte, `u64::MAX` = fino alla fine, al più 256 MiB), 4 `WRITE` (`b` contenuto, `x` modo di un file nuovo), 5 `MKDIR` (`x` modo), 6 `CREATE` (`x` modo), 7 `DELETE` (`x` 1 = ricorsivo), 8 `RENAME` (`b` destinazione, byte), 9 `WATCH`, 10 `UNWATCH` (`x` wd), 11 `SQL` (ABI 9: `b` = `u32` lunghezza e SQL UTF-8, `u16` numero di parametri, parametri nel formato dei valori del protocollo (`proto::encode_sql_args`); `x` righe cambiate attese, `u64::MAX` = qualsiasi; `y` bit 0 sola lettura). Restituisce l'id (> 0) o 0 |
-| `vetro_files_pump` | `(vm) -> u32` | fa avanzare il client (fra un quanto e l'altro) e restituisce i messaggi pronti |
-| `vetro_files_take` | `(vm) -> usize` | prepara il prossimo messaggio e ne dà la lunghezza (0 = nessuno) |
-| `vetro_files_ptr` | `(vm) -> *const u8` | i byte del messaggio, validi fino alla prossima `take` |
+| `vetro_files_open` | `(vm, port: u32) -> u32` | creates the client (port 0 = 5200), replacing the existing one; 1 done, 0 without vsock. After `vetro_load_linux` or `vetro_snapshot_restore`: connections to the daemon left in the snapshot are closed at the first `pump` |
+| `vetro_files_close` | `(vm)` | closes the connection and removes the client |
+| `vetro_files_status` | `(vm, out: *mut u32, cap: usize) -> u32` | 0 no client, 1 connecting (or waiting to retry), 2 connected. In `out`: unfinished operations, hellos received (grows with every reconnection: observations must be redone), maximum chunk and hello flags (bit 0 SELinux). It does not touch the machine |
+| `vetro_files_request` | `(vm, op: u32, a: *const u8, a_len, b: *const u8, b_len, x: u64, y: u64) -> u32` | requests an operation on path `a` (guest bytes, possibly not UTF-8, since ABI 9; empty = rejected): 1 `STAT`, 2 `LIST`, 3 `READ` (`x` offset, `y` bytes, `u64::MAX` = to the end, at most 256 MiB), 4 `WRITE` (`b` content, `x` mode of a new file), 5 `MKDIR` (`x` mode), 6 `CREATE` (`x` mode), 7 `DELETE` (`x` 1 = recursive), 8 `RENAME` (`b` destination, bytes), 9 `WATCH`, 10 `UNWATCH` (`x` wd), 11 `SQL` (ABI 9: `b` = `u32` length and UTF-8 SQL, `u16` number of parameters, parameters in the protocol's value format (`proto::encode_sql_args`); `x` expected changed rows, `u64::MAX` = any; `y` bit 0 read-only). Returns the id (> 0) or 0 |
+| `vetro_files_pump` | `(vm) -> u32` | advances the client (between one quantum and the next) and returns the ready messages |
+| `vetro_files_take` | `(vm) -> usize` | prepares the next message and gives its length (0 = none) |
+| `vetro_files_ptr` | `(vm) -> *const u8` | the message bytes, valid until the next `take` |
 
-Messaggio: `u32` lunghezza del JSON, JSON UTF-8, poi i byte di una lettura.
-JSON di una risposta: `{"kind":"reply","op":N,"ok":true,"type":T,...}` con
+Message: `u32` JSON length, UTF-8 JSON, then the bytes of a read.
+JSON of a reply: `{"kind":"reply","op":N,"ok":true,"type":T,...}` with
 `T` = `stat` (`stat`), `list` (`entries: [{name, stat}]`), `data` (`size`,
-`length`: i byte seguono), `written` (`stat`), `watch` (`wd`), `sql`
-(`changes`, `lastRowid` come stringa decimale, `truncated`, `columns`,
-`rows`: valori `null`, `["i","<intero>"]`, `["f","<reale>"]` (`inf`,
-`-inf`, `NaN` compresi), `["t","<testo>"]`, `["b","<esadecimale>"]`),
-`done`; o
+`length`: the bytes follow), `written` (`stat`), `watch` (`wd`), `sql`
+(`changes`, `lastRowid` as a decimal string, `truncated`, `columns`,
+`rows`: values `null`, `["i","<integer>"]`, `["f","<real>"]` (`inf`,
+`-inf`, `NaN` included), `["t","<text>"]`, `["b","<hex>"]`),
+`done`; or
 `{"kind":"reply","op":N,"ok":false,"error":"ENOENT (2)","errno":2,"code":"ENOENT"}`
-(`code` `PROTOCOL` o `DISCONNECTED` con `errno` null; `SQLITE` con
-`sqlite` = codice di SQLite se SQLite ha rifiutato). `stat` = `{kind,
-mode, uid, gid, size, mtime, mtimeNs, nlink, link, selinux}`. Evento:
-`{"kind":"event","wd":N,"mask":N,"cookie":N,"name":"..."}`. Nomi e
-destinazioni dei collegamenti sono byte del guest in *surrogateescape*: un
-byte che non fa parte di UTF-8 valido è `\udcXX` (surrogato solitario
-U+DC80 + byte − 0x80); `pathBytes` di `vetro.mjs` fa l'inverso per i
-percorsi mandati.
+(`code` `PROTOCOL` or `DISCONNECTED` with `errno` null; `SQLITE` with
+`sqlite` = SQLite's code if SQLite rejected it). `stat` = `{kind,
+mode, uid, gid, size, mtime, mtimeNs, nlink, link, selinux}`. Event:
+`{"kind":"event","wd":N,"mask":N,"cookie":N,"name":"..."}`. Names and
+link targets are guest bytes in *surrogateescape*: a byte that is not part
+of valid UTF-8 is `\udcXX` (lone surrogate U+DC80 + byte − 0x80);
+`pathBytes` in `vetro.mjs` does the inverse for the paths sent.
 
-Collegarsi, mandare e leggere sono ingressi (`Machine::input`, registrati
-per il replay); `status`, `take` e `ptr` no. In JS: `Machine.files(port)`
-→ `GuestFiles` (Promise per operazione, `sql(percorso, sql, parametri,
+Connecting, sending and reading are inputs (`Machine::input`, recorded
+for replay); `status`, `take` and `ptr` are not. In JS: `Machine.files(port)`
+→ `GuestFiles` (a Promise per operation, `sql(path, sql, params,
 { expect, readonly })`, `onEvent`, `status()`, `pump()`, `close()`),
-costanti `FILES_OP`, `FILES_STATUS`, `INOTIFY`; `pathBytes`,
+constants `FILES_OP`, `FILES_STATUS`, `INOTIFY`; `pathBytes`,
 `pathString`, `displayName`, `encodeSqlArgs`, `sqlValue`.
 
-### Buffer dei risultati (ABI 8)
+### Result buffer (ABI 8)
 
-Le funzioni che producono byte (JSON, HAR, pcapng, log, keyframe, registri)
-li mettono nel buffer dei risultati della macchina e ne restituiscono la
-lunghezza (0 = niente).
+Functions that produce bytes (JSON, HAR, pcapng, logs, keyframes, registers)
+put them in the machine's result buffer and return their length
+(0 = nothing).
 
-| Export | Firma | Significato |
+| Export | Signature | Meaning |
 |---|---|---|
-| `vetro_result_ptr` | `(vm) -> *const u8` | i byte dell'ultimo risultato (nullo se vuoto), validi fino al prossimo risultato |
-| `vetro_result_clear` | `(vm)` | libera il buffer |
+| `vetro_result_ptr` | `(vm) -> *const u8` | the bytes of the last result (null if empty), valid until the next result |
+| `vetro_result_clear` | `(vm)` | frees the buffer |
 
-### Ispettore di rete e timeline (ABI 8, ADR 0023)
+### Network inspector and timeline (ABI 8, ADR 0023)
 
-La cattura dei frame di virtio-net (`Machine::net_tap`, ADR 0016) si
-raccoglie nella macchina di vetro-wasm a ogni `vetro_run` (al più 64 MiB);
-lista e dettaglio sono il JSON di `vetro_analysis::net::view`, la timeline
-quello di `Timeline::to_json` (`docs/specs/analysis.md`). Niente di questo
-cambia l'esecuzione.
+The virtio-net frame capture (`Machine::net_tap`, ADR 0016) is collected in
+the vetro-wasm machine at every `vetro_run` (at most 64 MiB); list and
+detail are the JSON of `vetro_analysis::net::view`, the timeline is that of
+`Timeline::to_json` (`docs/specs/analysis.md`). None of this changes the
+execution.
 
-| Export | Firma | Significato |
+| Export | Signature | Meaning |
 |---|---|---|
-| `vetro_capture_set` | `(vm, on: u32) -> u32` | accende (1) o spegne la cattura; 1 fatto, 0 senza rete |
-| `vetro_capture_clear` | `(vm)` | svuota frame e analisi |
-| `vetro_capture_stats` | `(vm, out: *mut u64, cap) -> usize` | accesa, frame, byte, frame scartati oltre il limite |
-| `vetro_inspect_requests` | `(vm) -> usize` | la lista in JSON (`requests_json`) |
-| `vetro_inspect_request` | `(vm, index: u32) -> usize` | il dettaglio della richiesta `index` in JSON (`exchange_json`); 0 se non c'è |
-| `vetro_inspect_har` | `(vm, epoch_us: u64) -> usize` | l'HAR 1.2 (`epoch_us`: µs Unix del tempo 0 del guest) |
-| `vetro_inspect_pcapng` | `(vm, epoch_us: u64) -> usize` | il pcapng dei frame |
-| `vetro_timeline_input` | `(vm, kind: u32, weak: u32, text, len)` | annota un ingresso dell'utente che la macchina non riconosce da sé (comando del gestore dei file: `kind` 4) all'istruzione corrente |
-| `vetro_timeline_effect` | `(vm, kind: u32, text, len) -> u32` | annota un effetto (file cambiato: `kind` 3) all'istruzione corrente; 0 se il tipo non esiste |
-| `vetro_timeline_json` | `(vm, window_us: u64) -> usize` | la timeline in JSON con gli effetti di rete della cattura; finestra di attribuzione `window_us` (0 = 3 s) |
-| `vetro_timeline_version` | `(vm) -> u64` | cambia quando cambiano ingressi, effetti o frame: se è uguale, niente da ridisegnare |
-| `vetro_timeline_clear` | `(vm)` | svuota la timeline |
+| `vetro_capture_set` | `(vm, on: u32) -> u32` | turns the capture on (1) or off; 1 done, 0 without networking |
+| `vetro_capture_clear` | `(vm)` | empties frames and analysis |
+| `vetro_capture_stats` | `(vm, out: *mut u64, cap) -> usize` | on, frames, bytes, frames dropped beyond the limit |
+| `vetro_inspect_requests` | `(vm) -> usize` | the list in JSON (`requests_json`) |
+| `vetro_inspect_request` | `(vm, index: u32) -> usize` | the detail of request `index` in JSON (`exchange_json`); 0 if there is none |
+| `vetro_inspect_har` | `(vm, epoch_us: u64) -> usize` | the HAR 1.2 (`epoch_us`: Unix µs of guest time 0) |
+| `vetro_inspect_pcapng` | `(vm, epoch_us: u64) -> usize` | the pcapng of the frames |
+| `vetro_timeline_input` | `(vm, kind: u32, weak: u32, text, len)` | annotates a user input that the machine does not recognise by itself (file manager command: `kind` 4) at the current instruction |
+| `vetro_timeline_effect` | `(vm, kind: u32, text, len) -> u32` | annotates an effect (file changed: `kind` 3) at the current instruction; 0 if the kind does not exist |
+| `vetro_timeline_json` | `(vm, window_us: u64) -> usize` | the timeline in JSON with the network effects of the capture; attribution window `window_us` (0 = 3 s) |
+| `vetro_timeline_version` | `(vm) -> u64` | changes when inputs, effects or frames change: if it is the same, nothing to redraw |
+| `vetro_timeline_clear` | `(vm)` | empties the timeline |
 
-Tipi: ingressi `InputKind` (0 tasto, 1 puntatore, 2 tocco, 3 console, 4
-file, 5 accensione, 6 schermo, 7 altro), effetti `EffectKind` (0 http, 1
-dns, 2 tls, 3 file, 4 console). Gli ingressi che passano da
-`vetro_console_write`, `vetro_input_*`, `vetro_gpio_input` e
-`vetro_display_resize` si annotano da soli (`analysis::Describer`: tasti e
-pulsanti premuti, tocchi nuovi, righe della console, tasto di accensione,
-risoluzione; non movimenti, rilasci, risposte del terminale); l'uscita della
-console si annota quando `vetro_console_read` la legge.
+Kinds: inputs `InputKind` (0 key, 1 pointer, 2 touch, 3 console, 4
+file, 5 power, 6 screen, 7 other), effects `EffectKind` (0 http, 1
+dns, 2 tls, 3 file, 4 console). Inputs that go through
+`vetro_console_write`, `vetro_input_*`, `vetro_gpio_input` and
+`vetro_display_resize` are annotated automatically (`analysis::Describer`:
+keys and buttons pressed, new touches, console lines, power key,
+resolution; not movements, releases, terminal replies); console output is
+annotated when `vetro_console_read` reads it.
 
-### Record & replay (ABI 8, ADR 0019 e 0023, `docs/specs/replay.md`)
+### Record & replay (ABI 8, ADR 0019 and 0023, `docs/specs/replay.md`)
 
-| Export | Firma | Significato |
+| Export | Signature | Meaning |
 |---|---|---|
-| `vetro_record_start` | `(vm, keyframe_every: u64)` | registra da qui, keyframe ogni tante istruzioni (il primo subito; 0 = nessuno) |
-| `vetro_record_stop` | `(vm) -> u32` | finisce; il log resta nella macchina. 1 fatto, 0 non si registrava |
-| `vetro_rr_status` | `(vm, out: *mut u64, cap) -> u32` | 0 fermo, 1 registrazione, 2 replay, 3 replay finito identico, 4 replay diverso (motivo nel messaggio). In `out`: eventi registrati o prossimo evento, eventi del log, keyframe, istruzione di partenza e di fine, 1 se c'è un log |
-| `vetro_log_encode` | `(vm) -> usize` | il file del log con i keyframe presenti |
-| `vetro_log_load` | `(vm, data, len) -> u32` | carica un file di log; 0 fatto, 1 non valido (motivo nel messaggio) |
-| `vetro_log_info` | `(vm, out: *mut u64, cap) -> usize` | partenza, fine, eventi, keyframe, intervallo, JIT, 1 se della stessa configurazione, byte degli eventi; 0 senza log |
-| `vetro_log_events` | `(vm) -> usize` | gli eventi in JSON: `[{i, step, kind, label, weak, user}]` |
-| `vetro_log_keyframe` | `(vm, index, out: *mut u64, cap) -> usize` | istruzione, byte e hash della console, dimensione, 1 se presente |
-| `vetro_log_keyframe_take` | `(vm, index) -> usize` | sposta i byte del keyframe nel buffer dei risultati (nel log resta la posizione) |
-| `vetro_log_keyframe_put` | `(vm, index, data, len) -> u32` | li rimette; 1 fatto, 0 indice o lunghezza sbagliati |
-| `vetro_log_keyframe_for` | `(vm, step: u64) -> i32` | il keyframe da cui parte il replay verso `step`, -1 nessuno |
-| `vetro_replay_start` | `(vm, step: u64) -> u32` | replay dall'ultimo keyframe non oltre `step` (0 = dall'inizio). Codici: 0 fatto, 1 nessun log, 2 keyframe non presente, 3 rifiutato (motivo nel messaggio). Cattura e timeline ripartono (timeline con gli ingressi del log), il client del gestore dei file si chiude |
-| `vetro_registers_text` | `(vm) -> usize` | i registri (`Machine::registers_text`) |
-| `vetro_read_virt` | `(vm, va: u64, dst, len, fault: *mut u64) -> u32` | memoria virtuale (tabelle correnti, solo RAM); 1 fatto, 0 con il primo indirizzo illeggibile in `fault` |
-| `vetro_translate` | `(vm, va: u64) -> u64` | indirizzo fisico, `u64::MAX` se non mappato |
-| `vetro_read_phys` | `(vm, pa: u64, dst, len) -> u32` | RAM all'indirizzo fisico; 0 fuori dalla RAM |
+| `vetro_record_start` | `(vm, keyframe_every: u64)` | records from here, a keyframe every so many instructions (the first immediately; 0 = none) |
+| `vetro_record_stop` | `(vm) -> u32` | stops; the log stays in the machine. 1 done, 0 was not recording |
+| `vetro_rr_status` | `(vm, out: *mut u64, cap) -> u32` | 0 idle, 1 recording, 2 replaying, 3 replay finished identical, 4 replay diverged (reason in the message). In `out`: events recorded or next event, log events, keyframes, start and end instruction, 1 if there is a log |
+| `vetro_log_encode` | `(vm) -> usize` | the log file with the keyframes present |
+| `vetro_log_load` | `(vm, data, len) -> u32` | loads a log file; 0 done, 1 invalid (reason in the message) |
+| `vetro_log_info` | `(vm, out: *mut u64, cap) -> usize` | start, end, events, keyframes, interval, JIT, 1 if from the same configuration, event bytes; 0 without a log |
+| `vetro_log_events` | `(vm) -> usize` | the events in JSON: `[{i, step, kind, label, weak, user}]` |
+| `vetro_log_keyframe` | `(vm, index, out: *mut u64, cap) -> usize` | instruction, console bytes and hash, size, 1 if present |
+| `vetro_log_keyframe_take` | `(vm, index) -> usize` | moves the keyframe bytes into the result buffer (the position stays in the log) |
+| `vetro_log_keyframe_put` | `(vm, index, data, len) -> u32` | puts them back; 1 done, 0 wrong index or length |
+| `vetro_log_keyframe_for` | `(vm, step: u64) -> i32` | the keyframe the replay towards `step` starts from, -1 none |
+| `vetro_replay_start` | `(vm, step: u64) -> u32` | replay from the last keyframe not beyond `step` (0 = from the beginning). Codes: 0 done, 1 no log, 2 keyframe not present, 3 rejected (reason in the message). Capture and timeline restart (timeline with the log's inputs), the file manager client is closed |
+| `vetro_registers_text` | `(vm) -> usize` | the registers (`Machine::registers_text`) |
+| `vetro_read_virt` | `(vm, va: u64, dst, len, fault: *mut u64) -> u32` | virtual memory (current tables, RAM only); 1 done, 0 with the first unreadable address in `fault` |
+| `vetro_translate` | `(vm, va: u64) -> u64` | physical address, `u64::MAX` if not mapped |
+| `vetro_read_phys` | `(vm, pa: u64, dst, len) -> u32` | RAM at the physical address; 0 outside the RAM |
 
-Durante il replay `vetro_run` si ferma agli eventi del log e alla fine
-confronta l'impronta; gli ingressi del JS si ignorano. Per saltare a
-un'istruzione: `vetro_replay_start(step)`, poi `vetro_run` con budget
-`min(quanto, step - istruzioni)` finché non ci si arriva (i dischi si
-servono come sempre).
+During replay `vetro_run` stops at the log's events and at the end compares
+the fingerprint; inputs from JS are ignored. To jump to an instruction:
+`vetro_replay_start(step)`, then `vetro_run` with budget
+`min(quantum, step - instructions)` until it is reached (disks are served
+as always).
 
 In JS: `Machine.capture`, `captureStats`, `inspectRequests`,
 `inspectRequest`, `inspectHar`, `inspectPcapng`, `timelineInput`,
@@ -372,241 +371,241 @@ In JS: `Machine.capture`, `captureStats`, `inspectRequests`,
 `recordStop`, `rrStatus`, `logEncode`, `logLoad`, `logInfo`, `logEvents`,
 `logKeyframe`, `logKeyframeTake`, `logKeyframePut`, `logKeyframeFor`,
 `replayStart`, `registersText`, `readVirt`, `translate`, `readPhys`;
-costanti `TIMELINE_INPUT`, `TIMELINE_EFFECT`, `RR_STATE`, `REPLAY_START`;
-`Recording` (`web/node/recording.mjs`) per i keyframe in un archivio.
+constants `TIMELINE_INPUT`, `TIMELINE_EFFECT`, `RR_STATE`, `REPLAY_START`;
+`Recording` (`web/node/recording.mjs`) for keyframes in an archive.
 
-### Ponte JIT
+### JIT bridge
 
-| Export | Firma | Significato |
+| Export | Signature | Meaning |
 |---|---|---|
-| `vetro_jit_ld` | `(state: usize, va: u64, size: u32) -> u64` | `env.ld` dei moduli generati (spec `jit.md`) |
-| `vetro_jit_st` | `(state: usize, va: u64, size: u32, value: u64) -> u32` | `env.st` dei moduli generati |
-| `vetro_jit_resolve` | `(state: usize) -> u32` | `env.resolve` del dispatcher |
-| `vetro_jit_vsync` | `(state: usize)` | `env.vsync` del runtime: V0..V31 della `Cpu` nel `JitState` (ABI 10) |
-| `vetro_jit_simd` | `(state: usize, word: u32, x: u64, nzcv: u32) -> u64` | `env.simd` del runtime: istruzione SIMD/FP senza memoria eseguita dall'interprete sul `JitState` (ABI 11, ADR 0026) |
-| `__indirect_function_table` | tabella | la tabella delle funzioni di vetro-wasm, esportata ed estendibile (`build.rs`): il JS vi mette il dispatcher, che Rust chiama come un puntatore a funzione |
-| `vetro_jit_selftest` | `(wasm: *const u8, len: usize) -> u64` | prova del giro completo con un modulo di prova (sotto) |
+| `vetro_jit_ld` | `(state: usize, va: u64, size: u32) -> u64` | `env.ld` of the generated modules (spec `jit.md`) |
+| `vetro_jit_st` | `(state: usize, va: u64, size: u32, value: u64) -> u32` | `env.st` of the generated modules |
+| `vetro_jit_resolve` | `(state: usize) -> u32` | `env.resolve` of the dispatcher |
+| `vetro_jit_vsync` | `(state: usize)` | the runtime's `env.vsync`: V0..V31 of the `Cpu` in the `JitState` (ABI 10) |
+| `vetro_jit_simd` | `(state: usize, word: u32, x: u64, nzcv: u32) -> u64` | the runtime's `env.simd`: SIMD/FP instruction without memory access executed by the interpreter on the `JitState` (ABI 11, ADR 0026) |
+| `__indirect_function_table` | table | the vetro-wasm function table, exported and growable (`build.rs`): JS puts the dispatcher in it, which Rust calls as a function pointer |
+| `vetro_jit_selftest` | `(wasm: *const u8, len: usize) -> u64` | full round-trip test with a test module (below) |
 
-## Import
+## Imports
 
-Il JS li fornisce all'istanziazione (`web/node/vetro.mjs`):
+JS provides them at instantiation (`web/node/vetro.mjs`):
 
-| Import | Firma | Significato |
+| Import | Signature | Meaning |
 |---|---|---|
-| `vetro_host.panic` | `(ptr: *const u8, len: usize)` | messaggio UTF-8 di un panic, subito prima della trappola `unreachable` |
+| `vetro_host.panic` | `(ptr: *const u8, len: usize)` | UTF-8 message of a panic, right before the `unreachable` trap |
 | `vetro_host.snapshot_write` | `(ptr: *const u8, len: usize)` | ABI 12: a chunk of `vetro_snapshot_save_stream` (the view is valid only during the call) |
 | `vetro_host.snapshot_read` | `(ptr: *mut u8, cap: usize) -> usize` | ABI 12: the next bytes (at most `cap`) for `vetro_snapshot_restore_stream`, 0 at the end |
-| `vetro_jit.compile` | `(ptr: *const u8, len: usize) -> i32` | compila e istanzia un modulo generato; indice ≥ 0, o < 0 se rifiutato |
-| `vetro_jit.runtime` | `(ptr: *const u8, len: usize) -> i32` | compila e istanzia il modulo di runtime (con `env.mem`, `env.ld`, `env.st`, `env.vsync`, `env.simd` dall'ABI 11); i suoi export sono gli import `rt.*` dei moduli compilati dopo, anche dopo `reset`; 0, o < 0 se rifiutato (ABI 10) |
-| `vetro_jit.entry` | `(module: i32, index: u32) -> u32` | mette l'export `b<index>` del modulo in una voce nuova di `__indirect_function_table` e la restituisce: `JsEngine::run` la chiama come un puntatore a funzione, senza passare da JS |
-| `vetro_jit.place` | `(module: i32, count: u32, base: u32)` | mette `b0..b<count-1>` del modulo nella tabella dei blocchi (`env.tbl` del dispatcher) dalla voce `base` |
-| `vetro_jit.reset` | `()` | scarta tutte le istanze e ricrea la tabella dei blocchi |
-| `vetro_jit.drop` | `(module: i32)` | libera il modulo |
+| `vetro_jit.compile` | `(ptr: *const u8, len: usize) -> i32` | compiles and instantiates a generated module; index ≥ 0, or < 0 if rejected |
+| `vetro_jit.runtime` | `(ptr: *const u8, len: usize) -> i32` | compiles and instantiates the runtime module (with `env.mem`, `env.ld`, `env.st`, `env.vsync`, `env.simd` since ABI 11); its exports are the `rt.*` imports of the modules compiled afterwards, also after `reset`; 0, or < 0 if rejected (ABI 10) |
+| `vetro_jit.entry` | `(module: i32, index: u32) -> u32` | puts the module's export `b<index>` in a new entry of `__indirect_function_table` and returns it: `JsEngine::run` calls it as a function pointer, without going through JS |
+| `vetro_jit.place` | `(module: i32, count: u32, base: u32)` | puts the module's `b0..b<count-1>` in the block table (the dispatcher's `env.tbl`) starting at entry `base` |
+| `vetro_jit.reset` | `()` | discards all instances and recreates the block table |
+| `vetro_jit.drop` | `(module: i32)` | frees the module |
 
-## Il motore JIT in JavaScript
+## The JIT engine in JavaScript
 
-ADR 0012: nel browser il codice generato lo compila ed esegue l'API
-`WebAssembly` di JS. I pezzi:
+ADR 0012: in the browser the generated code is compiled and executed by the
+JS `WebAssembly` API. The pieces:
 
-- `web/node/jit-engine.mjs`, classe `JitEngine`, l'equivalente JS del trait
-  `vetro_jit::Engine` di `jit.md`:
-  - `runtime(bytes)`: istanzia il modulo di runtime con `env.mem`,
+- `web/node/jit-engine.mjs`, class `JitEngine`, the JS equivalent of the
+  `vetro_jit::Engine` trait in `jit.md`:
+  - `runtime(bytes)`: instantiates the runtime module with `env.mem`,
     `env.ld`/`env.st`/`env.vsync` = `vetro_jit_ld`/`vetro_jit_st`/
-    `vetro_jit_vsync`, e ne tiene gli export per gli import `rt.*`;
-  - `compile(bytes)`: `new WebAssembly.Module(bytes)` e subito
+    `vetro_jit_vsync`, and keeps its exports for the `rt.*` imports;
+  - `compile(bytes)`: `new WebAssembly.Module(bytes)` and immediately
     `new WebAssembly.Instance(module, { env: { mem, tbl, ld, st, resolve }, rt })`,
-    con `env.mem` = `memory` di vetro-wasm, `env.tbl` = la tabella dei
-    blocchi (la importa solo il dispatcher), `env.ld`/`env.st`/`env.resolve`
-    = `vetro_jit_ld`/`vetro_jit_st`/`vetro_jit_resolve` e `rt` = gli export
-    del runtime. Un export di un'istanza passato come import di un'altra è
-    chiamato da V8 direttamente, senza passare dal JS;
-  - `place`, `entry`, `reset` come gli import qui sopra;
-  - la memoria condivisa è la memoria lineare di vetro-wasm;
-  - `imports()`: gli import `vetro_jit.*`; `attach(exports)` dopo
-    l'istanziazione.
-- `crates/vetro-wasm/src/jit.rs`, lato Rust: `impl vetro_jit::Engine for
+    with `env.mem` = vetro-wasm's `memory`, `env.tbl` = the block table
+    (only the dispatcher imports it), `env.ld`/`env.st`/`env.resolve`
+    = `vetro_jit_ld`/`vetro_jit_st`/`vetro_jit_resolve` and `rt` = the
+    runtime's exports. An export of one instance passed as an import of
+    another is called by V8 directly, without going through JS;
+  - `place`, `entry`, `reset` like the imports above;
+  - the shared memory is vetro-wasm's linear memory;
+  - `imports()`: the `vetro_jit.*` imports; `attach(exports)` after
+    instantiation.
+- `crates/vetro-wasm/src/jit.rs`, Rust side: `impl vetro_jit::Engine for
   JsEngine`.
-  - La memoria condivisa è un buffer di 256 KiB allineato a 16 dentro
-    vetro-wasm (`JitState` e l'area della modalità sistema): `state` è un
-    offset in quel buffer, e al blocco arriva l'indirizzo assoluto (buffer +
-    `state`), perché per il blocco `env.mem` è l'intera memoria lineare. Per
-    lo stesso motivo `host_address` è l'indirizzo stesso: la TLB software dei
-    blocchi punta direttamente alla RAM del guest.
-  - `run` chiama la funzione attraverso `__indirect_function_table` (voce
-    data da `vetro_jit.entry` e tenuta in cache): nessun passaggio da JS.
-  - Durante `run` l'`Host` e la memoria condivisa sono raggiungibili da
-    `vetro_jit_ld`/`vetro_jit_st`/`vetro_jit_resolve` (celle per thread,
-    impostate e ripristinate da `run`, quindi anche rientranti).
-  - Fault: `vetro_jit_ld` scrive `FAULT` (1) in `exit_detail` e restituisce
-    0; `vetro_jit_st` scrive `FAULT` o `STOP` (2) e restituisce 1.
-- `vetro_jit_selftest` e `web/node/jit-selftest.mjs`: il JS codifica un
-  modulo con un blocco `b0` che fa `x2 = ld(x0) + x1; st(x0 + 8, x2);
-  pc += 12; steps += 3`; Rust lo compila con `JsEngine`, lo esegue su un
-  `JitState` con `x0 = 0x1000`, `x1 = 5` sopra una RAM di prova che contiene
-  37, e restituisce il valore scritto (42). Prova il giro Rust → JS → modulo
-  generato → `ld`/`st` in Rust.
+  - The shared memory is a 256 KiB buffer aligned to 16 inside
+    vetro-wasm (`JitState` and the system-mode area): `state` is an
+    offset into that buffer, and the block receives the absolute address
+    (buffer + `state`), because for the block `env.mem` is the whole linear
+    memory. For the same reason `host_address` is the address itself: the
+    blocks' software TLB points straight at the guest RAM.
+  - `run` calls the function through `__indirect_function_table` (entry
+    given by `vetro_jit.entry` and cached): no trip through JS.
+  - During `run` the `Host` and the shared memory are reachable from
+    `vetro_jit_ld`/`vetro_jit_st`/`vetro_jit_resolve` (per-thread cells,
+    set and restored by `run`, hence also reentrant).
+  - Faults: `vetro_jit_ld` writes `FAULT` (1) in `exit_detail` and returns
+    0; `vetro_jit_st` writes `FAULT` or `STOP` (2) and returns 1.
+- `vetro_jit_selftest` and `web/node/jit-selftest.mjs`: JS encodes a
+  module with a block `b0` that does `x2 = ld(x0) + x1; st(x0 + 8, x2);
+  pc += 12; steps += 3`; Rust compiles it with `JsEngine`, runs it on a
+  `JitState` with `x0 = 0x1000`, `x1 = 5` over a test RAM containing
+  37, and returns the value written (42). It tests the round trip Rust → JS →
+  generated module → `ld`/`st` in Rust.
 
-Il ciclo di esecuzione con i blocchi sta in `vetro-machine` e in
+The execution loop with blocks lives in `vetro-machine` and in
 `vetro_jit::sys` (ADR 0013).
 
-## Dischi in JavaScript (`web/node/disk.mjs`)
+## Disks in JavaScript (`web/node/disk.mjs`)
 
-Senza API di Node (gira nel Worker dell'app e nei test):
+No Node APIs (it runs in the app's Worker and in the tests):
 
-- `RangeSource(url)`: `open()` legge la dimensione dal `Content-Range` di
-  una richiesta `Range: bytes=0-0` (serve una risposta 206) e fa la chiave
-  della cache con URL, dimensione ed `ETag`/`Last-Modified`; `read(offset,
-  length)` con Range, 3 tentativi sugli errori di rete e sui 5xx.
-- `BlobSource(file)`: un `File` scelto dall'utente (`Blob.slice`).
-- `MemoryCache` e `OpfsCache.open(key, blockSize, blocks)`: la cache OPFS
-  usa `FileSystemSyncAccessHandle` (solo in un Worker dedicato): un file
-  `.img` con i blocchi al loro posto e un file `.map` con un bit per blocco
-  presente, scritto dopo i dati. Al riavvio i blocchi presenti non tornano
-  in rete.
+- `RangeSource(url)`: `open()` reads the size from the `Content-Range` of
+  a `Range: bytes=0-0` request (a 206 response is required) and builds the
+  cache key from URL, size and `ETag`/`Last-Modified`; `read(offset,
+  length)` with Range, 3 attempts on network errors and on 5xx.
+- `BlobSource(file)`: a `File` chosen by the user (`Blob.slice`).
+- `MemoryCache` and `OpfsCache.open(key, blockSize, blocks)`: the OPFS cache
+  uses `FileSystemSyncAccessHandle` (only in a dedicated Worker): an `.img`
+  file with the blocks in place and a `.map` file with one bit per block
+  present, written after the data. On restart the blocks present do not go
+  back to the network.
 - `DiskFeeder(machine)`: `add(source, { cache, blockSize, maxBlocks,
-  readOnly, readahead })` aggiunge il disco (`vetro_disk_add`); `serve()`
-  dopo `Blocked` consegna i blocchi chiesti, prima dalla cache, poi dalla
-  sorgente unendo i blocchi contigui (più `readahead` blocchi dopo ognuno)
-  in una richiesta fino a 8 MiB. Un errore della sorgente dopo i tentativi
-  diventa `vetro_disk_fail`.
+  readOnly, readahead })` adds the disk (`vetro_disk_add`); `serve()`
+  after `Blocked` delivers the requested blocks, first from the cache, then
+  from the source, merging contiguous blocks (plus `readahead` blocks after
+  each one) into a request of up to 8 MiB. A source error after the
+  attempts becomes `vetro_disk_fail`.
 
-## Persistenza in JavaScript (`web/node/persist.mjs`, M6, ADR 0017)
+## Persistence in JavaScript (`web/node/persist.mjs`, M6, ADR 0017)
 
-Senza API di Node. I file hanno l'interfaccia di `FileSystemSyncAccessHandle`
-(`getSize`, `read`, `write`, `truncate`, `flush`, `close`): quelli di OPFS
-nel Worker (`opfsFile(cartella, nome)`), `MemFile` nei test.
+No Node APIs. Files have the `FileSystemSyncAccessHandle` interface
+(`getSize`, `read`, `write`, `truncate`, `flush`, `close`): the OPFS ones
+in the Worker (`opfsFile(folder, name)`), `MemFile` in the tests.
 
-- `DiskOverlay.open(machine, disk, file, identity)`: legge il file e chiama
+- `DiskOverlay.open(machine, disk, file, identity)`: reads the file and calls
   `vetro_overlay_open` (`opened.code`: `Loaded`, `New`, `Mismatch`,
-  `Corrupt`); `persist()` applica le scritture di `vetro_overlay_take`
-  (troncamento, dati, flush, intestazione, flush) e dice se ha scritto;
+  `Corrupt`); `persist()` applies the writes of `vetro_overlay_take`
+  (truncation, data, flush, header, flush) and says whether it wrote;
   `generation`, `info`.
 - `SnapshotStore.opfs()` / `.memory()`: `loadMeta(key)` (metadata of a
   complete snapshot without reading its bytes), `readInto(key, view)`,
   `openReader(key)` (`{ size, readAt, close }`), `saveStream(key, meta,
   produce)` (chunks written as they come into a new file, which replaces the
   old one only when the save succeeded);
-  `save(chiave, metadati, byte)`
-  scrive `<chiave>.snap` e poi `<chiave>.json` (con `size`), `load(chiave)`
-  restituisce `{ meta, bytes }` solo se i metadati ci sono e la lunghezza
-  torna; `remove`.
-- `snapshotKey(parti)`: SHA-256 (32 cifre esadecimali) del JSON a chiavi
-  ordinate; `sha256Hex`; `staleReason(meta, overlays)`: null se ogni overlay
-  è alla generazione salvata nei metadati, altrimenti il motivo;
-  `toBase64`/`fromBase64` per la coda della console nei metadati.
+  `save(key, metadata, bytes)`
+  writes `<key>.snap` and then `<key>.json` (with `size`), `load(key)`
+  returns `{ meta, bytes }` only if the metadata is there and the length
+  matches; `remove`.
+- `snapshotKey(parts)`: SHA-256 (32 hex digits) of the JSON with sorted
+  keys; `sha256Hex`; `staleReason(meta, overlays)`: null if every overlay
+  is at the generation saved in the metadata, otherwise the reason;
+  `toBase64`/`fromBase64` for the console tail in the metadata.
 
-La classe `Machine` di `vetro.mjs` ha `snapshotVersion`, `snapshotSave()`
-(copia dei byte), `snapshotSaveTo(write)` (chunked: synchronous
+The `Machine` class of `vetro.mjs` has `snapshotVersion`, `snapshotSave()`
+(copy of the bytes), `snapshotSaveTo(write)` (chunked: synchronous
 `write(bytes, offset)`, then the header at offset 0),
 `snapshotRestoreStream(size, readAt)` (chunked: only the part before the
 RAM goes into the module's memory), `snapshotRestoreWith(n, fill)` (the
 bytes read straight into a buffer in the module's memory), `memoryBytes`,
-`snapshotRestore(bytes)` (lancia un `Error` con `code`
+`snapshotRestore(bytes)` (throws an `Error` with `code`
 `BadMagic`/`Version`/`Config`/`Corrupt`), `overlayOpen(disk, identity,
-bytes)`, `overlayTake(disk)` (`{ truncate, writes: [{ at, bytes }] }` o null),
+bytes)`, `overlayTake(disk)` (`{ truncate, writes: [{ at, bytes }] }` or null),
 `overlayInfo(disk)`.
 
-## L'app web (`web/app`)
+## The web app (`web/app`)
 
-HTML, CSS e moduli ES serviti così come sono: nessun bundler, nessuna
-dipendenza npm.
+HTML, CSS and ES modules served as they are: no bundler, no npm
+dependencies.
 
 ```sh
 cargo build --release --target wasm32-unknown-unknown -p vetro-wasm
 node tools/web-serve.mjs            # http://127.0.0.1:8080/app/
 ```
 
-`tools/web-serve.mjs` serve `web/` (l'app in `/app/`, i moduli comuni in
-`/node/`), il `.wasm` in `/wasm/vetro_wasm.wasm`, `target/guest-kernel` in
-`/guest/` (kernel e initramfs di M3, già scelti nella pagina) e
-`target/web-disks` in `/disks/`, con Range, `ETag` e le intestazioni
-`Cross-Origin-Opener-Policy: same-origin` e
-`Cross-Origin-Embedder-Policy: require-corp` (più
-`Cross-Origin-Resource-Policy: same-origin`). Oggi non servono (un solo
-thread, niente `SharedArrayBuffer`), ma la pagina è già
-`crossOriginIsolated`: quando arriveranno i thread WASM (ADR 0002) ogni
-server che ospita l'app dovrà mandarle, e ogni risorsa di un'altra origine
-(es. un disco su una CDN) dovrà avere CORS o `Cross-Origin-Resource-Policy:
-cross-origin`. Parametri dell'URL:
+`tools/web-serve.mjs` serves `web/` (the app at `/app/`, the shared modules at
+`/node/`), the `.wasm` at `/wasm/vetro_wasm.wasm`, `target/guest-kernel` at
+`/guest/` (M3 kernel and initramfs, already selected in the page) and
+`target/web-disks` at `/disks/`, with Range, `ETag` and the headers
+`Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: require-corp` (plus
+`Cross-Origin-Resource-Policy: same-origin`). They are not needed today (a
+single thread, no `SharedArrayBuffer`), but the page is already
+`crossOriginIsolated`: when WASM threads arrive (ADR 0002) every server
+hosting the app will have to send them, and every resource from another
+origin (e.g. a disk on a CDN) will need CORS or `Cross-Origin-Resource-Policy:
+cross-origin`. URL parameters:
 `?kernel=URL&initrd=URL&disk=URL&cmdline=...&pointer=multitouch&webgpu=1&autostart=1`,
-più `snapshot=0` (niente cache degli snapshot), `persist=0` (dischi non
-persistenti), `files=/a,/b` (radici del gestore dei file), `nofiles=1`
-(senza gestore dei file né vsock), plus `ram=MiB` and, for Vetro's AOSP
+plus `snapshot=0` (no snapshot cache), `persist=0` (non-persistent
+disks), `files=/a,/b` (file manager roots), `nofiles=1`
+(no file manager and no vsock), plus `ram=MiB` and, for Vetro's AOSP
 image, `os=android` and `manifest=URL` (default: the version published on
 R2; `tools/web-serve.mjs` also serves `target/aosp/out` at `/aosp/`).
 
-- `main.mjs` (thread della pagina): sceglie kernel, initramfs e disco (URL
-  o file locale), opzioni (RAM, risoluzione, tablet o touchscreen, blocchi
-  da 64 KiB o 1 MiB, JIT, tempo reale, cache OPFS, dischi persistenti,
-  snapshot in cache, WebGPU), avvia il
-  Worker; disegna i rettangoli cambiati dello scanout (`display.mjs`:
-  Canvas2D con `putImageData`, o WebGPU con `writeTexture` e un triangolo
-  a pieno schermo, se scelto e disponibile), il cursore in un secondo
-  canvas sopra, la console (`terminal.mjs`: CR/LF/BS/TAB, CSI K/J/C/D/G/H,
-  risposta a `ESC[6n`, UTF-8), la barra di stato. Pulsanti "Salva stato"
-  (snapshot subito) e, prima dell'avvio, "Cancella dati salvati"
-  (cartelle OPFS `vetro-snapshots`, `vetro-overlays`, `vetro-disks`). Dopo
-  un ripristino rimostra la coda della console dello snapshot senza
-  rispondere alle richieste del terminale. `window.vetroState` (`boot`:
-  `{ mode: 'cold' | 'snapshot', ms, times }`, `snapshots`, `disks`) per i
-  test.
-- Gestore dei file (M8, ADR 0020, `docs/specs/files.md`): opzione attiva di
-  default (virtio-vsock nella macchina e nella chiave degli snapshot); il
-  Worker tiene `GuestFiles` e lo fa avanzare fra una fetta e l'altra, le
-  richieste della pagina sono ingressi registrati in `inputLog`; il
-  pannello `files.mjs` accanto allo schermo mostra l'albero delle radici
-  (`window.vetroFiles.setRoots`), aggiornato dagli eventi di inotify, con i
-  visualizzatori (testo, JSON, XML/SharedPreferences, esadecimale,
-  immagini, SQLite con `sqlite.mjs`) e il salvataggio nel guest.
-- Analisi (M7, M10, ADR 0023; `analysis.mjs`): sotto lo schermo tre
-  pannelli. **Rete**: lista delle richieste (metodo, host, percorso, stato,
-  dimensioni, tipo, durata, cascata), filtri (testo, metodo, stato, tipo di
-  corpo), dettaglio con tempi per fase, intestazioni e corpi decodificati
-  (JSON, form, multipart, protobuf senza schema, testo, esadecimale),
-  esportazione HAR e pcapng (Blob + `<a download>`). **Timeline**: ingressi
-  nel tempo del guest con i loro effetti (http, dns, tls, file, console),
-  asse del tempo, finestra di attribuzione, filtri, clic su una richiesta →
-  dettaglio, "vai qui" → replay fino a quell'istruzione. **Registrazione**:
-  registra/ferma (keyframe ogni N M istruzioni), rigioca (verdetto "replay
-  identico" o la differenza), scarica e carica il log, vai all'istruzione,
-  continua, registri e dump esadecimale di un indirizzo virtuale, ingressi
-  registrati. `window.vetroAnalysis.state()` per i test. Il Worker manda
-  lista e timeline al più ogni 0,7 s se sono cambiate; con la rete la
-  cattura è accesa dall'avvio; i comandi del gestore dei file (salva, crea,
-  cancella, rinomina) sono ingressi della timeline e gli eventi di inotify
-  (creato, scritto, spostato, cancellato) effetti. Registrazioni in OPFS
-  (`vetro-recordings/`, anche "Cancella dati salvati" le toglie); durante un
-  replay gli ingressi della pagina si scartano, il gestore dei file è
-  chiuso, niente tempo reale né snapshot in cache.
-- Ingressi: tastiera sul canvas con `KeyboardEvent.code` → codice Linux
-  (`keymap.mjs`; le ripetizioni del browser si scartano, l'autorepeat lo fa
-  il guest con EV_REP; al blur si rilasciano i tasti premuti); mouse con
-  coordinate assolute 0..32767 del tablet e pulsanti `BTN_*`, rotella come
-  `REL_WHEEL`; col touchscreen ogni `pointerId` prende uno slot (0..9);
-  console con i byte di un terminale (Invio = CR, Backspace = DEL, frecce
-  CSI, Ctrl+lettera, incolla); pulsante del tasto di accensione (GPIO 3
-  premuto e rilasciato).
-- `worker.mjs`: istanzia vetro-wasm e il motore JIT, crea la macchina
-  (`vetro_machine_new_with`, rete col sinkhole a scelta), i dischi (`DiskFeeder`, cache OPFS per gli
-  URL), carica il kernel; esegue quanti da 1 M istruzioni per al più 12 ms
-  per fetta, poi manda console, rettangolo cambiato (ArrayBuffer
-  trasferito), cursore, statistiche; applica gli ingressi fra una fetta e
-  l'altra (registrandoli con il numero di istruzione, per M10); su
-  `Blocked` aspetta `DiskFeeder.serve()`; su `Idle` aspetta un messaggio.
-  Con "tempo reale" il tempo del guest non corre davanti all'orologio vero
-  (il tempo passato ad aspettare i dischi non conta).
-- Persistenza nel Worker (ADR 0017): per ogni disco scrivibile un overlay
-  in `vetro-overlays/<sha256(identità)>.cow`, salvato fra una fetta e
-  l'altra (al più ogni secondo, e a ogni arresto); lo snapshot in
-  `vetro-snapshots/`, con chiave da versione del formato, hash di kernel e
-  initramfs, riga di comando, RAM, risoluzione, dispositivi, identità e
-  dimensione dei dischi. All'avvio, se c'è uno snapshot per la chiave e gli
-  overlay sono alla generazione dei suoi metadati, si ripristina invece di
-  caricare il kernel (messaggio `restored` con i tempi); altrimenti si
-  avvia da zero (`cold`). Lo snapshot si salva (dopo gli overlay, messaggio
-  `snapshot`) la prima volta che il guest è a riposo, di nuovo a riposo se
-  gli overlay sono cambiati, e a richiesta. A riposo: `Idle`, o 1,5 s di
-  tempo del guest senza console, scanout, ingressi né dischi.
+- `main.mjs` (page thread): chooses kernel, initramfs and disk (URL
+  or local file), options (RAM, resolution, tablet or touchscreen, 64 KiB
+  or 1 MiB blocks, JIT, real time, OPFS cache, persistent disks,
+  cached snapshots, WebGPU), starts the
+  Worker; draws the changed rectangles of the scanout (`display.mjs`:
+  Canvas2D with `putImageData`, or WebGPU with `writeTexture` and a
+  full-screen triangle, if chosen and available), the cursor in a second
+  canvas on top, the console (`terminal.mjs`: CR/LF/BS/TAB, CSI K/J/C/D/G/H,
+  reply to `ESC[6n`, UTF-8), the status bar. Buttons "Save state"
+  (snapshot now) and, before boot, "Delete saved data"
+  (OPFS folders `vetro-snapshots`, `vetro-overlays`, `vetro-disks`). After
+  a restore it shows the snapshot's console tail again without
+  replying to the terminal's queries. `window.vetroState` (`boot`:
+  `{ mode: 'cold' | 'snapshot', ms, times }`, `snapshots`, `disks`) for the
+  tests.
+- File manager (M8, ADR 0020, `docs/specs/files.md`): option on by
+  default (virtio-vsock in the machine and in the snapshot key); the
+  Worker holds `GuestFiles` and advances it between one slice and the next,
+  the page's requests are inputs recorded in `inputLog`; the
+  `files.mjs` panel next to the screen shows the tree of the roots
+  (`window.vetroFiles.setRoots`), updated by inotify events, with the
+  viewers (text, JSON, XML/SharedPreferences, hex,
+  images, SQLite with `sqlite.mjs`) and saving into the guest.
+- Analysis (M7, M10, ADR 0023; `analysis.mjs`): three panels below the
+  screen. **Network**: list of requests (method, host, path, status,
+  sizes, type, duration, waterfall), filters (text, method, status, body
+  type), detail with per-phase timings, headers and decoded bodies
+  (JSON, form, multipart, schema-less protobuf, text, hex),
+  HAR and pcapng export (Blob + `<a download>`). **Timeline**: inputs
+  in guest time with their effects (http, dns, tls, file, console),
+  time axis, attribution window, filters, click on a request →
+  detail, "go here" → replay up to that instruction. **Recording**:
+  record/stop (keyframe every N M instructions), replay (verdict "identical
+  replay" or the difference), download and load the log, go to instruction,
+  continue, registers and hex dump of a virtual address, recorded
+  inputs. `window.vetroAnalysis.state()` for the tests. The Worker sends
+  list and timeline at most every 0.7 s if they have changed; with networking
+  the capture is on from boot; file manager commands (save, create,
+  delete, rename) are timeline inputs and inotify events
+  (created, written, moved, deleted) are effects. Recordings in OPFS
+  (`vetro-recordings/`, "Delete saved data" removes them too); during a
+  replay the page's inputs are discarded, the file manager is
+  closed, no real time and no cached snapshots.
+- Inputs: keyboard on the canvas with `KeyboardEvent.code` → Linux code
+  (`keymap.mjs`; browser repeats are discarded, the guest does autorepeat
+  with EV_REP; on blur the pressed keys are released); mouse with
+  absolute tablet coordinates 0..32767 and `BTN_*` buttons, wheel as
+  `REL_WHEEL`; with the touchscreen each `pointerId` takes a slot (0..9);
+  console with a terminal's bytes (Enter = CR, Backspace = DEL, arrows
+  CSI, Ctrl+letter, paste); power key button (GPIO 3
+  pressed and released).
+- `worker.mjs`: instantiates vetro-wasm and the JIT engine, creates the machine
+  (`vetro_machine_new_with`, network with the sinkhole optionally), the disks (`DiskFeeder`, OPFS cache for
+  URLs), loads the kernel; runs 1 M-instruction quanta for at most 12 ms
+  per slice, then sends console, changed rectangle (transferred
+  ArrayBuffer), cursor, statistics; applies inputs between one slice and
+  the next (recording them with the instruction number, for M10); on
+  `Blocked` it waits for `DiskFeeder.serve()`; on `Idle` it waits for a message.
+  With "real time" guest time does not run ahead of the real clock
+  (time spent waiting for disks does not count).
+- Persistence in the Worker (ADR 0017): for every writable disk an overlay
+  in `vetro-overlays/<sha256(identity)>.cow`, saved between one slice and
+  the next (at most every second, and at every stop); the snapshot in
+  `vetro-snapshots/`, with a key from the format version, hash of kernel and
+  initramfs, command line, RAM, resolution, devices, identity and
+  size of the disks. At boot, if there is a snapshot for the key and the
+  overlays are at the generation of its metadata, it restores instead of
+  loading the kernel (message `restored` with the timings); otherwise it
+  boots from scratch (`cold`). The snapshot is saved (after the overlays,
+  message `snapshot`) the first time the guest is idle, again when idle if
+  the overlays have changed, and on request. Idle: `Idle`, or 1.5 s of
+  guest time without console, scanout, inputs or disks.
 
 ### The AOSP image in the app (M5/M6, ADR 0028)
 
@@ -682,69 +681,69 @@ R2; `tools/web-serve.mjs` also serves `target/aosp/out` at `/aosp/`).
   `prebuilt-key.mjs` (key of a vetro-wasm build, lookup on R2, the site's
   hint and guard).
 
-## Test web
+## Web tests
 
-`tools/web-test.sh [--no-jit]` (job `boot` della CI, dopo
+`tools/web-test.sh [--no-jit]` (CI `boot` job, after
 `tools/wasm-boot.sh`):
 
-- `tests/boot/tests/web.rs` (nativo, release): gli stessi copioni di
-  `boot-disk.mjs` e `devices.mjs` con l'API di vetro-wasm compilata per
-  l'host, l'interprete e un disco locale; scrive istruzioni e log grezzo in
-  `target/web-test/native-*`. Con `VETRO_WEB_NATIVE=1` (lo mette
-  `tools/web-test.sh`) i test in Node devono dare le stesse istruzioni e lo
-  stesso log byte per byte (JIT in V8, disco via HTTP);
-- `tests/web/unit.mjs`: server (Range, suffissi, 416, HEAD, COOP/COEP,
-  percorsi fuori radice), `RangeSource`, `BlobSource`, `DiskFeeder` (cache,
-  blocchi contigui, lettura anticipata, errori), mappa dei tasti, terminale,
+- `tests/boot/tests/web.rs` (native, release): the same scripts as
+  `boot-disk.mjs` and `devices.mjs` with the vetro-wasm API compiled for
+  the host, the interpreter and a local disk; writes instructions and raw log to
+  `target/web-test/native-*`. With `VETRO_WEB_NATIVE=1` (set by
+  `tools/web-test.sh`) the Node tests must give the same instructions and the
+  same log byte for byte (JIT in V8, disk over HTTP);
+- `tests/web/unit.mjs`: server (Range, suffixes, 416, HEAD, COOP/COEP,
+  paths outside the root), `RangeSource`, `BlobSource`, `DiskFeeder` (cache,
+  contiguous blocks, read-ahead, errors), key map, terminal,
   `MemFile`, `SnapshotStore`, `snapshotKey`, `staleReason`;
-- `tests/web/boot-disk.mjs`: il kernel M3 legge e scrive un disco raw di
-  prova (`md5sum /dev/vda`, 13 byte scritti, cache svuotata, riletti,
-  `md5sum`): disco locale, via HTTP con cache vuota, dalla cache piena
-  (nessuna lettura in rete), con blocchi da 4 KiB e lettura anticipata.
-  Stesse istruzioni e stesso log in tutti i casi; somme uguali a quelle del
-  file; file sul server intatto;
-- `tests/web/devices.mjs`: `vetro-dev drm-hold` e il framebuffer letto con
-  `vetro_display_ptr` uguale pixel per pixel al motivo del guest (lo stesso
-  controllo di `tests/boot/tests/devices.rs`), rettangolo cambiato,
-  cursore, spegnimento dello scanout; tastiera e tablet via API letti dal
-  guest con evdev; LED; due esecuzioni identiche;
-- `tests/web/snapshot.mjs` (M6): kernel M3 con disco via HTTP e overlay su
-  `MemFile`; snapshot a 40 M istruzioni e al prompt, poi scrittura (dd +
-  sync, 75 cluster), rilettura a cache svuotata, `md5sum`, spegnimento;
-  ripristino su macchine nuove col JIT e con l'interprete (e da metà avvio):
-  seguito del log byte per byte, istruzioni finali e file dell'overlay
-  uguali all'esecuzione senza tagli; avvio da zero con l'overlay (la
-  scrittura c'è); base cambiata (overlay scartato). Stampa tempi e
-  dimensioni di salvataggio e ripristino in V8;
-- `tests/web/files.mjs` (M8): il gestore dei file via API sul kernel M3
-  con vsock: list, lettura, ENOENT, scrittura che conserva modo e
-  proprietario letta dal guest, evento di un processo del guest entro 1 s
-  di tempo del guest, 1,2 MB scritti e riletti a pezzi (`cmp` nel guest),
-  cancellazione ricorsiva; due esecuzioni uguali;
-- `tests/web/browser.mjs`: l'app in Chrome headless pilotato col protocollo
-  DevTools (WebSocket di Node 22): avvio col disco via HTTP, `md5sum` e
-  motivo del guest sul canvas pixel per pixel con cursore visibile, tasto
-  vero dal canvas al guest; snapshot salvato al riposo dopo l'avvio,
-  scrittura sul disco e snapshot risalvato; seconda sessione con
-  `snapshot=0` (avvio da zero, scrittura ritrovata dall'overlay in OPFS,
-  blocchi dalla cache OPFS); terza sessione ripristinata dallo snapshot
-  (tempo misurato, console che risponde, scrittura presente); pannello del
-  gestore dei file (albero aggiornato dal vivo quando il guest crea un
-  file, file aperto, modificato e salvato, riletto dal guest con `cat`,
-  ricollegamento dopo il ripristino). Senza Chrome
-  (`VETRO_CHROME`) stampa SKIP; `VETRO_REQUIRE_BROWSER=1` lo rende un
-  errore;
-- `tests/web/inspector.mjs` (M7, ABI 8): kernel M3 con la rete, POST JSON e
-  POST form di wget al sinkhole; lista, dettaglio con corpi decodificati,
-  HAR, pcapng; richieste e DNS attribuiti alla riga del comando, un
-  carattere singolo che non causa rete; due esecuzioni uguali (log, HAR,
+- `tests/web/boot-disk.mjs`: the M3 kernel reads and writes a raw test disk
+  (`md5sum /dev/vda`, 13 bytes written, cache dropped, read back,
+  `md5sum`): local disk, over HTTP with an empty cache, from the full cache
+  (no network reads), with 4 KiB blocks and read-ahead.
+  Same instructions and same log in all cases; sums equal to those of the
+  file; file on the server intact;
+- `tests/web/devices.mjs`: `vetro-dev drm-hold` and the framebuffer read with
+  `vetro_display_ptr` equal pixel for pixel to the guest's pattern (the same
+  check as `tests/boot/tests/devices.rs`), changed rectangle,
+  cursor, scanout power-off; keyboard and tablet via API read by the
+  guest with evdev; LEDs; two identical executions;
+- `tests/web/snapshot.mjs` (M6): M3 kernel with a disk over HTTP and overlay on
+  `MemFile`; snapshot at 40 M instructions and at the prompt, then a write (dd +
+  sync, 75 clusters), read back with the cache dropped, `md5sum`, power-off;
+  restore on new machines with the JIT and with the interpreter (and from mid-boot):
+  continuation of the log byte for byte, final instructions and overlay file
+  equal to the uncut execution; boot from scratch with the overlay (the
+  write is there); base changed (overlay discarded). Prints save and
+  restore times and sizes in V8;
+- `tests/web/files.mjs` (M8): the file manager via API on the M3 kernel
+  with vsock: list, read, ENOENT, a write that preserves mode and
+  owner read by the guest, event from a guest process within 1 s
+  of guest time, 1.2 MB written and read back in pieces (`cmp` in the guest),
+  recursive delete; two equal executions;
+- `tests/web/browser.mjs`: the app in headless Chrome driven with the
+  DevTools protocol (Node 22 WebSocket): boot with the disk over HTTP, `md5sum` and
+  guest pattern on the canvas pixel for pixel with the cursor visible, a real
+  key from the canvas to the guest; snapshot saved when idle after boot,
+  write to the disk and snapshot saved again; second session with
+  `snapshot=0` (boot from scratch, write found again from the overlay in OPFS,
+  blocks from the OPFS cache); third session restored from the snapshot
+  (time measured, console that responds, write present); file manager
+  panel (tree updated live when the guest creates a
+  file, file opened, edited and saved, read back by the guest with `cat`,
+  reconnection after the restore). Without Chrome
+  (`VETRO_CHROME`) it prints SKIP; `VETRO_REQUIRE_BROWSER=1` makes it an
+  error;
+- `tests/web/inspector.mjs` (M7, ABI 8): M3 kernel with networking, JSON POST and
+  form POST from wget to the sinkhole; list, detail with decoded bodies,
+  HAR, pcapng; requests and DNS attributed to the command line, a
+  single character that causes no network traffic; two equal executions (log, HAR,
   pcapng, timeline);
-- `tests/web/replay.mjs` (M10, ABI 8): registrazione con keyframe ogni 10 M
-  istruzioni, log da file, keyframe in un archivio in memoria (`Recording`),
-  replay identico con JIT e interprete (console byte per byte, ispettore e
-  timeline uguali), salto a un'istruzione con gli stessi registri e la
-  stessa memoria a VBAR_EL1, log ricomposto uguale al file, keyframe
-  alterato rifiutato;
+- `tests/web/replay.mjs` (M10, ABI 8): recording with a keyframe every 10 M
+  instructions, log from file, keyframes in an in-memory archive (`Recording`),
+  identical replay with JIT and interpreter (console byte for byte, inspector and
+  timeline equal), jump to an instruction with the same registers and the
+  same memory at VBAR_EL1, recomposed log equal to the file, altered keyframe
+  rejected;
 - `tests/web/android-boot.mjs` (M5, ABI 12): v4 `boot.img` and
   `init_boot.img` from `mkbootimg.py` around the M3 kernel,
   `vetro_load_android` on a 3 GiB machine: instructions and log equal to the
@@ -769,25 +768,25 @@ R2; `tools/web-serve.mjs` also serves `target/aosp/out` at `/aosp/`).
 - `tests/web/unit.mjs` also covers the prebuilt snapshot download (lookup,
   404, chunks verified, a break retried with a Range, an interrupted download
   resumed in a new session, a damaged chunk never written);
-- `tests/web/browser-analysis.mjs` (Chrome, come `browser.mjs`): wget
-  nell'ispettore con il JSON decodificato e legato al comando nella
-  timeline, scrittura di un file legata al suo comando, download veri di
-  log, HAR e pcapng, "Rigioca" identico, "vai qui" dalla timeline con
-  registri e dump di memoria, "Continua" identico, log ricaricato con "Carica
-  log" e rigiocato.
+- `tests/web/browser-analysis.mjs` (Chrome, like `browser.mjs`): wget
+  in the inspector with the JSON decoded and tied to the command in the
+  timeline, a file write tied to its command, real downloads of
+  log, HAR and pcapng, identical "Replay", "go here" from the timeline with
+  registers and memory dump, identical "Continue", log reloaded with "Load
+  log" and replayed.
 
 ## Node
 
-- `web/node/vetro.mjs`: `instantiate(bytes)` e la classe `Machine`, che avvolge
-  l'API (buffer, console, conteggi). Non usa API di Node.
-- `web/node/boot.mjs`: il copione di `tests/boot/tests/vetro.rs` (marcatore di
-  `/init`, autotest ok, `echo VETRO-SHELL-$((6*7))` a prompt completo,
-  `poweroff -f` fino a `PowerOff`), con i tempi reali, `--expect-steps N` e il
-  log in `target/guest-kernel/node-boot.log`. Con `--jit` (`--jit-threshold
-  N`, `--jit-batch N`) gira col JIT, stampa i contatori e scrive
+- `web/node/vetro.mjs`: `instantiate(bytes)` and the `Machine` class, which wraps
+  the API (buffers, console, counts). It uses no Node APIs.
+- `web/node/boot.mjs`: the script of `tests/boot/tests/vetro.rs` (`/init`
+  marker, self-test ok, `echo VETRO-SHELL-$((6*7))` at the full prompt,
+  `poweroff -f` until `PowerOff`), with real timings, `--expect-steps N` and the
+  log in `target/guest-kernel/node-boot.log`. With `--jit` (`--jit-threshold
+  N`, `--jit-batch N`) it runs with the JIT, prints the counters and writes
   `node-boot-jit.log`.
-- `tools/wasm-boot.sh [--jit]`: costruisce il .wasm, esegue
-  `jit-selftest.mjs`, l'avvio nativo e l'avvio in Node (e col JIT); istruzioni
-  e log devono coincidere. Con `--jit` fallisce se il JIT in V8 è più lento
-  dell'interprete nativo (soglia di M4). Gira nel job `boot` della CI
-  (Node 22).
+- `tools/wasm-boot.sh [--jit]`: builds the .wasm, runs
+  `jit-selftest.mjs`, the native boot and the boot in Node (and with the JIT);
+  instructions and logs must match. With `--jit` it fails if the JIT in V8 is
+  slower than the native interpreter (M4 threshold). It runs in the CI `boot`
+  job (Node 22).

@@ -1,26 +1,26 @@
-//! Record & replay nel browser (ABI 8, M10, ADR 0019 e 0023).
+//! Record & replay in the browser (ABI 8, M10, ADR 0019 and 0023).
 //!
-//! La registrazione e il replay sono quelli di `vetro_machine` (un solo
-//! punto d'ingresso, log con eventi e keyframe, impronta alla fine). Qui:
+//! Recording and replay are those of `vetro_machine` (a single
+//! entry point, log with events and keyframes, fingerprint at the end). Here:
 //!
-//! - il log finito (o caricato da un file) resta nella [`Vm`]; i keyframe
-//!   (snapshot completi, ~10 MB l'uno) si possono **spostare fuori** uno per
-//!   uno ([`vetro_log_keyframe_take`]: il JS li scrive in OPFS) e
-//!   **rimettere** quando servono ([`vetro_log_keyframe_put`]): nel log
-//!   resta solo la loro posizione (istruzione, conto della console);
-//! - il file del log ([`vetro_log_encode`]) contiene i keyframe presenti in
-//!   quel momento; [`vetro_log_load`] lo rilegge;
-//! - [`vetro_replay_start`] rifà la registrazione dal keyframe più vicino a
-//!   un'istruzione (serve che sia presente): il JS poi esegue come sempre,
-//!   `vetro_run` si ferma agli eventi e alla fine confronta l'impronta. Il
-//!   salto a un'istruzione è lo stesso avvio seguito da `vetro_run` con il
-//!   quanto limitato fino a lì (come `Machine::goto`, ma con i dischi serviti
-//!   dal JS mentre si va);
-//! - lettura dello stato al punto raggiunto: registri in testo, memoria
-//!   virtuale e fisica.
+//! - the finished log (or loaded from a file) stays in the [`Vm`]; the keyframes
+//!   (full snapshots, ~10 MB each) can be **moved out** one by
+//!   one ([`vetro_log_keyframe_take`]: JS writes them into OPFS) and
+//!   **put back** when needed ([`vetro_log_keyframe_put`]): in the log
+//!   only their position remains (instruction, console count);
+//! - the log file ([`vetro_log_encode`]) contains the keyframes present at
+//!   that moment; [`vetro_log_load`] reads it back;
+//! - [`vetro_replay_start`] redoes the recording from the keyframe closest to
+//!   an instruction (it must be present): JS then runs as always,
+//!   `vetro_run` stops at the events and at the end compares the fingerprint. The
+//!   jump to an instruction is the same start followed by `vetro_run` with the
+//!   quantum limited up to there (like `Machine::goto`, but with the disks served
+//!   by JS along the way);
+//! - reading the state at the point reached: registers as text, virtual
+//!   and physical memory.
 //!
-//! Durante il replay gli ingressi del JS si ignorano (`Reply::Ignored`);
-//! il client del gestore dei file si chiude (il JS lo riapre alla fine).
+//! During replay the JS inputs are ignored (`Reply::Ignored`);
+//! the file manager client is closed (JS reopens it at the end).
 
 use vetro_analysis::timeline::UserInput;
 use vetro_machine::record::{EventKind, Keyframe};
@@ -29,33 +29,33 @@ use vetro_machine::{Log, RecordOptions, ReplayStatus};
 use crate::Vm;
 use crate::analysis::{Describer, vm_ref};
 
-/// Stati di [`vetro_rr_status`].
+/// States of [`vetro_rr_status`].
 pub mod rr {
     pub const IDLE: u32 = 0;
     pub const RECORDING: u32 = 1;
     pub const REPLAYING: u32 = 2;
-    /// Replay arrivato alla fine con lo stesso stato: replay identico.
+    /// Replay arrived at the end with the same state: identical replay.
     pub const FINISHED: u32 = 3;
-    /// Replay fermato su una differenza (motivo nel messaggio).
+    /// Replay stopped on a difference (reason in the message).
     pub const DIVERGED: u32 = 4;
 }
 
-/// Codici di [`vetro_replay_start`].
+/// Codes of [`vetro_replay_start`].
 pub mod replay_start {
     pub const OK: u32 = 0;
-    /// Nessun log (né registrato né caricato).
+    /// No log (neither recorded nor loaded).
     pub const NO_LOG: u32 = 1;
-    /// Il keyframe da cui partire è fuori (`vetro_log_keyframe_for` dice
-    /// quale): va rimesso con `vetro_log_keyframe_put`.
+    /// The keyframe to start from is out (`vetro_log_keyframe_for` says
+    /// which): it must be put back with `vetro_log_keyframe_put`.
     pub const KEYFRAME_MISSING: u32 = 2;
-    /// Il log non si applica a questa macchina (motivo nel messaggio).
+    /// The log doesn't apply to this machine (reason in the message).
     pub const REFUSED: u32 = 3;
 }
 
 impl Vm {
-    /// Dopo che lo stato della macchina è cambiato da fuori (ripristino,
-    /// keyframe): uscita della console non letta scartata, overlay da
-    /// riallineare per intero.
+    /// After the machine state has changed from outside (restore,
+    /// keyframe): unread console output discarded, overlay to
+    /// realign in full.
     pub(crate) fn after_state_change(&mut self) {
         self.out.clear();
         self.out_pos = 0;
@@ -64,7 +64,7 @@ impl Vm {
         }
     }
 
-    /// Timeline del replay: gli ingressi dell'utente del log da `from` in poi.
+    /// Replay timeline: the user inputs of the log from `from` on.
     fn timeline_from_log(&mut self, from: usize) {
         self.timeline.clear();
         self.describer = Describer::default();
@@ -79,7 +79,7 @@ impl Vm {
         }
     }
 
-    /// Log senza i byte dei keyframe (per contarne le dimensioni).
+    /// Log without the keyframe bytes (to count their sizes).
     fn log_events_only(log: &Log) -> Log {
         Log {
             config_hash: log.config_hash,
@@ -109,10 +109,10 @@ impl Vm {
     }
 }
 
-/// Comincia a registrare da qui: ogni ingresso da ora entra nel log, con
-/// un keyframe ogni `keyframe_every` istruzioni (0 = nessuno; nel browser
-/// serve almeno quello iniziale per rifare la sessione, quindi la pagina
-/// ne chiede sempre). Un replay in corso finisce.
+/// Starts recording from here: every input from now on goes into the log, with
+/// a keyframe every `keyframe_every` instructions (0 = none; in the browser
+/// at least the initial one is needed to redo the session, so the page
+/// always asks for them). A replay in progress ends.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_record_start(vm: *mut Vm, keyframe_every: u64) {
     let vm = unsafe { vm_ref(vm) };
@@ -120,8 +120,8 @@ pub unsafe extern "C" fn vetro_record_start(vm: *mut Vm, keyframe_every: u64) {
     vm.m.start_recording(RecordOptions { keyframe_every });
 }
 
-/// Finisce la registrazione; il log resta nella macchina (al posto di
-/// quello che c'era). 1 fatto, 0 non si registrava.
+/// Ends the recording; the log stays in the machine (replacing
+/// the one that was there). 1 done, 0 it wasn't recording.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_record_stop(vm: *mut Vm) -> u32 {
     let vm = unsafe { vm_ref(vm) };
@@ -134,10 +134,10 @@ pub unsafe extern "C" fn vetro_record_stop(vm: *mut Vm) -> u32 {
     }
 }
 
-/// Stato di registrazione e replay (codici di [`rr`]); in `out` (al più
-/// `cap`): eventi registrati finora (o prossimo evento del replay), eventi
-/// del log, keyframe del log, istruzione di partenza e di fine del log, 1
-/// se c'è un log. Con `DIVERGED` il motivo è nel messaggio.
+/// Recording and replay state (codes of [`rr`]); in `out` (at most
+/// `cap`): events recorded so far (or next replay event), events
+/// of the log, keyframes of the log, start and end instruction of the log, 1
+/// if there is a log. With `DIVERGED` the reason is in the message.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_rr_status(vm: *mut Vm, out: *mut u64, cap: usize) -> u32 {
     let vm = unsafe { vm_ref(vm) };
@@ -171,8 +171,8 @@ pub unsafe extern "C" fn vetro_rr_status(vm: *mut Vm, out: *mut u64, cap: usize)
     code
 }
 
-/// Il file del log (formato di `docs/specs/replay.md`) nel buffer dei
-/// risultati, con i keyframe presenti in questo momento; 0 senza log.
+/// The log file (format of `docs/specs/replay.md`) in the result
+/// buffer, with the keyframes present at this moment; 0 without a log.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_log_encode(vm: *mut Vm) -> usize {
     let vm = unsafe { vm_ref(vm) };
@@ -180,8 +180,8 @@ pub unsafe extern "C" fn vetro_log_encode(vm: *mut Vm) -> usize {
     vm.set_result(bytes)
 }
 
-/// Legge un file di log (al posto del log che c'era). 0 fatto, 1 file non
-/// valido (motivo nel messaggio: altra versione, rovinato, troncato).
+/// Reads a log file (replacing the log that was there). 0 done, 1 invalid
+/// file (reason in the message: another version, damaged, truncated).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_log_load(vm: *mut Vm, data: *const u8, len: usize) -> u32 {
     let vm = unsafe { vm_ref(vm) };
@@ -197,10 +197,10 @@ pub unsafe extern "C" fn vetro_log_load(vm: *mut Vm, data: *const u8, len: usize
     }
 }
 
-/// Dati del log in `out` (al più `cap`): istruzione di partenza, di fine,
-/// eventi, keyframe, intervallo dei keyframe, 1 se registrato col JIT, 1
-/// se è di una macchina configurata come questa, byte degli eventi.
-/// Restituisce quanti valori (0 senza log).
+/// Log data in `out` (at most `cap`): start instruction, end instruction,
+/// events, keyframes, keyframe interval, 1 if recorded with the JIT, 1
+/// if it is of a machine configured like this one, bytes of the events.
+/// Returns how many values (0 without a log).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_log_info(vm: *mut Vm, out: *mut u64, cap: usize) -> usize {
     let vm = unsafe { vm_ref(vm) };
@@ -219,9 +219,9 @@ pub unsafe extern "C" fn vetro_log_info(vm: *mut Vm, out: *mut u64, cap: usize) 
     unsafe { crate::write_u64s(out, cap, &v) }
 }
 
-/// Il keyframe `index` in `out` (al più `cap`): istruzione, byte e hash
-/// della console, dimensione dello snapshot, 1 se è presente (0 se è stato
-/// preso). Restituisce quanti valori (0 = non c'è).
+/// Keyframe `index` in `out` (at most `cap`): instruction, console bytes and hash,
+/// snapshot size, 1 if present (0 if it has been
+/// taken). Returns how many values (0 = it doesn't exist).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_log_keyframe(vm: *mut Vm, index: u32, out: *mut u64, cap: usize) -> usize {
     let vm = unsafe { vm_ref(vm) };
@@ -231,9 +231,9 @@ pub unsafe extern "C" fn vetro_log_keyframe(vm: *mut Vm, index: u32, out: *mut u
     unsafe { crate::write_u64s(out, cap, &v) }
 }
 
-/// Sposta i byte del keyframe `index` nel buffer dei risultati (nel log
-/// resta la sua posizione); restituisce la lunghezza, 0 se non c'è o è già
-/// fuori.
+/// Moves the bytes of keyframe `index` into the result buffer (its position
+/// stays in the log); returns the length, 0 if it doesn't exist or is already
+/// out.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_log_keyframe_take(vm: *mut Vm, index: u32) -> usize {
     let vm = unsafe { vm_ref(vm) };
@@ -246,16 +246,16 @@ pub unsafe extern "C" fn vetro_log_keyframe_take(vm: *mut Vm, index: u32) -> usi
     vm.set_result(bytes)
 }
 
-/// Rimette i byte del keyframe `index` (presi con
-/// [`vetro_log_keyframe_take`]). 1 fatto, 0 indice sbagliato o lunghezza
-/// diversa da quella del keyframe (se nota: un log riletto da un file senza
-/// i byte dei keyframe non la sa).
+/// Puts back the bytes of keyframe `index` (taken with
+/// [`vetro_log_keyframe_take`]). 1 done, 0 wrong index or length
+/// different from the keyframe's (if known: a log read back from a file without
+/// the keyframe bytes doesn't know it).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_log_keyframe_put(vm: *mut Vm, index: u32, data: *const u8, len: usize) -> u32 {
     let vm = unsafe { vm_ref(vm) };
     let i = index as usize;
     let Some(k) = vm.log.as_mut().and_then(|l| l.keyframes.get_mut(i)) else { return 0 };
-    // Dimensione 0 = sconosciuta (log riletto senza i byte dei keyframe).
+    // Size 0 = unknown (log read back without the keyframe bytes).
     let size = vm.kf_sizes.get(i).copied().unwrap_or(0);
     if len == 0 || (size != 0 && size != len as u64) {
         return 0;
@@ -267,8 +267,8 @@ pub unsafe extern "C" fn vetro_log_keyframe_put(vm: *mut Vm, index: u32, data: *
     1
 }
 
-/// Indice del keyframe da cui parte il replay verso l'istruzione `step`
-/// (l'ultimo non oltre), -1 se nessuno.
+/// Index of the keyframe from which the replay towards instruction `step` starts
+/// (the last one not beyond it), -1 if none.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_log_keyframe_for(vm: *mut Vm, step: u64) -> i32 {
     let vm = unsafe { vm_ref(vm) };
@@ -276,10 +276,10 @@ pub unsafe extern "C" fn vetro_log_keyframe_for(vm: *mut Vm, step: u64) -> i32 {
     l.keyframes.iter().rposition(|k| k.step <= step).map_or(-1, |i| i as i32)
 }
 
-/// Gli eventi del log in JSON: `[{"i":0,"step":N,"kind":"console",
-/// "label":"...","weak":false,"user":true}, ...]`; gli eventi che non sono
-/// azioni dell'utente (vsock, rete dell'host, rilasci) hanno `user: false`
-/// e il tipo dell'ingresso.
+/// The log events in JSON: `[{"i":0,"step":N,"kind":"console",
+/// "label":"...","weak":false,"user":true}, ...]`; the events that are not
+/// user actions (vsock, host network, releases) have `user: false`
+/// and the input type.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_log_events(vm: *mut Vm) -> usize {
     use std::fmt::Write as _;
@@ -294,17 +294,17 @@ pub unsafe extern "C" fn vetro_log_events(vm: *mut Vm) -> usize {
             out.push(',');
         }
         let (kind, label, weak, user) = match &e.kind {
-            EventKind::Opaque { slot } => ("opaco", format!("accesso opaco allo slot {slot:?}"), true, false),
+            EventKind::Opaque { slot } => ("opaque", format!("opaque access to slot {slot:?}"), true, false),
             EventKind::Input(input) => match d.describe(input) {
                 Some((k, label, weak)) => (k.name(), label, weak, true),
                 None => {
                     let k = match input {
                         Input::Console(_) => "console",
-                        Input::Keyboard(_) => "tasto",
-                        Input::Pointer(_) => "puntatore",
+                        Input::Keyboard(_) => "key",
+                        Input::Pointer(_) => "pointer",
                         Input::Gpio { .. } => "gpio",
-                        Input::Display { .. } => "schermo",
-                        Input::NetFrame(_) | Input::NetLink(_) | Input::HostNet(_) => "rete",
+                        Input::Display { .. } => "display",
+                        Input::NetFrame(_) | Input::NetLink(_) | Input::HostNet(_) => "network",
                         Input::Vsock(_) => "vsock",
                     };
                     (k, String::new(), true, false)
@@ -319,13 +319,13 @@ pub unsafe extern "C" fn vetro_log_events(vm: *mut Vm) -> usize {
     vm.set_result(out.into_bytes())
 }
 
-/// Comincia il replay del log dall'ultimo keyframe non oltre `step` (0 =
-/// dall'inizio della registrazione), che dev'essere presente. Codici di
-/// [`replay_start`]. Da qui `vetro_run` rifà la sessione (si ferma agli
-/// eventi; alla fine confronta l'impronta: `vetro_rr_status`); per saltare
-/// a `step` il JS esegue con il quanto limitato fino a lì. La cattura e la
-/// timeline ripartono (la timeline con gli ingressi del log), il client del
-/// gestore dei file si chiude.
+/// Starts the replay of the log from the last keyframe not beyond `step` (0 =
+/// from the start of the recording), which must be present. Codes of
+/// [`replay_start`]. From here `vetro_run` redoes the session (it stops at the
+/// events; at the end it compares the fingerprint: `vetro_rr_status`); to jump
+/// to `step` JS runs with the quantum limited up to there. The capture and the
+/// timeline restart (the timeline with the log inputs), the file manager
+/// client is closed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_replay_start(vm: *mut Vm, step: u64) -> u32 {
     let vm = unsafe { vm_ref(vm) };
@@ -335,13 +335,13 @@ pub unsafe extern "C" fn vetro_replay_start(vm: *mut Vm, step: u64) -> u32 {
     if kf.is_some_and(|i| log.keyframes[i].snapshot.is_empty()) {
         vm.log = Some(log);
         vm.message =
-            "il keyframe da cui partire non è presente: rimetterlo con vetro_log_keyframe_put".into();
+            "the keyframe to start from is not present: put it back with vetro_log_keyframe_put".into();
         return replay_start::KEYFRAME_MISSING;
     }
     vm.files = None;
     vm.files_queue.clear();
-    // Senza keyframe utili si parte dallo stato attuale (dev'essere quello
-    // di partenza).
+    // Without useful keyframes start from the current state (it must be the
+    // starting one).
     let r = vm.m.replay_from(&log, step);
     let from = kf.map_or(0, |i| log.events.partition_point(|e| e.step < log.keyframes[i].step));
     vm.log = Some(log);
@@ -360,8 +360,8 @@ pub unsafe extern "C" fn vetro_replay_start(vm: *mut Vm, step: u64) -> u32 {
     }
 }
 
-/// I registri al punto raggiunto (`Machine::registers_text`) nel buffer dei
-/// risultati.
+/// The registers at the point reached (`Machine::registers_text`) in the result
+/// buffer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_registers_text(vm: *mut Vm) -> usize {
     let vm = unsafe { vm_ref(vm) };
@@ -369,9 +369,9 @@ pub unsafe extern "C" fn vetro_registers_text(vm: *mut Vm) -> usize {
     vm.set_result(t.into_bytes())
 }
 
-/// Legge `len` byte all'indirizzo virtuale `va` (tabelle correnti, EL
-/// corrente, solo RAM, senza toccare i dispositivi) in `dst`. 1 fatto; 0 se
-/// un indirizzo non è leggibile: il primo va in `fault`.
+/// Reads `len` bytes at virtual address `va` (current tables, current
+/// EL, RAM only, without touching the devices) into `dst`. 1 done; 0 if
+/// an address is not readable: the first one goes into `fault`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_read_virt(
     vm: *mut Vm,
@@ -384,7 +384,7 @@ pub unsafe extern "C" fn vetro_read_virt(
     if len == 0 {
         return 1;
     }
-    // SAFETY: `dst` vale per `len` byte (contratto dell'API).
+    // SAFETY: `dst` is valid for `len` bytes (API contract).
     let buf = unsafe { core::slice::from_raw_parts_mut(dst, len) };
     match vm.m.read_virt(va, buf) {
         Ok(()) => 1,
@@ -397,21 +397,21 @@ pub unsafe extern "C" fn vetro_read_virt(
     }
 }
 
-/// Traduce l'indirizzo virtuale `va`; `u64::MAX` se non è mappato.
+/// Translates virtual address `va`; `u64::MAX` if it is not mapped.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_translate(vm: *mut Vm, va: u64) -> u64 {
     unsafe { vm_ref(vm) }.m.translate(va).unwrap_or(u64::MAX)
 }
 
-/// Legge `len` byte di RAM all'indirizzo fisico `pa`. 1 fatto, 0 fuori
-/// dalla RAM.
+/// Reads `len` bytes of RAM at physical address `pa`. 1 done, 0 outside
+/// the RAM.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_read_phys(vm: *mut Vm, pa: u64, dst: *mut u8, len: usize) -> u32 {
     let vm = unsafe { vm_ref(vm) };
     if len == 0 {
         return 1;
     }
-    // SAFETY: `dst` vale per `len` byte.
+    // SAFETY: `dst` is valid for `len` bytes.
     let buf = unsafe { core::slice::from_raw_parts_mut(dst, len) };
     vm.m.read_phys(pa, buf) as u32
 }
@@ -439,7 +439,7 @@ mod tests {
         (c, v)
     }
 
-    /// Esegue fino all'istruzione `to` (a quanti di al più 300).
+    /// Runs up to instruction `to` (in quanta of at most 300).
     fn run_to(vm: *mut Vm, to: u64) {
         loop {
             let now = unsafe { (*vm).m.steps };
@@ -450,13 +450,13 @@ mod tests {
         }
     }
 
-    /// Una macchina senza kernel (il PC di reset non è in RAM: eccezioni a
-    /// ripetizione, deterministiche) registrata con ingressi della console
-    /// e della tastiera e keyframe ogni 500 istruzioni; il log passa da un
-    /// file, i keyframe escono e rientrano come farebbe il JS con OPFS; il
-    /// replay su un'altra macchina finisce con lo stesso stato; il salto a
-    /// un'istruzione ritrova i registri registrati lì; un log di un'altra
-    /// macchina si rifiuta.
+    /// A machine without a kernel (the reset PC is not in RAM: repeated,
+    /// deterministic exceptions) recorded with console and keyboard
+    /// inputs and a keyframe every 500 instructions; the log goes through a
+    /// file, the keyframes go out and come back in as JS would do with OPFS; the
+    /// replay on another machine ends with the same state; the jump to
+    /// an instruction finds the registers recorded there; a log of another
+    /// machine is refused.
     #[test]
     fn registrazione_e_replay_dall_api() {
         let a = new(64 << 20);
@@ -476,16 +476,16 @@ mod tests {
             assert_eq!(vetro_record_stop(a), 0);
             let (code, v) = status(a);
             assert_eq!(code, rr::IDLE);
-            // Keyframe alla fine dei quanti, appena passate 500 istruzioni dal
-            // precedente: 1000, 1600, 2300, 2800, 3400, 4000.
-            assert_eq!(v[1..], [3, 6, 1000, 4000, 1], "3 ingressi, 6 keyframe");
+            // Keyframes at the end of the quanta, right after 500 instructions since the
+            // previous one: 1000, 1600, 2300, 2800, 3400, 4000.
+            assert_eq!(v[1..], [3, 6, 1000, 4000, 1], "3 inputs, 6 keyframes");
 
-            // Timeline: la riga della console e il tasto (il rilascio no).
+            // Timeline: the console line and the key (not the release).
             let n = vetro_timeline_json(a, 0);
             let t = json::parse(&result(a, n)).unwrap();
             let Some(Value::Array(inputs)) = t.get("inputs") else { panic!() };
             let labels: Vec<&str> = inputs.iter().filter_map(|i| i.get("label")?.as_str()).collect();
-            assert_eq!(labels, ["Invio: ab", "A"]);
+            assert_eq!(labels, ["Enter: ab", "A"]);
             assert_eq!(inputs[0].get("step"), Some(&Value::Number("1700".into())));
 
             let mut info = [0u64; 8];
@@ -495,13 +495,13 @@ mod tests {
             let ev = json::parse(&result(a, n)).unwrap();
             let Value::Array(ev) = ev else { panic!() };
             assert_eq!(ev.len(), 3);
-            assert_eq!(ev[2].get("user"), Some(&Value::Bool(false)), "rilascio del tasto");
+            assert_eq!(ev[2].get("user"), Some(&Value::Bool(false)), "key release");
             let n = vetro_log_encode(a);
             let file = result(a, n);
             assert_eq!(&file[..8], b"VETROREC");
 
-            // Un'altra macchina: log dal file, keyframe fuori (in OPFS) e
-            // rimessi solo quando servono.
+            // Another machine: log from the file, keyframes out (in OPFS) and
+            // put back only when needed.
             let b = new(64 << 20);
             assert_eq!(vetro_log_load(b, b"rotto".as_ptr(), 5), 1);
             assert_eq!(vetro_log_load(b, file.as_ptr(), file.len()), 0);
@@ -515,16 +515,16 @@ mod tests {
                 assert_eq!(vetro_log_keyframe(b, i, k.as_mut_ptr(), 5), 5);
                 assert_eq!((k[0], k[3], k[4]), (step, n as u64, 0));
             }
-            assert_eq!(vetro_log_keyframe_take(b, 0), 0, "già fuori");
+            assert_eq!(vetro_log_keyframe_take(b, 0), 0, "already out");
             assert_eq!(vetro_log_keyframe_for(b, 0), -1);
             assert_eq!(vetro_log_keyframe_for(b, 2600), 2);
             assert_eq!(vetro_replay_start(b, 0), replay_start::KEYFRAME_MISSING);
-            assert_eq!(vetro_log_keyframe_put(b, 0, kfs[0].as_ptr(), kfs[0].len() - 1), 0, "lunghezza");
+            assert_eq!(vetro_log_keyframe_put(b, 0, kfs[0].as_ptr(), kfs[0].len() - 1), 0, "length");
             assert_eq!(vetro_log_keyframe_put(b, 0, kfs[0].as_ptr(), kfs[0].len()), 1);
             assert_eq!(vetro_replay_start(b, 0), replay_start::OK);
             assert_eq!((*b).m.steps, 1000);
             assert_eq!(status(b).0, rr::REPLAYING);
-            // Durante il replay gli ingressi si ignorano e non vanno nella timeline.
+            // During replay the inputs are ignored and don't go into the timeline.
             vetro_input_key(b, 31, 1);
             while status(b).0 == rr::REPLAYING {
                 vetro_run(b, 777);
@@ -535,9 +535,9 @@ mod tests {
             let n = vetro_timeline_json(b, 0);
             let t = json::parse(&result(b, n)).unwrap();
             let Some(Value::Array(inputs)) = t.get("inputs") else { panic!() };
-            assert_eq!(inputs.len(), 2, "gli ingressi del log, non quello ignorato");
+            assert_eq!(inputs.len(), 2, "the log inputs, not the ignored one");
 
-            // Salto a 2500 dal keyframe a 2300: gli stessi registri.
+            // Jump to 2500 from the keyframe at 2300: the same registers.
             let c = new(64 << 20);
             assert_eq!(vetro_log_load(c, file.as_ptr(), file.len()), 0);
             assert_eq!(vetro_replay_start(c, 2400), replay_start::OK);
@@ -548,21 +548,21 @@ mod tests {
             let mut buf = [0u8; 16];
             let mut fault = 0u64;
             let ram = vetro_platform::map::RAM_BASE;
-            assert_eq!(vetro_read_virt(c, ram, buf.as_mut_ptr(), 16, &mut fault), 1, "MMU spenta: VA = PA");
+            assert_eq!(vetro_read_virt(c, ram, buf.as_mut_ptr(), 16, &mut fault), 1, "MMU off: VA = PA");
             assert_eq!(vetro_read_virt(c, 0x1000, buf.as_mut_ptr(), 16, &mut fault), 0);
             assert_eq!(fault, 0x1000);
             assert_eq!(vetro_translate(c, ram + 8), ram + 8);
             assert_eq!(vetro_read_phys(c, ram, buf.as_mut_ptr(), 16), 1);
             assert_eq!(vetro_read_phys(c, 0, buf.as_mut_ptr(), 16), 0);
 
-            // Un'altra RAM: rifiutato con il motivo.
+            // Another RAM: refused with the reason.
             let d = new(128 << 20);
             assert_eq!(vetro_log_load(d, file.as_ptr(), file.len()), 0);
             let mut info = [0u64; 8];
             vetro_log_info(d, info.as_mut_ptr(), 8);
-            assert_eq!(info[6], 0, "configurazione diversa");
+            assert_eq!(info[6], 0, "different configuration");
             assert_eq!(vetro_replay_start(d, 0), replay_start::REFUSED);
-            assert!((*d).message.contains("configurata diversamente"), "{}", (*d).message);
+            assert!((*d).message.contains("configured differently"), "{}", (*d).message);
             let e = new(64 << 20);
             assert_eq!(vetro_replay_start(e, 0), replay_start::NO_LOG);
             for vm in [a, b, c, d, e] {
@@ -571,9 +571,9 @@ mod tests {
         }
     }
 
-    /// Cattura: senza rete non si accende; con la rete la lista è vuota e
-    /// valida, HAR e pcapng si scrivono. Timeline con ingressi ed effetti
-    /// annotati dal JS.
+    /// Capture: without a network it doesn't turn on; with the network the list is empty and
+    /// valid, HAR and pcapng are written. Timeline with inputs and effects
+    /// annotated by JS.
     #[test]
     fn cattura_e_ispettore_dall_api() {
         let none = vetro_machine_new_with(64 << 20, 0, 0, 0, 0, 0);

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Permessi di runtime concessi a microG al primo avvio (come le build
-  microG di LineageOS): account, posizione, telefono, contatti, notifiche.
+  Runtime permissions granted to microG on first boot (like the LineageOS
+  microG builds): accounts, location, phone, contacts, notifications.
 -->
 <exceptions>
     <exception package="com.google.android.gms">

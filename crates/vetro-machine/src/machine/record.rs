@@ -1,24 +1,24 @@
-//! Record & replay nella macchina (M10, ADR 0019, `docs/specs/replay.md`).
+//! Record & replay in the machine (M10, ADR 0019, `docs/specs/replay.md`).
 //!
-//! - **Registrazione** ([`Machine::start_recording`]): ogni
-//!   [`Machine::input`] finisce nel log con il numero d'istruzione, un hash
-//!   dei registri e i byte usciti dalla console fino a lì; ogni accesso
-//!   opaco dell'host (`Machine::device`, `Machine::net` con una chiusura)
-//!   come evento opaco. Alla fine dei quanti, a intervalli fissi, uno
-//!   snapshot (keyframe). Un ingresso che arriva mentre la macchina è ferma
-//!   su un disco ([`Stop::Blocked`]) si applica alla fine del primo quanto
-//!   dopo lo sblocco: così il suo istante non dipende da quando arrivano i
-//!   dati del disco, e il replay lo ritrova anche con un disco sempre
-//!   pronto.
+//! - **Recording** ([`Machine::start_recording`]): every
+//!   [`Machine::input`] ends up in the log with the instruction number, a hash
+//!   of the registers and the bytes output by the console up to there; every
+//!   opaque host access (`Machine::device`, `Machine::net` with a closure)
+//!   as an opaque event. At the end of quanta, at fixed intervals, a
+//!   snapshot (keyframe). An input that arrives while the machine is stopped
+//!   on a disk ([`Stop::Blocked`]) is applied at the end of the first quantum
+//!   after the unblock: this way its instant does not depend on when the
+//!   disk data arrives, and the replay finds it again even with an
+//!   always-ready disk.
 //! - **Replay** ([`Machine::start_replay`], [`Machine::replay_from`],
-//!   [`Machine::goto`]): `run` taglia i quanti agli istanti degli eventi (il
-//!   JIT riceve come limite la fine del quanto, quindi non li supera mai),
-//!   controlla registri e console e applica l'ingresso; alla fine della
-//!   registrazione confronta l'impronta dello stato ([`Digest`]).
+//!   [`Machine::goto`]): `run` cuts quanta at the instants of the events (the
+//!   JIT receives the end of the quantum as its limit, so it never goes past
+//!   them), checks registers and console and applies the input; at the end of
+//!   the recording it compares the state fingerprint ([`Digest`]).
 //!
-//! I confini dei quanti non cambiano l'esecuzione (ADR 0014, 0015): per
-//! questo un ingresso applicato fra due quanti allo stesso numero
-//! d'istruzione dà lo stesso risultato qualunque sia il quanto dell'host.
+//! Quantum boundaries do not change the execution (ADR 0014, 0015): this is
+//! why an input applied between two quanta at the same instruction number
+//! gives the same result whatever the host's quantum.
 
 use vetro_cpu::Access;
 use vetro_mmu::{BusError, PhysMemory};
@@ -31,17 +31,17 @@ use crate::record::{
     Reply, VsockOp, console_hash,
 };
 
-/// Opzioni di una registrazione.
+/// Options of a recording.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RecordOptions {
-    /// Istruzioni fra due keyframe (snapshot per il salto a
-    /// un'istruzione); 0 = nessuno. Con i keyframe il primo si prende alla
-    /// partenza, e il log basta da solo a ripartire.
+    /// Instructions between two keyframes (snapshots for jumping to an
+    /// instruction); 0 = none. With keyframes the first is taken at the
+    /// start, and the log alone is enough to start again.
     pub keyframe_every: u64,
 }
 
-/// Uscita della console tolta dalla UART: i byte non ancora dati all'host
-/// e il conto (byte, hash) dall'inizio della registrazione o del replay.
+/// Console output taken from the UART: the bytes not yet given to the host
+/// and the count (bytes, hash) since the start of the recording or replay.
 pub(super) struct ConsoleTap {
     pub(super) buf: Vec<u8>,
     len: u64,
@@ -57,15 +57,15 @@ impl Default for ConsoleTap {
 pub(super) struct Recorder {
     log: Log,
     next_keyframe: u64,
-    /// Ingressi arrivati con la macchina ferma su un disco.
+    /// Inputs that arrived with the machine stopped on a disk.
     deferred: Vec<Input>,
 }
 
 pub(super) struct Replayer {
-    /// Il log senza keyframe.
+    /// The log without keyframes.
     log: Log,
     next: usize,
-    /// Il replay ha usato il JIT.
+    /// The replay used the JIT.
     jit: bool,
 }
 
@@ -91,8 +91,8 @@ impl Rr {
     }
 }
 
-/// Memoria fisica in sola lettura, solo RAM: per le traduzioni del
-/// debugger, che non devono toccare i dispositivi.
+/// Read-only physical memory, RAM only: for the debugger's translations,
+/// which must not touch devices.
 struct RamOnly<'a>(&'a crate::board::Ram);
 
 impl PhysMemory for RamOnly<'_> {
@@ -105,13 +105,13 @@ impl PhysMemory for RamOnly<'_> {
 }
 
 impl Machine {
-    // ---- Ingressi ------------------------------------------------------------
+    // ---- Inputs --------------------------------------------------------------
 
-    /// Un ingresso dell'host: l'unico punto da cui, durante una
-    /// registrazione, cambia ciò che il guest vede. Registrato con il
-    /// numero d'istruzione corrente; arriva al guest prima della prossima
-    /// istruzione. Durante un replay si ignora ([`Reply::Ignored`]); durante
-    /// una registrazione con la macchina ferma su un disco si rimanda
+    /// A host input: the only point through which, during a recording,
+    /// what the guest sees changes. Recorded with the current instruction
+    /// number; it reaches the guest before the next instruction. During a
+    /// replay it is ignored ([`Reply::Ignored`]); during a recording with
+    /// the machine stopped on a disk it is deferred
     /// ([`Reply::Deferred`]).
     pub fn input(&mut self, input: Input) -> Reply {
         match &mut self.rr {
@@ -133,8 +133,8 @@ impl Machine {
         }
     }
 
-    /// Un accesso con una chiusura a un dispositivo: evento opaco durante
-    /// una registrazione.
+    /// An access to a device with a closure: an opaque event during a
+    /// recording.
     pub(super) fn note_opaque(&mut self, slot: Option<u32>) {
         if self.rr.recording() {
             self.log_event(EventKind::Opaque { slot });
@@ -229,9 +229,9 @@ impl Machine {
         }
     }
 
-    // ---- Console e impronte ----------------------------------------------------
+    // ---- Console and fingerprints ----------------------------------------------
 
-    /// Porta l'uscita della UART nel buffer della macchina, contandola.
+    /// Moves the UART output into the machine's buffer, counting it.
     pub(super) fn drain_console(&mut self) {
         let out = self.board.borrow_mut().virt.uart_mut().take_output();
         self.console.len += out.len() as u64;
@@ -239,8 +239,8 @@ impl Machine {
         self.console.buf.extend(out);
     }
 
-    /// Byte usciti dalla console, compresi quelli ancora nella UART: non
-    /// dipende da quando l'host legge.
+    /// Bytes output by the console, including those still in the UART: does
+    /// not depend on when the host reads.
     fn console_total(&self) -> u64 {
         self.console.len + self.board.borrow().virt.uart().output().len() as u64
     }
@@ -251,10 +251,10 @@ impl Machine {
         hash64(w.as_bytes())
     }
 
-    /// Impronta dello stato: istruzioni, CPU, MMU, piattaforma, RAM e
-    /// console. Prima porta l'uscita della UART nel buffer della macchina
-    /// (l'host la ritrova con [`Machine::console_output`]), così l'impronta
-    /// non dipende da quando l'host legge.
+    /// State fingerprint: instructions, CPU, MMU, platform, RAM and
+    /// console. First it moves the UART output into the machine's buffer
+    /// (the host finds it with [`Machine::console_output`]), so the
+    /// fingerprint does not depend on when the host reads.
     pub fn digest(&mut self) -> Digest {
         self.drain_console();
         let hash = |s: &dyn Fn(&mut Writer)| {
@@ -274,10 +274,10 @@ impl Machine {
         }
     }
 
-    // ---- Registrazione -----------------------------------------------------------
+    // ---- Recording ---------------------------------------------------------------
 
-    /// Comincia a registrare da qui (dopo `load_linux`, dopo un ripristino,
-    /// o in qualsiasi momento fra due `run`). Un replay in corso finisce.
+    /// Starts recording from here (after `load_linux`, after a restore,
+    /// or at any time between two `run`s). A replay in progress ends.
     pub fn start_recording(&mut self, opts: RecordOptions) {
         self.rr = Rr::Off;
         self.drain_console();
@@ -303,12 +303,12 @@ impl Machine {
         }
     }
 
-    /// Registrazione in corso.
+    /// Recording in progress.
     pub fn is_recording(&self) -> bool {
         self.rr.recording()
     }
 
-    /// Eventi registrati finora.
+    /// Events recorded so far.
     pub fn recorded_events(&self) -> usize {
         match &self.rr {
             Rr::Record(r) => r.log.events.len(),
@@ -316,9 +316,9 @@ impl Machine {
         }
     }
 
-    /// Finisce la registrazione e restituisce il log, con l'impronta dello
-    /// stato di adesso. Gli ingressi rimandati da una macchina ancora ferma
-    /// su un disco non sono mai arrivati al guest e non entrano.
+    /// Ends the recording and returns the log, with the fingerprint of the
+    /// current state. Inputs deferred by a machine still stopped on a disk
+    /// never reached the guest and are left out.
     pub fn stop_recording(&mut self) -> Option<Log> {
         let Rr::Record(r) = core::mem::replace(&mut self.rr, Rr::Off) else { return None };
         let mut log = r.log;
@@ -336,9 +336,9 @@ impl Machine {
         }
     }
 
-    /// Fine di un quanto registrato: keyframe se è ora (mai dopo un evento
-    /// allo stesso istante: gli eventi di un istante vengono dopo il suo
-    /// keyframe), poi gli ingressi rimandati se la macchina non è più ferma.
+    /// End of a recorded quantum: keyframe if it is time (never after an event
+    /// at the same instant: the events of an instant come after its
+    /// keyframe), then the deferred inputs if the machine is no longer stopped.
     pub(super) fn after_quantum(&mut self) {
         if self.blocked() {
             return;
@@ -356,9 +356,9 @@ impl Machine {
 
     // ---- Replay -------------------------------------------------------------------
 
-    /// Comincia il replay di `log` dallo stato attuale, che dev'essere
-    /// quello di partenza della registrazione (stessa configurazione, stessa
-    /// impronta: stesso kernel caricato, o stesso snapshot ripristinato).
+    /// Starts the replay of `log` from the current state, which must be
+    /// the starting state of the recording (same configuration, same
+    /// fingerprint: same kernel loaded, or same snapshot restored).
     pub fn start_replay(&mut self, log: &Log) -> Result<(), Divergence> {
         self.check_config(log)?;
         self.rr = Rr::Off;
@@ -368,46 +368,45 @@ impl Machine {
         let now = self.digest();
         let tlb = !log.jit && self.jit.is_none();
         if let Some(what) = log.start.diff(&now, tlb) {
-            return Err(self.refuse(Divergence::Start(format!(
-                "lo stato di partenza non è quello registrato ({what})"
-            ))));
+            return Err(self
+                .refuse(Divergence::Start(format!("the starting state is not the recorded one ({what})"))));
         }
         self.begin_replay(log, 0);
         Ok(())
     }
 
-    /// Comincia il replay di `log` dall'ultimo keyframe non oltre
-    /// l'istruzione `step`; senza keyframe utili, dallo stato attuale come
+    /// Starts the replay of `log` from the last keyframe not beyond
+    /// instruction `step`; without usable keyframes, from the current state like
     /// [`Machine::start_replay`].
     pub fn replay_from(&mut self, log: &Log, step: u64) -> Result<(), Divergence> {
         let Some(k) = log.keyframe_before(step) else { return self.start_replay(log) };
         self.check_config(log)?;
         if log.snapshot_version != vetro_snapshot::FORMAT_VERSION {
             return Err(self.refuse(Divergence::Start(format!(
-                "keyframe nel formato di snapshot {}, questa versione legge il {}",
+                "keyframes in snapshot format {}, this version reads {}",
                 log.snapshot_version,
                 vetro_snapshot::FORMAT_VERSION
             ))));
         }
         self.rr = Rr::Off;
         if let Err(e) = self.load_state(&k.snapshot) {
-            return Err(self.refuse(Divergence::Start(format!("keyframe a {}: {e}", k.step))));
+            return Err(self.refuse(Divergence::Start(format!("keyframe at {}: {e}", k.step))));
         }
         self.console = ConsoleTap { buf: Vec::new(), len: k.console_len, hash: k.console_hash };
         self.drain_console();
-        // Salto nel tempo: le syscall in corso dell'introspezione non valgono più.
+        // Jump in time: the introspection's in-progress syscalls are no longer valid.
         self.hooks.forget_pending();
         let first = log.events.partition_point(|e| e.step < k.step);
         self.begin_replay(log, first);
         Ok(())
     }
 
-    /// Porta la macchina all'istruzione `step` della registrazione (al primo
-    /// confine fra quanti con almeno `step` istruzioni: una WFI può saltare
-    /// oltre), ripartendo dal keyframe più vicino e rifacendo gli ingressi.
-    /// Restituisce le istruzioni raggiunte; da lì si leggono registri
-    /// (`Machine::cpu`) e memoria ([`Machine::read_phys`],
-    /// [`Machine::read_virt`]), e il replay può continuare con `run`.
+    /// Brings the machine to instruction `step` of the recording (at the first
+    /// boundary between quanta with at least `step` instructions: a WFI can
+    /// jump past it), restarting from the nearest keyframe and redoing the inputs.
+    /// Returns the instruction count reached; from there registers
+    /// (`Machine::cpu`) and memory ([`Machine::read_phys`],
+    /// [`Machine::read_virt`]) can be read, and the replay can continue with `run`.
     pub fn goto(&mut self, log: &Log, step: u64) -> Result<u64, Divergence> {
         self.replay_from(log, step)?;
         while self.steps < step {
@@ -424,7 +423,7 @@ impl Machine {
         Ok(self.steps)
     }
 
-    /// Stato dell'ultimo replay (`None` se non ce n'è stato uno).
+    /// State of the last replay (`None` if there has not been one).
     pub fn replay_status(&self) -> Option<&ReplayStatus> {
         self.replay_status.as_ref()
     }
@@ -433,8 +432,8 @@ impl Machine {
         let here = self.config_hash();
         if log.config_hash != here {
             return Err(self.refuse(Divergence::Start(format!(
-                "macchina configurata diversamente (hash {:016x}, questa {here:016x}): servono la stessa \
-                 RAM, gli stessi dispositivi e lo stesso seme",
+                "machine configured differently (hash {:016x}, this one {here:016x}): the same \
+                 RAM, devices and seed are required",
                 log.config_hash
             ))));
         }
@@ -447,7 +446,7 @@ impl Machine {
     }
 
     fn begin_replay(&mut self, log: &Log, next: usize) {
-        // Senza i keyframe (grandi): al replay servono solo gli eventi.
+        // Without the (large) keyframes: the replay needs only the events.
         let l = Log {
             config_hash: log.config_hash,
             config: log.config.clone(),
@@ -463,14 +462,14 @@ impl Machine {
         self.rr = Rr::Replay(Box::new(Replayer { log: l, next, jit: self.jit.is_some() }));
     }
 
-    /// Fine del replay per una differenza: la macchina continua libera.
+    /// End of the replay because of a difference: the machine continues freely.
     fn diverge(&mut self, d: Divergence, stop: Stop) -> Stop {
         self.rr = Rr::Off;
         self.replay_status = Some(ReplayStatus::Diverged(d));
         stop
     }
 
-    /// Arrivati alla fine della registrazione: si confronta l'impronta.
+    /// Reached the end of the recording: the fingerprint is compared.
     fn finish_replay(&mut self, stop: Stop) -> Stop {
         let Rr::Replay(p) = core::mem::replace(&mut self.rr, Rr::Off) else { return stop };
         let now = self.digest();
@@ -485,7 +484,7 @@ impl Machine {
     pub(super) fn run_replay(&mut self, budget: u64) -> Stop {
         let end = self.steps.saturating_add(budget);
         loop {
-            // Gli eventi di questo istante.
+            // The events of this instant.
             loop {
                 let Rr::Replay(p) = &self.rr else { return Stop::Budget };
                 let index = p.next;
@@ -499,9 +498,9 @@ impl Machine {
                     return self.diverge(d, Stop::Budget);
                 }
                 let what = if self.cpu_hash() != ev.cpu {
-                    Some("registri")
+                    Some("registers")
                 } else if self.console_total() != ev.console {
-                    Some("byte della console")
+                    Some("console bytes")
                 } else {
                     None
                 };
@@ -528,7 +527,7 @@ impl Machine {
                 return self.finish_replay(Stop::Budget);
             }
             if self.steps > last {
-                return self.diverge(Divergence::End { what: "istruzioni" }, Stop::Budget);
+                return self.diverge(Divergence::End { what: "instructions" }, Stop::Budget);
             }
             if self.steps >= end {
                 return Stop::Budget;
@@ -538,8 +537,8 @@ impl Machine {
             match stop {
                 Stop::Budget => {}
                 Stop::Blocked => return Stop::Blocked,
-                // Ferma da sola: va bene se qui la registrazione aveva un
-                // ingresso (la macchina lo aspettava) o la sua fine.
+                // Stopped by itself: fine if the recording had an input here
+                // (the machine was waiting for it) or its end.
                 other => {
                     if next == Some(self.steps) && other == Stop::Idle {
                         continue;
@@ -549,7 +548,7 @@ impl Machine {
                     }
                     let d = match next {
                         Some(step) => Divergence::Missed { index, step, at: self.steps },
-                        None => Divergence::End { what: "istruzioni" },
+                        None => Divergence::End { what: "instructions" },
                     };
                     return self.diverge(d, other);
                 }
@@ -557,11 +556,11 @@ impl Machine {
         }
     }
 
-    // ---- Lettura dello stato -------------------------------------------------------
+    // ---- Reading the state ----------------------------------------------------------
 
-    /// I registri in forma di testo (per `vetro boot --goto` e i
-    /// confronti): istruzioni, PC, SP, NZCV, EL, X0–X30 e i registri di
-    /// sistema di EL1 che servono a leggere lo stato del kernel.
+    /// The registers as text (for `vetro boot --goto` and comparisons):
+    /// instructions, PC, SP, NZCV, EL, X0–X30 and the EL1 system registers
+    /// needed to read the kernel state.
     pub fn registers_text(&self) -> String {
         use core::fmt::Write;
         let c = &self.cpu;
@@ -569,7 +568,7 @@ impl Machine {
         let mut t = String::new();
         let _ = writeln!(
             t,
-            "istruzioni {}\npc   {:016x}  sp   {:016x}  nzcv {:08x}  el {}  daif {:03x}",
+            "instructions {}\npc   {:016x}  sp   {:016x}  nzcv {:08x}  el {}  daif {:03x}",
             self.steps, c.pc, c.sp, c.nzcv, s.el, s.daif
         );
         for (row, regs) in c.x.chunks(4).enumerate() {
@@ -601,21 +600,21 @@ impl Machine {
         t
     }
 
-    /// Legge la RAM all'indirizzo fisico `pa`; falso fuori dalla RAM.
+    /// Reads RAM at physical address `pa`; false outside RAM.
     pub fn read_phys(&self, pa: u64, buf: &mut [u8]) -> bool {
         self.board.borrow().ram.read(pa, buf)
     }
 
-    /// Traduce l'indirizzo virtuale `va` con le tabelle correnti e
-    /// l'EL corrente (senza TLB, senza toccare dispositivi).
+    /// Translates virtual address `va` with the current tables and the
+    /// current EL (without TLB, without touching devices).
     pub fn translate(&self, va: u64) -> Option<u64> {
         let b = self.board.borrow();
         self.mmu.walk(&mut RamOnly(&b.ram), va, Access::Read, self.cpu.sys.el).ok().map(|t| t.pa)
     }
 
-    /// Legge la memoria all'indirizzo virtuale `va` (traduzione come
-    /// [`Machine::translate`], pagina per pagina). Errore: il primo
-    /// indirizzo virtuale non leggibile.
+    /// Reads memory at virtual address `va` (translation like
+    /// [`Machine::translate`], page by page). Error: the first
+    /// unreadable virtual address.
     pub fn read_virt(&self, va: u64, buf: &mut [u8]) -> Result<(), u64> {
         let mut done = 0usize;
         while done < buf.len() {
@@ -640,11 +639,11 @@ mod tests {
     use vetro_cpu::Cpu;
     use vetro_platform::virtio::VirtioBlk;
 
-    /// Il ciclo della sonda di `snapshot.rs` con in più l'eco della UART
-    /// (`tools/a64asm.sh`): accende la UART, poi a ogni giro legge UARTFR e, se c'è un byte,
-    /// lo legge, lo mescola in x21 e lo rimanda. Così un ingresso della
-    /// console cambia i registri, e un ingresso arrivato un'istruzione
-    /// prima o dopo cambia i punti interrotti dal timer (e la RAM).
+    /// The loop of the `snapshot.rs` probe plus the UART echo
+    /// (`tools/a64asm.sh`): turns on the UART, then on every iteration reads UARTFR and, if there
+    /// is a byte, reads it, mixes it into x21 and sends it back. This way a console
+    /// input changes the registers, and an input arriving one instruction
+    /// earlier or later changes the points interrupted by the timer (and the RAM).
     const ECHO: [u32; 14] = [
         0x52806025, // mov w5, #0x301 (UARTEN, TXE, RXE)
         0xb9003125, // str w5, [x9, #0x30] (UARTCR)
@@ -666,7 +665,7 @@ mod tests {
         let mut m = Machine::with_devices(&cfg(), &Devices::none());
         {
             let mut b = m.board.borrow_mut();
-            let main = &MAIN[..25]; // fino a `mov x2, #0`
+            let main = &MAIN[..25]; // up to `mov x2, #0`
             for (base, code) in
                 [(R, main), (R + 4 * 25, &ECHO[..]), (R + 0xa00, &SVC[..]), (IRQ_AT, &IRQ[..])]
             {
@@ -681,7 +680,7 @@ mod tests {
 
     const END: u64 = 300_000;
 
-    /// Ingressi dell'host: al primo confine con almeno `step` istruzioni.
+    /// Host inputs: at the first boundary with at least `step` instructions.
     fn schedule() -> Vec<(u64, Input)> {
         vec![
             (1_000, Input::Console(b"ciao".to_vec())),
@@ -693,16 +692,16 @@ mod tests {
         ]
     }
 
-    /// Esito di una sessione: console, impronta finale e stati nei punti
-    /// chiesti (istruzioni, CPU, hash della RAM).
+    /// Outcome of a session: console, final fingerprint and states at the
+    /// requested points (instructions, CPU, RAM hash).
     struct Session {
         out: Vec<u8>,
         end: Digest,
         at: Vec<(u64, Cpu, u64)>,
     }
 
-    /// Esegue la sonda fino a `END` a quanti di `q`, dando gli ingressi di
-    /// `inputs` e fermandosi esattamente in ogni punto di `stops`.
+    /// Runs the probe up to `END` in quanta of `q`, giving the inputs of
+    /// `inputs` and stopping exactly at every point of `stops`.
     fn drive(m: &mut Machine, q: u64, mut inputs: Vec<(u64, Input)>, stops: &[u64]) -> Session {
         inputs.reverse();
         let mut out = Vec::new();
@@ -738,19 +737,23 @@ mod tests {
         let log = m.stop_recording().unwrap();
         assert!(!m.is_recording());
         assert_eq!(log.end, s.end);
-        // Il log fa andata e ritorno dal file.
+        // The log makes a round trip through the file.
         let log = Log::decode(&log.encode()).unwrap();
         (log, s)
     }
 
-    /// Replay fino alla fine a quanti di `q`: console e stato finale.
+    /// Replay to the end in quanta of `q`: console and final state.
     fn replay(m: &mut Machine, q: u64) -> (Vec<u8>, Digest) {
         let mut out = Vec::new();
         for _ in 0..1_000_000 {
             if !matches!(m.replay_status(), Some(ReplayStatus::Running { .. })) {
                 break;
             }
-            assert_eq!(m.input(Input::Console(b"x".to_vec())), Reply::Ignored, "in replay l'host non entra");
+            assert_eq!(
+                m.input(Input::Console(b"x".to_vec())),
+                Reply::Ignored,
+                "in replay the host does not get in"
+            );
             m.run(q);
             out.extend(m.console_output());
         }
@@ -759,17 +762,17 @@ mod tests {
         (out, d)
     }
 
-    /// Il criterio di M10 sulla sonda: la registrazione, rifatta con quanti
-    /// diversi dall'inizio o da un keyframe su una macchina nuova, dà la
-    /// stessa console, le stesse istruzioni e lo stesso stato; l'eco prova
-    /// che gli ingressi sono arrivati.
+    /// The M10 criterion on the probe: the recording, replayed with
+    /// different quanta from the start or from a keyframe on a new machine,
+    /// gives the same console, the same instructions and the same state; the
+    /// echo proves that the inputs arrived.
     #[test]
     fn registra_e_riproduci_la_sonda() {
         let (log, rec) = record(&[]);
         let text = String::from_utf8_lossy(&rec.out);
-        assert!(text.contains("ciao!") && text.contains("vetro\n"), "eco della console: {text:?}");
+        assert!(text.contains("ciao!") && text.contains("vetro\n"), "console echo: {text:?}");
         assert_eq!(log.events.len(), schedule().len());
-        assert_eq!(log.events[0].step, log.events[1].step, "due ingressi nello stesso istante");
+        assert_eq!(log.events[0].step, log.events[1].step, "two inputs at the same instant");
         assert!(log.keyframes.len() >= 7, "{:?}", log.keyframes);
         assert_eq!(log.keyframes[0].step, 0);
 
@@ -777,8 +780,8 @@ mod tests {
             let mut m = echo_probe();
             m.start_replay(&log).unwrap();
             let (out, end) = if q == 1 {
-                // Un'istruzione alla volta per un tratto (confini
-                // dappertutto, eventi compresi), poi a quanti grandi.
+                // One instruction at a time for a stretch (boundaries
+                // everywhere, events included), then in large quanta.
                 for _ in 0..3_000 {
                     m.run(1);
                 }
@@ -789,12 +792,12 @@ mod tests {
             } else {
                 replay(&mut m, q)
             };
-            assert_eq!(m.replay_status(), Some(&ReplayStatus::Finished), "quanto {q}");
-            assert!(out == rec.out, "quanto {q}: console");
-            assert_eq!(end, rec.end, "quanto {q}");
+            assert_eq!(m.replay_status(), Some(&ReplayStatus::Finished), "quantum {q}");
+            assert!(out == rec.out, "quantum {q}: console");
+            assert_eq!(end, rec.end, "quantum {q}");
         }
 
-        // Da un keyframe, su una macchina nuova senza la sonda in RAM.
+        // From a keyframe, on a new machine without the probe in RAM.
         let mut m = Machine::with_devices(&cfg(), &Devices::none());
         m.replay_from(&log, 150_000).unwrap();
         assert_eq!(m.steps, log.keyframe_before(150_000).unwrap().step);
@@ -803,9 +806,9 @@ mod tests {
         assert_eq!(end, rec.end);
     }
 
-    /// `goto` riporta la macchina a un'istruzione con i registri e la RAM
-    /// dell'esecuzione registrata in quel punto, da qualsiasi stato di
-    /// partenza, e da lì il replay continua fino alla fine.
+    /// `goto` brings the machine back to an instruction with the registers and
+    /// RAM of the recorded execution at that point, from any starting
+    /// state, and from there the replay continues to the end.
     #[test]
     fn goto_come_l_esecuzione_diretta() {
         let targets = [0, 999, 1_000, 1_001, 40_000, 47_112, 123_457, 222_222, 299_999];
@@ -815,15 +818,15 @@ mod tests {
         for (target, cpu, ram) in rec.at.iter().rev() {
             let reached = m.goto(&log, *target).unwrap();
             assert_eq!(reached, *target);
-            assert_eq!(m.cpu, *cpu, "registri a {target}");
-            assert_eq!(m.board.borrow().ram.hash(), *ram, "RAM a {target}");
+            assert_eq!(m.cpu, *cpu, "registers at {target}");
+            assert_eq!(m.board.borrow().ram.hash(), *ram, "RAM at {target}");
         }
-        // Lettura della memoria al punto: la somma dei punti interrotti.
+        // Reading memory at the point: the sum of the interrupted points.
         m.goto(&log, 123_457).unwrap();
         let mut w = [0u8; 8];
         assert!(m.read_phys(R + 0x4008, &mut w));
         let mut v = [0u8; 8];
-        m.read_virt(R + 0x4008, &mut v).unwrap(); // MMU spenta: identità
+        m.read_virt(R + 0x4008, &mut v).unwrap(); // MMU off: identity
         assert_eq!(w, v);
         assert!(u64::from_le_bytes(w) > 0);
         assert_eq!(m.read_virt(0x1_0000_0000_0000, &mut v), Err(0x1_0000_0000_0000));
@@ -832,11 +835,11 @@ mod tests {
         assert_eq!(end, rec.end);
     }
 
-    /// Un ingresso che sfugge al log (dato alla UART senza passare da
-    /// `Machine::input`) si vede: il replay si ferma con una differenza al
-    /// primo evento dopo che il guest l'ha letto (l'evento 2 cade nello
-    /// stesso istante del byte di contrabbando, prima che il guest lo
-    /// legga: i registri sono ancora quelli giusti).
+    /// An input that escapes the log (given to the UART without going through
+    /// `Machine::input`) shows: the replay stops with a difference at the
+    /// first event after the guest has read it (event 2 falls at the
+    /// same instant as the smuggled byte, before the guest reads
+    /// it: the registers are still the right ones).
     #[test]
     fn ingresso_sfuggito_si_vede() {
         let mut m = echo_probe();
@@ -845,7 +848,7 @@ mod tests {
         inputs.truncate(4);
         let first = inputs.split_off(2);
         drive_until(&mut m, 60_000, inputs);
-        // Il byte di contrabbando arriva fra due ingressi registrati.
+        // The smuggled byte arrives between two recorded inputs.
         m.board.borrow_mut().virt.uart_mut().push_input(b"?");
         drive(&mut m, 5_000, first, &[]);
         let log = m.stop_recording().unwrap();
@@ -853,13 +856,13 @@ mod tests {
         n.start_replay(&log).unwrap();
         replay(&mut n, 10_000);
         match n.replay_status() {
-            Some(ReplayStatus::Diverged(Divergence::Event { index: 3, step, what: "registri" })) => {
+            Some(ReplayStatus::Diverged(Divergence::Event { index: 3, step, what: "registers" })) => {
                 assert_eq!(*step, log.events[3].step)
             }
-            other => panic!("atteso l'evento 3 diverso: {other:?}"),
+            other => panic!("expected event 3 to differ: {other:?}"),
         }
 
-        // Un accesso opaco a un dispositivo: il replay si ferma lì.
+        // An opaque access to a device: the replay stops there.
         let mut m = echo_probe();
         m.start_recording(RecordOptions::default());
         m.run(1_000);
@@ -874,10 +877,10 @@ mod tests {
             n.replay_status(),
             Some(&ReplayStatus::Diverged(Divergence::Opaque { index: 0, step: 1_000, slot: Some(0) }))
         );
-        assert!(!n.rr.replaying(), "dopo la differenza la macchina è libera");
+        assert!(!n.rr.replaying(), "after the difference the machine is free");
     }
 
-    /// Come `drive`, fino a `end` istruzioni.
+    /// Like `drive`, up to `end` instructions.
     fn drive_until(m: &mut Machine, end: u64, mut inputs: Vec<(u64, Input)>) {
         inputs.reverse();
         while m.steps < end {
@@ -889,8 +892,8 @@ mod tests {
         }
     }
 
-    /// Un log non si applica a una macchina configurata diversamente o in
-    /// un altro stato di partenza.
+    /// A log does not apply to a machine configured differently or in
+    /// another starting state.
     #[test]
     fn log_di_un_altra_macchina_rifiutato() {
         let (log, _) = record(&[]);
@@ -900,18 +903,18 @@ mod tests {
         let mut moved = echo_probe();
         moved.run(10);
         let e = moved.start_replay(&log).unwrap_err();
-        assert!(e.to_string().contains("stato di partenza"), "{e}");
+        assert!(e.to_string().contains("starting state"), "{e}");
         assert!(!moved.rr.replaying());
         let mut wrong = log.clone();
         wrong.snapshot_version += 1;
         let e = Machine::with_devices(&cfg(), &Devices::none()).replay_from(&wrong, 50_000).unwrap_err();
-        assert!(e.to_string().contains("formato di snapshot"), "{e}");
+        assert!(e.to_string().contains("snapshot format"), "{e}");
     }
 
-    /// Un ingresso arrivato mentre la macchina aspetta un disco
-    /// (`Stop::Blocked`) si applica alla fine del primo quanto dopo lo
-    /// sblocco; il replay con un disco sempre pronto dà la stessa
-    /// esecuzione.
+    /// An input that arrived while the machine is waiting for a disk
+    /// (`Stop::Blocked`) is applied at the end of the first quantum after the
+    /// unblock; the replay with an always-ready disk gives the same
+    /// execution.
     #[test]
     fn ingresso_con_il_disco_in_attesa() {
         let (mut m, slot) = blk_machine(false);
@@ -919,24 +922,24 @@ mod tests {
         assert_eq!(m.run(1000), Stop::Blocked);
         assert_eq!(m.input(Input::Console(b"k".to_vec())), Reply::Deferred);
         assert_eq!(m.run(1000), Stop::Blocked);
-        assert_eq!(m.recorded_events(), 0, "rimandato, non ancora registrato");
+        assert_eq!(m.recorded_events(), 0, "deferred, not yet recorded");
         m.host_link::<VirtioBlk, _>(Some(slot), |b| b.backend_as_mut::<Gate>().unwrap().open = true).unwrap();
         assert_eq!(m.run(500), Stop::Budget);
         let at = m.steps;
         assert_eq!(m.recorded_events(), 1);
         m.run(500);
         let log = m.stop_recording().unwrap();
-        assert_eq!(log.events[0].step, at, "registrato alla fine del quanto dopo lo sblocco");
+        assert_eq!(log.events[0].step, at, "recorded at the end of the quantum after the unblock");
         assert_eq!(log.events[0].kind, EventKind::Input(Input::Console(b"k".to_vec())));
-        assert!(log.keyframes.iter().all(|k| k.step != 1), "nessun keyframe con la macchina ferma");
+        assert!(log.keyframes.iter().all(|k| k.step != 1), "no keyframe with the machine stopped");
 
         let (mut n, _) = blk_machine(true);
         n.start_replay(&log).unwrap();
         while matches!(n.replay_status(), Some(ReplayStatus::Running { .. })) {
-            assert_eq!(n.run(333), Stop::Budget, "il disco pronto non ferma la macchina");
+            assert_eq!(n.run(333), Stop::Budget, "the ready disk does not stop the machine");
         }
         assert_eq!(n.replay_status(), Some(&ReplayStatus::Finished));
         assert_eq!(n.digest(), log.end);
-        assert_eq!(n.board.borrow().virt.uart().pending_input(), 1, "il byte è arrivato alla UART");
+        assert_eq!(n.board.borrow().virt.uart().pending_input(), 1, "the byte reached the UART");
     }
 }

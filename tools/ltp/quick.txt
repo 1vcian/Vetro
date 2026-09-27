@@ -1,4 +1,4 @@
-# Sottoinsieme LTP eseguito per default (veloce); il giro completo con VETRO_LTP_FULL=1.
+# LTP subset run by default (fast); the full run with VETRO_LTP_FULL=1.
 getpid01
 getppid01
 uname01

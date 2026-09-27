@@ -1,24 +1,24 @@
-//! Analisi di rete (M7, ADR 0016) sul traffico vero del kernel guest: il
-//! guest usa `wget` di BusyBox contro il sinkhole (risposte configurate
-//! per porta), la macchina cattura i frame al confine di virtio-net
-//! (`Machine::net_tap`), `vetro-analysis` ne fa pcapng, flussi, HTTP,
-//! corpi decodificati e HAR.
+//! Network analysis (M7, ADR 0016) on the real traffic of the guest kernel: the
+//! guest uses BusyBox's `wget` against the sinkhole (responses configured
+//! per port), the machine captures the frames at the virtio-net boundary
+//! (`Machine::net_tap`), `vetro-analysis` turns them into pcapng, flows, HTTP,
+//! decoded bodies and HAR.
 //!
-//! - GET con risposta JSON; GET con risposta `chunked` e `gzip` (compressa
-//!   dal `gzip` dell'host); POST JSON con risposta protobuf; POST form
-//!   urlencoded; POST multipart (file JSON); POST protobuf costruito con
-//!   `printf`; POST (mandato con `nc`) con corpo compresso dal `gzip` di
-//!   BusyBox (`Content-Encoding: gzip`): i decodificatori girano su dati
-//!   prodotti da codificatori esterni;
-//! - il pcapng si rilegge col nostro lettore (stessi frame) e, con Docker,
-//!   con `capinfos`, `tcpdump` e `tshark` (stesse richieste e risposte);
-//! - l'HAR si rilegge col nostro parser JSON e, con Docker, si valida
-//!   contro lo schema HAR 1.2 (`har-validator`) e si apre con `haralyzer`
+//! - GET with a JSON response; GET with a `chunked` and `gzip` response (compressed
+//!   by the host's `gzip`); JSON POST with a protobuf response; urlencoded form
+//!   POST; multipart POST (JSON file); protobuf POST built with
+//!   `printf`; POST (sent with `nc`) with a body compressed by BusyBox's
+//!   `gzip` (`Content-Encoding: gzip`): the decoders run on data
+//!   produced by external encoders;
+//! - the pcapng is read back with our reader (same frames) and, with Docker,
+//!   with `capinfos`, `tcpdump` and `tshark` (same requests and responses);
+//! - the HAR is read back with our JSON parser and, with Docker, is validated
+//!   against the HAR 1.2 schema (`har-validator`) and opened with `haralyzer`
 //!   (`tools/analysis/check.sh`);
-//! - determinismo: due esecuzioni danno lo stesso pcapng e lo stesso HAR,
-//!   byte per byte (i tempi sono quelli virtuali del guest).
+//! - determinism: two runs give the same pcapng and the same HAR,
+//!   byte for byte (the times are the guest's virtual ones).
 //!
-//! Solo in release, come `net.rs`. File in `target/guest-kernel/analysis.*`.
+//! Release only, like `net.rs`. Files in `target/guest-kernel/analysis.*`.
 
 use std::io::Write as _;
 use std::process::{Command, Stdio};
@@ -34,7 +34,7 @@ use vetro_machine::{Devices, FrameDir, Machine, MachineConfig, NetSetup, Stop};
 
 const PHASE_BUDGET: u64 = 6_000_000_000;
 
-/// Porte del sinkhole usate dal test (tshark le decodifica come HTTP).
+/// Sinkhole ports used by the test (tshark decodes them as HTTP).
 const PORTS: [u16; 7] = [80, 8081, 81, 82, 83, 84, 85];
 
 fn response(status: &str, headers: &[(&str, &str)], body: &[u8]) -> Vec<u8> {
@@ -52,26 +52,26 @@ fn reply(bytes: Vec<u8>) -> TcpReply {
     TcpReply { on_connect: Vec::new(), on_data: bytes, close_after_reply: true }
 }
 
-/// `seq 1 n` come lo stampa BusyBox.
+/// `seq 1 n` as BusyBox prints it.
 fn seq(n: u32) -> Vec<u8> {
     (1..=n).flat_map(|i| format!("{i}\n").into_bytes()).collect()
 }
 
-/// Comprime con il `gzip` dell'host (un codificatore che non è il nostro).
+/// Compresses with the host's `gzip` (an encoder that is not ours).
 fn host_gzip(data: &[u8]) -> Vec<u8> {
     let mut c = Command::new("gzip")
         .args(["-9", "-n", "-c"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .expect("gzip dell'host");
+        .expect("host gzip");
     c.stdin.take().unwrap().write_all(data).unwrap();
     let out = c.wait_with_output().unwrap();
     assert!(out.status.success());
     out.stdout
 }
 
-/// Risposta `chunked` con corpo gzip in pezzi da 1000 byte.
+/// `chunked` response with a gzip body in pieces of 1000 bytes.
 fn chunked_gzip(plain: &[u8]) -> Vec<u8> {
     let gz = host_gzip(plain);
     let mut r = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n".to_vec();
@@ -102,10 +102,10 @@ impl Run {
             {
                 return from + i + needle.len();
             }
-            assert!(self.m.steps < limit, "{needle:?} non arrivato:\n{}", self.tail());
+            assert!(self.m.steps < limit, "{needle:?} did not arrive:\n{}", self.tail());
             let stop = self.m.run(1_000_000);
             self.log.extend(self.m.console_output());
-            assert!(matches!(stop, Stop::Budget), "{stop:?} in attesa di {needle:?}:\n{}", self.tail());
+            assert!(matches!(stop, Stop::Budget), "{stop:?} while waiting for {needle:?}:\n{}", self.tail());
         }
     }
 
@@ -125,11 +125,11 @@ impl Run {
 fn value<'a>(out: &'a str, key: &str) -> &'a str {
     out.lines()
         .find_map(|l| l.strip_prefix(key))
-        .unwrap_or_else(|| panic!("manca {key:?} nell'uscita:\n{out}"))
+        .unwrap_or_else(|| panic!("missing {key:?} in the output:\n{out}"))
         .trim()
 }
 
-/// Una sessione: il guest fa le sette richieste; restituisce la cattura.
+/// A session: the guest makes the seven requests; returns the capture.
 fn session(image: &[u8], initrd: &[u8]) -> Capture {
     let mut net = NetSetup::default();
     let s = &mut net.sinkhole.tcp_by_port;
@@ -145,7 +145,7 @@ fn session(image: &[u8], initrd: &[u8]) -> Capture {
     let devices = Devices { net: Some(net), ..Devices::default() };
     let mut m = Machine::with_devices(&MachineConfig::default(), &devices);
     assert!(m.net_tap(true), "cattura su virtio-net");
-    m.load_linux(image, Some(initrd), "console=ttyAMA0 vetro.noautotest").expect("caricamento del kernel");
+    m.load_linux(image, Some(initrd), "console=ttyAMA0 vetro.noautotest").expect("loading the kernel");
     let mut r = Run { m, log: Vec::new() };
     let at = r.until(SHELL_PROMPT, 0);
     let (at, out) = r.command("udhcpc -i eth0 -n -q", at);
@@ -153,7 +153,7 @@ fn session(image: &[u8], initrd: &[u8]) -> Capture {
 
     let (at, out) = r.command("echo \"J\"SON=$(wget -q -O - 'http://api.example/api/items?x=1&y=due')", at);
     assert_eq!(value(&out, "JSON="), JSON_ITEMS);
-    // wget non decomprime: il guest riceve i byte gzip e li decomprime lui.
+    // wget does not decompress: the guest receives the gzip bytes and decompresses them itself.
     let (at, out) =
         r.command("echo \"G\"Z=$(wget -q -O - http://gz.example:8081/testo | gzip -dc | tail -n 1)", at);
     assert_eq!(value(&out, "GZ="), "3000");
@@ -177,15 +177,15 @@ fn session(image: &[u8], initrd: &[u8]) -> Capture {
         "wget -q -O /dev/null --header 'Content-Type: application/x-protobuf' --post-file /tmp/pb http://pb.example:84/pb",
         at,
     );
-    // Corpo binario: `wget --post-file` di BusyBox lo tronca al primo byte
-    // zero (lo legge come stringa C), quindi la richiesta la scrive la shell
-    // e la manda `nc`.
+    // Binary body: BusyBox's `wget --post-file` truncates it at the first zero
+    // byte (it reads it as a C string), so the shell writes the request
+    // and `nc` sends it.
     let (at, _) = r.command("seq 1 5000 | gzip -c > /tmp/z.gz", at);
     let (at, _) = r.command(
         "{ printf 'POST /zip HTTP/1.1\\r\\nHost: zip.example:85\\r\\nContent-Type: text/plain\\r\\nContent-Encoding: gzip\\r\\nContent-Length: %d\\r\\nConnection: close\\r\\n\\r\\n' $(wc -c < /tmp/z.gz); cat /tmp/z.gz; } | nc zip.example 85 > /dev/null",
         at,
     );
-    // TIME-WAIT e ultimi ACK prima di spegnere.
+    // TIME-WAIT and last ACKs before powering off.
     let (_, _) = r.command("sleep 2", at);
     r.m.console_input(b"poweroff -f\n");
     let limit = r.m.steps + PHASE_BUDGET;
@@ -204,11 +204,11 @@ fn session(image: &[u8], initrd: &[u8]) -> Capture {
     }
     let frames_in = r.m.net_view(|s| s.stats().frames_in).unwrap();
     let from_guest = cap.frames().iter().filter(|f| f.dir == Direction::FromGuest).count() as u64;
-    assert_eq!(from_guest, frames_in, "ogni frame del guest arrivato allo stack è nella cattura");
+    assert_eq!(from_guest, frames_in, "every guest frame that reached the stack is in the capture");
     cap
 }
 
-/// (metodo, url, stato) attesi, in ordine.
+/// Expected (method, url, status), in order.
 fn expected() -> Vec<(&'static str, &'static str, u16)> {
     vec![
         ("GET", "http://api.example/api/items?x=1&y=due", 200),
@@ -229,21 +229,21 @@ fn check_analysis(a: &NetworkAnalysis) {
     assert_eq!(got, want);
     for (x, name) in a.http.iter().zip(["api", "gz", "post", "form", "multi", "pb", "zip"]) {
         let name = format!("{name}.example");
-        assert!(x.request.complete && x.response.as_ref().unwrap().complete, "{name}: messaggi completi");
-        assert_eq!(x.resolved_name.as_deref(), Some(name.as_str()), "nome dal DNS del sinkhole");
+        assert!(x.request.complete && x.response.as_ref().unwrap().complete, "{name}: complete messages");
+        assert_eq!(x.resolved_name.as_deref(), Some(name.as_str()), "name from the sinkhole's DNS");
         let t = &x.timings;
         assert!(t.dns_us.is_some() && t.connect_us.is_some(), "{name}: {t:?}");
         assert!(t.total_us() > 0, "{name}: {t:?}");
     }
     assert!(a.http.windows(2).all(|w| w[0].timings.started_us < w[1].timings.started_us));
 
-    // Corpi decodificati.
+    // Decoded bodies.
     let Some(Decoded::Json(v)) = &a.http[0].response_body else { panic!("{:?}", a.http[0].response_body) };
     assert_eq!(v.to_compact(), JSON_ITEMS);
     let gz = a.http[1].response.as_ref().unwrap();
     assert!(gz.body.chunked);
     assert_eq!(gz.body.content_encoding.as_deref(), Some("gzip"));
-    assert_eq!(gz.body.decoded, seq(3000), "chunked + gzip dell'host decodificati");
+    assert_eq!(gz.body.decoded, seq(3000), "chunked + host gzip decoded");
     let Decoded::Json(v) = &a.http[2].request_body else { panic!("{:?}", a.http[2].request_body) };
     assert_eq!(v.to_compact(), r#"{"nome":"vetro","n":42}"#);
     let Some(Decoded::Protobuf(f)) = &a.http[2].response_body else { panic!() };
@@ -266,9 +266,9 @@ fn check_analysis(a: &NetworkAnalysis) {
     assert_eq!(vetro_analysis::net::body::protobuf_text(f), "1: 150\n2: \"testing\"\n3 {\n  1: 150\n}\n");
     let z = &a.http[6].request;
     assert_eq!(z.body.content_encoding.as_deref(), Some("gzip"), "{:?} {:?}", z.headers, z.body.decode_error);
-    assert_eq!(z.body.decoded, seq(5000), "corpo compresso dal gzip di BusyBox");
+    assert_eq!(z.body.decoded, seq(5000), "body compressed by BusyBox's gzip");
 
-    // DNS: una domanda A con risposta per nome, indirizzi finti in ordine.
+    // DNS: an A question with a per-name answer, fake addresses in order.
     for (i, n) in ["api", "gz", "post", "form", "multi", "pb", "zip"].iter().enumerate() {
         let name = format!("{n}.example");
         let d = a.dns.iter().find(|d| d.name == name && d.qtype == 1).unwrap_or_else(|| panic!("DNS {name}"));
@@ -277,7 +277,7 @@ fn check_analysis(a: &NetworkAnalysis) {
 }
 
 fn check_har(har: &str) {
-    let v = json::parse(har.as_bytes()).expect("HAR JSON valido");
+    let v = json::parse(har.as_bytes()).expect("valid HAR JSON");
     let Some(Value::Array(entries)) = v.get("log").and_then(|l| l.get("entries")) else { panic!() };
     assert_eq!(entries.len(), 7);
     for (e, (m, u, s)) in entries.iter().zip(expected()) {
@@ -290,13 +290,13 @@ fn check_har(har: &str) {
     assert_eq!(text.and_then(Value::as_str).map(str::as_bytes), Some(seq(3000).as_slice()));
 }
 
-/// Gli strumenti esterni in Docker (`tools/analysis/check.sh`).
+/// The external tools in Docker (`tools/analysis/check.sh`).
 fn check_external(pcap: &std::path::Path, har: &std::path::Path, frames: usize) {
     let docker = Command::new("docker").args(["info", "--format", "{{.ServerVersion}}"]).output();
     if !docker.is_ok_and(|o| o.status.success()) {
         return skip_or_fail(
             "VETRO_REQUIRE_ANALYSIS_TOOLS",
-            "Docker non disponibile: tshark e i validatori HAR non girano",
+            "Docker not available: tshark and the HAR validators do not run",
         );
     }
     let ports: Vec<String> = PORTS.iter().map(u16::to_string).collect();
@@ -322,9 +322,9 @@ fn check_external(pcap: &std::path::Path, har: &std::path::Path, frames: usize) 
             )
         })
         .collect();
-    assert_eq!(field("TSHARK-REQUEST "), reqs, "richieste viste da tshark");
+    assert_eq!(field("TSHARK-REQUEST "), reqs, "requests seen by tshark");
     let codes: Vec<String> = expected().iter().map(|e| e.2.to_string()).collect();
-    assert_eq!(field("TSHARK-RESPONSE "), codes, "risposte viste da tshark");
+    assert_eq!(field("TSHARK-RESPONSE "), codes, "responses seen by tshark");
     assert!(lines.contains(&"HAR-VALID"), "schema HAR 1.2:\n{text}");
     assert_eq!(field("HARALYZER "), ["7"]);
     let entries: Vec<String> = expected().iter().map(|(m, u, s)| format!("{m} {u} {s}")).collect();
@@ -334,18 +334,18 @@ fn check_external(pcap: &std::path::Path, har: &std::path::Path, frames: usize) 
 #[test]
 fn pcapng_e_har_dal_traffico_del_guest() {
     if cfg!(debug_assertions) {
-        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "rete sotto Vetro solo in release");
+        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "network under Vetro only in release");
     }
     let Some((image, initrd)) = guest_kernel() else {
         return skip_or_fail(
             "VETRO_REQUIRE_GUEST_KERNEL",
-            "target/guest-kernel mancante: esegui tools/guest-kernel/build.sh",
+            "target/guest-kernel missing: run tools/guest-kernel/build.sh",
         );
     };
     let (image, initrd) = (std::fs::read(image).unwrap(), std::fs::read(initrd).unwrap());
     let cap = session(&image, &initrd);
     let pcap = pcapng::write(cap.frames(), &PcapngOptions::default());
-    assert_eq!(pcapng::read(&pcap).expect("pcapng rileggibile").frames, cap.frames(), "nostro lettore");
+    assert_eq!(pcapng::read(&pcap).expect("readable pcapng").frames, cap.frames(), "our reader");
     let a = NetworkAnalysis::from_frames(cap.frames());
     check_analysis(&a);
     let har = a.to_har(&HarOptions::default());
@@ -362,10 +362,10 @@ fn pcapng_e_har_dal_traffico_del_guest() {
     let again = session(&image, &initrd);
     assert!(
         pcapng::write(again.frames(), &PcapngOptions::default()) == pcap,
-        "pcapng diverso fra due esecuzioni"
+        "pcapng different between two runs"
     );
     assert!(
         NetworkAnalysis::from_frames(again.frames()).to_har(&HarOptions::default()) == har,
-        "HAR diverso"
+        "HAR differs"
     );
 }

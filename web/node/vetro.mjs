@@ -1,39 +1,39 @@
-// Caricatore di vetro-wasm: istanzia il modulo con i suoi import e avvolge
-// l'API C di docs/specs/wasm.md. Non usa API di Node: va bene anche nel
-// browser (i byte del .wasm li passa chi chiama).
+// vetro-wasm loader: instantiates the module with its imports and wraps
+// the C API of docs/specs/wasm.md. It doesn't use Node APIs: it works in the
+// browser too (the bytes of the .wasm are passed by the caller).
 
 import { JitEngine } from './jit-engine.mjs';
 
 export const ABI_VERSION = 13;
-/** Codici di vetro_run. */
+/** Codes of vetro_run. */
 export const STOP = ['Budget', 'PowerOff', 'Reset', 'Idle', 'Unimplemented', 'Blocked'];
 
-/** Bit dei dispositivi di vetro_machine_new_with. */
+/** Device bits of vetro_machine_new_with. */
 export const DEV = { GPU: 1, KEYBOARD: 2, TABLET: 4, MULTITOUCH: 8, NET: 16, VSOCK: 32, DEFAULT: 1 | 2 | 4 | 16 };
-/** Bit dei dischi. */
+/** Disk bits. */
 export const DISK = { READ_ONLY: 1 };
-/** Dispositivi di vetro_input_events. */
+/** Devices of vetro_input_events. */
 export const INPUT = { KEYBOARD: 0, POINTER: 1 };
-/** Stati e motivi di chiusura di vetro_net_state (GuestSocket.state). */
+/** States and close reasons of vetro_net_state (GuestSocket.state). */
 export const NET_STATE = ['Unknown', 'Connecting', 'Open', 'Closed'];
-/** Codici di vetro_snapshot_restore (0 = riuscito). */
+/** Codes of vetro_snapshot_restore (0 = success). */
 export const RESTORE = [null, 'BadMagic', 'Version', 'Config', 'Corrupt'];
-/** Codici di vetro_overlay_open. */
+/** Codes of vetro_overlay_open. */
 export const OVERLAY = ['Loaded', 'New', 'Mismatch', 'Corrupt', 'NoDisk'];
 export const NET_REASON = [null, 'Normal', 'GuestReset', 'RemoteReset', 'Refused', 'Timeout'];
-/** Operazioni di vetro_files_request (gestore dei file, ABI 7; SQL con l'ABI 9). */
+/** Operations of vetro_files_request (file manager, ABI 7; SQL with ABI 9). */
 export const FILES_OP = { STAT: 1, LIST: 2, READ: 3, WRITE: 4, MKDIR: 5, CREATE: 6, DELETE: 7, RENAME: 8, WATCH: 9, UNWATCH: 10, SQL: 11 };
-/** Tipi degli ingressi della timeline (vetro_timeline_input, InputKind di vetro-analysis). */
+/** Timeline input kinds (vetro_timeline_input, InputKind of vetro-analysis). */
 export const TIMELINE_INPUT = { KEY: 0, POINTER: 1, TOUCH: 2, CONSOLE: 3, FILES: 4, POWER: 5, DISPLAY: 6, OTHER: 7 };
-/** Tipi degli effetti della timeline (vetro_timeline_effect, EffectKind). */
+/** Timeline effect kinds (vetro_timeline_effect, EffectKind). */
 export const TIMELINE_EFFECT = { HTTP: 0, DNS: 1, TLS: 2, FILE: 3, CONSOLE: 4 };
-/** Stati di vetro_rr_status. */
+/** States of vetro_rr_status. */
 export const RR_STATE = ['Idle', 'Recording', 'Replaying', 'Finished', 'Diverged'];
-/** Codici di vetro_replay_start (0 = riuscito). */
+/** Codes of vetro_replay_start (0 = success). */
 export const REPLAY_START = [null, 'NoLog', 'KeyframeMissing', 'Refused'];
-/** Stati di vetro_files_status. */
+/** States of vetro_files_status. */
 export const FILES_STATUS = ['None', 'Connecting', 'Ready'];
-/** Bit degli eventi di inotify (GuestFiles.onEvent). */
+/** inotify event bits (GuestFiles.onEvent). */
 export const INOTIFY = {
   MODIFY: 0x2, ATTRIB: 0x4, CLOSE_WRITE: 0x8, MOVED_FROM: 0x40, MOVED_TO: 0x80, CREATE: 0x100, DELETE: 0x200,
   DELETE_SELF: 0x400, MOVE_SELF: 0x800, Q_OVERFLOW: 0x4000, IGNORED: 0x8000, ISDIR: 0x40000000,
@@ -49,9 +49,9 @@ let snapshotSink = null;
 let snapshotSource = null;
 
 /**
- * Byte di un percorso del guest da una stringa in *surrogateescape* (ADR
- * 0021): i surrogati solitari U+DC80..U+DCFF tornano i byte 0x80..0xFF che
- * non erano UTF-8 valido, il resto è UTF-8.
+ * Bytes of a guest path from a string in *surrogateescape* (ADR
+ * 0021): the lone surrogates U+DC80..U+DCFF become again the bytes 0x80..0xFF that
+ * were not valid UTF-8, the rest is UTF-8.
  */
 export function pathBytes(path) {
   if (!/[\udc80-\udcff]/.test(path)) return toUtf8.encode(path);
@@ -73,13 +73,13 @@ export function pathBytes(path) {
   return new Uint8Array(out);
 }
 
-/** Una stringa in surrogateescape dai byte di un percorso (l'inverso di pathBytes). */
+/** A surrogateescape string from the bytes of a path (the inverse of pathBytes). */
 export function pathString(bytes) {
   const strict = new TextDecoder('utf-8', { fatal: true });
   try {
     return strict.decode(bytes);
   } catch {
-    // Byte per byte: le sequenze UTF-8 valide restano, gli altri byte diventano surrogati.
+    // Byte by byte: valid UTF-8 sequences stay, the other bytes become surrogates.
     let s = '';
     let i = 0;
     while (i < bytes.length) {
@@ -99,7 +99,7 @@ export function pathString(bytes) {
   }
 }
 
-/** Un nome con i byte non UTF-8 (surrogati solitari) mostrati come \xNN. */
+/** A name with the non-UTF-8 bytes (lone surrogates) shown as \xNN. */
 export function displayName(s) {
   return s.replace(/[\udc80-\udcff]/g, (c, i) => {
     const prev = i > 0 ? s.charCodeAt(i - 1) : 0;
@@ -107,14 +107,14 @@ export function displayName(s) {
   });
 }
 
-/** Tipi dei valori SQL nel protocollo del gestore dei file (ADR 0021). */
+/** Types of SQL values in the file manager protocol (ADR 0021). */
 const SQLV = { NULL: 0, INT: 1, REAL: 2, TEXT: 3, BLOB: 4 };
 
 /**
- * SQL e parametri nel formato di vetro-wasm (`proto::encode_sql_args`).
- * Un parametro è null, un bigint o un numero intero (INTEGER), un numero
- * non intero (REAL), una stringa (TEXT), un Uint8Array (BLOB), un booleano
- * (0/1), o esplicito: { type: 'integer'|'real'|'text'|'blob'|'null', value }.
+ * SQL and parameters in vetro-wasm's format (`proto::encode_sql_args`).
+ * A parameter is null, a bigint or an integer number (INTEGER), a non-integer
+ * number (REAL), a string (TEXT), a Uint8Array (BLOB), a boolean
+ * (0/1), or explicit: { type: 'integer'|'real'|'text'|'blob'|'null', value }.
  */
 export function encodeSqlArgs(sql, params = []) {
   const parts = [];
@@ -145,7 +145,7 @@ export function encodeSqlArgs(sql, params = []) {
     else if (typeof p === 'number') type = 'real';
     else if (typeof p === 'string') type = 'text';
     else if (p instanceof Uint8Array) type = 'blob';
-    else throw new Error(`parametro SQL non valido: ${p}`);
+    else throw new Error(`invalid SQL parameter: ${p}`);
     if (type === 'null') push(new Uint8Array([SQLV.NULL]));
     else if (type === 'integer') {
       const b = new Uint8Array(9);
@@ -162,7 +162,7 @@ export function encodeSqlArgs(sql, params = []) {
       push(new Uint8Array([type === 'text' ? SQLV.TEXT : SQLV.BLOB]));
       push(u32(bytes.length));
       push(bytes);
-    } else throw new Error(`tipo di parametro SQL ${type}`);
+    } else throw new Error(`SQL parameter type ${type}`);
   }
   const out = new Uint8Array(len);
   let at = 0;
@@ -173,7 +173,7 @@ export function encodeSqlArgs(sql, params = []) {
   return out;
 }
 
-/** Un valore SQL dal JSON di vetro-wasm: null, Number o BigInt, String, Uint8Array. */
+/** A SQL value from vetro-wasm's JSON: null, Number or BigInt, String, Uint8Array. */
 export function sqlValue(v) {
   if (v === null) return null;
   const [t, x] = v;
@@ -215,22 +215,22 @@ export async function instantiate(wasmBytes, { jitBudget } = {}) {
   exports = instance.exports;
   jit.attach(exports);
   const abi = exports.vetro_abi_version();
-  if (abi !== ABI_VERSION) throw new Error(`vetro-wasm: API ${abi}, attesa ${ABI_VERSION}`);
+  if (abi !== ABI_VERSION) throw new Error(`vetro-wasm: API ${abi}, expected ${ABI_VERSION}`);
   return { exports, jit };
 }
 
-/** Copia `bytes` in un buffer nuovo della memoria del modulo: [ptr, len]. */
+/** Copies `bytes` into a new buffer in the module's memory: [ptr, len]. */
 export function copyIn(x, bytes) {
   if (bytes.length === 0) return [0, 0];
-  // Puntatori come u32: oltre 2 GiB un i32 di WASM arriva negativo.
+  // Pointers as u32: beyond 2 GiB a WASM i32 arrives negative.
   const ptr = x.vetro_alloc(bytes.length) >>> 0;
   if (ptr === 0) throw new Error(`vetro_alloc(${bytes.length}) fallita`);
-  // Vista presa dopo l'allocazione: la memoria può essere cresciuta.
+  // View taken after the allocation: the memory may have grown.
   new Uint8Array(x.memory.buffer, ptr, bytes.length).set(bytes);
   return [ptr, bytes.length];
 }
 
-/** Una macchina di vetro-wasm. */
+/** A vetro-wasm machine. */
 export class Machine {
   #x;
   #vm;
@@ -238,9 +238,9 @@ export class Machine {
   #cap = 64 * 1024;
 
   /**
-   * ramSize/nowSecs/seed: BigInt, 0n = i valori di MachineConfig::default.
-   * devices: bit di DEV (default: GPU, tastiera e tablet, come
-   * `Devices::default`); width/height: risoluzione iniziale della GPU
+   * ramSize/nowSecs/seed: BigInt, 0n = the values of MachineConfig::default.
+   * devices: bits of DEV (default: GPU, keyboard and tablet, like
+   * `Devices::default`); width/height: initial GPU resolution
    * (0 = 1280x800).
    */
   constructor(x, { ramSize = 0n, nowSecs = 0n, seed = 0n, devices = DEV.DEFAULT, width = 0, height = 0 } = {}) {
@@ -249,28 +249,28 @@ export class Machine {
     this.#buf = x.vetro_alloc(this.#cap) >>> 0;
   }
 
-  /** Buffer di lavoro di `n` byte (dentro il buffer della console). */
+  /** Work buffer of `n` bytes (inside the console buffer). */
   #scratch(n) {
-    if (n > this.#cap) throw new Error(`buffer di lavoro troppo piccolo (${n} > ${this.#cap})`);
+    if (n > this.#cap) throw new Error(`work buffer too small (${n} > ${this.#cap})`);
     return this.#buf;
   }
 
   // ---- Display (virtio-gpu) -------------------------------------------
 
-  /** { width, height } dello scanout, o null se spento. */
+  /** { width, height } of the scanout, or null if off. */
   displaySize(scanout = 0) {
     const v = this.#x.vetro_display_size(this.#vm, scanout);
     return v === 0n ? null : { width: Number(v >> 32n), height: Number(v & 0xffffffffn) };
   }
 
-  /** Aggiornamenti dello scanout (Number): se non cambia, niente da ridisegnare. */
+  /** Updates of the scanout (Number): if it doesn't change, nothing to redraw. */
   displayUpdates(scanout = 0) {
     return Number(this.#x.vetro_display_updates(this.#vm, scanout));
   }
 
   /**
-   * Vista sui pixel RGBA dello scanout nella memoria del modulo (valida fino
-   * alla prossima esecuzione), o null.
+   * View on the RGBA pixels of the scanout in the module's memory (valid until
+   * the next run), or null.
    */
   displayPixels(scanout = 0) {
     const size = this.displaySize(scanout);
@@ -279,7 +279,7 @@ export class Machine {
     return new Uint8Array(this.#x.memory.buffer, ptr, size.width * size.height * 4);
   }
 
-  /** Rettangolo cambiato dall'ultima chiamata { x, y, width, height }, o null. */
+  /** Rectangle changed since the last call { x, y, width, height }, or null. */
   displayTakeDirty(scanout = 0) {
     const p = this.#scratch(16);
     if (!this.#x.vetro_display_take_dirty(this.#vm, scanout, p)) return null;
@@ -288,8 +288,8 @@ export class Machine {
   }
 
   /**
-   * I pixel RGBA del rettangolo `r` in un ArrayBuffer nuovo (da trasferire
-   * a un altro thread), righe da `r.width * 4` byte.
+   * The RGBA pixels of rectangle `r` in a new ArrayBuffer (to transfer
+   * to another thread), rows of `r.width * 4` bytes.
    */
   displayCopy(r, scanout = 0) {
     const size = this.displaySize(scanout);
@@ -302,12 +302,12 @@ export class Machine {
     return out;
   }
 
-  /** Risoluzione chiesta per lo scanout (ingresso dell'host). */
+  /** Resolution requested for the scanout (host input). */
   displayResize(width, height, scanout = 0) {
     return this.#x.vetro_display_resize(this.#vm, scanout, width, height) === 1;
   }
 
-  /** Cursore { resource, x, y, hotX, hotY, updates }, o null senza GPU. */
+  /** Cursor { resource, x, y, hotX, hotY, updates }, or null without a GPU. */
   cursor(scanout = 0) {
     const p = this.#scratch(24);
     if (!this.#x.vetro_cursor_state(this.#vm, scanout, p)) return null;
@@ -315,58 +315,58 @@ export class Machine {
     return { resource, x, y, hotX, hotY, updates };
   }
 
-  /** Immagine del cursore, copia 64x64 RGBA (Uint8ClampedArray), o null. */
+  /** Cursor image, a 64x64 RGBA copy (Uint8ClampedArray), or null. */
   cursorImage(scanout = 0) {
     const ptr = this.#x.vetro_cursor_image(this.#vm, scanout) >>> 0;
     return ptr ? new Uint8ClampedArray(this.#x.memory.buffer, ptr, 64 * 64 * 4).slice() : null;
   }
 
-  // ---- Ingressi (virtio-input, GPIO) ------------------------------------
+  // ---- Inputs (virtio-input, GPIO) --------------------------------------
 
-  /** Tasto Linux (KEY_*) premuto o rilasciato; false se non c'è la tastiera. */
+  /** Linux key (KEY_*) pressed or released; false if there is no keyboard. */
   key(code, down) {
     return this.#x.vetro_input_key(this.#vm, code, down ? 1 : 0) === 1;
   }
 
-  /** Posizione assoluta del tablet (0..32767). */
+  /** Absolute position of the tablet (0..32767). */
   pointerMove(x, y) {
     return this.#x.vetro_input_abs(this.#vm, x, y) === 1;
   }
 
-  /** Pulsante del puntatore (BTN_LEFT = 0x110, ...). */
+  /** Pointer button (BTN_LEFT = 0x110, ...). */
   pointerButton(code, down) {
     return this.#x.vetro_input_button(this.#vm, code, down ? 1 : 0) === 1;
   }
 
-  /** Contatto del touchscreen: pos = [x, y] (0..32767) o null per toglierlo. */
+  /** Touchscreen contact: pos = [x, y] (0..32767) or null to lift it. */
   touch(slot, pos) {
     const [x, y] = pos ?? [0, 0];
     return this.#x.vetro_input_touch(this.#vm, slot, x, y, pos ? 1 : 0) === 1;
   }
 
-  /** Eventi evdev grezzi [[type, code, value], ...] su INPUT.KEYBOARD o INPUT.POINTER. */
+  /** Raw evdev events [[type, code, value], ...] on INPUT.KEYBOARD or INPUT.POINTER. */
   inputEvents(device, events) {
     const p = this.#scratch(events.length * 12);
     new Uint32Array(this.#x.memory.buffer, p, events.length * 3).set(events.flat().map((v) => v >>> 0));
     return this.#x.vetro_input_events(this.#vm, device, p, events.length) === 1;
   }
 
-  /** LED della tastiera accesi dal guest (bit LED_*). */
+  /** Keyboard LEDs lit by the guest (LED_* bits). */
   get leds() {
     return this.#x.vetro_input_leds(this.#vm);
   }
 
-  /** Livello di una linea del GPIO; senza `line`, il tasto di accensione. */
+  /** Level of a GPIO line; without `line`, the power button. */
   gpio(level, line = this.#x.vetro_power_key_line()) {
     this.#x.vetro_gpio_input(this.#vm, line, level ? 1 : 0);
   }
 
-  // ---- Dischi (virtio-blk) ----------------------------------------------
+  // ---- Disks (virtio-blk) -----------------------------------------------
 
   /**
-   * Disco con i dati dal JS a blocchi (vedi web/node/disk.mjs): size in
-   * byte (Number o BigInt), blockSize potenza di due >= 512, maxBlocks
-   * blocchi in memoria (0 = nessun limite). Restituisce l'indice.
+   * Disk with the data from JS in blocks (see web/node/disk.mjs): size in
+   * bytes (Number or BigInt), blockSize a power of two >= 512, maxBlocks
+   * blocks in memory (0 = no limit). Returns the index.
    */
   addDisk(size, { blockSize = 1 << 20, maxBlocks = 0, readOnly = false } = {}) {
     const i = this.#x.vetro_disk_add(this.#vm, BigInt(size), blockSize, maxBlocks, readOnly ? DISK.READ_ONLY : 0);
@@ -374,7 +374,7 @@ export class Machine {
     return i;
   }
 
-  /** Disco con tutto il contenuto in memoria (sempre pronto). */
+  /** Disk with all its contents in memory (always ready). */
   addDiskMem(bytes, { readOnly = false } = {}) {
     const x = this.#x;
     const [p, n] = copyIn(x, bytes);
@@ -384,7 +384,7 @@ export class Machine {
     return i;
   }
 
-  /** Blocchi chiesti: [{ disk, block }] (block Number). */
+  /** Requested blocks: [{ disk, block }] (block Number). */
   diskWanted() {
     const x = this.#x;
     const out = [];
@@ -398,7 +398,7 @@ export class Machine {
     }
   }
 
-  /** Consegna un blocco (Uint8Array); lancia se rifiutato. */
+  /** Delivers a block (Uint8Array); throws if refused. */
   diskFill(disk, block, bytes) {
     const x = this.#x;
     const [p, n] = copyIn(x, bytes);
@@ -407,12 +407,12 @@ export class Machine {
     if (r !== 0) throw new Error(`vetro_disk_fill(${disk}, ${block}, ${n} byte): codice ${r}`);
   }
 
-  /** Il blocco non si può avere: il guest riceve un errore di I/O. */
+  /** The block can't be obtained: the guest gets an I/O error. */
   diskFail(disk, block) {
     this.#x.vetro_disk_fail(this.#vm, disk, BigInt(block));
   }
 
-  /** Contatori del disco, o null. */
+  /** Disk counters, or null. */
   diskStats(disk) {
     const names = ['size', 'blockSize', 'cachedBlocks', 'misses', 'fills', 'evictions', 'failures', 'dirtyClusters'];
     const p = this.#scratch(8 * names.length);
@@ -422,25 +422,25 @@ export class Machine {
     return Object.fromEntries(names.map((k, i) => [k, Number(v[i])]));
   }
 
-  // ---- Rete: connessioni verso i servizi del guest (ABI 5) ---------------
+  // ---- Network: connections to the guest's services (ABI 5) ---------------
 
   /**
-   * Apre una connessione TCP verso `port` del guest (10.0.2.15), che la vede
-   * arrivare dal gateway 10.0.2.2, come `hostfwd` di QEMU (per esempio adbd
-   * sulla 5555). Il SYN parte al prossimo `run`. Lancia senza rete.
+   * Opens a TCP connection to the guest's `port` (10.0.2.15), which sees it
+   * arrive from the gateway 10.0.2.2, like QEMU's `hostfwd` (for example adbd
+   * on 5555). The SYN leaves at the next `run`. Throws without a network.
    */
   connectGuest(port) {
     const id = this.#x.vetro_net_connect(this.#vm, port);
-    if (id === 0n) throw new Error(`vetro_net_connect(${port}): rete assente o porta non valida`);
+    if (id === 0n) throw new Error(`vetro_net_connect(${port}): no network or invalid port`);
     return new GuestSocket(this.#x, this.#vm, id);
   }
 
-  // ---- Gestore dei file (ABI 7, ADR 0020) --------------------------------
+  // ---- File manager (ABI 7, ADR 0020) --------------------------------------
 
   /**
-   * Il client del gestore dei file verso il demone `vetro-files` del guest
-   * (serve DEV.VSOCK). Le richieste partono e le risposte arrivano con
-   * `pump()`, da chiamare fra un quanto e l'altro. Lancia senza vsock.
+   * The file manager client towards the guest's `vetro-files` daemon
+   * (needs DEV.VSOCK). Requests leave and responses arrive with
+   * `pump()`, to be called between one quantum and the next. Throws without vsock.
    */
   files(port = 0) {
     return new GuestFiles(this.#x, this.#vm, port);
@@ -448,7 +448,7 @@ export class Machine {
 
   // ---- Snapshot (ABI 4, ADR 0015) ---------------------------------------
 
-  /** Versione del formato degli snapshot (da mettere nelle chiavi delle cache). */
+  /** Snapshot format version (to put in the cache keys). */
   get snapshotVersion() {
     return this.#x.vetro_snapshot_version();
   }
@@ -472,9 +472,9 @@ export class Machine {
   }
 
   /**
-   * Snapshot della macchina intera, copiato fuori dalla memoria del modulo
-   * (Uint8Array). Leggere prima la console: l'uscita non ancora letta dal JS
-   * non entra.
+   * Snapshot of the whole machine, copied out of the module's memory
+   * (Uint8Array). Read the console first: the output not yet read by JS
+   * is not included.
    */
   snapshotSave() {
     const x = this.#x;
@@ -584,10 +584,10 @@ export class Machine {
   }
 
   /**
-   * Ripristina uno snapshot su questa macchina, costruita come quella salvata
-   * (stessi dispositivi, stessi dischi aggiunti nello stesso ordine). Lancia
-   * un Error con `code` ('BadMagic', 'Version', 'Config', 'Corrupt') e il
-   * motivo; con i primi tre la macchina non è cambiata.
+   * Restores a snapshot onto this machine, built like the saved one
+   * (same devices, same disks added in the same order). Throws
+   * an Error with `code` ('BadMagic', 'Version', 'Config', 'Corrupt') and the
+   * reason; with the first three the machine has not changed.
    */
   snapshotRestore(bytes) {
     const x = this.#x;
@@ -601,14 +601,14 @@ export class Machine {
     }
   }
 
-  // ---- Overlay persistente dei dischi (ABI 6, ADR 0017) -----------------
+  // ---- Persistent disk overlay (ABI 6, ADR 0017) ----------------------------
 
   /**
-   * Apre l'overlay del disco `disk` dal contenuto del file (`bytes`, vuoto se
-   * non c'è) per l'immagine base `identity` (stringa). Restituisce
+   * Opens the overlay of disk `disk` from the file contents (`bytes`, empty if
+   * it doesn't exist) for the base image `identity` (string). Returns
    * { code: 'Loaded' | 'New' | 'Mismatch' | 'Corrupt' | 'NoDisk', message }.
-   * Con 'Mismatch' e 'Corrupt' l'overlay è scartato: la prossima
-   * `overlayTake` tronca il file.
+   * With 'Mismatch' and 'Corrupt' the overlay is discarded: the next
+   * `overlayTake` truncates the file.
    */
   overlayOpen(disk, identity, bytes) {
     const x = this.#x;
@@ -620,10 +620,10 @@ export class Machine {
   }
 
   /**
-   * Scritture da fare sul file dell'overlay del disco `disk` per salvarci le
-   * scritture del guest fatte finora: { truncate: Number | null, writes:
-   * [{ at: Number, bytes: Uint8Array }] } in ordine (l'intestazione per
-   * ultima), o null se non c'è niente di nuovo.
+   * Writes to make to the overlay file of disk `disk` to save in it the
+   * guest's writes made so far: { truncate: Number | null, writes:
+   * [{ at: Number, bytes: Uint8Array }] } in order (the header
+   * last), or null if there is nothing new.
    */
   overlayTake(disk) {
     const x = this.#x;
@@ -646,7 +646,7 @@ export class Machine {
     return { truncate: t === 0xffffffffffffffffn ? null : Number(t), writes };
   }
 
-  /** Contatori dell'overlay del disco, o null senza overlay. */
+  /** Overlay counters of the disk, or null without an overlay. */
   overlayInfo(disk) {
     const names = ['generation', 'clusters', 'slots', 'damaged', 'fileLength'];
     const p = this.#scratch(8 * names.length);
@@ -656,9 +656,9 @@ export class Machine {
     return Object.fromEntries(names.map((k, i) => [k, Number(v[i])]));
   }
 
-  // ---- Ispettore di rete e timeline (ABI 8, ADR 0023) ---------------------
+  // ---- Network inspector and timeline (ABI 8, ADR 0023) ---------------------
 
-  /** L'ultimo risultato di Rust (buffer dei risultati), copiato; poi liberato. */
+  /** The last result from Rust (result buffer), copied; then freed. */
   #result(n) {
     const x = this.#x;
     if (!n) return new Uint8Array();
@@ -680,7 +680,7 @@ export class Machine {
     return n ? Object.fromEntries(names.map((k, i) => [k, Number(v[i])])) : null;
   }
 
-  /** Accende o spegne la cattura dei frame di virtio-net; false senza rete. */
+  /** Turns the capture of the virtio-net frames on or off; false without a network. */
   capture(on = true) {
     return this.#x.vetro_capture_set(this.#vm, on ? 1 : 0) === 1;
   }
@@ -695,27 +695,27 @@ export class Machine {
     return { ...s, on: s.on === 1 };
   }
 
-  /** La lista dell'ispettore: { frames, requests: [...], dns: [...], tls: [...] } (docs/specs/analysis.md). */
+  /** The inspector list: { frames, requests: [...], dns: [...], tls: [...] } (docs/specs/analysis.md). */
   inspectRequests() {
     return this.#json(this.#x.vetro_inspect_requests(this.#vm));
   }
 
-  /** Il dettaglio della richiesta `index` ({ row, request, response }), o null. */
+  /** The detail of request `index` ({ row, request, response }), or null. */
   inspectRequest(index) {
     return this.#json(this.#x.vetro_inspect_request(this.#vm, index));
   }
 
-  /** L'HAR 1.2 della cattura (stringa); epochUs: µs Unix del tempo 0 del guest. */
+  /** The HAR 1.2 of the capture (string); epochUs: Unix µs of guest time 0. */
   inspectHar(epochUs = 0) {
     return utf8.decode(this.#result(this.#x.vetro_inspect_har(this.#vm, BigInt(epochUs))));
   }
 
-  /** Il pcapng della cattura (Uint8Array). */
+  /** The pcapng of the capture (Uint8Array). */
   inspectPcapng(epochUs = 0) {
     return this.#result(this.#x.vetro_inspect_pcapng(this.#vm, BigInt(epochUs)));
   }
 
-  /** Annota un ingresso dell'utente (kind in TIMELINE_INPUT) all'istruzione corrente. */
+  /** Annotates a user input (kind in TIMELINE_INPUT) at the current instruction. */
   timelineInput(kind, label, weak = false) {
     const x = this.#x;
     const [p, n] = copyIn(x, toUtf8.encode(label));
@@ -723,7 +723,7 @@ export class Machine {
     if (n) x.vetro_free(p, n);
   }
 
-  /** Annota un effetto (kind in TIMELINE_EFFECT) all'istruzione corrente. */
+  /** Annotates an effect (kind in TIMELINE_EFFECT) at the current instruction. */
   timelineEffect(kind, label) {
     const x = this.#x;
     const [p, n] = copyIn(x, toUtf8.encode(label));
@@ -732,12 +732,12 @@ export class Machine {
     return ok;
   }
 
-  /** La timeline { windowUs, inputs, effects, ... } con finestra `windowUs` (0 = 3 s). */
+  /** The timeline { windowUs, inputs, effects, ... } with window `windowUs` (0 = 3 s). */
   timeline(windowUs = 0) {
     return this.#json(this.#x.vetro_timeline_json(this.#vm, BigInt(windowUs)));
   }
 
-  /** Cambia quando la timeline cambia (BigInt). */
+  /** Changes when the timeline changes (BigInt). */
   timelineVersion() {
     return this.#x.vetro_timeline_version(this.#vm);
   }
@@ -748,12 +748,12 @@ export class Machine {
 
   // ---- Record & replay (ABI 8, ADR 0019 e 0023) ------------------------------
 
-  /** Registra da qui, con un keyframe ogni `keyframeEvery` istruzioni (il primo subito). */
+  /** Records from here, with a keyframe every `keyframeEvery` instructions (the first one immediately). */
   recordStart(keyframeEvery = 200_000_000) {
     this.#x.vetro_record_start(this.#vm, BigInt(keyframeEvery));
   }
 
-  /** Finisce la registrazione (il log resta nella macchina); false se non si registrava. */
+  /** Ends the recording (the log stays in the machine); false if it wasn't recording. */
   recordStop() {
     return this.#x.vetro_record_stop(this.#vm) === 1;
   }
@@ -772,18 +772,18 @@ export class Machine {
     return out;
   }
 
-  /** Il file del log con i keyframe presenti (Uint8Array, vuoto senza log). */
+  /** The log file with the keyframes present (Uint8Array, empty without a log). */
   logEncode() {
     return this.#result(this.#x.vetro_log_encode(this.#vm));
   }
 
-  /** Carica un file di log (al posto del log che c'era); lancia se non è valido. */
+  /** Loads a log file (replacing the log that was there); throws if it is invalid. */
   logLoad(bytes) {
     const x = this.#x;
     const [p, n] = copyIn(x, bytes);
     const r = x.vetro_log_load(this.#vm, p, n);
     if (n) x.vetro_free(p, n);
-    if (r !== 0) throw new Error(`log non valido: ${this.#message()}`);
+    if (r !== 0) throw new Error(`invalid log: ${this.#message()}`);
   }
 
   /** { startSteps, endSteps, events, keyframes, keyframeEvery, jit, sameMachine, eventsBytes }, o null. */
@@ -792,40 +792,40 @@ export class Machine {
     return s && { ...s, jit: s.jit === 1, sameMachine: s.sameMachine === 1 };
   }
 
-  /** { step, consoleLen, consoleHash, size, present } del keyframe `index`, o null. */
+  /** { step, consoleLen, consoleHash, size, present } of keyframe `index`, or null. */
   logKeyframe(index) {
     const s = this.#u64s(this.#x.vetro_log_keyframe, ['step', 'consoleLen', 'consoleHash', 'size', 'present'], index);
     return s && { ...s, present: s.present === 1 };
   }
 
-  /** Sposta fuori i byte del keyframe `index` (Uint8Array; vuota se già fuori). */
+  /** Moves out the bytes of keyframe `index` (Uint8Array; empty if already out). */
   logKeyframeTake(index) {
     return this.#result(this.#x.vetro_log_keyframe_take(this.#vm, index));
   }
 
-  /** Rimette i byte del keyframe `index`; lancia se rifiutati. */
+  /** Puts back the bytes of keyframe `index`; throws if refused. */
   logKeyframePut(index, bytes) {
     const x = this.#x;
     const [p, n] = copyIn(x, bytes);
     const r = x.vetro_log_keyframe_put(this.#vm, index, p, n);
     if (n) x.vetro_free(p, n);
-    if (r !== 1) throw new Error(`keyframe ${index} rifiutato (${n} byte)`);
+    if (r !== 1) throw new Error(`keyframe ${index} refused (${n} bytes)`);
   }
 
-  /** Indice del keyframe da cui parte il replay verso l'istruzione `step`, -1 se nessuno. */
+  /** Index of the keyframe from which the replay towards instruction `step` starts, -1 if none. */
   logKeyframeFor(step) {
     return this.#x.vetro_log_keyframe_for(this.#vm, BigInt(step));
   }
 
-  /** Gli eventi del log: [{ i, step, kind, label, weak, user }]. */
+  /** The log events: [{ i, step, kind, label, weak, user }]. */
   logEvents() {
     return this.#json(this.#x.vetro_log_events(this.#vm)) ?? [];
   }
 
   /**
-   * Replay del log dall'ultimo keyframe non oltre `step` (che dev'essere
-   * presente). Lancia un Error con `code` ('NoLog', 'KeyframeMissing',
-   * 'Refused') e il motivo.
+   * Replay of the log from the last keyframe not beyond `step` (which must be
+   * present). Throws an Error with `code` ('NoLog', 'KeyframeMissing',
+   * 'Refused') and the reason.
    */
   replayStart(step = 0) {
     const r = this.#x.vetro_replay_start(this.#vm, BigInt(step));
@@ -835,12 +835,12 @@ export class Machine {
     }
   }
 
-  /** I registri al punto raggiunto (testo di Machine::registers_text). */
+  /** The registers at the point reached (text of Machine::registers_text). */
   registersText() {
     return utf8.decode(this.#result(this.#x.vetro_registers_text(this.#vm)));
   }
 
-  /** `len` byte all'indirizzo virtuale `va` (BigInt o Number): { bytes } o { fault } (BigInt). */
+  /** `len` bytes at virtual address `va` (BigInt or Number): { bytes } or { fault } (BigInt). */
   readVirt(va, len) {
     const x = this.#x;
     const p = len ? x.vetro_alloc(len) >>> 0 : 0;
@@ -852,13 +852,13 @@ export class Machine {
     return out;
   }
 
-  /** Indirizzo fisico di `va` (BigInt), o null se non è mappato. */
+  /** Physical address of `va` (BigInt), or null if it is not mapped. */
   translate(va) {
     const pa = this.#x.vetro_translate(this.#vm, BigInt(va));
     return pa === 0xffffffffffffffffn ? null : pa;
   }
 
-  /** `len` byte di RAM all'indirizzo fisico `pa`, o null fuori dalla RAM. */
+  /** `len` bytes of RAM at physical address `pa`, or null outside the RAM. */
   readPhys(pa, len) {
     const x = this.#x;
     const p = x.vetro_alloc(Math.max(len, 1)) >>> 0;
@@ -874,7 +874,7 @@ export class Machine {
     return utf8.decode(new Uint8Array(x.memory.buffer, ptr, x.vetro_message_len(this.#vm)));
   }
 
-  /** Kernel, initramfs (o null) e riga di comando; lancia in caso di errore. */
+  /** Kernel, initramfs (or null) and command line; throws on error. */
   loadLinux(image, initrd, cmdline) {
     const x = this.#x;
     const bufs = [copyIn(x, image), copyIn(x, initrd ?? new Uint8Array()), copyIn(x, toUtf8.encode(cmdline))];
@@ -900,7 +900,7 @@ export class Machine {
     return msg;
   }
 
-  /** Esegue al più `budget` istruzioni; restituisce il motivo dell'arresto. */
+  /** Runs at most `budget` instructions; returns the reason for stopping. */
   run(budget) {
     const x = this.#x;
     const code = x.vetro_run(this.#vm, BigInt(budget));
@@ -912,7 +912,7 @@ export class Machine {
     return STOP[code] ?? `codice ${code}`;
   }
 
-  /** L'uscita della console dall'ultima lettura (Uint8Array). */
+  /** The console output since the last read (Uint8Array). */
   consoleRead() {
     const x = this.#x;
     const parts = [];
@@ -933,7 +933,7 @@ export class Machine {
     return out;
   }
 
-  /** Scrive sulla console, come dalla tastiera. */
+  /** Writes to the console, as from the keyboard. */
   consoleWrite(text) {
     const x = this.#x;
     const [p, n] = copyIn(x, toUtf8.encode(text));
@@ -942,15 +942,15 @@ export class Machine {
   }
 
   /**
-   * Attiva il JIT della modalità sistema (ADR 0013): `threshold` ingressi
-   * prima di tradurre un blocco, `batch` blocchi per modulo. Il risultato
-   * non cambia, solo la velocità.
+   * Turns on the system-mode JIT (ADR 0013): `threshold` entries
+   * before translating a block, `batch` blocks per module. The result
+   * doesn't change, only the speed.
    */
   setJit(threshold = 64, batch = 16) {
     this.#x.vetro_machine_set_jit(this.#vm, threshold, batch);
   }
 
-  /** Contatori del JIT (`SysJitStats`), o null senza JIT. */
+  /** JIT counters (`SysJitStats`), or null without JIT. */
   jitStats() {
     const x = this.#x;
     const names = ['jitSteps', 'runs', 'resolves', 'calls', 'blocks', 'modules', 'reused', 'invalidatedPages', 'faults',
@@ -963,12 +963,12 @@ export class Machine {
     return out;
   }
 
-  /** Istruzioni eseguite (BigInt). */
+  /** Instructions executed (BigInt). */
   get steps() {
     return this.#x.vetro_steps(this.#vm);
   }
 
-  /** Tempo del guest in ns (BigInt). */
+  /** Guest time in ns (BigInt). */
   get guestNs() {
     return this.#x.vetro_guest_ns(this.#vm);
   }
@@ -980,12 +980,12 @@ export class Machine {
 }
 
 /**
- * Una connessione dal JS verso un servizio TCP del guest (vedi
- * `Machine.connectGuest`). Sincrona: `send` mette in coda, `recv` legge ciò
- * che è arrivato; i byte si muovono mentre la macchina esegue (`run`), quindi
- * chi la usa alterna i due, come la console. Scrivere, leggere byte pronti,
- * chiudere sono ingressi della macchina (da registrare per il replay); lo
- * stato no.
+ * A connection from JS to a TCP service of the guest (see
+ * `Machine.connectGuest`). Synchronous: `send` queues, `recv` reads what
+ * has arrived; the bytes move while the machine runs (`run`), so
+ * the user alternates the two, like the console. Writing, reading ready bytes,
+ * closing are machine inputs (to be recorded for replay); the
+ * state isn't.
  */
 export class GuestSocket {
   #x;
@@ -996,15 +996,15 @@ export class GuestSocket {
   constructor(x, vm, id) {
     this.#x = x;
     this.#vm = vm;
-    /** Id della connessione nello stack (BigInt). */
+    /** Id of the connection in the stack (BigInt). */
     this.id = id;
     this.#buf = x.vetro_alloc(this.#cap) >>> 0;
   }
 
   /**
    * { state, reason, readable, writable, guestEof, unsent }: state in
-   * NET_STATE, reason in NET_REASON (null finché è aperta), guestEof vero
-   * quando il guest ha chiuso il suo verso e tutto è stato letto.
+   * NET_STATE, reason in NET_REASON (null while it is open), guestEof true
+   * when the guest has closed its direction and everything has been read.
    */
   state() {
     const x = this.#x;
@@ -1014,7 +1014,7 @@ export class GuestSocket {
     return { state: NET_STATE[code], reason: NET_REASON[reason], readable, writable, guestEof: eof === 1, unsent };
   }
 
-  /** Mette in coda byte (Uint8Array) per il guest; restituisce quanti ne ha presi. */
+  /** Queues bytes (Uint8Array) for the guest; returns how many it took. */
   send(bytes) {
     let sent = 0;
     while (sent < bytes.length) {
@@ -1027,7 +1027,7 @@ export class GuestSocket {
     return sent;
   }
 
-  /** I byte arrivati dal guest (Uint8Array, vuota se non ce ne sono). */
+  /** The bytes arrived from the guest (Uint8Array, empty if there are none). */
   recv() {
     const x = this.#x;
     const parts = [];
@@ -1048,17 +1048,17 @@ export class GuestSocket {
     return out;
   }
 
-  /** Chiude il verso JS→guest (FIN dopo i byte in coda). */
+  /** Closes the JS→guest direction (FIN after the queued bytes). */
   shutdown() {
     this.#x.vetro_net_shutdown(this.#vm, this.id);
   }
 
-  /** Interrompe la connessione (RST al guest). */
+  /** Aborts the connection (RST to the guest). */
   abort() {
     this.#x.vetro_net_abort(this.#vm, this.id);
   }
 
-  /** Dimentica la connessione (se è viva la interrompe) e libera il buffer. */
+  /** Forgets the connection (if it is alive it aborts it) and frees the buffer. */
   release() {
     if (!this.#buf) return;
     this.#x.vetro_net_release(this.#vm, this.id);
@@ -1068,25 +1068,25 @@ export class GuestSocket {
 }
 
 /**
- * Il gestore dei file dal JS (vedi `Machine.files`): operazioni sui file del
- * guest attraverso il demone `vetro-files` su virtio-vsock (ADR 0020).
- * Ogni operazione restituisce una Promise che si risolve (o fallisce con un
- * Error con `code`, per esempio 'ENOENT', ed `errno`) durante un `pump()`.
- * Gli eventi di inotify delle osservazioni arrivano a `onEvent({ wd, mask,
- * cookie, name })`. Chiedere, mandare e leggere sono ingressi della macchina
- * (registrati per il replay); `status()` no.
+ * The file manager from JS (see `Machine.files`): operations on the guest's
+ * files through the `vetro-files` daemon over virtio-vsock (ADR 0020).
+ * Every operation returns a Promise that resolves (or fails with an
+ * Error with `code`, for example 'ENOENT', and `errno`) during a `pump()`.
+ * The inotify events of the watches arrive at `onEvent({ wd, mask,
+ * cookie, name })`. Requesting, sending and reading are machine inputs
+ * (recorded for replay); `status()` isn't.
  */
 export class GuestFiles {
   #x;
   #vm;
   #pending = new Map();
-  /** Callback degli eventi di inotify. */
+  /** Callback for the inotify events. */
   onEvent = null;
 
   constructor(x, vm, port = 0) {
     this.#x = x;
     this.#vm = vm;
-    if (x.vetro_files_open(vm, port) !== 1) throw new Error('vetro_files_open: la macchina non ha virtio-vsock (DEV.VSOCK)');
+    if (x.vetro_files_open(vm, port) !== 1) throw new Error('vetro_files_open: the machine has no virtio-vsock (DEV.VSOCK)');
   }
 
   /** { state: 'None' | 'Connecting' | 'Ready', pending, generation, maxChunk, selinux }. */
@@ -1105,27 +1105,27 @@ export class GuestFiles {
     const bb = copyIn(ex, typeof b === 'string' ? pathBytes(b) : b ?? new Uint8Array());
     const id = ex.vetro_files_request(this.#vm, op, ...a, ...bb, BigInt(x), BigInt(y));
     for (const [p, n] of [a, bb]) if (n) ex.vetro_free(p, n);
-    if (id === 0) return Promise.reject(new Error(`vetro_files_request(${op}, ${path}): rifiutata`));
+    if (id === 0) return Promise.reject(new Error(`vetro_files_request(${op}, ${path}): refused`));
     return new Promise((ok, ko) => this.#pending.set(id, { ok, ko }));
   }
 
-  /** Metadati: { kind, mode, uid, gid, size, mtime, mtimeNs, nlink, link, selinux }. */
+  /** Metadata: { kind, mode, uid, gid, size, mtime, mtimeNs, nlink, link, selinux }. */
   stat(path) {
     return this.#request(FILES_OP.STAT, path).then((r) => r.stat);
   }
 
-  /** Le voci della cartella: [{ name, stat }], in ordine di nome. */
+  /** The entries of the folder: [{ name, stat }], in name order. */
   list(path) {
     return this.#request(FILES_OP.LIST, path).then((r) => r.entries);
   }
 
-  /** { size, data: Uint8Array }: `length` byte da `offset` (null = fino alla fine). */
+  /** { size, data: Uint8Array }: `length` bytes from `offset` (null = to the end). */
   read(path, offset = 0, length = null) {
     return this.#request(FILES_OP.READ, path, null, offset, length === null ? 0xffffffffffffffffn : length)
       .then((r) => ({ size: r.size, data: r.data }));
   }
 
-  /** Sostituisce il file (scrittura atomica; proprietario, modo e xattr restano). Restituisce i nuovi metadati. */
+  /** Replaces the file (atomic write; owner, mode and xattrs stay). Returns the new metadata. */
   writeFile(path, bytes, mode = 0o644) {
     return this.#request(FILES_OP.WRITE, path, bytes, mode).then((r) => r.stat);
   }
@@ -1146,7 +1146,7 @@ export class GuestFiles {
     return this.#request(FILES_OP.RENAME, from, to).then(() => undefined);
   }
 
-  /** Osserva una cartella con inotify: l'id (wd) degli eventi. */
+  /** Watches a folder with inotify: the id (wd) of the events. */
   watch(path) {
     return this.#request(FILES_OP.WATCH, path).then((r) => r.wd);
   }
@@ -1156,12 +1156,12 @@ export class GuestFiles {
   }
 
   /**
-   * SQL sul database SQLite `path`, nel guest con il motore vero e come il
-   * proprietario del file (ADR 0021): istruzioni in una transazione (tranne
-   * `readonly`), `params` legati a ?1, ?2, ... (vedi encodeSqlArgs); con
-   * `expect` un numero diverso di righe cambiate annulla tutto. Restituisce
-   * { changes, lastRowid (BigInt), truncated, columns, rows }; un rifiuto
-   * di SQLite è un errore con code 'SQLITE' e sqlite (il codice).
+   * SQL on the SQLite database `path`, in the guest with the real engine and as the
+   * owner of the file (ADR 0021): statements in one transaction (except
+   * `readonly`), `params` bound to ?1, ?2, ... (see encodeSqlArgs); with
+   * `expect`, a different number of changed rows rolls everything back. Returns
+   * { changes, lastRowid (BigInt), truncated, columns, rows }; a refusal
+   * by SQLite is an error with code 'SQLITE' and sqlite (the code).
    */
   sql(path, sql, params = [], { expect = null, readonly = false } = {}) {
     const x = expect === null ? 0xffffffffffffffffn : BigInt(expect);
@@ -1174,7 +1174,7 @@ export class GuestFiles {
     }));
   }
 
-  /** Fa avanzare il client e consegna risposte ed eventi; restituisce quanti messaggi. */
+  /** Advances the client and delivers responses and events; returns how many messages. */
   pump() {
     const x = this.#x;
     x.vetro_files_pump(this.#vm);
@@ -1206,10 +1206,10 @@ export class GuestFiles {
     }
   }
 
-  /** Chiude la connessione; le richieste in corso falliscono al prossimo pump (se ce n'è uno). */
+  /** Closes the connection; the requests in progress fail at the next pump (if there is one). */
   close() {
     this.#x.vetro_files_close(this.#vm);
-    for (const p of this.#pending.values()) p.ko(Object.assign(new Error('gestore dei file chiuso'), { code: 'CLOSED' }));
+    for (const p of this.#pending.values()) p.ko(Object.assign(new Error('file manager closed'), { code: 'CLOSED' }));
     this.#pending.clear();
   }
 }

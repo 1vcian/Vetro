@@ -1,24 +1,24 @@
-// Dischi virtio-blk di vetro-wasm con i dati procurati dal JS (M5,
-// docs/specs/wasm.md, ADR 0014). Non usa API di Node: gira in Node (test)
-// e nel browser (Worker dell'app).
+// vetro-wasm virtio-blk disks with the data obtained by JS (M5,
+// docs/specs/wasm.md, ADR 0014). It doesn't use Node APIs: it runs in Node (tests)
+// and in the browser (the app's Worker).
 //
-// Il giro:
-//   1. `vetro_run` si ferma con `Blocked`: una richiesta del guest tocca
-//      blocchi che la macchina non ha, e il tempo del guest è fermo;
-//   2. `DiskFeeder.serve()` prende i blocchi chiesti (`vetro_disk_wanted`),
-//      li cerca prima nella cache (OPFS nel browser), poi nella sorgente
-//      (HTTP Range su un URL, o un File locale), unendo i blocchi contigui in
-//      una sola richiesta, e li consegna (`vetro_disk_fill`);
-//   3. il quanto successivo ripete la richiesta, che ora si completa allo
-//      stesso numero di istruzioni che con un disco locale.
+// The round trip:
+//   1. `vetro_run` stops with `Blocked`: a guest request touches
+//      blocks the machine doesn't have, and guest time is stopped;
+//   2. `DiskFeeder.serve()` takes the requested blocks (`vetro_disk_wanted`),
+//      looks for them first in the cache (OPFS in the browser), then in the source
+//      (HTTP Range on a URL, or a local File), merging contiguous blocks into
+//      a single request, and delivers them (`vetro_disk_fill`);
+//   3. the next quantum repeats the request, which now completes at the
+//      same instruction count as with a local disk.
 //
-// Le scritture del guest restano nel livello copy-on-write in memoria dentro
-// vetro-wasm: la sorgente e la cache non cambiano mai.
+// The guest's writes stay in the in-memory copy-on-write layer inside
+// vetro-wasm: the source and the cache never change.
 
-/** Una sorgente letta con HTTP Range. */
+/** A source read with HTTP Range. */
 export class RangeSource {
   #fetch;
-  /** Richieste HTTP fatte e byte ricevuti (per i test e la barra di stato). */
+  /** HTTP requests made and bytes received (for the tests and the status bar). */
   stats = { requests: 0, bytes: 0 };
 
   constructor(url, { fetch: f = (...a) => globalThis.fetch(...a) } = {}) {
@@ -29,9 +29,9 @@ export class RangeSource {
   }
 
   /**
-   * GET con Range; riprova (fino a 3 volte, con attesa crescente) gli errori
-   * di rete e le risposte 5xx: una connessione tenuta aperta e chiusa dal
-   * server nel frattempo non deve diventare un errore di I/O per il guest.
+   * GET with Range; retries (up to 3 times, with increasing waits) network
+   * errors and 5xx responses: a connection kept open and closed by the
+   * server in the meantime must not become an I/O error for the guest.
    */
   async #get(range) {
     for (let attempt = 0; ; attempt++) {
@@ -46,36 +46,36 @@ export class RangeSource {
     }
   }
 
-  /** Legge la dimensione (dal Content-Range di una richiesta di 1 byte). */
+  /** Reads the size (from the Content-Range of a 1-byte request). */
   async open() {
     const res = await this.#get('bytes=0-0');
     this.stats.requests++;
     await res.arrayBuffer();
-    if (res.status !== 206) throw new Error(`${this.url}: il server non risponde a Range (stato ${res.status})`);
+    if (res.status !== 206) throw new Error(`${this.url}: the server does not answer Range requests (status ${res.status})`);
     const m = /\/(\d+)$/.exec(res.headers.get('Content-Range') ?? '');
-    if (!m) throw new Error(`${this.url}: Content-Range senza dimensione`);
+    if (!m) throw new Error(`${this.url}: Content-Range without a size`);
     this.size = Number(m[1]);
-    // La chiave della cache cambia se cambia il file sul server.
+    // The cache key changes if the file on the server changes.
     const tag = res.headers.get('ETag') ?? res.headers.get('Last-Modified') ?? '';
     this.key = `${this.url}|${this.size}|${tag}`;
     return this;
   }
 
-  /** `length` byte da `offset` (Uint8Array). */
+  /** `length` bytes from `offset` (Uint8Array). */
   async read(offset, length) {
     const end = offset + length - 1;
     const res = await this.#get(`bytes=${offset}-${end}`);
     this.stats.requests++;
     const buf = new Uint8Array(await res.arrayBuffer());
     if (res.status !== 206 || buf.length !== length) {
-      throw new Error(`${this.url}: byte ${offset}-${end}: stato ${res.status}, ${buf.length} byte`);
+      throw new Error(`${this.url}: bytes ${offset}-${end}: status ${res.status}, ${buf.length} bytes`);
     }
     this.stats.bytes += length;
     return buf;
   }
 }
 
-/** Una sorgente da un Blob o File (disco scelto dal computer). */
+/** A source from a Blob or File (disk chosen from the computer). */
 export class BlobSource {
   stats = { requests: 0, bytes: 0 };
 
@@ -236,7 +236,7 @@ export class LayoutSource {
   }
 }
 
-/** Cache dei blocchi in memoria (Node, test, o browser senza OPFS). */
+/** In-memory block cache (Node, tests, or a browser without OPFS). */
 export class MemoryCache {
   #m = new Map();
   stats = { hits: 0, puts: 0 };
@@ -266,12 +266,12 @@ async function hashName(text) {
 }
 
 /**
- * Cache dei blocchi in OPFS (Origin Private File System), solo in un
- * Worker dedicato: `FileSystemSyncAccessHandle` legge e scrive in modo
- * sincrono. Due file per disco, dal nome derivato dalla chiave della
- * sorgente (URL, dimensione, ETag) e dalla dimensione del blocco: `.img`
- * (i blocchi al loro posto, file sparso) e `.map` (un bit per blocco
- * presente). Al riavvio i blocchi già scaricati si leggono da qui.
+ * Block cache in OPFS (Origin Private File System), only in a
+ * dedicated Worker: `FileSystemSyncAccessHandle` reads and writes
+ * synchronously. Two files per disk, with the name derived from the key of the
+ * source (URL, size, ETag) and from the block size: `.img`
+ * (the blocks in their place, a sparse file) and `.map` (one bit per block
+ * present). At restart the blocks already downloaded are read from here.
  */
 export class OpfsCache {
   stats = { hits: 0, puts: 0 };
@@ -303,15 +303,15 @@ export class OpfsCache {
     this.stats.hits++;
     const buf = new Uint8Array(length);
     const n = this.data.read(buf, { at: block * this.blockSize });
-    if (n !== length) throw new Error(`OPFS ${this.name}: blocco ${block} corto (${n} byte)`);
+    if (n !== length) throw new Error(`OPFS ${this.name}: block ${block} short (${n} bytes)`);
     return buf;
   }
 
   put(block, bytes) {
     this.stats.puts++;
     this.data.write(bytes, { at: block * this.blockSize });
-    // Prima i dati, poi il bit: un'interruzione lascia al più un blocco da
-    // riscaricare.
+    // Data first, then the bit: an interruption leaves at most one block to
+    // download again.
     this.data.flush();
     this.bits[block >> 3] |= 1 << (block & 7);
     this.map.write(this.bits.subarray(block >> 3, (block >> 3) + 1), { at: block >> 3 });
@@ -324,10 +324,10 @@ export class OpfsCache {
   }
 }
 
-/** Blocchi contigui uniti in una richiesta, al più. */
+/** Contiguous blocks merged into one request, at most. */
 const MAX_RUN_BYTES = 8 << 20;
 
-/** Serve i dischi di una `Machine` (web/node/vetro.mjs) dalle loro sorgenti. */
+/** Serves the disks of a `Machine` (web/node/vetro.mjs) from their sources. */
 export class DiskFeeder {
   #m;
   disks = [];
@@ -338,9 +338,9 @@ export class DiskFeeder {
   }
 
   /**
-   * Aggiunge un disco dalla sorgente (già aperta). `cache`: MemoryCache,
-   * OpfsCache o null; `readahead`: blocchi seguenti da prendere insieme a
-   * ogni blocco chiesto. Restituisce l'indice del disco.
+   * Adds a disk from the source (already open). `cache`: MemoryCache,
+   * OpfsCache or null; `readahead`: following blocks to fetch together with
+   * every requested block. Returns the disk index.
    */
   add(source, { cache = null, blockSize = 1 << 20, maxBlocks = 0, readOnly = false, readahead = 0 } = {}) {
     const size = Math.floor(source.size / 512) * 512;
@@ -359,9 +359,9 @@ export class DiskFeeder {
   }
 
   /**
-   * Procura e consegna i blocchi chiesti; restituisce quanti ne erano stati
-   * chiesti (0 = niente da fare). Un errore della sorgente diventa un
-   * errore di I/O per il guest.
+   * Obtains and delivers the requested blocks; returns how many had been
+   * requested (0 = nothing to do). A source error becomes an
+   * I/O error for the guest.
    */
   async serve() {
     const wanted = this.#m.diskWanted();
@@ -374,7 +374,7 @@ export class DiskFeeder {
     }
     for (const [index, set] of byDisk) {
       const d = this.disks[index];
-      if (!d) throw new Error(`disco ${index} sconosciuto al DiskFeeder`);
+      if (!d) throw new Error(`disk ${index} unknown to the DiskFeeder`);
       const asked = new Set(set);
       for (const b of asked) {
         for (let k = 1; k <= d.readahead && b + k < d.blocks; k++) {
@@ -393,7 +393,7 @@ export class DiskFeeder {
           missing.push(b);
         }
       }
-      // Blocchi contigui in una sola lettura.
+      // Contiguous blocks in a single read.
       let i = 0;
       while (i < missing.length) {
         let j = i + 1;

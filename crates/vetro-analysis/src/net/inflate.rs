@@ -1,10 +1,10 @@
-//! DEFLATE (RFC 1951) con gli involucri gzip (RFC 1952) e zlib (RFC 1950),
-//! per `Content-Encoding: gzip` e `deflate`. Decodificatore canonico alla
-//! maniera di `puff.c` di zlib: lento ma piccolo e senza dipendenze. Le
-//! somme (CRC-32, Adler-32) e le lunghezze si verificano; l'uscita è
-//! limitata (bombe di compressione).
+//! DEFLATE (RFC 1951) with the gzip (RFC 1952) and zlib (RFC 1950) wrappers,
+//! for `Content-Encoding: gzip` and `deflate`. Canonical decoder in the
+//! manner of zlib's `puff.c`: slow but small and without dependencies. The
+//! sums (CRC-32, Adler-32) and lengths are verified; the output is
+//! limited (compression bombs).
 
-/// Uscita massima di una decompressione.
+/// Maximum output of one decompression.
 pub const MAX_OUTPUT: usize = 256 << 20;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,7 +31,7 @@ impl Bits<'_> {
     fn need(&mut self, n: u32) -> Result<u32> {
         let mut v = self.bit;
         while self.nbits < n {
-            let b = *self.data.get(self.pos).ok_or(InflateError("dati DEFLATE troncati"))?;
+            let b = *self.data.get(self.pos).ok_or(InflateError("truncated DEFLATE data"))?;
             self.pos += 1;
             v |= u32::from(b) << self.nbits;
             self.nbits += 8;
@@ -53,8 +53,8 @@ struct Huffman {
 }
 
 impl Huffman {
-    /// Codice canonico dalle lunghezze; ammette codici incompleti solo
-    /// con un solo simbolo (come puff).
+    /// Canonical code from the lengths; accepts incomplete codes only
+    /// with a single symbol (like puff).
     fn new(lengths: &[u8]) -> Result<Huffman> {
         let mut count = [0u16; 16];
         for &l in lengths {
@@ -68,7 +68,7 @@ impl Huffman {
             left <<= 1;
             left -= i32::from(c);
             if left < 0 {
-                return Err(InflateError("codice di Huffman sovrabbondante"));
+                return Err(InflateError("over-subscribed Huffman code"));
             }
         }
         let mut offs = [0u16; 16];
@@ -95,14 +95,14 @@ impl Huffman {
                     .symbol
                     .get((index + code - first) as usize)
                     .copied()
-                    .ok_or(InflateError("simbolo non valido"));
+                    .ok_or(InflateError("invalid symbol"));
             }
             index += count;
             first += count;
             first <<= 1;
             code <<= 1;
         }
-        Err(InflateError("codice di Huffman non valido"))
+        Err(InflateError("invalid Huffman code"))
     }
 }
 
@@ -125,23 +125,23 @@ fn codes(b: &mut Bits<'_>, out: &mut Vec<u8>, lit: &Huffman, dist: &Huffman) -> 
         match s {
             0..=255 => {
                 if out.len() >= MAX_OUTPUT {
-                    return Err(InflateError("uscita oltre il limite"));
+                    return Err(InflateError("output over the limit"));
                 }
                 out.push(s as u8);
             }
             256 => return Ok(()),
             _ => {
                 let i = usize::from(s - 257);
-                let len = usize::from(*LBASE.get(i).ok_or(InflateError("lunghezza non valida"))?)
+                let len = usize::from(*LBASE.get(i).ok_or(InflateError("invalid length"))?)
                     + b.need(u32::from(LEXT[i]))? as usize;
                 let d = usize::from(dist.decode(b)?);
-                let dd = usize::from(*DBASE.get(d).ok_or(InflateError("distanza non valida"))?)
+                let dd = usize::from(*DBASE.get(d).ok_or(InflateError("invalid distance"))?)
                     + b.need(u32::from(DEXT[d]))? as usize;
                 if dd > out.len() {
-                    return Err(InflateError("distanza oltre l'inizio"));
+                    return Err(InflateError("distance before the start"));
                 }
                 if out.len() + len > MAX_OUTPUT {
-                    return Err(InflateError("uscita oltre il limite"));
+                    return Err(InflateError("output over the limit"));
                 }
                 let start = out.len() - dd;
                 for k in 0..len {
@@ -152,7 +152,7 @@ fn codes(b: &mut Bits<'_>, out: &mut Vec<u8>, lit: &Huffman, dist: &Huffman) -> 
     }
 }
 
-/// Decomprime un flusso DEFLATE grezzo; restituisce i dati e i byte letti.
+/// Decompresses a raw DEFLATE stream; returns the data and the bytes read.
 pub fn inflate_raw(data: &[u8]) -> Result<(Vec<u8>, usize)> {
     let mut b = Bits { data, pos: 0, bit: 0, nbits: 0 };
     let mut out = Vec::new();
@@ -161,16 +161,14 @@ pub fn inflate_raw(data: &[u8]) -> Result<(Vec<u8>, usize)> {
         match b.need(2)? {
             0 => {
                 b.align();
-                let h = data.get(b.pos..b.pos + 4).ok_or(InflateError("blocco non compresso troncato"))?;
+                let h = data.get(b.pos..b.pos + 4).ok_or(InflateError("truncated stored block"))?;
                 let len = usize::from(u16::from_le_bytes([h[0], h[1]]));
                 if u16::from_le_bytes([h[2], h[3]]) != !(len as u16) {
-                    return Err(InflateError("lunghezza del blocco non compresso incoerente"));
+                    return Err(InflateError("inconsistent stored block length"));
                 }
-                let d = data
-                    .get(b.pos + 4..b.pos + 4 + len)
-                    .ok_or(InflateError("blocco non compresso troncato"))?;
+                let d = data.get(b.pos + 4..b.pos + 4 + len).ok_or(InflateError("truncated stored block"))?;
                 if out.len() + len > MAX_OUTPUT {
-                    return Err(InflateError("uscita oltre il limite"));
+                    return Err(InflateError("output over the limit"));
                 }
                 out.extend_from_slice(d);
                 b.pos += 4 + len;
@@ -190,7 +188,7 @@ pub fn inflate_raw(data: &[u8]) -> Result<(Vec<u8>, usize)> {
                 let ndist = b.need(5)? as usize + 1;
                 let ncode = b.need(4)? as usize + 4;
                 if nlen > 286 || ndist > 30 {
-                    return Err(InflateError("troppe lunghezze"));
+                    return Err(InflateError("too many lengths"));
                 }
                 const ORDER: [usize; 19] = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
                 let mut cl = [0u8; 19];
@@ -207,26 +205,26 @@ pub fn inflate_raw(data: &[u8]) -> Result<(Vec<u8>, usize)> {
                         16 => {
                             let prev = *lengths
                                 .get(i.wrapping_sub(1))
-                                .ok_or(InflateError("ripetizione senza precedente"))?;
+                                .ok_or(InflateError("repeat without a previous length"))?;
                             (prev, 3 + b.need(2)? as usize)
                         }
                         17 => (0, 3 + b.need(3)? as usize),
                         _ => (0, 11 + b.need(7)? as usize),
                     };
                     if i + rep > lengths.len() {
-                        return Err(InflateError("troppe lunghezze"));
+                        return Err(InflateError("too many lengths"));
                     }
                     lengths[i..i + rep].fill(val);
                     i += rep;
                 }
                 if lengths[256] == 0 {
-                    return Err(InflateError("manca il codice di fine blocco"));
+                    return Err(InflateError("missing end-of-block code"));
                 }
                 let lit = Huffman::new(&lengths[..nlen])?;
                 let dist = Huffman::new(&lengths[nlen..])?;
                 codes(&mut b, &mut out, &lit, &dist)?;
             }
-            _ => return Err(InflateError("tipo di blocco non valido")),
+            _ => return Err(InflateError("invalid block type")),
         }
         if last == 1 {
             return Ok((out, b.pos));
@@ -234,7 +232,7 @@ pub fn inflate_raw(data: &[u8]) -> Result<(Vec<u8>, usize)> {
     }
 }
 
-/// CRC-32 (IEEE, quello di gzip e di Ethernet).
+/// CRC-32 (IEEE, the one of gzip and Ethernet).
 pub fn crc32(data: &[u8]) -> u32 {
     let mut crc = !0u32;
     for &b in data {
@@ -259,17 +257,17 @@ fn adler32(data: &[u8]) -> u32 {
     (b << 16) | a
 }
 
-/// Decomprime gzip (uno o più membri concatenati).
+/// Decompresses gzip (one or more concatenated members).
 pub fn gunzip(mut data: &[u8]) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     loop {
         if data.len() < 18 || data[0] != 0x1f || data[1] != 0x8b || data[2] != 8 {
-            return Err(InflateError("intestazione gzip non valida"));
+            return Err(InflateError("invalid gzip header"));
         }
         let flg = data[3];
         let mut pos = 10;
         if flg & 4 != 0 {
-            let x = data.get(pos..pos + 2).ok_or(InflateError("gzip troncato"))?;
+            let x = data.get(pos..pos + 2).ok_or(InflateError("truncated gzip"))?;
             pos += 2 + usize::from(u16::from_le_bytes([x[0], x[1]]));
         }
         for bit in [8u8, 16] {
@@ -277,36 +275,36 @@ pub fn gunzip(mut data: &[u8]) -> Result<Vec<u8>> {
                 let z = data
                     .get(pos..)
                     .and_then(|d| d.iter().position(|&c| c == 0))
-                    .ok_or(InflateError("gzip troncato"))?;
+                    .ok_or(InflateError("truncated gzip"))?;
                 pos += z + 1;
             }
         }
         if flg & 2 != 0 {
             pos += 2;
         }
-        let (d, used) = inflate_raw(data.get(pos..).ok_or(InflateError("gzip troncato"))?)?;
-        let t = data.get(pos + used..pos + used + 8).ok_or(InflateError("coda gzip mancante"))?;
+        let (d, used) = inflate_raw(data.get(pos..).ok_or(InflateError("truncated gzip"))?)?;
+        let t = data.get(pos + used..pos + used + 8).ok_or(InflateError("missing gzip trailer"))?;
         if u32::from_le_bytes([t[0], t[1], t[2], t[3]]) != crc32(&d) {
-            return Err(InflateError("CRC gzip errato"));
+            return Err(InflateError("wrong gzip CRC"));
         }
         if u32::from_le_bytes([t[4], t[5], t[6], t[7]]) != d.len() as u32 {
-            return Err(InflateError("lunghezza gzip errata"));
+            return Err(InflateError("wrong gzip length"));
         }
         if out.len() + d.len() > MAX_OUTPUT {
-            return Err(InflateError("uscita oltre il limite"));
+            return Err(InflateError("output over the limit"));
         }
         out.extend(d);
         data = &data[pos + used + 8..];
-        // Zeri di riempimento dopo l'ultimo membro sono tollerati.
+        // Padding zeros after the last member are tolerated.
         if data.iter().all(|&b| b == 0) {
             return Ok(out);
         }
     }
 }
 
-/// Decomprime zlib (`Content-Encoding: deflate` secondo RFC 9110); se
-/// l'intestazione non è zlib, prova DEFLATE grezzo (come fanno i browser
-/// con i server che lo mandano così).
+/// Decompresses zlib (`Content-Encoding: deflate` per RFC 9110); if
+/// the header is not zlib, tries raw DEFLATE (as browsers do
+/// with servers that send it that way).
 pub fn zlib_or_raw(data: &[u8]) -> Result<Vec<u8>> {
     if data.len() >= 6
         && data[0] & 0x0f == 8
@@ -314,9 +312,9 @@ pub fn zlib_or_raw(data: &[u8]) -> Result<Vec<u8>> {
         && data[1] & 0x20 == 0
     {
         let (d, used) = inflate_raw(&data[2..])?;
-        let t = data.get(2 + used..6 + used).ok_or(InflateError("coda zlib mancante"))?;
+        let t = data.get(2 + used..6 + used).ok_or(InflateError("missing zlib trailer"))?;
         if u32::from_be_bytes([t[0], t[1], t[2], t[3]]) != adler32(&d) {
-            return Err(InflateError("Adler-32 errato"));
+            return Err(InflateError("wrong Adler-32"));
         }
         return Ok(d);
     }
@@ -327,7 +325,7 @@ pub fn zlib_or_raw(data: &[u8]) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
 
-    /// `printf 'ciao ciao ciao vetro\n' | gzip -9 -n` (gzip dell'host).
+    /// `printf 'ciao ciao ciao vetro\n' | gzip -9 -n` (the host's gzip).
     const GZ_SHORT: &[u8] = &[
         0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x03, 0x4b, 0xce, 0x4c, 0xcc, 0x57, 0x48, 0x86,
         0x13, 0x65, 0xa9, 0x25, 0x45, 0xf9, 0x5c, 0x00, 0xb6, 0x65, 0xcc, 0x5d, 0x15, 0x00, 0x00, 0x00,
@@ -340,12 +338,12 @@ mod tests {
 
     #[test]
     fn gzip_con_codici_dinamici() {
-        // `seq 1 2000 | gzip -9 -n`: blocco con codici dinamici.
+        // `seq 1 2000 | gzip -9 -n`: block with dynamic codes.
         let expect: Vec<u8> = (1..=2000).flat_map(|i| format!("{i}\n").into_bytes()).collect();
         let gz = include_bytes!("testdata/seq2000.gz");
-        assert_eq!((gz[10] >> 1) & 3, 2, "primo blocco a codici dinamici");
+        assert_eq!((gz[10] >> 1) & 3, 2, "first block with dynamic codes");
         assert_eq!(gunzip(gz).unwrap(), expect);
-        // Due membri concatenati.
+        // Two concatenated members.
         let mut two = GZ_SHORT.to_vec();
         two.extend_from_slice(gz);
         let mut e2 = b"ciao ciao ciao vetro\n".to_vec();
@@ -355,12 +353,12 @@ mod tests {
 
     #[test]
     fn blocco_non_compresso_e_zlib() {
-        // zlib con un blocco stored: 78 01, BFINAL=1 BTYPE=00, LEN, NLEN.
+        // zlib with a stored block: 78 01, BFINAL=1 BTYPE=00, LEN, NLEN.
         let mut z = vec![0x78, 0x01, 0x01, 5, 0, 0xfa, 0xff];
         z.extend(b"hello");
         z.extend(adler32(b"hello").to_be_bytes());
         assert_eq!(zlib_or_raw(&z).unwrap(), b"hello");
-        assert_eq!(zlib_or_raw(&z[2..z.len() - 4]).unwrap(), b"hello", "DEFLATE grezzo");
+        assert_eq!(zlib_or_raw(&z[2..z.len() - 4]).unwrap(), b"hello", "raw DEFLATE");
         let mut bad = z.clone();
         *bad.last_mut().unwrap() ^= 1;
         assert!(zlib_or_raw(&bad).is_err());

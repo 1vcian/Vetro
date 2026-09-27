@@ -1,45 +1,45 @@
-//! Stato della modalità sistema: PSTATE oltre NZCV, stack pointer per
-//! livello e registri di sistema tenuti dalla CPU.
+//! System mode state: PSTATE beyond NZCV, per-level stack pointers
+//! and system registers kept by the CPU.
 
 use crate::state::Cpu;
 
 use super::TranslationRegs;
 
-/// Modalità della CPU.
+/// CPU mode.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Mode {
-    /// Linux user mode (M1/M2): sempre EL0, eccezioni restituite al
-    /// chiamante, memoria [`Memory`](crate::Memory) senza MMU.
+    /// Linux user mode (M1/M2): always EL0, exceptions returned to the
+    /// caller, [`Memory`](crate::Memory) memory without MMU.
     #[default]
     User,
-    /// EL0 ed EL1 con MMU, vettori delle eccezioni e interrupt.
+    /// EL0 and EL1 with MMU, exception vectors and interrupts.
     System,
 }
 
-/// Dove arrivano le chiamate PSCI.
+/// Where PSCI calls go.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PsciConduit {
-    /// HVC a EL1 diventa [`SysEvent::Hvc`](super::SysEvent::Hvc); SMC è
-    /// UNDEFINED (niente EL3). Default di `qemu-system-aarch64 -M virt`.
+    /// HVC at EL1 becomes [`SysEvent::Hvc`](super::SysEvent::Hvc); SMC is
+    /// UNDEFINED (no EL3). Default of `qemu-system-aarch64 -M virt`.
     #[default]
     Hvc,
-    /// SMC a EL1 diventa [`SysEvent::Smc`](super::SysEvent::Smc); HVC è
-    /// UNDEFINED (niente EL2).
+    /// SMC at EL1 becomes [`SysEvent::Smc`](super::SysEvent::Smc); HVC is
+    /// UNDEFINED (no EL2).
     Smc,
-    /// Nessun PSCI: HVC e SMC sono UNDEFINED.
+    /// No PSCI: HVC and SMC are UNDEFINED.
     None,
 }
 
-/// Configurazione della modalità sistema.
+/// System mode configuration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SysConfig {
     pub psci: PsciConduit,
-    /// MPIDR_EL1: 0x8000_0000 per la CPU 0 di `-M virt` (bit 31 RES1).
+    /// MPIDR_EL1: 0x8000_0000 for CPU 0 of `-M virt` (bit 31 RES1).
     pub mpidr: u64,
-    /// Interfaccia CPU del GICv3 a registri di sistema presente: rende
-    /// accessibili gli ICC_* e alza i campi GIC di ID_AA64PFR0/ID_PFR1.
+    /// GICv3 system register CPU interface present: makes the ICC_*
+    /// accessible and raises the GIC fields of ID_AA64PFR0/ID_PFR1.
     pub gicv3: bool,
-    /// CBAR_EL1: base delle periferiche (su `-M virt` il distributore GIC).
+    /// CBAR_EL1: peripheral base (on `-M virt` the GIC distributor).
     pub cbar: u64,
 }
 
@@ -49,42 +49,42 @@ impl Default for SysConfig {
     }
 }
 
-/// Bit di SCTLR_EL1 letti dalla CPU.
+/// SCTLR_EL1 bits read by the CPU.
 pub mod sctlr {
     pub const M: u64 = 1 << 0;
-    /// Controllo di allineamento per tutti gli accessi ai dati.
+    /// Alignment check for all data accesses.
     pub const A: u64 = 1 << 1;
-    /// Controllo di allineamento dello SP a EL1.
+    /// SP alignment check at EL1.
     pub const SA: u64 = 1 << 3;
-    /// Controllo di allineamento dello SP a EL0.
+    /// SP alignment check at EL0.
     pub const SA0: u64 = 1 << 4;
-    /// EL0 può accedere a DAIF.
+    /// EL0 can access DAIF.
     pub const UMA: u64 = 1 << 9;
-    /// DC ZVA permesso a EL0.
+    /// DC ZVA permitted at EL0.
     pub const DZE: u64 = 1 << 14;
-    /// CTR_EL0 leggibile a EL0.
+    /// CTR_EL0 readable at EL0.
     pub const UCT: u64 = 1 << 15;
-    /// WFI a EL0 non trappata.
+    /// WFI at EL0 not trapped.
     pub const NTWI: u64 = 1 << 16;
-    /// WFE a EL0 non trappata (in Vetro, come in QEMU, WFE non si trappa
-    /// mai perché non attende).
+    /// WFE at EL0 not trapped (in Vetro, as in QEMU, WFE is never trapped
+    /// because it does not wait).
     pub const NTWE: u64 = 1 << 18;
-    /// Accessi ai dati a EL0 big-endian.
+    /// Big-endian data accesses at EL0.
     pub const E0E: u64 = 1 << 24;
-    /// Accessi a EL1 (e descrittori) big-endian.
+    /// Big-endian accesses at EL1 (and descriptors).
     pub const EE: u64 = 1 << 25;
-    /// DC CVAU, DC CVAC, DC CIVAC, IC IVAU permessi a EL0.
+    /// DC CVAU, DC CVAC, DC CIVAC, IC IVAU permitted at EL0.
     pub const UCI: u64 = 1 << 26;
-    /// Bit di MTE che QEMU azzera sulle CPU senza MTE.
+    /// MTE bits that QEMU clears on CPUs without MTE.
     pub const MTE_BITS: u64 = 1 << 37 | 0b11 << 38 | 0b11 << 40 | 1 << 42 | 1 << 43;
 }
 
-/// Campi di CPACR_EL1.
+/// CPACR_EL1 fields.
 pub mod cpacr {
     pub const FPEN_SHIFT: u32 = 20;
 }
 
-/// Bit di CNTKCTL_EL1 che governano l'accesso al timer da EL0.
+/// CNTKCTL_EL1 bits that govern timer access from EL0.
 pub mod cntkctl {
     pub const EL0PCTEN: u64 = 1 << 0;
     pub const EL0VCTEN: u64 = 1 << 1;
@@ -92,7 +92,7 @@ pub mod cntkctl {
     pub const EL0PTEN: u64 = 1 << 9;
 }
 
-/// Campi di SPSR_EL1 (formato PSTATE da AArch64).
+/// SPSR_EL1 fields (PSTATE format from AArch64).
 pub mod spsr {
     pub const NZCV: u64 = 0xf000_0000;
     pub const IL: u64 = 1 << 20;
@@ -101,7 +101,7 @@ pub mod spsr {
     pub const M: u64 = 0x1f;
 }
 
-/// Bit di DAIF (stessa posizione in PSTATE, SPSR e nel registro DAIF).
+/// DAIF bits (same position in PSTATE, SPSR and the DAIF register).
 pub(crate) mod daif {
     pub const D: u32 = 1 << 9;
     pub const A: u32 = 1 << 8;
@@ -110,25 +110,25 @@ pub(crate) mod daif {
     pub const ALL: u32 = D | A | I | F;
 }
 
-/// Stato della modalità sistema. `Default` è lo stato della modalità
-/// utente (EL0, SP_EL0): la modalità utente non lo guarda mai.
+/// System mode state. `Default` is the user mode state
+/// (EL0, SP_EL0): user mode never looks at it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SysState {
     pub mode: Mode,
     pub cfg: SysConfig,
 
-    // PSTATE (NZCV sta in `Cpu::nzcv`).
-    /// PSTATE.EL (0 o 1).
+    // PSTATE (NZCV lives in `Cpu::nzcv`).
+    /// PSTATE.EL (0 or 1).
     pub el: u8,
-    /// PSTATE.SP: a EL1, vero = SP_EL1, falso = SP_EL0.
+    /// PSTATE.SP: at EL1, true = SP_EL1, false = SP_EL0.
     pub spsel: bool,
-    /// PSTATE.{D,A,I,F} nei bit 9:6.
+    /// PSTATE.{D,A,I,F} in bits 9:6.
     pub daif: u32,
     /// PSTATE.IL (Illegal Execution state).
     pub il: bool,
 
-    /// Stack pointer non selezionati: `sp_el[n]` vale solo quando SP_ELn non
-    /// è quello in uso, che sta sempre in `Cpu::sp`.
+    /// Unselected stack pointers: `sp_el[n]` is valid only when SP_ELn is not
+    /// the one in use, which always lives in `Cpu::sp`.
     pub sp_el: [u64; 2],
 
     pub elr_el1: u64,
@@ -148,29 +148,29 @@ pub struct SysState {
     pub cntkctl_el1: u64,
     pub csselr_el1: u64,
 
-    // Debug: solo memoria, nessuna eccezione di debug.
+    // Debug: storage only, no debug exceptions.
     pub mdscr_el1: u64,
-    /// OSLSR_EL1.OSLK (OS lock): 1 al reset, azzerato da OSLAR_EL1.
+    /// OSLSR_EL1.OSLK (OS lock): 1 at reset, cleared by OSLAR_EL1.
     pub oslk: bool,
     pub osdlr_el1: u64,
     pub dbgbvr: [u64; 6],
     pub dbgbcr: [u64; 6],
     pub dbgwvr: [u64; 4],
     pub dbgwcr: [u64; 4],
-    /// Bit di CLAIM (DBGCLAIMSET_EL1/DBGCLAIMCLR_EL1), 8 come in QEMU.
+    /// CLAIM bits (DBGCLAIMSET_EL1/DBGCLAIMCLR_EL1), 8 as in QEMU.
     pub dbgclaim: u8,
     pub pmuserenr_el0: u64,
 
-    /// SError in attesa (ISS di ESR_EL1), consegnato quando PSTATE.A = 0.
+    /// Pending SError (ISS of ESR_EL1), delivered when PSTATE.A = 0.
     pub serror_pending: Option<u32>,
 }
 
 impl Cpu {
-    /// Porta la CPU in modalità sistema, nello stato di reset della
-    /// Cortex-A53 senza EL2/EL3 (come `qemu-system-aarch64 -M virt`): EL1h,
-    /// DAIF mascherati, MMU spenta, SCTLR_EL1 = 0x00c50838, CPACR_EL1 = 0
-    /// (FP/SIMD trappati), OS lock attivo. Registri generali, PC e SIMD
-    /// restano quelli che ci sono: li imposta il caricatore.
+    /// Puts the CPU into system mode, in the reset state of the
+    /// Cortex-A53 without EL2/EL3 (like `qemu-system-aarch64 -M virt`): EL1h,
+    /// DAIF masked, MMU off, SCTLR_EL1 = 0x00c50838, CPACR_EL1 = 0
+    /// (FP/SIMD trapped), OS lock active. General registers, PC and SIMD
+    /// stay as they are: the loader sets them.
     pub fn reset_system(&mut self, cfg: SysConfig) {
         self.sys = SysState {
             mode: Mode::System,
@@ -185,18 +185,18 @@ impl Cpu {
         self.monitor = None;
     }
 
-    /// Indice dello stack pointer in uso (0 = SP_EL0, 1 = SP_EL1).
+    /// Index of the stack pointer in use (0 = SP_EL0, 1 = SP_EL1).
     #[inline]
     pub(crate) fn sp_index(el: u8, spsel: bool) -> usize {
         if el == 0 || !spsel { 0 } else { 1 }
     }
 
-    /// Valore di SP_ELn qualunque sia quello in uso.
+    /// Value of SP_ELn whichever one is in use.
     pub fn sp_el(&self, n: usize) -> u64 {
         if Self::sp_index(self.sys.el, self.sys.spsel) == n { self.sp } else { self.sys.sp_el[n] }
     }
 
-    /// Scrive SP_ELn qualunque sia quello in uso.
+    /// Writes SP_ELn whichever one is in use.
     pub fn set_sp_el(&mut self, n: usize, v: u64) {
         if Self::sp_index(self.sys.el, self.sys.spsel) == n {
             self.sp = v;
@@ -205,7 +205,7 @@ impl Cpu {
         }
     }
 
-    /// Cambia PSTATE.EL e PSTATE.SP scambiando lo stack pointer in uso.
+    /// Changes PSTATE.EL and PSTATE.SP, swapping the stack pointer in use.
     pub(crate) fn set_el_sp(&mut self, el: u8, spsel: bool) {
         let old = Self::sp_index(self.sys.el, self.sys.spsel);
         let new = Self::sp_index(el, spsel);
@@ -217,7 +217,7 @@ impl Cpu {
         self.sys.spsel = spsel;
     }
 
-    /// PSTATE nel formato di SPSR_EL1.
+    /// PSTATE in SPSR_EL1 format.
     pub fn pstate_spsr(&self) -> u64 {
         let m = u64::from(self.sys.el) << 2 | u64::from(self.sys.spsel);
         u64::from(self.nzcv & 0xf000_0000) | u64::from(self.sys.il) << 20 | u64::from(self.sys.daif) | m
@@ -234,8 +234,8 @@ impl Cpu {
         }
     }
 
-    /// Vero se le istruzioni FP/SIMD sono trappate al livello corrente
-    /// (CPACR_EL1.FPEN: 00 e 10 trappano EL0 ed EL1, 01 solo EL0).
+    /// True if FP/SIMD instructions are trapped at the current level
+    /// (CPACR_EL1.FPEN: 00 and 10 trap EL0 and EL1, 01 only EL0).
     pub(crate) fn fp_trapped(&self) -> bool {
         match self.sys.cpacr_el1 >> cpacr::FPEN_SHIFT & 3 {
             0b11 => false,
@@ -244,8 +244,8 @@ impl Cpu {
         }
     }
 
-    /// `AArch64.BranchAddr`: con Top Byte Ignore attivo per la metà di
-    /// `target` il tag si toglie estendendo il bit 55 (come QEMU).
+    /// `AArch64.BranchAddr`: with Top Byte Ignore active for the half of
+    /// `target` the tag is removed by extending bit 55 (like QEMU).
     pub(crate) fn branch_addr(&self, target: u64) -> u64 {
         let tbi = if target >> 55 & 1 != 0 { 1u64 << 38 } else { 1u64 << 37 };
         if self.sys.tcr_el1 & tbi != 0 { crate::bits::sext(target, 56) as u64 } else { target }

@@ -1,15 +1,15 @@
-//! Esecuzione dell'oracolo `qemu-aarch64` (QEMU in user mode).
+//! Running the `qemu-aarch64` oracle (QEMU in user mode).
 //!
-//! Il binario si sceglie così, in ordine:
-//! 1. variabile `VETRO_QEMU_AARCH64` (percorso o wrapper, es.
-//!    `tools/oracle/qemu-aarch64-docker.sh` su macOS);
-//! 2. `qemu-aarch64` nel PATH.
+//! The binary is chosen like this, in order:
+//! 1. variable `VETRO_QEMU_AARCH64` (path or wrapper, e.g.
+//!    `tools/oracle/qemu-aarch64-docker.sh` on macOS);
+//! 2. `qemu-aarch64` in the PATH.
 //!
-//! QEMU emula sempre la CPU di [`cpu`] (default `cortex-a53`, ADR 0005).
+//! QEMU always emulates the CPU of [`cpu`] (default `cortex-a53`, ADR 0005).
 //!
-//! Se l'oracolo manca, [`locate`] restituisce `None`: i test lo segnalano e
-//! si saltano, a meno che `VETRO_REQUIRE_ORACLE=1` (impostato in CI), nel
-//! qual caso falliscono.
+//! If the oracle is missing, [`locate`] returns `None`: the tests report it and
+//! are skipped, unless `VETRO_REQUIRE_ORACLE=1` (set in CI), in
+//! which case they fail.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -20,18 +20,18 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
 pub struct Outcome {
-    /// Codice di uscita del programma guest; `None` se terminato da segnale.
+    /// Exit code of the guest program; `None` if terminated by a signal.
     pub exit_code: Option<i32>,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
 }
 
 impl Outcome {
-    /// Segnale che ha terminato il guest, letto dal messaggio di QEMU
-    /// ("uncaught target signal N"): vale sia in nativo sia via Docker.
+    /// Signal that terminated the guest, read from QEMU's message
+    /// ("uncaught target signal N"): works both natively and via Docker.
     pub fn signal(&self) -> Option<i32> {
         let err = String::from_utf8_lossy(&self.stderr);
-        // L'ultimo messaggio: i figli muoiono prima del processo principale.
+        // The last message: the children die before the main process.
         let rest = err
             .rsplit("uncaught target signal ")
             .next()
@@ -40,7 +40,7 @@ impl Outcome {
     }
 }
 
-/// Modello di CPU passato a QEMU (`VETRO_QEMU_CPU`, default `cortex-a53`).
+/// CPU model passed to QEMU (`VETRO_QEMU_CPU`, default `cortex-a53`).
 pub fn cpu() -> String {
     std::env::var("VETRO_QEMU_CPU").unwrap_or_else(|_| "cortex-a53".into())
 }
@@ -53,33 +53,33 @@ pub fn locate() -> Option<PathBuf> {
     std::env::split_paths(&path).map(|dir| dir.join("qemu-aarch64")).find(|p| p.is_file())
 }
 
-/// `true` se la CI (o l'utente) esige che l'oracolo sia presente.
+/// `true` if the CI (or the user) requires the oracle to be present.
 pub fn required() -> bool {
     std::env::var("VETRO_REQUIRE_ORACLE").is_ok_and(|v| v == "1")
 }
 
-/// Restituisce l'oracolo, oppure `None` dopo aver stampato il motivo dello
-/// skip. Va in panic se l'oracolo è obbligatorio ma assente.
+/// Returns the oracle, or `None` after printing the reason for the
+/// skip. Panics if the oracle is mandatory but absent.
 pub fn locate_or_skip(test: &str) -> Option<PathBuf> {
     match locate() {
         Some(p) => Some(p),
         None if required() => {
-            panic!("{test}: qemu-aarch64 non trovato e VETRO_REQUIRE_ORACLE=1")
+            panic!("{test}: qemu-aarch64 not found and VETRO_REQUIRE_ORACLE=1")
         }
         None => {
             eprintln!(
-                "SKIP {test}: qemu-aarch64 non trovato (imposta VETRO_QEMU_AARCH64 \
-                 o installa qemu-user; su macOS vedi tools/oracle/README.md)"
+                "SKIP {test}: qemu-aarch64 not found (set VETRO_QEMU_AARCH64 \
+                 or install qemu-user; on macOS see tools/oracle/README.md)"
             );
             None
         }
     }
 }
 
-/// Esegue `elf` sotto QEMU con timeout.
+/// Runs `elf` under QEMU with a timeout.
 pub fn run(qemu: &Path, elf: &Path, timeout: Duration) -> std::io::Result<Outcome> {
-    // Niente core dump: dopo un SIGILL del guest QEMU ne scriverebbe uno,
-    // lentissimo, invece di uscire.
+    // No core dump: after a guest SIGILL QEMU would write one,
+    // very slowly, instead of exiting.
     let mut child = Command::new("sh")
         .arg("-c")
         .arg("ulimit -c 0; exec \"$@\"")
@@ -93,7 +93,7 @@ pub fn run(qemu: &Path, elf: &Path, timeout: Duration) -> std::io::Result<Outcom
         .stderr(Stdio::piped())
         .spawn()?;
 
-    // Lettura in thread separati per non bloccarsi su pipe piene.
+    // Reading in separate threads so as not to block on full pipes.
     let mut out = child.stdout.take().expect("stdout piped");
     let mut err = child.stderr.take().expect("stderr piped");
     let t_out = std::thread::spawn(move || {
@@ -115,7 +115,7 @@ pub fn run(qemu: &Path, elf: &Path, timeout: Duration) -> std::io::Result<Outcom
             let _ = child.wait();
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
-                format!("qemu-aarch64 oltre {timeout:?} su {}", elf.display()),
+                format!("qemu-aarch64 over {timeout:?} on {}", elf.display()),
             ));
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -128,8 +128,8 @@ pub fn run(qemu: &Path, elf: &Path, timeout: Duration) -> std::io::Result<Outcom
     })
 }
 
-/// Scrive `image` in un file eseguibile temporaneo e restituisce il percorso.
-/// Il file resta in `target/` (o nella tmp di sistema) per poterlo ispezionare.
+/// Writes `image` to a temporary executable file and returns the path.
+/// The file stays in `target/` (or in the system tmp) so it can be inspected.
 pub fn write_temp_elf(name: &str, image: &[u8]) -> std::io::Result<PathBuf> {
     let dir = std::env::var_os("CARGO_TARGET_TMPDIR")
         .map(PathBuf::from)
@@ -146,9 +146,9 @@ pub fn write_temp_elf(name: &str, image: &[u8]) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
-/// Esecuzione di un programma Linux con argomenti, ambiente, directory di
-/// lavoro e stdin controllati. L'ambiente del guest è esattamente `env`
-/// (passato con `-E`, su un processo QEMU senza variabili ereditate).
+/// Running a Linux program with controlled arguments, environment, working
+/// directory and stdin. The guest's environment is exactly `env`
+/// (passed with `-E`, on a QEMU process without inherited variables).
 pub fn run_program(
     qemu: &Path,
     prog: &Path,
@@ -161,7 +161,7 @@ pub fn run_program(
     run_program_with(qemu, &[], prog, args, env, cwd, stdin, timeout)
 }
 
-/// Come [`run_program`], con opzioni di QEMU in più (es. `-L sysroot`).
+/// Like [`run_program`], with extra QEMU options (e.g. `-L sysroot`).
 #[allow(clippy::too_many_arguments)]
 pub fn run_program_with(
     qemu: &Path,
@@ -175,8 +175,8 @@ pub fn run_program_with(
 ) -> std::io::Result<Outcome> {
     use std::io::Write;
     let mut cmd = Command::new("sh");
-    // VETRO_ORACLE_NOFILE: limite soft dei descrittori da ridare a QEMU se
-    // chi lancia l'oracolo ha alzato il proprio (vetro_cli::raise_fd_limit).
+    // VETRO_ORACLE_NOFILE: soft limit of descriptors to give back to QEMU if
+    // whoever launches the oracle has raised its own (vetro_cli::raise_fd_limit).
     let nofile = std::env::var("VETRO_ORACLE_NOFILE")
         .ok()
         .filter(|n| n.chars().all(|c| c.is_ascii_digit()))
@@ -189,8 +189,8 @@ pub fn run_program_with(
         .arg("-cpu")
         .arg(cpu())
         .args(qemu_opts);
-    // QEMU passa al guest il proprio ambiente: toglie le variabili che
-    // teniamo solo per il processo QEMU (e il wrapper Docker).
+    // QEMU passes its own environment to the guest: remove the variables that
+    // we keep only for the QEMU process (and the Docker wrapper).
     for k in ["PATH", "HOME"] {
         if !env.iter().any(|(n, _)| n == k) {
             cmd.arg("-U").arg(k);
@@ -200,7 +200,7 @@ pub fn run_program_with(
         cmd.arg("-E").arg(format!("{k}={v}"));
     }
     cmd.arg(prog).args(args);
-    // Il wrapper Docker ha bisogno di PATH per trovare docker.
+    // The Docker wrapper needs PATH to find docker.
     cmd.env_clear();
     if let Some(p) = std::env::var_os("PATH") {
         cmd.env("PATH", p);
@@ -238,7 +238,7 @@ pub fn run_program_with(
         if start.elapsed() > timeout {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, format!("qemu oltre {timeout:?}")));
+            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, format!("qemu over {timeout:?}")));
         }
         std::thread::sleep(Duration::from_millis(5));
     };

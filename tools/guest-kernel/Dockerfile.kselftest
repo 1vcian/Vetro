@@ -1,5 +1,5 @@
-# kselftest per il guest di M3: presuppongono glibc, quindi Debian arm64 (con
-# collegamento statico: l'initramfs non ha librerie condivise).
+# kselftests for the M3 guest: they assume glibc, hence arm64 Debian (with
+# static linking: the initramfs has no shared libraries).
 FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential make rsync libcap-dev libcap-ng-dev libnuma-dev libc6-dev \

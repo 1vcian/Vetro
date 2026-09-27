@@ -1,8 +1,8 @@
-//! Registro degli eventi di rete per il motore di analisi.
+//! Log of network events for the analysis engine.
 //!
-//! Ogni evento porta il tempo virtuale del momento in cui è accaduto. Il
-//! registro contiene metadati (chi, quando, quanti byte); il contenuto dei
-//! byte lo conserva l'`Upstream` (per esempio il `Sinkhole`).
+//! Every event carries the virtual time of the moment it happened. The
+//! log contains metadata (who, when, how many bytes); the contents of the
+//! bytes are kept by the `Upstream` (for example the `Sinkhole`).
 
 use core::fmt;
 use std::net::Ipv4Addr;
@@ -10,36 +10,36 @@ use std::net::Ipv4Addr;
 use crate::wire::Mac;
 use crate::{ConnId, Flow, VirtualTime};
 
-/// Verso dei dati.
+/// Direction of the data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
-    /// Dal guest verso la destinazione remota.
+    /// From the guest to the remote destination.
     ToRemote,
-    /// Dalla destinazione remota verso il guest.
+    /// From the remote destination to the guest.
     ToGuest,
 }
 
-/// Perché una connessione è finita.
+/// Why a connection ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CloseReason {
-    /// FIN in entrambi i versi, tutto riscontrato.
+    /// FIN in both directions, everything acknowledged.
     Normal,
-    /// RST inviato dal guest.
+    /// RST sent by the guest.
     GuestReset,
-    /// L'upstream (o l'host, per le connessioni aperte dall'host) ha
-    /// interrotto la connessione (RST verso il guest).
+    /// The upstream (or the host, for connections opened by the host)
+    /// aborted the connection (RST to the guest).
     RemoteReset,
-    /// L'upstream ha rifiutato la connessione (RST al SYN del guest); per le
-    /// connessioni aperte dall'host, il guest ha risposto RST al SYN.
+    /// The upstream refused the connection (RST to the guest's SYN); for
+    /// connections opened by the host, the guest answered RST to the SYN.
     Refused,
-    /// Il guest non risponde più: ritrasmissioni esaurite o connessione
-    /// rimasta in attesa dell'upstream troppo a lungo.
+    /// The guest no longer answers: retransmissions exhausted or connection
+    /// left waiting for the upstream too long.
     Timeout,
-    /// Flusso UDP inattivo oltre il limite.
+    /// UDP flow inactive beyond the limit.
     Idle,
 }
 
-/// Messaggi DHCP registrati.
+/// DHCP messages recorded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DhcpMessage {
     Offer,
@@ -51,37 +51,37 @@ pub enum DhcpMessage {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EventKind {
-    /// Scambio DHCP: per Offer/Ack/Nak lo invia il gateway, per
-    /// Release/Decline il guest. `hostname` è l'opzione 12 del client.
+    /// DHCP exchange: for Offer/Ack/Nak it is sent by the gateway, for
+    /// Release/Decline by the guest. `hostname` is the client's option 12.
     Dhcp {
         message: DhcpMessage,
         mac: Mac,
         ip: Ipv4Addr,
         hostname: Option<String>,
     },
-    /// Echo ICMP del guest verso `dst`; `answered` se è partita la risposta.
+    /// ICMP echo from the guest to `dst`; `answered` if the reply was sent.
     IcmpEcho {
         dst: Ipv4Addr,
         answered: bool,
     },
-    /// SYN del guest ricevuto: la connessione esiste da qui.
+    /// Guest SYN received: the connection exists from here.
     TcpOpen {
         id: ConnId,
         flow: Flow,
     },
-    /// L'host apre una connessione verso un servizio del guest (inoltro di
-    /// porte, `Stack::host_connect`): SYN dal gateway verso `flow.guest`,
-    /// da `flow.remote`. Da qui la connessione è come le altre: `TcpData`
-    /// `ToRemote` sono i byte del guest verso l'host.
+    /// The host opens a connection to a guest service (port
+    /// forwarding, `Stack::host_connect`): SYN from the gateway to `flow.guest`,
+    /// from `flow.remote`. From here the connection is like the others: `TcpData`
+    /// `ToRemote` are the guest's bytes to the host.
     TcpConnect {
         id: ConnId,
         flow: Flow,
     },
-    /// Handshake completato.
+    /// Handshake completed.
     TcpEstablished {
         id: ConnId,
     },
-    /// Byte nuovi (mai contati prima) in un verso.
+    /// New bytes (never counted before) in one direction.
     TcpData {
         id: ConnId,
         dir: Direction,
@@ -93,7 +93,7 @@ pub enum EventKind {
         bytes_to_remote: u64,
         bytes_to_guest: u64,
     },
-    /// Primo datagramma di un flusso UDP.
+    /// First datagram of a UDP flow.
     UdpOpen {
         id: ConnId,
         flow: Flow,
@@ -109,14 +109,14 @@ pub enum EventKind {
         bytes_to_remote: u64,
         bytes_to_guest: u64,
     },
-    /// Domanda DNS del guest verso il server DNS virtuale.
+    /// DNS query from the guest to the virtual DNS server.
     DnsQuery {
         id: ConnId,
         txid: u16,
         name: String,
         qtype: u16,
     },
-    /// Risposta DNS consegnata al guest (solo i record A sono estratti).
+    /// DNS answer delivered to the guest (only A records are extracted).
     DnsAnswer {
         id: ConnId,
         txid: u16,
@@ -133,7 +133,7 @@ pub struct NetEvent {
     pub kind: EventKind,
 }
 
-/// Registro in memoria, in ordine di accadimento.
+/// In-memory log, in order of occurrence.
 #[derive(Debug, Default)]
 pub(crate) struct EventLog {
     pub(crate) events: Vec<NetEvent>,
@@ -158,15 +158,15 @@ impl fmt::Display for Flow {
     }
 }
 
-/// Una riga leggibile per evento (per `vetro boot --net-events` e i log):
-/// tempo virtuale in secondi, poi il fatto.
+/// One readable line per event (for `vetro boot --net-events` and the logs):
+/// virtual time in seconds, then the fact.
 impl fmt::Display for NetEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let us = self.at.as_micros();
         write!(f, "[{:6}.{:06}] ", us / 1_000_000, us % 1_000_000)?;
         let dir = |d: &Direction| match d {
-            Direction::ToRemote => "guest->remoto",
-            Direction::ToGuest => "remoto->guest",
+            Direction::ToRemote => "guest->remote",
+            Direction::ToGuest => "remote->guest",
         };
         match &self.kind {
             EventKind::Dhcp { message, mac, ip, hostname } => {
@@ -177,29 +177,29 @@ impl fmt::Display for NetEvent {
                 Ok(())
             }
             EventKind::IcmpEcho { dst, answered } => {
-                write!(f, "icmp echo {dst} {}", if *answered { "risposto" } else { "senza risposta" })
+                write!(f, "icmp echo {dst} {}", if *answered { "answered" } else { "unanswered" })
             }
             EventKind::TcpOpen { id, flow } => write!(f, "tcp {id} syn {flow}"),
             EventKind::TcpConnect { id, flow } => {
-                write!(f, "tcp {id} dall'host {} -> {}", flow.remote, flow.guest)
+                write!(f, "tcp {id} from host {} -> {}", flow.remote, flow.guest)
             }
-            EventKind::TcpEstablished { id } => write!(f, "tcp {id} stabilita"),
-            EventKind::TcpData { id, dir: d, len } => write!(f, "tcp {id} {} {len} byte", dir(d)),
+            EventKind::TcpEstablished { id } => write!(f, "tcp {id} established"),
+            EventKind::TcpData { id, dir: d, len } => write!(f, "tcp {id} {} {len} bytes", dir(d)),
             EventKind::TcpClosed { id, reason, bytes_to_remote, bytes_to_guest } => write!(
                 f,
-                "tcp {id} chiusa {reason:?} (guest->remoto {bytes_to_remote} byte, remoto->guest {bytes_to_guest} byte)"
+                "tcp {id} closed {reason:?} (guest->remote {bytes_to_remote} bytes, remote->guest {bytes_to_guest} bytes)"
             ),
-            EventKind::UdpOpen { id, flow } => write!(f, "udp {id} nuovo {flow}"),
-            EventKind::UdpData { id, dir: d, len } => write!(f, "udp {id} {} {len} byte", dir(d)),
+            EventKind::UdpOpen { id, flow } => write!(f, "udp {id} new {flow}"),
+            EventKind::UdpData { id, dir: d, len } => write!(f, "udp {id} {} {len} bytes", dir(d)),
             EventKind::UdpClosed { id, reason, bytes_to_remote, bytes_to_guest } => write!(
                 f,
-                "udp {id} chiuso {reason:?} (guest->remoto {bytes_to_remote} byte, remoto->guest {bytes_to_guest} byte)"
+                "udp {id} closed {reason:?} (guest->remote {bytes_to_remote} bytes, remote->guest {bytes_to_guest} bytes)"
             ),
             EventKind::DnsQuery { id, txid, name, qtype } => {
-                write!(f, "dns {id} domanda {name} tipo {qtype} (id {txid:#06x})")
+                write!(f, "dns {id} query {name} type {qtype} (id {txid:#06x})")
             }
             EventKind::DnsAnswer { id, txid, name, qtype, rcode, addrs } => {
-                write!(f, "dns {id} risposta {name} tipo {qtype} rcode {rcode} (id {txid:#06x})")?;
+                write!(f, "dns {id} answer {name} type {qtype} rcode {rcode} (id {txid:#06x})")?;
                 for a in addrs {
                     write!(f, " {a}")?;
                 }
@@ -241,7 +241,7 @@ mod tests {
         };
         assert_eq!(
             e(0, answer),
-            "[     0.000000] dns 2 risposta vetro.example tipo 1 rcode 0 (id 0x1234) 198.18.0.1"
+            "[     0.000000] dns 2 answer vetro.example type 1 rcode 0 (id 0x1234) 198.18.0.1"
         );
     }
 }

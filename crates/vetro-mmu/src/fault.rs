@@ -1,50 +1,50 @@
-//! Fault della MMU e loro codifica in ESR_EL1, FAR_EL1 e PAR_EL1.
+//! MMU faults and their encoding in ESR_EL1, FAR_EL1 and PAR_EL1.
 
 use vetro_cpu::{Access, MemFault};
 
 use crate::walk::BusError;
 
-/// Exception Class (ESR_ELx.EC) degli abort.
+/// Exception Class (ESR_ELx.EC) of the aborts.
 pub mod ec {
-    /// Instruction Abort da un livello inferiore (EL0 → EL1).
+    /// Instruction Abort from a lower level (EL0 → EL1).
     pub const INSN_ABORT_LOWER: u64 = 0x20;
-    /// Instruction Abort senza cambio di livello.
+    /// Instruction Abort without a change of level.
     pub const INSN_ABORT_SAME: u64 = 0x21;
-    /// Data Abort da un livello inferiore.
+    /// Data Abort from a lower level.
     pub const DATA_ABORT_LOWER: u64 = 0x24;
-    /// Data Abort senza cambio di livello.
+    /// Data Abort without a change of level.
     pub const DATA_ABORT_SAME: u64 = 0x25;
 }
 
-/// Tipo di fault; il numero è il livello di lookup (0-3).
+/// Fault type; the number is the lookup level (0-3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FaultKind {
-    /// Indirizzo fisico (base in TTBR, tabella o uscita) oltre la dimensione
-    /// configurata, oppure VA oltre PARange a MMU spenta.
+    /// Physical address (base in TTBR, table or output) beyond the configured
+    /// size, or VA beyond PARange with the MMU off.
     AddressSize(u8),
-    /// Descrittore non valido, VA fuori dalle due metà, walk disabilitato
-    /// (EPDx) o blocco a un livello che non lo ammette.
+    /// Invalid descriptor, VA outside both halves, walk disabled
+    /// (EPDx) or block at a level that does not allow it.
     Translation(u8),
-    /// Descrittore con AF = 0 (niente aggiornamento hardware in ARMv8.0).
+    /// Descriptor with AF = 0 (no hardware update in ARMv8.0).
     AccessFlag(u8),
-    /// Accesso negato da AP, UXN, PXN o WXN.
+    /// Access denied by AP, UXN, PXN or WXN.
     Permission(u8),
-    /// Accesso ai dati non allineato su memoria Device (o DC ZVA su Device),
-    /// controllato dopo il walk e prima dei permessi.
+    /// Unaligned data access on Device memory (or DC ZVA on Device),
+    /// checked after the walk and before the permissions.
     Alignment,
-    /// Abort esterno sincrono leggendo un descrittore.
+    /// Synchronous external abort while reading a descriptor.
     ExternalWalk(u8, BusError),
-    /// Abort esterno sincrono sull'accesso finale (indirizzo fisico dove non
-    /// risponde nessuno).
+    /// Synchronous external abort on the final access (physical address where
+    /// nobody responds).
     External(BusError),
-    /// Configurazione architetturalmente valida che Vetro non implementa
-    /// (granulo 64 KiB, descrittori big-endian). Non è un fault
-    /// architetturale: va segnalato come limite, non consegnato al guest.
+    /// Architecturally valid configuration that Vetro does not implement
+    /// (64 KiB granule, big-endian descriptors). It is not an architectural
+    /// fault: it must be reported as a limitation, not delivered to the guest.
     Unimplemented(&'static str),
 }
 
 impl FaultKind {
-    /// Codice DFSC/IFSC (ESR_ELx.ISS[5:0], PAR_EL1.FST). `None` per
+    /// DFSC/IFSC code (ESR_ELx.ISS[5:0], PAR_EL1.FST). `None` for
     /// [`FaultKind::Unimplemented`].
     pub fn fsc(self) -> Option<u8> {
         Some(match self {
@@ -59,7 +59,7 @@ impl FaultKind {
         })
     }
 
-    /// Livello di lookup, se il fault ne ha uno.
+    /// Lookup level, if the fault has one.
     pub fn level(self) -> Option<u8> {
         match self {
             FaultKind::AddressSize(l)
@@ -71,36 +71,36 @@ impl FaultKind {
         }
     }
 
-    /// Bit EA (External abort type). Come QEMU: 1 per uno slave error, 0 per
-    /// un decode error e per i fault che non sono abort esterni.
+    /// EA bit (External abort type). Like QEMU: 1 for a slave error, 0 for
+    /// a decode error and for faults that are not external aborts.
     pub fn ea(self) -> bool {
         matches!(self, FaultKind::External(BusError::Slave) | FaultKind::ExternalWalk(_, BusError::Slave))
     }
 }
 
-/// Un accesso fallito, con tutto ciò che serve a costruire la sindrome.
+/// A failed access, with everything needed to build the syndrome.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Fault {
     pub kind: FaultKind,
-    /// Indirizzo virtuale che ha causato il fault, tag compreso (va in
-    /// FAR_EL1). Per un accesso a cavallo di due pagine è il primo byte
-    /// della pagina che fallisce, come in QEMU.
+    /// Virtual address that caused the fault, tag included (goes into
+    /// FAR_EL1). For an access straddling two pages it is the first byte
+    /// of the page that fails, as in QEMU.
     pub va: u64,
     pub access: Access,
-    /// Privilegio usato per il controllo dei permessi (0 o 1).
+    /// Privilege used for the permission check (0 or 1).
     pub el: u8,
 }
 
 impl Fault {
-    /// Valore di FAR_EL1.
+    /// Value of FAR_EL1.
     pub fn far(&self) -> u64 {
         self.va
     }
 
-    /// Valore di ESR_EL1 per l'eccezione presa a EL1 da `from_el`
-    /// (PSTATE.EL al momento dell'accesso: differisce da `el` per LDTR/STTR).
-    /// ISV = 0 come QEMU per gli abort stage 1; IL = 1 (RES1 per questi
-    /// abort). CM (bit 8, manutenzione cache) lo aggiunge chi esegue DC.
+    /// Value of ESR_EL1 for the exception taken to EL1 from `from_el`
+    /// (PSTATE.EL at the time of the access: differs from `el` for LDTR/STTR).
+    /// ISV = 0 like QEMU for stage 1 aborts; IL = 1 (RES1 for these
+    /// aborts). CM (bit 8, cache maintenance) is added by whoever executes DC.
     pub fn esr(&self, from_el: u8) -> Option<u64> {
         let fsc = u64::from(self.kind.fsc()?);
         let lower = from_el == 0;
@@ -115,13 +115,13 @@ impl Fault {
         Some(class << 26 | 1 << 25 | iss)
     }
 
-    /// Valore di PAR_EL1 dopo un AT che fallisce: F = 1, FST, bit 11 (RES1)
-    /// a 1 come QEMU. PTW e S sono 0 (niente stage 2).
+    /// Value of PAR_EL1 after a failing AT: F = 1, FST, bit 11 (RES1)
+    /// set to 1 like QEMU. PTW and S are 0 (no stage 2).
     pub fn par(&self) -> Option<u64> {
         Some(1 << 11 | u64::from(self.kind.fsc()?) << 1 | 1)
     }
 
-    /// Forma ridotta per l'interfaccia `vetro_cpu::Memory`.
+    /// Reduced form for the `vetro_cpu::Memory` interface.
     pub fn mem_fault(&self) -> MemFault {
         MemFault { addr: self.va, access: self.access }
     }

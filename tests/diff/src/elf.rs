@@ -1,32 +1,32 @@
-//! ELF64 little-endian, AArch64, statico.
+//! ELF64 little-endian, AArch64, static.
 //!
-//! Layout: header (64 B) + 2 program header (2 × 56 B) + codice + dati, tutto
-//! in un PT_LOAD RX a [`BASE`]; poi, facoltativo, un PT_LOAD RW a
-//! [`RW_BASE`] che inizia a un offset di file allineato alla pagina. Se il
-//! segmento RW manca, il secondo program header è PT_NULL.
+//! Layout: header (64 B) + 2 program headers (2 × 56 B) + code + data, all
+//! in one PT_LOAD RX at [`BASE`]; then, optionally, a PT_LOAD RW at
+//! [`RW_BASE`] that starts at a page-aligned file offset. If the
+//! RW segment is missing, the second program header is PT_NULL.
 
 pub const BASE: u64 = 0x40_0000;
 pub const RW_BASE: u64 = 0x80_0000;
 const EHDR_SIZE: u64 = 64;
 const PHDR_SIZE: u64 = 56;
 const PHNUM: u64 = 2;
-/// Offset del codice nel file: `BASE + CODE_OFFSET` è l'entry point.
+/// Offset of the code in the file: `BASE + CODE_OFFSET` is the entry point.
 pub const CODE_OFFSET: u64 = EHDR_SIZE + PHNUM * PHDR_SIZE;
 const EM_AARCH64: u16 = 183;
 const PAGE: u64 = 0x1000;
 
-/// Indirizzo del byte `data_offset` dei dati, dato il numero di istruzioni.
+/// Address of byte `data_offset` of the data, given the number of instructions.
 pub fn data_addr(code_len_insns: usize, data_offset: usize) -> u64 {
     BASE + CODE_OFFSET + (code_len_insns * 4 + data_offset) as u64
 }
 
-/// Indirizzo dell'istruzione di indice `i`.
+/// Address of the instruction with index `i`.
 pub fn insn_addr(i: usize) -> u64 {
     BASE + CODE_OFFSET + i as u64 * 4
 }
 
-/// Segmento RW: contenuto iniziale e dimensione totale in memoria (il resto
-/// è azzerato, come una bss).
+/// RW segment: initial contents and total size in memory (the rest
+/// is zeroed, like a bss).
 pub struct Rw<'a> {
     pub init: &'a [u8],
     pub memsz: u64,

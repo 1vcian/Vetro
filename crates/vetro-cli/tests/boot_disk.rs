@@ -1,11 +1,11 @@
-//! `vetro boot --no-devices --disk=FILE`: il kernel guest di M3 vede il file
-//! come /dev/vda (primo disco, slot virtio-mmio 31), lo legge, ci scrive, e il
-//! file resta intatto (copy-on-write in memoria, come `snapshot=on` di QEMU).
-//! È il meccanismo con cui si avvia l'immagine dell'emulatore Android
-//! (`tools/android-emu`, `docs/research/m5-avvio-gki.md`).
+//! `vetro boot --no-devices --disk=FILE`: the M3 guest kernel sees the file
+//! as /dev/vda (first disk, virtio-mmio slot 31), reads it, writes to it, and the
+//! file stays intact (in-memory copy-on-write, like QEMU's `snapshot=on`).
+//! It is the mechanism used to boot the Android emulator image
+//! (`tools/android-emu`, `docs/research/m5-gki-boot.md`).
 //!
-//! In release (`cargo test --release -p vetro-cli`): in debug l'interprete è
-//! troppo lento e il test si salta.
+//! In release (`cargo test --release -p vetro-cli`): in debug the interpreter is
+//! too slow and the test is skipped.
 
 use std::process::Command;
 use std::time::Duration;
@@ -15,10 +15,10 @@ use vetro_boot_tests::{BOOT_MARKER, Console, SHELL_PROMPT, guest_kernel, skip_or
 #[test]
 fn boot_con_disco_da_file() {
     if cfg!(debug_assertions) {
-        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "avvio sotto Vetro solo in release");
+        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "boot under Vetro only in release");
     }
     let Some((image, initrd)) = guest_kernel() else {
-        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "target/guest-kernel mancante");
+        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "target/guest-kernel missing");
     };
     let dir = std::env::temp_dir().join(format!("vetro-boot-disk-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -38,22 +38,22 @@ fn boot_con_disco_da_file() {
         .arg(format!("--disk={}", disk.display()));
     let mut c = Console::spawn(cmd).expect("vetro boot");
     let limit = timeout();
-    let at = c.wait_for(BOOT_MARKER, 0, limit).unwrap_or_else(|| panic!("niente /init:\n{}", c.log()));
-    let at = c.wait_for(SHELL_PROMPT, at, limit).unwrap_or_else(|| panic!("niente shell:\n{}", c.log()));
-    // I marcatori sono scritti "D"IM= ecc.: l'eco del comando non li contiene.
+    let at = c.wait_for(BOOT_MARKER, 0, limit).unwrap_or_else(|| panic!("no /init:\n{}", c.log()));
+    let at = c.wait_for(SHELL_PROMPT, at, limit).unwrap_or_else(|| panic!("no shell:\n{}", c.log()));
+    // The markers are written "D"IM= etc.: the echo of the command doesn't contain them.
     c.send(concat!(
         "echo \"D\"IM=$(cat /sys/block/vda/size) DEV=$(basename $(readlink /sys/block/vda/device)); ",
         "echo \"P\"RIMO=$(head -c 13 /dev/vda) $(dd if=/dev/vda bs=512 skip=1000 count=1 2>/dev/null | head -c 6); ",
         "echo SCRITTO | dd of=/dev/vda bs=512 seek=5 conv=sync 2>/dev/null; sync; echo 3 > /proc/sys/vm/drop_caches; ",
         "echo \"D\"OPO=$(dd if=/dev/vda bs=512 skip=5 count=1 2>/dev/null | head -c 7); poweroff -f\n"
     ));
-    let (_, dim) = c.wait_line("DIM=", at, limit).unwrap_or_else(|| panic!("niente DIM:\n{}", c.log()));
-    assert_eq!(dim, "DIM=2048 DEV=virtio0", "1 MiB = 2048 settori, primo dispositivo virtio");
-    let (_, primo) = c.wait_line("PRIMO=", at, limit).unwrap_or_else(|| panic!("niente PRIMO:\n{}", c.log()));
+    let (_, dim) = c.wait_line("DIM=", at, limit).unwrap_or_else(|| panic!("no DIM:\n{}", c.log()));
+    assert_eq!(dim, "DIM=2048 DEV=virtio0", "1 MiB = 2048 sectors, first virtio device");
+    let (_, primo) = c.wait_line("PRIMO=", at, limit).unwrap_or_else(|| panic!("no PRIMO:\n{}", c.log()));
     assert_eq!(primo, "PRIMO=VETRO-DISCO-7 SETTOR");
-    let (_, dopo) = c.wait_line("DOPO=", at, limit).unwrap_or_else(|| panic!("niente DOPO:\n{}", c.log()));
-    assert_eq!(dopo, "DOPO=SCRITTO", "il guest rilegge ciò che ha scritto");
-    assert!(c.finish(Duration::from_secs(60)), "poweroff -f non ha fermato vetro:\n{}", c.log());
-    assert_eq!(std::fs::read(&disk).unwrap(), data, "il file del disco non cambia");
+    let (_, dopo) = c.wait_line("DOPO=", at, limit).unwrap_or_else(|| panic!("no DOPO:\n{}", c.log()));
+    assert_eq!(dopo, "DOPO=SCRITTO", "the guest rereads what it wrote");
+    assert!(c.finish(Duration::from_secs(60)), "poweroff -f did not stop vetro:\n{}", c.log());
+    assert_eq!(std::fs::read(&disk).unwrap(), data, "the disk file doesn't change");
     std::fs::remove_dir_all(&dir).unwrap();
 }

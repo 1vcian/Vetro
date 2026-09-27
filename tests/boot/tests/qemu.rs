@@ -1,4 +1,4 @@
-//! Il kernel guest di M3 si avvia sotto l'oracolo fino alla shell:
+//! The M3 guest kernel boots under the oracle up to the shell:
 //!
 //! ```text
 //! qemu-system-aarch64 -M virt,gic-version=3,its=off -cpu cortex-a53 -m 1G -nic none \
@@ -8,12 +8,12 @@
 //!     -kernel Image -initrd initramfs.cpio.gz -append "console=ttyAMA0"
 //! ```
 //!
-//! Senza qemu-system-aarch64 il test viene saltato, salvo
-//! `VETRO_REQUIRE_SYSTEM_ORACLE=1`. Controlla, ciascuno entro `VETRO_BOOT_TIMEOUT`: il marcatore di `/init`,
-//! la fine dell'autotest senza errori, una shell interattiva che esegue un
-//! comando scritto sulla console, lo spegnimento con `poweroff -f` (PSCI).
-//! Il log completo va in `target/guest-kernel/qemu-boot.log`; il riferimento
-//! versionato è `guest/kernel/reference/qemu-boot.log`.
+//! Without qemu-system-aarch64 the test is skipped, unless
+//! `VETRO_REQUIRE_SYSTEM_ORACLE=1`. It checks, each within `VETRO_BOOT_TIMEOUT`: the `/init` marker,
+//! the end of the self-test without errors, an interactive shell that runs a
+//! command written on the console, the power-off with `poweroff -f` (PSCI).
+//! The complete log goes to `target/guest-kernel/qemu-boot.log`; the versioned
+//! reference is `guest/kernel/reference/qemu-boot.log`.
 
 use std::process::Command;
 use std::time::Duration;
@@ -24,13 +24,13 @@ fn qemu_boots_guest_kernel_to_shell() {
     let Some((image, initrd)) = guest_kernel() else {
         return skip_or_fail(
             "VETRO_REQUIRE_GUEST_KERNEL",
-            "target/guest-kernel mancante: esegui tools/guest-kernel/build.sh",
+            "target/guest-kernel missing: run tools/guest-kernel/build.sh",
         );
     };
     let Some(qemu) = qemu_system() else {
         return skip_or_fail(
             "VETRO_REQUIRE_SYSTEM_ORACLE",
-            "qemu-system-aarch64 assente (su macOS: VETRO_QEMU_SYSTEM_AARCH64=tools/guest-kernel/qemu-system-aarch64-docker.sh)",
+            "qemu-system-aarch64 missing (on macOS: VETRO_QEMU_SYSTEM_AARCH64=tools/guest-kernel/qemu-system-aarch64-docker.sh)",
         );
     };
     let mut cmd = Command::new(qemu);
@@ -41,38 +41,36 @@ fn qemu_boots_guest_kernel_to_shell() {
         .arg(&initrd)
         .args(["-append", "console=ttyAMA0"]);
     let limit = timeout();
-    let mut con = Console::spawn(cmd).expect("avvio di qemu-system-aarch64");
+    let mut con = Console::spawn(cmd).expect("boot of qemu-system-aarch64");
 
     let report = |con: &Console, what: &str| -> String {
         let log = con.log();
         let tail: String =
             log.lines().rev().take(40).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
-        format!("{what} dopo {:.1} s; ultime righe della console:\n{tail}", con.elapsed().as_secs_f64())
+        format!("{what} after {:.1} s; last lines of the console:\n{tail}", con.elapsed().as_secs_f64())
     };
 
-    let Some(at) = con.wait_for(BOOT_MARKER, 0, limit) else {
-        panic!("{}", report(&con, "nessun marcatore di avvio"))
-    };
+    let Some(at) = con.wait_for(BOOT_MARKER, 0, limit) else { panic!("{}", report(&con, "no boot marker")) };
     let t_boot = con.elapsed();
-    // La riga intera: la seriale può consegnare il marcatore prima dell'esito.
+    // The whole line: the serial port can deliver the marker before the outcome.
     let Some((end, line)) = con.wait_line(AUTOTEST_END, at, limit) else {
-        panic!("{}", report(&con, "autotest non finito"))
+        panic!("{}", report(&con, "self-test not finished"))
     };
     let t_autotest = con.elapsed();
-    assert_eq!(line, AUTOTEST_OK, "{}", report(&con, "autotest con errori"));
+    assert_eq!(line, AUTOTEST_OK, "{}", report(&con, "self-test with errors"));
 
-    // Shell interattiva: il risultato dell'espansione distingue l'uscita del
-    // comando dall'eco del terminale.
-    // L'ingresso parte solo a prompt completo (SHELL_PROMPT), come sotto Vetro.
+    // Interactive shell: the result of the expansion distinguishes the output of the
+    // command from the terminal's echo.
+    // Input starts only at a complete prompt (SHELL_PROMPT), as under Vetro.
     let Some(prompt) = con.wait_for(SHELL_PROMPT, end, limit) else {
-        panic!("{}", report(&con, "nessun prompt"))
+        panic!("{}", report(&con, "no prompt"))
     };
     con.send("echo VETRO-SHELL-$((6*7))\n");
     let Some(out) = con.wait_for("VETRO-SHELL-42", prompt, limit) else {
-        panic!("{}", report(&con, "la shell non risponde"))
+        panic!("{}", report(&con, "the shell does not respond"))
     };
     if con.wait_for(SHELL_PROMPT, out, limit).is_none() {
-        panic!("{}", report(&con, "nessun prompt dopo il comando"));
+        panic!("{}", report(&con, "no prompt after the command"));
     }
     con.send("poweroff -f\n");
     let exited = con.finish(Duration::from_secs(30));
@@ -86,10 +84,10 @@ fn qemu_boots_guest_kernel_to_shell() {
         std::fs::write(dir.join("qemu-boot.log"), &log).unwrap();
     }
     eprintln!(
-        "QEMU: /init a {:.1} s, autotest finito a {:.1} s, spento a {:.1} s",
+        "QEMU: /init at {:.1} s, self-test finished at {:.1} s, powered off at {:.1} s",
         t_boot.as_secs_f64(),
         t_autotest.as_secs_f64(),
         con.elapsed().as_secs_f64()
     );
-    assert!(exited, "QEMU non si è spento dopo poweroff -f");
+    assert!(exited, "QEMU did not power off after poweroff -f");
 }

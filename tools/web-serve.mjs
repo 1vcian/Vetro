@@ -1,22 +1,22 @@
 #!/usr/bin/env node
-// Server HTTP statico per l'app web di Vetro (web/app) e per i test
-// (tests/web): file con Range (206, 416, suffissi), HEAD, ETag, e le
-// intestazioni COOP/COEP che servono a SharedArrayBuffer e ai thread WASM
-// (crossOriginIsolated). Nessuna dipendenza, solo node:http.
+// Static HTTP server for Vetro's web app (web/app) and for the tests
+// (tests/web): files with Range (206, 416, suffixes), HEAD, ETag, and the
+// COOP/COEP headers needed by SharedArrayBuffer and WASM threads
+// (crossOriginIsolated). No dependencies, only node:http.
 //
 //   node tools/web-serve.mjs [--port 8080] [--host 127.0.0.1]
 //
-// Monta:
-//   /                       -> web/            (l'app è in /app/)
+// Mounts:
+//   /                       -> web/            (the app is in /app/)
 //   /wasm/vetro_wasm.wasm   -> target/wasm32-unknown-unknown/release/vetro_wasm.wasm
 //   /guest/                 -> target/guest-kernel/  (Image, initramfs.cpio.gz)
-//   /disks/                 -> target/web-disks/     (immagini di disco da provare)
+//   /disks/                 -> target/web-disks/     (disk images to try)
 //   /aosp/                  -> target/aosp/out/      (Vetro's AOSP image: manifest.json,
 //                              images, web/disk.json; tools/aosp/fetch.sh and web-disk.mjs)
 //
-// Come modulo: `serve({ mounts, port, onRequest })` restituisce
-// `{ server, url, close() }` (porta 0 = una libera). `isolation: false`
-// toglie COOP/COEP, come su GitHub Pages (tests/web/pages.mjs).
+// As a module: `serve({ mounts, port, onRequest })` returns
+// `{ server, url, close() }` (port 0 = a free one). `isolation: false`
+// removes COOP/COEP, as on GitHub Pages (tests/web/pages.mjs).
 
 import { createServer } from 'node:http';
 import { open, stat } from 'node:fs/promises';
@@ -34,7 +34,7 @@ const TYPES = {
   '.png': 'image/png',
 };
 
-/** Intestazioni di isolamento: senza, niente SharedArrayBuffer. */
+/** Isolation headers: without them, no SharedArrayBuffer. */
 export const ISOLATION = {
   'Cross-Origin-Opener-Policy': 'same-origin',
   'Cross-Origin-Embedder-Policy': 'require-corp',
@@ -42,9 +42,9 @@ export const ISOLATION = {
 };
 
 /**
- * Intervallo di un'intestazione Range su un file di `size` byte:
- * { start, end } (inclusivo), null se assente, 'invalid' se non
- * soddisfacibile. Un solo intervallo (niente multipart).
+ * Range of a Range header on a file of `size` bytes:
+ * { start, end } (inclusive), null if absent, 'invalid' if not
+ * satisfiable. A single range (no multipart).
  */
 export function parseRange(header, size) {
   if (!header) return null;
@@ -65,7 +65,7 @@ export function parseRange(header, size) {
   return { start, end };
 }
 
-/** Il file di `mounts` ([prefisso URL, directory o file]) per `pathname`. */
+/** The file of `mounts` ([URL prefix, directory or file]) for `pathname`. */
 function locate(mounts, pathname) {
   for (const [prefix, target] of mounts) {
     if (pathname === prefix || (prefix.endsWith('/') && pathname.startsWith(prefix))) {
@@ -100,7 +100,7 @@ export function serve({ mounts, port = 0, host = '127.0.0.1', onRequest = () => 
         st = await stat(file);
       }
     } catch {
-      return done(404, {}, 'non trovato\n');
+      return done(404, {}, 'not found\n');
     }
     const size = st.size;
     const type = TYPES[extname(file)] ?? 'application/octet-stream';
@@ -125,8 +125,8 @@ export function serve({ mounts, port = 0, host = '127.0.0.1', onRequest = () => 
     }
   });
   return new Promise((ok) => {
-    // Connessioni tenute a lungo: un client fermo per secondi (la macchina
-    // gira fra una richiesta e l'altra) non trova il socket chiuso.
+    // Connections kept for a long time: a client idle for seconds (the machine
+    // runs between one request and the next) doesn't find the socket closed.
     server.keepAliveTimeout = 120_000;
     server.listen(port, host, () => {
       const a = server.address();
@@ -137,7 +137,7 @@ export function serve({ mounts, port = 0, host = '127.0.0.1', onRequest = () => 
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-/** I montaggi dell'app (vedi l'intestazione). */
+/** The app's mounts (see the header). */
 export function appMounts() {
   return [
     ['/wasm/vetro_wasm.wasm', join(root, 'target/wasm32-unknown-unknown/release/vetro_wasm.wasm')],
@@ -154,6 +154,6 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const args = process.argv.slice(2);
   const opt = (n, d) => (args.includes(n) ? args[args.indexOf(n) + 1] : d);
   const { url } = await serve({ mounts: appMounts(), port: Number(opt('--port', '8080')), host: opt('--host', '127.0.0.1') });
-  console.log(`Vetro: app su ${url}/app/  (kernel di prova in ${url}/guest/, .wasm in ${url}/wasm/vetro_wasm.wasm)`);
-  console.log('Il .wasm si costruisce con: cargo build --release --target wasm32-unknown-unknown -p vetro-wasm');
+  console.log(`Vetro: app at ${url}/app/  (test kernel at ${url}/guest/, .wasm at ${url}/wasm/vetro_wasm.wasm)`);
+  console.log('The .wasm is built with: cargo build --release --target wasm32-unknown-unknown -p vetro-wasm');
 }

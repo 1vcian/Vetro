@@ -1,10 +1,10 @@
 #!/bin/sh
-# Avvia l'immagine dell'emulatore Android 15 (target/android-emu, vedi
-# README.md) sotto qemu-system-aarch64 con la macchina di Vetro. La seriale va
-# su stdout. I dischi sono in copy-on-write (snapshot=on): i file non cambiano
-# (la cartella dell'immagine è montata in sola lettura dal wrapper Docker).
-# Uso: tools/android-emu/qemu.sh > log (si ferma con SIGTERM); VETRO_QEMU_EXTRA
-# aggiunge opzioni (es. "-device virtio-gpu-device").
+# Boots the Android 15 emulator image (target/android-emu, see
+# README.md) under qemu-system-aarch64 with the Vetro machine. The serial goes
+# to stdout. The disks are copy-on-write (snapshot=on): the files don't change
+# (the image folder is mounted read-only by the Docker wrapper).
+# Usage: tools/android-emu/qemu.sh > log (stops with SIGTERM); VETRO_QEMU_EXTRA
+# adds options (e.g. "-device virtio-gpu-device").
 set -eu
 here="$(cd "$(dirname "$0")" && pwd)"
 dir="$(cd "${VETRO_ANDROID_EMU:-$here/../../target/android-emu}" && pwd -P)"

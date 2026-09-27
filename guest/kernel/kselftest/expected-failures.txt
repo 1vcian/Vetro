@@ -1,19 +1,19 @@
-# kselftest che falliscono anche sotto QEMU per l'ambiente del guest, non per
-# la CPU o la piattaforma. Il test tests/boot/tests/kselftest.rs pretende che
-# ogni altro test della selezione sia ok o SKIP, e che l'esito di tutti
-# coincida con QEMU. Formato: gruppo:test  # motivo
-arm64:fp-ptrace                  # PTRACE_GETREGSET di FPSIMD: ENOSYS con questa configurazione del kernel
-exec:execveat                    # 13 sottocasi su 54 eseguono `script` (#!/bin/bash): bash non c'è, ENOENT
-exec:non-regular                 # 1 sottocaso su 6 (S_IFLNK.exec_errno) fallisce anche sotto QEMU
-exec:load_address.0x1000         # compilato statico: manca l'header INTERP che il test cerca
-exec:load_address.0x200000       # come sopra
-exec:load_address.0x1000000      # come sopra
-exec:load_address.static.0x1000  # SIGSEGV anche sotto QEMU: il test usa -static-pie e il nostro CC aggiunge -static
-exec:load_address.static.0x200000 # come sopra
-exec:load_address.static.0x1000000 # come sopra
-exec:check-exec                  # 4 sottocasi su 32 aprono un dispositivo a blocchi: ENXIO, il kernel guest non ne ha
-exec:binfmt_script.py            # serve python3, assente nell'initramfs
-exec:check-exec-tests.sh         # serve bash, assente nell'initramfs
-mincore:mincore_selftest         # O_TMPFILE sulla radice (ramfs) non supportato
-timers:mqueue-lat                # CONFIG_POSIX_MQUEUE spento nel kernel guest
-timers:rtcpie                    # senza CONFIG_HIGH_RES_TIMERS (HZ=100) il periodo a 16 Hz è 70 ms invece di 62,5: stesso valore sotto QEMU e Vetro
+# kselftests that fail under QEMU too because of the guest environment, not
+# because of the CPU or the platform. The test tests/boot/tests/kselftest.rs requires
+# every other test in the selection to be ok or SKIP, and the result of all of them
+# to match QEMU. Format: group:test  # reason
+arm64:fp-ptrace                  # PTRACE_GETREGSET of FPSIMD: ENOSYS with this kernel configuration
+exec:execveat                    # 13 subcases out of 54 run `script` (#!/bin/bash): there is no bash, ENOENT
+exec:non-regular                 # 1 subcase out of 6 (S_IFLNK.exec_errno) fails under QEMU too
+exec:load_address.0x1000         # built static: the INTERP header the test looks for is missing
+exec:load_address.0x200000       # same as above
+exec:load_address.0x1000000      # same as above
+exec:load_address.static.0x1000  # SIGSEGV under QEMU too: the test uses -static-pie and our CC adds -static
+exec:load_address.static.0x200000 # same as above
+exec:load_address.static.0x1000000 # same as above
+exec:check-exec                  # 4 subcases out of 32 open a block device: ENXIO, the guest kernel has none
+exec:binfmt_script.py            # needs python3, missing from the initramfs
+exec:check-exec-tests.sh         # needs bash, missing from the initramfs
+mincore:mincore_selftest         # O_TMPFILE on the root (ramfs) not supported
+timers:mqueue-lat                # CONFIG_POSIX_MQUEUE disabled in the guest kernel
+timers:rtcpie                    # without CONFIG_HIGH_RES_TIMERS (HZ=100) the 16 Hz period is 70 ms instead of 62.5: same value under QEMU and Vetro

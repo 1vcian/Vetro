@@ -1,76 +1,76 @@
-//! Il trait `Upstream`: dove finiscono le connessioni del guest.
+//! The `Upstream` trait: where the guest's connections end up.
 //!
-//! Interfaccia "sans-I/O" a interrogazione: lo stack chiama i metodi quando
-//! riceve frame dal guest e durante `Stack::poll`; l'upstream non chiama mai
-//! lo stack. Così un upstream asincrono (il relay WebSocket nel browser) può
-//! rispondere più tardi: basta restituire `Pending`/`WouldBlock` e lasciare
-//! che la piattaforma chiami di nuovo `poll`.
+//! Polling "sans-I/O" interface: the stack calls the methods when it
+//! receives frames from the guest and during `Stack::poll`; the upstream never calls
+//! the stack. So an asynchronous upstream (the WebSocket relay in the browser) can
+//! answer later: it just returns `Pending`/`WouldBlock` and lets
+//! the platform call `poll` again.
 
 use std::net::Ipv4Addr;
 
 use crate::{ConnId, Flow, VirtualTime};
 
-/// Esito dell'apertura verso la destinazione remota.
+/// Outcome of opening towards the remote destination.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TcpStatus {
-    /// Ancora in corso: il guest resta in attesa del SYN-ACK.
+    /// Still in progress: the guest keeps waiting for the SYN-ACK.
     Pending,
-    /// Aperta: lo stack risponde al guest con SYN-ACK.
+    /// Open: the stack answers the guest with SYN-ACK.
     Connected,
-    /// Rifiutata: lo stack risponde al guest con RST (connection refused).
+    /// Refused: the stack answers the guest with RST (connection refused).
     Refused,
 }
 
-/// Esito di una lettura dall'upstream.
+/// Outcome of a read from the upstream.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TcpRead {
-    /// `n` byte copiati nel buffer (`n > 0`).
+    /// `n` bytes copied into the buffer (`n > 0`).
     Data(usize),
-    /// Niente per ora.
+    /// Nothing for now.
     WouldBlock,
-    /// Il remoto ha chiuso il suo verso: lo stack manda FIN dopo i dati.
+    /// The remote has closed its direction: the stack sends FIN after the data.
     Eof,
-    /// Il remoto ha interrotto la connessione: lo stack manda RST.
+    /// The remote has aborted the connection: the stack sends RST.
     Reset,
 }
 
 pub trait Upstream {
-    /// Il guest ha mandato un SYN verso `flow.remote`. L'esito arriva da
+    /// The guest sent a SYN to `flow.remote`. The outcome comes from
     /// [`Upstream::tcp_status`].
     fn tcp_open(&mut self, now: VirtualTime, id: ConnId, flow: Flow);
 
-    /// Stato dell'apertura di `id`. Interrogato finché non è più `Pending`.
+    /// State of the opening of `id`. Polled until it is no longer `Pending`.
     fn tcp_status(&mut self, now: VirtualTime, id: ConnId) -> TcpStatus;
 
-    /// Byte dal guest verso il remoto, in ordine. Restituisce quanti ne ha
-    /// accettati: i rimanenti restano nel buffer di ricezione dello stack e
-    /// riducono la finestra annunciata al guest (controllo di flusso).
+    /// Bytes from the guest to the remote, in order. Returns how many it
+    /// accepted: the remaining ones stay in the stack's receive buffer and
+    /// reduce the window announced to the guest (flow control).
     fn tcp_write(&mut self, now: VirtualTime, id: ConnId, data: &[u8]) -> usize;
 
-    /// Byte dal remoto verso il guest. Lo stack legge solo quando ha spazio
-    /// nel buffer di trasmissione.
+    /// Bytes from the remote to the guest. The stack reads only when it has room
+    /// in the transmit buffer.
     fn tcp_read(&mut self, now: VirtualTime, id: ConnId, buf: &mut [u8]) -> TcpRead;
 
-    /// Il guest ha chiuso il suo verso (FIN) dopo tutti i dati già scritti.
+    /// The guest has closed its direction (FIN) after all the data already written.
     fn tcp_shutdown(&mut self, now: VirtualTime, id: ConnId);
 
-    /// La connessione è finita: `reset` se è stata interrotta (RST dal guest,
-    /// timeout), falso dopo una chiusura ordinata. Ultima chiamata per `id`.
+    /// The connection is over: `reset` if it was aborted (RST from the guest,
+    /// timeout), false after an orderly close. Last call for `id`.
     fn tcp_close(&mut self, now: VirtualTime, id: ConnId, reset: bool);
 
-    /// Datagramma UDP del guest sul flusso `id` (il primo datagramma di un
-    /// flusso nuovo arriva con un `id` mai visto).
+    /// UDP datagram from the guest on flow `id` (the first datagram of a
+    /// new flow arrives with an `id` never seen).
     fn udp_send(&mut self, now: VirtualTime, id: ConnId, flow: Flow, data: &[u8]);
 
-    /// Prossima risposta UDP da consegnare al guest, sul flusso indicato:
-    /// parte da `flow.remote` verso `flow.guest`.
+    /// Next UDP response to deliver to the guest, on the indicated flow:
+    /// it leaves from `flow.remote` to `flow.guest`.
     fn udp_recv(&mut self, now: VirtualTime) -> Option<(ConnId, Vec<u8>)>;
 
-    /// Il flusso UDP `id` è scaduto per inattività.
+    /// UDP flow `id` has expired for inactivity.
     fn udp_close(&mut self, now: VirtualTime, id: ConnId);
 
-    /// Echo ICMP verso un indirizzo esterno: vero se va risposto. Il gateway
-    /// e il DNS virtuale rispondono sempre, senza chiedere all'upstream.
+    /// ICMP echo to an external address: true if it must be answered. The gateway
+    /// and the virtual DNS always answer, without asking the upstream.
     fn ping(&mut self, _now: VirtualTime, _dst: Ipv4Addr) -> bool {
         false
     }

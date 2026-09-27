@@ -1,24 +1,24 @@
 #!/bin/sh
-# Carica su Cloudflare R2 gli artefatti dell'immagine AOSP di Vetro, con un
-# percorso versionato e un manifest con gli sha256:
-#   aosp/<versione>/{boot,vendor_boot,init_boot,super,userdata}.img
-#   aosp/<versione>/build-info.txt, SHA256SUMS, manifest.json
-#   aosp/<versione>/sources/...   (sorgenti GPL, tools/aosp/gpl-sources.sh)
-# <versione> = VETRO_AOSP_VERSION, altrimenti
-# <tag AOSP>-<BUILD_ID>-<commit di guest/aosp e tools/aosp>, es.
+# Uploads the Vetro AOSP image artifacts to Cloudflare R2, with a
+# versioned path and a manifest with the sha256s:
+#   aosp/<version>/{boot,vendor_boot,init_boot,super,userdata}.img
+#   aosp/<version>/build-info.txt, SHA256SUMS, manifest.json
+#   aosp/<version>/sources/...   (GPL sources, tools/aosp/gpl-sources.sh)
+# <version> = VETRO_AOSP_VERSION, otherwise
+# <AOSP tag>-<BUILD_ID>-<commit of guest/aosp and tools/aosp>, e.g.
 # android-15.0.0_r36-BP1A.250505.005.D1-1a2b3c4d.
-# Solo artefatti nostri e ridistribuibili (AOSP Apache/GPL, microG Apache):
-# mai l'immagine SDK di Google. Un oggetto già presente con lo stesso sha256
-# non si ricarica (idempotente); uno diverso sotto la stessa versione è un
-# errore (una versione pubblicata non cambia).
-# Credenziali in ~/.config/vetro/r2.env (R2_ENDPOINT, R2_ACCESS_KEY_ID,
-# R2_SECRET_ACCESS_KEY, R2_BUCKET, R2_PUBLIC_URL): mai stampate.
+# Only our own, redistributable artifacts (AOSP Apache/GPL, microG Apache):
+# never Google's SDK image. An object already present with the same sha256
+# is not re-uploaded (idempotent); a different one under the same version is an
+# error (a published version does not change).
+# Credentials in ~/.config/vetro/r2.env (R2_ENDPOINT, R2_ACCESS_KEY_ID,
+# R2_SECRET_ACCESS_KEY, R2_BUCKET, R2_PUBLIC_URL): never printed.
 set -eu
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 a="$root/target/aosp"
 env_file="${VETRO_R2_ENV:-$HOME/.config/vetro/r2.env}"
-[ -f "$a/out/SHA256SUMS" ] || { echo "mancano gli artefatti (tools/aosp/fetch.sh)" >&2; exit 1; }
+[ -f "$a/out/SHA256SUMS" ] || { echo "artifacts missing (tools/aosp/fetch.sh)" >&2; exit 1; }
 (cd "$a/out" && shasum -a 256 -c --quiet SHA256SUMS)
 # shellcheck disable=SC1090
 . "$env_file"
@@ -29,36 +29,37 @@ s3() { aws --endpoint-url "$R2_ENDPOINT" "$@"; }
 if [ -z "${VETRO_AOSP_VERSION:-}" ]; then
   tag="$(sed -n 's/^manifest_tag=//p' "$a/out/build-info.txt")"
   bid="$(sed -n 's/^build_id=//p' "$a/out/build-info.txt")"
-  # Il commit di Vetro da cui è stata costruita l'immagine (sync.sh ->
-  # build-info.txt), non quello del Mac al momento del caricamento. Le build
-  # vecchie senza vetro_rev usano il commit attuale, pulito.
+  # The Vetro commit the image was built from (sync.sh ->
+  # build-info.txt), not the Mac's at upload time. Old builds
+  # without vetro_rev use the current, clean commit.
+  # "sconosciuta" (unknown) is the value remote/build.sh and pack.sh write: keep it.
   rev="$(sed -n 's/^vetro_rev=//p' "$a/out/build-info.txt")"
   case "$rev" in
-    *-dirty) echo "l'immagine è stata costruita da modifiche non committate ($rev): committa, risincronizza e ricostruisci" >&2; exit 1 ;;
+    *-dirty) echo "the image was built from uncommitted changes ($rev): commit, re-sync and rebuild" >&2; exit 1 ;;
     ""|sconosciuta)
       rev="$(git -C "$root" log -1 --format=%h -- guest/aosp tools/aosp guest/kernel/initramfs/vetro-files.c)"
       if [ -n "$(git -C "$root" status --porcelain -- guest/aosp tools/aosp)" ]; then
-        echo "guest/aosp o tools/aosp hanno modifiche non committate: committa prima di pubblicare" >&2
+        echo "guest/aosp or tools/aosp have uncommitted changes: commit before publishing" >&2
         exit 1
       fi ;;
   esac
   VETRO_AOSP_VERSION="${tag:-aosp}-${bid}-${rev}"
 fi
 prefix="aosp/$VETRO_AOSP_VERSION"
-echo "versione: $VETRO_AOSP_VERSION"
+echo "version: $VETRO_AOSP_VERSION"
 
-# put FILE CHIAVE: carica se manca, verifica lo sha256 se c'è già.
+# put FILE KEY: uploads if missing, verifies the sha256 if already there.
 put() {
   sha="$(shasum -a 256 "$1" | cut -d' ' -f1)"
   have="$(s3 s3api head-object --bucket "$R2_BUCKET" --key "$2" --query 'Metadata.sha256' --output text 2>/dev/null || true)"
   if [ "$have" = "$sha" ]; then
-    echo "già presente: $2"
+    echo "already present: $2"
   elif [ -n "$have" ] && [ "$have" != None ]; then
-    echo "ERRORE: $2 esiste con uno sha256 diverso ($have)" >&2
+    echo "ERROR: $2 exists with a different sha256 ($have)" >&2
     exit 1
   else
     s3 s3 cp --only-show-errors --metadata "sha256=$sha" "$1" "s3://$R2_BUCKET/$2"
-    echo "caricato: $2"
+    echo "uploaded: $2"
   fi
 }
 
@@ -70,10 +71,10 @@ if [ -f "$a/sources/SHA256SUMS" ]; then
   src_list="$(cd "$a/sources" && find . -type f | sed 's|^\./||' | sort)"
   for f in $src_list; do put "$a/sources/$f" "$prefix/sources/$f"; done
 else
-  echo "attenzione: niente sorgenti GPL (tools/aosp/gpl-sources.sh): l'immagine non va distribuita senza" >&2
+  echo "warning: no GPL sources (tools/aosp/gpl-sources.sh): the image must not be distributed without them" >&2
 fi
 
-# Manifest: file, dimensione, sha256, URL pubblico.
+# Manifest: file, size, sha256, public URL.
 man="$a/manifest.json"
 {
   printf '{\n  "version": "%s",\n  "base_url": "%s/%s",\n  "files": [\n' "$VETRO_AOSP_VERSION" "$R2_PUBLIC_URL" "$prefix"

@@ -1,8 +1,10 @@
-# Autotest dell'initramfs di Vetro (M3): pochi controlli che toccano syscall,
-# file system virtuali e dispositivi. Stampa VETRO-AUTOTEST-FINE con l'esito.
+# Autotest of the Vetro initramfs (M3): a few checks that touch syscalls,
+# virtual file systems and devices. Prints VETRO-AUTOTEST-FINE with the result.
+# The check descriptions stay in Italian: they end up in the console log, which
+# is compared with guest/kernel/reference/qemu-boot.log.
 fail=0
 check() {
-  # check <descrizione> <comando...>: esegue il comando e ne segna l'esito.
+  # check <description> <command...>: runs the command and records its result.
   desc=$1
   shift
   if "$@"; then
@@ -26,13 +28,13 @@ check "RTC PL031" test -c /dev/rtc0
 check "echo e pipe" test "$(echo vetro | tr a-z A-Z)" = VETRO
 check "file su tmpfs" sh -c 'echo 42 > /tmp/x && test "$(cat /tmp/x)" = 42'
 check "aritmetica della shell" test $((6 * 7)) = 42
-# Layout di avvio visto dal guest: confronto con il caricatore di Vetro
+# Boot layout as seen by the guest: comparison with the Vetro loader
 # (crates/vetro-cli/src/boot.rs).
 grep -i kernel /proc/iomem
 echo "initrd-start: $(od -An -tx1 /proc/device-tree/chosen/linux,initrd-start)"
-# M5: virtio-gpu, virtio-input e virtio-vsock, esercitati da vetro-dev
-# (guest/kernel/initramfs/vetro-dev.c). Solo ciò che è uguale sotto QEMU:
-# niente CID né trasporto vsock (QEMU in container non ha vhost-vsock).
+# M5: virtio-gpu, virtio-input and virtio-vsock, exercised by vetro-dev
+# (guest/kernel/initramfs/vetro-dev.c). Only what is identical under QEMU:
+# no CID and no vsock transport (QEMU in a container has no vhost-vsock).
 check "DRM: /dev/dri/card0" test -c /dev/dri/card0
 check "DRM: dumb buffer, modeset, dirtyfb e cursore" vetro-dev drm
 conn=/sys/class/drm/card0-Virtual-1
@@ -44,10 +46,10 @@ check "input: tastiera e tablet" test -c /dev/input/event0 -a -c /dev/input/even
 cat /proc/bus/input/devices
 check "input: capacità di evdev" vetro-dev input
 check "vsock: /dev/vsock" test -c /dev/vsock
-# Rete (virtio-net): DHCP e ping al gateway, con lo stesso esito sotto la
-# rete user di QEMU (-netdev user) e sotto lo stack di Vetro (vetro-net).
-# Solo valori che non dipendono dai tempi: niente contatori né millisecondi
-# (i messaggi di udhcpc, che contano i tentativi, vanno in /tmp).
+# Network (virtio-net): DHCP and ping to the gateway, with the same result under
+# QEMU's user network (-netdev user) and under the Vetro stack (vetro-net).
+# Only values that do not depend on timing: no counters and no milliseconds
+# (udhcpc's messages, which count the attempts, go to /tmp).
 check "rete: eth0" test -d /sys/class/net/eth0
 echo "eth0: $(cat /sys/class/net/eth0/address)"
 check "rete: DHCP" sh -c 'udhcpc -i eth0 -n -q -t 5 -T 2 2>/tmp/udhcpc.err'

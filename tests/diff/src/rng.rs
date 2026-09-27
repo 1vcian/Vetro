@@ -1,5 +1,5 @@
-//! Generatore pseudocasuale deterministico (SplitMix64): stessi semi, stessi
-//! programmi, su ogni macchina.
+//! Deterministic pseudorandom generator (SplitMix64): same seeds, same
+//! programs, on every machine.
 
 #[derive(Clone, Debug)]
 pub struct Rng(u64);
@@ -21,12 +21,12 @@ impl Rng {
         (self.next_u64() >> 32) as u32
     }
 
-    /// Intero uniforme in `0..n` (n > 0).
+    /// Uniform integer in `0..n` (n > 0).
     pub fn below(&mut self, n: u64) -> u64 {
         ((self.next_u64() as u128 * n as u128) >> 64) as u64
     }
 
-    /// Vero con probabilità `num/den`.
+    /// True with probability `num/den`.
     pub fn chance(&mut self, num: u64, den: u64) -> bool {
         self.below(den) < num
     }
@@ -35,7 +35,7 @@ impl Rng {
         &items[self.below(items.len() as u64) as usize]
     }
 
-    /// Valore a 64 bit con molti casi limite (zero, segni, confini a 32 bit).
+    /// 64-bit value with many edge cases (zero, signs, 32-bit boundaries).
     pub fn interesting_u64(&mut self) -> u64 {
         const SPECIAL: [u64; 12] = [
             0,
@@ -60,7 +60,7 @@ impl Rng {
         }
     }
 
-    /// Valore FP a 32 bit con molti casi limite.
+    /// 32-bit FP value with many edge cases.
     pub fn fp32(&mut self) -> u32 {
         const SPECIAL: [u32; 20] = [
             0x0000_0000,
@@ -72,27 +72,27 @@ impl Rng {
             0x7fc0_0000,
             0xffc0_0001,
             0x7f80_0001,
-            0xff90_0000, // qNaN e sNaN
+            0xff90_0000, // qNaN and sNaN
             0x0000_0001,
             0x807f_ffff,
             0x0080_0000,
-            0x7f7f_ffff, // denormali, min/max normali
+            0x7f7f_ffff, // denormals, min/max normals
             0x3f00_0000,
             0x3fc0_0000,
-            0x4020_0000, // 0.5, 1.5, 2.5 (pareggi)
+            0x4020_0000, // 0.5, 1.5, 2.5 (ties)
             0x4f00_0000,
             0xcf00_0000,
             0x5f00_0000, // 2^31, -2^31, 2^63
         ];
         match self.below(8) {
             0..=2 => *self.pick(&SPECIAL),
-            3 => ((self.below(2001) as i32 - 1000) as f32).to_bits(), // interi piccoli
+            3 => ((self.below(2001) as i32 - 1000) as f32).to_bits(), // small integers
             4 => ((self.below(2001) as i32 - 1000) as f32 / 8.0).to_bits(),
             _ => self.next_u32(),
         }
     }
 
-    /// Valore FP a 64 bit con molti casi limite.
+    /// 64-bit FP value with many edge cases.
     pub fn fp64(&mut self) -> u64 {
         const SPECIAL: [u64; 18] = [
             0,
@@ -122,7 +122,7 @@ impl Rng {
         }
     }
 
-    /// Registro vettoriale: corsie a 32 o 64 bit con valori FP, o bit casuali.
+    /// Vector register: 32- or 64-bit lanes with FP values, or random bits.
     pub fn fp_vector(&mut self) -> u128 {
         match self.below(4) {
             0 => (0..4).fold(0u128, |v, i| v | (self.fp32() as u128) << (32 * i)),
@@ -132,7 +132,7 @@ impl Rng {
         }
     }
 
-    /// Registro vettoriale con corsie quasi sempre speciali.
+    /// Vector register with lanes that are almost always special.
     pub fn fp_vector_special(&mut self) -> u128 {
         const S32: [u32; 12] = [
             0x7fc0_0000,

@@ -1,4 +1,4 @@
-//! Il gateway virtuale: smista i frame del guest e produce le risposte.
+//! The virtual gateway: dispatches the guest's frames and produces the answers.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::net::{Ipv4Addr, SocketAddrV4};
@@ -12,29 +12,29 @@ use crate::{ConnId, Flow, VirtualTime, dhcp, dns};
 
 pub(crate) mod snapshot;
 
-/// Configurazione della rete virtuale. I valori predefiniti sono quelli
-/// della rete "user" di QEMU.
+/// Configuration of the virtual network. The default values are those
+/// of QEMU's "user" network.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NetConfig {
-    /// MAC del gateway (e del DNS virtuale).
+    /// MAC of the gateway (and of the virtual DNS).
     pub gateway_mac: Mac,
     pub gateway_ip: Ipv4Addr,
     pub dns_ip: Ipv4Addr,
-    /// Indirizzo assegnato al guest via DHCP.
+    /// Address assigned to the guest via DHCP.
     pub guest_ip: Ipv4Addr,
     pub netmask: Ipv4Addr,
-    /// MTU del collegamento (senza intestazione Ethernet).
+    /// Link MTU (without the Ethernet header).
     pub mtu: u16,
     pub lease_secs: u32,
-    /// Seme dei numeri di sequenza iniziali TCP.
+    /// Seed of the initial TCP sequence numbers.
     pub seed: u64,
-    /// Scarta i pacchetti con checksum IP/TCP/UDP/ICMP errato. Richiede che
-    /// virtio-net non offra l'offload del checksum (`VIRTIO_NET_F_CSUM`) o
-    /// che la piattaforma completi i checksum parziali prima di consegnarli.
+    /// Discards packets with a wrong IP/TCP/UDP/ICMP checksum. Requires that
+    /// virtio-net doesn't offer checksum offload (`VIRTIO_NET_F_CSUM`) or
+    /// that the platform completes partial checksums before delivering them.
     pub verify_checksums: bool,
-    /// Inattività dopo cui un flusso UDP si chiude.
+    /// Inactivity after which a UDP flow is closed.
     pub udp_idle_timeout_us: u64,
-    /// Attesa massima dell'upstream per aprire una connessione TCP.
+    /// Maximum wait for the upstream to open a TCP connection.
     pub tcp_connect_timeout_us: u64,
 }
 
@@ -56,25 +56,25 @@ impl Default for NetConfig {
     }
 }
 
-/// Contatori dei frame, per diagnosi. Non entrano nel registro eventi.
+/// Frame counters, for diagnostics. They don't go into the event log.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
     pub frames_in: u64,
     pub frames_out: u64,
-    /// Frame o pacchetti troncati o incoerenti.
+    /// Truncated or inconsistent frames or packets.
     pub malformed: u64,
     pub bad_checksum: u64,
-    /// Destinazione che non è il gateway né un indirizzo esterno.
+    /// Destination that is neither the gateway nor an external address.
     pub not_for_us: u64,
-    /// IPv6 non è supportato (vedi docs/specs/net.md).
+    /// IPv6 is not supported (see docs/specs/net.md).
     pub ipv6: u64,
-    /// Frammenti IPv4: non si riassemblano.
+    /// IPv4 fragments: they are not reassembled.
     pub fragments: u64,
-    /// Protocolli o messaggi ignorati.
+    /// Ignored protocols or messages.
     pub ignored: u64,
-    /// Risposte UDP troppo grandi per l'MTU o per flussi già chiusi.
+    /// UDP responses too large for the MTU or for flows already closed.
     pub udp_dropped: u64,
-    /// RST per segmenti che non appartengono a nessuna connessione.
+    /// RSTs for segments that don't belong to any connection.
     pub tcp_rst_unknown: u64,
 }
 
@@ -85,12 +85,12 @@ struct UdpFlow {
     bytes_to_guest: u64,
 }
 
-/// Lo stack di rete lato host, con il suo upstream.
+/// The host-side network stack, with its upstream.
 ///
-/// Uso tipico dalla piattaforma: [`Stack::receive`] per ogni frame che il
-/// guest trasmette, [`Stack::poll`] quando scade [`Stack::next_deadline`] o
-/// quando l'upstream ha dati nuovi, e [`Stack::pop_frame`] per consegnare
-/// al guest i frame prodotti.
+/// Typical use from the platform: [`Stack::receive`] for every frame the
+/// guest transmits, [`Stack::poll`] when [`Stack::next_deadline`] expires or
+/// when the upstream has new data, and [`Stack::pop_frame`] to deliver
+/// the produced frames to the guest.
 pub struct Stack<U: Upstream> {
     config: NetConfig,
     upstream: U,
@@ -104,11 +104,11 @@ pub struct Stack<U: Upstream> {
     udp_index: BTreeMap<Flow, ConnId>,
     next_id: ConnId,
     ip_ident: u16,
-    /// Connessioni aperte dall'host verso il guest (inoltro di porte).
+    /// Connections opened by the host to the guest (port forwarding).
     host: HostSide,
 }
 
-/// SplitMix64: funzione di mescolamento per derivare gli ISN dal seme.
+/// SplitMix64: mixing function to derive the ISNs from the seed.
 fn splitmix64(mut z: u64) -> u64 {
     z = z.wrapping_add(0x9e37_79b9_7f4a_7c15);
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -151,60 +151,60 @@ impl<U: Upstream> Stack<U> {
         &self.stats
     }
 
-    /// MAC del guest, imparato dal primo frame ricevuto.
+    /// MAC of the guest, learned from the first frame received.
     pub fn guest_mac(&self) -> Option<Mac> {
         self.guest_mac
     }
 
-    /// Registro degli eventi dall'inizio (o dall'ultimo `take_events`).
+    /// Event log since the start (or since the last `take_events`).
     pub fn events(&self) -> &[NetEvent] {
         &self.log.events
     }
 
-    /// Svuota e restituisce il registro degli eventi.
+    /// Empties and returns the event log.
     pub fn take_events(&mut self) -> Vec<NetEvent> {
         std::mem::take(&mut self.log.events)
     }
 
-    /// Connessioni TCP ancora vive (compresa TIME-WAIT).
+    /// TCP connections still alive (including TIME-WAIT).
     pub fn tcp_connections(&self) -> usize {
         self.tcp.len()
     }
 
-    /// Flussi UDP ancora vivi.
+    /// UDP flows still alive.
     pub fn udp_flows(&self) -> usize {
         self.udp.len()
     }
 
-    /// Prossimo frame per il guest.
+    /// Next frame for the guest.
     pub fn pop_frame(&mut self) -> Option<Vec<u8>> {
         self.out.pop_front()
     }
 
-    /// Frame in attesa di essere consegnati al guest.
+    /// Frames waiting to be delivered to the guest.
     pub fn pending_frames(&self) -> usize {
         self.out.len()
     }
 
-    /// Primo istante in cui un timer interno scade (ritrasmissioni,
-    /// TIME-WAIT, attese dell'upstream, flussi UDP inattivi). La piattaforma
-    /// deve chiamare `poll` entro quell'istante; `None` se non ci sono timer.
+    /// First instant at which an internal timer expires (retransmissions,
+    /// TIME-WAIT, upstream waits, inactive UDP flows). The platform
+    /// must call `poll` by that instant; `None` if there are no timers.
     pub fn next_deadline(&self) -> Option<VirtualTime> {
         let tcp = self.tcp.values().filter_map(TcpConn::next_deadline);
         let udp = self.udp.values().map(|f| f.last_activity.after(self.config.udp_idle_timeout_us));
         tcp.chain(udp).min()
     }
 
-    /// Frame trasmesso dal guest. Esegue anche un giro di [`Stack::poll`].
+    /// Frame transmitted by the guest. Also runs a round of [`Stack::poll`].
     pub fn receive(&mut self, now: VirtualTime, frame: &[u8]) {
         self.stats.frames_in += 1;
         self.handle_frame(now, frame);
         self.poll(now);
     }
 
-    /// Fa avanzare timer e scambi con l'upstream fino a `now`.
+    /// Advances timers and exchanges with the upstream up to `now`.
     pub fn poll(&mut self, now: VirtualTime) {
-        // Connessioni chieste dall'host: il SYN parte adesso.
+        // Connections requested by the host: the SYN leaves now.
         let opens: Vec<(ConnId, Flow)> = self
             .host
             .conns
@@ -230,7 +230,7 @@ impl<U: Upstream> Stack<U> {
             self.with_conn(now, id, |c, ctx| c.start_active(ctx));
         }
 
-        // TCP, in ordine di id: l'ordine dei frame prodotti è deterministico.
+        // TCP, in id order: the order of the produced frames is deterministic.
         let ids: Vec<ConnId> = self.tcp.keys().copied().collect();
         for id in ids {
             let abort = self.host.conns.get_mut(&id).is_some_and(|h| std::mem::take(&mut h.abort));
@@ -244,12 +244,12 @@ impl<U: Upstream> Stack<U> {
             });
         }
 
-        // Risposte UDP.
+        // UDP responses.
         while let Some((id, data)) = self.upstream.udp_recv(now) {
             self.udp_to_guest(now, id, &data);
         }
 
-        // Flussi UDP scaduti.
+        // Expired UDP flows.
         let timeout = self.config.udp_idle_timeout_us;
         let expired: Vec<ConnId> = self
             .udp
@@ -275,7 +275,7 @@ impl<U: Upstream> Stack<U> {
     }
 
     // -----------------------------------------------------------------------
-    // Uscita
+    // Output
     // -----------------------------------------------------------------------
 
     fn send_eth(&mut self, dst: Mac, ethertype: u16, payload: &[u8]) {
@@ -330,9 +330,9 @@ impl<U: Upstream> Stack<U> {
         }
     }
 
-    /// Esegue `f` sulla connessione `id` con l'upstream giusto (quello dello
-    /// stack, o il lato host per le connessioni aperte dall'host), poi
-    /// manda i segmenti prodotti e toglie la connessione se è chiusa.
+    /// Runs `f` on connection `id` with the right upstream (the
+    /// stack's, or the host side for connections opened by the host), then
+    /// sends the produced segments and removes the connection if it is closed.
     fn with_conn(
         &mut self,
         now: VirtualTime,
@@ -358,14 +358,14 @@ impl<U: Upstream> Stack<U> {
     }
 
     // -----------------------------------------------------------------------
-    // Inoltro di porte: connessioni dall'host verso il guest (hostfwd.rs)
+    // Port forwarding: connections from the host to the guest (hostfwd.rs)
     // -----------------------------------------------------------------------
 
-    /// Apre una connessione TCP dall'host verso `guest_port` del guest
-    /// (all'indirizzo `NetConfig::guest_ip`), come `hostfwd` di QEMU: il
-    /// guest la vede arrivare dal gateway (10.0.2.2) da una porta effimera
-    /// (49152, 49153, … in ordine). Il SYN parte al prossimo
-    /// [`Stack::poll`]. `None` solo se le porte effimere sono tutte occupate.
+    /// Opens a TCP connection from the host to the guest's `guest_port`
+    /// (at the address `NetConfig::guest_ip`), like QEMU's `hostfwd`: the
+    /// guest sees it arrive from the gateway (10.0.2.2) from an ephemeral port
+    /// (49152, 49153, … in order). The SYN leaves at the next
+    /// [`Stack::poll`]. `None` only if the ephemeral ports are all taken.
     pub fn host_connect(&mut self, guest_port: u16) -> Option<ConnId> {
         let guest = SocketAddrV4::new(self.config.guest_ip, guest_port);
         let span = u32::from(u16::MAX - FIRST_EPHEMERAL_PORT) + 1;
@@ -399,10 +399,10 @@ impl<U: Upstream> Stack<U> {
         None
     }
 
-    /// Mette in coda byte per il guest; restituisce quanti ne ha accettati
-    /// (al più [`HOST_BUFFER`] in coda: il resto va riproposto dopo un
-    /// `poll`). 0 se la connessione è chiusa o sconosciuta, o se l'host ha
-    /// già chiuso il suo verso.
+    /// Queues bytes for the guest; returns how many it accepted
+    /// (at most [`HOST_BUFFER`] queued: the rest must be offered again after a
+    /// `poll`). 0 if the connection is closed or unknown, or if the host has
+    /// already closed its direction.
     pub fn host_send(&mut self, id: ConnId, data: &[u8]) -> usize {
         let Some(h) = self.host.conns.get_mut(&id) else { return 0 };
         if h.closed.is_some() || h.shutdown || h.abort {
@@ -413,9 +413,9 @@ impl<U: Upstream> Stack<U> {
         n
     }
 
-    /// Legge byte arrivati dal guest; 0 se non ce ne sono (la fine del
-    /// flusso è [`HostConnInfo::guest_eof`]). Liberare spazio riapre la
-    /// finestra del guest al prossimo `poll`.
+    /// Reads bytes arrived from the guest; 0 if there are none (the end of
+    /// the stream is [`HostConnInfo::guest_eof`]). Freeing space reopens the
+    /// guest's window at the next `poll`.
     pub fn host_recv(&mut self, id: ConnId, buf: &mut [u8]) -> usize {
         let Some(h) = self.host.conns.get_mut(&id) else { return 0 };
         let n = buf.len().min(h.from_guest.len());
@@ -425,15 +425,15 @@ impl<U: Upstream> Stack<U> {
         n
     }
 
-    /// Chiude il verso host→guest: FIN dopo i byte già in coda.
+    /// Closes the host→guest direction: FIN after the bytes already queued.
     pub fn host_shutdown(&mut self, id: ConnId) {
         if let Some(h) = self.host.conns.get_mut(&id) {
             h.shutdown = true;
         }
     }
 
-    /// Interrompe la connessione: RST al guest al prossimo `poll` (se il SYN
-    /// non è ancora partito, finisce senza pacchetti).
+    /// Aborts the connection: RST to the guest at the next `poll` (if the SYN
+    /// hasn't left yet, it ends without packets).
     pub fn host_abort(&mut self, id: ConnId) {
         let Some(h) = self.host.conns.get_mut(&id) else { return };
         if h.closed.is_some() {
@@ -447,8 +447,8 @@ impl<U: Upstream> Stack<U> {
         }
     }
 
-    /// Stato di una connessione dell'host; `None` se sconosciuta o già
-    /// rilasciata.
+    /// State of a host connection; `None` if unknown or already
+    /// released.
     pub fn host_conn(&self, id: ConnId) -> Option<HostConnInfo> {
         let h = self.host.conns.get(&id)?;
         let state = match (h.closed, self.tcp.get(&id)) {
@@ -467,14 +467,14 @@ impl<U: Upstream> Stack<U> {
         })
     }
 
-    /// Connessioni dell'host ancora registrate (anche chiuse ma non
-    /// rilasciate), in ordine di id.
+    /// Host connections still registered (including closed but not
+    /// released ones), in id order.
     pub fn host_conns(&self) -> impl Iterator<Item = ConnId> + '_ {
         self.host.conns.keys().copied()
     }
 
-    /// Dimentica una connessione dell'host. Se è ancora viva la interrompe
-    /// (RST al prossimo `poll`) e sparisce appena chiusa.
+    /// Forgets a host connection. If it is still alive it aborts it
+    /// (RST at the next `poll`) and it disappears as soon as it is closed.
     pub fn host_release(&mut self, id: ConnId) {
         let Some(h) = self.host.conns.get_mut(&id) else { return };
         if h.closed.is_some() {
@@ -490,7 +490,7 @@ impl<U: Upstream> Stack<U> {
     }
 
     // -----------------------------------------------------------------------
-    // Ingresso
+    // Input
     // -----------------------------------------------------------------------
 
     fn is_gateway_addr(&self, ip: Ipv4Addr) -> bool {
@@ -527,8 +527,8 @@ impl<U: Upstream> Stack<U> {
             self.stats.malformed += 1;
             return;
         };
-        // Si risponde solo per i nostri indirizzi: mai per quello del guest,
-        // altrimenti il suo controllo di conflitto (ARP probe) fallirebbe.
+        // Answer only for our addresses: never for the guest's,
+        // otherwise its conflict check (ARP probe) would fail.
         if arp.op != wire::ARP_REQUEST || !self.is_gateway_addr(arp.target_ip) {
             self.stats.ignored += 1;
             return;
@@ -556,7 +556,7 @@ impl<U: Upstream> Stack<U> {
             self.stats.fragments += 1;
             return;
         }
-        // DHCP arriva in broadcast (o al gateway) da una sorgente ancora nulla.
+        // DHCP arrives as broadcast (or to the gateway) from a still null source.
         if ip.proto == wire::PROTO_UDP
             && (ip.dst == Ipv4Addr::BROADCAST || ip.dst == self.config.gateway_ip)
             && let Some((udp, data)) = wire::parse_udp(ip.src, ip.dst, payload)
@@ -667,8 +667,8 @@ impl<U: Upstream> Stack<U> {
             remote: SocketAddrV4::new(ip.dst, udp.dst_port),
         };
         if self.is_gateway_addr(ip.dst) && flow.remote != self.dns_endpoint() {
-            // Nessun servizio UDP qui: ICMP port unreachable con l'intestazione
-            // IP originale e i primi 8 byte (RFC 792).
+            // No UDP service here: ICMP port unreachable with the original IP
+            // header and the first 8 bytes (RFC 792).
             let ihl = usize::from(packet[0] & 0x0f) * 4;
             let quoted = &packet[..(ihl + 8).min(packet.len())];
             let msg =
@@ -754,7 +754,7 @@ impl<U: Upstream> Stack<U> {
         if let Some(&id) = self.tcp_index.get(&flow) {
             self.with_conn(now, id, |conn, ctx| {
                 if conn.state == State::TimeWait && is_new_syn {
-                    // Riapertura della stessa quadrupla: la vecchia si chiude.
+                    // Reopening of the same four-tuple: the old one is closed.
                     conn.end_time_wait(ctx);
                 } else {
                     conn.input(ctx, &h, payload);
@@ -789,7 +789,7 @@ impl<U: Upstream> Stack<U> {
         if h.has(TCP_RST) {
             return;
         }
-        // Nessuna connessione: RST (RFC 9293 3.10.7.1).
+        // No connection: RST (RFC 9293 3.10.7.1).
         self.stats.tcp_rst_unknown += 1;
         let (seq, ack, flags) = if h.has(TCP_ACK) {
             (h.ack, 0, TCP_RST)

@@ -1,96 +1,96 @@
-//! `vetro`: runner nativo headless.
+//! `vetro`: headless native runner.
 //!
 //! ```text
-//! vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]
-//! vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--save-on=TESTO:FILE [--save-delay=S] [--exit-after-save]] [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=ISTRUZIONE [--dump=VA:BYTE]]] [--vsock] [--files-ls=PERCORSO]... [--files-cat=PERCORSO]... [--files-put=PERCORSO:FILE]... [--kernel-profile=FILE [--system-map=FILE] [--kernel-btf=FILE]] [--tls] [--binder-log=FILE]
+//! vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [args...]
+//! vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=LINE] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORT-:GUEST_PORT]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=INSTRUCTIONS:FILE]... [--save-on=TEXT:FILE [--save-delay=S] [--exit-after-save]] [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=INSTRUCTION [--dump=VA:BYTES]]] [--vsock] [--files-ls=PATH]... [--files-cat=PATH]... [--files-put=PATH:FILE]... [--kernel-profile=FILE [--system-map=FILE] [--kernel-btf=FILE]] [--tls] [--binder-log=FILE]
 //! ```
 //!
-//! `boot` avvia la macchina virt (M3) con la console PL011 su stdin/stdout.
-//! Le opzioni con un valore si scrivono `--opzione=valore` o `--opzione
-//! valore`.
+//! `boot` starts the virt machine (M3) with the PL011 console on stdin/stdout.
+//! Options that take a value are written `--option=value` or `--option
+//! value`.
 //!
-//! Immagini Android (M5, `docs/specs/android-boot.md`): invece di `--kernel`
-//! e `--initrd`, `--boot-img` (header v0–v4) con `--vendor-boot` (v3/v4) e
-//! `--init-boot` facoltativi. Il bootloader di Vetro
-//! (`vetro_machine::android`) decomprime il kernel (gzip, LZ4), concatena i
-//! ramdisk del vendor (senza quelli di recovery, salvo `--recovery`) e il
-//! ramdisk generico, compone la riga di comando (boot, vendor, poi `--append`)
-//! e, con `vendor_boot` v4, mette gli `androidboot.*` di `--append` nel
-//! blocco bootconfig in coda all'initrd. `--android-dump=DIR` scrive in DIR
-//! `Image`, `initrd` e `cmdline` come li riceve il kernel: gli stessi file
-//! vanno a `qemu-system-aarch64 -kernel -initrd -append`.
-//! I dispositivi di default (GPU, tastiera, tablet) occupano gli slot
-//! virtio-mmio 31, 30, 29, e la rete (virtio-net con lo stack di `vetro-net`
-//! e il sinkhole: DHCP 10.0.2.15, gateway 10.0.2.2, DNS finto 10.0.2.3) il
-//! 28; `--no-devices` li toglie tutti, `--no-net` solo la rete, `--net` la
-//! rimette anche dopo `--no-devices`. `--net-events` stampa su stderr il
-//! registro degli eventi di rete (DHCP, DNS, connessioni, byte, chiusure)
-//! man mano che accadono, in tempo virtuale. `--hostfwd` (ripetibile, la
-//! sintassi di QEMU) apre un socket in ascolto sull'host (127.0.0.1 se
-//! l'indirizzo manca; porta 0 = scelta dal sistema, stampata su stderr) e
-//! inoltra ogni connessione a quella porta del guest, che la vede arrivare
-//! da 10.0.2.2 (vedi `vetro_cli::hostfwd`). `--pcap=FILE` (o `--pcap FILE`)
-//! scrive a fine esecuzione i frame Ethernet visti da virtio-net in pcapng,
-//! con il tempo virtuale del guest; `--har=FILE` le richieste HTTP
-//! ricostruite in HAR 1.2; `--net-requests` stampa su stderr la lista
-//! dell'ispettore di rete (M7, ADR 0016). Ogni `--disk` aggiunge
-//! un virtio-blk nello slot libero più alto, nell'ordine della riga di comando
-//! (come i `-device virtio-blk-device` di QEMU): il file resta intatto, le
-//! scritture del guest restano in memoria (`snapshot=on`). `--overlay=FILE`
-//! dopo un `--disk` le conserva in FILE (creato se manca; formato di
-//! `vetro_snapshot::overlay`, lo stesso del browser, ADR 0017) e al
-//! prossimo avvio le riapplica; un overlay fatto su un'altra immagine base
-//! (nome, dimensione, data di modifica) si scarta con un avviso. `--guest-secs`
-//! ferma la macchina dopo N secondi di tempo del guest.
-//! `--jit` esegue col JIT verso WASM (M4, wasmtime; in `boot` il JIT della
-//! modalità sistema, ADR 0013, con `--jit-threshold=N` ingressi prima di
-//! tradurre un blocco); `--stats` stampa su stderr istruzioni, tempo e MIPS
-//! (e i contatori del JIT).
+//! Android images (M5, `docs/specs/android-boot.md`): instead of `--kernel`
+//! and `--initrd`, `--boot-img` (header v0–v4) with optional `--vendor-boot`
+//! (v3/v4) and `--init-boot`. Vetro's bootloader
+//! (`vetro_machine::android`) decompresses the kernel (gzip, LZ4), concatenates
+//! the vendor ramdisks (without the recovery ones, unless `--recovery`) and the
+//! generic ramdisk, builds the command line (boot, vendor, then `--append`)
+//! and, with `vendor_boot` v4, puts the `androidboot.*` of `--append` in the
+//! bootconfig block at the end of the initrd. `--android-dump=DIR` writes to DIR
+//! `Image`, `initrd` and `cmdline` as the kernel receives them: the same files
+//! go to `qemu-system-aarch64 -kernel -initrd -append`.
+//! The default devices (GPU, keyboard, tablet) occupy virtio-mmio slots
+//! 31, 30, 29, and the network (virtio-net with the `vetro-net` stack
+//! and the sinkhole: DHCP 10.0.2.15, gateway 10.0.2.2, fake DNS 10.0.2.3)
+//! slot 28; `--no-devices` removes them all, `--no-net` only the network, `--net`
+//! puts it back even after `--no-devices`. `--net-events` prints to stderr the
+//! network event log (DHCP, DNS, connections, bytes, closes)
+//! as they happen, in virtual time. `--hostfwd` (repeatable, QEMU's
+//! syntax) opens a listening socket on the host (127.0.0.1 if the
+//! address is missing; port 0 = chosen by the system, printed on stderr) and
+//! forwards every connection to that guest port, which sees it arrive
+//! from 10.0.2.2 (see `vetro_cli::hostfwd`). `--pcap=FILE` (or `--pcap FILE`)
+//! writes at the end of the run the Ethernet frames seen by virtio-net as pcapng,
+//! with the guest's virtual time; `--har=FILE` the HTTP requests
+//! reconstructed as HAR 1.2; `--net-requests` prints to stderr the list
+//! of the network inspector (M7, ADR 0016). Each `--disk` adds
+//! a virtio-blk in the highest free slot, in command-line order
+//! (like QEMU's `-device virtio-blk-device`): the file stays intact, the
+//! guest's writes stay in memory (`snapshot=on`). `--overlay=FILE`
+//! after a `--disk` keeps them in FILE (created if missing; format of
+//! `vetro_snapshot::overlay`, the same as the browser's, ADR 0017) and on the
+//! next boot reapplies them; an overlay made on a different base image
+//! (name, size, modification date) is discarded with a warning. `--guest-secs`
+//! stops the machine after N seconds of guest time.
+//! `--jit` runs with the JIT to WASM (M4, wasmtime; in `boot` the
+//! system-mode JIT, ADR 0013, with `--jit-threshold=N` entries before
+//! translating a block); `--stats` prints to stderr instructions, time and MIPS
+//! (and the JIT counters).
 //!
-//! Snapshot (M6, ADR 0015): `--save-at=N:FILE` salva la macchina intera in
-//! FILE al primo confine fra due quanti con almeno N istruzioni eseguite
-//! (una WFI può saltare oltre N), e continua; si può ripetere.
-//! `--save-on=TESTO:FILE` salva quando TESTO compare sulla console (per
-//! Android `sys.boot_completed=1`), dopo altri `--save-delay=S` secondi di
-//! guest; con `--exit-after-save` poi esce (codice 0). `--restore=FILE`
-//! riparte da uno snapshot invece che dal kernel (`--kernel` non serve):
-//! RAM, dispositivi e opzioni (`--mem`, dispositivi, `--disk` con gli stessi
-//! file) devono essere quelli della macchina salvata, altrimenti lo snapshot
-//! si rifiuta. I file dei dischi sono collegamenti: il loro contenuto non
-//! entra nello snapshot, le scritture del guest (copy-on-write) sì.
+//! Snapshots (M6, ADR 0015): `--save-at=N:FILE` saves the whole machine to
+//! FILE at the first boundary between two quanta with at least N instructions
+//! executed (a WFI can jump past N), and continues; it can be repeated.
+//! `--save-on=TEXT:FILE` saves when TEXT appears on the console (for
+//! Android `sys.boot_completed=1`), after a further `--save-delay=S` seconds of
+//! guest time; with `--exit-after-save` it then exits (code 0). `--restore=FILE`
+//! restarts from a snapshot instead of from the kernel (`--kernel` is not needed):
+//! RAM, devices and options (`--mem`, devices, `--disk` with the same
+//! files) must be those of the saved machine, otherwise the snapshot
+//! is rejected. Disk files are links: their content does not
+//! go into the snapshot, the guest's writes (copy-on-write) do.
 //!
-//! Record & replay (M10, ADR 0019): `--record=FILE` registra ogni ingresso
-//! dell'host (console da stdin, connessioni di `--hostfwd`) con il numero
-//! d'istruzione, più uno snapshot ogni `--keyframes=N` istruzioni (default
-//! 100 milioni, 0 = nessuno), e scrive il log all'uscita (spegnimento,
-//! reset, `--guest-secs`, stdin chiuso). `--replay=FILE` rifà la sessione
-//! registrata: stessi dispositivi e dischi, RAM, ora e seme dal log; parte
-//! da `--kernel` (stessi `--initrd`/`--append`) o da `--restore`, come la
-//! registrazione, oppure, senza nessuno dei due, dal primo keyframe del log.
-//! Stdin non conta; alla fine confronta console, istruzioni, CPU, RAM e
-//! dispositivi con la registrazione e dice se il replay è identico (codice
-//! 0) o dove diverge (codice 1). `--goto=N` va all'istruzione N (dal
-//! keyframe più vicino) e stampa i registri; `--dump=VA:BYTE` aggiunge i
-//! byte della memoria virtuale a quell'indirizzo (tabelle correnti).
+//! Record & replay (M10, ADR 0019): `--record=FILE` records every host
+//! input (console from stdin, `--hostfwd` connections) with its
+//! instruction number, plus a snapshot every `--keyframes=N` instructions (default
+//! 100 million, 0 = none), and writes the log on exit (power-off,
+//! reset, `--guest-secs`, stdin closed). `--replay=FILE` replays the recorded
+//! session: same devices and disks, RAM, time and seed from the log; it starts
+//! from `--kernel` (same `--initrd`/`--append`) or from `--restore`, like the
+//! recording, or, with neither of them, from the first keyframe of the log.
+//! Stdin does not count; at the end it compares console, instructions, CPU, RAM and
+//! devices with the recording and says whether the replay is identical (code
+//! 0) or where it diverges (code 1). `--goto=N` goes to instruction N (from the
+//! nearest keyframe) and prints the registers; `--dump=VA:BYTES` adds the
+//! bytes of virtual memory at that address (current tables).
 //!
-//! Gestore dei file (M8, ADR 0020): `--vsock` monta virtio-vsock (CID 3),
-//! su cui `/init` avvia il demone `vetro-files`. `--files-ls=PERCORSO`,
-//! `--files-cat=PERCORSO` e `--files-put=PERCORSO_GUEST:FILE_HOST`
-//! (ripetibili, implicano `--vsock`) eseguono nell'ordine le operazioni
-//! appena il demone risponde e scrivono i risultati su stdout; finite
-//! tutte, `vetro` esce con 0 se sono riuscite, 1 altrimenti (vedi
+//! File manager (M8, ADR 0020): `--vsock` mounts virtio-vsock (CID 3),
+//! on which `/init` starts the `vetro-files` daemon. `--files-ls=PATH`,
+//! `--files-cat=PATH` and `--files-put=GUEST_PATH:HOST_FILE`
+//! (repeatable, imply `--vsock`) run the operations in order
+//! as soon as the daemon answers and write the results to stdout; once they
+//! have all finished, `vetro` exits with 0 if they succeeded, 1 otherwise (see
 //! `vetro_cli::files`).
 //!
-//! Analisi dall'esterno (M7/M8, ADR 0027, `vetro_cli::analysis`): serve il
-//! profilo del kernel (`--kernel-profile=FILE`: un `boot.img` di Android o
-//! un `Image`, con `--system-map`/`--kernel-btf` per il kernel di prova;
-//! senza, si usa `--boot-img`/`--kernel`). `--tls` aggancia
-//! `SSL_write`/`SSL_read` di `libssl` (BoringSSL, anche Conscrypt): le
-//! richieste HTTPS in chiaro finiscono nell'HAR (`--har`) e nella lista
-//! (`--net-requests`) come quelle in chiaro, legate a processo e libreria.
-//! `--binder-log=FILE` scrive le chiamate Binder decodificate (interfaccia
-//! e metodo AIDL, mittente e destinatario) in JSON (`.json`) o in righe di
-//! testo, e stampa su stderr gli accessi sensibili (ispettore privacy).
+//! Analysis from the outside (M7/M8, ADR 0027, `vetro_cli::analysis`): it needs
+//! the kernel profile (`--kernel-profile=FILE`: an Android `boot.img` or
+//! an `Image`, with `--system-map`/`--kernel-btf` for the test kernel;
+//! without it, `--boot-img`/`--kernel` is used). `--tls` hooks
+//! `SSL_write`/`SSL_read` of `libssl` (BoringSSL, Conscrypt too): the
+//! decrypted HTTPS requests end up in the HAR (`--har`) and in the list
+//! (`--net-requests`) like the plaintext ones, tied to process and library.
+//! `--binder-log=FILE` writes the decoded Binder calls (AIDL interface
+//! and method, sender and recipient) as JSON (`.json`) or as lines of
+//! text, and prints the sensitive accesses to stderr (privacy inspector).
 
 use std::process::ExitCode;
 use vetro_cli::linux::{ClockMode, Config, Exit};
@@ -111,17 +111,17 @@ fn main() -> ExitCode {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "uso: vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [argomenti...]"
+        "usage: vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [args...]"
     );
     eprintln!(
-        "     vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=RIGA] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORTA-:PORTA_GUEST]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=ISTRUZIONI:FILE]... [--save-on=TESTO:FILE [--save-delay=S] [--exit-after-save]] [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=ISTRUZIONE [--dump=VA:BYTE]]] [--vsock] [--files-ls=PERCORSO]... [--files-cat=PERCORSO]... [--files-put=PERCORSO:FILE]... [--kernel-profile=FILE [--system-map=FILE] [--kernel-btf=FILE]] [--tls] [--binder-log=FILE]"
+        "       vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=LINE] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORT-:GUEST_PORT]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=INSTRUCTIONS:FILE]... [--save-on=TEXT:FILE [--save-delay=S] [--exit-after-save]] [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=INSTRUCTION [--dump=VA:BYTES]]] [--vsock] [--files-ls=PATH]... [--files-cat=PATH]... [--files-put=PATH:FILE]... [--kernel-profile=FILE [--system-map=FILE] [--kernel-btf=FILE]] [--tls] [--binder-log=FILE]"
     );
     ExitCode::from(2)
 }
 
 fn run(args: &[String]) -> ExitCode {
-    // Le CPU viste dal guest sono fisse (una, deterministico) salvo --cpus=N:
-    // non dipendono dalla macchina che esegue.
+    // The CPUs seen by the guest are fixed (one, deterministic) unless --cpus=N:
+    // they do not depend on the machine running it.
     let mut cfg = Config { echo: true, ..Config::default() };
     let mut stats = false;
     let mut i = 0;
@@ -168,7 +168,7 @@ fn run(args: &[String]) -> ExitCode {
     };
     if stats {
         let s = t0.elapsed().as_secs_f64();
-        eprintln!("vetro: {} istruzioni in {s:.3} s = {:.1} MIPS", out.steps, out.steps as f64 / s / 1e6);
+        eprintln!("vetro: {} instructions in {s:.3} s = {:.1} MIPS", out.steps, out.steps as f64 / s / 1e6);
         if let Some(j) = out.jit {
             eprintln!("vetro: jit {j:?}");
         }
@@ -177,26 +177,26 @@ fn run(args: &[String]) -> ExitCode {
         Exit::Code(c) => ExitCode::from(c as u8),
         Exit::Signal { signo, cause, pc } => {
             match cause {
-                Some(c) => eprintln!("vetro: segnale {signo} a pc={pc:#x}: {c:?}"),
-                None => eprintln!("vetro: terminato dal segnale {signo}"),
+                Some(c) => eprintln!("vetro: signal {signo} at pc={pc:#x}: {c:?}"),
+                None => eprintln!("vetro: killed by signal {signo}"),
             }
             ExitCode::from(128 + signo as u8)
         }
         Exit::UnsupportedSyscall { nr, pc } => {
             let name = vetro_analysis::syscall::name(nr);
-            eprintln!("vetro: syscall {nr} ({name}) non ancora implementata (pc={pc:#x})");
+            eprintln!("vetro: syscall {nr} ({name}) not implemented yet (pc={pc:#x})");
             ExitCode::from(125)
         }
         Exit::Unimplemented { raw, what, pc } => {
-            eprintln!("vetro: istruzione {raw:#010x} non ancora implementata ({what}) a pc={pc:#x}");
+            eprintln!("vetro: instruction {raw:#010x} not implemented yet ({what}) at pc={pc:#x}");
             ExitCode::from(126)
         }
         Exit::StepLimit => {
-            eprintln!("vetro: limite di istruzioni raggiunto");
+            eprintln!("vetro: instruction limit reached");
             ExitCode::from(124)
         }
         Exit::Deadlock => {
-            eprintln!("vetro: tutti i processi bloccati");
+            eprintln!("vetro: all processes blocked");
             ExitCode::from(123)
         }
     }
@@ -214,7 +214,7 @@ fn boot(args: &[String]) -> ExitCode {
     let (mut recovery, mut android_dump) = (false, None::<String>);
     let mut cfg = MachineConfig::default();
     let mut devices = Devices::default();
-    // (immagine, overlay).
+    // (image, overlay).
     let mut disks: Vec<(String, Option<String>)> = Vec::new();
     let mut guest_ns = u64::MAX;
     let mut stats = false;
@@ -363,18 +363,18 @@ fn boot(args: &[String]) -> ExitCode {
         return usage();
     }
     if (goto.is_some() && replay.is_none()) || (dump.is_some() && goto.is_none()) {
-        eprintln!("vetro: --goto richiede --replay, --dump richiede --goto");
+        eprintln!("vetro: --goto requires --replay, --dump requires --goto");
         return ExitCode::from(2);
     }
     if record.is_some() && replay.is_some() {
-        eprintln!("vetro: --record e --replay insieme non hanno senso");
+        eprintln!("vetro: --record and --replay together make no sense");
         return ExitCode::from(2);
     }
     if replay.is_some() && !forwards.is_empty() {
-        eprintln!("vetro: in replay la rete dell'host viene dal log: niente --hostfwd");
+        eprintln!("vetro: in replay the host network comes from the log: no --hostfwd");
         return ExitCode::from(2);
     }
-    // I salvataggi in ordine di istruzioni, il primo in fondo.
+    // The saves in instruction order, the first one at the end.
     save_at.sort_by_key(|s| std::cmp::Reverse(s.0));
     let read = |p: &str| {
         std::fs::read(p).map_err(|e| {
@@ -394,7 +394,7 @@ fn boot(args: &[String]) -> ExitCode {
         Ok(s) => s,
         Err(c) => return c,
     };
-    // Immagini Android: il bootloader prepara kernel, initrd e riga di comando.
+    // Android images: the bootloader prepares kernel, initrd and command line.
     let android = match boot_img.as_deref().filter(|_| restore.is_none()) {
         None => None,
         Some(path) => {
@@ -416,14 +416,14 @@ fn boot(args: &[String]) -> ExitCode {
             ) {
                 Ok(a) => {
                     eprintln!(
-                        "vetro: kernel {} ({} byte), ramdisk: {}{}",
+                        "vetro: kernel {} ({} bytes), ramdisk: {}{}",
                         a.kernel_format,
                         a.kernel.len(),
-                        if a.ramdisks.is_empty() { "nessuno".to_string() } else { a.ramdisks.join(", ") },
+                        if a.ramdisks.is_empty() { "none".to_string() } else { a.ramdisks.join(", ") },
                         if a.bootconfig.is_empty() {
                             String::new()
                         } else {
-                            format!(", bootconfig {} byte", a.bootconfig.len())
+                            format!(", bootconfig {} bytes", a.bootconfig.len())
                         }
                     );
                     if let Some(dir) = &android_dump
@@ -454,7 +454,7 @@ fn boot(args: &[String]) -> ExitCode {
         Err(c) => return c,
     };
     if let Some(l) = &log {
-        // RAM, ora e seme della macchina registrata.
+        // RAM, time and seed of the recorded machine.
         cfg = l.config.clone();
     }
     match net {
@@ -466,16 +466,16 @@ fn boot(args: &[String]) -> ExitCode {
         devices.vsock_cid = Some(3);
     }
     if replay.is_some() && !file_cmds.is_empty() {
-        eprintln!("vetro: in replay gli ingressi vengono dal log: niente --files-*");
+        eprintln!("vetro: in replay the inputs come from the log: no --files-*");
         return ExitCode::from(2);
     }
     let mut files = (!file_cmds.is_empty()).then(|| FilesTask::new(file_cmds));
     if !forwards.is_empty() && devices.net.is_none() {
-        eprintln!("vetro: --hostfwd richiede la rete (--net)");
+        eprintln!("vetro: --hostfwd requires the network (--net)");
         return ExitCode::from(2);
     }
     let mut m = Machine::with_devices(&cfg, &devices);
-    // Overlay persistenti: (slot del disco, overlay).
+    // Persistent overlays: (disk slot, overlay).
     let mut overlays: Vec<(u32, FileOverlay)> = Vec::new();
     for (d, ov) in &disks {
         let path = std::path::Path::new(d);
@@ -505,15 +505,15 @@ fn boot(args: &[String]) -> ExitCode {
         };
         let blk = VirtioBlk::new(Box::new(backend), VirtioBlkConfig::default());
         let Ok(slot) = m.board.borrow_mut().virt.attach_virtio_next(Box::new(blk)) else {
-            eprintln!("vetro: troppi dispositivi virtio");
+            eprintln!("vetro: too many virtio devices");
             return ExitCode::from(2);
         };
         if let Some(f) = overlay {
             overlays.push((slot, f));
         }
     }
-    // Scrive negli overlay i cluster cambiati (fra un quanto e l'altro, e
-    // prima di uscire). Letture dell'host: il guest non se ne accorge.
+    // Writes the changed clusters to the overlays (between one quantum and the next, and
+    // before exiting). Host reads: the guest does not notice.
     let persist = |m: &Machine, overlays: &mut Vec<(u32, FileOverlay)>| -> Result<(), ExitCode> {
         for (slot, f) in overlays.iter_mut() {
             let mut b = m.board.borrow_mut();
@@ -522,9 +522,9 @@ fn boot(args: &[String]) -> ExitCode {
                 .virtio_mut(*slot)
                 .and_then(|t| t.device_as_mut::<VirtioBlk>())
                 .and_then(|blk| blk.backend_as_mut::<CowBackend<FileBackend>>())
-                .expect("disco con overlay");
+                .expect("disk with overlay");
             if let Err(e) = f.persist(cow) {
-                eprintln!("vetro: overlay del disco nello slot {slot}: {e}");
+                eprintln!("vetro: overlay of the disk in slot {slot}: {e}");
                 return Err(ExitCode::from(2));
             }
         }
@@ -536,7 +536,7 @@ fn boot(args: &[String]) -> ExitCode {
             eprintln!("vetro: {path}: {e}");
             return ExitCode::from(2);
         }
-        eprintln!("vetro: ripristinato {path} a {} istruzioni", m.steps);
+        eprintln!("vetro: restored {path} at {} instructions", m.steps);
         for (_, f) in overlays.iter_mut() {
             f.after_restore();
         }
@@ -555,7 +555,7 @@ fn boot(args: &[String]) -> ExitCode {
         m.set_jit(Some(vetro_jit_native::system_jit(threshold)));
     }
     if capture.wanted() && !m.net_tap(true) {
-        eprintln!("vetro: --pcap, --har e --net-requests richiedono la rete (--net)");
+        eprintln!("vetro: --pcap, --har and --net-requests require the network (--net)");
         return ExitCode::from(2);
     }
     if let Err(e) = analysis.install(&mut m, boot_img.as_deref().or(kernel.as_deref())) {
@@ -573,7 +573,7 @@ fn boot(args: &[String]) -> ExitCode {
                         match m.read_virt(va, &mut buf) {
                             Ok(()) => print!("{}", hex_dump(va, &buf)),
                             Err(at) => {
-                                eprintln!("vetro: {at:#x} non è mappato");
+                                eprintln!("vetro: {at:#x} is not mapped");
                                 return ExitCode::from(1);
                             }
                         }
@@ -586,7 +586,7 @@ fn boot(args: &[String]) -> ExitCode {
                 }
             };
         }
-        // Senza kernel né snapshot si parte dal keyframe iniziale del log.
+        // Without kernel or snapshot we start from the log's initial keyframe.
         let start = if image.is_none() && snapshot.is_none() && android.is_none() {
             m.replay_from(l, l.start.steps)
         } else {
@@ -597,7 +597,7 @@ fn boot(args: &[String]) -> ExitCode {
             return ExitCode::from(1);
         }
         eprintln!(
-            "vetro: replay di {path}: {} eventi, da {} a {} istruzioni",
+            "vetro: replay of {path}: {} events, from {} to {} instructions",
             l.events.len(),
             m.steps,
             l.end.steps
@@ -606,11 +606,11 @@ fn boot(args: &[String]) -> ExitCode {
     if record.is_some() {
         m.start_recording(vetro_machine::RecordOptions { keyframe_every: keyframes });
     }
-    // stdin in un thread, i socket di --hostfwd nei loro: tutto arriva su
-    // un canale e passa alla macchina tra un quanto e l'altro.
+    // stdin in a thread, the --hostfwd sockets in their own: everything arrives on
+    // a channel and goes to the machine between one quantum and the next.
     let (tx, rx) = std::sync::mpsc::channel::<Input>();
     let stdin_tx = tx.clone();
-    // In replay gli ingressi vengono dal log: stdin non si legge.
+    // In replay the inputs come from the log: stdin is not read.
     let replaying = log.is_some();
     std::thread::spawn(move || {
         if replaying {
@@ -659,7 +659,7 @@ fn boot(args: &[String]) -> ExitCode {
         if stats {
             let s = t0.elapsed().as_secs_f64();
             eprintln!(
-                "vetro: {} istruzioni ({:.3} s di guest) in {s:.3} s = {:.1} MIPS",
+                "vetro: {} instructions ({:.3} s of guest) in {s:.3} s = {:.1} MIPS",
                 m.steps,
                 m.guest_ns() as f64 / 1e9,
                 m.steps as f64 / s / 1e6
@@ -669,14 +669,14 @@ fn boot(args: &[String]) -> ExitCode {
             }
         }
         if let Some(p) = m.jit_profile() {
-            eprintln!("vetro: {}vetro: chiamate a env.simd: {}", p.report(40), vetro_jit::helper::calls());
+            eprintln!("vetro: {}vetro: calls to env.simd: {}", p.report(40), vetro_jit::helper::calls());
             if let Some(r) = vetro_jit::helper::profile_report(20) {
                 eprint!("vetro: env.simd, {r}");
             }
         }
     };
-    // Eventi di rete già stampati (il registro si legge senza toccarlo:
-    // l'esecuzione non cambia con --net-events).
+    // Network events already printed (the log is read without touching it:
+    // execution does not change with --net-events).
     let mut net_seen = 0usize;
     let mut print_net = |m: &Machine| {
         if !net_events {
@@ -696,10 +696,10 @@ fn boot(args: &[String]) -> ExitCode {
         }
         if m.guest_ns() >= guest_ns {
             report(&m);
-            eprintln!("vetro: raggiunto il limite di tempo del guest");
+            eprintln!("vetro: guest time limit reached");
             break ExitCode::from(124);
         }
-        // Un quanto non supera il prossimo salvataggio.
+        // A quantum does not go past the next save.
         let budget = save_at.last().map_or(2_000_000, |s| s.0.saturating_sub(m.steps).clamp(1, 2_000_000));
         let stop = m.run(budget);
         analysis.tls_service(&mut m);
@@ -712,7 +712,7 @@ fn boot(args: &[String]) -> ExitCode {
             let _ = out.write_all(&o);
             let _ = out.flush();
         }
-        // --save-on: il testo sulla console fissa l'istante del salvataggio.
+        // --save-on: the text on the console fixes the moment of the save.
         if let Some((text, _)) = &save_on
             && save_on_at.is_none()
         {
@@ -720,7 +720,7 @@ fn boot(args: &[String]) -> ExitCode {
             if console_tail.windows(text.len()).any(|w| w == text.as_bytes()) {
                 save_on_at = Some(m.guest_ns().saturating_add(save_delay_ns));
                 eprintln!(
-                    "vetro: {text:?} sulla console a {:.1} s di guest: snapshot fra {:.1} s di guest",
+                    "vetro: {text:?} on the console at {:.1} s of guest: snapshot in {:.1} s of guest",
                     m.guest_ns() as f64 / 1e9,
                     save_delay_ns as f64 / 1e9
                 );
@@ -739,7 +739,7 @@ fn boot(args: &[String]) -> ExitCode {
                 return ExitCode::from(2);
             }
             eprintln!(
-                "vetro: snapshot a {} istruzioni ({:.1} s di guest, {:.0} s reali) in {path} ({} byte, salvato in {:.1} s)",
+                "vetro: snapshot at {} instructions ({:.1} s of guest, {:.0} s real) in {path} ({} bytes, saved in {:.1} s)",
                 m.steps,
                 m.guest_ns() as f64 / 1e9,
                 t0.elapsed().as_secs_f64(),
@@ -754,24 +754,24 @@ fn boot(args: &[String]) -> ExitCode {
         match m.replay_status() {
             Some(vetro_machine::ReplayStatus::Finished) if log.is_some() => {
                 report(&m);
-                eprintln!("vetro: replay identico alla registrazione ({} istruzioni)", m.steps);
+                eprintln!("vetro: replay identical to the recording ({} instructions)", m.steps);
                 break ExitCode::SUCCESS;
             }
             Some(vetro_machine::ReplayStatus::Diverged(d)) if log.is_some() => {
                 report(&m);
-                eprintln!("vetro: replay diverso dalla registrazione: {d}");
+                eprintln!("vetro: replay differs from the recording: {d}");
                 break ExitCode::from(1);
             }
             _ => {}
         }
         while save_at.last().is_some_and(|s| m.steps >= s.0) {
-            let (_, path) = save_at.pop().expect("controllato sopra");
+            let (_, path) = save_at.pop().expect("checked above");
             let snap = m.save();
             if let Err(e) = std::fs::write(&path, &snap) {
                 eprintln!("vetro: {path}: {e}");
                 return ExitCode::from(2);
             }
-            eprintln!("vetro: snapshot a {} istruzioni in {path} ({} byte)", m.steps, snap.len());
+            eprintln!("vetro: snapshot at {} instructions in {path} ({} bytes)", m.steps, snap.len());
         }
         while let Ok(i) = rx.try_recv() {
             handle(&mut m, i, &mut console_open, &mut fwd);
@@ -787,16 +787,16 @@ fn boot(args: &[String]) -> ExitCode {
         }
         match stop {
             Stop::Budget => {}
-            // Il gestore dei file ha richieste per il guest: si continua.
+            // The file manager has requests for the guest: keep going.
             Stop::Idle if files.is_some() => {}
             Stop::Idle => {
-                // Niente da fare per il guest: si aspetta un ingresso
-                // dell'host (console o rete).
+                // Nothing to do for the guest: wait for a host
+                // input (console or network).
                 let waiting = console_open || fwd.is_some();
                 match rx.recv() {
                     Ok(i) if waiting => handle(&mut m, i, &mut console_open, &mut fwd),
                     _ => {
-                        eprintln!("vetro: il guest aspetta un ingresso e stdin è chiuso");
+                        eprintln!("vetro: the guest is waiting for input and stdin is closed");
                         break ExitCode::from(3);
                     }
                 }
@@ -813,17 +813,17 @@ fn boot(args: &[String]) -> ExitCode {
                 if let Err(c) = persist(&m, &mut overlays) {
                     return c;
                 }
-                eprintln!("vetro: il guest ha chiesto un reset");
+                eprintln!("vetro: the guest requested a reset");
                 break ExitCode::SUCCESS;
             }
             Stop::Blocked => {
-                // I dischi da file sono sempre pronti: non succede.
-                eprintln!("vetro: un disco non ha dati pronti");
+                // File-backed disks are always ready: this does not happen.
+                eprintln!("vetro: a disk has no data ready");
                 break ExitCode::from(2);
             }
             Stop::Unimplemented { pc, raw, what } => {
                 report(&m);
-                eprintln!("vetro: {raw:#010x} non ancora implementata ({what}) a pc={pc:#x}");
+                eprintln!("vetro: {raw:#010x} not implemented yet ({what}) at pc={pc:#x}");
                 break ExitCode::from(125);
             }
         }
@@ -855,7 +855,7 @@ fn boot(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
         eprintln!(
-            "vetro: registrazione in {path}: {} eventi, {} keyframe, {} istruzioni, {} byte ({} senza keyframe)",
+            "vetro: recording in {path}: {} events, {} keyframes, {} instructions, {} bytes ({} without keyframes)",
             l.events.len(),
             l.keyframes.len(),
             l.end.steps,
@@ -866,8 +866,8 @@ fn boot(args: &[String]) -> ExitCode {
     code
 }
 
-/// Opzioni di `boot` che vogliono un valore: `--opzione valore` diventa
-/// `--opzione=valore`.
+/// `boot` options that take a value: `--option value` becomes
+/// `--option=value`.
 const BOOT_VALUE_OPTIONS: &[&str] = &[
     "--kernel",
     "--initrd",
@@ -915,17 +915,17 @@ fn join_values(args: &[String]) -> Vec<String> {
     out
 }
 
-/// `Image`, `initrd` e `cmdline` come li riceve il kernel.
+/// `Image`, `initrd` and `cmdline` as the kernel receives them.
 fn dump_android(dir: &std::path::Path, a: &vetro_machine::android::AndroidBoot) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     std::fs::write(dir.join("Image"), &a.kernel)?;
     std::fs::write(dir.join("initrd"), &a.initrd)?;
     std::fs::write(dir.join("cmdline"), format!("{}\n", a.cmdline))?;
-    eprintln!("vetro: Image, initrd e cmdline in {}", dir.display());
+    eprintln!("vetro: Image, initrd and cmdline in {}", dir.display());
     Ok(())
 }
 
-/// Un indirizzo in esadecimale (`0x...`) o in decimale.
+/// An address in hexadecimal (`0x...`) or in decimal.
 fn parse_addr(s: &str) -> Option<u64> {
     match s.strip_prefix("0x") {
         Some(h) => u64::from_str_radix(h, 16).ok(),
@@ -933,7 +933,7 @@ fn parse_addr(s: &str) -> Option<u64> {
     }
 }
 
-/// Byte in righe da 16: indirizzo, esadecimale, ASCII.
+/// Bytes in rows of 16: address, hexadecimal, ASCII.
 fn hex_dump(va: u64, bytes: &[u8]) -> String {
     let mut t = String::new();
     for (i, row) in bytes.chunks(16).enumerate() {

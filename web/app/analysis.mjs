@@ -1,21 +1,21 @@
-// I pannelli di analisi della pagina (M7, M10, ADR 0023): ispettore di rete,
-// timeline input→effetti e registrazione/replay. I dati arrivano dal Worker
-// (messaggi `analysis`, `rr`, `paused`, `replay-started`, `replay-ended`);
-// dettaglio, esportazioni, registri e memoria si chiedono con `call(op,
-// args)` (messaggio `inspect`), i comandi di registrazione con `command(op,
-// args)` (messaggio `rr`).
+// The analysis panels of the page (M7, M10, ADR 0023): network inspector,
+// input→effects timeline and recording/replay. The data arrives from the
+// Worker (messages `analysis`, `rr`, `paused`, `replay-started`,
+// `replay-ended`); detail, exports, registers and memory are requested with
+// `call(op, args)` (message `inspect`), the recording commands with
+// `command(op, args)` (message `rr`).
 //
-// Esportazioni: Blob + <a download>, che nell'app (anche su GitHub Pages)
-// scarica il file. Lo stato è leggibile da `window.vetroAnalysis` (test).
+// Exports: Blob + <a download>, which in the app (also on GitHub Pages)
+// downloads the file. The state can be read from `window.vetroAnalysis` (tests).
 
 const $ = (id) => document.getElementById(id);
 
-/** Tempo del guest (µs) come secondi con i millisecondi. */
+/** Guest time (µs) as seconds with milliseconds. */
 export function guestTime(us) {
   return `${Math.floor(us / 1e6)}.${String(Math.floor(us / 1000) % 1000).padStart(3, '0')} s`;
 }
 
-/** Durata in µs, leggibile. */
+/** Duration in µs, human-readable. */
 export function duration(us) {
   if (us === null || us === undefined) return '–';
   if (us < 1000) return `${us} µs`;
@@ -30,9 +30,9 @@ export function bytes(n) {
 }
 
 /**
- * Cella del corpo nella lista: "0 B" per un corpo vuoto (Content-Length: 0
- * o nessun byte), dimensione e tipo riconosciuto altrimenti; "–" solo se
- * l'informazione manca (dimensione assente).
+ * Body cell in the list: "0 B" for an empty body (Content-Length: 0 or no
+ * bytes), size and detected type otherwise; "–" only if the information is
+ * missing (no size).
  */
 export function bodyCell(size, kind) {
   if (size === null || size === undefined) return '–';
@@ -41,14 +41,14 @@ export function bodyCell(size, kind) {
 }
 
 /**
- * Il tipo della risposta: il Content-Type, se c'è; altrimenti quello
- * riconosciuto dal contenuto (attenuato); "–" senza risposta.
+ * The type of the response: the Content-Type, if present; otherwise the one
+ * detected from the content (dimmed); "–" without a response.
  */
 export function typeText(r) {
   if (r.mime) return { text: r.mime, title: r.mime, guessed: false };
-  if (r.status === null || r.status === undefined) return { text: '–', title: 'senza risposta', guessed: false };
-  const kind = r.respBytes ? r.respKind : 'vuoto';
-  return { text: kind, title: 'nessun Content-Type: tipo riconosciuto dal contenuto', guessed: true };
+  if (r.status === null || r.status === undefined) return { text: '–', title: 'no response', guessed: false };
+  const kind = r.respBytes ? r.respKind : 'empty';
+  return { text: kind, title: 'no Content-Type: type detected from the content', guessed: true };
 }
 
 function typeCell(r) {
@@ -56,7 +56,7 @@ function typeCell(r) {
   return el('td', { text: t.text, title: t.title, class: t.guessed ? 'guessed' : '' });
 }
 
-/** Byte da base64. */
+/** Bytes from base64. */
 export function fromB64(s) {
   const bin = atob(s);
   const out = new Uint8Array(bin.length);
@@ -64,7 +64,7 @@ export function fromB64(s) {
   return out;
 }
 
-/** Dump esadecimale (16 byte per riga) a partire dall'indirizzo `base` (BigInt). */
+/** Hexadecimal dump (16 bytes per line) starting at address `base` (BigInt). */
 export function hexdump(data, base = 0n, max = 64 * 1024) {
   const rows = [];
   const n = Math.min(data.length, max);
@@ -74,11 +74,11 @@ export function hexdump(data, base = 0n, max = 64 * 1024) {
     const ascii = [...chunk].map((b) => (b >= 0x20 && b < 0x7f ? String.fromCharCode(b) : '.')).join('');
     rows.push(`${(base + BigInt(o)).toString(16).padStart(16, '0')}  ${hex.padEnd(47)}  ${ascii}`);
   }
-  if (data.length > n) rows.push(`… altri ${data.length - n} byte`);
+  if (data.length > n) rows.push(`… ${data.length - n} more bytes`);
   return rows.join('\n');
 }
 
-/** Scarica `data` (Uint8Array o stringa) come file. */
+/** Downloads `data` (Uint8Array or string) as a file. */
 export function download(data, name, type = 'application/octet-stream') {
   const url = URL.createObjectURL(new Blob([data], { type }));
   const a = document.createElement('a');
@@ -105,7 +105,7 @@ function el(tag, attrs = {}, ...children) {
 
 const stamp = () => new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 
-// ---- Ispettore di rete --------------------------------------------------------
+// ---- Network inspector --------------------------------------------------------
 
 class NetPanel {
   constructor(app) {
@@ -131,7 +131,7 @@ class NetPanel {
     const methods = [...new Set(requests.requests.map((r) => r.method))].sort();
     const sel = $('net-method');
     const cur = sel.value;
-    sel.replaceChildren(el('option', { value: '', text: 'tutti i metodi' }), ...methods.map((m) => el('option', { value: m, text: m })));
+    sel.replaceChildren(el('option', { value: '', text: 'all methods' }), ...methods.map((m) => el('option', { value: m, text: m })));
     sel.value = methods.includes(cur) ? cur : '';
     $('tab-count-net').textContent = requests.requests.length ? `(${requests.requests.length})` : '';
     this.render();
@@ -170,9 +170,9 @@ class NetPanel {
         el('td', { class: 'method', text: r.method }),
         el('td', { text: r.host, title: r.host }),
         el('td', { class: 'path', text: r.path, title: r.url }),
-        el('td', { class: `status s${String(r.status ?? 0)[0]}`, text: r.status ?? '—', title: r.reason ?? 'senza risposta' }),
+        el('td', { class: `status s${String(r.status ?? 0)[0]}`, text: r.status ?? '—', title: r.reason ?? 'no response' }),
         el('td', { class: 'num', text: bodyCell(r.reqBytes, r.reqKind) }),
-        el('td', { class: 'num', text: r.status === null ? '–' : bodyCell(r.respBytes, r.respKind), title: r.status === null ? 'senza risposta' : '' }),
+        el('td', { class: 'num', text: r.status === null ? '–' : bodyCell(r.respBytes, r.respKind), title: r.status === null ? 'no response' : '' }),
         typeCell(r),
         el('td', { class: 'num', text: duration(r.timings.totalUs) }),
         el('td', { class: 'wf' }, el('span', { style: `left:${left}%;width:${width}%` })),
@@ -180,7 +180,7 @@ class NetPanel {
     }));
     const c = this.capture;
     $('net-info').textContent = c
-      ? `${rows.length}/${this.data.requests.length} richieste · ${this.data.dns.length} DNS · ${this.data.tls.length} TLS · ${c.frames} frame (${bytes(c.bytes)})${c.dropped ? ` · ${c.dropped} scartati` : ''}${c.on ? '' : ' · cattura spenta'}`
+      ? `${rows.length}/${this.data.requests.length} requests · ${this.data.dns.length} DNS · ${this.data.tls.length} TLS · ${c.frames} frames (${bytes(c.bytes)})${c.dropped ? ` · ${c.dropped} dropped` : ''}${c.on ? '' : ' · capture off'}`
       : '';
   }
 
@@ -190,7 +190,7 @@ class NetPanel {
     const d = await this.app.call('request', { index: i });
     if (this.selected !== i) return;
     this.detail = d;
-    $('net-detail').replaceChildren(...(d ? this.renderDetail(d) : [el('p', { text: 'richiesta non trovata' })]));
+    $('net-detail').replaceChildren(...(d ? this.renderDetail(d) : [el('p', { text: 'request not found' })]));
   }
 
   renderDetail(d) {
@@ -200,14 +200,14 @@ class NetPanel {
     const total = Math.max(1, t.totalUs);
     const general = el('section', { class: 'nd-general' },
       el('div', { class: 'nd-url' }, el('strong', { text: `${r.method} ` }), r.url),
-      el('div', { text: `stato: ${r.status ?? 'senza risposta'} ${r.reason ?? ''} · ${r.client} → ${r.server}${r.resolvedName ? ` (${r.resolvedName})` : ''} · flusso ${r.flow}` }),
-      el('div', { text: `inizio ${guestTime(t.startedUs)} · totale ${duration(t.totalUs)}` }),
+      el('div', { text: `status: ${r.status ?? 'no response'} ${r.reason ?? ''} · ${r.client} → ${r.server}${r.resolvedName ? ` (${r.resolvedName})` : ''} · flow ${r.flow}` }),
+      el('div', { text: `start ${guestTime(t.startedUs)} · total ${duration(t.totalUs)}` }),
       el('div', { class: 'phases' }, ...phases.filter(([, v]) => v !== null).map(([n, v]) =>
         el('span', { class: `ph ph-${n}`, style: `flex-grow:${Math.max(v / total, 0.02)}`, title: `${n}: ${duration(v)}`, text: `${n} ${duration(v)}` }))),
     );
-    const sections = [general, this.message('Richiesta', `${d.request.method} ${d.request.target} ${d.request.version}`, d.request)];
-    if (d.response) sections.push(this.message('Risposta', `${d.response.version} ${d.response.status} ${d.response.reason}`, d.response));
-    else sections.push(el('section', {}, el('h4', { text: 'Risposta' }), el('p', { class: 'dim', text: 'nessuna risposta nella cattura' })));
+    const sections = [general, this.message('Request', `${d.request.method} ${d.request.target} ${d.request.version}`, d.request)];
+    if (d.response) sections.push(this.message('Response', `${d.response.version} ${d.response.status} ${d.response.reason}`, d.response));
+    else sections.push(el('section', {}, el('h4', { text: 'Response' }), el('p', { class: 'dim', text: 'no response in the capture' })));
     return sections;
   }
 
@@ -216,48 +216,48 @@ class NetPanel {
     return el('section', {},
       el('h4', { text: title }),
       el('div', { class: 'mono', text: line }),
-      el('details', { open: true }, el('summary', { text: `intestazioni (${msg.headers.length})` }), headers),
+      el('details', { open: true }, el('summary', { text: `headers (${msg.headers.length})` }), headers),
       this.body_(msg.body),
     );
   }
 
   body_(b) {
     const info = [`${bytes(b.size)}`, b.kind];
-    if (b.encoding) info.push(`${b.encoding} (${bytes(b.raw)} sul filo)`);
+    if (b.encoding) info.push(`${b.encoding} (${bytes(b.raw)} on the wire)`);
     if (b.chunked) info.push('chunked');
-    if (b.decodeError) info.push(`non decodificato: ${b.decodeError}`);
+    if (b.decodeError) info.push(`not decoded: ${b.decodeError}`);
     const view = el('div', { class: 'body-view' });
-    const mode = el('select', { class: 'body-mode', title: 'Visualizzazione del corpo' },
-      el('option', { value: 'decoded', text: 'decodificato' }), el('option', { value: 'hex', text: 'esadecimale' }));
+    const mode = el('select', { class: 'body-mode', title: 'Body view' },
+      el('option', { value: 'decoded', text: 'decoded' }), el('option', { value: 'hex', text: 'hexadecimal' }));
     const show = () => view.replaceChildren(mode.value === 'hex' ? this.hex(b) : this.decoded(b));
     mode.addEventListener('input', show);
     show();
     return el('details', { open: b.size > 0 },
-      el('summary', {}, `corpo: ${info.join(' · ')} `, b.size ? mode : null),
+      el('summary', {}, `body: ${info.join(' · ')} `, b.size ? mode : null),
       view);
   }
 
   hex(b) {
     const data = fromB64(b.base64);
-    return el('pre', { class: 'hex', text: hexdump(data) + (b.truncated ? `\n… (corpo di ${bytes(b.size)}, mostrati i primi ${bytes(data.length)})` : '') });
+    return el('pre', { class: 'hex', text: hexdump(data) + (b.truncated ? `\n… (body of ${bytes(b.size)}, showing the first ${bytes(data.length)})` : '') });
   }
 
   decoded(b) {
     switch (b.kind) {
-      case 'vuoto':
-        return el('p', { class: 'dim', text: '(nessun corpo)' });
+      case 'empty':
+        return el('p', { class: 'dim', text: '(no body)' });
       case 'json':
         return el('pre', { class: 'json', text: b.text });
       case 'form':
         return el('table', { class: 'kv' }, ...b.fields.map(([k, v]) => el('tr', {}, el('th', { text: k }), el('td', { text: v }))));
       case 'multipart':
         return el('div', {}, ...b.parts.map((p, i) => el('div', { class: 'part' },
-          el('div', { class: 'mono', text: `parte ${i + 1}: name=${p.name ?? '-'} filename=${p.filename ?? '-'} type=${p.contentType ?? '-'} (${bytes(p.size)}, ${p.kind})` }),
+          el('div', { class: 'mono', text: `part ${i + 1}: name=${p.name ?? '-'} filename=${p.filename ?? '-'} type=${p.contentType ?? '-'} (${bytes(p.size)}, ${p.kind})` }),
           p.kind === 'form' ? this.decoded(p) : el('pre', { text: p.text }))));
-      case 'binario':
-        return el('div', {}, el('p', { class: 'dim', text: b.note ? `non decodificato: ${b.note}` : 'byte non riconosciuti' }), this.hex(b));
+      case 'binary':
+        return el('div', {}, el('p', { class: 'dim', text: b.note ? `not decoded: ${b.note}` : 'unrecognised bytes' }), this.hex(b));
       default:
-        return el('pre', { class: b.kind, text: b.text + (b.textTruncated ? '\n… (tagliato)' : '') });
+        return el('pre', { class: b.kind, text: b.text + (b.textTruncated ? '\n… (cut)' : '') });
     }
   }
 
@@ -268,14 +268,14 @@ class NetPanel {
       download(data, name, what === 'har' ? 'application/json' : 'application/vnd.tcpdump.pcap');
       this.app.state.downloads.push({ what, name, size: data.length });
     } catch (e) {
-      this.app.setStatus(`esportazione non riuscita: ${e.message}`);
+      this.app.setStatus(`export failed: ${e.message}`);
     }
   }
 }
 
 // ---- Timeline ------------------------------------------------------------------
 
-const INPUT_COLORS = { tasto: '#6cb6ff', puntatore: '#d2a8ff', tocco: '#d2a8ff', console: '#7ee787', file: '#ffa657', accensione: '#ff7b72', schermo: '#8a96a3', altro: '#8a96a3' };
+const INPUT_COLORS = { key: '#6cb6ff', pointer: '#d2a8ff', touch: '#d2a8ff', console: '#7ee787', file: '#ffa657', power: '#ff7b72', display: '#8a96a3', other: '#8a96a3' };
 const EFFECT_COLORS = { http: '#79c0ff', dns: '#56d4dd', tls: '#e3b341', file: '#ffa657', console: '#8b949e' };
 
 class TimelinePanel {
@@ -318,7 +318,7 @@ class TimelinePanel {
         byCause.get(e.cause).push(e);
       } else if (e.cause === null || e.kind !== 'console') loose.push(e);
     }
-    // Ingressi (con i loro effetti) ed effetti senza causa, in ordine di tempo.
+    // Inputs (with their effects) and effects without a cause, in time order.
     const items = [
       ...t.inputs.filter(showInput).map((i) => ({ at: i.atUs, input: i })),
       ...loose.map((e) => ({ at: e.atUs, effect: e })),
@@ -334,13 +334,13 @@ class TimelinePanel {
           el('span', { class: 'tl-time', text: guestTime(i.atUs) }),
           el('span', { class: 'badge', style: `background:${INPUT_COLORS[i.kind] ?? '#888'}`, text: i.kind }),
           el('span', { class: 'tl-label', text: i.label }),
-          el('span', { class: 'dim', text: `istruzione ${i.step}${effects.length ? ` · ${effects.length} effetti` : ''}` }),
-          canGo(i.step) ? el('button', { class: 'fsmall', 'data-goto': i.step, title: 'Replay fino a questa istruzione: registri e memoria di quel momento', text: 'vai qui' }) : null),
+          el('span', { class: 'dim', text: `instruction ${i.step}${effects.length ? ` · ${effects.length} effects` : ''}` }),
+          canGo(i.step) ? el('button', { class: 'fsmall', 'data-goto': i.step, title: 'Replay up to this instruction: registers and memory of that moment', text: 'go here' }) : null),
         effects.length ? el('div', { class: 'tl-effects' }, ...effects.slice(0, 50).map((e) => this.effectRow(e, true)),
-          effects.length > 50 ? el('div', { class: 'dim', text: `… altri ${effects.length - 50}` }) : null) : null);
+          effects.length > 50 ? el('div', { class: 'dim', text: `… ${effects.length - 50} more` }) : null) : null);
     });
-    $('tl-list').replaceChildren(...(list.length ? list : [el('p', { class: 'dim', text: 'nessun ingresso né effetto finora' })]));
-    $('tl-info').textContent = `${t.inputs.length} ingressi · ${t.effects.length} effetti · finestra ${duration(t.windowUs)}${t.dropped ? ` · ${t.dropped} scartati` : ''}`;
+    $('tl-list').replaceChildren(...(list.length ? list : [el('p', { class: 'dim', text: 'no inputs or effects so far' })]));
+    $('tl-info').textContent = `${t.inputs.length} inputs · ${t.effects.length} effects · window ${duration(t.windowUs)}${t.dropped ? ` · ${t.dropped} dropped` : ''}`;
     this.track(t, showInput);
   }
 
@@ -350,10 +350,10 @@ class TimelinePanel {
       el('span', { class: 'tl-time', text: nested ? delay : guestTime(e.atUs) }),
       el('span', { class: 'badge', style: `background:${EFFECT_COLORS[e.kind] ?? '#888'}`, text: e.kind }),
       e.ref !== null ? el('a', { href: '#', 'data-req': e.ref, class: 'tl-label', text: e.label }) : el('span', { class: 'tl-label', text: e.label }),
-      nested ? null : el('span', { class: 'dim', text: 'senza causa' }));
+      nested ? null : el('span', { class: 'dim', text: 'no cause' }));
   }
 
-  /** Asse del tempo del guest: ingressi in alto, effetti per tipo sotto. */
+  /** Guest time axis: inputs on top, effects by type below. */
   track(t, showInput) {
     const svg = $('tl-track');
     const w = svg.clientWidth || 800;
@@ -395,9 +395,9 @@ class TimelinePanel {
   }
 }
 
-// ---- Registrazione e replay -----------------------------------------------------
+// ---- Recording and replay -------------------------------------------------------
 
-const RR_TEXT = { Idle: 'fermo', Recording: 'registrazione in corso', Replaying: 'replay in corso', Finished: 'replay identico', Diverged: 'replay diverso' };
+const RR_TEXT = { Idle: 'stopped', Recording: 'recording', Replaying: 'replaying', Finished: 'replay identical', Diverged: 'replay differs' };
 
 class ReplayPanel {
   constructor(app) {
@@ -445,12 +445,12 @@ class ReplayPanel {
   async download() {
     try {
       const data = await this.app.call('log');
-      if (!data.length) throw new Error('nessuna registrazione');
+      if (!data.length) throw new Error('no recording');
       const name = `vetro-${stamp()}.vrec`;
       download(data, name);
       this.app.state.downloads.push({ what: 'log', name, size: data.length });
     } catch (e) {
-      this.app.setStatus(`log non scaricato: ${e.message}`);
+      this.app.setStatus(`log not downloaded: ${e.message}`);
     }
   }
 
@@ -461,23 +461,23 @@ class ReplayPanel {
       const r = await this.app.call('memory', { va: BigInt(va).toString(), length });
       this.memory = r;
       $('rr-mem').textContent = r.bytes
-        ? `${va} → fisico ${r.pa ? `0x${r.pa}` : '?'}\n${hexdump(r.bytes, BigInt(va))}`
-        : `indirizzo non leggibile: ${r.fault} (non mappato o fuori dalla RAM)`;
+        ? `${va} → physical ${r.pa ? `0x${r.pa}` : '?'}\n${hexdump(r.bytes, BigInt(va))}`
+        : `address not readable: ${r.fault} (not mapped or outside RAM)`;
     } catch (e) {
-      $('rr-mem').textContent = `indirizzo non valido: ${e.message}`;
+      $('rr-mem').textContent = `invalid address: ${e.message}`;
     }
   }
 
   async refreshEvents() {
     const events = this.info ? await this.app.call('events') : [];
-    // Solo i comandi (Invio, clic, tocchi, ...): i singoli caratteri no.
+    // Only the commands (Enter, clicks, touches, ...): not the single characters.
     const user = events.filter((e) => e.user && !e.weak);
     $('rr-events').replaceChildren(...user.slice(-500).map((e) => el('div', { class: 'tl-head' },
-      el('span', { class: 'tl-time', text: `istr. ${e.step}` }),
+      el('span', { class: 'tl-time', text: `instr. ${e.step}` }),
       el('span', { class: 'badge', style: `background:${INPUT_COLORS[e.kind] ?? '#888'}`, text: e.kind }),
       el('span', { class: 'tl-label', text: e.label }),
-      this.info?.sameMachine ? el('button', { class: 'fsmall', 'data-goto': e.step, text: 'vai qui' }) : null)));
-    $('rr-events-count').textContent = `${user.length} comandi dell'utente su ${events.length} eventi`;
+      this.info?.sameMachine ? el('button', { class: 'fsmall', 'data-goto': e.step, text: 'go here' }) : null)));
+    $('rr-events-count').textContent = `${user.length} user commands out of ${events.length} events`;
   }
 
   update(msg) {
@@ -487,7 +487,7 @@ class ReplayPanel {
     this.mode = msg.mode;
     const s = msg.status;
     const rec = s.state === 'Recording';
-    $('rr-record').textContent = rec ? 'Ferma' : 'Registra';
+    $('rr-record').textContent = rec ? 'Stop' : 'Record';
     $('rr-record').classList.toggle('recording', rec);
     const live = msg.mode === 'live';
     $('rr-replay').disabled = !this.info?.sameMachine || rec;
@@ -495,14 +495,14 @@ class ReplayPanel {
     $('rr-goto').disabled = !this.info?.sameMachine || rec;
     $('rr-continue').disabled = msg.mode !== 'paused';
     const parts = [];
-    if (rec) parts.push(`registrazione: ${s.progress} ingressi`);
-    else if (msg.mode === 'replay') parts.push(`replay: evento ${s.progress} di ${s.events}${msg.target !== null ? `, fino all'istruzione ${msg.target}` : ''}`);
-    else if (msg.mode === 'paused') parts.push(`fermo all'istruzione ${msg.steps}`);
+    if (rec) parts.push(`recording: ${s.progress} inputs`);
+    else if (msg.mode === 'replay') parts.push(`replay: event ${s.progress} of ${s.events}${msg.target !== null ? `, up to instruction ${msg.target}` : ''}`);
+    else if (msg.mode === 'paused') parts.push(`stopped at instruction ${msg.steps}`);
     if (this.verdict) parts.push(this.verdict.text);
     if (this.info) {
-      parts.push(`log: istruzioni ${this.info.startSteps}–${this.info.endSteps}, ${this.info.events} eventi, ${this.info.keyframes} keyframe` +
-        `${msg.meta ? ` in OPFS (${bytes(msg.meta.sizes.reduce((a, b) => a + b, 0))})` : ''}${this.info.sameMachine ? '' : ', di un\'altra macchina'}`);
-    } else if (!rec) parts.push('nessuna registrazione');
+      parts.push(`log: instructions ${this.info.startSteps}–${this.info.endSteps}, ${this.info.events} events, ${this.info.keyframes} keyframes` +
+        `${msg.meta ? ` in OPFS (${bytes(msg.meta.sizes.reduce((a, b) => a + b, 0))})` : ''}${this.info.sameMachine ? '' : ', from another machine'}`);
+    } else if (!rec) parts.push('no recording');
     $('rr-status').textContent = parts.join(' · ');
     $('rr-status').className = this.verdict?.ok === false ? 'err' : '';
     const now = this.info ? `${this.info.startSteps}/${this.info.endSteps}/${this.info.events}` : '';
@@ -523,18 +523,18 @@ class ReplayPanel {
   onEnded(msg) {
     const ok = msg.status.state === 'Finished';
     this.verdict = ok
-      ? { ok, text: `replay identico: stesso stato all'istruzione ${msg.steps}` }
-      : { ok, text: `replay diverso: ${msg.status.message}` };
+      ? { ok, text: `replay identical: same state at instruction ${msg.steps}` }
+      : { ok, text: `replay differs: ${msg.status.message}` };
     this.app.state.rr = { ...this.app.state.rr, verdict: this.verdict };
   }
 }
 
-// ---- Insieme -----------------------------------------------------------------------
+// ---- Together ----------------------------------------------------------------------
 
 export class AnalysisPanels {
   /**
-   * `post(msg, transfer)`: manda al Worker; `setStatus(testo)`: la barra
-   * di stato della pagina.
+   * `post(msg, transfer)`: sends to the Worker; `setStatus(text)`: the
+   * status bar of the page.
    */
   constructor({ post, setStatus }) {
     this.post = post;
@@ -559,7 +559,7 @@ export class AnalysisPanels {
     if (name === 'timeline') this.timeline.render();
   }
 
-  /** Una lettura nel Worker: Promise del risultato. */
+  /** A read in the Worker: a Promise of the result. */
   call(op, args = {}) {
     return new Promise((ok, ko) => {
       const id = ++this.id;
@@ -572,7 +572,7 @@ export class AnalysisPanels {
     this.post({ type: 'rr', op, ...args }, transfer);
   }
 
-  /** Un messaggio del Worker; true se era per questi pannelli. */
+  /** A message from the Worker; true if it was for these panels. */
   onMessage(msg) {
     switch (msg.type) {
       case 'analysis':

@@ -1,4 +1,4 @@
-//! La macchina: CPU, MMU e scheda, con il ciclo di esecuzione.
+//! The machine: CPU, MMU and board, with the execution loop.
 
 use core::cell::RefCell;
 
@@ -23,55 +23,55 @@ mod snapshot;
 
 pub use record::RecordOptions;
 
-/// Bit di indirizzo fisico della Cortex-A53 (ID_AA64MMFR0.PARange = 40 bit).
+/// Physical address bits of the Cortex-A53 (ID_AA64MMFR0.PARange = 40 bits).
 const PA_BITS: u32 = 40;
 
-/// Configurazione della macchina.
+/// Machine configuration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MachineConfig {
-    /// RAM da `0x4000_0000`.
+    /// RAM from `0x4000_0000`.
     pub ram_size: u64,
-    /// Ora iniziale dell'RTC (secondi dall'epoca): tempo esterno, fissato.
+    /// Initial RTC time (seconds since the epoch): external time, fixed.
     pub now_secs: u64,
-    /// Seme della casualità offerta al guest (`rng-seed` del device tree).
+    /// Seed of the randomness offered to the guest (`rng-seed` in the device tree).
     pub seed: u64,
 }
 
 impl Default for MachineConfig {
     fn default() -> Self {
-        // 1 GiB come il `-m 1G` del test di riferimento; ora fissa come il
-        // tempo virtuale del livello user mode.
+        // 1 GiB like the `-m 1G` of the reference test; fixed time like the
+        // virtual time of the user mode layer.
         MachineConfig { ram_size: 1 << 30, now_secs: 1_767_225_600, seed: 0x5645_5452_4f00_0001 }
     }
 }
 
-/// Il dispositivo di puntamento assoluto.
+/// The absolute pointing device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pointer {
-    /// `virtio-tablet-device` di QEMU: puntatore assoluto con pulsanti.
+    /// QEMU's `virtio-tablet-device`: absolute pointer with buttons.
     Tablet,
-    /// `virtio-multitouch-device` di QEMU: touchscreen diretto a più
-    /// contatti (quello che vuole Android).
+    /// QEMU's `virtio-multitouch-device`: direct multi-contact touchscreen
+    /// (the one Android wants).
     Multitouch,
 }
 
-/// Dispositivi virtio-mmio della macchina, oltre a GIC, UART e RTC.
+/// virtio-mmio devices of the machine, besides GIC, UART and RTC.
 ///
-/// Si montano in quest'ordine, ciascuno nello slot libero più alto (come i
-/// `-device` di QEMU in ordine di riga di comando): GPU nello slot 31,
-/// tastiera nel 30, puntatore nel 29, rete nel 28, vsock nel successivo
-/// libero. Il default è quello del test di avvio confrontato con QEMU
-/// (`tests/boot/src/lib.rs`, `QEMU_MACHINE`): GPU 1280x800, tastiera,
-/// tablet e virtio-net con il sinkhole (in QEMU `-netdev user`), senza vsock
-/// (QEMU in container non ha vhost-vsock).
+/// They are attached in this order, each in the highest free slot (like
+/// QEMU's `-device` in command-line order): GPU in slot 31, keyboard in 30,
+/// pointer in 29, network in 28, vsock in the next free one. The default is
+/// the one of the boot test compared against QEMU
+/// (`tests/boot/src/lib.rs`, `QEMU_MACHINE`): 1280x800 GPU, keyboard,
+/// tablet and virtio-net with the sinkhole (in QEMU `-netdev user`), without
+/// vsock (QEMU in a container has no vhost-vsock).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Devices {
     pub gpu: Option<GpuConfig>,
     pub keyboard: bool,
     pub pointer: Option<Pointer>,
-    /// virtio-net con lo stack di `vetro-net` e il sinkhole.
+    /// virtio-net with the `vetro-net` stack and the sinkhole.
     pub net: Option<NetSetup>,
-    /// CID del guest, se c'è virtio-vsock.
+    /// Guest CID, if there is virtio-vsock.
     pub vsock_cid: Option<u64>,
 }
 
@@ -88,13 +88,13 @@ impl Default for Devices {
 }
 
 impl Devices {
-    /// Nessun dispositivo virtio (la macchina di M3).
+    /// No virtio devices (the M3 machine).
     pub fn none() -> Self {
         Devices { gpu: None, keyboard: false, pointer: None, net: None, vsock_cid: None }
     }
 }
 
-/// Slot virtio-mmio dei dispositivi montati.
+/// virtio-mmio slots of the attached devices.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Slots {
     pub gpu: Option<u32>,
@@ -104,27 +104,27 @@ pub struct Slots {
     pub vsock: Option<u32>,
 }
 
-/// Perché [`Machine::run`] si è fermata.
+/// Why [`Machine::run`] stopped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stop {
-    /// Esaurito il quanto di istruzioni: si può continuare.
+    /// The instruction quantum ran out: execution can continue.
     Budget,
-    /// PSCI SYSTEM_OFF (o CPU_OFF dell'unica CPU).
+    /// PSCI SYSTEM_OFF (or CPU_OFF of the only CPU).
     PowerOff,
     /// PSCI SYSTEM_RESET.
     Reset,
-    /// WFI senza interrupt possibili né scadenze del timer: il guest aspetta
-    /// un ingresso (per esempio dalla console).
+    /// WFI with no possible interrupts and no timer deadlines: the guest is
+    /// waiting for input (for example from the console).
     Idle,
-    /// Istruzione o configurazione che Vetro non implementa.
+    /// Instruction or configuration that Vetro does not implement.
     Unimplemented { pc: u64, raw: u32, what: &'static str },
-    /// Una richiesta di virtio-blk aspetta dati dall'host
-    /// (`BlockError::NotReady`, es. un disco scaricato a pezzi nel browser).
-    /// Nessuna istruzione eseguita da quando la richiesta è arrivata: il
-    /// tempo del guest è fermo. L'host fornisce i dati al backend (da
-    /// [`Machine::device`], che fa servire di nuovo il dispositivo) e
-    /// richiama [`Machine::run`]: la richiesta si completa allo stesso
-    /// numero di istruzioni di un disco sempre pronto.
+    /// A virtio-blk request is waiting for data from the host
+    /// (`BlockError::NotReady`, e.g. a disk downloaded in pieces in the browser).
+    /// No instruction executed since the request arrived: guest time is
+    /// stopped. The host provides the data to the backend (from
+    /// [`Machine::device`], which makes the device be serviced again) and
+    /// calls [`Machine::run`] again: the request completes at the same
+    /// instruction count as with an always-ready disk.
     Blocked,
 }
 
@@ -133,43 +133,43 @@ pub struct Machine {
     pub mmu: Mmu,
     pub board: RefCell<Board>,
     seed: u64,
-    /// Istruzioni eseguite (e passi di tempo saltati nelle WFI): l'orologio.
+    /// Instructions executed (and time steps skipped in WFIs): the clock.
     pub steps: u64,
-    /// Prossimo CNTPCT a cui qualcosa cambia da sé: il timer cambia
-    /// livello o scade un timer dello stack di rete (cache).
+    /// Next CNTPCT at which something changes by itself: the timer changes
+    /// level or a network stack timer expires (cache).
     timer_deadline: Option<u64>,
-    /// Prossimo CNTPCT a cui chiamare `poll` sullo stack di rete.
+    /// Next CNTPCT at which to call `poll` on the network stack.
     net_deadline: Option<u64>,
     slots: Slots,
-    /// Il JIT, se attivo ([`Machine::set_jit`]).
+    /// The JIT, if active ([`Machine::set_jit`]).
     jit: Option<Box<dyn SysJitDyn>>,
-    /// Che cosa fa l'interprete prima di richiamare il JIT: niente
-    /// (`Jit`), un'istruzione (`One`), fino al prossimo salto (`Cold`).
+    /// What the interpreter does before calling the JIT again: nothing
+    /// (`Jit`), one instruction (`One`), up to the next branch (`Cold`).
     interp: Next,
-    /// Una WFI interrotta da [`Stop::Blocked`]: la si riprende prima della
-    /// prossima istruzione.
+    /// A WFI interrupted by [`Stop::Blocked`]: it is resumed before the
+    /// next instruction.
     wfi_pending: bool,
-    /// Configurazione e dispositivi con cui è stata costruita (per l'hash
-    /// della configurazione negli snapshot).
+    /// Configuration and devices it was built with (for the configuration
+    /// hash in snapshots).
     cfg: MachineConfig,
     devices: Devices,
-    /// Uscita della console tolta dalla UART e non ancora data all'host, con
-    /// il conto dei byte (M10).
+    /// Console output taken from the UART and not yet given to the host, with
+    /// the byte count (M10).
     console: record::ConsoleTap,
-    /// Registrazione o replay in corso (M10, ADR 0019).
+    /// Recording or replay in progress (M10, ADR 0019).
     rr: record::Rr,
-    /// Esito dell'ultimo replay (anche finito).
+    /// Outcome of the last replay (even a finished one).
     replay_status: Option<crate::record::ReplayStatus>,
-    /// Punti di aggancio dell'introspezione (ADR 0027).
+    /// Introspection hook points (ADR 0027).
     hooks: Hooks,
 }
 
-/// CNTPCT dopo `steps` istruzioni: 62,5 MHz su 100 MHz nominali.
+/// CNTPCT after `steps` instructions: 62.5 MHz over a nominal 100 MHz.
 fn counter(steps: u64) -> u64 {
     steps / 8 * 5 + steps % 8 * 5 / 8
 }
 
-/// Primo numero di istruzioni a cui CNTPCT vale almeno `c`.
+/// First instruction count at which CNTPCT is at least `c`.
 fn steps_for(c: u64) -> u64 {
     let mut s = c / 5 * 8;
     while counter(s) < c {
@@ -179,23 +179,21 @@ fn steps_for(c: u64) -> u64 {
 }
 
 impl Machine {
-    /// Macchina con i dispositivi di default ([`Devices::default`]).
+    /// Machine with the default devices ([`Devices::default`]).
     pub fn new(cfg: &MachineConfig) -> Self {
         Self::with_devices(cfg, &Devices::default())
     }
 
-    /// Macchina con i dispositivi virtio scelti. La GPU parte con un
-    /// [`MemDisplay`]; il browser lo sostituisce con `VirtioGpu::set_backend`
-    /// (da [`Machine::gpu`]).
+    /// Machine with the chosen virtio devices. The GPU starts with a
+    /// [`MemDisplay`]; the browser replaces it with `VirtioGpu::set_backend`
+    /// (from [`Machine::gpu`]).
     pub fn with_devices(cfg: &MachineConfig, devices: &Devices) -> Self {
         let mut cpu = Cpu::new();
         cpu.reset_system(SysConfig::default());
         let mut board = Board::new(cfg.ram_size, cfg.now_secs);
         let mut slots = Slots::default();
         let mut attach = |dev: Box<dyn VirtioDevice>| {
-            Some(
-                board.virt.attach_virtio_next(dev).expect("32 slot bastano per i dispositivi della macchina"),
-            )
+            Some(board.virt.attach_virtio_next(dev).expect("32 slots are enough for the machine's devices"))
         };
         if let Some(g) = &devices.gpu {
             slots.gpu = attach(Box::new(VirtioGpu::new(Box::new(MemDisplay::default()), g.clone())));
@@ -237,9 +235,9 @@ impl Machine {
         }
     }
 
-    /// Attiva (o toglie) il JIT della modalità sistema. Il risultato
-    /// dell'esecuzione non cambia: stesse istruzioni, stessi interrupt negli
-    /// stessi punti, stessa uscita (vedi `vetro_jit::sys`).
+    /// Turns on (or removes) the system mode JIT. The result of the
+    /// execution does not change: same instructions, same interrupts at the
+    /// same points, same output (see `vetro_jit::sys`).
     pub fn set_jit(&mut self, mut jit: Option<Box<dyn SysJitDyn>>) {
         if let Some(j) = jit.as_mut() {
             self.rr.note_jit();
@@ -249,21 +247,21 @@ impl Machine {
         self.interp = Next::Jit;
     }
 
-    // ---- Introspezione (ADR 0027) ------------------------------------------
+    // ---- Introspection (ADR 0027) ------------------------------------------
 
-    /// Mette (o toglie) il tracciatore degli eventi dell'introspezione;
-    /// restituisce quello di prima. Non cambia l'esecuzione.
+    /// Sets (or removes) the introspection event tracer; returns the
+    /// previous one. Does not change the execution.
     pub fn set_tracer(&mut self, tracer: Option<Box<dyn Tracer>>) -> Option<Box<dyn Tracer>> {
         core::mem::replace(&mut self.hooks.tracer, tracer)
     }
 
-    /// Il tracciatore, col suo tipo.
+    /// The tracer, with its type.
     pub fn tracer_mut<T: Tracer>(&mut self) -> Option<&mut T> {
         self.hooks.tracer_any()?.downcast_mut::<T>()
     }
 
-    /// Accende o spegne gli eventi delle syscall di EL0
-    /// ([`crate::hooks::Event::SyscallEnter`] e `SyscallExit`).
+    /// Turns EL0 syscall events on or off
+    /// ([`crate::hooks::Event::SyscallEnter`] and `SyscallExit`).
     pub fn trace_syscalls(&mut self, on: bool) {
         self.hooks.syscalls = on;
         if !on {
@@ -271,23 +269,22 @@ impl Machine {
         }
     }
 
-    /// Aggiunge un punto d'arresto invisibile su un indirizzo di EL0;
-    /// restituisce il suo numero. Il JIT non mette più l'indirizzo nelle
-    /// regioni.
+    /// Adds an invisible breakpoint on an EL0 address; returns its number.
+    /// The JIT no longer puts the address into its regions.
     pub fn add_breakpoint(&mut self, bp: Breakpoint) -> u32 {
         let id = self.hooks.add(bp);
         self.sync_stops();
         id
     }
 
-    /// Toglie un punto d'arresto: falso se non c'era.
+    /// Removes a breakpoint: false if it was not there.
     pub fn remove_breakpoint(&mut self, id: u32) -> bool {
         let found = self.hooks.remove(id);
         self.sync_stops();
         found
     }
 
-    /// I punti d'arresto, con il loro numero.
+    /// The breakpoints, with their number.
     pub fn breakpoints(&self) -> Vec<(u32, Breakpoint)> {
         self.hooks.breakpoints()
     }
@@ -299,37 +296,37 @@ impl Machine {
         }
     }
 
-    /// La macchina in sola lettura (registri e RAM), per leggere il guest
-    /// fra un quanto e l'altro.
+    /// The machine read-only (registers and RAM), to read the guest
+    /// between one quantum and the next.
     pub fn with_guest<R>(&self, f: impl FnOnce(&GuestView<'_>) -> R) -> R {
         let b = self.board.borrow();
         f(&GuestView { cpu: &self.cpu, ram: &b.ram, steps: self.steps })
     }
 
-    /// Contatori del JIT, se attivo.
+    /// JIT counters, if active.
     pub fn jit_stats(&self) -> Option<SysJitStats> {
         self.jit.as_ref().map(|j| j.stats())
     }
 
-    /// Istruzioni dell'interprete per classe, se il JIT le conta
+    /// Interpreter instructions per class, if the JIT counts them
     /// (`SysJitConfig::profile`).
     pub fn jit_profile(&self) -> Option<&vetro_jit::Profile> {
         self.jit.as_ref().and_then(|j| j.profile())
     }
 
-    /// Slot dei dispositivi virtio montati.
+    /// Slots of the attached virtio devices.
     pub fn slots(&self) -> Slots {
         self.slots
     }
 
-    /// Agisce sul dispositivo virtio dello slot `slot`, di tipo `T`. Il
-    /// dispositivo viene servito prima della prossima istruzione (eventi,
-    /// dati, cambi di configurazione dell'host arrivano al guest).
+    /// Acts on the virtio device in slot `slot`, of type `T`. The device
+    /// is serviced before the next instruction (host events, data and
+    /// configuration changes reach the guest).
     ///
-    /// Una chiusura non si può registrare: durante una registrazione (M10,
-    /// ADR 0019) l'accesso finisce nel log come evento opaco, e il replay si
-    /// ferma lì. Gli ingressi passano da [`Machine::input`]; le letture da
-    /// [`Machine::device_view`]; i dati di un disco atteso da
+    /// A closure cannot be recorded: during a recording (M10, ADR 0019)
+    /// the access ends up in the log as an opaque event, and the replay
+    /// stops there. Inputs go through [`Machine::input`]; reads through
+    /// [`Machine::device_view`]; the data of an awaited disk through
     /// [`Machine::host_link`].
     pub fn device<T: VirtioDevice, R>(
         &mut self,
@@ -340,11 +337,10 @@ impl Machine {
         self.device_raw(slot, f)
     }
 
-    /// Come [`Machine::device`], per i collegamenti esterni di un
-    /// dispositivo che non sono ingressi del guest: i dati di un disco che
-    /// la macchina aspetta ([`Stop::Blocked`], ADR 0014; il tempo del guest
-    /// è fermo, e in replay il disco deve dare gli stessi dati). Non si
-    /// registra.
+    /// Like [`Machine::device`], for the external links of a device that
+    /// are not guest inputs: the data of a disk the machine is waiting for
+    /// ([`Stop::Blocked`], ADR 0014; guest time is stopped, and in replay
+    /// the disk must give the same data). Not recorded.
     pub fn host_link<T: VirtioDevice, R>(
         &mut self,
         slot: Option<u32>,
@@ -353,19 +349,19 @@ impl Machine {
         self.device_raw(slot, f)
     }
 
-    /// Il dispositivo virtio dello slot `slot` in sola lettura, senza
-    /// effetti sulla macchina.
+    /// The virtio device in slot `slot`, read-only, with no effect on the
+    /// machine.
     pub fn device_view<T: VirtioDevice, R>(&self, slot: Option<u32>, f: impl FnOnce(&T) -> R) -> Option<R> {
         let b = self.board.borrow();
         Some(f(b.virt.virtio(slot?)?.device_as::<T>()?))
     }
 
-    /// La GPU in sola lettura (immagine, cursore, risorse).
+    /// The GPU, read-only (image, cursor, resources).
     pub fn gpu_view<R>(&self, f: impl FnOnce(&VirtioGpu) -> R) -> Option<R> {
         self.device_view(self.slots.gpu, f)
     }
 
-    /// virtio-vsock in sola lettura (stato delle connessioni, byte pronti).
+    /// virtio-vsock, read-only (connection state, ready bytes).
     pub fn vsock_view<R>(&self, f: impl FnOnce(&VirtioVsock) -> R) -> Option<R> {
         self.device_view(self.slots.vsock, f)
     }
@@ -382,28 +378,28 @@ impl Machine {
         Some(r)
     }
 
-    /// La GPU, se c'è.
+    /// The GPU, if present.
     pub fn gpu<R>(&mut self, f: impl FnOnce(&mut VirtioGpu) -> R) -> Option<R> {
         self.device(self.slots.gpu, f)
     }
 
-    /// La tastiera, se c'è.
+    /// The keyboard, if present.
     pub fn keyboard<R>(&mut self, f: impl FnOnce(&mut VirtioInput) -> R) -> Option<R> {
         self.device(self.slots.keyboard, f)
     }
 
-    /// Il tablet o il touchscreen, se c'è.
+    /// The tablet or the touchscreen, if present.
     pub fn pointer<R>(&mut self, f: impl FnOnce(&mut VirtioInput) -> R) -> Option<R> {
         self.device(self.slots.pointer, f)
     }
 
-    /// Lo stack di rete (con il sinkhole), se c'è virtio-net: registro degli
-    /// eventi, connessioni e byte registrati, statistiche. Dopo l'accesso lo
-    /// stack viene interrogato (`poll`) prima della prossima istruzione, così
-    /// ciò che l'host cambia nell'upstream arriva al guest.
+    /// The network stack (with the sinkhole), if there is virtio-net: event
+    /// log, connections and recorded bytes, statistics. After the access the
+    /// stack is polled (`poll`) before the next instruction, so whatever
+    /// the host changes upstream reaches the guest.
     ///
-    /// Come [`Machine::device`], durante una registrazione è un accesso
-    /// opaco: le connessioni dell'host passano da [`Machine::input`] con
+    /// Like [`Machine::device`], during a recording it is an opaque access:
+    /// host connections go through [`Machine::input`] with
     /// [`Input::HostNet`](crate::record::Input::HostNet).
     pub fn net<R>(&mut self, f: impl FnOnce(&mut Stack<Sinkhole>) -> R) -> Option<R> {
         self.note_opaque(self.slots.net);
@@ -414,9 +410,9 @@ impl Machine {
         self.net_input_link(|l| f(&mut l.stack))
     }
 
-    /// Il collegamento di rete (stack e frame dell'host) come ingresso: il
-    /// dispositivo si serve e lo stack si interroga (`poll`) prima della
-    /// prossima istruzione.
+    /// The network link (stack and host frames) as an input: the device is
+    /// serviced and the stack is polled (`poll`) before the next
+    /// instruction.
     fn net_input_link<R>(&mut self, f: impl FnOnce(&mut NetLink) -> R) -> Option<R> {
         let r =
             self.device_raw(self.slots.net, |d: &mut VirtioNet| d.backend_as_mut::<NetLink>().map(f))??;
@@ -425,44 +421,44 @@ impl Machine {
         Some(r)
     }
 
-    /// Lo stack di rete in sola lettura (registro, connessioni, byte del
-    /// sinkhole), senza effetti sulla macchina: si può chiamare in qualsiasi
-    /// momento senza cambiare l'esecuzione.
+    /// The network stack, read-only (log, connections, sinkhole bytes), with
+    /// no effect on the machine: it can be called at any time without
+    /// changing the execution.
     pub fn net_view<R>(&self, f: impl FnOnce(&Stack<Sinkhole>) -> R) -> Option<R> {
         let b = self.board.borrow();
         let d = b.virt.virtio(self.slots.net?)?.device_as::<VirtioNet>()?;
         Some(f(&d.backend_as::<NetLink>()?.stack))
     }
 
-    /// Accende o spegne la cattura dei frame Ethernet al confine di
-    /// virtio-net (M7, ADR 0016). Solo osservazione: l'esecuzione resta la
-    /// stessa, e la cattura non entra negli snapshot. `false` se la
-    /// macchina non ha la rete.
+    /// Turns on or off the capture of Ethernet frames at the virtio-net
+    /// boundary (M7, ADR 0016). Observation only: the execution stays the
+    /// same, and the capture does not go into snapshots. `false` if the
+    /// machine has no network.
     pub fn net_tap(&mut self, on: bool) -> bool {
         self.net_link(|l| l.set_tap(on)).is_some()
     }
 
-    /// I frame catturati da [`Machine::net_tap`] dall'ultima chiamata, in
-    /// ordine, con l'istante in tempo virtuale. Non cambia l'esecuzione.
+    /// The frames captured by [`Machine::net_tap`] since the last call, in
+    /// order, with their instant in virtual time. Does not change the execution.
     pub fn net_tap_take(&mut self) -> Vec<TappedFrame> {
         self.net_link(NetLink::take_tapped).unwrap_or_default()
     }
 
-    /// Il backend di virtio-net senza segnare i dispositivi da servire.
+    /// The virtio-net backend without marking the devices to be serviced.
     fn net_link<R>(&mut self, f: impl FnOnce(&mut NetLink) -> R) -> Option<R> {
         let mut b = self.board.borrow_mut();
         let d = b.virt.virtio_mut(self.slots.net?)?.device_as_mut::<VirtioNet>()?;
         Some(f(d.backend_as_mut::<NetLink>()?))
     }
 
-    /// virtio-vsock, se c'è.
+    /// virtio-vsock, if present.
     pub fn vsock<R>(&mut self, f: impl FnOnce(&mut VirtioVsock) -> R) -> Option<R> {
         self.device(self.slots.vsock, f)
     }
 
-    /// Carica un kernel Linux arm64 (`Image`) con initramfs e riga di comando,
-    /// come `-kernel/-initrd/-append` di QEMU: copia i pezzi in RAM, genera
-    /// il device tree e prepara i registri d'ingresso.
+    /// Loads an arm64 Linux kernel (`Image`) with initramfs and command line,
+    /// like QEMU's `-kernel/-initrd/-append`: copies the pieces into RAM,
+    /// generates the device tree and prepares the entry registers.
     pub fn load_linux(
         &mut self,
         image: &[u8],
@@ -472,8 +468,8 @@ impl Machine {
         let ram_size = self.board.borrow().ram.size();
         let ram = RamConfig::virt(ram_size);
         let initrd_len = initrd.map(|i| i.len() as u64);
-        // La posizione dell'initramfs non dipende dal DTB: un primo piano la
-        // fissa, poi si genera il DTB e si rifà il piano con la sua lunghezza.
+        // The initramfs position does not depend on the DTB: a first plan
+        // fixes it, then the DTB is generated and the plan redone with its length.
         let first = boot::plan(ram, image, initrd_len, 0)?;
         let dtb = virt_dtb(&VirtDtbConfig {
             ram_size,
@@ -487,7 +483,7 @@ impl Machine {
         {
             let mut b = self.board.borrow_mut();
             for (pa, bytes) in plan.segments(image, initrd, &dtb) {
-                assert!(b.ram.write(pa, bytes), "segmento fuori dalla RAM: il piano lo esclude");
+                assert!(b.ram.write(pa, bytes), "segment outside RAM: the plan rules it out");
             }
         }
         let e = plan.entry;
@@ -498,38 +494,38 @@ impl Machine {
         Ok(plan)
     }
 
-    /// Carica kernel, initrd e riga di comando preparati dal bootloader
-    /// Android ([`crate::android`]): come [`Machine::load_linux`] con i pezzi
-    /// ricavati da `boot.img`, `vendor_boot.img` e `init_boot.img`.
+    /// Loads kernel, initrd and command line prepared by the Android
+    /// bootloader ([`crate::android`]): like [`Machine::load_linux`] with the
+    /// pieces taken from `boot.img`, `vendor_boot.img` and `init_boot.img`.
     pub fn load_android(&mut self, boot: &crate::android::AndroidBoot) -> Result<BootPlan, BootError> {
         self.load_linux(&boot.kernel, boot.initrd(), &boot.cmdline)
     }
 
-    /// Accoda byte sulla console (PL011) come se arrivassero dalla tastiera:
-    /// [`Machine::input`] con [`Input::Console`](crate::record::Input::Console).
+    /// Queues bytes on the console (PL011) as if they came from the keyboard:
+    /// [`Machine::input`] with [`Input::Console`](crate::record::Input::Console).
     pub fn console_input(&mut self, bytes: &[u8]) {
         self.input(crate::record::Input::Console(bytes.to_vec()));
     }
 
-    /// Pilota una linea d'ingresso del GPIO PL061 (la 3 è il tasto di
-    /// spegnimento): [`Machine::input`] con
+    /// Drives an input line of the PL061 GPIO (line 3 is the power
+    /// button): [`Machine::input`] with
     /// [`Input::Gpio`](crate::record::Input::Gpio).
     pub fn gpio_input(&mut self, line: u32, level: bool) {
         self.input(crate::record::Input::Gpio { line, level });
     }
 
-    /// Consuma l'uscita della console.
+    /// Consumes the console output.
     pub fn console_output(&mut self) -> Vec<u8> {
         self.drain_console();
         core::mem::take(&mut self.console.buf)
     }
 
-    /// Una richiesta di virtio-blk aspetta dati dall'host ([`Stop::Blocked`]).
+    /// A virtio-blk request is waiting for data from the host ([`Stop::Blocked`]).
     pub fn blocked(&self) -> bool {
         self.board.borrow().host_wait
     }
 
-    /// Tempo del guest in nanosecondi (10 ns per istruzione).
+    /// Guest time in nanoseconds (10 ns per instruction).
     pub fn guest_ns(&self) -> u64 {
         self.steps * 10
     }
@@ -547,7 +543,7 @@ impl Machine {
                 .virtio_mut(slot)
                 .and_then(|t| t.device_as_mut::<VirtioNet>())
                 .and_then(|d| d.backend_as_mut::<NetLink>())
-                .expect("virtio-net con NetLink nello slot della rete");
+                .expect("virtio-net with NetLink in the network slot");
             link.now = now;
             if net_due {
                 link.stack.poll(now);
@@ -568,9 +564,9 @@ impl Machine {
                 .virtio_mut(slot)
                 .and_then(|t| t.device_as_mut::<VirtioNet>())
                 .and_then(|d| d.backend_as_mut::<NetLink>())
-                .expect("virtio-net con NetLink nello slot della rete");
-            // Mai nel passato: una scadenza già raggiunta si ripete al
-            // prossimo tick del contatore.
+                .expect("virtio-net with NetLink in the network slot");
+            // Never in the past: a deadline already reached repeats at the
+            // next counter tick.
             self.net_deadline = link.stack.next_deadline().map(|t| net::counter_at(t).max(b.cntpct + 1));
         }
         b.update_irqs();
@@ -581,17 +577,17 @@ impl Machine {
         };
     }
 
-    /// Passi che il JIT può eseguire adesso senza cambiare nulla rispetto
-    /// all'interprete, fino a `end`: nessuno se l'interprete prenderebbe
-    /// un interrupt (o PSTATE.IL, o PC non allineato), altrimenti fino alla
-    /// prossima scadenza del timer (lì l'interprete aggiorna le linee di
-    /// interrupt prima dell'istruzione).
+    /// Steps the JIT can execute now without changing anything compared to
+    /// the interpreter, up to `end`: none if the interpreter would take
+    /// an interrupt (or PSTATE.IL, or a misaligned PC), otherwise up to the
+    /// next timer deadline (there the interpreter updates the interrupt
+    /// lines before the instruction).
     fn jit_budget(&mut self, end: u64) -> Option<u64> {
         let s = &self.cpu.sys;
         if s.il || self.cpu.pc & 3 != 0 {
             return None;
         }
-        // PSTATE.I e PSTATE.A (bit 7 e 8 di DAIF), come `take_interrupt`.
+        // PSTATE.I and PSTATE.A (bits 7 and 8 of DAIF), like `take_interrupt`.
         if s.daif & 1 << 7 == 0 && Env(&self.board).irq_line() {
             return None;
         }
@@ -609,9 +605,9 @@ impl Machine {
         Some(limit)
     }
 
-    /// Esegue al più `budget` istruzioni. Durante un replay (M10) le
-    /// istruzioni si fermano a ogni evento del log per applicarlo, e alla
-    /// fine della registrazione ([`Machine::replay_status`]).
+    /// Executes at most `budget` instructions. During a replay (M10) the
+    /// instructions stop at every log event to apply it, and at the end of
+    /// the recording ([`Machine::replay_status`]).
     pub fn run(&mut self, budget: u64) -> Stop {
         if self.rr.replaying() {
             return self.run_replay(budget);
@@ -623,7 +619,7 @@ impl Machine {
         stop
     }
 
-    /// Un quanto di al più `budget` istruzioni, senza registrazione né
+    /// A quantum of at most `budget` instructions, with no recording or
     /// replay.
     fn run_quantum(&mut self, budget: u64) -> Stop {
         let end = self.steps.saturating_add(budget);
@@ -654,8 +650,8 @@ impl Machine {
                 && self.jit.is_some()
                 && let Some(limit) = self.jit_budget(end)
             {
-                let jit = self.jit.as_mut().expect("controllato sopra");
-                // L'orologio per MRS CNTPCT/CNTVCT dentro le regioni.
+                let jit = self.jit.as_mut().expect("checked above");
+                // The clock for MRS CNTPCT/CNTVCT inside regions.
                 let cntvoff = self.board.borrow().virt.timer.cntvoff;
                 jit.set_time(vetro_jit::Clock { steps: self.steps, cntvoff });
                 let mut phys = Phys(&self.board);
@@ -682,14 +678,14 @@ impl Machine {
                 self.cpu.step_system(&mut bus, &mut env)
             };
             self.steps += 1;
-            // Solo i passi che interessano: un punto d'arresto al PC, o un
-            // cambio di EL (SVC da EL0, ERET verso EL0).
+            // Only the steps of interest: a breakpoint at the PC, or an
+            // EL change (SVC from EL0, ERET to EL0).
             if hooked && (pre.is_some() || old_el != self.cpu.sys.el) {
                 let b = self.board.borrow();
                 self.hooks.after(old_el, &ev, pre, &self.cpu, &b.ram, self.steps);
             }
             if self.interp == Next::Cold {
-                // Fino al prossimo salto (o cambio di pagina, o evento).
+                // Up to the next branch (or page change, or event).
                 let next = old_pc.wrapping_add(4);
                 if !(ev == SysEvent::Executed && self.cpu.pc == next && next >> 12 == old_pc >> 12) {
                     self.interp = Next::Jit;
@@ -727,17 +723,17 @@ impl Machine {
         Stop::Budget
     }
 
-    /// WFI: se nessun interrupt è pronto il tempo salta alla prossima
-    /// scadenza (timer o stack di rete); senza scadenze la macchina è
-    /// inattiva.
+    /// WFI: if no interrupt is ready, time jumps to the next deadline
+    /// (timer or network stack); with no deadlines the machine is
+    /// idle.
     fn wait_for_interrupt(&mut self) -> Option<Stop> {
         self.sync_irqs();
         if self.blocked() {
             self.wfi_pending = true;
             return Some(Stop::Blocked);
         }
-        // Come una CPU vera, la WFI finisce solo con un interrupt: dati in
-        // arrivo sulla UART senza il suo interrupt abilitato non la svegliano.
+        // Like a real CPU, WFI ends only with an interrupt: data arriving
+        // on the UART without its interrupt enabled does not wake it.
         if self.board.borrow().virt.irq_line() {
             return None;
         }
@@ -751,7 +747,7 @@ impl Machine {
         }
     }
 
-    /// Indirizzo fisico di inizio della RAM.
+    /// Physical start address of RAM.
     pub fn ram_base() -> u64 {
         map::RAM_BASE
     }
@@ -762,9 +758,9 @@ mod tests {
     use super::*;
     use vetro_platform::virtio::{self as vio, BlockBackend, BlockError, MemBackend, VirtioBlk};
 
-    /// WFI con byte in arrivo sulla UART ma senza il suo interrupt: nessun
-    /// risveglio, e senza scadenze del timer la macchina è inattiva (prima
-    /// girava a vuoto un'istruzione alla volta).
+    /// WFI with bytes arriving on the UART but without its interrupt: no
+    /// wakeup, and with no timer deadlines the machine is idle (before, it
+    /// spun idly one instruction at a time).
     #[test]
     fn wfi_non_si_sveglia_senza_interrupt() {
         let mut m = Machine::new(&MachineConfig { ram_size: 1 << 20, ..MachineConfig::default() });
@@ -778,12 +774,12 @@ mod tests {
         m.cpu.pc = map::RAM_BASE;
         m.console_input(b"x");
         assert_eq!(m.run(1_000_000), Stop::Idle);
-        assert!(m.steps < 10, "si ferma subito, non esaurisce il quanto");
+        assert!(m.steps < 10, "stops right away, does not use up the quantum");
     }
 
-    /// Dispositivi negli slot dei `-device` di QEMU, nello stesso ordine
-    /// (tests/boot/src/lib.rs, `QEMU_MACHINE`); l'host li raggiunge per tipo
-    /// e ogni accesso li fa servire.
+    /// Devices in the slots of QEMU's `-device`s, in the same order
+    /// (tests/boot/src/lib.rs, `QEMU_MACHINE`); the host reaches them by type
+    /// and every access makes them be serviced.
     #[test]
     fn dispositivi_negli_slot_di_qemu() {
         let cfg = MachineConfig { ram_size: 1 << 20, ..MachineConfig::default() };
@@ -801,15 +797,15 @@ mod tests {
         assert_eq!(m.gpu(|g| g.resource_count()), Some(0));
         m.board.borrow_mut().virtio_dirty = false;
         m.pointer(|p| p.touch(0, Some((1, 2))));
-        assert!(m.board.borrow().virtio_dirty, "l'host ha toccato un dispositivo");
+        assert!(m.board.borrow().virtio_dirty, "the host touched a device");
         assert_eq!(m.pointer(|p| p.config().clone()), Some(InputConfig::multitouch()));
         let m = Machine::with_devices(&cfg, &Devices::none());
         assert_eq!(m.slots(), Slots::default());
         assert!(m.board.borrow().virt.virtio(31).unwrap().device().is_none());
     }
 
-    /// Disco che risponde `NotReady` finché l'host non lo apre (come il
-    /// disco via HTTP del browser prima dell'arrivo dei dati).
+    /// Disk that answers `NotReady` until the host opens it (like the
+    /// browser's HTTP disk before the data arrives).
     pub(super) struct Gate {
         pub(super) open: bool,
         pub(super) disk: MemBackend,
@@ -837,9 +833,9 @@ mod tests {
     pub(super) const DATA: u64 = R + 0x5000;
     pub(super) const USED: u64 = R + 0x3000;
 
-    /// Una macchina con un virtio-blk già inizializzato (come farebbe il
-    /// driver) e una lettura del settore 1 pubblicata nella coda; il codice
-    /// notifica la coda e poi conta in x2 all'infinito.
+    /// A machine with a virtio-blk already initialized (as the driver would
+    /// do) and a read of sector 1 published in the queue; the code
+    /// notifies the queue and then counts in x2 forever.
     pub(super) fn blk_machine(open: bool) -> (Machine, u32) {
         let cfg = MachineConfig { ram_size: 1 << 20, ..MachineConfig::default() };
         let mut m = Machine::with_devices(&cfg, &Devices::none());
@@ -877,8 +873,8 @@ mod tests {
                 d[14..16].copy_from_slice(&next.to_le_bytes());
                 (R + 0x1000 + 16 * i, d)
             };
-            // IN dal settore 1: intestazione, 512 byte di dati (scrivibili),
-            // byte di stato (scrivibile). Flag: 1 = NEXT, 2 = WRITE.
+            // IN from sector 1: header, 512 bytes of data (writable),
+            // status byte (writable). Flags: 1 = NEXT, 2 = WRITE.
             for (a, d) in
                 [desc(0, R + 0x4000, 16, 1, 1), desc(1, DATA, 512, 3, 2), desc(2, R + 0x6000, 1, 2, 0)]
             {
@@ -908,10 +904,10 @@ mod tests {
         v
     }
 
-    /// Un disco non pronto ferma la macchina subito dopo la notifica, senza
-    /// far avanzare il tempo; quando l'host apre il disco la richiesta si
-    /// completa allo stesso numero di istruzioni di un disco sempre pronto,
-    /// e il resto dell'esecuzione è identico.
+    /// A disk that is not ready stops the machine right after the
+    /// notification, without advancing time; when the host opens the disk
+    /// the request completes at the same instruction count as with an
+    /// always-ready disk, and the rest of the execution is identical.
     #[test]
     fn disco_non_pronto_ferma_il_tempo_del_guest() {
         let (mut ready, _) = blk_machine(true);
@@ -919,11 +915,11 @@ mod tests {
 
         let (mut m, slot) = blk_machine(false);
         assert_eq!(m.run(1000), Stop::Blocked);
-        assert_eq!(m.steps, 1, "solo la notifica: nessuna istruzione dopo la richiesta");
+        assert_eq!(m.steps, 1, "only the notification: no instruction after the request");
         assert!(m.blocked());
-        assert_eq!(m.run(1000), Stop::Blocked, "senza dati resta ferma");
+        assert_eq!(m.run(1000), Stop::Blocked, "without data it stays stopped");
         assert_eq!(m.steps, 1);
-        assert_eq!(ram(&m, USED + 2, 2), [0, 0], "nessuna risposta al guest");
+        assert_eq!(ram(&m, USED + 2, 2), [0, 0], "no response to the guest");
         m.device::<VirtioBlk, _>(Some(slot), |b| b.backend_as_mut::<Gate>().unwrap().open = true).unwrap();
         assert_eq!(m.run(999), Stop::Budget);
         assert!(!m.blocked());
@@ -932,8 +928,8 @@ mod tests {
         assert_eq!(ram(&m, USED, 16), ram(&ready, USED, 16));
         assert_eq!(ram(&m, DATA, 512), ram(&ready, DATA, 512));
         let expected: Vec<u8> = (512..516u32).map(|i| (i * 7 + 1) as u8).collect();
-        assert_eq!(ram(&m, DATA, 4), expected, "settore 1 del disco");
-        assert_eq!(ram(&m, USED + 2, 2), [1, 0], "una risposta nello used ring");
+        assert_eq!(ram(&m, DATA, 4), expected, "sector 1 of the disk");
+        assert_eq!(ram(&m, USED + 2, 2), [1, 0], "one response in the used ring");
     }
 
     #[test]

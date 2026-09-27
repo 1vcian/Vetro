@@ -1,9 +1,9 @@
 #!/bin/sh
-# Avvia l'immagine dell'emulatore Android 15 (target/android-emu, vedi
-# README.md) sotto `vetro boot`, con gli stessi dischi, la stessa RAM e la
-# stessa riga di comando di qemu.sh. La seriale va su stdout; le statistiche
-# su stderr. I dischi restano intatti (copy-on-write in memoria).
-# Uso: tools/android-emu/vetro.sh [secondi di guest] > log
+# Boots the Android 15 emulator image (target/android-emu, see
+# README.md) under `vetro boot`, with the same disks, the same RAM and the
+# same command line as qemu.sh. The serial goes to stdout; the statistics
+# to stderr. The disks stay intact (in-memory copy-on-write).
+# Usage: tools/android-emu/vetro.sh [guest seconds] > log
 set -eu
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"

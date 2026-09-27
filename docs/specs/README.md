@@ -1,17 +1,17 @@
-# Spec dei componenti
+# Component specs
 
-Una spec per componente: interfaccia pubblica, invarianti, dipendenze
-ammesse, test che ne verificano il comportamento. Cambiare un'interfaccia
-richiede prima un ADR in `docs/adr/`.
+One spec per component: public interface, invariants, allowed
+dependencies, tests that verify its behaviour. Changing an interface
+requires an ADR in `docs/adr/` first.
 
-Prossime da scrivere: `cpu.md` (stato dei registri, decoder, interfaccia
-memoria verso `vetro-mmu`) prima di iniziare M1.
+Next to write: `cpu.md` (register state, decoder, memory interface
+towards `vetro-mmu`) before starting M1.
 
-Spec presenti: `cpu.md`, `mmu.md`, `platform.md`, `net.md`, `jit.md`,
-`wasm.md`, `snapshot.md` (M6: formato e API degli snapshot, ADR 0015),
-`analysis.md` (M7: analisi di rete, pcapng, HTTP, HAR, ADR 0016),
-`android-boot.md` (M5: boot.img, vendor_boot, init_boot e bootconfig, ADR 0018),
-`replay.md` (M10: ingressi dell'host, registrazione, replay e salto, ADR 0019),
-`files.md` (M8: gestore dei file, demone `vetro-files` su vsock, protocollo e
-client, ADR 0020; SQL nel guest, WAL, SharedPreferences e nomi non UTF-8,
+Existing specs: `cpu.md`, `mmu.md`, `platform.md`, `net.md`, `jit.md`,
+`wasm.md`, `snapshot.md` (M6: snapshot format and API, ADR 0015),
+`analysis.md` (M7: network analysis, pcapng, HTTP, HAR, ADR 0016),
+`android-boot.md` (M5: boot.img, vendor_boot, init_boot and bootconfig, ADR 0018),
+`replay.md` (M10: host inputs, recording, replay and seeking, ADR 0019),
+`files.md` (M8: file manager, `vetro-files` daemon over vsock, protocol and
+client, ADR 0020; SQL in the guest, WAL, SharedPreferences and non-UTF-8 names,
 ADR 0021).

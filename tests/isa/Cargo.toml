@@ -1,6 +1,6 @@
 [package]
 name = "vetro-isa-tests"
-description = "Test per istruzione della CPU, con valori attesi verificati anche contro QEMU."
+description = "Per-instruction CPU tests, with expected values also verified against QEMU."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,6 +15,6 @@ vetro-diff = { path = "../diff" }
 [dev-dependencies]
 vetro-cpu = { path = "../../crates/vetro-cpu" }
 vetro-mmu = { path = "../../crates/vetro-mmu" }
-# La sonda di sistema anche col JIT della modalità sistema (ADR 0013).
+# The system probe also with the system-mode JIT (ADR 0013).
 vetro-jit = { path = "../../crates/vetro-jit" }
 vetro-jit-native = { path = "../../crates/vetro-jit-native" }

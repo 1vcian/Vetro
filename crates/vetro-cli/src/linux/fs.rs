@@ -1,8 +1,8 @@
-//! File descriptor, file aperti, pipe e console.
+//! File descriptors, open files, pipes and console.
 //!
-//! I percorsi del guest vanno sul file system dell'host così come sono (come
-//! fa QEMU user mode), tranne pochi file speciali emulati: /dev/null,
-//! /dev/zero, /dev/urandom (deterministico) e /proc/self/exe.
+//! Guest paths go to the host file system as they are (like
+//! QEMU user mode does), except for a few emulated special files: /dev/null,
+//! /dev/zero, /dev/urandom (deterministic) and /proc/self/exe.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use super::abi::*;
 
-/// stdin, stdout e stderr del processo iniziale.
+/// stdin, stdout and stderr of the initial process.
 pub struct Console {
     stdin: VecDeque<u8>,
     pub stdout: Vec<u8>,
@@ -26,7 +26,7 @@ impl Console {
     }
 }
 
-/// Capacità di una pipe, come su Linux.
+/// Capacity of a pipe, as on Linux.
 const PIPE_CAP: usize = 65536;
 
 #[derive(Default)]
@@ -34,26 +34,26 @@ pub struct Pipe {
     buf: VecDeque<u8>,
     readers: usize,
     writers: usize,
-    /// Capi di lettura con O_ASYNC: a ogni scrittura il loro proprietario
-    /// riceve il segnale di I/O.
+    /// Read ends with O_ASYNC: on every write their owner
+    /// receives the I/O signal.
     pub async_readers: Vec<std::rc::Weak<RefCell<OpenFile>>>,
-    /// Capacità scelta con F_SETPIPE_SZ; 0 = quella di default.
+    /// Capacity chosen with F_SETPIPE_SZ; 0 = the default one.
     size: usize,
 }
 
 impl Pipe {
-    /// Byte in attesa di essere letti (FIONREAD).
+    /// Bytes waiting to be read (FIONREAD).
     pub fn pending(&self) -> usize {
         self.buf.len()
     }
 
-    /// Capacità in byte (F_GETPIPE_SZ).
+    /// Capacity in bytes (F_GETPIPE_SZ).
     pub fn capacity(&self) -> usize {
         if self.size == 0 { PIPE_CAP } else { self.size }
     }
 
-    /// F_SETPIPE_SZ, come pipe_set_size: potenza di due di pagine, al più
-    /// /proc/sys/fs/pipe-max-size senza privilegi, non sotto i dati presenti.
+    /// F_SETPIPE_SZ, like pipe_set_size: power of two of pages, at most
+    /// /proc/sys/fs/pipe-max-size without privileges, not below the data present.
     pub fn set_capacity(&mut self, arg: u64, privileged: bool) -> Result<usize, i64> {
         const PIPE_MAX_SIZE: usize = 1 << 20;
         if arg > 1 << 31 {
@@ -97,28 +97,28 @@ pub enum Kind {
     },
     PipeR(Rc<RefCell<Pipe>>),
     PipeW(Rc<RefCell<Pipe>>),
-    /// FIFO aperta in lettura e scrittura (O_RDWR).
+    /// FIFO opened for reading and writing (O_RDWR).
     PipeRW(Rc<RefCell<Pipe>>),
     Null,
     Zero,
     Random,
-    /// Socket non connesso (AF_UNIX/AF_INET): la rete arriva con M7.
+    /// Unconnected socket (AF_UNIX/AF_INET): networking comes with M7.
     Socket,
-    /// Aperto con O_PATH: solo un riferimento al percorso (fstat, fchdir,
-    /// dirfd delle *at); l'I/O fallisce con EBADF.
+    /// Opened with O_PATH: only a reference to the path (fstat, fchdir,
+    /// dirfd of the *at calls); I/O fails with EBADF.
     Path {
         path: PathBuf,
         dir: bool,
-        /// Aperto con O_NOFOLLOW: se è un link, fstat descrive il link.
+        /// Opened with O_NOFOLLOW: if it is a link, fstat describes the link.
         nofollow: bool,
     },
-    /// /proc/<pid>/pagemap: 8 byte per pagina virtuale, letti dallo spazio
-    /// d'indirizzamento del processo.
+    /// /proc/<pid>/pagemap: 8 bytes per virtual page, read from the process
+    /// address space.
     Pagemap {
         mm: Rc<RefCell<super::mm::Mm>>,
         pos: u64,
     },
-    /// File generato in memoria (procfs).
+    /// File generated in memory (procfs).
     Mem {
         data: Vec<u8>,
         pos: usize,
@@ -127,20 +127,20 @@ pub enum Kind {
 
 pub struct OpenFile {
     pub kind: Kind,
-    /// Flag di stato (modo d'accesso, O_APPEND, O_NONBLOCK).
+    /// Status flags (access mode, O_APPEND, O_NONBLOCK).
     pub flags: u64,
-    /// Percorso del guest, per fchdir e /proc/self/fd.
+    /// Guest path, for fchdir and /proc/self/fd.
     pub guest_path: String,
-    /// Destinatario dei segnali di I/O (F_SETOWN_EX): (tipo F_OWNER_*, id).
+    /// Recipient of the I/O signals (F_SETOWN_EX): (F_OWNER_* type, id).
     pub owner: (i32, i32),
-    /// Segnale di I/O (F_SETSIG); 0 = SIGIO.
+    /// I/O signal (F_SETSIG); 0 = SIGIO.
     pub sigio: i32,
-    /// Lease (F_SETLEASE): F_RDLCK, F_WRLCK o F_UNLCK.
+    /// Lease (F_SETLEASE): F_RDLCK, F_WRLCK or F_UNLCK.
     pub lease: i16,
-    /// Creato da questa open (F_CREATED_QUERY).
+    /// Created by this open (F_CREATED_QUERY).
     pub created: bool,
-    /// Proprietario dei lock OFD (F_OFD_SETLK) di questa descrizione; 0 =
-    /// ancora nessuno.
+    /// Owner of the OFD locks (F_OFD_SETLK) of this description; 0 =
+    /// none yet.
     pub ofd_owner: i32,
 }
 
@@ -159,14 +159,14 @@ impl Drop for OpenFile {
     }
 }
 
-/// Esito di un'operazione su un file che può dover aspettare.
+/// Outcome of an operation on a file that may have to wait.
 pub enum Io {
     Done(Vec<u8>),
     Written(usize),
-    /// La pipe è vuota (o piena): il task deve bloccarsi.
+    /// The pipe is empty (or full): the task must block.
     Block,
     Err(i64),
-    /// Scrittura su una pipe senza lettori: EPIPE e SIGPIPE.
+    /// Write to a pipe without readers: EPIPE and SIGPIPE.
     BrokenPipe,
 }
 
@@ -249,15 +249,15 @@ impl OpenFile {
                 Io::Done(out)
             }
             Kind::Pagemap { mm, pos } => {
-                // Solo voci intere; bit 63 = pagina presente (il PFN resta a 0,
-                // come per chi non ha CAP_SYS_ADMIN).
+                // Whole entries only; bit 63 = page present (the PFN stays at 0,
+                // as for those without CAP_SYS_ADMIN).
                 if !pos.is_multiple_of(8) || !len.is_multiple_of(8) {
                     return Io::Err(EINVAL);
                 }
                 let mm = mm.borrow();
                 let mut out = Vec::with_capacity(len.min(1 << 20));
                 for i in 0..(len / 8).min(1 << 17) as u64 {
-                    // Oltre TASK_SIZE (48 bit) il file finisce.
+                    // Beyond TASK_SIZE (48 bits) the file ends.
                     let Some(va) = (*pos / 8).checked_add(i).and_then(|p| p.checked_mul(4096)) else { break };
                     if va >= 1 << 48 {
                         break;
@@ -325,8 +325,8 @@ impl OpenFile {
             Kind::PipeR(_) => Io::Err(EBADF),
             Kind::Socket => Io::Err(107), // ENOTCONN
             Kind::Null | Kind::Zero | Kind::Random => Io::Written(data.len()),
-            // /proc/<pid>/oom_score_adj si può scrivere (e non ha effetto);
-            // il resto del /proc virtuale è in sola lettura.
+            // /proc/<pid>/oom_score_adj can be written (and has no effect);
+            // the rest of the virtual /proc is read-only.
             Kind::Mem { .. } if self.guest_path.ends_with("/oom_score_adj") => Io::Written(data.len()),
             Kind::Mem { .. } | Kind::Pagemap { .. } => Io::Err(EACCES),
         }
@@ -335,12 +335,12 @@ impl OpenFile {
     pub fn lseek(&mut self, off: i64, whence: u64) -> SysResult {
         match &mut self.kind {
             Kind::Host { file, .. } => {
-                // SEEK_DATA (3) e SEEK_HOLE (4): i numeri dell'host possono
-                // essere diversi (su macOS sono scambiati).
+                // SEEK_DATA (3) and SEEK_HOLE (4): the host's numbers may
+                // be different (on macOS they are swapped).
                 if whence == 3 || whence == 4 {
                     use std::os::fd::AsRawFd;
                     let w = if whence == 3 { libc::SEEK_DATA } else { libc::SEEK_HOLE };
-                    // SAFETY: descrittore valido di proprietà di `file`.
+                    // SAFETY: valid descriptor owned by `file`.
                     let r = unsafe { libc::lseek(file.as_raw_fd(), off, w) };
                     return if r < 0 { Err(host_errno(&std::io::Error::last_os_error())) } else { Ok(r) };
                 }
@@ -426,8 +426,8 @@ impl OpenFile {
         }
     }
 
-    /// Voci di directory da `pos` in poi, già serializzate come
-    /// linux_dirent64, fino a `cap` byte.
+    /// Directory entries from `pos` onwards, already serialized as
+    /// linux_dirent64, up to `cap` bytes.
     pub fn getdents(&mut self, cap: usize) -> SysResult2 {
         let Kind::Dir { path, entries, pos } = &mut self.kind else { return Err(ENOTDIR) };
         if entries.is_none() {
@@ -524,11 +524,11 @@ pub struct Fd {
 #[derive(Clone, Default)]
 pub struct FdTable {
     fds: Vec<Option<Fd>>,
-    /// RLIMIT_NOFILE corrente del processo; `None` = quello di default.
+    /// Current RLIMIT_NOFILE of the process; `None` = the default one.
     pub limit: Option<usize>,
 }
 
-/// Limite di descrittori per processo (RLIMIT_NOFILE).
+/// Descriptor limit per process (RLIMIT_NOFILE).
 pub const NOFILE: usize = 1024;
 
 impl FdTable {
@@ -559,7 +559,7 @@ impl FdTable {
         self.fds.get_mut(fd as usize).and_then(|f| f.as_mut()).ok_or(EBADF)
     }
 
-    /// Installa `file` nel primo descrittore libero ≥ `min`.
+    /// Installs `file` in the first free descriptor ≥ `min`.
     pub fn install(&mut self, file: Rc<RefCell<OpenFile>>, cloexec: bool, min: usize) -> SysResult {
         let mut i = min;
         while i < self.fds.len() && self.fds[i].is_some() {
@@ -575,7 +575,7 @@ impl FdTable {
         Ok(i as i64)
     }
 
-    /// Installa `file` esattamente in `fd`, chiudendo ciò che c'era (dup3).
+    /// Installs `file` exactly at `fd`, closing whatever was there (dup3).
     pub fn install_at(&mut self, fd: usize, file: Rc<RefCell<OpenFile>>, cloexec: bool) -> SysResult {
         if fd >= self.max() {
             return Err(EBADF);
@@ -607,19 +607,19 @@ impl FdTable {
         self.fds.iter().flatten().any(|f| f.file.borrow().is_pipe_ready())
     }
 
-    /// I file aperti della tabella.
+    /// The open files of the table.
     pub fn files(&self) -> impl Iterator<Item = &Rc<RefCell<OpenFile>>> {
         self.fds.iter().flatten().map(|f| &f.file)
     }
 
-    /// Descrittori aperti (per /proc/self/fd).
+    /// Open descriptors (for /proc/self/fd).
     pub fn open_fds(&self) -> Vec<usize> {
         self.fds.iter().enumerate().filter(|(_, f)| f.is_some()).map(|(i, _)| i).collect()
     }
 }
 
-/// FIFO del file system: la pipe interna condivisa da tutti gli aperti dello
-/// stesso file, e chi è fermo in open() aspettando l'altro capo.
+/// File system FIFO: the internal pipe shared by all the opens of the
+/// same file, and who is stopped in open() waiting for the other end.
 #[derive(Default)]
 pub struct Fifo {
     pub pipe: Rc<RefCell<Pipe>>,
@@ -627,7 +627,7 @@ pub struct Fifo {
     pub waiting_writers: Vec<i32>,
 }
 
-/// Crea una pipe: (lettura, scrittura).
+/// Creates a pipe: (read, write).
 pub fn new_pipe(flags: u64) -> (Rc<RefCell<OpenFile>>, Rc<RefCell<OpenFile>>) {
     let p = Rc::new(RefCell::new(Pipe::default()));
     let nb = flags & O_NONBLOCK;
@@ -637,8 +637,8 @@ pub fn new_pipe(flags: u64) -> (Rc<RefCell<OpenFile>>, Rc<RefCell<OpenFile>>) {
     )
 }
 
-/// Percorso assoluto del guest: `path` relativo a `base` (cwd o directory
-/// di un dirfd), normalizzato solo lessicalmente per "." e "//".
+/// Absolute guest path: `path` relative to `base` (cwd or directory
+/// of a dirfd), normalized only lexically for "." and "//".
 pub fn join(base: &str, path: &[u8]) -> String {
     let p = String::from_utf8_lossy(path);
     let full =
@@ -654,9 +654,9 @@ pub fn join(base: &str, path: &[u8]) -> String {
     if full.ends_with('/') && s != "/" { s + "/" } else { s }
 }
 
-/// O_TMPFILE: file senza nome nella directory `dir`. Su un host Linux è
-/// quello del kernel, raggiungibile come /proc/self/fd/N (per linkat con
-/// AT_SYMLINK_FOLLOW); altrove non è supportato.
+/// O_TMPFILE: unnamed file in the directory `dir`. On a Linux host it is
+/// the kernel's, reachable as /proc/self/fd/N (for linkat with
+/// AT_SYMLINK_FOLLOW); elsewhere it is not supported.
 #[cfg(target_os = "linux")]
 fn open_tmpfile(
     dir: &std::path::Path,
@@ -673,15 +673,15 @@ fn open_tmpfile(
     let c = std::ffi::CString::new(dir.as_os_str().as_bytes()).map_err(|_| EINVAL)?;
     let acc = if flags & O_ACCMODE == O_WRONLY { libc::O_WRONLY } else { libc::O_RDWR };
     let excl = if flags & O_EXCL != 0 { libc::O_EXCL } else { 0 };
-    // SAFETY: percorso C valido; il descrittore restituito passa a File.
+    // SAFETY: valid C path; the returned descriptor is handed to File.
     let fd = unsafe { libc::open(c.as_ptr(), libc::O_TMPFILE | acc | excl | libc::O_CLOEXEC, mode) };
     if fd < 0 {
         return Err(host_errno(&std::io::Error::last_os_error()));
     }
-    // SAFETY: `fd` è appena stato aperto ed è nostro.
+    // SAFETY: `fd` was just opened and is ours.
     let file = unsafe { std::fs::File::from_raw_fd(fd) };
-    // I permessi solo dalla umask del guest.
-    // SAFETY: descrittore valido.
+    // Permissions from the guest's umask only.
+    // SAFETY: valid descriptor.
     unsafe { libc::fchmod(fd, mode as libc::mode_t) };
     let path = PathBuf::from(format!("/proc/self/fd/{fd}"));
     let _ = guest;
@@ -696,11 +696,11 @@ fn open_tmpfile(
     _status: u64,
     _guest: &str,
 ) -> Result<Rc<RefCell<OpenFile>>, i64> {
-    Err(95) // EOPNOTSUPP: il file system dell'host non ha file senza nome
+    Err(95) // EOPNOTSUPP: the host file system has no unnamed files
 }
 
-/// Dopo una creazione: i permessi devono dipendere solo dalla umask del
-/// guest, non da quella del processo host (che li avrebbe già ridotti).
+/// After a creation: the permissions must depend only on the guest's
+/// umask, not on the host process's (which would already have reduced them).
 pub fn fix_mode(host: &std::path::Path, want: u32) {
     use std::os::unix::fs::PermissionsExt;
     if let Ok(m) = std::fs::symlink_metadata(host)
@@ -711,7 +711,7 @@ pub fn fix_mode(host: &std::path::Path, want: u32) {
     }
 }
 
-/// Apertura di un percorso del guest.
+/// Opening of a guest path.
 pub fn open(guest: &str, flags: u64, mode: u32, umask: u32) -> Result<Rc<RefCell<OpenFile>>, i64> {
     use std::os::unix::fs::OpenOptionsExt;
     let special = match guest {
@@ -731,8 +731,8 @@ pub fn open(guest: &str, flags: u64, mode: u32, umask: u32) -> Result<Rc<RefCell
         return open_tmpfile(&host, flags, mode & !umask & 0o7777, status, guest);
     }
     if flags & O_PATH != 0 {
-        // Nessun permesso richiesto sul file: basta che esista.
-        // Con O_NOFOLLOW il riferimento è al link stesso.
+        // No permission required on the file: it just has to exist.
+        // With O_NOFOLLOW the reference is to the link itself.
         let m = meta.map_err(|e| host_errno(&e))?;
         if flags & O_DIRECTORY != 0 && !m.is_dir() {
             return Err(ENOTDIR);
@@ -750,7 +750,7 @@ pub fn open(guest: &str, flags: u64, mode: u32, umask: u32) -> Result<Rc<RefCell
             }
             return Ok(OpenFile::new(Kind::Dir { path: host, entries: None, pos: 0 }, status, guest.into()));
         }
-        Ok(m) if m.file_type().is_symlink() => return Err(40), // ELOOP con O_NOFOLLOW
+        Ok(m) if m.file_type().is_symlink() => return Err(40), // ELOOP with O_NOFOLLOW
         Ok(_) if flags & O_DIRECTORY != 0 => return Err(ENOTDIR),
         Err(_) if flags & O_DIRECTORY != 0 && flags & O_CREAT == 0 => {
             return Err(meta.as_ref().err().map(host_errno).unwrap_or(ENOENT));
@@ -767,7 +767,7 @@ pub fn open(guest: &str, flags: u64, mode: u32, umask: u32) -> Result<Rc<RefCell
         _ => o.read(true).write(true),
     };
     if flags & O_CREAT != 0 {
-        // Non con create(): std la rifiuta senza accesso in scrittura, Linux no.
+        // Not with create(): std rejects it without write access, Linux does not.
         o.custom_flags(libc::O_CREAT | if flags & O_EXCL != 0 { libc::O_EXCL } else { 0 });
         o.mode(mode & !umask & 0o7777);
     }
@@ -780,8 +780,8 @@ pub fn open(guest: &str, flags: u64, mode: u32, umask: u32) -> Result<Rc<RefCell
         fix_mode(&host, mode & !umask & 0o7777);
     }
     if flags & O_TRUNC != 0 && flags & O_ACCMODE == 0 {
-        // O_TRUNC con O_RDONLY: Linux tronca comunque (comportamento non
-        // specificato da POSIX); servirebbe la scrittura, lo ignoriamo.
+        // O_TRUNC with O_RDONLY: Linux truncates anyway (behaviour not
+        // specified by POSIX); it would need write access, we ignore it.
     }
     let f = OpenFile::new(Kind::Host { file, path: host }, status, guest.into());
     f.borrow_mut().created = created;

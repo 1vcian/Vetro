@@ -1,7 +1,7 @@
-# Strumenti esterni per verificare le esportazioni di vetro-analysis
-# (ADR 0016): tshark e tcpdump rileggono il pcapng, har-validator (schema
-# HAR 1.2 di ahmadnassri/har-schema) e haralyzer (Python) riaprono l'HAR.
-# Costruita da tools/analysis/check.sh alla prima esecuzione.
+# External tools to verify the vetro-analysis exports
+# (ADR 0016): tshark and tcpdump read back the pcapng, har-validator (schema
+# HAR 1.2 by ahmadnassri/har-schema) and haralyzer (Python) reopen the HAR.
+# Built by tools/analysis/check.sh on first run.
 FROM debian:trixie-slim
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \

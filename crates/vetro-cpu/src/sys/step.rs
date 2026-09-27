@@ -1,5 +1,5 @@
-//! Un passo in modalità sistema: interrupt, fetch con MMU, istruzioni di
-//! sistema, interprete comune e consegna delle eccezioni al guest.
+//! One step in system mode: interrupts, fetch with MMU, system
+//! instructions, common interpreter and delivery of exceptions to the guest.
 
 use crate::bits::field;
 use crate::decode::{AtOp, Insn, PstateField, SysOp, SysReg, decode};
@@ -13,13 +13,13 @@ use super::regs::Deny;
 use super::state::{Mode, PsciConduit, daif, sctlr};
 use super::{AtResult, BusFault, CpuEnv, SysBus, SysEvent};
 
-/// ISS di una trap WFI da EL0 (EC 0x01): CV = 1, COND = 0b1110, TI = 0.
+/// ISS of a WFI trap from EL0 (EC 0x01): CV = 1, COND = 0b1110, TI = 0.
 const ISS_WFI: u64 = 1 << 24 | 0xe << 20;
-/// ISS di una trap FP/SIMD da AArch64 (EC 0x07): CV = 1, COND = 0b1110.
+/// ISS of an FP/SIMD trap from AArch64 (EC 0x07): CV = 1, COND = 0b1110.
 const ISS_FP: u64 = 1 << 24 | 0xe << 20;
 
-/// ISS di una trap di MSR/MRS/SYS (EC 0x18) ricavato dalla codifica:
-/// Op0, Op2, Op1, CRn, Rt, CRm, direzione (1 = lettura).
+/// ISS of an MSR/MRS/SYS trap (EC 0x18) derived from the encoding:
+/// Op0, Op2, Op1, CRn, Rt, CRm, direction (1 = read).
 fn sysreg_iss(raw: u32) -> u64 {
     let f = |hi, lo| u64::from(field(raw, hi, lo));
     f(20, 19) << 20
@@ -31,7 +31,7 @@ fn sysreg_iss(raw: u32) -> u64 {
         | f(21, 21)
 }
 
-/// Istruzioni soggette alla trap di CPACR_EL1.FPEN.
+/// Instructions subject to the CPACR_EL1.FPEN trap.
 fn is_fp(insn: &Insn) -> bool {
     matches!(
         insn,
@@ -41,22 +41,22 @@ fn is_fp(insn: &Insn) -> bool {
     )
 }
 
-/// Scritture che possono dare un fault di allineamento dall'interprete
-/// (esclusive e store-release): servono per WnR.
+/// Writes that can give an alignment fault from the interpreter
+/// (exclusives and store-release): needed for WnR.
 fn is_store(insn: &Insn) -> bool {
     matches!(insn, Insn::Exclusive { load: false, .. } | Insn::StoreRelease { .. })
 }
 
 impl Cpu {
-    /// Esegue un'istruzione in modalità sistema, oppure prende un interrupt
-    /// o un'eccezione. Richiede [`Cpu::reset_system`] (o
-    /// `sys.mode = Mode::System`) prima del primo passo.
+    /// Executes an instruction in system mode, or takes an interrupt
+    /// or an exception. Requires [`Cpu::reset_system`] (or
+    /// `sys.mode = Mode::System`) before the first step.
     pub fn step_system<B: SysBus + ?Sized, E: CpuEnv + ?Sized>(
         &mut self,
         bus: &mut B,
         env: &mut E,
     ) -> SysEvent {
-        debug_assert_eq!(self.sys.mode, Mode::System, "step_system in modalità utente");
+        debug_assert_eq!(self.sys.mode, Mode::System, "step_system in user mode");
         if let Some(ev) = self.take_interrupt(env) {
             return ev;
         }
@@ -100,17 +100,17 @@ impl Cpu {
                     let f = Pending::Abort { va: addr, fsc: BusFault::FSC_ALIGNMENT, ea: false, access };
                     self.deliver_fault(Some(f), raw, false)
                 }
-                // Architetturale; QEMU non controlla SCTLR_EL1.SA/SA0.
+                // Architectural; QEMU does not check SCTLR_EL1.SA/SA0.
                 Exception::SpAlignment => self.sync(esr(ec::SP_ALIGN, 0), None, pc),
                 Exception::Svc(_) | Exception::PcAlignment { .. } => {
-                    unreachable!("non prodotte dall'interprete comune")
+                    unreachable!("not produced by the common interpreter")
                 }
             },
         }
     }
 
-    /// FIQ, IRQ e SError non mascherati, in quest'ordine (come QEMU per FIQ
-    /// e IRQ). Si prendono fra un'istruzione e l'altra, con ELR = PC.
+    /// Unmasked FIQ, IRQ and SError, in this order (like QEMU for FIQ
+    /// and IRQ). Taken between one instruction and the next, with ELR = PC.
     fn take_interrupt<E: CpuEnv + ?Sized>(&mut self, env: &mut E) -> Option<SysEvent> {
         let masks = self.sys.daif;
         let from_el = self.sys.el;
@@ -131,19 +131,19 @@ impl Cpu {
         Some(SysEvent::Exception { kind, esr: 0, from_el })
     }
 
-    /// Eccezione sincrona con ELR = `preferred`.
+    /// Synchronous exception with ELR = `preferred`.
     fn sync(&mut self, esr: u64, far: Option<u64>, preferred: u64) -> SysEvent {
         let from_el = self.sys.el;
         self.take_exception(ExceptionKind::Sync, Some(esr), far, preferred);
         SysEvent::Exception { kind: ExceptionKind::Sync, esr, from_el }
     }
 
-    /// Istruzione UNDEFINED al PC corrente (EC 0x00).
+    /// UNDEFINED instruction at the current PC (EC 0x00).
     fn undefined(&mut self) -> SysEvent {
         self.sync(esr(ec::UNKNOWN, 0), None, self.pc)
     }
 
-    /// Trap di MSR/MRS/SYS a EL1 (EC 0x18).
+    /// MSR/MRS/SYS trap to EL1 (EC 0x18).
     fn sysreg_trap(&mut self, raw: u32) -> SysEvent {
         self.sync(esr(ec::SYSREG, sysreg_iss(raw)), None, self.pc)
     }
@@ -155,9 +155,9 @@ impl Cpu {
         }
     }
 
-    /// Consegna un fault di memoria come Instruction o Data Abort (o fault
-    /// di allineamento), oppure lo restituisce come limite di Vetro. `cm`
-    /// marca le istruzioni di manutenzione (AT).
+    /// Delivers a memory fault as an Instruction or Data Abort (or alignment
+    /// fault), or returns it as a Vetro limitation. `cm`
+    /// marks the maintenance instructions (AT).
     fn deliver_fault(&mut self, f: Option<Pending>, raw: u32, cm: bool) -> SysEvent {
         let lower = self.sys.el == 0;
         match f {
@@ -180,12 +180,12 @@ impl Cpu {
                 self.sync(e, Some(va), self.pc)
             }
             Some(Pending::Unimplemented(what)) => SysEvent::Unimplemented { raw, what },
-            None => SysEvent::Unimplemented { raw, what: "fault di memoria senza dettagli" },
+            None => SysEvent::Unimplemented { raw, what: "memory fault without details" },
         }
     }
 
-    /// Istruzioni con una semantica propria della modalità sistema.
-    /// `None`: l'istruzione va all'interprete comune.
+    /// Instructions with semantics specific to system mode.
+    /// `None`: the instruction goes to the common interpreter.
     fn exec_system<B: SysBus + ?Sized, E: CpuEnv + ?Sized>(
         &mut self,
         insn: Insn,
@@ -259,8 +259,8 @@ impl Cpu {
                         };
                         match mem.bus.at(&mem.regs, xt, access, level) {
                             AtResult::Par(p) => self.sys.par_el1 = p,
-                            // Abort esterno sul walk: Data Abort con CM = 1 e
-                            // WnR = 1, come QEMU.
+                            // External abort on the walk: Data Abort with CM = 1 and
+                            // WnR = 1, like QEMU.
                             AtResult::Abort { fsc, ea } => {
                                 let f = Pending::Abort { va: xt, fsc, ea, access: Access::Write };
                                 return Some(self.deliver_fault(Some(f), raw, true));
@@ -270,7 +270,7 @@ impl Cpu {
                             }
                         }
                     }
-                    // Nessuna cache modellata: come QEMU non fanno nulla.
+                    // No cache modelled: like QEMU they do nothing.
                     SysOp::IcIall | SysOp::DcIvac | SysOp::DcSetWay => {}
                 }
                 self.pc = next;

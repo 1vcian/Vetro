@@ -1,24 +1,24 @@
-//! Parità interprete-JIT in modalità sistema (ADR 0013): programmi
-//! bare-metal casuali con la MMU accesa, eseguiti da `Cpu::step_system` e
-//! dal ciclo della macchina con `SysJit` (blocchi tradotti fra un passo
-//! dell'interprete e l'altro, come `Machine::run`), dallo stesso stato.
-//! Si confrontano le eccezioni (e a che passo arrivano), lo stato finale
-//! della CPU (registri di sistema e monitor esclusivo compresi) e tutta la
+//! Interpreter-JIT parity in system mode (ADR 0013): random bare-metal
+//! programs with the MMU on, run by `Cpu::step_system` and
+//! by the machine loop with `SysJit` (translated blocks between one interpreter
+//! step and the next, like `Machine::run`), from the same state.
+//! Compared: the exceptions (and at which step they arrive), the final state
+//! of the CPU (system registers and exclusive monitor included) and all of
 //! RAM.
 //!
-//! Nel ciclo col JIT la RAM sta dentro la memoria di wasmtime, così i
-//! blocchi la raggiungono con la TLB software (il percorso veloce di
-//! `ld`/`st`, lo stesso del browser).
+//! In the JIT loop RAM lives inside wasmtime's memory, so the
+//! blocks reach it through the software TLB (the fast path of
+//! `ld`/`st`, the same as in the browser).
 //!
-//! I programmi mescolano istruzioni casuali (filtrate dal decoder) e
-//! istruzioni di sistema prese da una tabella (MRS/MSR, esclusive, DC ZVA,
-//! CRC32, LDTR/STTR, SVC, TLBI...), con registri casuali; le pagine dei dati
-//! hanno permessi e attributi diversi (non mappate, sola lettura, solo EL1,
-//! Device), SCTLR_EL1.A/SA/SA0/DZE, TBI0 e SPSel sono casuali, e una parte
-//! dei programmi parte a EL0. Ogni eccezione va a un gestore che salta
-//! l'istruzione (ELR += 4) e torna con ERET.
+//! The programs mix random instructions (filtered by the decoder) and
+//! system instructions taken from a table (MRS/MSR, exclusives, DC ZVA,
+//! CRC32, LDTR/STTR, SVC, TLBI...), with random registers; the data pages
+//! have different permissions and attributes (unmapped, read-only, EL1 only,
+//! Device), SCTLR_EL1.A/SA/SA0/DZE, TBI0 and SPSel are random, and some
+//! of the programs start at EL0. Every exception goes to a handler that skips
+//! the instruction (ELR += 4) and returns with ERET.
 //!
-//! `VETRO_JIT_SYS_PARITY_CASES` (default 400) e `VETRO_JIT_SYS_PARITY_SEED`.
+//! `VETRO_JIT_SYS_PARITY_CASES` (default 400) and `VETRO_JIT_SYS_PARITY_SEED`.
 
 use vetro_cpu::sys::{CpuEnv, SysEvent, sctlr};
 use vetro_cpu::sysreg::EnvReg;
@@ -30,23 +30,23 @@ use vetro_mmu::{BusError, Mmu, MmuBus, PhysMemory};
 
 const RAM_BASE: u64 = 0x4000_0000;
 const RAM_LEN: usize = 8 << 20;
-/// Vettori delle eccezioni (VBAR_EL1), in un blocco di 2 MiB solo per EL1.
+/// Exception vectors (VBAR_EL1), in a 2 MiB block for EL1 only.
 const VBAR: u64 = 0x4000_0800;
-/// Il programma, in un altro blocco di 2 MiB: scrivibile ed eseguibile dal
-/// livello a cui gira (la memoria scrivibile da EL0 non è mai eseguibile a
+/// The program, in another 2 MiB block: writable and executable at the
+/// level it runs at (memory writable from EL0 is never executable at
 /// EL1).
 const CODE: u64 = 0x4060_0000;
 const START: u64 = CODE + 0x1_0e00;
 const PROG_LEN: usize = 256;
-/// Dati: 2 MiB mappati a pagine con permessi diversi.
+/// Data: 2 MiB mapped in pages with different permissions.
 const DATA: u64 = 0x4020_0000;
 const DATA_LEN: u64 = 0x20_0000;
-/// Tabelle delle pagine (fuori dallo spazio virtuale: il programma non le
-/// può scrivere).
+/// Page tables (outside the virtual space: the program cannot
+/// write them).
 const TABLES: u64 = 0x4050_0000;
 const STEP_LIMIT: u64 = 3000;
 
-/// Gestore di ogni eccezione: salta l'istruzione e torna.
+/// Handler for every exception: skips the instruction and returns.
 const HANDLER: [u32; 4] = [
     0xd538403c, // mrs x28, ELR_EL1
     0x9100139c, // add x28, x28, #0x4
@@ -54,8 +54,8 @@ const HANDLER: [u32; 4] = [
     0xd69f03e0, // eret
 ];
 
-/// Istruzioni di sistema (registri Rt = x0, Rn = x1, Rs = w2, Rt2 = x3:
-/// il generatore li cambia a caso).
+/// System instructions (registers Rt = x0, Rn = x1, Rs = w2, Rt2 = x3:
+/// the generator changes them at random).
 const SYSTEM: [u32; 42] = [
     0xd53be040, // mrs x0, CNTVCT_EL0 (ADR 0026)
     0xd53be020, // mrs x0, CNTPCT_EL0
@@ -89,7 +89,7 @@ const SYSTEM: [u32; 42] = [
     0xd508871f, // tlbi vmalle1
     0xd50342df, // msr DAIFSet, #0x2
     0xd50b7e20, // dc civac, x0
-    // ADR 0024: DAIF, ELR/SPSR/ESR/FAR a EL1 nei blocchi.
+    // ADR 0024: DAIF, ELR/SPSR/ESR/FAR at EL1 in the blocks.
     0xd53b4220, // mrs x0, DAIF
     0xd51b4220, // msr DAIF, x0
     0xd50342ff, // msr DAIFClr, #0x2
@@ -102,8 +102,8 @@ const SYSTEM: [u32; 42] = [
     0xd5386000, // mrs x0, FAR_EL1
 ];
 
-/// Coppie esclusive con lo stesso indirizzo in x1 (perché lo store possa
-/// riuscire): load, poi store.
+/// Exclusive pairs with the same address in x1 (so that the store can
+/// succeed): load, then store.
 const EXCLUSIVE_PAIRS: [(u32, u32); 3] = [
     (0xc85f7c20, 0xc8027c20), // ldxr x0, [x1] ; stxr w2, x0, [x1]
     (0xc87f0c20, 0xc8220c20), // ldxp x0, x3, [x1] ; stxp w2, x0, x3, [x1]
@@ -126,15 +126,15 @@ impl Rng {
     }
 }
 
-/// Sostituisce il campo `[lo, lo+width)` di `w` con `v`.
+/// Replaces the field `[lo, lo+width)` of `w` with `v`.
 fn with_field(w: u32, lo: u32, width: u32, v: i64) -> u32 {
     let mask = ((1u64 << width) - 1) as u32;
     (w & !(mask << lo)) | (((v as u32) & mask) << lo)
 }
 
-/// Registri a caso in una istruzione della tabella (x28 resta al gestore).
+/// Random registers in an instruction from the table (x28 stays with the handler).
 fn random_regs(rng: &mut Rng, w: u32) -> u32 {
-    // SVC, TLBI, MSR DAIFSet: nessun registro da cambiare.
+    // SVC, TLBI, MSR DAIFSet: no register to change.
     if w >> 24 == 0xd4 || (w & 0x1f == 0x1f && w >> 22 == 0x354) {
         return w;
     }
@@ -145,7 +145,7 @@ fn random_regs(rng: &mut Rng, w: u32) -> u32 {
     let (rt, rn, rs, rt2) = (r(), r(), r(), r());
     let mut w = with_field(w, 0, 5, rt);
     if w >> 22 != 0x354 {
-        // MRS/MSR hanno solo Rt; le altre hanno anche Rn, Rs, Rt2.
+        // MRS/MSR have only Rt; the others also have Rn, Rs, Rt2.
         w = with_field(w, 5, 5, rn);
         if w & 0x3f00_0000 == 0x0800_0000 {
             w = with_field(with_field(w, 16, 5, rs), 10, 5, rt2);
@@ -154,21 +154,21 @@ fn random_regs(rng: &mut Rng, w: u32) -> u32 {
     w
 }
 
-/// Un'istruzione casuale per un blocco della modalità sistema: bit casuali
-/// filtrati dal decoder, con gli offset dei salti riportati vicino.
+/// A random instruction for a system-mode block: random bits
+/// filtered by the decoder, with branch offsets brought close.
 fn random_insn(rng: &mut Rng, sys: SysTarget) -> u32 {
     loop {
         let mut w = rng.next() as u32;
         let insn = decode(w);
         match insn {
             Insn::Unimplemented(_) | Insn::Eret => continue,
-            // Poche UNDEFINED (il gestore le salta) e qualche altra
-            // istruzione non tradotta, per alternare JIT e interprete.
+            // A few UNDEFINED (the handler skips them) and some other
+            // untranslated instructions, to alternate JIT and interpreter.
             Insn::Undefined if rng.below(64) != 0 => continue,
             _ if kind_in(&insn, Some(sys)) == Kind::Unsupported && rng.below(16) != 0 => continue,
             _ => {}
         }
-        // x28 è del gestore.
+        // x28 belongs to the handler.
         if w & 0x1f == 28 {
             continue;
         }
@@ -184,7 +184,7 @@ fn random_insn(rng: &mut Rng, sys: SysTarget) -> u32 {
     }
 }
 
-// Descrittori VMSAv8-64 (granulo 4 KiB).
+// VMSAv8-64 descriptors (4 KiB granule).
 const VALID_TABLE: u64 = 0b11;
 const VALID_BLOCK: u64 = 0b01;
 const VALID_PAGE: u64 = 0b11;
@@ -196,9 +196,9 @@ const AP_RW_EL1: u64 = 0b00 << 6;
 const ATTR_NORMAL: u64 = 0 << 2;
 const ATTR_DEVICE: u64 = 1 << 2;
 
-/// La memoria fisica di prova: RAM a `RAM_BASE` dietro un puntatore (un
-/// `Vec` per l'interprete, la memoria di wasmtime per il JIT), il resto
-/// decode error. Sorveglia le pagine di codice come `vetro_machine::Board`.
+/// The test physical memory: RAM at `RAM_BASE` behind a pointer (a
+/// `Vec` for the interpreter, wasmtime's memory for the JIT), the rest
+/// decode error. Watches the code pages like `vetro_machine::Board`.
 struct TestPhys {
     ram: *mut u8,
     watched: Vec<bool>,
@@ -211,8 +211,8 @@ impl TestPhys {
         (o + len as u64 <= RAM_LEN as u64).then_some(o as usize)
     }
     fn bytes(&mut self) -> &mut [u8] {
-        // SAFETY: `ram` vale per RAM_LEN byte per tutta la vita di `self`, e
-        // nessun blocco WASM gira mentre questa fetta esiste.
+        // SAFETY: `ram` is valid for RAM_LEN bytes for the whole life of `self`, and
+        // no WASM block runs while this slice exists.
         unsafe { std::slice::from_raw_parts_mut(self.ram, RAM_LEN) }
     }
 }
@@ -271,15 +271,15 @@ impl SysPhys for TestPhys {
     }
 }
 
-/// CNTVOFF delle prove.
+/// CNTVOFF of the tests.
 const CNTVOFF: u64 = 12345;
 
-/// CNTPCT dopo `steps` istruzioni, come `vetro_machine` (62,5 MHz su 100).
+/// CNTPCT after `steps` instructions, like `vetro_machine` (62.5 MHz over 100).
 fn counter(steps: u64) -> u64 {
     steps / 8 * 5 + steps % 8 * 5 / 8
 }
 
-/// Nessun interrupt; CNTPCT e CNTVCT dal numero di istruzioni già fatte.
+/// No interrupts; CNTPCT and CNTVCT from the number of instructions already executed.
 struct NoEnv {
     steps: u64,
 }
@@ -298,7 +298,7 @@ impl CpuEnv for NoEnv {
     fn write_sysreg(&mut self, _: EnvReg, _: u64) {}
 }
 
-/// RAM iniziale e CPU di un caso.
+/// Initial RAM and CPU of a case.
 fn setup(seed: u64) -> (Cpu, Vec<u8>) {
     let mut rng = Rng(seed.wrapping_mul(0x2545_F491_4F6C_DD1D) ^ 0x5eed_5eed);
     let mut ram = vec![0u8; RAM_LEN];
@@ -306,20 +306,20 @@ fn setup(seed: u64) -> (Cpu, Vec<u8>) {
         let o = (pa - RAM_BASE) as usize;
         ram[o..o + bytes.len()].copy_from_slice(bytes);
     };
-    // Dati riconoscibili.
+    // Recognisable data.
     for (i, b) in
         ram[(DATA - RAM_BASE) as usize..(DATA - RAM_BASE + DATA_LEN) as usize].iter_mut().enumerate()
     {
         *b = (i as u64).wrapping_mul(0x9E37_79B9) as u8 >> 1;
     }
-    // Vettori: lo stesso gestore per sincrone e IRQ di ogni provenienza.
+    // Vectors: the same handler for synchronous and IRQ from every source.
     let handler: Vec<u8> = HANDLER.iter().flat_map(|w| w.to_le_bytes()).collect();
     for off in (0..0x800).step_by(0x80) {
         put(&mut ram, VBAR + off, &handler);
     }
     let el0 = rng.below(4) == 0;
-    // Tabelle: L1[1] -> L2; L2[0] blocco dei vettori (EL1); L2[1] -> L3
-    // (dati); L2[3] blocco del programma.
+    // Tables: L1[1] -> L2; L2[0] vector block (EL1); L2[1] -> L3
+    // (data); L2[3] program block.
     let (l1, l2, l3) = (TABLES, TABLES + 0x1000, TABLES + 0x2000);
     put(&mut ram, l1 + 8, &(l2 | VALID_TABLE).to_le_bytes());
     let block = |pa: u64, ap: u64| pa | VALID_BLOCK | AF | SH_INNER | ap | ATTR_NORMAL;
@@ -348,7 +348,7 @@ fn setup(seed: u64) -> (Cpu, Vec<u8>) {
         fp: true,
         cntk: 0,
     };
-    // Programma: istruzioni casuali, di sistema, coppie esclusive.
+    // Program: random instructions, system instructions, exclusive pairs.
     let mut prog = Vec::with_capacity(PROG_LEN);
     while prog.len() < PROG_LEN {
         match rng.below(10) {
@@ -374,8 +374,8 @@ fn setup(seed: u64) -> (Cpu, Vec<u8>) {
     let s = &mut cpu.sys;
     s.vbar_el1 = VBAR;
     s.mair_el1 = 0x00ff; // attr0 Normal WB, attr1 Device-nGnRnE
-    // T0SZ = 25 (VA a 39 bit, si parte da L1), granulo 4 KiB, IPS 40 bit,
-    // niente walk da TTBR1.
+    // T0SZ = 25 (39-bit VA, starting from L1), 4 KiB granule, 40-bit IPS,
+    // no walk from TTBR1.
     s.tcr_el1 = 25 | 0b01 << 8 | 0b01 << 10 | 0b11 << 12 | 1 << 23 | 0b010 << 32;
     if sys.tbi0 {
         s.tcr_el1 |= 1 << 37;
@@ -395,10 +395,10 @@ fn setup(seed: u64) -> (Cpu, Vec<u8>) {
     s.sctlr_el1 = sctlr_v;
     s.daif = 0;
     if rng.below(2) == 0 {
-        s.cpacr_el1 = 0b11 << 20; // FP/SIMD senza trap
+        s.cpacr_el1 = 0b11 << 20; // FP/SIMD without trap
     }
     s.tpidr_el1 = rng.next();
-    // CNTKCTL_EL1.EL0PCTEN/EL0VCTEN: MRS del contatore a EL0 permesso o no.
+    // CNTKCTL_EL1.EL0PCTEN/EL0VCTEN: MRS of the counter at EL0 allowed or not.
     s.cntkctl_el1 = rng.below(4);
     cpu.tpidr_el0 = rng.next();
     cpu.tpidrro_el0 = rng.next();
@@ -427,8 +427,8 @@ fn setup(seed: u64) -> (Cpu, Vec<u8>) {
     (cpu, ram)
 }
 
-/// Esito: eventi (eccezioni, HVC, ...) col passo a cui arrivano, passi,
-/// CPU finale e RAM.
+/// Outcome: events (exceptions, HVC, ...) with the step at which they arrive, steps,
+/// final CPU and RAM.
 #[derive(Debug, PartialEq)]
 struct Trace {
     events: Vec<(u64, SysEvent)>,
@@ -441,7 +441,7 @@ fn hash(b: &[u8]) -> u64 {
     b.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &x| (h ^ x as u64).wrapping_mul(0x100_0000_01b3))
 }
 
-/// Un passo dell'interprete; `None` se l'esecuzione si ferma.
+/// One interpreter step; `None` if execution stops.
 fn step(
     cpu: &mut Cpu,
     mmu: &mut Mmu,
@@ -449,7 +449,7 @@ fn step(
     events: &mut Vec<(u64, SysEvent)>,
     n: u64,
 ) -> bool {
-    // `n` conta anche questo passo: prima ne erano stati fatti n - 1.
+    // `n` also counts this step: n - 1 had been done before.
     let ev = cpu.step_system(&mut MmuBus::new(mmu, phys), &mut NoEnv { steps: n - 1 });
     match ev {
         SysEvent::Executed | SysEvent::WaitForInterrupt => true,
@@ -468,7 +468,7 @@ fn run_interp(cpu: Cpu, ram: Vec<u8>) -> Trace {
     run_interp_stops(cpu, ram, &[]).0
 }
 
-/// Come [`run_interp`]; conta anche i passi fatti con il PC in `stops`.
+/// Like [`run_interp`]; also counts the steps done with the PC in `stops`.
 fn run_interp_stops(mut cpu: Cpu, mut ram: Vec<u8>, stops: &[u64]) -> (Trace, u64) {
     let mut phys = TestPhys { ram: ram.as_mut_ptr(), watched: vec![false; RAM_LEN >> 12], dirty: Vec::new() };
     let mut mmu = Mmu::new(Mmu::PA_BITS_CORTEX_A53);
@@ -485,8 +485,8 @@ fn run_interp_stops(mut cpu: Cpu, mut ram: Vec<u8>, stops: &[u64]) -> (Trace, u6
     (Trace { events, steps: n, cpu, ram_hash: hash(&ram) }, hits)
 }
 
-/// Offset della RAM del guest nella memoria di wasmtime (dopo l'area del
-/// JIT).
+/// Offset of guest RAM in wasmtime's memory (after the
+/// JIT area).
 const RAM_IN_ENGINE: usize = 1 << 20;
 
 fn run_jit(cpu: Cpu, ram: &[u8], seed: u64) -> (Trace, vetro_jit::SysJitStats) {
@@ -494,8 +494,8 @@ fn run_jit(cpu: Cpu, ram: &[u8], seed: u64) -> (Trace, vetro_jit::SysJitStats) {
     (t, s)
 }
 
-/// Come [`run_jit`] con `SysJit::set_stops(stops)`; conta anche i passi
-/// dell'interprete fatti con il PC in `stops`.
+/// Like [`run_jit`] with `SysJit::set_stops(stops)`; also counts the
+/// interpreter steps done with the PC in `stops`.
 fn run_jit_stops(mut cpu: Cpu, ram: &[u8], seed: u64, stops: &[u64]) -> (Trace, vetro_jit::SysJitStats, u64) {
     let mut rng = Rng(seed ^ 0xb0d9e7);
     let mut engine = NativeEngine::new();
@@ -519,10 +519,10 @@ fn run_jit_stops(mut cpu: Cpu, ram: &[u8], seed: u64, stops: &[u64]) -> (Trace, 
         if n >= STEP_LIMIT {
             break;
         }
-        // Come `Machine::jit_budget`: niente interrupt in questa prova.
+        // Like `Machine::jit_budget`: no interrupts in this test.
         if interp == Next::Jit && !cpu.sys.il && cpu.pc & 3 == 0 {
             let budget = (STEP_LIMIT - n).min(1 + rng.below(300));
-            // L'orologio (a volte no: MRS del contatore esce all'interprete).
+            // The clock (sometimes not: an MRS of the counter exits to the interpreter).
             if rng.below(8) != 0 {
                 jit.set_time(vetro_jit::Clock { steps: n, cntvoff: CNTVOFF });
             }
@@ -550,18 +550,18 @@ fn run_jit_stops(mut cpu: Cpu, ram: &[u8], seed: u64, stops: &[u64]) -> (Trace, 
         };
     }
     let stats = jit.stats();
-    assert_eq!(stats.resets, 0, "la RAM sta nella memoria del motore: niente azzeramenti");
+    assert_eq!(stats.resets, 0, "RAM lives in the engine memory: no resets");
     let h = hash(phys.bytes());
     (Trace { events, steps: n, cpu, ram_hash: h }, stats, hits)
 }
 
-/// Punti di fermata del JIT (ADR 0027, punti di aggancio
-/// dell'introspezione): con indirizzi del programma in `set_stops`, le
-/// regioni non li contengono. L'esecuzione resta identica all'interprete,
-/// e ogni passo con il PC su un punto di fermata lo fa l'interprete (lo
-/// stesso numero di volte che nell'esecuzione tutta interpretata), così
-/// la macchina vi può controllare i punti di aggancio. Senza le fermate
-/// nelle regioni il conto scende (provato togliendo il controllo in
+/// JIT stop points (ADR 0027, introspection hook
+/// points): with program addresses in `set_stops`, the
+/// regions do not contain them. Execution stays identical to the interpreter,
+/// and every step with the PC on a stop point is done by the interpreter (the
+/// same number of times as in the fully interpreted run), so
+/// the machine can check the hook points there. Without the stops
+/// in the regions the count drops (tested by removing the check in
 /// `install`).
 #[test]
 fn punti_di_fermata_restano_all_interprete() {
@@ -573,14 +573,14 @@ fn punti_di_fermata_restano_all_interprete() {
         let stops: Vec<u64> = (0..3).map(|_| START + 4 * rng.below(PROG_LEN as u64 / 2)).collect();
         let (want, want_hits) = run_interp_stops(cpu.clone(), ram.clone(), &stops);
         let (got, s, got_hits) = run_jit_stops(cpu, &ram, seed, &stops);
-        assert_eq!(got, want, "seme {seed}: interprete e JIT con fermate {stops:x?}");
-        assert_eq!(got_hits, want_hits, "seme {seed}: il JIT ha eseguito un punto di fermata {stops:x?}");
+        assert_eq!(got, want, "seed {seed}: interpreter and JIT with stops {stops:x?}");
+        assert_eq!(got_hits, want_hits, "seed {seed}: the JIT executed a stop point {stops:x?}");
         total_hits += want_hits;
         jit_steps += s.jit_steps;
     }
     assert!(
         total_hits > 100 && jit_steps > 10_000,
-        "prova troppo debole: {total_hits} fermate, {jit_steps} passi nel JIT"
+        "test too weak: {total_hits} stops, {jit_steps} steps in the JIT"
     );
 }
 
@@ -598,7 +598,7 @@ fn sistema_interprete_e_jit_identici() {
         let (cpu, ram) = setup(seed);
         let want = run_interp(cpu.clone(), ram.clone());
         if std::env::var_os("VETRO_JIT_SYS_PARITY_DEBUG").is_some() {
-            eprintln!("seme {seed}: {:?}", &want.events[..want.events.len().min(8)]);
+            eprintln!("seed {seed}: {:?}", &want.events[..want.events.len().min(8)]);
         }
         let (got, s) = run_jit(cpu, &ram, seed);
         if got != want {
@@ -607,11 +607,11 @@ fn sistema_interprete_e_jit_identici() {
                 let i = first_diff.unwrap_or(e.len()).saturating_sub(1);
                 format!("{:?}", &e[i.min(e.len())..(i + 3).min(e.len())])
             };
-            eprintln!("eventi vicini: interprete {}\nJIT {}", around(&want.events), around(&got.events));
+            eprintln!("nearby events: interpreter {}\nJIT {}", around(&want.events), around(&got.events));
             panic!(
-                "seme {seed}: interprete e JIT diversi (VETRO_JIT_SYS_PARITY_SEED={seed} \
-                 VETRO_JIT_SYS_PARITY_CASES=1)\nprimo evento diverso: {first_diff:?}\n\
-                 passi {} / {}, eventi {} / {}, RAM uguale: {}\ninterprete: {:?}\nJIT:        {:?}",
+                "seed {seed}: interpreter and JIT differ (VETRO_JIT_SYS_PARITY_SEED={seed} \
+                 VETRO_JIT_SYS_PARITY_CASES=1)\nfirst differing event: {first_diff:?}\n\
+                 steps {} / {}, events {} / {}, RAM equal: {}\ninterpreter: {:?}\nJIT:         {:?}",
                 want.steps,
                 got.steps,
                 want.events.len(),
@@ -638,24 +638,24 @@ fn sistema_interprete_e_jit_identici() {
         total.tlb_fills += s.tlb_fills;
         total.yields += s.yields;
     }
-    eprintln!("{cases} programmi, {exceptions} eccezioni; JIT: {total:?}");
-    // La prova vale solo se il JIT ha lavorato davvero, anche nei casi
-    // difficili.
-    assert!(total.jit_steps > cases * STEP_LIMIT / 10, "troppo pochi passi nei blocchi: {total:?}");
+    eprintln!("{cases} programs, {exceptions} exceptions; JIT: {total:?}");
+    // The test is valid only if the JIT really did work, even in the
+    // hard cases.
+    assert!(total.jit_steps > cases * STEP_LIMIT / 10, "too few steps in the blocks: {total:?}");
     assert!(total.faults > 0 && total.stops > 0 && total.invalidated_pages > 0, "{total:?}");
     assert!(total.tlb_fills > 0 && total.svcs > 0 && total.resolves > 0, "{total:?}");
-    // MSR DAIF/DAIFClr che smascherano (ADR 0024).
+    // MSR DAIF/DAIFClr that unmask (ADR 0024).
     assert!(total.yields > 0, "{total:?}");
 }
 
-/// TLB degli accessi non allineati (ADR 0024): una pagina Normal riempita da
-/// un accesso non allineato riuscito non deve far passare un accesso non
-/// allineato che sconfina nella pagina successiva, non mappata: lì
-/// l'interprete dà il fault. Anche un Q allineato a 8 ma non a 16 su
-/// memoria Device va all'interprete (fault di allineamento).
+/// Unaligned-access TLB (ADR 0024): a Normal page filled by
+/// a successful unaligned access must not let through an unaligned
+/// access that spills into the next, unmapped page: there
+/// the interpreter gives the fault. Also a Q aligned to 8 but not to 16 on
+/// Device memory goes to the interpreter (alignment fault).
 #[test]
 fn tlb_non_allineata_non_sconfina() {
-    // (pagina corrente, pagina successiva) cercate nelle tabelle di un caso.
+    // (current page, next page) looked up in the tables of a case.
     let l3 = TABLES + 0x2000;
     let pte = |ram: &[u8], i: u64| {
         let o = (l3 + 8 * i - RAM_BASE) as usize;
@@ -667,7 +667,7 @@ fn tlb_non_allineata_non_sconfina() {
         if cpu.sys.el != 1 {
             continue;
         }
-        // Normal RW seguita da una pagina non mappata.
+        // Normal RW followed by an unmapped page.
         let normal = |d: u64| d & 3 == VALID_PAGE && d & (1 << 2) == ATTR_NORMAL && d & (0b10 << 6) == 0;
         let Some(i) = (1..511).find(|&i| normal(pte(&ram, i)) && pte(&ram, i + 1) == 0) else { continue };
         let page = DATA + i * 0x1000;
@@ -682,29 +682,29 @@ fn tlb_non_allineata_non_sconfina() {
         cpu.x[2] = page + 0xffd;
         let want = run_interp(cpu.clone(), ram.clone());
         let (got, _) = run_jit(cpu, &ram, seed);
-        assert!(!want.events.is_empty(), "l'accesso a cavallo deve dare un fault");
-        assert_eq!(got, want, "seme {seed}");
+        assert!(!want.events.is_empty(), "the straddling access must fault");
+        assert_eq!(got, want, "seed {seed}");
         checked += 1;
         if checked == 8 {
             break;
         }
     }
-    assert!(checked > 0, "nessun caso adatto");
+    assert!(checked > 0, "no suitable case");
 }
 
-/// MSR DAIFClr che smaschera un interrupt (ADR 0024): il blocco esce con
-/// YIELD subito dopo l'istruzione, così la macchina ricontrolla gli
-/// interrupt al confine giusto (lo stesso dell'interprete). DAIFSet, e
-/// DAIFClr di un bit già a zero, non escono.
+/// MSR DAIFClr that unmasks an interrupt (ADR 0024): the block exits with
+/// YIELD right after the instruction, so the machine checks the
+/// interrupts again at the right boundary (the same as the interpreter). DAIFSet, and
+/// DAIFClr of a bit already zero, do not exit.
 #[test]
 fn daifclr_esce_dopo_l_istruzione() {
-    let seed = (0..100).find(|&s| setup(s).0.sys.el == 1).expect("un caso a EL1");
+    let seed = (0..100).find(|&s| setup(s).0.sys.el == 1).expect("a case at EL1");
     let (mut cpu, mut ram) = setup(seed);
     let prog = [
         0xd5034fdfu32, // msr DAIFSet, #0xf
         0xd50342ff,    // msr DAIFClr, #0x2
         0x91000400,    // add x0, x0, #1
-        0xd50342ff,    // msr DAIFClr, #0x2 (I già a 0)
+        0xd50342ff,    // msr DAIFClr, #0x2 (I already 0)
         0x91000400,    // add x0, x0, #1
         0x14000000,    // b .
     ];
@@ -722,11 +722,11 @@ fn daifclr_esce_dopo_l_istruzione() {
     let mut mmu = Mmu::new(Mmu::PA_BITS_CORTEX_A53);
     let x0 = cpu.x[0];
     let r = jit.run(&mut cpu, &mut mmu, &mut phys, 100);
-    assert_eq!((r.steps, r.next), (2, Next::Jit), "YIELD dopo DAIFClr");
+    assert_eq!((r.steps, r.next), (2, Next::Jit), "YIELD after DAIFClr");
     assert_eq!(cpu.pc, START + 8);
-    assert_eq!(cpu.sys.daif, 0x340, "D, A, F mascherati, I no");
+    assert_eq!(cpu.sys.daif, 0x340, "D, A, F masked, I not");
     assert_eq!(jit.stats().yields, 1);
-    // Il resto fino al limite: nessun'altra uscita.
+    // The rest up to the limit: no other exit.
     let r = jit.run(&mut cpu, &mut mmu, &mut phys, 10);
     assert_eq!((r.steps, r.next), (10, Next::Jit));
     assert_eq!(cpu.x[0], x0.wrapping_add(2));

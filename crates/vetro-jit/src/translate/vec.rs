@@ -1,16 +1,16 @@
-//! SIMD intero in linea con le istruzioni WASM a 128 bit (ADR 0026).
+//! Integer SIMD inline with the 128-bit WASM instructions (ADR 0026).
 //!
-//! Solo operazioni esatte per costruzione (niente flag: le saturanti, che
-//! scrivono FPSR.QC, restano a `env.simd`), con la semantica di
-//! `vetro_cpu::simd::int`: con Q = 0 la metà alta del risultato è zero.
-//! Quello che non ha una forma qui torna `false` e lo esegue l'interprete
-//! dalla regione ([`Tx::simd_helper`]).
+//! Only operations that are exact by construction (no flags: the saturating ones,
+//! which write FPSR.QC, stay with `env.simd`), with the semantics of
+//! `vetro_cpu::simd::int`: with Q = 0 the high half of the result is zero.
+//! Whatever has no form here returns `false` and the interpreter executes it
+//! from the region ([`Tx::simd_helper`]).
 
 use super::*;
 use crate::wasm::v;
 
-/// Opcode WASM per dimensione dell'elemento (8, 16, 32, 64 bit); `None` se
-/// l'operazione non esiste a quella dimensione.
+/// WASM opcode per element size (8, 16, 32, 64 bits); `None` if
+/// the operation does not exist at that size.
 type BySize = [Option<u32>; 4];
 
 const ADD: BySize = [Some(v::I8X16_ADD), Some(v::I16X8_ADD), Some(v::I32X4_ADD), Some(v::I64X2_ADD)];
@@ -35,10 +35,10 @@ const SHR_U: BySize =
 const SPLAT: BySize =
     [Some(v::I8X16_SPLAT), Some(v::I16X8_SPLAT), Some(v::I32X4_SPLAT), Some(v::I64X2_SPLAT)];
 
-/// Indici di `i8x16.shuffle` per un risultato di `n` elementi di `eb` byte
-/// in cui l'elemento `e` viene dall'elemento `src(e)` della concatenazione
-/// (primo operando: elementi 0..16/eb, secondo: i successivi). Gli elementi
-/// oltre `n` ripetono il primo (il chiamante li azzera se servono).
+/// `i8x16.shuffle` indices for a result of `n` elements of `eb` bytes
+/// in which element `e` comes from element `src(e)` of the concatenation
+/// (first operand: elements 0..16/eb, second: the following ones). The elements
+/// beyond `n` repeat the first (the caller zeroes them if needed).
 fn lanes(n: usize, eb: usize, src: impl Fn(usize) -> usize) -> [u8; 16] {
     let mut l = [0u8; 16];
     for e in 0..16 / eb {
@@ -51,19 +51,19 @@ fn lanes(n: usize, eb: usize, src: impl Fn(usize) -> usize) -> [u8; 16] {
 }
 
 impl Tx {
-    /// Vr (v128) sullo stack.
+    /// Vr (v128) on the stack.
     pub(super) fn vld(&mut self, r: u8) {
         self.simd = true;
         self.f.local_get(L_STATE).v128_load(off::V + 16 * r as u32);
     }
 
-    /// Prima di calcolare un valore da scrivere in un registro V: l'indirizzo.
+    /// Before computing a value to write into a V register: the address.
     pub(super) fn vst_begin(&mut self) {
         self.simd = true;
         self.f.local_get(L_STATE);
     }
 
-    /// Scrive il v128 in cima allo stack in Vd (metà alta a zero se `!q`).
+    /// Writes the v128 on top of the stack into Vd (high half zeroed if `!q`).
     pub(super) fn vst_end(&mut self, rd: u8, q: bool) {
         if !q {
             self.f.v128_const(u64::MAX, 0).v(v::AND);
@@ -71,8 +71,8 @@ impl Tx {
         self.f.v128_store(off::V + 16 * rd as u32);
     }
 
-    /// Due v128 sullo stack: se differiscono (solo nella metà bassa con
-    /// `!q`), FPSR.QC = 1 (flag cumulativo della saturazione).
+    /// Two v128 on the stack: if they differ (only in the low half with
+    /// `!q`), FPSR.QC = 1 (cumulative saturation flag).
     fn qc_if_differ(&mut self, q: bool) {
         self.f.v(v::XOR);
         if !q {
@@ -84,7 +84,7 @@ impl Tx {
         self.f.end();
     }
 
-    /// Vd = op(Vn, Vm) con un'istruzione WASM binaria.
+    /// Vd = op(Vn, Vm) with a binary WASM instruction.
     fn vbin(&mut self, op_: u32, rn: u8, rm: u8, rd: u8, q: bool) {
         self.vst_begin();
         self.vld(rn);
@@ -93,8 +93,8 @@ impl Tx {
         self.vst_end(rd, q);
     }
 
-    /// Istruzioni SIMD intere in linea; falso se non ce n'è una forma (le
-    /// esegue `env.simd`).
+    /// Inline integer SIMD instructions; false if there is no form for them (they
+    /// are executed by `env.simd`).
     pub(super) fn vec_int_inline(&mut self, i: IntInsn) -> bool {
         match i {
             IntInsn::ThreeSame { scalar: false, q, u, size, opcode, rm, rn, rd } => {
@@ -132,7 +132,7 @@ impl Tx {
                 let n = (if q { 16 } else { 8 }) / eb;
                 let part = (opcode >> 2) as usize;
                 let l = match opcode & 3 {
-                    // UZP: elementi pari (o dispari) di concat(b:a)
+                    // UZP: even (or odd) elements of concat(b:a)
                     1 => lanes(n, eb, |e| {
                         let k = 2 * e + part;
                         if k < n { k } else { 16 / eb + k - n }
@@ -160,7 +160,7 @@ impl Tx {
                 let l: [u8; 16] = if q {
                     core::array::from_fn(|j| (pos + j) as u8)
                 } else {
-                    // concat(hi.lo : lo.lo) >> pos, 8 byte.
+                    // concat(hi.lo : lo.lo) >> pos, 8 bytes.
                     core::array::from_fn(|j| {
                         let k = (pos + j) % 16;
                         if k < 8 { k as u8 } else { (16 + k - 8) as u8 }
@@ -174,8 +174,8 @@ impl Tx {
                 true
             }
             IntInsn::Tbl { q, len, tbx, rm, rn, rd } => {
-                // swizzle dà 0 per gli indici >= 16: la tabella k usa
-                // indice - 16k (gli indici fuori tabella danno 0 in tutte).
+                // swizzle gives 0 for indices >= 16: table k uses
+                // index - 16k (out-of-table indices give 0 in all of them).
                 let regs = len as u32 + 1;
                 self.vst_begin();
                 for k in 0..regs {
@@ -191,7 +191,7 @@ impl Tx {
                     }
                 }
                 if tbx {
-                    // Indici fuori tabella: il byte di Vd.
+                    // Out-of-table indices: the byte of Vd.
                     self.vld(rd);
                     self.vld(rm);
                     let b = (16 * regs) as u64 * 0x0101_0101_0101_0101;
@@ -209,7 +209,7 @@ impl Tx {
     fn three_same(&mut self, q: bool, u: bool, size: u8, opcode: u8, rm: u8, rn: u8, rd: u8) -> bool {
         let s = size as usize;
         if opcode == 0b00011 {
-            // Logiche su tutto il registro.
+            // Logical operations on the whole register.
             self.vst_begin();
             match (u, size) {
                 (false, 0) => {
@@ -328,9 +328,9 @@ impl Tx {
                 true
             }
             (_, 0b00001 | 0b00101) if size <= 1 => {
-                // [SU]Q{ADD,SUB} a 8 e 16 bit: saturanti del WASM; QC se una
-                // corsia differisce dalla somma modulare (c'è saturazione
-                // esattamente quando differiscono).
+                // [SU]Q{ADD,SUB} at 8 and 16 bits: WASM's saturating ops; QC if a
+                // lane differs from the modular sum (there is saturation
+                // exactly when they differ).
                 let (sat_op, wrap) = match (u, opcode, size) {
                     (false, 0b00001, 0) => (v::I8X16_ADD_SAT_S, v::I8X16_ADD),
                     (true, 0b00001, 0) => (v::I8X16_ADD_SAT_U, v::I8X16_ADD),
@@ -354,11 +354,11 @@ impl Tx {
                 true
             }
             (true, 0b00010) if size <= 1 => {
-                // URHADD: (a + b + 1) >> 1 senza traboccare
+                // URHADD: (a + b + 1) >> 1 without overflowing
                 bin(self, [Some(v::I8X16_AVGR_U), Some(v::I16X8_AVGR_U), None, None])
             }
             (_, 0b10111 | 0b10100 | 0b10101) => {
-                // ADDP, [SU]MAXP, [SU]MINP: a coppie di concat(a, b)
+                // ADDP, [SU]MAXP, [SU]MINP: pairwise over concat(a, b)
                 let ops = match (u, opcode) {
                     (false, 0b10111) => ADD,
                     (true, 0b10111) => return false,
@@ -371,7 +371,7 @@ impl Tx {
                 let eb = 1usize << size;
                 let n = (if q { 16 } else { 8 }) / eb;
                 let half = n / 2;
-                // coppia e: elementi 2e, 2e+1 di a (e < n/2) o di b
+                // pair e: elements 2e, 2e+1 of a (e < n/2) or of b
                 let src = |e: usize, o: usize| {
                     if e < half { 2 * e + o } else { 16 / eb + 2 * (e - half) + o }
                 };
@@ -400,7 +400,7 @@ impl Tx {
             t.vst_end(rd, q);
             true
         };
-        // Confronto con zero: op(Vn, 0) (op su (x, 0)) o op(0, Vn).
+        // Comparison with zero: op(Vn, 0) (op on (x, 0)) or op(0, Vn).
         let cmp0 = |t: &mut Tx, o: Option<u32>, zero_first: bool| -> bool {
             let Some(o) = o else { return false };
             t.vst_begin();
@@ -448,7 +448,7 @@ impl Tx {
                 true
             }
             (_, 0b00010 | 0b00110) if size <= 1 => {
-                // [SU]ADDLP, [SU]ADALP: somme a coppie estese
+                // [SU]ADDLP, [SU]ADALP: widening pairwise sums
                 let o = match (u, size) {
                     (false, 0) => v::I16X8_EXTADD_PAIRWISE_I8X16_S,
                     (true, 0) => v::I16X8_EXTADD_PAIRWISE_I8X16_U,
@@ -468,10 +468,10 @@ impl Tx {
                 true
             }
             (_, 0b10100) | (true, 0b10010) if size <= 1 => {
-                // SQXTN(2) (u=0, 10100), SQXTUN(2) (u=1, 10010): da 2*esize
-                // con saturazione (narrow del WASM, che legge l'ingresso con
-                // segno); UQXTN (u=1, 10100) no. QC se il risultato
-                // differisce dal troncamento.
+                // SQXTN(2) (u=0, 10100), SQXTUN(2) (u=1, 10010): from 2*esize
+                // with saturation (WASM's narrow, which reads the input as
+                // signed); UQXTN (u=1, 10100) no. QC if the result
+                // differs from the truncation.
                 let narrow = match (u, opcode, size) {
                     (false, 0b10100, 0) => v::I8X16_NARROW_I16X8_S,
                     (true, 0b10010, 0) => v::I8X16_NARROW_I16X8_U,
@@ -481,7 +481,7 @@ impl Tx {
                 };
                 let eb = 1usize << size;
                 let trunc = lanes(8 / eb, eb, |e| 2 * e);
-                // Risultato (8 byte bassi) in L_V0, troncamento accanto.
+                // Result (low 8 bytes) in L_V0, truncation next to it.
                 self.vld(rn);
                 self.vld(rn);
                 self.f.v(narrow).local_tee(L_V0);
@@ -491,7 +491,7 @@ impl Tx {
                 self.qc_if_differ(false);
                 self.vst_begin();
                 if q {
-                    // XTN2: metà bassa di Vd, poi il risultato.
+                    // XTN2: low half of Vd, then the result.
                     self.vld(rd);
                     self.f.local_get(L_V0);
                     self.f
@@ -504,13 +504,13 @@ impl Tx {
                 true
             }
             (false, 0b10010) => {
-                // XTN/XTN2: la metà bassa di ogni elemento da 2*esize.
+                // XTN/XTN2: the low half of each element from 2*esize.
                 let eb = 1usize << size;
                 let n = 8 / eb;
                 let l = lanes(n, eb, |e| 2 * e);
                 self.vst_begin();
                 if q {
-                    // XTN2: metà bassa di Vd, poi i risultati nella metà alta.
+                    // XTN2: low half of Vd, then the results in the high half.
                     self.vld(rd);
                     self.vld(rn);
                     self.vld(rn);
@@ -534,7 +534,7 @@ impl Tx {
         let s = size as usize;
         let eb = 1usize << size;
         let n = (if q { 16 } else { 8 }) / eb;
-        // Operazione di riduzione e dimensione del risultato.
+        // Reduction operation and result size.
         let (o, res_bytes, widen) = match (u, opcode) {
             (_, 0b11011) => (ADD[s], eb, None),
             (false, 0b01010) => (MAX_S[s], eb, None),
@@ -542,7 +542,7 @@ impl Tx {
             (false, 0b11010) => (MIN_S[s], eb, None),
             (true, 0b11010) => (MIN_U[s], eb, None),
             (_, 0b00011) if size <= 1 => {
-                // [SU]ADDLV: prima le somme a coppie estese, poi le somme.
+                // [SU]ADDLV: first the widening pairwise sums, then the sums.
                 let w = match (u, size) {
                     (false, 0) => v::I16X8_EXTADD_PAIRWISE_I8X16_S,
                     (true, 0) => v::I16X8_EXTADD_PAIRWISE_I8X16_U,
@@ -558,10 +558,10 @@ impl Tx {
         self.vld(rn);
         if !q {
             if opcode == 0b11011 || opcode == 0b00011 {
-                // Somme: metà alta a zero.
+                // Sums: high half zeroed.
                 self.f.v128_const(u64::MAX, 0).v(v::AND);
             } else {
-                // Massimi e minimi: la metà bassa ripetuta.
+                // Maxima and minima: the low half repeated.
                 self.f.local_tee(L_V0);
                 self.f.local_get(L_V0);
                 self.f.shuffle(core::array::from_fn(|j| (j % 8) as u8));
@@ -573,7 +573,7 @@ impl Tx {
             self.f.v(w);
             ebw = 2 * eb;
         }
-        // Piega a metà finché resta un elemento.
+        // Fold in half until one element remains.
         while width > ebw {
             width /= 2;
             self.f.local_tee(L_V0);
@@ -616,7 +616,7 @@ impl Tx {
                     self.f.v128_const(0, 0);
                 } else {
                     self.vld(rn);
-                    // SSHR #esize: come #(esize - 1), il segno ovunque.
+                    // SSHR #esize: like #(esize - 1), the sign everywhere.
                     self.f.i32_const(shift.min(esize - 1) as i32).v(sh);
                 }
                 if opcode == 0b00010 {
@@ -626,8 +626,8 @@ impl Tx {
                 true
             }
             (_, 0b10100) => {
-                // [SU]SHLL(2) #shift, UXTL/SXTL: estensione della metà
-                // bassa (o alta) e shift a sinistra.
+                // [SU]SHLL(2) #shift, UXTL/SXTL: extension of the low
+                // (or high) half and shift left.
                 let ext = match (s, u, q) {
                     (0, false, false) => v::I16X8_EXTEND_LOW_I8X16_S,
                     (0, false, true) => v::I16X8_EXTEND_HIGH_I8X16_S,
@@ -654,7 +654,7 @@ impl Tx {
                 true
             }
             (false, 0b10000) => {
-                // SHRN(2) #shift: esize è la destinazione; elementi da 2*esize.
+                // SHRN(2) #shift: esize is the destination; elements from 2*esize.
                 let Some(sh) = SHR_U[s + 1] else { return false };
                 let eb = 1usize << s;
                 let l = lanes(8 / eb, eb, |e| 2 * e);
@@ -678,20 +678,20 @@ impl Tx {
         }
     }
 
-    /// LD1/ST1 di 1-4 registri interi, LD1R, LD1/ST1 di una corsia (una
-    /// struttura: `selem` = 1), come `simd::ldst::exec`. I load leggono
-    /// tutto prima di scrivere i registri (un fault non lascia nulla di
-    /// cambiato: l'interprete rifà l'istruzione e ottiene il suo stato); gli
-    /// store scrivono in ordine (rifatti dall'interprete, riscrivono gli
-    /// stessi byte). Accessi da 8 o 16 byte invece che per elemento: stessi
-    /// byte, e dove un accesso largo fallirebbe e quelli per elemento no
-    /// (allineamento) decide l'interprete. Il writeback dopo l'ultimo
-    /// accesso.
+    /// LD1/ST1 of 1-4 integer registers, LD1R, LD1/ST1 of one lane (one
+    /// structure: `selem` = 1), like `simd::ldst::exec`. The loads read
+    /// everything before writing the registers (a fault leaves nothing
+    /// changed: the interpreter redoes the instruction and gets its state); the
+    /// stores write in order (redone by the interpreter, they rewrite the
+    /// same bytes). 8- or 16-byte accesses instead of per element: same
+    /// bytes, and where a wide access would fail and per-element ones would not
+    /// (alignment) the interpreter decides. The writeback after the last
+    /// access.
     pub(super) fn vec_struct(&mut self, m: VecMemInsn) {
         use vetro_cpu::simd::Post;
         let (rn, post) = match m {
             VecMemInsn::Multi { rn, post, .. } | VecMemInsn::Single { rn, post, .. } => (rn, post),
-            other => unreachable!("non è una struttura: {other:?}"),
+            other => unreachable!("not a structure: {other:?}"),
         };
         self.sp_check(rn);
         let was_ok = self.sp_ok;
@@ -759,7 +759,7 @@ impl Tx {
                     }
                 }
                 if load {
-                    // Tutti i load riusciti: ora i registri.
+                    // All loads succeeded: now the registers.
                     for r in 0..rpt as u32 {
                         let reg = (rt as u32 + r) % 32;
                         self.vst_begin();
@@ -778,7 +778,7 @@ impl Tx {
                         if scale < 3 {
                             self.f.op(op::I32_WRAP_I64);
                         }
-                        self.f.v(SPLAT[scale as usize].expect("tutte le dimensioni"));
+                        self.f.v(SPLAT[scale as usize].expect("all sizes"));
                         self.vst_end(rt, q);
                     } else {
                         self.v_insert(rt, index, 8 * bytes, t64(5));
@@ -788,7 +788,7 @@ impl Tx {
                     self.v_elem(rt, index, 8 * bytes);
                     self.f.local_set(t64(7));
                     if post == Post::None {
-                        // Store unico: STOP subito dopo.
+                        // Single store: STOP right after.
                         self.st(base, bytes, t64(7), None);
                         store = false;
                     } else {
@@ -810,12 +810,12 @@ impl Tx {
         }
     }
 
-    /// LD2..LD4/ST2..ST4 (strutture multiple, `selem` registri da `rt`,
-    /// elementi di `eb` byte): la memoria in blocchi da 16 byte (o 8), e i
-    /// registri ne sono le permutazioni (con Q = 0 metà registro): il byte
-    /// `j` dell'elemento `e` del registro `s` sta all'offset
-    /// `(e × selem + s) × eb + j`. Load: tutti gli accessi, poi i registri;
-    /// store: i blocchi in ordine, in `t32(0)` se uno chiede STOP.
+    /// LD2..LD4/ST2..ST4 (multiple structures, `selem` registers from `rt`,
+    /// elements of `eb` bytes): the memory in 16-byte (or 8-byte) blocks, and the
+    /// registers are permutations of it (with Q = 0 half a register): byte
+    /// `j` of element `e` of register `s` is at offset
+    /// `(e × selem + s) × eb + j`. Load: all the accesses, then the registers;
+    /// store: the blocks in order, in `t32(0)` if one asks for STOP.
     #[allow(clippy::too_many_arguments)]
     fn vec_interleaved(&mut self, load: bool, q: bool, selem: u32, eb: u32, rt: u8, base: u32, addr: u32) {
         let bpr = if q { 16 } else { 8 };
@@ -823,9 +823,9 @@ impl Tx {
         let chunks = total.div_ceil(16);
         let chunk_l = |c: u32| L_V0 + 2 + c;
         let reg = |s: u32| ((rt as u32 + s) % 32) as u8;
-        // Sorgente del byte `j` (0..16) di un risultato fatto di pezzi da 16
-        // byte: `src(j)` = (pezzo, byte nel pezzo), o None (byte da azzerare).
-        // Due livelli di shuffle: coppie di pezzi, poi le due coppie.
+        // Source of byte `j` (0..16) of a result made of 16-byte
+        // pieces: `src(j)` = (piece, byte in the piece), or None (byte to zero).
+        // Two levels of shuffle: pairs of pieces, then the two pairs.
         let gather =
             |t: &mut Tx, piece: &dyn Fn(u32) -> u32, n: u32, src: &dyn Fn(usize) -> Option<(u32, u32)>| {
                 let pairs = n.div_ceil(2);
@@ -845,7 +845,7 @@ impl Tx {
                 }
             };
         if load {
-            // Blocchi da 16 byte (l'ultimo da 8 con Q = 0 e selem dispari).
+            // 16-byte blocks (the last one of 8 with Q = 0 and odd selem).
             for c in 0..chunks {
                 self.f.local_get(base);
                 if c > 0 {
@@ -862,7 +862,7 @@ impl Tx {
                 self.f.v128_const(0, 0).local_get(t64(5)).lane(v::I64X2_REPLACE_LANE, 0);
                 self.f.local_get(t64(3)).lane(v::I64X2_REPLACE_LANE, 1).local_set(chunk_l(c));
             }
-            // Registro s: il byte j (j < bpr) viene dall'offset
+            // Register s: byte j (j < bpr) comes from offset
             // ((j / eb) × selem + s) × eb + j % eb.
             for s in 0..selem {
                 let src = |j: usize| -> Option<(u32, u32)> {
@@ -874,22 +874,22 @@ impl Tx {
                 };
                 gather(self, &chunk_l, chunks, &src);
                 self.f.local_set(L_V0 + 1);
-                // Il registro dopo tutti i load (in L_V0 + 2 + chunks + s non
-                // c'è posto: si scrive alla fine, dai pezzi ancora intatti).
+                // The register after all loads (in L_V0 + 2 + chunks + s there is
+                // no room: it is written at the end, from the pieces still intact).
                 self.vst_begin();
                 self.f.local_get(L_V0 + 1);
                 self.vst_end(reg(s), q);
             }
         } else {
             self.f.i32_const(0).local_set(t32(0));
-            // I registri nei temporanei, poi i blocchi.
+            // The registers in the temporaries, then the blocks.
             for s in 0..selem {
                 self.vld(reg(s));
                 self.f.local_set(L_V0 + 2 + s);
             }
             for c in 0..chunks {
-                // Byte j del blocco c: offset o = 16c + j, elemento m = o / eb
-                // del registro m % selem, byte (m / selem) × eb + o % eb.
+                // Byte j of block c: offset o = 16c + j, element m = o / eb
+                // of register m % selem, byte (m / selem) × eb + o % eb.
                 let src = |j: usize| -> Option<(u32, u32)> {
                     let o = 16 * c + j as u32;
                     (o < total).then(|| {
@@ -915,10 +915,10 @@ impl Tx {
         }
     }
 
-    /// DUP da elemento e da registro generale con v128 (i due casi più
-    /// frequenti di `CopyOp`, gli altri restano in `vec_int`).
+    /// DUP from element and from general register with v128 (the two most
+    /// frequent cases of `CopyOp`, the others stay in `vec_int`).
     #[allow(dead_code)]
     fn splat_op(esize: u32) -> u32 {
-        SPLAT[esize.trailing_zeros() as usize - 3].expect("tutte le dimensioni")
+        SPLAT[esize.trailing_zeros() as usize - 3].expect("all sizes")
     }
 }

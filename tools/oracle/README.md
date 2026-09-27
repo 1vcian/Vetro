@@ -1,17 +1,17 @@
-# Oracolo QEMU
+# QEMU oracle
 
-L'oracolo è `qemu-aarch64` (QEMU user mode), che esiste solo su Linux.
+The oracle is `qemu-aarch64` (QEMU user mode), which exists only on Linux.
 
-- **Linux / CI**: `apt-get install qemu-user`. I test lo trovano nel PATH.
-- **macOS**: con Docker attivo,
+- **Linux / CI**: `apt-get install qemu-user`. The tests find it in the PATH.
+- **macOS**: with Docker running,
 
   ```sh
   export VETRO_QEMU_AARCH64="$PWD/tools/oracle/qemu-aarch64-docker.sh"
   cargo test -p vetro-diff
   ```
 
-  Il primo avvio costruisce l'immagine `vetro-oracle` da questo Dockerfile.
+  The first run builds the `vetro-oracle` image from this Dockerfile.
 
-Senza oracolo i test differenziali stampano `SKIP` e passano. Con
-`VETRO_REQUIRE_ORACLE=1` (impostato in CI) falliscono: in CI uno skip non
-deve mai sembrare un successo.
+Without an oracle the differential tests print `SKIP` and pass. With
+`VETRO_REQUIRE_ORACLE=1` (set in CI) they fail: in CI a skip must never
+look like a success.

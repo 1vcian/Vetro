@@ -1,23 +1,23 @@
-//! La rete del guest sotto Vetro: virtio-net collegato allo stack di
-//! `vetro-net` con il sinkhole, esercitato dal kernel guest con gli strumenti
-//! di BusyBox. È la parte che il confronto con QEMU (`vetro.rs`, autotest:
-//! DHCP e ping al gateway) non può coprire, perché con `-netdev user` QEMU
-//! manda DNS e TCP sulla rete vera.
+//! The guest's network under Vetro: virtio-net connected to the
+//! `vetro-net` stack with the sinkhole, exercised by the guest kernel with
+//! BusyBox's tools. It is the part that the comparison with QEMU (`vetro.rs`, self-test:
+//! DHCP and ping to the gateway) cannot cover, because with `-netdev user` QEMU
+//! sends DNS and TCP onto the real network.
 //!
 //! - DHCP (`udhcpc`): 10.0.2.15, gateway 10.0.2.2, DNS 10.0.2.3;
-//! - DNS (`nslookup`): il sinkhole risponde con indirizzi finti in
-//!   198.18.0.0/15, in ordine di prima domanda (ADR 0007);
-//! - HTTP (`wget`): una GET con risposta breve, una GET da 300 KB (più
-//!   della finestra di 64 KiB, somma `cksum` confrontata con l'host), una
-//!   POST da 108 KB (l'host ritrova il corpo byte per byte);
-//! - ICMP (`ping`): gateway e un indirizzo finto;
-//! - l'host verifica il registro degli eventi (DHCP, DNS, connessioni, byte,
-//!   chiusure) e ciò che il sinkhole ha registrato (nome risolto, byte del
-//!   guest);
-//! - determinismo: due esecuzioni danno lo stesso log, le stesse istruzioni
-//!   e lo stesso registro.
+//! - DNS (`nslookup`): the sinkhole answers with fake addresses in
+//!   198.18.0.0/15, in order of first question (ADR 0007);
+//! - HTTP (`wget`): a GET with a short response, a 300 KB GET (more
+//!   than the 64 KiB window, `cksum` checksum compared with the host), a
+//!   108 KB POST (the host finds the body again byte for byte);
+//! - ICMP (`ping`): gateway and a fake address;
+//! - the host checks the event log (DHCP, DNS, connections, bytes,
+//!   closes) and what the sinkhole recorded (resolved name, guest
+//!   bytes);
+//! - determinism: two runs give the same log, the same instructions
+//!   and the same event log.
 //!
-//! Solo in release, come `vetro.rs`.
+//! Release only, like `vetro.rs`.
 
 use std::net::Ipv4Addr;
 
@@ -27,7 +27,7 @@ use vetro_machine::{Devices, Machine, MachineConfig, NetSetup, Stop};
 
 const PHASE_BUDGET: u64 = 6_000_000_000;
 
-/// Corpo della risposta grande (porta 8080): 300 KB deterministici.
+/// Body of the large response (port 8080): 300 KB, deterministic.
 fn big_body() -> Vec<u8> {
     (0..300_000u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8).collect()
 }
@@ -43,8 +43,8 @@ fn reply(body: &[u8]) -> TcpReply {
     TcpReply { on_connect: Vec::new(), on_data: http_ok(body), close_after_reply: true }
 }
 
-/// `cksum` POSIX (CRC-32 MSB-first sul contenuto e sulla lunghezza), come
-/// quello di BusyBox.
+/// POSIX `cksum` (MSB-first CRC-32 over the contents and the length), like
+/// BusyBox's.
 fn posix_cksum(data: &[u8]) -> (u32, usize) {
     let mut crc = 0u32;
     let mut feed = |b: u8| {
@@ -74,15 +74,15 @@ impl Run {
             if let Some(i) = find(&self.log[from.min(self.log.len())..], needle.as_bytes()) {
                 return from + i + needle.len();
             }
-            assert!(self.m.steps < limit, "{needle:?} non arrivato:\n{}", self.tail());
+            assert!(self.m.steps < limit, "{needle:?} did not arrive:\n{}", self.tail());
             let stop = self.m.run(1_000_000);
             self.log.extend(self.m.console_output());
-            assert!(matches!(stop, Stop::Budget), "{stop:?} in attesa di {needle:?}:\n{}", self.tail());
+            assert!(matches!(stop, Stop::Budget), "{stop:?} while waiting for {needle:?}:\n{}", self.tail());
         }
     }
 
-    /// Manda un comando e aspetta il prompt successivo; restituisce la
-    /// posizione dopo il prompt e l'uscita del comando.
+    /// Sends a command and waits for the next prompt; returns the
+    /// position after the prompt and the command's output.
     fn command(&mut self, cmd: &str, from: usize) -> (usize, String) {
         self.m.console_input(format!("{cmd}\n").as_bytes());
         let at = self.until(SHELL_PROMPT, from);
@@ -100,17 +100,17 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
-/// La riga che comincia con `key` nell'uscita (i marcatori sono scritti
-/// `"K"EY=` nel comando, così l'eco non li contiene).
+/// The line that starts with `key` in the output (the markers are written
+/// `"K"EY=` in the command, so the echo does not contain them).
 fn value<'a>(out: &'a str, key: &str) -> &'a str {
     out.lines()
         .find_map(|l| l.strip_prefix(key))
-        .unwrap_or_else(|| panic!("manca {key:?} nell'uscita:\n{out}"))
+        .unwrap_or_else(|| panic!("missing {key:?} in the output:\n{out}"))
         .trim()
 }
 
-/// Esito di una sessione: log, istruzioni e registro degli eventi (in
-/// forma di testo, per il confronto fra esecuzioni).
+/// Outcome of a session: log, instructions and event log (in
+/// text form, for the comparison between runs).
 struct Session {
     log: String,
     steps: u64,
@@ -124,7 +124,7 @@ fn session(image: &[u8], initrd: &[u8]) -> Session {
     net.sinkhole.tcp_by_port.insert(81, reply(b"RICEVUTO\n"));
     let devices = Devices { net: Some(net), ..Devices::default() };
     let mut m = Machine::with_devices(&MachineConfig::default(), &devices);
-    m.load_linux(image, Some(initrd), "console=ttyAMA0 vetro.noautotest").expect("caricamento del kernel");
+    m.load_linux(image, Some(initrd), "console=ttyAMA0 vetro.noautotest").expect("loading the kernel");
     let mut r = Run { m, log: Vec::new() };
     let at = r.until(SHELL_PROMPT, 0);
 
@@ -141,7 +141,7 @@ fn session(image: &[u8], initrd: &[u8]) -> Session {
 
     let (at, out) = r.command("echo \"C\"K=$(wget -q -O - http://grande.example:8080/dati | cksum)", at);
     let (crc, len) = posix_cksum(&big_body());
-    assert_eq!(value(&out, "CK="), format!("{crc} {len}"), "300 KB dal sinkhole al guest");
+    assert_eq!(value(&out, "CK="), format!("{crc} {len}"), "300 KB from the sinkhole to the guest");
 
     let (at, _) = r.command("seq 1 20000 > /tmp/su", at);
     let (at, out) =
@@ -149,13 +149,13 @@ fn session(image: &[u8], initrd: &[u8]) -> Session {
     assert_eq!(value(&out, "POST="), "RICEVUTO");
 
     let (at, out) = r.command("echo \"P\"ING=$(ping -c 2 -W 5 10.0.2.2 | grep -c ttl=)", at);
-    assert_eq!(value(&out, "PING="), "2", "ping al gateway");
+    assert_eq!(value(&out, "PING="), "2", "ping to the gateway");
     let (at, out) = r.command("echo \"F\"INTO=$(ping -c 1 -W 5 198.18.0.1 | grep -c ttl=)", at);
-    assert_eq!(value(&out, "FINTO="), "1", "ping a un indirizzo finto (risponde il sinkhole)");
+    assert_eq!(value(&out, "FINTO="), "1", "ping to a fake address (the sinkhole answers)");
 
-    // Le chiusure TCP finiscono con TIME-WAIT: il guest dorme abbastanza
-    // (in tempo virtuale: la WFI salta alla scadenza) perché lo stack le
-    // registri.
+    // TCP closes end with TIME-WAIT: the guest sleeps long enough
+    // (in virtual time: WFI jumps to the deadline) for the stack to
+    // record them.
     let (_, _) = r.command("sleep 5", at);
 
     r.m.console_input(b"poweroff -f\n");
@@ -173,7 +173,7 @@ fn session(image: &[u8], initrd: &[u8]) -> Session {
     Session { log: normalize(&String::from_utf8_lossy(&r.log)), steps: r.m.steps, events }
 }
 
-/// Ciò che l'host vede: registro degli eventi e registrazioni del sinkhole.
+/// What the host sees: event log and the sinkhole's recordings.
 fn check_host_view(m: &Machine) -> String {
     m.net_view(|s| {
         let stats = s.stats();
@@ -185,7 +185,7 @@ fn check_host_view(m: &Machine) -> String {
             assert!(
                 ev.iter().any(|k| matches!(k, EventKind::Dhcp { message, mac, ip, .. }
                     if *message == msg && *mac == guest_mac && *ip == guest)),
-                "DHCP {msg:?} mancante: {ev:#?}"
+                "DHCP {msg:?} missing: {ev:#?}"
             );
         }
         let answers: Vec<(&str, &[Ipv4Addr])> = ev
@@ -200,7 +200,7 @@ fn check_host_view(m: &Machine) -> String {
         {
             assert!(
                 answers.iter().any(|(n, a)| *n == name && *a == [addr]),
-                "risposta DNS per {name}: {answers:?}"
+                "DNS answer for {name}: {answers:?}"
             );
         }
         let pings: Vec<(Ipv4Addr, bool)> = ev
@@ -215,7 +215,7 @@ fn check_host_view(m: &Machine) -> String {
             [(Ipv4Addr::new(10, 0, 2, 2), true), (Ipv4Addr::new(10, 0, 2, 2), true), (fake(1), true)]
         );
 
-        // Connessioni: nome, porta, byte nei due versi, chiusura pulita.
+        // Connections: name, port, bytes in both directions, clean close.
         let conns: Vec<_> = s.upstream().tcp_connections().collect();
         assert_eq!(conns.len(), 3, "{conns:#?}");
         let expect = [
@@ -241,7 +241,7 @@ fn check_host_view(m: &Machine) -> String {
                     _ => None,
                 })
                 .sum();
-            assert_eq!(data_to_remote, c.from_guest.len() as u64, "{name}: byte nel registro");
+            assert_eq!(data_to_remote, c.from_guest.len() as u64, "{name}: bytes in the event log");
             assert!(
                 ev.iter().any(|k| matches!(k, EventKind::TcpEstablished { id } if *id == c.id)),
                 "{name}: handshake"
@@ -251,42 +251,42 @@ fn check_host_view(m: &Machine) -> String {
                     bytes_to_remote, bytes_to_guest }
                     if *id == c.id && *bytes_to_remote == c.from_guest.len() as u64
                         && *bytes_to_guest == to_guest as u64)),
-                "{name}: chiusura normale nel registro: {ev:#?}"
+                "{name}: normal close in the event log: {ev:#?}"
             );
         }
         assert!(String::from_utf8_lossy(&conns[0].from_guest).starts_with("GET /prova HTTP/1.1\r\n"));
         assert!(String::from_utf8_lossy(&conns[1].from_guest).starts_with("GET /dati HTTP/1.1\r\n"));
         let post = &conns[2].from_guest;
         assert!(String::from_utf8_lossy(post).starts_with("POST /carica HTTP/1.1\r\n"));
-        assert!(post.ends_with(&upload), "corpo della POST ({} byte) diverso", post.len());
+        assert!(post.ends_with(&upload), "POST body ({} bytes) different", post.len());
         eprintln!(
-            "Vetro: {} eventi di rete, {} frame dal guest, {} verso il guest",
+            "Vetro: {} network events, {} frames from the guest, {} to the guest",
             ev.len(),
             stats.frames_in,
             stats.frames_out
         );
         format!("{:?}", s.events())
     })
-    .expect("virtio-net montato")
+    .expect("virtio-net present")
 }
 
 #[test]
 fn rete_del_guest_con_il_sinkhole() {
     if cfg!(debug_assertions) {
-        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "rete sotto Vetro solo in release");
+        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "network under Vetro only in release");
     }
     let Some((image, initrd)) = guest_kernel() else {
         return skip_or_fail(
             "VETRO_REQUIRE_GUEST_KERNEL",
-            "target/guest-kernel mancante: esegui tools/guest-kernel/build.sh",
+            "target/guest-kernel missing: run tools/guest-kernel/build.sh",
         );
     };
     let (image, initrd) = (std::fs::read(image).unwrap(), std::fs::read(initrd).unwrap());
     let a = session(&image, &initrd);
     std::fs::write(repo_root().join("target/guest-kernel/vetro-net.log"), &a.log).unwrap();
-    eprintln!("Vetro: rete esercitata in {} istruzioni", a.steps);
+    eprintln!("Vetro: network exercised in {} instructions", a.steps);
     let b = session(&image, &initrd);
-    assert_eq!(a.steps, b.steps, "istruzioni diverse fra due esecuzioni uguali");
-    assert!(a.log == b.log, "log diversi fra due esecuzioni uguali");
-    assert!(a.events == b.events, "registri di rete diversi fra due esecuzioni uguali");
+    assert_eq!(a.steps, b.steps, "different instructions between two identical runs");
+    assert!(a.log == b.log, "different logs between two identical runs");
+    assert!(a.events == b.events, "different network event logs between two identical runs");
 }

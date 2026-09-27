@@ -1,5 +1,5 @@
-//! Criterio di uscita M0: l'oracolo QEMU si lancia su un ELF statico minimo
-//! e se ne leggono codice di uscita e output.
+//! M0 exit criterion: the QEMU oracle is launched on a minimal static ELF
+//! and its exit code and output are read.
 
 use vetro_diff::a64::{self, sys};
 use vetro_diff::{elf, qemu};

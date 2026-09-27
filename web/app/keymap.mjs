@@ -1,7 +1,7 @@
-// KeyboardEvent.code (posizione fisica del tasto, indipendente dal layout)
-// -> codice Linux KEY_* (include/uapi/linux/input-event-codes.h), quello
-// che virtio-input manda al guest. Il layout lo applica il guest, come con
-// una tastiera USB vera.
+// KeyboardEvent.code (physical position of the key, independent of the layout)
+// -> Linux KEY_* code (include/uapi/linux/input-event-codes.h), the one
+// virtio-input sends to the guest. The layout is applied by the guest, as with
+// a real USB keyboard.
 
 export const KEYMAP = Object.freeze({
   Escape: 1,
@@ -32,15 +32,15 @@ export const KEYMAP = Object.freeze({
   BrowserSearch: 217, MediaSelect: 226,
 });
 
-/** Codice Linux del tasto, o undefined se non ha corrispondente. */
+/** Linux code of the key, or undefined if it has no counterpart. */
 export function evdevCode(code) {
   return Object.hasOwn(KEYMAP, code) ? KEYMAP[code] : undefined;
 }
 
-/** Pulsanti del puntatore: MouseEvent.button -> BTN_*. */
+/** Pointer buttons: MouseEvent.button -> BTN_*. */
 export const BUTTONS = Object.freeze({ 0: 0x110, 1: 0x112, 2: 0x111, 3: 0x113, 4: 0x114 });
 
-/** Coordinata assoluta di virtio-input (0..32767) da una frazione 0..1. */
+/** Absolute virtio-input coordinate (0..32767) from a fraction 0..1. */
 export function absAxis(fraction) {
   return Math.max(0, Math.min(0x7fff, Math.round(fraction * 0x7fff)));
 }

@@ -1,7 +1,7 @@
-//! Una connessione TCP negli snapshot (M6, ADR 0015): stato, sequenze,
-//! finestre, controllo di congestione, dati in transito nei due versi, RTO
-//! e timer. Figlio di `tcp` per vedere i campi privati: chi aggiunge un
-//! campo a [`TcpConn`] lo aggiunge anche qui.
+//! A TCP connection in snapshots (M6, ADR 0015): state, sequences,
+//! windows, congestion control, data in transit in both directions, RTO
+//! and timers. Child of `tcp` to see the private fields: whoever adds a
+//! field to [`TcpConn`] adds it here too.
 
 use vetro_snapshot::{Error, Reader, Result, Writer};
 
@@ -37,7 +37,7 @@ fn state_from(v: u8) -> Result<State> {
         8 => State::TimeWait,
         9 => State::Closed,
         10 => State::SynSent,
-        _ => return Err(Error::invalid(format!("stato TCP {v}"))),
+        _ => return Err(Error::invalid(format!("TCP state {v}"))),
     })
 }
 

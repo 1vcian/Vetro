@@ -1,8 +1,8 @@
-//! Finto guest e validazione indipendente dei frame prodotti dallo stack.
+//! Fake guest and independent validation of the frames produced by the stack.
 //!
-//! Ogni frame che esce dallo stack passa da [`validate`]: lo analizza
-//! `smoltcp::wire` (un'implementazione indipendente) e i checksum vengono
-//! ricalcolati anche qui con una funzione separata da quella del crate.
+//! Every frame that leaves the stack goes through [`validate`]: it is parsed by
+//! `smoltcp::wire` (an independent implementation) and the checksums are
+//! recomputed here too with a function separate from the crate's.
 
 #![allow(dead_code)]
 
@@ -26,7 +26,7 @@ pub fn t(ms: u64) -> VirtualTime {
     VirtualTime::from_millis(ms)
 }
 
-/// Checksum di Internet scritto di nuovo, senza usare il crate.
+/// Internet checksum written again, without using the crate.
 pub fn inet_sum(parts: &[&[u8]]) -> u16 {
     let mut bytes = Vec::new();
     for p in parts {
@@ -52,7 +52,7 @@ fn pseudo(src: Ipv4Addr, dst: Ipv4Addr, proto: u8, len: usize) -> Vec<u8> {
     p
 }
 
-/// Frame prodotto dallo stack, già validato.
+/// Frame produced by the stack, already validated.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Out {
     Arp { op: u16, sender_mac: Mac, sender_ip: Ipv4Addr, target_mac: Mac, target_ip: Ipv4Addr },
@@ -79,7 +79,7 @@ impl Out {
     pub fn tcp(self) -> TcpSeg {
         match self {
             Out::Tcp(s) => s,
-            other => panic!("atteso TCP, arrivato {other:?}"),
+            other => panic!("expected TCP, got {other:?}"),
         }
     }
 }
@@ -88,15 +88,15 @@ fn mac(a: EthernetAddress) -> Mac {
     Mac(a.0)
 }
 
-/// Analizza e valida un frame dello stack con smoltcp e con i checksum
-/// ricalcolati qui. Va in panic su qualsiasi incoerenza.
+/// Parses and validates a frame of the stack with smoltcp and with the checksums
+/// recomputed here. Panics on any inconsistency.
 pub fn validate(frame: &[u8]) -> Out {
     let caps = ChecksumCapabilities::default();
-    let eth = EthernetFrame::new_checked(frame).expect("Ethernet valido");
-    assert_eq!(mac(eth.src_addr()), GW_MAC, "sorgente Ethernet del gateway");
+    let eth = EthernetFrame::new_checked(frame).expect("valid Ethernet");
+    assert_eq!(mac(eth.src_addr()), GW_MAC, "Ethernet source of the gateway");
     match eth.ethertype() {
         EthernetProtocol::Arp => {
-            let p = ArpPacket::new_checked(eth.payload()).expect("ARP valido");
+            let p = ArpPacket::new_checked(eth.payload()).expect("valid ARP");
             let ArpRepr::EthernetIpv4 {
                 operation,
                 source_hardware_addr,
@@ -105,7 +105,7 @@ pub fn validate(frame: &[u8]) -> Out {
                 target_protocol_addr,
             } = ArpRepr::parse(&p).expect("ARP analizzabile")
             else {
-                panic!("ARP non Ethernet/IPv4")
+                panic!("ARP that is not Ethernet/IPv4")
             };
             let op = match operation {
                 ArpOperation::Request => 1,
@@ -122,11 +122,11 @@ pub fn validate(frame: &[u8]) -> Out {
             }
         }
         EthernetProtocol::Ipv4 => {
-            let ip = Ipv4Packet::new_checked(eth.payload()).expect("IPv4 valido");
+            let ip = Ipv4Packet::new_checked(eth.payload()).expect("valid IPv4");
             assert!(ip.verify_checksum(), "checksum IPv4 (smoltcp)");
             let hl = usize::from(ip.header_len());
             assert_eq!(inet_sum(&[&eth.payload()[..hl]]), 0, "checksum IPv4 (ricalcolato)");
-            assert_eq!(usize::from(ip.total_len()), eth.payload().len(), "niente padding né troncamenti");
+            assert_eq!(usize::from(ip.total_len()), eth.payload().len(), "no padding or truncation");
             assert!(ip.dont_frag());
             assert_eq!(ip.hop_limit(), 64);
             let (src, dst) = (ip.src_addr(), ip.dst_addr());
@@ -134,7 +134,7 @@ pub fn validate(frame: &[u8]) -> Out {
             let payload = ip.payload();
             match ip.next_header() {
                 IpProtocol::Tcp => {
-                    let p = TcpPacket::new_checked(payload).expect("TCP valido");
+                    let p = TcpPacket::new_checked(payload).expect("valid TCP");
                     assert!(p.verify_checksum(&isrc, &idst), "checksum TCP (smoltcp)");
                     assert_eq!(
                         inet_sum(&[&pseudo(src, dst, 6, payload.len()), payload]),
@@ -157,9 +157,9 @@ pub fn validate(frame: &[u8]) -> Out {
                     })
                 }
                 IpProtocol::Udp => {
-                    let p = UdpPacket::new_checked(payload).expect("UDP valido");
+                    let p = UdpPacket::new_checked(payload).expect("valid UDP");
                     assert!(p.verify_checksum(&isrc, &idst), "checksum UDP (smoltcp)");
-                    assert_ne!(p.checksum(), 0, "checksum UDP presente");
+                    assert_ne!(p.checksum(), 0, "UDP checksum present");
                     assert_eq!(
                         inet_sum(&[&pseudo(src, dst, 17, payload.len()), payload]),
                         0,
@@ -173,7 +173,7 @@ pub fn validate(frame: &[u8]) -> Out {
                     }
                 }
                 IpProtocol::Icmp => {
-                    let p = Icmpv4Packet::new_checked(payload).expect("ICMP valido");
+                    let p = Icmpv4Packet::new_checked(payload).expect("valid ICMP");
                     assert!(p.verify_checksum(), "checksum ICMP (smoltcp)");
                     assert_eq!(inet_sum(&[payload]), 0, "checksum ICMP (ricalcolato)");
                     Out::Icmp {
@@ -185,14 +185,14 @@ pub fn validate(frame: &[u8]) -> Out {
                         data: payload[8..].to_vec(),
                     }
                 }
-                other => panic!("protocollo IP inatteso {other:?}"),
+                other => panic!("unexpected IP protocol {other:?}"),
             }
         }
-        other => panic!("ethertype inatteso {other:?}"),
+        other => panic!("unexpected ethertype {other:?}"),
     }
 }
 
-/// Tutti i frame in attesa, validati.
+/// All the pending frames, validated.
 pub fn drain<U: Upstream>(stack: &mut Stack<U>) -> Vec<Out> {
     std::iter::from_fn(|| stack.pop_frame()).map(|f| validate(&f)).collect()
 }
@@ -201,7 +201,7 @@ pub fn config() -> NetConfig {
     NetConfig { seed: 42, ..NetConfig::default() }
 }
 
-/// Il finto guest: costruisce i frame come li manderebbe Linux.
+/// The fake guest: builds frames as Linux would send them.
 pub struct Guest;
 
 impl Guest {
@@ -231,13 +231,13 @@ impl Guest {
     }
 }
 
-/// Estremo TCP del finto guest, pilotato a mano dai test.
+/// TCP endpoint of the fake guest, driven by hand by the tests.
 pub struct Client {
     pub sport: u16,
     pub dst: SocketAddrV4,
-    /// Prossimo numero di sequenza da mandare.
+    /// Next sequence number to send.
     pub seq: u32,
-    /// Prossimo byte atteso dallo stack.
+    /// Next byte expected by the stack.
     pub ack: u32,
     pub window: u16,
     pub mss: u16,
@@ -274,9 +274,9 @@ impl Client {
         self.segment(self.seq, F_SYN, b"")
     }
 
-    /// Accetta il SYN-ACK e restituisce l'ACK finale dell'handshake.
+    /// Accepts the SYN-ACK and returns the final ACK of the handshake.
     pub fn on_syn_ack(&mut self, s: &TcpSeg) -> Vec<u8> {
-        assert!(s.syn && !s.rst, "atteso SYN-ACK: {s:?}");
+        assert!(s.syn && !s.rst, "expected SYN-ACK: {s:?}");
         assert_eq!(s.ack, Some(self.seq.wrapping_add(1)));
         self.seq = self.seq.wrapping_add(1);
         self.ack = s.seq.wrapping_add(1);
@@ -295,9 +295,9 @@ impl Client {
         f
     }
 
-    /// Prende i dati (e l'eventuale FIN) di un segmento in ordine.
+    /// Takes the data (and any FIN) of an in-order segment.
     pub fn take(&mut self, s: &TcpSeg) {
-        assert_eq!(s.seq, self.ack, "segmento fuori ordine: {s:?}");
+        assert_eq!(s.seq, self.ack, "out-of-order segment: {s:?}");
         self.ack = self.ack.wrapping_add(s.payload.len() as u32 + u32::from(s.fin));
     }
 

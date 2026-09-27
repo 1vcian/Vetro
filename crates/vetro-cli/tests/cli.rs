@@ -1,4 +1,4 @@
-//! Il comando `vetro run`: le CPU viste dal guest non dipendono dall'host.
+//! The `vetro run` command: the CPUs seen by the guest don't depend on the host.
 
 use std::process::Command;
 
@@ -8,9 +8,9 @@ fn busybox() -> Option<std::path::PathBuf> {
         return Some(p);
     }
     if std::env::var("VETRO_REQUIRE_GUEST_BINS").is_ok_and(|v| v == "1") {
-        panic!("target/guest-bins/busybox mancante (tools/guest-bins/build.sh)");
+        panic!("target/guest-bins/busybox missing (tools/guest-bins/build.sh)");
     }
-    eprintln!("SKIP: target/guest-bins/busybox mancante");
+    eprintln!("SKIP: target/guest-bins/busybox missing");
     None
 }
 
@@ -32,6 +32,6 @@ fn cpu_del_guest_deterministiche() {
     if busybox().is_none() {
         return;
     }
-    assert_eq!(nproc(&[]), "1\n", "per default una CPU, qualunque sia l'host");
+    assert_eq!(nproc(&[]), "1\n", "one CPU by default, whatever the host");
     assert_eq!(nproc(&["--cpus=3"]), "3\n");
 }

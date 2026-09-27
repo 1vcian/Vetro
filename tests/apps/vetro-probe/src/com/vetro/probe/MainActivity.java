@@ -18,10 +18,10 @@ import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 
 /**
- * App di prova per le analisi dall'esterno di Vetro (M7 TLS, M8 Binder).
- * All'avvio, in un thread: legge appunti e ANDROID_ID (transazioni Binder
- * sensibili) e fa una POST HTTPS con corpo JSON (testo in chiaro dagli
- * hook TLS). Vedi README.md.
+ * Test app for Vetro's analyses from the outside (M7 TLS, M8 Binder).
+ * At startup, in a thread: reads the clipboard and ANDROID_ID (sensitive
+ * Binder transactions) and makes an HTTPS POST with a JSON body (plaintext
+ * from the TLS hooks). See README.md.
  */
 public class MainActivity extends Activity {
     static final String TAG = "vetro-probe";
@@ -35,7 +35,7 @@ public class MainActivity extends Activity {
     }
 
     void run(String host) {
-        // M8: appunti (IClipboard.getPrimaryClip via Binder).
+        // M8: clipboard (IClipboard.getPrimaryClip via Binder).
         String clip = "";
         try {
             ClipboardManager cb = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
@@ -46,7 +46,7 @@ public class MainActivity extends Activity {
         } catch (Throwable t) {
             Log.w(TAG, "appunti", t);
         }
-        // M8: ANDROID_ID (IContentProvider.call verso Settings via Binder).
+        // M8: ANDROID_ID (IContentProvider.call to Settings via Binder).
         String androidId = "";
         try {
             androidId = Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
@@ -55,7 +55,7 @@ public class MainActivity extends Activity {
         }
         Log.i(TAG, "appunti=" + clip + " android_id=" + androidId);
 
-        // M7: POST HTTPS con corpo JSON (chiaro dagli hook TLS).
+        // M7: HTTPS POST with a JSON body (plaintext from the TLS hooks).
         String body = "{\"android_id\":\"" + androidId + "\",\"clip\":\"" + clip + "\",\"ts\":1}";
         try {
             trustOurCa();
@@ -76,10 +76,10 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Per la sola prova: accetta ogni certificato, così la connessione si
-     * completa contro l'endpoint TLS della sinkhole (il chiaro viene dagli
-     * hook, non dai record). In produzione userebbe la CA di sviluppo di
-     * Vetro nel trust store.
+     * For the test only: accepts every certificate, so the connection
+     * completes against the sinkhole's TLS endpoint (the plaintext comes from
+     * the hooks, not from the records). In production it would use Vetro's
+     * development CA in the trust store.
      */
     void trustOurCa() throws Exception {
         TrustManager[] tm = { new X509TrustManager() {

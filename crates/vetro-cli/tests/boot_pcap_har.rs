@@ -1,9 +1,9 @@
-//! `vetro boot --pcap FILE --har=FILE --net-requests` (M7, ADR 0016): il
-//! guest fa una GET col wget di BusyBox, a fine esecuzione `vetro` scrive la
-//! cattura in pcapng e le richieste in HAR, e stampa la lista
-//! dell'ispettore su stderr. I file si rileggono con `vetro-analysis`.
+//! `vetro boot --pcap FILE --har=FILE --net-requests` (M7, ADR 0016): the
+//! guest makes a GET with BusyBox's wget, at the end of the run `vetro` writes the
+//! capture in pcapng and the requests in HAR, and prints the inspector
+//! list on stderr. The files are read back with `vetro-analysis`.
 //!
-//! In release (`cargo test --release -p vetro-cli`), come `boot_net.rs`.
+//! In release (`cargo test --release -p vetro-cli`), like `boot_net.rs`.
 
 use std::process::Command;
 use std::time::Duration;
@@ -15,10 +15,10 @@ use vetro_boot_tests::{BOOT_MARKER, Console, SHELL_PROMPT, guest_kernel, repo_ro
 #[test]
 fn boot_con_pcap_e_har() {
     if cfg!(debug_assertions) {
-        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "avvio sotto Vetro solo in release");
+        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "boot under Vetro only in release");
     }
     let Some((image, initrd)) = guest_kernel() else {
-        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "target/guest-kernel mancante");
+        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "target/guest-kernel missing");
     };
     let dir = repo_root().join("target/guest-kernel");
     let (pcap, har) = (dir.join("cli.pcapng"), dir.join("cli.har"));
@@ -41,32 +41,32 @@ fn boot_con_pcap_e_har() {
         .arg("--net-requests");
     let mut c = Console::spawn(cmd).expect("vetro boot");
     let limit = timeout();
-    let at = c.wait_for(BOOT_MARKER, 0, limit).unwrap_or_else(|| panic!("niente /init:\n{}", c.log()));
-    let at = c.wait_for(SHELL_PROMPT, at, limit).unwrap_or_else(|| panic!("niente shell:\n{}", c.log()));
+    let at = c.wait_for(BOOT_MARKER, 0, limit).unwrap_or_else(|| panic!("no /init:\n{}", c.log()));
+    let at = c.wait_for(SHELL_PROMPT, at, limit).unwrap_or_else(|| panic!("no shell:\n{}", c.log()));
     c.send(concat!(
         "udhcpc -i eth0 -n -q >/dev/null 2>&1; ",
         "wget -q -O /dev/null 'http://cli.example/pagina?a=1'; echo \"F\"ATTO; ",
         "sleep 2; poweroff -f\n"
     ));
-    c.wait_line("FATTO", at, limit).unwrap_or_else(|| panic!("niente wget:\n{}", c.log()));
-    assert!(c.finish(Duration::from_secs(60)), "poweroff -f non ha fermato vetro:\n{}", c.log());
+    c.wait_line("FATTO", at, limit).unwrap_or_else(|| panic!("no wget:\n{}", c.log()));
+    assert!(c.finish(Duration::from_secs(60)), "poweroff -f did not stop vetro:\n{}", c.log());
     let log = c.log();
     assert!(
         log.lines()
             .any(|l| l.starts_with("vetro: http: [")
                 && l.contains("#0 GET http://cli.example/pagina?a=1 -> 200")),
-        "lista dell'ispettore:\n{log}"
+        "inspector list:\n{log}"
     );
-    assert!(log.contains("vetro: har: 1 richieste in"), "{log}");
+    assert!(log.contains("vetro: har: 1 requests in"), "{log}");
 
-    let file = pcapng::read(&std::fs::read(&pcap).expect("pcapng scritto")).expect("pcapng valido");
+    let file = pcapng::read(&std::fs::read(&pcap).expect("pcapng written")).expect("valid pcapng");
     assert!(log.contains(&format!("vetro: pcapng: {} frame in", file.frames.len())), "{log}");
     let a = NetworkAnalysis::from_frames(&file.frames);
     assert_eq!(a.http.len(), 1);
     assert_eq!(a.http[0].url, "http://cli.example/pagina?a=1");
     assert!(a.dns.iter().any(|d| d.name == "cli.example"));
 
-    let v = json::parse(&std::fs::read(&har).expect("HAR scritto")).expect("HAR JSON");
+    let v = json::parse(&std::fs::read(&har).expect("HAR written")).expect("HAR JSON");
     let Some(Value::Array(e)) = v.get("log").and_then(|l| l.get("entries")) else { panic!() };
     assert_eq!(e.len(), 1);
     assert_eq!(

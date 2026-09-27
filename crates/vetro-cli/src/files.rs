@@ -1,11 +1,11 @@
-//! `vetro boot --files-ls/--files-cat/--files-put` (M8, ADR 0020): poche
-//! operazioni del gestore dei file dalla riga di comando, per provare il
-//! demone `vetro-files` del guest senza l'app web.
+//! `vetro boot --files-ls/--files-cat/--files-put` (M8, ADR 0020): a few
+//! file manager operations from the command line, to try out the
+//! guest's `vetro-files` daemon without the web app.
 //!
-//! Le operazioni si eseguono una dopo l'altra, nell'ordine della riga di
-//! comando, appena il demone risponde; i risultati vanno su stdout (`ls`:
-//! una riga per voce; `cat`: i byte del file). Finite tutte, `vetro` esce:
-//! 0 se sono riuscite, 1 altrimenti (con il motivo su stderr).
+//! The operations run one after the other, in command-line
+//! order, as soon as the daemon answers; the results go to stdout (`ls`:
+//! one line per entry; `cat`: the file's bytes). Once they have all finished, `vetro` exits:
+//! 0 if they succeeded, 1 otherwise (with the reason on stderr).
 
 use std::collections::VecDeque;
 use std::io::Write;
@@ -14,14 +14,14 @@ use vetro_machine::files::proto::{Entry, Kind, Stat, display_name};
 use vetro_machine::files::{FilesError, Outcome};
 use vetro_machine::{FilesClient, Machine};
 
-/// Un'operazione chiesta dalla riga di comando.
+/// An operation requested from the command line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FileCmd {
-    /// `--files-ls=PERCORSO`
+    /// `--files-ls=PATH`
     Ls(String),
-    /// `--files-cat=PERCORSO`
+    /// `--files-cat=PATH`
     Cat(String),
-    /// `--files-put=PERCORSO_GUEST:FILE_HOST` (permessi 0644 se è nuovo).
+    /// `--files-put=GUEST_PATH:HOST_FILE` (permissions 0644 if it is new).
     Put(String, Vec<u8>),
 }
 
@@ -33,7 +33,7 @@ impl FileCmd {
     }
 }
 
-/// Le operazioni in corso.
+/// The operations in progress.
 pub struct FilesTask {
     fc: FilesClient,
     queue: VecDeque<FileCmd>,
@@ -41,7 +41,7 @@ pub struct FilesTask {
     failed: bool,
 }
 
-/// `drwxr-x---` di un `st_mode`.
+/// `drwxr-x---` of an `st_mode`.
 pub fn mode_string(s: &Stat) -> String {
     let t = match s.kind {
         Kind::Dir => 'd',
@@ -62,8 +62,8 @@ pub fn mode_string(s: &Stat) -> String {
     out
 }
 
-/// Una riga di `--files-ls`: modo, uid, gid, dimensione, mtime, nome, poi
-/// destinazione e contesto SELinux se ci sono.
+/// A line of `--files-ls`: mode, uid, gid, size, mtime, name, then
+/// target and SELinux context if present.
 pub fn ls_line(e: &Entry) -> String {
     let s = &e.stat;
     let name = display_name(&e.name);
@@ -82,7 +82,7 @@ impl FilesTask {
         FilesTask { fc: FilesClient::default(), queue: cmds.into(), current: None, failed: false }
     }
 
-    /// Fra un quanto e l'altro. `Some(riuscite)` quando non resta niente.
+    /// Between one quantum and the next. `Some(succeeded)` when nothing is left.
     pub fn step(&mut self, m: &mut Machine, out: &mut impl Write) -> Option<bool> {
         if self.current.is_none() {
             let Some(cmd) = self.queue.pop_front() else { return Some(!self.failed) };
@@ -107,7 +107,7 @@ impl FilesTask {
                     let _ = out.write_all(&data);
                 }
                 Ok(Outcome::Written(s)) => {
-                    eprintln!("vetro-files: scritto {} ({} byte, {})", cmd.path(), s.size, mode_string(&s));
+                    eprintln!("vetro-files: wrote {} ({} bytes, {})", cmd.path(), s.size, mode_string(&s));
                 }
                 Ok(_) => {}
                 Err(e) => {
@@ -125,12 +125,12 @@ impl FilesTask {
     }
 }
 
-/// `PERCORSO_GUEST:FILE_HOST` di `--files-put`.
+/// `GUEST_PATH:HOST_FILE` of `--files-put`.
 pub fn parse_put(v: &str) -> Result<FileCmd, String> {
     let (guest, host) =
-        v.split_once(':').ok_or_else(|| format!("--files-put={v}: serve PERCORSO_GUEST:FILE_HOST"))?;
+        v.split_once(':').ok_or_else(|| format!("--files-put={v}: GUEST_PATH:HOST_FILE required"))?;
     if !guest.starts_with('/') {
-        return Err(format!("--files-put={v}: il percorso del guest dev'essere assoluto"));
+        return Err(format!("--files-put={v}: the guest path must be absolute"));
     }
     let data = std::fs::read(host).map_err(|e| format!("{host}: {e}"))?;
     Ok(FileCmd::Put(guest.to_string(), data))

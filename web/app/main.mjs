@@ -1,29 +1,29 @@
-// La pagina di Vetro: sceglie kernel, initramfs e disco, avvia la macchina
-// nel Worker (worker.mjs), mostra lo scanout di virtio-gpu e il cursore,
-// la console seriale, e manda al guest tastiera, mouse/tocco e il tasto di
-// accensione. Nessun bundler né dipendenza: moduli ES serviti così come
-// sono (tools/web-serve.mjs).
+// The Vetro page: picks kernel, initramfs and disk, starts the machine
+// in the Worker (worker.mjs), shows the virtio-gpu scanout and the cursor,
+// the serial console, and sends keyboard, mouse/touch and the power button
+// to the guest. No bundler and no dependencies: ES modules served as they
+// are (tools/web-serve.mjs).
 //
-// Parametri dell'URL per precompilare ed eventualmente avviare:
+// URL parameters to prefill and optionally start:
 //   ?kernel=URL&initrd=URL&disk=URL&cmdline=...&pointer=multitouch&webgpu=1&autostart=1
-//   &snapshot=0 (niente cache degli snapshot) &persist=0 (dischi non persistenti)
-//   &files=/tmp,/root (radici del gestore dei file) &nofiles=1 (senza gestore)
+//   &snapshot=0 (no snapshot cache) &persist=0 (non-persistent disks)
+//   &files=/tmp,/root (file manager roots) &nofiles=1 (no file manager)
 //
-// Gestore dei file (M8, ADR 0020): pannello accanto allo schermo con
-// l'albero delle radici (`window.vetroFiles.setRoots([...])`: oggi a mano,
-// con Android le imposterà il rilevamento dell'app in primo piano).
+// File manager (M8, ADR 0020): panel next to the screen with the tree of
+// the roots (`window.vetroFiles.setRoots([...])`: by hand today; with
+// Android they will be set by detecting the foreground app).
 //
-// Analisi (M7, M10, ADR 0023): sotto lo schermo i pannelli dell'ispettore
-// di rete, della timeline input→effetti e della registrazione/replay
-// (analysis.mjs); `window.vetroAnalysis` per i test.
+// Analysis (M7, M10, ADR 0023): below the screen the panels of the network
+// inspector, of the input→effects timeline and of recording/replay
+// (analysis.mjs); `window.vetroAnalysis` for the tests.
 //
-// Schermo: a scanout spento un messaggio spiega che il guest non disegna e
-// un pulsante digita nella console `timeout 30 vetro-dev drm-hold` (motivo
-// di prova, vedi DEMO_COMMAND).
+// Screen: with the scanout off a message explains that the guest is not
+// drawing and a button types `timeout 30 vetro-dev drm-hold` in the console
+// (test pattern, see DEMO_COMMAND).
 //
-// Persistenza (M6, ADR 0017): il Worker salva in OPFS lo snapshot della
-// macchina e l'overlay dei dischi; al secondo avvio riparte dallo snapshot.
-// Lo stato si legge anche da `window.vetroState` (per i test nel browser).
+// Persistence (M6, ADR 0017): the Worker saves the machine snapshot and the
+// disk overlay in OPFS; at the second boot it resumes from the snapshot.
+// The state can also be read from `window.vetroState` (for browser tests).
 //
 // Vetro's AOSP image (M5/M6, ADR 0028): `?os=android` (or the "System"
 // selector) and `&manifest=URL` (default: the version published on R2). The
@@ -52,20 +52,20 @@ let renderer = null;
 let fb = { width: 0, height: 0 };
 let cursor = null;
 let pointerKind = 'tablet';
-/** Stato visibile ai test: come è partita la macchina, snapshot salvati, dischi. */
+/** State visible to tests: how the machine started, saved snapshots, disks. */
 const vetroState = (window.vetroState = { boot: null, snapshots: [], disks: [], stopped: null });
 let startedAt = 0;
 
-// ---- Gestore dei file --------------------------------------------------------
+// ---- File manager ------------------------------------------------------------
 
 const DEFAULT_ROOTS = ['/tmp', '/root', '/etc'];
 const ANDROID_ROOTS = ['/data/local/tmp', '/sdcard/Download'];
 let rpcId = 0;
 const rpcPending = new Map();
-/** Un'operazione del gestore dei file nel Worker: Promise del risultato. */
+/** A file manager operation in the Worker: a Promise of the result. */
 function rpc(op, args) {
   return new Promise((ok, ko) => {
-    if (!worker) return ko(new Error('macchina spenta'));
+    if (!worker) return ko(new Error('machine off'));
     const id = ++rpcId;
     rpcPending.set(id, { ok, ko });
     worker.postMessage({ type: 'files', id, op, args });
@@ -86,7 +86,7 @@ const filePanel = new FilePanel({
 }, rpc);
 let pendingRoots = DEFAULT_ROOTS;
 let rootsFromUrl = false;
-/** Per i test e per chi imposta le radici (l'app in primo piano). */
+/** For the tests and for whoever sets the roots (the foreground app). */
 window.vetroFiles = {
   panel: filePanel,
   setRoots: (roots) => {
@@ -105,9 +105,9 @@ const panels = new AnalysisPanels({ post: (msg, transfer = []) => worker?.postMe
 
 // ---- Console ---------------------------------------------------------------
 
-// Durante la ripresa della coda della console di uno snapshot il terminale
-// non risponde (la risposta a ESC[6n l'aveva già data la sessione salvata:
-// ripeterla sarebbe un ingresso in più per il guest).
+// While replaying the console tail of a snapshot the terminal does not
+// answer (the saved session had already answered ESC[6n: repeating it
+// would be an extra input for the guest).
 let replaying = false;
 const term = new Terminal({ onReply: (s) => !replaying && worker?.postMessage({ type: 'serial', text: s }) });
 let consoleDirty = false;
@@ -131,7 +131,7 @@ consoleEl.addEventListener('paste', (e) => {
   worker?.postMessage({ type: 'serial', text });
 });
 
-// ---- Schermo ---------------------------------------------------------------
+// ---- Screen ----------------------------------------------------------------
 
 function placeCursor() {
   if (!cursor || !cursor.resource || !fb.width) {
@@ -163,13 +163,13 @@ function onFrame(msg) {
   renderer.draw(msg.rect, msg.pixels);
 }
 
-// Scanout spento: col kernel di prova il guest non disegna finché un
-// programma non usa il DRM. Il pulsante digita nella console un comando del
-// guest di prova che disegna il motivo noto di `vetro-dev drm-hold`
-// (tests/boot/tests/devices.rs) e lo tiene finché arriva una riga su stdin
-// (Invio nella console) o per 30 s di tempo del guest (`timeout` di
-// BusyBox): la shell torna libera in ogni caso, e chiuso il DRM lo scanout
-// si spegne di nuovo.
+// Scanout off: with the test kernel the guest does not draw until a program
+// uses DRM. The button types in the console a command of the test guest
+// that draws the known pattern of `vetro-dev drm-hold`
+// (tests/boot/tests/devices.rs) and holds it until a line arrives on stdin
+// (Enter in the console) or for 30 s of guest time (BusyBox `timeout`):
+// the shell is free again either way, and once DRM is closed the scanout
+// turns off again.
 const DEMO_COMMAND = 'timeout 30 vetro-dev drm-hold';
 $('screen-demo').addEventListener('click', () => {
   worker?.postMessage({ type: 'serial', text: `${DEMO_COMMAND}\r` });
@@ -184,7 +184,7 @@ function onCursor(msg) {
   placeCursor();
 }
 
-// ---- Ingressi --------------------------------------------------------------
+// ---- Input -----------------------------------------------------------------
 
 const send = (msg) => worker?.postMessage(msg);
 const held = new Set();
@@ -193,7 +193,7 @@ screen.addEventListener('keydown', (e) => {
   const code = evdevCode(e.code);
   if (code === undefined) return;
   e.preventDefault();
-  // L'autorepeat lo fa il guest (EV_REP): le ripetizioni del browser no.
+  // Autorepeat is done by the guest (EV_REP): not the browser's repeats.
   if (e.repeat || held.has(code)) return;
   held.add(code);
   send({ type: 'key', code, down: true });
@@ -215,7 +215,7 @@ function abs(e) {
   return [absAxis((e.clientX - r.left) / r.width), absAxis((e.clientY - r.top) / r.height)];
 }
 
-// Contatti del touchscreen: pointerId -> slot (0..9).
+// Touchscreen contacts: pointerId -> slot (0..9).
 const slots = new Map();
 function slotFor(id) {
   if (!slots.has(id)) {
@@ -274,7 +274,7 @@ power.addEventListener('pointerdown', () => send({ type: 'power', down: true }))
 power.addEventListener('pointerup', () => send({ type: 'power', down: false }));
 power.addEventListener('pointerleave', (e) => e.buttons && send({ type: 'power', down: false }));
 
-// ---- Avvio -----------------------------------------------------------------
+// ---- Boot ------------------------------------------------------------------
 
 function source(urlField, fileField) {
   const f = form.elements[fileField].files[0];
@@ -285,17 +285,17 @@ function source(urlField, fileField) {
 
 function fmtStats(s) {
   const parts = [
-    `${(s.steps / 1e6).toFixed(0)} M istruzioni`,
+    `${(s.steps / 1e6).toFixed(0)} M instructions`,
     `guest ${s.guestSecs.toFixed(2)} s`,
     `${s.mips.toFixed(1)} MIPS`,
   ];
   if (s.memory) parts.push(`memory ${(s.memory / 2 ** 20).toFixed(0)} MiB`);
   for (const [i, d] of s.disks.entries()) {
-    const ov = d.overlay ? ` (persistente, gen. ${d.overlay.generation})` : '';
-    parts.push(`vd${String.fromCharCode(97 + i)}: ${d.fills} blocchi, ${d.http.requests} letture, cow ${d.dirtyClusters}${ov}`);
+    const ov = d.overlay ? ` (persistent, gen. ${d.overlay.generation})` : '';
+    parts.push(`vd${String.fromCharCode(97 + i)}: ${d.fills} blocks, ${d.http.requests} reads, cow ${d.dirtyClusters}${ov}`);
   }
-  if (s.feeder.served) parts.push(`attesa disco ${(s.feeder.waitMs / 1000).toFixed(1)} s`);
-  if (s.jit) parts.push(`JIT ${s.jit.modules} moduli`);
+  if (s.feeder.served) parts.push(`disk wait ${(s.feeder.waitMs / 1000).toFixed(1)} s`);
+  if (s.jit) parts.push(`JIT ${s.jit.modules} modules`);
   return parts.join(' · ');
 }
 
@@ -531,7 +531,7 @@ async function start() {
   const el = form.elements;
   const android = osValue() === 'android';
   const kernel = android ? null : source('kernelUrl', 'kernelFile');
-  if (!kernel && !android) return setStatus('manca il kernel');
+  if (!kernel && !android) return setStatus('kernel missing');
   const disk = android ? null : source('diskUrl', 'diskFile');
   const config = {
     wasmUrl: new URL('../wasm/vetro_wasm.wasm', location.href).href,
@@ -573,15 +573,15 @@ async function start() {
     if (onAndroidMessage(msg)) return;
     switch (msg.type) {
       case 'replay-started':
-        // Una riga nel terminale (solo nella pagina, il guest non la vede).
+        // A line in the terminal (only in the page, the guest does not see it).
         replaying = true;
-        term.feed(new TextEncoder().encode(`\r\n\x1b[7m[vetro: replay dall'istruzione ${msg.from}${msg.target !== null ? `, fermo a ${msg.target}` : ''}]\x1b[0m\r\n`));
+        term.feed(new TextEncoder().encode(`\r\n\x1b[7m[vetro: replay from instruction ${msg.from}${msg.target !== null ? `, stopping at ${msg.target}` : ''}]\x1b[0m\r\n`));
         replaying = false;
         renderConsole();
-        setStatus(`replay dall'istruzione ${msg.from}`);
+        setStatus(`replay from instruction ${msg.from}`);
         break;
       case 'replay-ended':
-        setStatus(msg.status.state === 'Finished' ? `replay identico (${msg.steps} istruzioni): la macchina continua libera` : `replay diverso: ${msg.status.message}`);
+        setStatus(msg.status.state === 'Finished' ? `replay identical (${msg.steps} instructions): the machine runs free again` : `replay differs: ${msg.status.message}`);
         break;
       case 'console':
         term.feed(msg.bytes);
@@ -617,8 +617,8 @@ async function start() {
         replaying = false;
         renderConsole();
         const t = msg.times;
-        setStatus(`ripristinato dallo snapshot del ${new Date(msg.savedAt).toLocaleString()} (${(msg.size / 2 ** 20).toFixed(1)} MiB, ` +
-          `ripristino ${t.restore.toFixed(0)} ms, pronto in ${(vetroState.boot.ms / 1000).toFixed(2)} s)`);
+        setStatus(`restored from the snapshot of ${new Date(msg.savedAt).toLocaleString()} (${(msg.size / 2 ** 20).toFixed(1)} MiB, ` +
+          `restore ${t.restore.toFixed(0)} ms, ready in ${(vetroState.boot.ms / 1000).toFixed(2)} s)`);
         break;
       }
       case 'cold':
@@ -626,7 +626,7 @@ async function start() {
         break;
       case 'snapshot':
         vetroState.snapshots.push({ ...msg, at: performance.now() - startedAt });
-        $('snapinfo').textContent = `snapshot salvato (${msg.why}): ${(msg.size / 2 ** 20).toFixed(1)} MiB in ${(msg.saveMs + msg.writeMs).toFixed(0)} ms`;
+        $('snapinfo').textContent = `snapshot saved (${msg.why}): ${(msg.size / 2 ** 20).toFixed(1)} MiB in ${(msg.saveMs + msg.writeMs).toFixed(0)} ms`;
         break;
       case 'status':
         setStatus(msg.text);
@@ -648,27 +648,27 @@ async function start() {
         break;
       }
       case 'started':
-        if (!msg.restored) setStatus(`in esecuzione (${renderer.name}, ${config.jit ? 'JIT' : 'interprete'}${crossOriginIsolated ? ', isolata' : ''})`);
+        if (!msg.restored) setStatus(`running (${renderer.name}, ${config.jit ? 'JIT' : 'interpreter'}${crossOriginIsolated ? ', isolated' : ''})`);
         consoleEl.focus();
         break;
       case 'stopped':
         vetroState.stopped = msg;
-        setStatus(`macchina ferma: ${msg.reason} dopo ${msg.steps} istruzioni`);
+        setStatus(`machine stopped: ${msg.reason} after ${msg.steps} instructions`);
         break;
       case 'error':
-        setStatus(`errore: ${msg.text.split('\n')[0]}`);
+        setStatus(`error: ${msg.text.split('\n')[0]}`);
         console.error(msg.text);
         break;
     }
   };
-  worker.onerror = (e) => setStatus(`errore nel Worker: ${e.message}`);
+  worker.onerror = (e) => setStatus(`error in the Worker: ${e.message}`);
   worker.postMessage({ type: 'start', config });
 }
 
 $('save').addEventListener('click', () => send({ type: 'save' }));
 
-// Cancella snapshot, overlay e cache dei blocchi (solo a macchina spenta:
-// il Worker tiene aperti i file).
+// Deletes snapshots, overlays and the block cache (only with the machine
+// off: the Worker keeps the files open).
 $('forget').addEventListener('click', async () => {
   try {
     const root = await navigator.storage.getDirectory();
@@ -677,18 +677,18 @@ $('forget').addEventListener('click', async () => {
         if (e.name !== 'NotFoundError') throw e;
       });
     }
-    setStatus('dati salvati cancellati (snapshot, dischi persistenti, cache dei blocchi, registrazioni)');
+    setStatus('saved data deleted (snapshots, persistent disks, block cache, recordings)');
   } catch (e) {
-    setStatus(`cancellazione non riuscita: ${e.message ?? e}`);
+    setStatus(`deletion failed: ${e.message ?? e}`);
   }
 });
 
 form.addEventListener('submit', (e) => {
   e.preventDefault();
-  start().catch((err) => setStatus(`errore: ${err.message ?? err}`));
+  start().catch((err) => setStatus(`error: ${err.message ?? err}`));
 });
 
-// Parametri dell'URL.
+// URL parameters.
 const q = new URLSearchParams(location.search);
 if (q.get('os') === 'android') {
   form.elements.os.value = 'android';
@@ -709,4 +709,4 @@ if (q.has('files')) {
   pendingRoots = q.get('files').split(',').map((s) => s.trim()).filter(Boolean);
   rootsFromUrl = true;
 }
-if (q.get('autostart') === '1') start().catch((err) => setStatus(`errore: ${err.message ?? err}`));
+if (q.get('autostart') === '1') start().catch((err) => setStatus(`error: ${err.message ?? err}`));

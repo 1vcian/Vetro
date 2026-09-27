@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// Test unitari dei pezzi JS dell'app web (senza kernel né browser):
-// server con Range (tools/web-serve.mjs), sorgenti e DiskFeeder
-// (web/node/disk.mjs), mappa dei tasti (web/app/keymap.mjs), terminale
-// (web/app/terminal.mjs), persistenza (web/node/persist.mjs), lettore
-// SQLite (anche con il WAL) e visualizzatori del gestore dei file
-// (web/app/sqlite.mjs, web/app/files.mjs, M8), SQL e SharedPreferences
-// del pannello, nomi non UTF-8 e argomenti SQL di vetro.mjs (ADR 0021),
-// formati dei pannelli di analisi (web/app/analysis.mjs, M7/M10), the disk
+// Unit tests of the JS pieces of the web app (without a kernel or browser):
+// server with Range (tools/web-serve.mjs), sources and DiskFeeder
+// (web/node/disk.mjs), key map (web/app/keymap.mjs), terminal
+// (web/app/terminal.mjs), persistence (web/node/persist.mjs), SQLite
+// reader (also with the WAL) and file manager viewers
+// (web/app/sqlite.mjs, web/app/files.mjs, M8), panel SQL and SharedPreferences,
+// non-UTF-8 names and SQL arguments of vetro.mjs (ADR 0021),
+// formats of the analysis panels (web/app/analysis.mjs, M7/M10), the disk
 // rebuilt from a map, Android boot phases and APK manifests
 // (web/node/disk.mjs, android.mjs, apk.mjs, M5/M6).
 //
@@ -32,24 +32,24 @@ import { bodyCell, duration, fromB64, guestTime, hexdump, typeText } from '../..
 import { check, root, run } from './lib.mjs';
 import { downloadPrebuilt, findPrebuilt, PREBUILT_CHUNK, PREBUILT_FORMAT, prebuiltInfoUrl, prebuiltProblem, prebuiltSnapUrl } from '../../web/node/prebuilt.mjs';
 
-const eq = (a, b, what) => check(JSON.stringify(a) === JSON.stringify(b), `${what}: ${JSON.stringify(a)} invece di ${JSON.stringify(b)}`);
+const eq = (a, b, what) => check(JSON.stringify(a) === JSON.stringify(b), `${what}: ${JSON.stringify(a)} instead of ${JSON.stringify(b)}`);
 let count = 0;
 const cases = [];
 const test = (name, f) => cases.push([name, f]);
 
 test('parseRange', () => {
-  eq(parseRange(undefined, 100), null, 'senza Range');
-  eq(parseRange('bytes=0-9', 100), { start: 0, end: 9 }, 'intervallo');
-  eq(parseRange('bytes=90-', 100), { start: 90, end: 99 }, 'aperto');
+  eq(parseRange(undefined, 100), null, 'without Range');
+  eq(parseRange('bytes=0-9', 100), { start: 0, end: 9 }, 'range');
+  eq(parseRange('bytes=90-', 100), { start: 90, end: 99 }, 'open');
   eq(parseRange('bytes=-10', 100), { start: 90, end: 99 }, 'suffisso');
-  eq(parseRange('bytes=95-200', 100), { start: 95, end: 99 }, 'oltre la fine');
-  eq(parseRange('bytes=100-', 100), 'invalid', 'dalla fine');
+  eq(parseRange('bytes=95-200', 100), { start: 95, end: 99 }, 'beyond the end');
+  eq(parseRange('bytes=100-', 100), 'invalid', 'from the end');
   eq(parseRange('bytes=5-2', 100), 'invalid', 'rovesciato');
-  eq(parseRange('bytes=0-1,4-5', 100), 'invalid', 'multiplo');
-  eq(parseRange('items=0-1', 100), 'invalid', 'unità');
+  eq(parseRange('bytes=0-1,4-5', 100), 'invalid', 'multiple');
+  eq(parseRange('items=0-1', 100), 'invalid', 'unit');
 });
 
-test('server: Range, HEAD, isolamento, percorsi', async () => {
+test('server: Range, HEAD, isolation, paths', async () => {
   const dir = join(root, 'target/web-test');
   mkdirSync(join(dir, 'www'), { recursive: true });
   const data = new Uint8Array(1000).map((_, i) => i % 251);
@@ -60,36 +60,36 @@ test('server: Range, HEAD, isolamento, percorsi', async () => {
   const srv = await serve({ mounts: [['/w/', join(dir, 'www')], ['/x.bin', join(dir, 'www/a.bin')]], onRequest: (r) => log.push(r) });
   try {
     let r = await fetch(`${srv.url}/w/a.bin`, { headers: { Range: 'bytes=10-19' } });
-    eq(r.status, 206, 'stato');
+    eq(r.status, 206, 'status');
     eq(r.headers.get('content-range'), 'bytes 10-19/1000', 'Content-Range');
     eq([...new Uint8Array(await r.arrayBuffer())], [...data.subarray(10, 20)], 'byte');
     eq(r.headers.get('cross-origin-opener-policy'), 'same-origin', 'COOP');
     eq(r.headers.get('cross-origin-embedder-policy'), 'require-corp', 'COEP');
     r = await fetch(`${srv.url}/x.bin`);
-    eq([r.status, (await r.arrayBuffer()).byteLength], [200, 1000], 'intero');
+    eq([r.status, (await r.arrayBuffer()).byteLength], [200, 1000], 'whole');
     r = await fetch(`${srv.url}/x.bin`, { headers: { Range: 'bytes=5000-' } });
     eq([r.status, r.headers.get('content-range')], [416, 'bytes */1000'], '416');
     r = await fetch(`${srv.url}/x.bin`, { method: 'HEAD' });
     eq([r.status, r.headers.get('content-length'), r.headers.get('accept-ranges')], [200, '1000', 'bytes'], 'HEAD');
     r = await fetch(`${srv.url}/w/`);
-    eq([r.status, r.headers.get('content-type'), await r.text()], [200, 'text/html; charset=utf-8', '<p>ciao</p>'], 'indice');
+    eq([r.status, r.headers.get('content-type'), await r.text()], [200, 'text/html; charset=utf-8', '<p>ciao</p>'], 'index');
     r = await fetch(`${srv.url}/w/..%2fsegreto.txt`);
-    eq(r.status, 404, 'fuori dalla radice');
+    eq(r.status, 404, 'outside the root');
     r = await fetch(`${srv.url}/altro`);
-    eq(r.status, 404, 'non montato');
+    eq(r.status, 404, 'not mounted');
 
-    // Sorgenti.
+    // Sources.
     const src = await new RangeSource(`${srv.url}/w/a.bin`).open();
-    eq(src.size, 1000, 'dimensione dal Content-Range');
-    check(src.key.includes('|1000|"'), `chiave con ETag: ${src.key}`);
-    eq([...(await src.read(995, 5))], [...data.subarray(995)], 'lettura');
-    eq(src.stats, { requests: 2, bytes: 5 }, 'contatori');
+    eq(src.size, 1000, 'size from the Content-Range');
+    check(src.key.includes('|1000|"'), `key with ETag: ${src.key}`);
+    eq([...(await src.read(995, 5))], [...data.subarray(995)], 'read');
+    eq(src.stats, { requests: 2, bytes: 5 }, 'counters');
     let failed = false;
     await src.read(990, 20).catch(() => (failed = true));
-    check(failed, 'una lettura oltre la fine deve fallire');
+    check(failed, 'a read beyond the end must fail');
     failed = false;
     await new RangeSource(`${srv.url}/nessuno`).open().catch(() => (failed = true));
-    check(failed, 'una sorgente senza file deve fallire');
+    check(failed, 'a source without a file must fail');
   } finally {
     await srv.close();
   }
@@ -97,7 +97,7 @@ test('server: Range, HEAD, isolamento, percorsi', async () => {
   eq([...(await blob.read(1, 2))], [2, 3], 'BlobSource');
 });
 
-/** Una Machine finta: registra le consegne e dà blocchi chiesti a comando. */
+/** A fake Machine: records the deliveries and gives requested blocks on command. */
 class FakeMachine {
   wanted = [];
   filled = [];
@@ -125,29 +125,29 @@ class FakeSource {
   }
   async read(offset, length) {
     this.reads.push([offset, length]);
-    if (this.fail) throw new Error('rete giù');
+    if (this.fail) throw new Error('network down');
     return new Uint8Array(length).map((_, i) => ((offset + i) >> 12) & 0xff);
   }
 }
 
-test('DiskFeeder: cache, blocchi contigui, lettura anticipata, errori', async () => {
+test('DiskFeeder: cache, contiguous blocks, read-ahead, errors', async () => {
   const m = new FakeMachine();
   const f = new DiskFeeder(m);
-  const src = new FakeSource(10 * 4096 + 700); // 10 blocchi e uno corto (512 dopo l'arrotondamento)
+  const src = new FakeSource(10 * 4096 + 700); // 10 blocks and a short one (512 after rounding)
   const cache = new MemoryCache();
   cache.put(3, new Uint8Array(4096).fill(33));
-  eq(f.add(src, { cache, blockSize: 4096, readahead: 1 }), 0, 'indice');
-  eq(m.opt, { size: 10 * 4096 + 512, blockSize: 4096, maxBlocks: 0, readOnly: false }, 'disco aggiunto');
-  eq(await f.serve(), 0, 'niente da fare');
+  eq(f.add(src, { cache, blockSize: 4096, readahead: 1 }), 0, 'index');
+  eq(m.opt, { size: 10 * 4096 + 512, blockSize: 4096, maxBlocks: 0, readOnly: false }, 'disk added');
+  eq(await f.serve(), 0, 'nothing to do');
   m.wanted = [{ disk: 0, block: 1 }, { disk: 0, block: 2 }, { disk: 0, block: 3 }, { disk: 0, block: 10 }];
-  eq(await f.serve(), 4, 'chiesti');
-  // 1 e 2 insieme, 3 dalla cache, 4 in anticipo (dopo 3), 10 (ultimo, corto).
-  eq(src.reads, [[4096, 2 * 4096], [4 * 4096, 4096], [10 * 4096, 512]], 'letture');
-  eq(m.filled.map((x) => x[1]).sort((a, b) => a - b), [1, 2, 3, 4, 10], 'consegnati');
-  eq(m.filled.find((x) => x[1] === 3)[3], 33, 'il blocco 3 viene dalla cache');
-  eq(m.filled.find((x) => x[1] === 10)[2], 512, 'ultimo blocco corto');
-  check(cache.has(1) && cache.has(4) && cache.has(10), 'blocchi scaricati messi in cache');
-  eq(f.stats.fromCache, 1, 'da cache');
+  eq(await f.serve(), 4, 'requested');
+  // 1 and 2 together, 3 from the cache, 4 ahead (after 3), 10 (last, short).
+  eq(src.reads, [[4096, 2 * 4096], [4 * 4096, 4096], [10 * 4096, 512]], 'reads');
+  eq(m.filled.map((x) => x[1]).sort((a, b) => a - b), [1, 2, 3, 4, 10], 'delivered');
+  eq(m.filled.find((x) => x[1] === 3)[3], 33, 'block 3 comes from the cache');
+  eq(m.filled.find((x) => x[1] === 10)[2], 512, 'short last block');
+  check(cache.has(1) && cache.has(4) && cache.has(10), 'downloaded blocks put in the cache');
+  eq(f.stats.fromCache, 1, 'from cache');
   eq(f.stats.readahead, 1, 'in anticipo');
 
   const bad = new FakeMachine();
@@ -161,166 +161,166 @@ test('DiskFeeder: cache, blocchi contigui, lettura anticipata, errori', async ()
   } finally {
     console.error = orig;
   }
-  eq(bad.failed, [[0, 0]], 'solo il blocco chiesto fallisce (non quello in anticipo)');
+  eq(bad.failed, [[0, 0]], 'only the requested block fails (not the read-ahead one)');
 });
 
 test('keymap', () => {
-  eq([evdevCode('KeyA'), evdevCode('Enter'), evdevCode('Space'), evdevCode('ArrowUp'), evdevCode('MetaLeft')], [30, 28, 57, 103, 125], 'codici');
-  eq([evdevCode('Digit1'), evdevCode('Digit0'), evdevCode('F12'), evdevCode('NumpadEnter')], [2, 11, 88, 96], 'altri codici');
-  eq(evdevCode('toString'), undefined, 'niente prototipo');
-  eq(evdevCode('Nessuno'), undefined, 'sconosciuto');
-  eq([BUTTONS[0], BUTTONS[1], BUTTONS[2]], [0x110, 0x112, 0x111], 'pulsanti');
+  eq([evdevCode('KeyA'), evdevCode('Enter'), evdevCode('Space'), evdevCode('ArrowUp'), evdevCode('MetaLeft')], [30, 28, 57, 103, 125], 'codes');
+  eq([evdevCode('Digit1'), evdevCode('Digit0'), evdevCode('F12'), evdevCode('NumpadEnter')], [2, 11, 88, 96], 'other codes');
+  eq(evdevCode('toString'), undefined, 'no prototype');
+  eq(evdevCode('Nessuno'), undefined, 'unknown');
+  eq([BUTTONS[0], BUTTONS[1], BUTTONS[2]], [0x110, 0x112, 0x111], 'buttons');
   eq([absAxis(0), absAxis(1), absAxis(0.5), absAxis(-1), absAxis(2)], [0, 32767, 16384, 0, 32767], 'assi');
 });
 
-test('terminale', () => {
+test('terminal', () => {
   const replies = [];
   const t = new Terminal({ onReply: (s) => replies.push(s) });
   const feed = (s) => t.feed(new TextEncoder().encode(s));
   feed('abc\r\nriga due\rRIGA\n');
   eq(t.lines, ['abc', 'RIGA due', ''], 'CR e LF');
   feed('~ # \x1b[6n');
-  eq(replies, ['\x1b[3;5R'], 'risposta a ESC[6n');
+  eq(replies, ['\x1b[3;5R'], 'reply to ESC[6n');
   feed('xyz\b\b\x1b[K!');
-  eq(t.lines[2], '~ # x!', 'backspace e cancellazione');
+  eq(t.lines[2], '~ # x!', 'backspace and erase');
   feed('\x1b[1;32mverde\x1b[0m\x1b]0;titolo\x07.');
-  eq(t.lines[2], '~ # x!verde.', 'colori e OSC ignorati');
+  eq(t.lines[2], '~ # x!verde.', 'colours and OSC ignored');
   const e = new TextEncoder().encode('è');
   t.feed(e.subarray(0, 1));
   t.feed(e.subarray(1));
-  eq(t.lines[2].endsWith('è'), true, 'UTF-8 spezzato');
+  eq(t.lines[2].endsWith('è'), true, 'split UTF-8');
   feed('\ta');
   eq(t.lines[2].length, 17, 'tabulazione');
   const k = (key, o = {}) => keyToBytes({ key, ctrlKey: false, altKey: false, metaKey: false, ...o });
   eq([k('a'), k('Enter'), k('Backspace'), k('ArrowUp'), k('c', { ctrlKey: true }), k('Shift'), k('v', { metaKey: true })],
-    ['a', '\r', '\x7f', '\x1b[A', '\x03', null, null], 'tasti');
+    ['a', '\r', '\x7f', '\x1b[A', '\x03', null, null], 'keys');
 });
 
-test('persistenza: MemFile, cache degli snapshot, chiavi', async () => {
+test('persistence: MemFile, snapshot cache, keys', async () => {
   const f = new MemFile();
   f.write(new Uint8Array([1, 2, 3]), { at: 5000 });
-  eq(f.getSize(), 5003, 'scrittura oltre la fine');
-  eq([...readAll(f).subarray(4998)], [0, 0, 1, 2, 3], 'buco a zero');
+  eq(f.getSize(), 5003, 'write beyond the end');
+  eq([...readAll(f).subarray(4998)], [0, 0, 1, 2, 3], 'zeroed hole');
   f.truncate(4999);
   f.truncate(5001);
-  eq([...readAll(f).subarray(4998)], [0, 0, 0], 'troncato e riallungato a zero');
+  eq([...readAll(f).subarray(4998)], [0, 0, 0], 'truncated and extended again with zeros');
   const buf = new Uint8Array(4);
-  eq(f.read(buf, { at: 4999 }), 2, 'lettura corta alla fine');
+  eq(f.read(buf, { at: 4999 }), 2, 'short read at the end');
 
   const store = SnapshotStore.memory();
-  eq(await store.load('k'), null, 'chiave assente');
+  eq(await store.load('k'), null, 'missing key');
   await store.save('k', { generations: [3, null], console: toBase64(new Uint8Array([0, 255, 10])) }, new Uint8Array([9, 8, 7]));
   const r = await store.load('k');
-  eq([...r.bytes], [9, 8, 7], 'byte riletti');
-  eq(r.meta.size, 3, 'dimensione nei metadati');
+  eq([...r.bytes], [9, 8, 7], 'bytes read back');
+  eq(r.meta.size, 3, 'size in the metadata');
   eq([...fromBase64(r.meta.console)], [0, 255, 10], 'console in base64');
-  eq(staleReason(r.meta, [{ generation: 3 }, null]), null, 'stessa generazione: vale');
-  check(staleReason(r.meta, [{ generation: 4 }, null])?.includes('generation 4'), 'disco andato avanti: non vale');
+  eq(staleReason(r.meta, [{ generation: 3 }, null]), null, 'same generation: valid');
+  check(staleReason(r.meta, [{ generation: 4 }, null])?.includes('generation 4'), 'disk moved on: not valid');
   await store.remove('k');
-  eq(await store.load('k'), null, 'tolto');
+  eq(await store.load('k'), null, 'removed');
 
   const a = await snapshotKey({ v: 2, disks: [{ id: 'x', size: 1 }], ram: 1024 });
   const b = await snapshotKey({ ram: 1024, disks: [{ size: 1, id: 'x' }], v: 2 });
   const c = await snapshotKey({ ram: 1024, disks: [{ size: 1, id: 'x' }], v: 3 });
-  eq(a === b && a !== c && a.length === 32, true, 'chiave stabile rispetto all\'ordine, diversa per un valore');
+  eq(a === b && a !== c && a.length === 32, true, 'key stable with respect to order, different for one value');
 });
 
-test('SQLite: varint e CREATE TABLE', () => {
+test('SQLite: varint and CREATE TABLE', () => {
   eq(varint([0x05], 0).map(String), ['5', '1'], 'un byte');
   eq(varint([0x81, 0x00], 0).map(String), ['128', '2'], 'due byte');
-  eq(varint([0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff], 0).map(String), ['18446744073709551615', '9'], 'nove byte');
+  eq(varint([0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff], 0).map(String), ['18446744073709551615', '9'], 'nine bytes');
   eq(parseCreateTable('CREATE TABLE t (id INTEGER PRIMARY KEY, "a b" TEXT, [c] INT, `d`, CHECK (c > 0))'),
-    { columns: ['id', 'a b', 'c', 'd'], rowidAlias: 0, withoutRowid: false, pk: [0] }, 'alias del rowid e virgolette');
-  eq(parseCreateTable('CREATE TABLE t (id INT PRIMARY KEY, x)').rowidAlias, -1, 'INT non è un alias');
+    { columns: ['id', 'a b', 'c', 'd'], rowidAlias: 0, withoutRowid: false, pk: [0] }, 'rowid alias and quotes');
+  eq(parseCreateTable('CREATE TABLE t (id INT PRIMARY KEY, x)').rowidAlias, -1, 'INT is not an alias');
   eq(parseCreateTable('CREATE TABLE t (k TEXT, v, PRIMARY KEY (k)) WITHOUT ROWID'),
     { columns: ['k', 'v'], rowidAlias: -1, withoutRowid: true, pk: [0] }, 'WITHOUT ROWID');
-  eq(formatValue(new Uint8Array([0, 255])), "x'00ff' (2 byte)", 'BLOB');
+  eq(formatValue(new Uint8Array([0, 255])), "x'00ff' (2 bytes)", 'BLOB');
   eq(formatValue(null), 'NULL', 'NULL');
 });
 
-test('SQLite: database vero (tests/web/testdata/prova.sqlite)', () => {
+test('SQLite: real database (tests/web/testdata/prova.sqlite)', () => {
   const bytes = new Uint8Array(readFileSync(join(root, 'tests/web/testdata/prova.sqlite')));
   check(isSqlite(bytes) && !isSqlite(bytes.subarray(0, 50)), 'riconoscimento');
   const db = new SqliteDb(bytes);
-  eq(db.pageSize, 1024, 'pagine');
-  eq(db.tables().map((t) => t.name), ['valori', 'molte righe', 'prefs'], 'tabelle');
+  eq(db.pageSize, 1024, 'pages');
+  eq(db.tables().map((t) => t.name), ['valori', 'molte righe', 'prefs'], 'tables');
   const v = db.rows('valori');
-  eq(v.columns, ['id', 'nome', 'n', 'x', 'dati'], 'colonne');
+  eq(v.columns, ['id', 'nome', 'n', 'x', 'dati'], 'columns');
   eq(v.rows.length, 7, 'righe');
   eq(v.rows[0], [1, 'nullo', null, null, null], 'NULL');
-  eq(v.rows[1][2] === 0 && v.rows[1][3] === 1.5 && [...v.rows[1][4]].join() === '0,255', true, 'zero, reale, BLOB');
-  eq(v.rows[2][2] === 1 && v.rows[2][3] === -2.25 && v.rows[2][4].length === 0, true, 'uno, BLOB vuoto');
-  check(v.rows[3][2] === 9007199254740993n, `intero a 8 byte oltre 2^53: ${v.rows[3][2]}`);
-  eq([v.rows[4][2], v.rows[4][3]], [-300000, 1e300], 'negativo a 3 byte, reale grande');
+  eq(v.rows[1][2] === 0 && v.rows[1][3] === 1.5 && [...v.rows[1][4]].join() === '0,255', true, 'zero, real, BLOB');
+  eq(v.rows[2][2] === 1 && v.rows[2][3] === -2.25 && v.rows[2][4].length === 0, true, 'one, empty BLOB');
+  check(v.rows[3][2] === 9007199254740993n, `8-byte integer beyond 2^53: ${v.rows[3][2]}`);
+  eq([v.rows[4][2], v.rows[4][3]], [-300000, 1e300], '3-byte negative, large real');
   eq(v.rows[5][1], 'àèìòù €', 'UTF-8');
-  eq(v.rows[6][1], 'L'.repeat(5000), 'testo con pagine di overflow');
+  eq(v.rows[6][1], 'L'.repeat(5000), 'text with overflow pages');
   const m = db.rows('molte righe', 1000);
-  eq(m.columns, ['rowid', 'chiave', 'valore'], 'rowid senza alias');
-  eq(m.rows.length, 600, 'b-tree a più livelli');
-  eq(m.rows[599], [600, 'riga-0599', 599 * 599], 'ultima riga');
-  eq(db.rows('molte righe', 10).rows.length, 10, 'limite');
-  eq(db.rows('prefs').rows, [['anna', 'lingua', 'en'], ['anna', 'tema', 'scuro'], ['bruno', 'lingua', 'it']], 'WITHOUT ROWID in ordine di chiave');
+  eq(m.columns, ['rowid', 'chiave', 'valore'], 'rowid without an alias');
+  eq(m.rows.length, 600, 'multi-level b-tree');
+  eq(m.rows[599], [600, 'riga-0599', 599 * 599], 'last row');
+  eq(db.rows('molte righe', 10).rows.length, 10, 'limit');
+  eq(db.rows('prefs').rows, [['anna', 'lingua', 'en'], ['anna', 'tema', 'scuro'], ['bruno', 'lingua', 'it']], 'WITHOUT ROWID in key order');
   let err = null;
   try {
     new SqliteDb(new Uint8Array(200));
   } catch (e) {
     err = e.message;
   }
-  eq(err, 'non è un database SQLite 3', 'file che non è SQLite');
+  eq(err, 'not an SQLite 3 database', 'file that is not SQLite');
 });
 
-test('SQLite: WAL (tests/web/testdata/wal.sqlite e -wal)', () => {
+test('SQLite: WAL (tests/web/testdata/wal.sqlite and -wal)', () => {
   const bytes = new Uint8Array(readFileSync(join(root, 'tests/web/testdata/wal.sqlite')));
   const wal = new Uint8Array(readFileSync(join(root, 'tests/web/testdata/wal.sqlite-wal')));
-  // Senza WAL: com'era all'ultimo checkpoint.
+  // Without WAL: as it was at the last checkpoint.
   const old = new SqliteDb(bytes);
-  eq(old.rows('t').rows, [[1, 'base-1'], [2, 'base-2'], [3, 'base-3'], [4, 'base-4'], [5, 'base-5']], 'senza WAL');
-  eq(old.tables().map((t) => t.name), ['t'], 'tabelle senza WAL');
+  eq(old.rows('t').rows, [[1, 'base-1'], [2, 'base-2'], [3, 'base-3'], [4, 'base-4'], [5, 'base-5']], 'without WAL');
+  eq(old.tables().map((t) => t.name), ['t'], 'tables without WAL');
   const db = new SqliteDb(bytes, wal);
-  check(db.walFrames > 0 && db.pageCount > old.pageCount, `WAL applicato: ${db.walFrames} frame, ${db.pageCount} pagine`);
+  check(db.walFrames > 0 && db.pageCount > old.pageCount, `WAL applied: ${db.walFrames} frames, ${db.pageCount} pages`);
   const t = db.rows('t');
-  eq(t.rows, [[1, 'base-1'], [2, 'dal-wal'], [3, 'base-3'], [4, 'base-4'], [6, 'nuova']], 'righe con il WAL (come sqlite3)');
+  eq(t.rows, [[1, 'base-1'], [2, 'dal-wal'], [3, 'base-3'], [4, 'base-4'], [6, 'nuova']], 'rows with the WAL (like sqlite3)');
   eq(t.rowids, [1, 2, 3, 4, 6], 'rowid');
-  eq(t.types[0], ['integer', 'text'], 'tipi');
-  eq(db.tables().map((x) => x.name), ['t', 'altra'], 'tabella creata nel WAL');
-  eq(db.rows('altra').rows.map((r) => r[1].length), [900, 900, 900, 900], 'righe della tabella nuova');
-  // Il frame rovinato in coda non conta; un WAL tagliato a metà del primo
-  // frame non vale; un WAL di un'altra dimensione di pagina si ignora.
+  eq(t.types[0], ['integer', 'text'], 'types');
+  eq(db.tables().map((x) => x.name), ['t', 'altra'], 'table created in the WAL');
+  eq(db.rows('altra').rows.map((r) => r[1].length), [900, 900, 900, 900], 'rows of the new table');
+  // The damaged frame at the end doesn't count; a WAL cut halfway through the first
+  // frame is not valid; a WAL with another page size is ignored.
   const w = walPages(wal, 1024);
-  check((wal.length - 32) / (24 + 1024) === w.frames + 1, `frame validi ${w.frames} su ${(wal.length - 32) / 1048}`);
+  check((wal.length - 32) / (24 + 1024) === w.frames + 1, `valid frames ${w.frames} of ${(wal.length - 32) / 1048}`);
   eq(walPages(wal.subarray(0, 32 + 600), 1024), null, 'frame tagliato');
-  eq(walPages(wal, 4096), null, 'altra pagina');
+  eq(walPages(wal, 4096), null, 'another page size');
   const bad = wal.slice();
   bad[40] ^= 1;
-  eq(walPages(bad, 1024), null, 'salt rovinato nel primo frame');
+  eq(walPages(bad, 1024), null, 'damaged salt in the first frame');
 });
 
-test('SQLite: SQL delle modifiche del pannello', () => {
+test('SQLite: SQL of the panel edits', () => {
   const db = new SqliteDb(new Uint8Array(readFileSync(join(root, 'tests/web/testdata/prova.sqlite'))));
   const v = db.rows('valori');
-  eq(v.types[1], ['integer', 'text', 'integer', 'real', 'blob'], 'tipi di una riga');
+  eq(v.types[1], ['integer', 'text', 'integer', 'real', 'blob'], 'types of a row');
   const u = updateCellSql(v, 1, 3, { type: 'real', value: 2 });
-  eq(u.sql, 'UPDATE "valori" SET "x" = ?1 WHERE rowid = ?2', 'UPDATE con alias');
+  eq(u.sql, 'UPDATE "valori" SET "x" = ?1 WHERE rowid = ?2', 'UPDATE with alias');
   eq(u.params[1], 2, 'rowid');
   const m = db.rows('molte righe');
-  eq(updateCellSql(m, 0, 2, 'z').sql, 'UPDATE "molte righe" SET "valore" = ?1 WHERE rowid = ?2', 'senza alias: colonna spostata dal rowid');
+  eq(updateCellSql(m, 0, 2, 'z').sql, 'UPDATE "molte righe" SET "valore" = ?1 WHERE rowid = ?2', 'without an alias: column moved by the rowid');
   let err = null;
   try {
     updateCellSql(m, 0, 0, 1);
   } catch (e) {
     err = e.message;
   }
-  check(err?.includes('rowid'), 'il rowid senza alias non si cambia');
+  check(err?.includes('rowid'), 'the rowid without an alias cannot be changed');
   const pr = db.rows('prefs');
   const d = deleteRowSql(pr, 0);
-  eq([d.sql, d.params], ['DELETE FROM "prefs" WHERE "utente" IS ?1 AND "chiave" IS ?2', ['anna', 'lingua']], 'WITHOUT ROWID: chiave');
+  eq([d.sql, d.params], ['DELETE FROM "prefs" WHERE "utente" IS ?1 AND "chiave" IS ?2', ['anna', 'lingua']], 'WITHOUT ROWID: key');
   eq(deleteRowSql(v, 0), { sql: 'DELETE FROM "valori" WHERE rowid = ?1', params: [1] }, 'DELETE');
   eq(insertRowSql(v.table, { nome: 'n', x: 1.5 }), { sql: 'INSERT INTO "valori" ("nome", "x") VALUES (?1, ?2)', params: ['n', 1.5] }, 'INSERT');
-  eq(insertRowSql({ name: 'a"b' }, {}).sql, 'INSERT INTO "a""b" DEFAULT VALUES', 'INSERT vuoto e virgolette');
+  eq(insertRowSql({ name: 'a"b' }, {}).sql, 'INSERT INTO "a""b" DEFAULT VALUES', 'empty INSERT and quotes');
 });
 
-test('SharedPreferences: XML di Android', () => {
-  // Un file come lo scrive Android (FastXmlSerializer), con tutti i tipi.
+test('SharedPreferences: Android XML', () => {
+  // A file as Android writes it (FastXmlSerializer), with all the types.
   const xml = "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n" +
     '    <string name="nome">Vetro &amp; &lt;co&gt; &quot;x&quot; &#10;riga</string>\n' +
     '    <int name="avvii" value="3" />\n' +
@@ -333,14 +333,14 @@ test('SharedPreferences: XML di Android', () => {
     '    <string name="vuota"></string>\n' +
     '</map>\n';
   const p = parsePrefs(xml);
-  eq(p.map((e) => e.type), ['string', 'int', 'long', 'float', 'boolean', 'set', 'set', 'null', 'string'], 'tipi');
-  eq(p[0].value, 'Vetro & <co> "x" \nriga', 'entità');
+  eq(p.map((e) => e.type), ['string', 'int', 'long', 'float', 'boolean', 'set', 'set', 'null', 'string'], 'types');
+  eq(p[0].value, 'Vetro & <co> "x" \nriga', 'entities');
   eq(p[5].value, ['a', 'b c'], 'set');
-  eq(prefsToXml(p), xml, 'riletto e riscritto: stessi byte');
-  eq(prefsToXml([]), "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map />\n", 'mappa vuota');
-  eq(prefsToXml([{ type: 'string', name: 't', value: 'fine\n' }]).split('\n')[2], '    <string name="t">fine&#10;    </string>', 'testo che finisce con \\n (come FastXmlSerializer)');
-  eq(parsePrefs('<a/>'), null, 'radice diversa da map');
-  eq(parsePrefs('<map><int-array name="x" num="0" /></map>'), null, 'tipo non gestito');
+  eq(prefsToXml(p), xml, 'read back and rewritten: same bytes');
+  eq(prefsToXml([]), "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map />\n", 'empty map');
+  eq(prefsToXml([{ type: 'string', name: 't', value: 'fine\n' }]).split('\n')[2], '    <string name="t">fine&#10;    </string>', 'text ending with \\n (like FastXmlSerializer)');
+  eq(parsePrefs('<a/>'), null, 'root other than map');
+  eq(parsePrefs('<map><int-array name="x" num="0" /></map>'), null, 'unhandled type');
   eq(parsePrefs('<!-- c --><map>\n<string name="a"><![CDATA[<x>]]></string></map>')[0].value, '<x>', 'commento e CDATA');
   for (const bad of ['<map>', '<map><int name="a" value="1"></map>', '<map a=1/>', '<map>&nope;</map>', '<map/><x/>']) {
     let e = null;
@@ -349,12 +349,12 @@ test('SharedPreferences: XML di Android', () => {
     } catch (x) {
       e = x.message;
     }
-    check(e?.startsWith('XML non valido'), `XML rotto accettato: ${bad}`);
+    check(e?.startsWith('invalid XML'), `broken XML accepted: ${bad}`);
   }
   eq(['7', '+7', '-2147483648'].map((x) => checkPrefValue('int', x)), ['7', '7', '-2147483648'], 'int');
   eq(checkPrefValue('long', '9223372036854775807'), '9223372036854775807', 'long');
   eq(['1', '1.5f', '0.1', '1e10', '-0', '1e-5', '3.4028235e38', 'NaN'].map((x) => checkPrefValue('float', x)),
-    ['1.0', '1.5', '0.1', '1.0E10', '-0.0', '1.0E-5', '3.4028235E38', 'NaN'], 'float come Float.toString');
+    ['1.0', '1.5', '0.1', '1.0E10', '-0.0', '1.0E-5', '3.4028235E38', 'NaN'], 'float like Float.toString');
   eq([javaFloatString(100), javaFloatString(1234567), javaFloatString(0.001), javaFloatString(1 / 3)], ['100.0', '1234567.0', '0.001', '0.33333334'], 'Float.toString');
   for (const [t, x] of [['int', '2147483648'], ['int', '1.0'], ['long', '9223372036854775808'], ['float', 'abc'], ['boolean', 'True']]) {
     let e = null;
@@ -363,50 +363,50 @@ test('SharedPreferences: XML di Android', () => {
     } catch (y) {
       e = y;
     }
-    check(e !== null, `${t} ${x} accettato`);
+    check(e !== null, `${t} ${x} accepted`);
   }
 });
 
-test('nomi non UTF-8 e argomenti SQL (vetro.mjs)', () => {
+test('non-UTF-8 names and SQL arguments (vetro.mjs)', () => {
   const raw = new Uint8Array([0x2f, 0x61, 0xff, 0x62, 0xc3, 0xa0, 0xc3, 0xed, 0xb2, 0x80]);
   const s = pathString(raw);
   eq(s, '/a\udcffbà\udcc3\udced\udcb2\udc80', 'surrogateescape');
   eq([...pathBytes(s)], [...raw], 'andata e ritorno');
-  eq(displayName(s), '/a\\xffbà\\xc3\\xed\\xb2\\x80', 'mostrato con \\xNN');
-  eq([...pathBytes('😀/à')], [...new TextEncoder().encode('😀/à')], 'UTF-8 con coppie di surrogati');
-  eq(displayName('😀'), '😀', 'coppia di surrogati intatta');
-  eq(JSON.parse('"a\\udcff"'), 'a\udcff', 'JSON di vetro-wasm');
-  // Stessi byte di proto::encode_sql_args (test Rust sql_e_nomi / wasm).
-  eq([...encodeSqlArgs('S', [1n, 'x'])], [1, 0, 0, 0, 83, 2, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 3, 1, 0, 0, 0, 120], 'formato');
+  eq(displayName(s), '/a\\xffbà\\xc3\\xed\\xb2\\x80', 'shown with \\xNN');
+  eq([...pathBytes('😀/à')], [...new TextEncoder().encode('😀/à')], 'UTF-8 with surrogate pairs');
+  eq(displayName('😀'), '😀', 'surrogate pair intact');
+  eq(JSON.parse('"a\\udcff"'), 'a\udcff', 'vetro-wasm JSON');
+  // Same bytes as proto::encode_sql_args (Rust tests sql_e_nomi / wasm).
+  eq([...encodeSqlArgs('S', [1n, 'x'])], [1, 0, 0, 0, 83, 2, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 3, 1, 0, 0, 0, 120], 'format');
   const all = encodeSqlArgs('', [null, 2, 2.5, true, new Uint8Array([7]), { type: 'real', value: 3 }, { type: 'integer', value: -1n }]);
-  eq([...all.subarray(4, 6)], [7, 0], 'numero di parametri');
-  eq([all[6], all[7], all[16], all[25], all[34]], [0, 1, 2, 1, 4], 'tipi dedotti');
-  check(sqlValue(['i', '9223372036854775807']) === 9223372036854775807n, 'intero grande');
-  eq([sqlValue(['i', '-3']), sqlValue(['f', '1.0']), sqlValue(['f', 'inf']), sqlValue(['t', 'x']), sqlValue(null)], [-3, 1, null, 'x', null], 'valori');
-  eq(sqlValue(['f', '-inf']), -Infinity, 'meno infinito');
+  eq([...all.subarray(4, 6)], [7, 0], 'number of parameters');
+  eq([all[6], all[7], all[16], all[25], all[34]], [0, 1, 2, 1, 4], 'inferred types');
+  check(sqlValue(['i', '9223372036854775807']) === 9223372036854775807n, 'large integer');
+  eq([sqlValue(['i', '-3']), sqlValue(['f', '1.0']), sqlValue(['f', 'inf']), sqlValue(['t', 'x']), sqlValue(null)], [-3, 1, null, 'x', null], 'values');
+  eq(sqlValue(['f', '-inf']), -Infinity, 'minus infinity');
   eq([...sqlValue(['b', '00ab'])], [0, 0xab], 'BLOB');
 });
 
-test('gestore dei file: visualizzatori', () => {
+test('file manager: viewers', () => {
   const enc = new TextEncoder();
   const bytes = new Uint8Array(40).map((_, i) => (i * 37) & 0xff);
   const dump = hexDump(bytes);
   eq(dump.split('\n').length, 3, 'righe da 16 byte');
-  eq(dump.split('\n')[0], '00000000  00 25 4a 6f 94 b9 de 03 28 4d 72 97 bc e1 06 2b  |.%Jo....(Mr....+|', 'prima riga');
+  eq(dump.split('\n')[0], '00000000  00 25 4a 6f 94 b9 de 03 28 4d 72 97 bc e1 06 2b  |.%Jo....(Mr....+|', 'first line');
   eq([...parseHex(dump)], [...bytes], 'andata e ritorno');
-  eq([...parseHex('00000000  41 42 |AB|\n00000002  43 ff 00\n')], [0x41, 0x42, 0x43, 0xff, 0x00], 'byte aggiunti');
+  eq([...parseHex('00000000  41 42 |AB|\n00000002  43 ff 00\n')], [0x41, 0x42, 0x43, 0xff, 0x00], 'bytes added');
   let err = null;
   try {
     parseHex('00000000  41 4g');
   } catch (e) {
     err = e.message;
   }
-  eq(err, 'riga 1: "4g" non è un byte esadecimale', 'errore con la riga');
-  eq(modeString('file', 0o100640), '-rw-r-----', 'modo di un file');
-  eq(modeString('dir', 0o40755), 'drwxr-xr-x', 'modo di una cartella');
-  eq(sizeString(2048), '2.0 KiB', 'dimensione');
-  eq(asText(enc.encode('ciao')), 'ciao', 'testo');
-  eq(asText(new Uint8Array([0xc3])), null, 'UTF-8 non valido');
+  eq(err, 'line 1: "4g" is not a hexadecimal byte', 'error with the line');
+  eq(modeString('file', 0o100640), '-rw-r-----', 'mode of a file');
+  eq(modeString('dir', 0o40755), 'drwxr-xr-x', 'mode of a folder');
+  eq(sizeString(2048), '2.0 KiB', 'size');
+  eq(asText(enc.encode('ciao')), 'ciao', 'text');
+  eq(asText(new Uint8Array([0xc3])), null, 'invalid UTF-8');
   eq(imageType(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 13, 10])), 'image/png', 'PNG');
   const sqlite = new Uint8Array(readFileSync(join(root, 'tests/web/testdata/prova.sqlite')));
   eq([
@@ -418,32 +418,32 @@ test('gestore dei file: visualizzatori', () => {
     detectView('bin', new Uint8Array([1, 0, 2])),
     detectView('img', new Uint8Array([0xff, 0xd8, 0xff, 0xe0])),
     detectView('app.db', sqlite),
-  ], ['json', 'json', 'xml', 'xml', 'text', 'hex', 'image', 'sqlite'], 'riconoscimento');
+  ], ['json', 'json', 'xml', 'xml', 'text', 'hex', 'image', 'sqlite'], 'detection');
 });
 
-test('pannelli di analisi: tempi, durate, dump', () => {
-  eq(guestTime(1_234_567), '1.234 s', 'tempo del guest');
-  eq(guestTime(5), '0.000 s', 'tempo piccolo');
-  eq([duration(null), duration(999), duration(1500), duration(25_000), duration(3_200_000)], ['–', '999 µs', '1.50 ms', '25.0 ms', '3.20 s'], 'durate');
+test('analysis panels: times, durations, dump', () => {
+  eq(guestTime(1_234_567), '1.234 s', 'guest time');
+  eq(guestTime(5), '0.000 s', 'small time');
+  eq([duration(null), duration(999), duration(1500), duration(25_000), duration(3_200_000)], ['–', '999 µs', '1.50 ms', '25.0 ms', '3.20 s'], 'durations');
   eq([...fromB64('AAH/')], [0, 1, 255], 'base64');
   const d = hexdump(new Uint8Array([0x41, 0x00, 0x7f, 0x42, ...new Array(14).fill(0x2e)]), 0xffff800080010800n);
   eq(d.split('\n'), [
     'ffff800080010800  41 00 7f 42 2e 2e 2e 2e 2e 2e 2e 2e 2e 2e 2e 2e  A..B............',
     'ffff800080010810  2e 2e                                            ..',
-  ], 'dump esadecimale');
-  eq(hexdump(new Uint8Array(40), 0n, 16).split('\n').at(-1), '… altri 24 byte', 'dump tagliato');
+  ], 'hex dump');
+  eq(hexdump(new Uint8Array(40), 0n, 16).split('\n').at(-1), '… 24 more bytes', 'truncated dump');
 });
 
-test('ispettore: celle dei corpi e del tipo', () => {
-  eq([bodyCell(0, 'vuoto'), bodyCell(12, 'json'), bodyCell(2048, 'binario'), bodyCell(5, '-'), bodyCell(null, '-'), bodyCell(undefined)],
-    ['0 B', '12 B json', '2.0 KiB binario', '5 B', '–', '–'], 'corpi');
+test('inspector: body and type cells', () => {
+  eq([bodyCell(0, 'empty'), bodyCell(12, 'json'), bodyCell(2048, 'binary'), bodyCell(5, '-'), bodyCell(null, '-'), bodyCell(undefined)],
+    ['0 B', '12 B json', '2.0 KiB binary', '5 B', '–', '–'], 'bodies');
   const t = (r) => typeText(r).text;
   eq([
     t({ mime: 'application/json', status: 200, respBytes: 2, respKind: 'json' }),
-    t({ mime: null, status: 200, respBytes: 0, respKind: 'vuoto' }),
-    t({ mime: null, status: 200, respBytes: 7, respKind: 'testo' }),
+    t({ mime: null, status: 200, respBytes: 0, respKind: 'empty' }),
+    t({ mime: null, status: 200, respBytes: 7, respKind: 'text' }),
     t({ mime: null, status: null, respBytes: 0, respKind: '-' }),
-  ], ['application/json', 'vuoto', 'testo', '–'], 'tipo');
+  ], ['application/json', 'empty', 'text', '–'], 'type');
 });
 
 test('disk map: extents, fills, holes, LayoutSource over HTTP', async () => {
@@ -719,5 +719,5 @@ run(async () => {
     count++;
     console.log(`ok: ${name}`);
   }
-  console.log(`test unitari web: ${count} ok`);
+  console.log(`web unit tests: ${count} ok`);
 });

@@ -1,47 +1,47 @@
-//! GICv3 per una CPU: distributore, redistributore e interfaccia CPU a
-//! registri di sistema (ARM IHI0069).
+//! GICv3 for one CPU: distributor, redistributor and system-register CPU
+//! interface (ARM IHI0069).
 //!
-//! Perimetro e scelte (vedi anche `docs/specs/platform.md`):
-//! - **Un solo stato di sicurezza** (GICD_CTLR.DS = 1, RAO/WI) e affinity
-//!   routing sempre attivo (ARE = 1, RAO/WI), come vede Linux sotto QEMU
-//!   senza EL3.
-//! - **Solo gruppo 1 non sicuro**: IGROUPR si memorizza, ma gli interrupt
-//!   lasciati in gruppo 0 non vengono mai segnalati (sarebbero FIQ).
-//!   Linux mette tutto in gruppo 1. IGRPMODR e NSACR sono RAZ/WI.
-//! - Niente LPI/ITS: GICR_CTLR.EnableLPIs, PROPBASER e PENDBASER RAZ/WI.
+//! Scope and choices (see also `docs/specs/platform.md`):
+//! - **A single security state** (GICD_CTLR.DS = 1, RAO/WI) and affinity
+//!   routing always on (ARE = 1, RAO/WI), as Linux sees it under QEMU
+//!   without EL3.
+//! - **Non-secure group 1 only**: IGROUPR is stored, but interrupts
+//!   left in group 0 are never signalled (they would be FIQs).
+//!   Linux puts everything in group 1. IGRPMODR and NSACR are RAZ/WI.
+//! - No LPI/ITS: GICR_CTLR.EnableLPIs, PROPBASER and PENDBASER RAZ/WI.
 //! - 256 SPI (INTID 32..287), GICD_TYPER.ITLinesNumber = 8, IDbits = 9.
-//! - Interfaccia CPU con 5 bit di priorità (PRIbits = 4, come QEMU):
-//!   PMR tiene i 5 bit alti, BPR1 minimo 3. ICC_CTLR_EL1.CBPR è RAZ/WI
-//!   (BPR0 non è modellato), EOImode è scrivibile.
-//! - GICR_WAKER fa l'handshake (ChildrenAsleep segue ProcessorSleep) ma non
-//!   blocca la consegna.
+//! - CPU interface with 5 priority bits (PRIbits = 4, like QEMU):
+//!   PMR holds the top 5 bits, BPR1 minimum 3. ICC_CTLR_EL1.CBPR is RAZ/WI
+//!   (BPR0 is not modelled), EOImode is writable.
+//! - GICR_WAKER does the handshake (ChildrenAsleep follows ProcessorSleep) but does not
+//!   block delivery.
 //!
-//! Il GIC si mappa sul bus come un'unica regione che parte da GICD_BASE e
-//! copre il redistributore (vedi [`MMIO_SIZE`]); lo spazio in mezzo è
+//! The GIC is mapped on the bus as a single region starting at GICD_BASE and
+//! covering the redistributor (see [`MMIO_SIZE`]); the space in between is
 //! RAZ/WI.
 
 use crate::bus::MmioDevice;
 use crate::map;
 
-/// Numero di SPI implementati.
+/// Number of implemented SPIs.
 pub const NUM_SPIS: usize = 256;
-/// Numero totale di INTID (SGI + PPI + SPI).
+/// Total number of INTIDs (SGI + PPI + SPI).
 pub const NUM_INTIDS: usize = 32 + NUM_SPIS;
-/// INTID restituito da IAR quando non c'è niente da consegnare.
+/// INTID returned by IAR when there is nothing to deliver.
 pub const INTID_SPURIOUS: u32 = 1023;
-/// Bit di priorità implementati nell'interfaccia CPU.
+/// Priority bits implemented in the CPU interface.
 pub const PRI_BITS: u32 = 5;
-/// Maschera dei bit di priorità implementati.
+/// Mask of the implemented priority bits.
 pub const PRI_MASK: u8 = (0xFF00u16 >> PRI_BITS) as u8;
-/// Valore minimo di ICC_BPR1_EL1 (8 - PRI_BITS).
+/// Minimum value of ICC_BPR1_EL1 (8 - PRI_BITS).
 pub const MIN_BPR1: u8 = (8 - PRI_BITS) as u8;
 
-/// Dimensione della regione MMIO del GIC sul bus (GICD + buco + un GICR).
+/// Size of the GIC MMIO region on the bus (GICD + hole + one GICR).
 pub const MMIO_SIZE: u64 = map::GICR_BASE + map::GICR_SIZE_PER_CPU - map::GICD_BASE;
-/// Offset del redistributore dentro la regione.
+/// Offset of the redistributor inside the region.
 const GICR_OFFSET: u64 = map::GICR_BASE - map::GICD_BASE;
 
-// Distributore.
+// Distributor.
 pub const GICD_CTLR: u64 = 0x0000;
 pub const GICD_TYPER: u64 = 0x0004;
 pub const GICD_IIDR: u64 = 0x0008;
@@ -64,7 +64,7 @@ pub const GICD_CTLR_ENABLE_GRP1: u32 = 1 << 1;
 pub const GICD_CTLR_ARE: u32 = 1 << 4;
 pub const GICD_CTLR_DS: u32 = 1 << 6;
 
-// Redistributore, frame RD_base.
+// Redistributor, RD_base frame.
 pub const GICR_CTLR: u64 = 0x0000;
 pub const GICR_IIDR: u64 = 0x0004;
 pub const GICR_TYPER: u64 = 0x0008;
@@ -72,7 +72,7 @@ pub const GICR_WAKER: u64 = 0x0014;
 pub const GICR_PIDR2: u64 = 0xFFE8;
 pub const GICR_WAKER_PROCESSOR_SLEEP: u32 = 1 << 1;
 pub const GICR_WAKER_CHILDREN_ASLEEP: u32 = 1 << 2;
-// Redistributore, frame SGI_base (offset relativi al frame).
+// Redistributor, SGI_base frame (offsets relative to the frame).
 pub const GICR_SGI_BASE: u64 = 0x1_0000;
 pub const GICR_IGROUPR0: u64 = 0x0080;
 pub const GICR_ISENABLER0: u64 = 0x0100;
@@ -85,14 +85,14 @@ pub const GICR_IPRIORITYR: u64 = 0x0400;
 pub const GICR_ICFGR0: u64 = 0x0C00;
 pub const GICR_ICFGR1: u64 = 0x0C04;
 
-/// Implementatore ARM (JEP106 0x43B), come QEMU.
+/// ARM implementer (JEP106 0x43B), like QEMU.
 const IIDR: u32 = 0x43B;
-/// PIDR4-7, PIDR0-3, CIDR0-3 a partire da 0xFFD0 (valori di QEMU; PIDR2
-/// dice ArchRev = 3, cioè GICv3, e Linux lo controlla).
+/// PIDR4-7, PIDR0-3, CIDR0-3 starting at 0xFFD0 (QEMU's values; PIDR2
+/// says ArchRev = 3, i.e. GICv3, and Linux checks it).
 const GICD_IDS: [u8; 12] = [0x44, 0x00, 0x00, 0x00, 0x92, 0xB4, 0x3B, 0x00, 0x0D, 0xF0, 0x05, 0xB1];
 const GICR_IDS: [u8; 12] = [0x44, 0x00, 0x00, 0x00, 0x93, 0xB4, 0x3B, 0x00, 0x0D, 0xF0, 0x05, 0xB1];
 
-/// ICC_CTLR_EL1: bit scrivibili e campi fissi.
+/// ICC_CTLR_EL1: writable bits and fixed fields.
 pub const ICC_CTLR_EOIMODE: u64 = 1 << 1;
 const ICC_CTLR_PRIBITS: u64 = ((PRI_BITS - 1) as u64) << 8;
 const ICC_CTLR_A3V: u64 = 1 << 15;
@@ -100,16 +100,16 @@ const ICC_CTLR_A3V: u64 = 1 << 15;
 #[derive(Clone, Copy, Debug, Default)]
 struct Irq {
     enabled: bool,
-    /// Latch di pending (fronte, ISPENDR); per i livelli si somma alla linea.
+    /// Pending latch (edge, ISPENDR); for levels it is added to the line.
     pending: bool,
-    /// Livello della linea in ingresso.
+    /// Level of the input line.
     level: bool,
     active: bool,
     group1: bool,
-    /// true = fronte di salita, false = livello alto.
+    /// true = rising edge, false = level high.
     edge: bool,
     priority: u8,
-    /// GICD_IROUTER (solo SPI).
+    /// GICD_IROUTER (SPIs only).
     router: u64,
 }
 
@@ -133,15 +133,15 @@ enum BitOp {
 #[derive(Clone, Debug)]
 pub struct Gic {
     irqs: Vec<Irq>,
-    /// Solo EnableGrp0/EnableGrp1; ARE e DS si aggiungono in lettura.
+    /// Only EnableGrp0/EnableGrp1; ARE and DS are added on read.
     gicd_ctlr: u32,
     processor_sleep: bool,
-    // Interfaccia CPU.
+    // CPU interface.
     pmr: u8,
     bpr1: u8,
     igrpen1: bool,
     eoimode: bool,
-    /// Priorità attive (INTID, priorità di gruppo), la più alta in cima.
+    /// Active priorities (INTID, group priority), the highest on top.
     active_prio: Vec<(u32, u8)>,
 }
 
@@ -155,7 +155,7 @@ impl Gic {
     pub fn new() -> Self {
         let mut irqs = vec![Irq::default(); NUM_INTIDS];
         for irq in &mut irqs[..16] {
-            irq.edge = true; // gli SGI sono sempre a fronte
+            irq.edge = true; // SGIs are always edge-triggered
         }
         Self {
             irqs,
@@ -169,10 +169,10 @@ impl Gic {
         }
     }
 
-    // ---- Linee in ingresso -------------------------------------------------
+    // ---- Input lines -------------------------------------------------------
 
-    /// Livello della linea di un PPI (16..31) o SPI (32..). Su un interrupt
-    /// configurato a fronte, la salita imposta il pending.
+    /// Line level of a PPI (16..31) or SPI (32..). On an interrupt
+    /// configured as edge-triggered, the rising edge sets pending.
     pub fn set_irq_level(&mut self, intid: u32, level: bool) {
         let Some(irq) = self.irqs.get_mut(intid as usize).filter(|_| intid >= 16) else {
             return;
@@ -183,33 +183,33 @@ impl Gic {
         irq.level = level;
     }
 
-    /// Livello della linea dello SPI `spi` (INTID `32 + spi`).
+    /// Line level of SPI `spi` (INTID `32 + spi`).
     pub fn set_spi_level(&mut self, spi: u32, level: bool) {
         self.set_irq_level(map::SPI_BASE + spi, level);
     }
 
-    /// Rende pendente un SGI (0..15) sulla CPU 0.
+    /// Makes an SGI (0..15) pending on CPU 0.
     pub fn send_sgi(&mut self, intid: u32) {
         if intid < 16 {
             self.irqs[intid as usize].pending = true;
         }
     }
 
-    /// Stato di un interrupt: (abilitato, pendente, attivo).
+    /// State of an interrupt: (enabled, pending, active).
     pub fn irq_state(&self, intid: u32) -> Option<(bool, bool, bool)> {
         self.irqs.get(intid as usize).map(|i| (i.enabled, i.is_pending(), i.active))
     }
 
-    // ---- Selezione ---------------------------------------------------------
+    // ---- Selection ---------------------------------------------------------
 
     fn routed_here(intid: usize, irq: &Irq) -> bool {
-        // IRM = 1 (qualunque CPU) oppure affinità 0.0.0.0.
+        // IRM = 1 (any CPU) or affinity 0.0.0.0.
         intid < 32 || irq.router & (1 << 31) != 0 || irq.router & 0xFF_00FF_FFFF == 0
     }
 
-    /// Interrupt pendente di gruppo 1 a priorità più alta (valore più basso;
-    /// a parità vince l'INTID più basso), senza guardare PMR né la priorità
-    /// in esecuzione.
+    /// Highest-priority pending group 1 interrupt (lowest value;
+    /// on a tie the lowest INTID wins), without looking at PMR or the running
+    /// priority.
     pub fn highest_pending(&self) -> Option<(u32, u8)> {
         if self.gicd_ctlr & GICD_CTLR_ENABLE_GRP1 == 0 {
             return None;
@@ -233,27 +233,27 @@ impl Gic {
         prio & (0xFFu8 << self.bpr1)
     }
 
-    /// Priorità in esecuzione (0x100 = nessuna attiva, per i confronti).
+    /// Running priority (0x100 = none active, for comparisons).
     fn running(&self) -> u16 {
         self.active_prio.last().map_or(0x100, |&(_, p)| u16::from(p))
     }
 
-    /// L'interrupt che l'interfaccia CPU segnalerebbe adesso.
+    /// The interrupt the CPU interface would signal now.
     fn deliverable(&self) -> Option<(u32, u8)> {
         let (intid, prio) = self.highest_pending()?;
         (self.igrpen1 && prio < self.pmr && u16::from(self.group_prio(prio)) < self.running())
             .then_some((intid, prio))
     }
 
-    /// Linea IRQ verso la CPU: la CPU prende l'eccezione se PSTATE.I è 0.
+    /// IRQ line to the CPU: the CPU takes the exception if PSTATE.I is 0.
     pub fn irq_line(&self) -> bool {
         self.deliverable().is_some()
     }
 
-    // ---- Interfaccia CPU (registri di sistema) -----------------------------
+    // ---- CPU interface (system registers) ----------------------------------
 
-    /// MRS ICC_IAR1_EL1: riconosce l'interrupt segnalato (diventa attivo) e
-    /// ne restituisce l'INTID, oppure 1023.
+    /// MRS ICC_IAR1_EL1: acknowledges the signalled interrupt (it becomes active) and
+    /// returns its INTID, or 1023.
     pub fn read_iar1(&mut self) -> u64 {
         let Some((intid, prio)) = self.deliverable() else {
             return u64::from(INTID_SPURIOUS);
@@ -266,13 +266,13 @@ impl Gic {
         u64::from(intid)
     }
 
-    /// MRS ICC_HPPIR1_EL1: INTID pendente più prioritario, senza riconoscerlo.
+    /// MRS ICC_HPPIR1_EL1: highest-priority pending INTID, without acknowledging it.
     pub fn read_hppir1(&self) -> u64 {
         u64::from(self.highest_pending().map_or(INTID_SPURIOUS, |(i, _)| i))
     }
 
-    /// MSR ICC_EOIR1_EL1: abbassa la priorità in esecuzione e, con
-    /// EOImode = 0, disattiva l'interrupt.
+    /// MSR ICC_EOIR1_EL1: drops the running priority and, with
+    /// EOImode = 0, deactivates the interrupt.
     pub fn write_eoir1(&mut self, value: u64) {
         let intid = (value & 0xFF_FFFF) as u32;
         if (1020..1024).contains(&intid) {
@@ -284,7 +284,7 @@ impl Gic {
         }
     }
 
-    /// MSR ICC_DIR_EL1: disattivazione separata (usata con EOImode = 1).
+    /// MSR ICC_DIR_EL1: separate deactivation (used with EOImode = 1).
     pub fn write_dir(&mut self, value: u64) {
         self.deactivate((value & 0xFF_FFFF) as u32);
     }
@@ -295,9 +295,9 @@ impl Gic {
         }
     }
 
-    /// MSR ICC_SGI1R_EL1: con una sola CPU conta solo l'affinità 0.0.0 con
-    /// il bit 0 della TargetList; IRM = 1 ("tutte tranne me") non colpisce
-    /// nessuno.
+    /// MSR ICC_SGI1R_EL1: with a single CPU only affinity 0.0.0 with
+    /// bit 0 of the TargetList counts; IRM = 1 ("all but me") hits
+    /// nobody.
     pub fn write_sgi1r(&mut self, value: u64) {
         let targets = value & 0xFFFF;
         let affs = value & 0x00FF_00FF_00FF_0000;
@@ -321,7 +321,7 @@ impl Gic {
         self.bpr1 = (value as u8 & 7).max(MIN_BPR1);
     }
 
-    /// MRS ICC_RPR_EL1: priorità in esecuzione, 0xFF se nessuna.
+    /// MRS ICC_RPR_EL1: running priority, 0xFF if none.
     pub fn read_rpr(&self) -> u64 {
         u64::from(self.running().min(0xFF))
     }
@@ -340,18 +340,18 @@ impl Gic {
         self.igrpen1 = value & 1 != 0;
     }
 
-    /// ICC_SRE_EL1: SRE, DFB e DIB fissi a 1 (solo interfaccia a registri).
+    /// ICC_SRE_EL1: SRE, DFB and DIB fixed at 1 (register interface only).
     pub fn read_sre(&self) -> u64 {
         0x7
     }
     pub fn write_sre(&mut self, _value: u64) {}
 
-    /// ICC_AP1R0_EL1: un bit per priorità di gruppo attiva (bit = prio >> 3).
+    /// ICC_AP1R0_EL1: one bit per active group priority (bit = prio >> 3).
     pub fn read_ap1r0(&self) -> u64 {
         self.active_prio.iter().fold(0, |acc, &(_, p)| acc | 1 << (p >> 3))
     }
-    /// Scrivere zero (come fa Linux all'avvio) svuota le priorità attive;
-    /// altri valori ricostruiscono la pila senza INTID associati.
+    /// Writing zero (as Linux does at boot) empties the active priorities;
+    /// other values rebuild the stack without associated INTIDs.
     pub fn write_ap1r0(&mut self, value: u64) {
         self.active_prio.clear();
         for bit in (0..32).rev() {
@@ -361,7 +361,7 @@ impl Gic {
         }
     }
 
-    // ---- Registri a bitmap condivisi da GICD e GICR -------------------------
+    // ---- Bitmap registers shared by GICD and GICR ---------------------------
 
     fn read_bits(&self, word: usize, op: BitOp) -> u32 {
         let mut v = 0;
@@ -421,7 +421,7 @@ impl Gic {
         }
     }
 
-    /// ICFGRn: due bit per interrupt, il bit alto vale "a fronte".
+    /// ICFGRn: two bits per interrupt, the high bit means "edge-triggered".
     fn read_cfg(&self, word: usize) -> u32 {
         self.irqs
             .iter()
@@ -437,7 +437,7 @@ impl Gic {
         }
     }
 
-    // ---- Distributore ------------------------------------------------------
+    // ---- Distributor -------------------------------------------------------
 
     pub fn dist_read(&mut self, offset: u64, size: u8) -> u64 {
         let words = NUM_INTIDS as u64 / 32;
@@ -513,7 +513,7 @@ impl Gic {
         }
     }
 
-    // ---- Redistributore ----------------------------------------------------
+    // ---- Redistributor -----------------------------------------------------
 
     pub fn redist_read(&mut self, offset: u64, size: u8) -> u64 {
         if offset >= GICR_SGI_BASE {
@@ -533,7 +533,7 @@ impl Gic {
             };
         }
         match (offset, size) {
-            // TYPER: Last = 1, Processor_Number = 0, affinità 0.0.0.0.
+            // TYPER: Last = 1, Processor_Number = 0, affinity 0.0.0.0.
             (GICR_TYPER, 8) => 1 << 4,
             (_, 4) => u64::from(match offset {
                 GICR_IIDR => IIDR,
@@ -566,7 +566,7 @@ impl Gic {
                 ) => {
                     self.write_bits(0, Self::bit_op(off).unwrap(), value as u32);
                 }
-                // ICFGR0 (SGI) è in sola lettura: sempre a fronte.
+                // ICFGR0 (SGI) is read-only: always edge-triggered.
                 (GICR_ICFGR1, 4) => self.write_cfg(1, value as u32),
                 _ => {}
             }
@@ -627,11 +627,11 @@ impl vetro_snapshot::Snapshot for Gic {
     }
 
     fn restore(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
-        r.expect_u64("INTID del GIC", self.irqs.len() as u64)?;
+        r.expect_u64("GIC INTIDs", self.irqs.len() as u64)?;
         for i in &mut self.irqs {
             let f = r.u8()?;
             if f >> 6 != 0 {
-                return Err(vetro_snapshot::Error::invalid(format!("stato di un interrupt {f:#x}")));
+                return Err(vetro_snapshot::Error::invalid(format!("interrupt state {f:#x}")));
             }
             i.enabled = f & 1 != 0;
             i.pending = f & 2 != 0;
@@ -659,8 +659,8 @@ mod tests {
 
     const UART: u32 = 33;
 
-    /// GIC inizializzato come fa Linux: gruppo 1 ovunque, distributore e
-    /// interfaccia CPU accesi, PMR aperto.
+    /// GIC initialised the way Linux does it: group 1 everywhere, distributor and
+    /// CPU interface enabled, PMR open.
     fn linux_like() -> Gic {
         let mut g = Gic::new();
         g.redist_write(GICR_WAKER, 4, 0);
@@ -689,7 +689,7 @@ mod tests {
         assert_eq!(typer & 0x1F, 8);
         assert_eq!(typer >> 19 & 0x1F, 9);
         assert_eq!(g.dist_read(GICD_IIDR, 4), 0x43B);
-        assert_eq!(g.redist_read(GICR_TYPER, 8), 0x10, "Last = 1, affinità 0");
+        assert_eq!(g.redist_read(GICR_TYPER, 8), 0x10, "Last = 1, affinity 0");
         assert_eq!(g.redist_read(GICR_TYPER + 4, 4), 0);
     }
 
@@ -723,12 +723,12 @@ mod tests {
         assert_eq!(g.read_hppir1(), 33);
         assert_eq!(g.read_iar1(), 33);
         assert_eq!(g.read_rpr(), 0xA0);
-        assert_eq!(g.irq_state(UART), Some((true, true, true)), "attivo e pendente: linea alta");
-        assert!(!g.irq_line(), "un interrupt attivo non si ripresenta");
+        assert_eq!(g.irq_state(UART), Some((true, true, true)), "active and pending: line high");
+        assert!(!g.irq_line(), "an active interrupt does not come back");
         assert_eq!(g.read_iar1(), u64::from(INTID_SPURIOUS));
         g.write_eoir1(33);
         assert_eq!(g.read_rpr(), 0xFF);
-        assert!(g.irq_line(), "la linea è ancora alta");
+        assert!(g.irq_line(), "the line is still high");
         g.set_spi_level(1, false);
         assert!(!g.irq_line());
         assert_eq!(g.dist_read(GICD_ISPENDR + 4, 4), 0);
@@ -738,13 +738,13 @@ mod tests {
     fn spi_a_fronte() {
         let mut g = linux_like();
         enable_spi(&mut g, 48, 0x80);
-        g.dist_write(GICD_ICFGR + 4 * 3, 4, 0b10); // INTID 48 a fronte
+        g.dist_write(GICD_ICFGR + 4 * 3, 4, 0b10); // INTID 48 edge-triggered
         assert_eq!(g.dist_read(GICD_ICFGR + 4 * 3, 4), 0b10);
         g.set_irq_level(48, true);
         g.set_irq_level(48, false);
         assert_eq!(g.read_iar1(), 48);
         g.write_eoir1(48);
-        assert!(!g.irq_line(), "il fronte è stato consumato");
+        assert!(!g.irq_line(), "the edge has been consumed");
         g.set_irq_level(48, true);
         assert!(g.irq_line());
     }
@@ -774,9 +774,9 @@ mod tests {
         for i in [40, 41, 42] {
             g.set_irq_level(i, true);
         }
-        assert_eq!(g.read_hppir1(), 41, "priorità 0x40, a parità l'INTID più basso");
+        assert_eq!(g.read_hppir1(), 41, "priority 0x40, on a tie the lowest INTID");
         g.write_pmr(0x40);
-        assert!(!g.irq_line(), "serve priorità strettamente minore di PMR");
+        assert!(!g.irq_line(), "priority strictly lower than PMR is needed");
         assert_eq!(g.read_iar1(), u64::from(INTID_SPURIOUS));
         g.write_pmr(0x48);
         assert_eq!(g.read_pmr(), 0x48);
@@ -792,9 +792,9 @@ mod tests {
         assert_eq!(g.read_iar1(), 40);
         enable_spi(&mut g, 42, 0x80);
         g.set_irq_level(42, true);
-        assert!(!g.irq_line(), "stessa priorità di gruppo: niente prelazione");
+        assert!(!g.irq_line(), "same group priority: no preemption");
         g.set_irq_level(41, true);
-        assert_eq!(g.read_iar1(), 41, "priorità più alta: prelaziona");
+        assert_eq!(g.read_iar1(), 41, "higher priority: preempts");
         assert_eq!(g.read_rpr(), 0x40);
         assert_eq!(g.read_ap1r0(), (1 << (0x40 >> 3)) | (1 << (0x80 >> 3)));
         g.set_irq_level(41, false);
@@ -815,7 +815,7 @@ mod tests {
         assert_eq!(g.read_iar1(), 40);
         g.write_eoir1(40);
         assert_eq!(g.read_rpr(), 0xFF);
-        assert_eq!(g.irq_state(40), Some((true, true, true)), "ancora attivo fino a DIR");
+        assert_eq!(g.irq_state(40), Some((true, true, true)), "still active until DIR");
         g.write_dir(40);
         assert_eq!(g.irq_state(40), Some((true, true, false)));
     }
@@ -830,7 +830,7 @@ mod tests {
         assert_eq!(g.redist_read(GICR_SGI_BASE + GICR_ISPENDR0, 4), 1 << 27);
         assert_eq!(g.read_iar1(), 27);
         g.write_eoir1(27);
-        // Nel distributore gli SGI/PPI sono RAZ/WI con ARE = 1.
+        // In the distributor SGIs/PPIs are RAZ/WI with ARE = 1.
         assert_eq!(g.dist_read(GICD_ISENABLER, 4), 0);
         g.dist_write(GICD_ICENABLER, 4, 1 << 27);
         assert_eq!(g.redist_read(GICR_SGI_BASE + GICR_ISENABLER0, 4), 1 << 27);
@@ -842,11 +842,11 @@ mod tests {
         g.redist_write(GICR_SGI_BASE + GICR_ISENABLER0, 4, 1 << 5);
         assert_eq!(g.redist_read(GICR_SGI_BASE + GICR_ICFGR0, 4), 0xAAAA_AAAA);
         g.redist_write(GICR_SGI_BASE + GICR_ICFGR0, 4, 0);
-        assert_eq!(g.redist_read(GICR_SGI_BASE + GICR_ICFGR0, 4), 0xAAAA_AAAA, "ICFGR0 in sola lettura");
+        assert_eq!(g.redist_read(GICR_SGI_BASE + GICR_ICFGR0, 4), 0xAAAA_AAAA, "ICFGR0 read-only");
         g.write_sgi1r(5 << 24 | 1 << 40 | 1);
-        assert!(!g.irq_line(), "IRM: tutte le CPU tranne questa");
+        assert!(!g.irq_line(), "IRM: all CPUs but this one");
         g.write_sgi1r(5 << 24 | 1 << 16 | 1);
-        assert!(!g.irq_line(), "Aff1 = 1: nessuna CPU");
+        assert!(!g.irq_line(), "Aff1 = 1: no CPU");
         g.write_sgi1r(5 << 24 | 1);
         assert_eq!(g.read_iar1(), 5);
     }
@@ -857,7 +857,7 @@ mod tests {
         enable_spi(&mut g, 40, 0x80);
         g.set_irq_level(40, true);
         g.dist_write(GICD_IGROUPR + 4, 4, 0);
-        assert!(!g.irq_line(), "gruppo 0 non supportato");
+        assert!(!g.irq_line(), "group 0 not supported");
         g.dist_write(GICD_IGROUPR + 4, 4, 0xFFFF_FFFF);
         assert!(g.irq_line());
         g.dist_write(GICD_CTLR, 4, 0);
@@ -865,7 +865,7 @@ mod tests {
         g.dist_write(GICD_CTLR, 4, u64::from(GICD_CTLR_ENABLE_GRP1));
         g.write_igrpen1(0);
         assert!(!g.irq_line());
-        assert_eq!(g.read_hppir1(), 40, "HPPIR ignora IGRPEN1 e PMR");
+        assert_eq!(g.read_hppir1(), 40, "HPPIR ignores IGRPEN1 and PMR");
     }
 
     #[test]
@@ -877,12 +877,12 @@ mod tests {
         g.dist_write(r, 8, 0x0000_0001_0000_0100);
         assert_eq!(g.dist_read(r, 8), 0x0000_0001_0000_0100);
         assert_eq!(g.dist_read(r + 4, 4), 1);
-        assert!(!g.irq_line(), "affinità di un'altra CPU");
+        assert!(!g.irq_line(), "affinity of another CPU");
         g.dist_write(r, 8, 1 << 31);
         assert!(g.irq_line(), "IRM = 1");
         g.dist_write(r, 4, 0);
         assert!(g.irq_line());
-        assert_eq!(g.dist_read(GICD_IROUTER, 8), 0, "IROUTER degli SGI/PPI riservato");
+        assert_eq!(g.dist_read(GICD_IROUTER, 8), 0, "SGI/PPI IROUTER reserved");
     }
 
     #[test]
@@ -907,14 +907,14 @@ mod tests {
     #[test]
     fn bpr1_raggruppa_le_priorita() {
         let mut g = linux_like();
-        g.write_bpr1(5); // priorità di gruppo = bit [7:5]
+        g.write_bpr1(5); // group priority = bits [7:5]
         enable_spi(&mut g, 40, 0x50);
         enable_spi(&mut g, 41, 0x48);
         g.set_irq_level(40, true);
         assert_eq!(g.read_iar1(), 40);
-        assert_eq!(g.read_rpr(), 0x40, "RPR riporta la priorità di gruppo");
+        assert_eq!(g.read_rpr(), 0x40, "RPR reports the group priority");
         g.set_irq_level(41, true);
-        assert!(!g.irq_line(), "0x48 e 0x50 stanno nello stesso gruppo 0x40");
+        assert!(!g.irq_line(), "0x48 and 0x50 are in the same group 0x40");
         g.write_bpr1(3);
         g.write_eoir1(40);
         g.set_irq_level(40, false);
@@ -927,11 +927,11 @@ mod tests {
         let gicr = map::GICR_BASE - map::GICD_BASE;
         assert_eq!(MmioDevice::read(&mut g, GICD_PIDR2, 4), 0x3B);
         assert_eq!(MmioDevice::read(&mut g, gicr + GICR_PIDR2, 4), 0x3B);
-        assert_eq!(MmioDevice::read(&mut g, 0x5_0000, 4), 0, "buco RAZ");
+        assert_eq!(MmioDevice::read(&mut g, 0x5_0000, 4), 0, "RAZ hole");
         MmioDevice::write(&mut g, gicr + GICR_WAKER, 4, 0);
         assert_eq!(MmioDevice::read(&mut g, gicr + GICR_WAKER, 4), 0);
         MmioDevice::write(&mut g, GICD_IPRIORITYR + 32, 4, 0x4433_2211);
         assert_eq!(MmioDevice::read(&mut g, GICD_IPRIORITYR + 34, 1), 0x33);
-        assert_eq!(MmioDevice::read(&mut g, GICD_IPRIORITYR, 4), 0, "priorità SGI RAZ nel distributore");
+        assert_eq!(MmioDevice::read(&mut g, GICD_IPRIORITYR, 4), 0, "SGI priority RAZ in the distributor");
     }
 }

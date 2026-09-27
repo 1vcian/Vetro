@@ -1,13 +1,13 @@
-//! Chiamate Binder decodificate (M8): dalle transazioni grezze di
-//! [`super::binder`] a "chi chiama chi, quale interfaccia, quale metodo,
-//! che cosa di sensibile".
+//! Decoded Binder calls (M8): from the raw transactions of
+//! [`super::binder`] to "who calls whom, which interface, which method,
+//! what sensitive data".
 //!
-//! Ogni transazione si vede due volte: dal mittente (`BC_TRANSACTION`
-//! nell'ingresso della sua `ioctl`, con un handle come destinazione) e dal
-//! destinatario (`BR_TRANSACTION` all'uscita della sua `ioctl`, con pid e
-//! euid del mittente messi dal kernel; pid 0 per le chiamate oneway). Il
-//! [`BinderLog`] le accoppia per codice e byte del Parcel, così ogni
-//! chiamata ha i due capi.
+//! Each transaction is seen twice: by the sender (`BC_TRANSACTION`
+//! on entry to its `ioctl`, with a handle as the destination) and by the
+//! receiver (`BR_TRANSACTION` on exit from its `ioctl`, with the sender's
+//! pid and euid set by the kernel; pid 0 for oneway calls). The
+//! [`BinderLog`] pairs them by code and Parcel bytes, so every
+//! call has both ends.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Write as _;
@@ -17,21 +17,21 @@ use super::binder::Transaction;
 use super::parcel::{Parcel, strings16};
 use super::privacy::{self, Sensitive};
 
-/// Un capo di una chiamata.
+/// One end of a call.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Party {
     pub pid: i32,
     pub tid: i32,
     pub uid: u32,
-    /// `comm` del thread.
+    /// The thread's `comm`.
     pub comm: String,
-    /// Nome del processo (riga di comando: per le app è il pacchetto).
+    /// Process name (command line: for apps it is the package).
     pub process: String,
 }
 
 impl Party {
-    /// Il pacchetto: il nome del processo se è un'app (uid >= 10000),
-    /// senza il suffisso `:servizio`.
+    /// The package: the process name if it is an app (uid >= 10000),
+    /// without the `:service` suffix.
     pub fn package(&self) -> Option<&str> {
         (self.uid % 100_000 >= 10_000 && !self.process.is_empty())
             .then(|| self.process.split(':').next().unwrap_or(&self.process))
@@ -43,28 +43,28 @@ impl Party {
     }
 }
 
-/// Una chiamata Binder decodificata.
+/// A decoded Binder call.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BinderCall {
-    /// Istruzione della macchina dell'osservazione più vecchia.
+    /// Machine instruction of the oldest observation.
     pub step: u64,
     pub sender: Option<Party>,
     pub receiver: Option<Party>,
-    /// Handle usato dal mittente.
+    /// Handle used by the sender.
     pub handle: Option<u64>,
     pub descriptor: Option<String>,
     pub code: u32,
     pub method: Option<&'static str>,
     pub one_way: bool,
     pub data_size: u64,
-    /// Stringhe del Parcel (dopo il descrittore), al più 16.
+    /// Parcel strings (after the descriptor), at most 16.
     pub strings: Vec<String>,
     pub sensitive: Vec<Sensitive>,
 }
 
 impl BinderCall {
-    /// Decodifica una transazione (non una risposta) vista da `observer`:
-    /// il mittente se `BC_*`, il destinatario se `BR_*`.
+    /// Decodes a transaction (not a reply) seen by `observer`:
+    /// the sender if `BC_*`, the receiver if `BR_*`.
     pub fn decode(step: u64, t: &Transaction, observer: Party) -> Option<BinderCall> {
         if t.reply {
             return None;
@@ -102,8 +102,8 @@ impl BinderCall {
         })
     }
 
-    /// Interfaccia e metodo leggibili: `android.content.IClipboard.getPrimaryClip`
-    /// o `android.foo.IBar#7`.
+    /// Readable interface and method: `android.content.IClipboard.getPrimaryClip`
+    /// or `android.foo.IBar#7`.
     pub fn name(&self) -> String {
         let d = self.descriptor.as_deref().unwrap_or("?");
         match self.method {
@@ -112,11 +112,11 @@ impl BinderCall {
         }
     }
 
-    /// Una riga di log.
+    /// A log line.
     pub fn line(&self) -> String {
         let who = |p: &Option<Party>| p.as_ref().map_or("?".to_string(), Party::label);
         let mut s = format!(
-            "[{}] {} -> {} {}{} ({} byte)",
+            "[{}] {} -> {} {}{} ({} bytes)",
             self.step,
             who(&self.sender),
             who(&self.receiver),
@@ -125,12 +125,12 @@ impl BinderCall {
             self.data_size
         );
         for x in &self.sensitive {
-            let _ = write!(s, " ; SENSIBILE {x}");
+            let _ = write!(s, " ; SENSITIVE {x}");
         }
         s
     }
 
-    /// JSON (una chiamata).
+    /// JSON (one call).
     pub fn to_json(&self) -> String {
         let party = |p: &Option<Party>| match p {
             None => "null".to_string(),
@@ -171,20 +171,20 @@ fn q(s: &str) -> String {
     crate::net::json::quote(s)
 }
 
-/// Le chiamate in ordine, con i due capi accoppiati.
+/// The calls in order, with both ends paired.
 #[derive(Debug, Default)]
 pub struct BinderLog {
     pub calls: Vec<BinderCall>,
-    /// Chiamate viste dal mittente, in attesa del destinatario: chiave
-    /// (codice, hash del Parcel) -> indici in `calls`.
+    /// Calls seen by the sender, waiting for the receiver: key
+    /// (code, Parcel hash) -> indices in `calls`.
     waiting: BTreeMap<(u32, u64), VecDeque<usize>>,
-    /// Oltre, le chiamate si contano soltanto.
+    /// Beyond this, calls are only counted.
     pub max_calls: usize,
     pub dropped: u64,
 }
 
 fn hash(d: &[u8]) -> u64 {
-    // FNV-1a: basta a distinguere Parcel diversi con lo stesso codice.
+    // FNV-1a: enough to tell apart different Parcels with the same code.
     d.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3))
 }
 
@@ -193,7 +193,7 @@ impl BinderLog {
         BinderLog { max_calls: 1 << 20, ..Default::default() }
     }
 
-    /// Aggiunge una transazione osservata da `observer` all'istruzione `step`.
+    /// Adds a transaction observed by `observer` at instruction `step`.
     pub fn observe(&mut self, step: u64, t: &Transaction, observer: Party) {
         let Some(call) = BinderCall::decode(step, t, observer) else { return };
         let key = (t.code, hash(&t.data));
@@ -203,8 +203,8 @@ impl BinderLog {
             {
                 let c = &mut self.calls[i];
                 c.receiver = call.receiver;
-                // Il kernel dà pid 0 per le oneway: il mittente visto
-                // dall'ingresso ha già pid e uid giusti.
+                // The kernel gives pid 0 for oneway calls: the sender seen
+                // on entry already has the right pid and uid.
                 if q.is_empty() {
                     self.waiting.remove(&key);
                 }
@@ -224,7 +224,7 @@ impl BinderLog {
         if let Some(k) = key {
             let q = self.waiting.entry(k).or_default();
             q.push_back(self.calls.len());
-            // Una destinazione morta non deve far crescere la coda.
+            // A dead destination must not make the queue grow.
             if q.len() > 64 {
                 q.pop_front();
             }
@@ -232,12 +232,12 @@ impl BinderLog {
         self.calls.push(call);
     }
 
-    /// Le chiamate con accessi sensibili.
+    /// The calls with sensitive accesses.
     pub fn sensitive(&self) -> impl Iterator<Item = &BinderCall> {
         self.calls.iter().filter(|c| !c.sensitive.is_empty())
     }
 
-    /// Tutto in JSON: `{"calls":[...]}`.
+    /// Everything as JSON: `{"calls":[...]}`.
     pub fn to_json(&self) -> String {
         let v: Vec<String> = self.calls.iter().map(BinderCall::to_json).collect();
         format!("{{\"calls\":[\n{}\n],\"dropped\":{}}}\n", v.join(",\n"), self.dropped)
@@ -296,8 +296,8 @@ mod tests {
         assert_eq!(c.sender.as_ref().unwrap().package(), Some("com.vetro.probe"));
         assert_eq!(c.receiver.as_ref().unwrap().process, "system_server");
         assert_eq!(c.sensitive[0].category, privacy::Category::Clipboard);
-        assert!(c.line().contains("SENSIBILE appunti"), "{}", c.line());
-        // ANDROID_ID: IContentProvider.call verso il provider delle impostazioni.
+        assert!(c.line().contains("SENSITIVE clipboard"), "{}", c.line());
+        // ANDROID_ID: IContentProvider.call to the settings provider.
         let call = Builder::default()
             .token("android.content.IContentProvider")
             .s16("com.vetro.probe")

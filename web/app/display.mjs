@@ -1,9 +1,9 @@
-// Disegno dello scanout di virtio-gpu sul canvas della pagina. Il Worker
-// manda solo il rettangolo cambiato (RGBA, righe da `rect.width * 4` byte);
-// qui lo si copia sul canvas:
-//   - Canvas2D (default): putImageData del rettangolo;
-//   - WebGPU (opzione): una texture rgba8unorm aggiornata con writeTexture
-//     e disegnata con un triangolo che copre il canvas.
+// Drawing of the virtio-gpu scanout on the page canvas. The Worker
+// sends only the changed rectangle (RGBA, rows of `rect.width * 4` bytes);
+// here it is copied onto the canvas:
+//   - Canvas2D (default): putImageData of the rectangle;
+//   - WebGPU (option): an rgba8unorm texture updated with writeTexture
+//     and drawn with a triangle that covers the canvas.
 
 export class Canvas2DRenderer {
   name = 'canvas 2D';
@@ -46,7 +46,7 @@ struct Out { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
 export class WebGpuRenderer {
   name = 'WebGPU';
 
-  /** Il renderer, o null se WebGPU non c'è. */
+  /** The renderer, or null if WebGPU isn't available. */
   static async create(canvas) {
     if (!navigator.gpu) return null;
     const adapter = await navigator.gpu.requestAdapter();

@@ -1,16 +1,16 @@
-//! Messaggi DNS (RFC 1035) e scambi domanda/risposta ricostruiti dai
-//! flussi UDP verso la porta 53 (il DNS del gateway, cioè il sinkhole).
+//! DNS messages (RFC 1035) and query/answer exchanges reassembled from the
+//! UDP flows towards port 53 (the gateway DNS, i.e. the sinkhole).
 
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4};
 
 use super::flow::UdpFlow;
 
-/// Dati di un record di risposta.
+/// Data of an answer record.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecordData {
     A(Ipv4Addr),
     Aaaa(Ipv6Addr),
-    /// CNAME, NS, PTR: un nome.
+    /// CNAME, NS, PTR: a name.
     Name(String),
     Other(Vec<u8>),
 }
@@ -29,12 +29,12 @@ pub struct Message {
     pub response: bool,
     pub opcode: u8,
     pub rcode: u8,
-    /// (nome in minuscolo, tipo).
+    /// (lowercase name, type).
     pub questions: Vec<(String, u16)>,
     pub answers: Vec<Record>,
 }
 
-/// Nome del tipo di record, per la stampa.
+/// Name of the record type, for printing.
 pub fn type_name(t: u16) -> String {
     match t {
         1 => "A".into(),
@@ -92,7 +92,7 @@ fn name(msg: &[u8], mut pos: usize) -> Option<(String, usize)> {
     }
 }
 
-/// Decodifica un messaggio DNS; `None` se malformato.
+/// Decodes a DNS message; `None` if malformed.
 pub fn parse(msg: &[u8]) -> Option<Message> {
     if msg.len() < 12 {
         return None;
@@ -134,10 +134,10 @@ pub fn parse(msg: &[u8]) -> Option<Message> {
     Some(m)
 }
 
-/// Una domanda DNS e la sua risposta (se arrivata).
+/// A DNS query and its answer (if it arrived).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DnsExchange {
-    /// Indice del flusso UDP.
+    /// Index of the UDP flow.
     pub flow: usize,
     pub client: SocketAddrV4,
     pub server: SocketAddrV4,
@@ -151,7 +151,7 @@ pub struct DnsExchange {
 }
 
 impl DnsExchange {
-    /// Indirizzi IPv4 della risposta.
+    /// IPv4 addresses of the answer.
     pub fn ipv4(&self) -> impl Iterator<Item = Ipv4Addr> + '_ {
         self.answers.iter().filter_map(|r| match r.data {
             RecordData::A(a) => Some(a),
@@ -160,9 +160,9 @@ impl DnsExchange {
     }
 }
 
-/// Scambi DNS nei flussi UDP con porta 53 (dal lato del server), in ordine
-/// di domanda. Una risposta si abbina all'ultima domanda senza risposta con
-/// lo stesso id nello stesso flusso.
+/// DNS exchanges in the UDP flows with port 53 (on the server side), in query
+/// order. An answer is matched to the last unanswered query with
+/// the same id in the same flow.
 pub fn exchanges(flows: &[UdpFlow]) -> Vec<DnsExchange> {
     let mut out: Vec<DnsExchange> = Vec::new();
     for f in flows.iter().filter(|f| f.server.port() == 53) {
@@ -197,7 +197,7 @@ pub fn exchanges(flows: &[UdpFlow]) -> Vec<DnsExchange> {
     out
 }
 
-/// Costruttori di messaggi per i test.
+/// Message builders for the tests.
 #[cfg(test)]
 pub mod build {
     pub fn query(id: u16, name: &str, qtype: u16) -> Vec<u8> {
@@ -213,7 +213,7 @@ pub mod build {
         m
     }
 
-    /// Risposta con un record A per ogni indirizzo (nome compresso).
+    /// Answer with one A record per address (compressed name).
     pub fn answer(id: u16, name: &str, addrs: &[[u8; 4]]) -> Vec<u8> {
         let mut m = query(id, name, 1);
         m[2] = 0x81;
@@ -255,7 +255,7 @@ mod tests {
     fn puntatori_in_ciclo_e_troncati() {
         let mut m = build::query(1, "a", 1);
         m[12] = 0xc0;
-        m[13] = 12; // punta a sé stesso
+        m[13] = 12; // points to itself
         assert_eq!(parse(&m), None);
         let full = build::answer(1, "abc.de", &[[1, 2, 3, 4]]);
         for n in 0..full.len() {

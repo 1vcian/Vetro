@@ -1,5 +1,5 @@
-//! Load/store dei registri SIMD/FP (V=1): singoli, coppie, letterali e
-//! strutture (LD1–LD4, ST1–ST4, LDnR).
+//! Load/store of SIMD/FP registers (V=1): single, pairs, literals and
+//! structures (LD1–LD4, ST1–ST4, LDnR).
 
 use super::SimdInsn;
 use super::vreg::{clip, elem, set_elem};
@@ -9,7 +9,7 @@ use crate::exec::{Exception, extend_reg};
 use crate::mem::Memory;
 use crate::state::Cpu;
 
-/// Incremento dopo l'accesso per le strutture: immediato implicito o Xm.
+/// Post-access increment for structures: implicit immediate or Xm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Post {
     None,
@@ -19,7 +19,7 @@ pub enum Post {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VecMemInsn {
-    /// `scale` = log2 dei byte (0..=4, 4 = Q).
+    /// `scale` = log2 of the bytes (0..=4, 4 = Q).
     Reg {
         scale: u8,
         load: bool,
@@ -41,7 +41,7 @@ pub enum VecMemInsn {
         rt2: u8,
         rn: u8,
     },
-    /// LD1–LD4/ST1–ST4 (strutture multiple).
+    /// LD1–LD4/ST1–ST4 (multiple structures).
     Multi {
         load: bool,
         q: bool,
@@ -52,7 +52,7 @@ pub enum VecMemInsn {
         rn: u8,
         post: Post,
     },
-    /// Struttura singola: una corsia (`index`) oppure replica (LDnR).
+    /// Single structure: one lane (`index`) or replicate (LDnR).
     Single {
         load: bool,
         q: bool,
@@ -73,7 +73,7 @@ fn ok(i: VecMemInsn) -> Insn {
 pub fn decode(w: u32) -> Insn {
     let rt = field(w, 4, 0) as u8;
     let rn = field(w, 9, 5) as u8;
-    // Strutture: 31=0, 29:27 = 001, 26 = 1 (V), 25 = 0... (bits 29:24 = 0011xx).
+    // Structures: 31=0, 29:27 = 001, 26 = 1 (V), 25 = 0... (bits 29:24 = 0011xx).
     if field(w, 29, 24) == 0b001100 || field(w, 29, 24) == 0b001101 {
         return structures(w, rt, rn);
     }
@@ -147,7 +147,7 @@ pub fn decode(w: u32) -> Insn {
                 0b00 => Index::Offset,
                 0b01 => Index::Post,
                 0b11 => Index::Pre,
-                _ => return Insn::Undefined, // niente LDTR/STTR per i registri FP
+                _ => return Insn::Undefined, // no LDTR/STTR for FP registers
             };
             let offset = sext(field(w, 20, 12) as u64, 9);
             ok(VecMemInsn::Reg { scale, load, addr: AddrMode::Imm { offset, index }, rt, rn })
@@ -165,7 +165,7 @@ fn structures(w: u32, rt: u8, rn: u8) -> Insn {
     let postidx = bit(w, 23);
     let rm = field(w, 20, 16) as u8;
     if !bit(w, 24) {
-        // Strutture multiple: 0 Q 0011000 L 000000 opcode size Rn Rt
+        // Multiple structures: 0 Q 0011000 L 000000 opcode size Rn Rt
         if bit(w, 21) || !postidx && rm != 0 {
             return Insn::Undefined;
         }
@@ -193,7 +193,7 @@ fn structures(w: u32, rt: u8, rn: u8) -> Insn {
         };
         return ok(VecMemInsn::Multi { load, q, rpt, selem, esize: 8 << size, rt, rn, post });
     }
-    // Struttura singola: 0 Q 0011010 L R 00000 opcode S size Rn Rt
+    // Single structure: 0 Q 0011010 L R 00000 opcode S size Rn Rt
     if !postidx && rm != 0 {
         return Insn::Undefined;
     }
@@ -344,7 +344,7 @@ pub(crate) fn exec<M: Memory>(cpu: &mut Cpu, i: VecMemInsn, mem: &mut M) -> Resu
                     cpu.v[t] = v;
                 } else if load {
                     let x = read(mem, a, ebytes)? as u64;
-                    // Una corsia: il registro resta intero (Q conta solo per l'indice).
+                    // One lane: the register stays whole (Q only matters for the index).
                     cpu.v[t] = set_elem(cpu.v[t], index as usize, esize, x);
                 } else {
                     write(mem, a, ebytes, elem(cpu.v[t], index as usize, esize) as u128)?;

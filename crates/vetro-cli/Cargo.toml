@@ -1,6 +1,6 @@
 [package]
 name = "vetro-cli"
-description = "Runner nativo headless per test e CI."
+description = "Headless native runner for tests and CI."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -22,11 +22,11 @@ vetro-analysis = { path = "../vetro-analysis" }
 vetro-machine = { path = "../vetro-machine" }
 vetro-platform = { path = "../vetro-platform" }
 vetro-jit = { path = "../vetro-jit" }
-# Motore del JIT per `vetro run --jit` (wasmtime): il runner nativo non va
-# nel browser.
+# JIT engine for `vetro run --jit` (wasmtime): the native runner does not go
+# into the browser.
 vetro-jit-native = { path = "../vetro-jit-native" }
-# Solo per il runner nativo: syscall dell'host che std non espone
-# (utimensat, mknodat...). Il core resta senza dipendenze.
+# Only for the native runner: host syscalls that std does not expose
+# (utimensat, mknodat...). The core stays dependency-free.
 libc = "0.2"
 
 [dev-dependencies]

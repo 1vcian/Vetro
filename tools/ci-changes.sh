@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# Quali job della CI servono (ADR 0025). Stampa righe `nome=true|false` per
-# $GITHUB_OUTPUT. Variabili (le imposta il job `changes` di ci.yml):
+# Which CI jobs are needed (ADR 0025). Prints `name=true|false` lines for
+# $GITHUB_OUTPUT. Variables (set by the `changes` job in ci.yml):
 #   EVENT     push | pull_request | schedule | workflow_dispatch
-#   BEFORE    commit precedente del push (tutti zeri se il branch è nuovo)
-#   PR_BASE   base della pull request
-#   MESSAGE   messaggio del commit: "[ci full]" forza tutto
-# Localmente: EVENT=push BEFORE=<commit> tools/ci-changes.sh
+#   BEFORE    commit before the push (all zeros if the branch is new)
+#   PR_BASE   base of the pull request
+#   MESSAGE   commit message: "[ci full]" forces everything
+# Locally: EVENT=push BEFORE=<commit> tools/ci-changes.sh
 #
-# Categorie (un file può farne scattare più d'una):
-#   rust    codice Rust, test, toolchain         -> native, wasm
-#   linux   CPU, JIT, syscall Linux, LTP/RISU     -> linux (LTP completo, due volte)
-#   boot    macchina, dispositivi, kernel guest   -> boot (avvio sotto QEMU e Vetro)
-#   kernel  configurazione/initramfs del guest    -> kselftest dentro boot
-#   web     app web, vetro-wasm, test web         -> boot ridotto (solo test web)
-#   site    ciò che finisce su GitHub Pages       -> pages, deploy
-# Solo documenti (docs/, *.md): nessun job pesante.
+# Categories (one file can trigger more than one):
+#   rust    Rust code, tests, toolchain           -> native, wasm
+#   linux   CPU, JIT, Linux syscalls, LTP/RISU    -> linux (full LTP, twice)
+#   boot    machine, devices, guest kernel        -> boot (boot under QEMU and Vetro)
+#   kernel  guest configuration/initramfs         -> kselftest inside boot
+#   web     web app, vetro-wasm, web tests        -> reduced boot (web tests only)
+#   site    whatever ends up on GitHub Pages      -> pages, deploy
+# Documents only (docs/, *.md): no heavy job.
 set -euo pipefail
 
 all() {
@@ -39,7 +39,7 @@ fi
 files=$(git diff --name-only "$base" HEAD)
 match() { grep -Eq "$1" <<<"$files" && echo true || echo false; }
 
-# La CI stessa e questo script: tutto, per provarli davvero.
+# The CI itself and this script: everything, to really exercise them.
 if grep -Eq '^(\.github/|tools/ci-changes\.sh$)' <<<"$files"; then all; fi
 
 echo "rust=$(match '^(crates/|tests/[^/]+/(Cargo\.toml|src/|tests/|c/|[^/]+\.rs$)|Cargo\.(toml|lock)$|rust-toolchain\.toml$|\.cargo/)')"

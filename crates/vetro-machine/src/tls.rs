@@ -1,21 +1,21 @@
-//! Hook TLS (M7, ADR 0027): il testo in chiaro di `SSL_write`/`SSL_read`
-//! (e `_ex`) di `libssl.so` (BoringSSL, anche quella di Conscrypt negli
-//! APEX), catturato con punti d'arresto invisibili risolti dai simboli ELF
-//! di ogni processo, legato alla connessione (fd -> socket -> 4-tupla),
-//! al processo e alla libreria. Le conversazioni finiscono in
-//! [`vetro_analysis::net::TlsConversation`], che l'ispettore e l'HAR
-//! uniscono alle richieste in chiaro (`NetworkAnalysis::merge_tls`).
+//! TLS hooks (M7, ADR 0027): the plaintext of `SSL_write`/`SSL_read`
+//! (and `_ex`) of `libssl.so` (BoringSSL, including Conscrypt's in the
+//! APEXes), captured with invisible breakpoints resolved from each process's
+//! ELF symbols, tied to the connection (fd -> socket -> 4-tuple),
+//! to the process and to the library. The conversations end up in
+//! [`vetro_analysis::net::TlsConversation`], which the inspector and the HAR
+//! merge with the plaintext requests (`NetworkAnalysis::merge_tls`).
 //!
-//! - La connessione si ricava dalla sequenza di syscall: `connect` sullo
-//!   stesso thread dà il fd del socket, e `Linux::socket_endpoints` la
-//!   4-tupla dalla `struct sock` del kernel (niente strutture interne di
-//!   BoringSSL, che cambiano versione).
-//! - `SSL_write` ha il testo in chiaro già all'ingresso (buf, num).
-//!   `SSL_read` no: il numero di byte è il valore di ritorno, quindi il
-//!   buffer si legge quando la funzione ritorna, con un punto d'arresto
-//!   sull'indirizzo di ritorno (LR) messo la prima volta che lo si vede.
+//! - The connection is derived from the syscall sequence: `connect` on the
+//!   same thread gives the socket fd, and `Linux::socket_endpoints` the
+//!   4-tuple from the kernel's `struct sock` (no BoringSSL internal
+//!   structures, which change between versions).
+//! - `SSL_write` has the plaintext already on entry (buf, num).
+//!   `SSL_read` does not: the byte count is the return value, so the
+//!   buffer is read when the function returns, with a breakpoint
+//!   on the return address (LR) set the first time it is seen.
 //!
-//! Nulla scrive nel guest.
+//! Nothing writes into the guest.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddrV4;
@@ -28,7 +28,7 @@ use vetro_analysis::net::{TlsConversation, TlsMessage};
 use crate::analysis::ProcessNames;
 use crate::hooks::{Breakpoint, Event, GuestView, Tracer};
 
-/// Le funzioni di `libssl` che aggancia.
+/// The `libssl` functions it hooks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Func {
     Write,
@@ -44,7 +44,7 @@ const SYMBOLS: &[(&str, Func)] = &[
     ("SSL_read_ex", Func::ReadEx),
 ];
 
-/// Un aggancio pianificato per un processo (da installare fra due quanti).
+/// A hook planned for a process (to be installed between two quanta).
 #[derive(Clone, Debug)]
 pub struct Planned {
     pub ttbr0: u64,
@@ -53,12 +53,12 @@ pub struct Planned {
     pub library: String,
 }
 
-/// Una lettura in corso, in attesa del ritorno.
+/// A read in progress, waiting for the return.
 #[derive(Clone, Debug)]
 struct PendingRead {
     ex: bool,
     buf: u64,
-    /// Per `SSL_read_ex`: `size_t *readbytes`.
+    /// For `SSL_read_ex`: `size_t *readbytes`.
     readbytes: u64,
     client: SocketAddrV4,
     server: SocketAddrV4,
@@ -68,22 +68,22 @@ struct PendingRead {
 pub struct TlsTracer {
     pub kernel: Rc<Kernel>,
     names: ProcessNames,
-    /// `ttbr0` dei processi già agganciati.
+    /// `ttbr0` of the processes already hooked.
     hooked: BTreeSet<u64>,
-    /// (ttbr0, va) -> funzione e libreria.
+    /// (ttbr0, va) -> function and library.
     sites: BTreeMap<(u64, u64), (Func, String)>,
-    /// Indirizzi di ritorno di `SSL_read` con un punto d'arresto attivo.
+    /// Return addresses of `SSL_read` with an active breakpoint.
     return_sites: BTreeSet<(u64, u64)>,
-    /// Ritorni di `SSL_read` da installare (drenati dal servizio).
+    /// `SSL_read` returns to install (drained by the service).
     want_returns: Vec<(u64, u64)>,
-    /// Ultimo fd passato a `connect` per thread (ttbr0, tid).
+    /// Last fd passed to `connect` per thread (ttbr0, tid).
     connected: BTreeMap<(u64, i32), u32>,
-    /// Letture in corso per thread.
+    /// Reads in progress per thread.
     pending: BTreeMap<(u64, i32), PendingRead>,
-    /// Conversazioni per (ttbr0, client, server).
+    /// Conversations by (ttbr0, client, server).
     convs: BTreeMap<(u64, SocketAddrV4, SocketAddrV4), usize>,
     pub conversations: Vec<TlsConversation>,
-    /// Byte di testo in chiaro al più per messaggio.
+    /// Maximum plaintext bytes per message.
     pub cap: usize,
 }
 
@@ -104,24 +104,24 @@ impl TlsTracer {
         }
     }
 
-    /// Etichetta della libreria dal percorso del modulo.
+    /// Library label from the module path.
     fn library(path: &str) -> String {
         if path.contains("conscrypt") {
             "Conscrypt (libssl)".into()
         } else if path.contains("com.android.") {
             format!("libssl ({})", path.rsplit('/').nth(2).unwrap_or("apex"))
         } else {
-            "libssl (sistema)".into()
+            "libssl (system)".into()
         }
     }
 
-    /// La copia dei `ttbr0` già agganciati (per il servizio).
+    /// A copy of the `ttbr0`s already hooked (for the service).
     pub fn hooked(&self) -> BTreeSet<u64> {
         self.hooked.clone()
     }
 
-    /// Pianifica gli agganci dei processi non ancora in `hooked` (chiamato
-    /// dal servizio con una vista del guest).
+    /// Plans the hooks for processes not yet in `hooked` (called
+    /// by the service with a view of the guest).
     pub fn scan<M: vetro_analysis::introspect::PhysMem + ?Sized>(
         lx: &Linux<'_, M>,
         hooked: &BTreeSet<u64>,
@@ -147,13 +147,13 @@ impl TlsTracer {
         out
     }
 
-    /// Registra un aggancio installato.
+    /// Records an installed hook.
     pub fn registered(&mut self, p: &Planned) {
         self.sites.insert((p.ttbr0, p.va), (p.func, p.library.clone()));
         self.hooked.insert(p.ttbr0);
     }
 
-    /// I ritorni di `SSL_read` da installare adesso (una volta ciascuno).
+    /// The `SSL_read` returns to install now (once each).
     pub fn take_return_requests(&mut self) -> Vec<Breakpoint> {
         std::mem::take(&mut self.want_returns)
             .into_iter()
@@ -169,7 +169,7 @@ impl TlsTracer {
         lx.task(lx.current(g.cpu.sys.tpidr_el1)?)
     }
 
-    /// La 4-tupla del fd connesso più di recente da questo thread.
+    /// The 4-tuple of the fd most recently connected by this thread.
     fn endpoints<M: vetro_analysis::introspect::PhysMem + ?Sized>(
         &self,
         lx: &Linux<'_, M>,
@@ -181,7 +181,7 @@ impl TlsTracer {
         {
             return Some(e);
         }
-        // Ripiego: il primo socket IPv4 connesso fra i fd aperti.
+        // Fallback: the first connected IPv4 socket among the open fds.
         for f in lx.files(task.addr) {
             if let Some(e) = lx.socket_endpoints(task.addr, f.fd)
                 && e.1.port() != 0
@@ -228,7 +228,7 @@ impl Tracer for TlsTracer {
     fn event(&mut self, ev: &Event<'_>, g: &GuestView<'_>) {
         let at_us = g.steps / 100;
         match ev {
-            // connect(fd, ...): ricorda il fd del thread.
+            // connect(fd, ...): remember the thread's fd.
             Event::SyscallEnter(e) if e.nr == 203 => {
                 let ttbr0 = ttbr_base(e.ttbr0);
                 let kernel = self.kernel.clone();
@@ -239,7 +239,7 @@ impl Tracer for TlsTracer {
                 }
             }
             Event::SyscallEnter(e) if matches!(e.nr, 93 | 94 | 221) => {
-                // exit/execve: dimentica il nome del processo.
+                // exit/execve: forget the process name.
                 let kernel = self.kernel.clone();
                 let regs = g.cpu_regs();
                 let lx = Linux::new(g, &kernel, &regs);
@@ -254,13 +254,13 @@ impl Tracer for TlsTracer {
                 let lx = Linux::new(g, &kernel, &regs);
                 let Some(task) = Self::current(&lx, g) else { return };
                 let key = (ttbr0, task.pid);
-                // Ritorno di SSL_read?
+                // Return from SSL_read?
                 if self.return_sites.contains(&(ttbr0, *va))
                     && let Some(p) = self.pending.remove(&key)
                     && p.lr == *va
                 {
                     let n = if p.ex {
-                        // SSL_read_ex: ret 1 = ok, byte in *readbytes.
+                        // SSL_read_ex: ret 1 = ok, bytes in *readbytes.
                         if cpu.x[0] == 0 {
                             0
                         } else {
@@ -282,7 +282,7 @@ impl Tracer for TlsTracer {
                     }
                     return;
                 }
-                // Ingresso di una funzione agganciata.
+                // Entry into a hooked function.
                 let Some((func, library)) = self.sites.get(&(ttbr0, *va)).cloned() else { return };
                 let Some(ends) = self.endpoints(&lx, key, &task) else { return };
                 match func {
@@ -311,11 +311,11 @@ impl Tracer for TlsTracer {
     }
 }
 
-/// Installa e aggiorna gli agganci TLS fra due quanti (M7): trova
-/// `libssl` nei processi nuovi, mette i punti d'arresto su
-/// `SSL_write`/`SSL_read`/`_ex` e i punti sui ritorni di `SSL_read`
-/// richiesti dagli hook. Va chiamato ogni tanto durante l'esecuzione: i
-/// processi (e le app) appaiono col tempo.
+/// Installs and updates the TLS hooks between two quanta (M7): finds
+/// `libssl` in new processes, sets breakpoints on
+/// `SSL_write`/`SSL_read`/`_ex` and the breakpoints on the `SSL_read` returns
+/// requested by the hooks. It must be called now and then during execution:
+/// processes (and apps) appear over time.
 pub fn tls_service(m: &mut crate::Machine) {
     let Some(kernel) = m
         .tracer_mut::<crate::analysis::Tracers>()

@@ -1,5 +1,5 @@
-# Nightly fissato: i thread WASM richiedono build-std (vedi docs/adr/0002).
-# Aggiornare solo con un ADR e CI verde.
+# Pinned nightly: WASM threads need build-std (see docs/adr/0002).
+# Update only with an ADR and green CI.
 [toolchain]
 channel = "nightly-2026-09-15"
 components = ["rust-src", "clippy", "rustfmt"]

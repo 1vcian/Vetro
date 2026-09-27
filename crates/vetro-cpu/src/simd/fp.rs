@@ -1,12 +1,12 @@
-//! Aritmetica in virgola mobile in software, secondo il pseudocodice Arm
+//! Software floating-point arithmetic, following the Arm pseudocode
 //! (shared/functions/float: FPUnpack, FPRound, FPProcessNaNs, FPAdd, ...).
 //!
-//! Bit-exact e deterministica su ogni host, WASM compreso: niente float
-//! dell'host, i cui NaN non hanno bit garantiti. I valori sono sempre
-//! pattern di bit (`u64`) nel formato `Fmt`; un valore finito diverso da zero
-//! si rappresenta esattamente come `mant · 2^exp`.
+//! Bit-exact and deterministic on every host, WASM included: no host
+//! floats, whose NaNs have no guaranteed bits. Values are always
+//! bit patterns (`u64`) in the `Fmt` format; a finite nonzero value
+//! is represented exactly as `mant · 2^exp`.
 
-/// Formato IEEE: bit totali, bit di esponente, bit di frazione.
+/// IEEE format: total bits, exponent bits, fraction bits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Fmt {
     pub n: u32,
@@ -46,11 +46,11 @@ impl Fmt {
     pub fn default_nan(self) -> u64 {
         (self.exp_mask() << self.f) | (1 << (self.f - 1))
     }
-    /// Valore `m · 2^k` con `m` piccolo, esatto (per 1.0, 1.5, 2.0 ...).
+    /// Value `m · 2^k` with small `m`, exact (for 1.0, 1.5, 2.0 ...).
     fn small(self, sign: bool, value_x2: u64) -> u64 {
-        // value_x2 = valore * 2 (2 → 1.0, 3 → 1.5, 4 → 2.0)
+        // value_x2 = value * 2 (2 → 1.0, 3 → 1.5, 4 → 2.0)
         let msb = 63 - value_x2.leading_zeros() as i32;
-        let e = msb - 1; // esponente del valore
+        let e = msb - 1; // exponent of the value
         let frac = (value_x2 << (self.f as i32 - msb)) & self.frac_mask();
         self.zero(sign) | (((e + self.bias()) as u64) << self.f) | frac
     }
@@ -75,7 +75,7 @@ pub enum Rounding {
     Odd,
 }
 
-// Bit di FPSR.
+// FPSR bits.
 pub const IOC: u32 = 1 << 0;
 pub const DZC: u32 = 1 << 1;
 pub const OFC: u32 = 1 << 2;
@@ -83,7 +83,7 @@ pub const UFC: u32 = 1 << 3;
 pub const IXC: u32 = 1 << 4;
 pub const IDC: u32 = 1 << 7;
 
-/// Contesto: FPCR in ingresso e flag cumulativi in uscita.
+/// Context: FPCR as input and cumulative flags as output.
 #[derive(Clone, Copy, Debug)]
 pub struct Ctx {
     pub fpcr: u32,
@@ -103,7 +103,7 @@ impl Ctx {
         }
     }
     fn fz(&self, f: Fmt) -> bool {
-        // FZ16 non esiste su ARMv8.0: la mezza precisione non si azzera.
+        // FZ16 does not exist on ARMv8.0: half precision is not flushed to zero.
         f.n != 16 && self.fpcr & (1 << 24) != 0
     }
     fn dn(&self) -> bool {
@@ -123,7 +123,7 @@ pub enum Class {
     SNaN,
 }
 
-/// Operando spacchettato: per `Normal`, valore = (-1)^sign · mant · 2^exp.
+/// Unpacked operand: for `Normal`, value = (-1)^sign · mant · 2^exp.
 #[derive(Clone, Copy, Debug)]
 pub struct Unpacked {
     pub class: Class,
@@ -132,7 +132,7 @@ pub struct Unpacked {
     pub exp: i32,
 }
 
-/// FPUnpack: i denormali con FZ diventano zero e segnalano IDC.
+/// FPUnpack: denormals with FZ become zero and signal IDC.
 pub fn unpack(f: Fmt, x: u64, ctx: &mut Ctx) -> Unpacked {
     unpack_ahp(f, x, ctx, true)
 }
@@ -167,7 +167,7 @@ fn is_nan(c: Class) -> bool {
     matches!(c, Class::QNaN | Class::SNaN)
 }
 
-/// FPProcessNaN: silenzia un SNaN (IOC) o usa il NaN di default con DN.
+/// FPProcessNaN: quietens an SNaN (IOC) or uses the default NaN with DN.
 pub fn process_nan(f: Fmt, c: Class, x: u64, ctx: &mut Ctx) -> u64 {
     let mut r = x;
     if c == Class::SNaN {
@@ -205,7 +205,7 @@ fn process_nans3(f: Fmt, a: (Class, u64), b: (Class, u64), c: (Class, u64), ctx:
     None
 }
 
-/// Valore esatto con segno: (mant + ε) · 2^exp, con ε ∈ (0,1) se `sticky`.
+/// Exact signed value: (mant + ε) · 2^exp, with ε ∈ (0,1) if `sticky`.
 #[derive(Clone, Copy, Debug)]
 pub struct Exact {
     pub sign: bool,
@@ -221,7 +221,7 @@ impl Exact {
     fn from(u: &Unpacked) -> Exact {
         Exact { sign: u.sign, mant: u.mant as u128, exp: u.exp, sticky: false }
     }
-    /// Porta il bit più alto alla posizione 125 (lascia spazio per i riporti).
+    /// Moves the highest bit to position 125 (leaves room for carries).
     fn normalized(self) -> Exact {
         if self.mant == 0 {
             return self;
@@ -237,7 +237,7 @@ impl Exact {
     }
 }
 
-/// Shift a destra che raccoglie i bit persi in un flag.
+/// Right shift that collects the lost bits into a flag.
 fn shr_sticky(m: u128, n: u32) -> (u128, bool) {
     if n == 0 {
         (m, false)
@@ -248,7 +248,7 @@ fn shr_sticky(m: u128, n: u32) -> (u128, bool) {
     }
 }
 
-/// Somma esatta (a meno dello sticky) di due valori.
+/// Exact sum (up to the sticky bit) of two values.
 fn add_exact(a: Exact, b: Exact) -> Exact {
     if a.is_zero() {
         return b;
@@ -257,7 +257,7 @@ fn add_exact(a: Exact, b: Exact) -> Exact {
         return a;
     }
     let (a, b) = (a.normalized(), b.normalized());
-    // big = quello di modulo maggiore
+    // big = the one with the larger magnitude
     let a_bigger = (a.exp, a.mant) >= (b.exp, b.mant);
     let (big, small) = if a_bigger { (a, b) } else { (b, a) };
     let d = (big.exp - small.exp) as u32;
@@ -273,7 +273,7 @@ fn add_exact(a: Exact, b: Exact) -> Exact {
     }
 }
 
-/// FPRound (con arrotondamento esplicito). Il valore non deve essere zero.
+/// FPRound (with explicit rounding). The value must not be zero.
 pub fn round(f: Fmt, v: Exact, ctx: &mut Ctx, rounding: Rounding) -> u64 {
     round_ahp(f, v, ctx, rounding, true)
 }
@@ -283,20 +283,20 @@ fn round_ahp(f: Fmt, v: Exact, ctx: &mut Ctx, rounding: Rounding, honor_ahp: boo
     let v = if v.mant == 0 { Exact { mant: 1, exp: v.exp - 200, sticky: true, ..v } } else { v };
     let sign = v.sign;
     let msb = 127 - v.mant.leading_zeros() as i32;
-    let exponent = msb + v.exp; // valore in [2^exponent, 2^(exponent+1))
+    let exponent = msb + v.exp; // value in [2^exponent, 2^(exponent+1))
     let min_exp = f.min_exp();
     if ctx.fz(f) && exponent < min_exp {
         ctx.flags |= UFC;
         return f.zero(sign);
     }
     let mut biased = (exponent - min_exp + 1).max(0) as u64;
-    // Posizione (in potenze di 2) dell'ultimo bit del risultato.
+    // Position (in powers of 2) of the last bit of the result.
     let lsb_exp = if biased == 0 { min_exp - f.f as i32 } else { exponent - f.f as i32 };
-    let s = lsb_exp - v.exp; // bit da scartare
+    let s = lsb_exp - v.exp; // bits to discard
     let (mut int_mant, rem_gt_half, rem_eq_half, inexact) = if s <= 0 {
         (v.mant << (-s) as u32, false, false, v.sticky)
     } else if s >= 128 {
-        // tutto sotto la metà dell'ulp (v.mant < 2^127 ≤ 2^(s-1))
+        // everything below half an ulp (v.mant < 2^127 ≤ 2^(s-1))
         (0u128, false, false, true)
     } else {
         let s = s as u32;
@@ -402,7 +402,7 @@ pub fn mul(f: Fmt, a: u64, b: u64, ctx: &mut Ctx) -> u64 {
     mul_x(f, a, b, false, ctx)
 }
 
-/// FMUL (`x = false`) o FMULX (∞ × 0 = ±2).
+/// FMUL (`x = false`) or FMULX (∞ × 0 = ±2).
 pub fn mul_x(f: Fmt, a: u64, b: u64, x: bool, ctx: &mut Ctx) -> u64 {
     let (ua, ub) = (unpack(f, a, ctx), unpack(f, b, ctx));
     if let Some(r) = process_nans(f, (ua.class, a), (ub.class, b), ctx) {
@@ -449,7 +449,7 @@ pub fn div(f: Fmt, a: u64, b: u64, ctx: &mut Ctx) -> u64 {
     if zero1 || inf2 {
         return f.zero(sign);
     }
-    // Normalizza le mantisse al bit 63 e dividi con 64 bit di guardia.
+    // Normalise the mantissas to bit 63 and divide with 64 guard bits.
     let (sa, sb) = (ua.mant.leading_zeros(), ub.mant.leading_zeros());
     let (ma, mb) = ((ua.mant << sa) as u128, (ub.mant << sb) as u128);
     let q = (ma << 64) / mb;
@@ -485,9 +485,9 @@ pub fn sqrt(f: Fmt, a: u64, ctx: &mut Ctx) -> u64 {
         ctx.flags |= IOC;
         return f.default_nan();
     }
-    // mant · 2^exp con exp pari e mant di ~120 bit.
+    // mant · 2^exp with even exp and mant of ~120 bits.
     let lz = (u.mant as u128).leading_zeros() as i32;
-    let mut sh = lz - 7; // porta il bit alto a 120
+    let mut sh = lz - 7; // moves the high bit to 120
     if (u.exp - sh) % 2 != 0 {
         sh += 1;
     }
@@ -498,7 +498,7 @@ pub fn sqrt(f: Fmt, a: u64, ctx: &mut Ctx) -> u64 {
     round(f, Exact { sign: false, mant: r, exp: e / 2, sticky: r * r != m }, ctx, rm)
 }
 
-/// FPMulAdd(addend, op1, op2) = addend + op1 · op2, arrotondato una volta.
+/// FPMulAdd(addend, op1, op2) = addend + op1 · op2, rounded once.
 pub fn mul_add(f: Fmt, addend: u64, a: u64, b: u64, ctx: &mut Ctx) -> u64 {
     let ux = unpack(f, addend, ctx);
     let (u1, u2) = (unpack(f, a, ctx), unpack(f, b, ctx));
@@ -537,7 +537,7 @@ pub fn mul_add(f: Fmt, addend: u64, a: u64, b: u64, ctx: &mut Ctx) -> u64 {
     round(f, r, ctx, rm)
 }
 
-/// FRECPS: 2 - op1·op2 (fuso). FRSQRTS: (3 - op1·op2) / 2 (fuso).
+/// FRECPS: 2 - op1·op2 (fused). FRSQRTS: (3 - op1·op2) / 2 (fused).
 pub fn step_fused(f: Fmt, a: u64, b: u64, sqrt_step: bool, ctx: &mut Ctx) -> u64 {
     let a = f.neg(a);
     let (u1, u2) = (unpack(f, a, ctx), unpack(f, b, ctx));
@@ -569,7 +569,7 @@ pub fn step_fused(f: Fmt, a: u64, b: u64, sqrt_step: bool, ctx: &mut Ctx) -> u64
     round(f, r, ctx, rm)
 }
 
-/// FPCompare: NZCV (0110 uguali, 1000 minore, 0010 maggiore, 0011 non ordinati).
+/// FPCompare: NZCV (0110 equal, 1000 less, 0010 greater, 0011 unordered).
 pub fn compare(f: Fmt, a: u64, b: u64, signal_nans: bool, ctx: &mut Ctx) -> u32 {
     let (ua, ub) = (unpack(f, a, ctx), unpack(f, b, ctx));
     if is_nan(ua.class) || is_nan(ub.class) {
@@ -585,11 +585,11 @@ pub fn compare(f: Fmt, a: u64, b: u64, signal_nans: bool, ctx: &mut Ctx) -> u32 
     }
 }
 
-/// Confronto numerico di due valori non NaN.
+/// Numeric comparison of two non-NaN values.
 fn cmp_values(a: &Unpacked, b: &Unpacked) -> std::cmp::Ordering {
     use std::cmp::Ordering::*;
     let key = |u: &Unpacked| -> (i32, i32, u64) {
-        // (classe di grandezza, esponente normalizzato, mantissa normalizzata)
+        // (magnitude class, normalised exponent, normalised mantissa)
         match u.class {
             Class::Zero => (0, 0, 0),
             Class::Inf => (2, 0, 0),
@@ -614,7 +614,7 @@ fn cmp_values(a: &Unpacked, b: &Unpacked) -> std::cmp::Ordering {
     }
 }
 
-/// Confronti vettoriali: EQ, GE, GT. Restituisce true/false.
+/// Vector comparisons: EQ, GE, GT. Returns true/false.
 pub fn compare_eq(f: Fmt, a: u64, b: u64, ctx: &mut Ctx) -> bool {
     let (ua, ub) = (unpack(f, a, ctx), unpack(f, b, ctx));
     if is_nan(ua.class) || is_nan(ub.class) {
@@ -636,13 +636,13 @@ pub fn compare_ge(f: Fmt, a: u64, b: u64, gt: bool, ctx: &mut Ctx) -> bool {
     if gt { o == std::cmp::Ordering::Greater } else { o != std::cmp::Ordering::Less }
 }
 
-/// FPMax/FPMin (`max`), con o senza la semantica "numero" (FMAXNM/FMINNM).
+/// FPMax/FPMin (`max`), with or without the "number" semantics (FMAXNM/FMINNM).
 pub fn max_min(f: Fmt, a: u64, b: u64, max: bool, num: bool, ctx: &mut Ctx) -> u64 {
     let (mut a, mut b) = (a, b);
     if num {
         let mut scratch = *ctx;
         let (ca, cb) = (unpack(f, a, &mut scratch).class, unpack(f, b, &mut scratch).class);
-        // Un solo QNaN: diventa -∞ (per il massimo) o +∞ (per il minimo).
+        // A single QNaN: becomes -∞ (for the maximum) or +∞ (for the minimum).
         if ca == Class::QNaN && cb != Class::QNaN {
             a = f.infinity(max);
         } else if ca != Class::QNaN && cb == Class::QNaN {
@@ -658,7 +658,7 @@ pub fn max_min(f: Fmt, a: u64, b: u64, max: bool, num: bool, ctx: &mut Ctx) -> u
     let u = if pick_a { ua } else { ub };
     match u.class {
         Class::Zero => {
-            // max: segno più positivo (AND), min: più negativo (OR).
+            // max: most positive sign (AND), min: most negative (OR).
             let (sa, sb) = (ua.sign, ub.sign);
             let both_zero = ua.class == Class::Zero && ub.class == Class::Zero;
             let sign = if !both_zero {
@@ -672,14 +672,14 @@ pub fn max_min(f: Fmt, a: u64, b: u64, max: bool, num: bool, ctx: &mut Ctx) -> u
         }
         Class::Inf => f.infinity(u.sign),
         _ => {
-            // FPRound anche se esatto: con FZ un denormale diventa zero.
+            // FPRound even if exact: with FZ a denormal becomes zero.
             let rm = ctx.rounding();
             round(f, Exact::from(&u), ctx, rm)
         }
     }
 }
 
-/// FPRoundInt: all'intero secondo `rounding`; `exact` segnala l'inesattezza.
+/// FPRoundInt: to integer according to `rounding`; `exact` signals inexactness.
 pub fn round_int(f: Fmt, a: u64, rounding: Rounding, exact: bool, ctx: &mut Ctx) -> u64 {
     let u = unpack(f, a, ctx);
     match u.class {
@@ -689,7 +689,7 @@ pub fn round_int(f: Fmt, a: u64, rounding: Rounding, exact: bool, ctx: &mut Ctx)
         Class::Normal => {}
     }
     if u.exp >= 0 {
-        return f.zero(u.sign) | (a & !f.sign_bit()); // già intero
+        return f.zero(u.sign) | (a & !f.sign_bit()); // already an integer
     }
     let (int_part, frac_nonzero, gt_half, eq_half) = split_frac(u.mant as u128, (-u.exp) as u32);
     let odd = int_part & 1 == 1;
@@ -709,7 +709,7 @@ pub fn round_int(f: Fmt, a: u64, rounding: Rounding, exact: bool, ctx: &mut Ctx)
     r
 }
 
-/// Parte intera di m · 2^-n (modulo) e informazioni sulla parte frazionaria.
+/// Integer part of m · 2^-n (magnitude) and information on the fractional part.
 fn split_frac(m: u128, n: u32) -> (u128, bool, bool, bool) {
     if n >= 128 {
         return (0, m != 0, false, false);
@@ -720,8 +720,8 @@ fn split_frac(m: u128, n: u32) -> (u128, bool, bool, bool) {
     (int_part, frac != 0, frac > half, frac == half)
 }
 
-/// Arrotondamento all'intero del modulo, dato il segno (come il pseudocodice
-/// su RoundDown, riscritto sul valore assoluto).
+/// Rounding of the magnitude to integer, given the sign (like the pseudocode
+/// on RoundDown, rewritten on the absolute value).
 fn round_up_int(r: Rounding, sign: bool, nonzero: bool, gt: bool, eq: bool, odd: bool) -> bool {
     match r {
         Rounding::TieEven => gt || eq && odd,
@@ -732,7 +732,7 @@ fn round_up_int(r: Rounding, sign: bool, nonzero: bool, gt: bool, eq: bool, odd:
     }
 }
 
-/// FPToFixed: `op · 2^fbits` arrotondato a intero di `bits` bit, saturato.
+/// FPToFixed: `op · 2^fbits` rounded to a `bits`-bit integer, saturated.
 pub fn to_fixed(
     f: Fmt,
     a: u64,
@@ -782,7 +782,7 @@ pub fn to_fixed(
     (v as u64) & crate::bits::ones(bits)
 }
 
-/// FixedToFP: intero di `bits` bit (con o senza segno) diviso 2^fbits.
+/// FixedToFP: `bits`-bit integer (signed or unsigned) divided by 2^fbits.
 pub fn from_fixed(
     f: Fmt,
     x: u64,
@@ -805,14 +805,14 @@ pub fn from_fixed(
     )
 }
 
-/// FPConvert tra formati (FCVT), con le regole dei NaN.
+/// FPConvert between formats (FCVT), with the NaN rules.
 pub fn convert(from: Fmt, to: Fmt, a: u64, rounding: Rounding, ctx: &mut Ctx) -> u64 {
     let u = unpack_ahp(from, a, ctx, true);
     let alt_to = to.n == 16 && ctx.ahp();
     match u.class {
         Class::QNaN | Class::SNaN => {
             if alt_to {
-                // Mezza precisione alternativa: niente NaN, risultato zero.
+                // Alternative half precision: no NaN, result zero.
                 ctx.flags |= IOC;
                 return to.zero(u.sign);
             }
@@ -822,7 +822,7 @@ pub fn convert(from: Fmt, to: Fmt, a: u64, rounding: Rounding, ctx: &mut Ctx) ->
             if ctx.dn() {
                 return to.default_nan();
             }
-            // Conserva segno e bit alti della frazione, silenziato.
+            // Keeps sign and high bits of the fraction, quietened.
             let frac = a & from.frac_mask();
             let top = if from.f >= to.f { frac >> (from.f - to.f) } else { frac << (to.f - from.f) };
             to.zero(u.sign) | (to.exp_mask() << to.f) | (1 << (to.f - 1)) | (top & to.frac_mask())
@@ -839,7 +839,7 @@ pub fn convert(from: Fmt, to: Fmt, a: u64, rounding: Rounding, ctx: &mut Ctx) ->
     }
 }
 
-/// FRECPE: stima del reciproco (tabella di RecipEstimate).
+/// FRECPE: reciprocal estimate (RecipEstimate table).
 pub fn recip_estimate(f: Fmt, a: u64, ctx: &mut Ctx) -> u64 {
     let u = unpack(f, a, ctx);
     match u.class {
@@ -852,7 +852,7 @@ pub fn recip_estimate(f: Fmt, a: u64, ctx: &mut Ctx) -> u64 {
         Class::Normal => {}
     }
     let lz = u.mant.leading_zeros() as i32;
-    let vexp = u.exp + 63 - lz; // |valore| in [2^vexp, 2^(vexp+1))
+    let vexp = u.exp + 63 - lz; // |value| in [2^vexp, 2^(vexp+1))
     let tiny = match f.n {
         16 => vexp < -16,
         32 => vexp < -128,
@@ -877,7 +877,7 @@ pub fn recip_estimate(f: Fmt, a: u64, ctx: &mut Ctx) -> u64 {
         ctx.flags |= UFC;
         return f.zero(u.sign);
     }
-    // Frazione estesa a 52 bit ed esponente, come per la doppia precisione.
+    // Fraction extended to 52 bits and exponent, as for double precision.
     let mut fraction = (a & f.frac_mask()) << (52 - f.f);
     let mut exp = ((a >> f.f) & f.exp_mask()) as i64;
     if exp == 0 {
@@ -910,7 +910,7 @@ pub fn recip_estimate(f: Fmt, a: u64, ctx: &mut Ctx) -> u64 {
     f.zero(u.sign) | ((rexp as u64 & f.exp_mask()) << f.f) | (fraction >> (52 - f.f))
 }
 
-/// FRSQRTE: stima della radice reciproca.
+/// FRSQRTE: reciprocal square root estimate.
 pub fn rsqrt_estimate(f: Fmt, a: u64, ctx: &mut Ctx) -> u64 {
     let u = unpack(f, a, ctx);
     match u.class {
@@ -958,7 +958,7 @@ pub fn rsqrt_estimate(f: Fmt, a: u64, ctx: &mut Ctx) -> u64 {
     ((result_exp as u64 & f.exp_mask()) << f.f) | ((est & 0xff) << (f.f - 8))
 }
 
-/// FRECPX: reciproco dell'esponente.
+/// FRECPX: reciprocal of the exponent.
 pub fn recpx(f: Fmt, a: u64, ctx: &mut Ctx) -> u64 {
     let u = unpack(f, a, ctx);
     if is_nan(u.class) {
@@ -969,7 +969,7 @@ pub fn recpx(f: Fmt, a: u64, ctx: &mut Ctx) -> u64 {
     if exp == 0 { sign | ((f.exp_mask() - 1) << f.f) } else { sign | ((!exp & f.exp_mask()) << f.f) }
 }
 
-/// Stime intere URECPE / URSQRTE (su 32 bit).
+/// Integer estimates URECPE / URSQRTE (on 32 bits).
 pub fn unsigned_recip_estimate(x: u32) -> u32 {
     if x >> 31 == 0 {
         return 0xffff_ffff;
@@ -999,7 +999,7 @@ pub fn unsigned_rsqrt_estimate(x: u32) -> u32 {
     ((b.div_ceil(2)) as u32) << 23
 }
 
-/// VFPExpandImm: immediato di FMOV.
+/// VFPExpandImm: FMOV immediate.
 pub fn expand_imm(f: Fmt, imm8: u64) -> u64 {
     let sign = imm8 >> 7;
     let b6 = (imm8 >> 6) & 1;

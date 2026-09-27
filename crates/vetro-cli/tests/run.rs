@@ -1,4 +1,4 @@
-//! `vetro run` esegue un ELF statico: output del guest e codice di uscita.
+//! `vetro run` executes a static ELF: guest output and exit code.
 
 use std::process::Command;
 use vetro_diff::a64::{self, sys};
@@ -33,9 +33,9 @@ fn run_prints_and_exits() {
 
 #[test]
 fn run_reports_sigill() {
-    // udf #0 → il processo muore di SIGILL: codice 128 + 4, come una shell.
+    // udf #0 → the process dies of SIGILL: code 128 + 4, like a shell.
     let path = qemu::write_temp_elf("cli-udf", &elf::build(&[0], &[])).unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_vetro")).arg("run").arg(&path).output().unwrap();
     assert_eq!(out.status.code(), Some(132));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("segnale 4"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("signal 4"));
 }

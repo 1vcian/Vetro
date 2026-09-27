@@ -1,22 +1,22 @@
-//! Virtqueue split (virtio v1.2, §2.7).
+//! Split virtqueue (virtio v1.2, §2.7).
 //!
-//! Aree in RAM del guest, con `n` = Queue Size (potenza di 2):
-//! - tabella dei descrittori: `n` voci da 16 byte (addr, len, flags, next);
-//! - area del driver (available ring): flags, idx, `ring[n]`, used_event;
-//! - area del dispositivo (used ring): flags, idx, `ring[n]` di (id, len),
+//! Areas in guest RAM, with `n` = Queue Size (a power of 2):
+//! - descriptor table: `n` entries of 16 bytes (addr, len, flags, next);
+//! - driver area (available ring): flags, idx, `ring[n]`, used_event;
+//! - device area (used ring): flags, idx, `ring[n]` of (id, len),
 //!   avail_event.
 //!
-//! Regole di validazione (una violazione è un errore della coda: il
-//! trasporto porta il dispositivo in DEVICE_NEEDS_RESET, come fa QEMU con
+//! Validation rules (a violation is a queue error: the
+//! transport puts the device in DEVICE_NEEDS_RESET, as QEMU does with
 //! `virtio_error`):
-//! - testa e `next` dentro la tabella; una catena non visita più
-//!   descrittori di quanti ne ha la tabella (niente cicli);
-//! - i buffer scrivibili dal dispositivo seguono tutti quelli leggibili;
-//! - INDIRECT solo se negoziato e solo sul descrittore di testa, con
-//!   lunghezza multipla di 16 e non nulla; il flag NEXT sul descrittore
-//!   indiretto si ignora (la catena finisce con la tabella, come QEMU) e
-//!   dentro una tabella indiretta INDIRECT è vietato;
-//! - `avail.idx` non può avanzare di più di `n` oltre l'ultimo consumato.
+//! - head and `next` inside the table; a chain does not visit more
+//!   descriptors than the table has (no loops);
+//! - the device-writable buffers all follow the readable ones;
+//! - INDIRECT only if negotiated and only on the head descriptor, with a
+//!   length that is a non-zero multiple of 16; the NEXT flag on the indirect
+//!   descriptor is ignored (the chain ends with the table, like QEMU) and
+//!   inside an indirect table INDIRECT is forbidden;
+//! - `avail.idx` cannot advance more than `n` past the last one consumed.
 
 use core::fmt;
 
@@ -25,32 +25,32 @@ use super::{GuestRam, GuestRamExt, RamError};
 pub const DESC_F_NEXT: u16 = 1;
 pub const DESC_F_WRITE: u16 = 2;
 pub const DESC_F_INDIRECT: u16 = 4;
-/// `avail.flags`: il driver non vuole interrupt (senza EVENT_IDX).
+/// `avail.flags`: the driver does not want interrupts (without EVENT_IDX).
 pub const AVAIL_F_NO_INTERRUPT: u16 = 1;
 
-/// Dimensione massima di una coda split (§2.7).
+/// Maximum size of a split queue (§2.7).
 pub const MAX_QUEUE_SIZE: u16 = 32768;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QueueError {
     Ram(RamError),
-    /// `avail.idx` è avanzato di più della dimensione della coda.
+    /// `avail.idx` advanced by more than the queue size.
     AvailIdx {
         last: u16,
         avail: u16,
     },
     HeadOutOfRange(u16),
     NextOutOfRange(u16),
-    /// Catena più lunga della tabella: c'è un ciclo.
+    /// Chain longer than the table: there is a loop.
     ChainLoop,
-    /// Buffer leggibile dopo uno scrivibile.
+    /// Readable buffer after a writable one.
     ReadableAfterWritable,
     IndirectNotNegotiated,
-    /// Tabella indiretta vuota o di lunghezza non multipla di 16.
+    /// Indirect table empty or with a length that is not a multiple of 16.
     IndirectLen(u32),
-    /// INDIRECT fuori dal descrittore di testa o dentro una tabella.
+    /// INDIRECT outside the head descriptor or inside a table.
     IndirectMisplaced,
-    /// Richiesta malformata per il dispositivo (es. intestazione mancante).
+    /// Malformed request for the device (e.g. missing header).
     Malformed(&'static str),
 }
 
@@ -65,35 +65,35 @@ impl fmt::Display for QueueError {
         match self {
             QueueError::Ram(e) => write!(f, "{e}"),
             QueueError::AvailIdx { last, avail } => {
-                write!(f, "avail.idx salta da {last} a {avail}")
+                write!(f, "avail.idx jumps from {last} to {avail}")
             }
-            QueueError::HeadOutOfRange(h) => write!(f, "testa {h} fuori dalla tabella"),
-            QueueError::NextOutOfRange(n) => write!(f, "next {n} fuori dalla tabella"),
-            QueueError::ChainLoop => write!(f, "ciclo nella catena di descrittori"),
-            QueueError::ReadableAfterWritable => write!(f, "buffer leggibile dopo uno scrivibile"),
-            QueueError::IndirectNotNegotiated => write!(f, "INDIRECT senza VIRTIO_F_INDIRECT_DESC"),
-            QueueError::IndirectLen(l) => write!(f, "tabella indiretta di {l} byte"),
-            QueueError::IndirectMisplaced => write!(f, "INDIRECT fuori dal descrittore di testa"),
-            QueueError::Malformed(m) => write!(f, "richiesta malformata: {m}"),
+            QueueError::HeadOutOfRange(h) => write!(f, "head {h} outside the table"),
+            QueueError::NextOutOfRange(n) => write!(f, "next {n} outside the table"),
+            QueueError::ChainLoop => write!(f, "loop in the descriptor chain"),
+            QueueError::ReadableAfterWritable => write!(f, "readable buffer after a writable one"),
+            QueueError::IndirectNotNegotiated => write!(f, "INDIRECT without VIRTIO_F_INDIRECT_DESC"),
+            QueueError::IndirectLen(l) => write!(f, "indirect table of {l} bytes"),
+            QueueError::IndirectMisplaced => write!(f, "INDIRECT outside the head descriptor"),
+            QueueError::Malformed(m) => write!(f, "malformed request: {m}"),
         }
     }
 }
 
-/// Un buffer della catena: indirizzo fisico e lunghezza.
+/// A buffer of the chain: physical address and length.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Buf {
     pub addr: u64,
     pub len: u32,
 }
 
-/// Catena di descrittori estratta dall'available ring. `head` è l'id da
-/// restituire nello used ring.
+/// Descriptor chain extracted from the available ring. `head` is the id to
+/// return in the used ring.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DescChain {
     pub head: u16,
-    /// Buffer leggibili dal dispositivo (dal driver al dispositivo).
+    /// Buffers readable by the device (from the driver to the device).
     pub readable: Vec<Buf>,
-    /// Buffer scrivibili dal dispositivo (dal dispositivo al driver).
+    /// Buffers writable by the device (from the device to the driver).
     pub writable: Vec<Buf>,
 }
 
@@ -101,8 +101,8 @@ fn total(bufs: &[Buf]) -> u64 {
     bufs.iter().map(|b| u64::from(b.len)).sum()
 }
 
-/// Copia tra una sequenza di buffer vista come spazio contiguo e `len`
-/// byte a partire da `offset`; `f(addr, inizio, fine)` agisce su ogni pezzo.
+/// Copy between a sequence of buffers seen as contiguous space and `len`
+/// bytes starting at `offset`; `f(addr, start, end)` acts on each piece.
 fn for_each_piece(
     bufs: &[Buf],
     mut offset: u64,
@@ -136,14 +136,14 @@ impl DescChain {
         total(&self.writable)
     }
 
-    /// Legge dai buffer leggibili, visti come spazio contiguo, a partire da
-    /// `offset`. Restituisce i byte letti (meno di `out.len()` alla fine).
+    /// Reads from the readable buffers, seen as contiguous space, starting at
+    /// `offset`. Returns the bytes read (fewer than `out.len()` at the end).
     pub fn read(&self, ram: &dyn GuestRam, offset: u64, out: &mut [u8]) -> Result<usize, RamError> {
         let len = out.len();
         for_each_piece(&self.readable, offset, len, |addr, a, b| ram.read(addr, &mut out[a..b]))
     }
 
-    /// Tutti i byte leggibili da `offset` alla fine.
+    /// All the readable bytes from `offset` to the end.
     pub fn read_to_vec(&self, ram: &dyn GuestRam, offset: u64) -> Result<Vec<u8>, RamError> {
         let len = self.readable_len().saturating_sub(offset) as usize;
         let mut v = vec![0; len];
@@ -151,14 +151,14 @@ impl DescChain {
         Ok(v)
     }
 
-    /// Scrive nei buffer scrivibili, visti come spazio contiguo, a partire
-    /// da `offset`. Restituisce i byte scritti (meno se lo spazio finisce).
+    /// Writes into the writable buffers, seen as contiguous space, starting
+    /// at `offset`. Returns the bytes written (fewer if the space runs out).
     pub fn write(&self, ram: &mut dyn GuestRam, offset: u64, data: &[u8]) -> Result<usize, RamError> {
         for_each_piece(&self.writable, offset, data.len(), |addr, a, b| ram.write(addr, &data[a..b]))
     }
 }
 
-/// Descrittore come sta in memoria.
+/// Descriptor as laid out in memory.
 #[derive(Clone, Copy, Debug)]
 struct Desc {
     addr: u64,
@@ -178,13 +178,13 @@ fn read_desc(ram: &dyn GuestRam, table: u64, i: u16) -> Result<Desc, RamError> {
     })
 }
 
-/// `vring_need_event` (§2.7.10): serve un evento se `event` sta in
+/// `vring_need_event` (§2.7.10): an event is needed if `event` lies in
 /// `[old, new)` modulo 2^16.
 pub fn need_event(event: u16, new: u16, old: u16) -> bool {
     new.wrapping_sub(event).wrapping_sub(1) < new.wrapping_sub(old)
 }
 
-/// Stato di una coda split lato dispositivo.
+/// State of a split queue on the device side.
 #[derive(Clone, Debug)]
 pub struct Virtqueue {
     max_size: u16,
@@ -193,11 +193,11 @@ pub struct Virtqueue {
     desc: u64,
     driver: u64,
     device: u64,
-    /// Prossimo indice dell'available ring da consumare.
+    /// Next available ring index to consume.
     last_avail: u16,
-    /// Prossimo indice dello used ring da scrivere (copia di `used.idx`).
+    /// Next used ring index to write (copy of `used.idx`).
     used_idx: u16,
-    /// `used.idx` all'ultima decisione sull'interrupt.
+    /// `used.idx` at the last interrupt decision.
     signalled_used: u16,
     pub(crate) event_idx: bool,
     pub(crate) indirect: bool,
@@ -220,7 +220,7 @@ impl Virtqueue {
         }
     }
 
-    /// Torna allo stato di reset (dimensione = massima, non pronta).
+    /// Back to the reset state (size = maximum, not ready).
     pub fn reset(&mut self) {
         *self = Self::new(self.max_size);
     }
@@ -234,7 +234,7 @@ impl Virtqueue {
     pub fn ready(&self) -> bool {
         self.ready
     }
-    /// Indirizzi di tabella, area del driver e area del dispositivo.
+    /// Addresses of the table, driver area and device area.
     pub fn addrs(&self) -> (u64, u64, u64) {
         (self.desc, self.driver, self.device)
     }
@@ -252,9 +252,9 @@ impl Virtqueue {
         self.device = a;
     }
 
-    /// QueueReady: la coda diventa pronta solo con una configurazione valida
-    /// (dimensione potenza di 2 non oltre il massimo, aree allineate come
-    /// chiede §2.7: 16, 2 e 4 byte). Restituisce lo stato risultante.
+    /// QueueReady: the queue becomes ready only with a valid configuration
+    /// (size a power of 2 not above the maximum, areas aligned as
+    /// §2.7 requires: 16, 2 and 4 bytes). Returns the resulting state.
     pub(crate) fn set_ready(&mut self, ready: bool) -> bool {
         let valid = self.size != 0
             && self.size.is_power_of_two()
@@ -279,7 +279,7 @@ impl Virtqueue {
         Ok(idx)
     }
 
-    /// Numero di catene disponibili e non ancora consumate.
+    /// Number of chains available and not yet consumed.
     pub fn available(&self, ram: &dyn GuestRam) -> Result<u16, QueueError> {
         if !self.ready {
             return Ok(0);
@@ -287,8 +287,8 @@ impl Virtqueue {
         Ok(self.avail_idx(ram)?.wrapping_sub(self.last_avail))
     }
 
-    /// Con EVENT_IDX: chiede al driver una notifica quando pubblica
-    /// l'indice `last_avail` (campo avail_event dello used ring).
+    /// With EVENT_IDX: asks the driver for a notification when it publishes
+    /// index `last_avail` (avail_event field of the used ring).
     fn publish_avail_event(&self, ram: &mut dyn GuestRam) -> Result<(), RamError> {
         if self.event_idx {
             ram.write_u16(self.device + 4 + 8 * u64::from(self.size), self.last_avail)?;
@@ -296,7 +296,7 @@ impl Virtqueue {
         Ok(())
     }
 
-    /// Estrae la prossima catena disponibile, se c'è.
+    /// Extracts the next available chain, if any.
     pub fn pop(&mut self, ram: &mut dyn GuestRam) -> Result<Option<DescChain>, QueueError> {
         if !self.ready {
             return Ok(None);
@@ -314,8 +314,8 @@ impl Virtqueue {
         Ok(Some(chain))
     }
 
-    /// Rimette le ultime `n` catene estratte nell'available ring (il
-    /// dispositivo non le ha usate, es. un frame che non ci stava).
+    /// Puts the last `n` extracted chains back into the available ring (the
+    /// device did not use them, e.g. a frame that did not fit).
     pub fn rewind(&mut self, ram: &mut dyn GuestRam, n: u16) -> Result<(), RamError> {
         self.last_avail = self.last_avail.wrapping_sub(n);
         self.publish_avail_event(ram)
@@ -367,7 +367,7 @@ impl Virtqueue {
         }
     }
 
-    /// Restituisce la catena `head` al driver con `len` byte scritti.
+    /// Returns chain `head` to the driver with `len` bytes written.
     pub fn push_used(&mut self, ram: &mut dyn GuestRam, head: u16, len: u32) -> Result<(), RamError> {
         let slot = u64::from(self.used_idx % self.size);
         let elem = self.device + 4 + 8 * slot;
@@ -377,9 +377,9 @@ impl Virtqueue {
         ram.write_u16(self.device + 2, self.used_idx)
     }
 
-    /// Dopo una serie di `push_used`: il driver va avvisato? Senza
-    /// EVENT_IDX decide `avail.flags` (NO_INTERRUPT); con EVENT_IDX serve
-    /// che `used_event` sia stato superato da quest'ultima serie.
+    /// After a series of `push_used`: should the driver be notified? Without
+    /// EVENT_IDX `avail.flags` decides (NO_INTERRUPT); with EVENT_IDX
+    /// `used_event` must have been passed by this last series.
     pub(crate) fn should_notify(&mut self, ram: &dyn GuestRam) -> Result<bool, RamError> {
         let (old, new) = (self.signalled_used, self.used_idx);
         if !self.ready || old == new {
@@ -397,8 +397,8 @@ impl Virtqueue {
 
 // ---- Snapshot (M6, ADR 0015) -------------------------------------------------
 
-/// Indirizzi, dimensione, indici e feature negoziate della coda. La
-/// dimensione massima è configurazione del dispositivo: si controlla.
+/// Addresses, size, indices and negotiated features of the queue. The
+/// maximum size is device configuration: it is checked.
 impl vetro_snapshot::Snapshot for Virtqueue {
     fn save(&self, w: &mut vetro_snapshot::Writer) {
         w.u16(self.max_size);
@@ -418,7 +418,7 @@ impl vetro_snapshot::Snapshot for Virtqueue {
         let max = r.u16()?;
         if max != self.max_size {
             return Err(vetro_snapshot::Error::invalid(format!(
-                "coda da {max} nello snapshot, {} nel dispositivo",
+                "queue of {max} in the snapshot, {} in the device",
                 self.max_size
             )));
         }
@@ -437,8 +437,8 @@ impl vetro_snapshot::Snapshot for Virtqueue {
 }
 
 impl DescChain {
-    /// Una catena estratta e non ancora restituita (richiesta in volo) per
-    /// gli snapshot: la testa e i buffer, già validati all'estrazione.
+    /// A chain extracted and not yet returned (in-flight request) for
+    /// snapshots: the head and the buffers, already validated at extraction.
     pub fn save(&self, w: &mut vetro_snapshot::Writer) {
         w.u16(self.head);
         for bufs in [&self.readable, &self.writable] {
@@ -502,22 +502,22 @@ mod tests {
         assert!(!need_event(1, 1, 0));
         assert!(need_event(5, 8, 3));
         assert!(!need_event(8, 8, 3));
-        assert!(need_event(0xFFFF, 2, 0xFFFE)); // a cavallo dell'overflow
+        assert!(need_event(0xFFFF, 2, 0xFFFE)); // straddling the overflow
     }
 
     #[test]
     fn ready_rifiuta_configurazioni_invalide() {
         let mut q = Virtqueue::new(8);
         q.set_size(6);
-        assert!(!q.set_ready(true), "non potenza di 2");
+        assert!(!q.set_ready(true), "not a power of 2");
         q.set_size(16);
-        assert!(!q.set_ready(true), "oltre il massimo");
+        assert!(!q.set_ready(true), "above the maximum");
         q.set_size(8);
         q.set_desc(0x1008);
-        assert!(!q.set_ready(true), "tabella non allineata a 16");
+        assert!(!q.set_ready(true), "table not aligned to 16");
         q.set_desc(0x1000);
         q.set_device(0x3002);
-        assert!(!q.set_ready(true), "used ring non allineato a 4");
+        assert!(!q.set_ready(true), "used ring not aligned to 4");
         q.set_device(0x3000);
         assert!(q.set_ready(true));
         assert!(!q.set_ready(false));
@@ -555,11 +555,11 @@ mod tests {
             q.push_used(&mut r, c.head, 1).unwrap();
         }
         assert_eq!(r.read_u16(USED + 2), Ok(5));
-        // Il quinto elemento torna nello slot 0.
+        // The fifth element goes back to slot 0.
         assert_eq!(r.read_u32(USED + 4), Ok(2));
         assert_eq!(r.read_u32(USED + 8), Ok(1));
         assert_eq!(q.should_notify(&r), Ok(true));
-        assert_eq!(q.should_notify(&r), Ok(false), "niente di nuovo");
+        assert_eq!(q.should_notify(&r), Ok(false), "nothing new");
         r.write_u16(AVAIL, AVAIL_F_NO_INTERRUPT).unwrap();
         offer(&mut r, 4, 0);
         let c = q.pop(&mut r).unwrap().unwrap();
@@ -574,7 +574,7 @@ mod tests {
         q.event_idx = true;
         let used_event = AVAIL + 4 + 2 * 8;
         let avail_event = USED + 4 + 8 * 8;
-        // Il driver vuole un interrupt solo dopo il terzo buffer (idx 2).
+        // The driver wants an interrupt only after the third buffer (idx 2).
         r.write_u16(used_event, 2).unwrap();
         for i in 0..3u16 {
             put_desc(&mut r, DESC, i, 0x5000, 1, 0, 0);
@@ -582,9 +582,9 @@ mod tests {
             let c = q.pop(&mut r).unwrap().unwrap();
             assert_eq!(r.read_u16(avail_event), Ok(i + 1));
             q.push_used(&mut r, c.head, 0).unwrap();
-            assert_eq!(q.should_notify(&r), Ok(i == 2), "dopo il buffer {i}");
+            assert_eq!(q.should_notify(&r), Ok(i == 2), "after buffer {i}");
         }
-        // Due buffer insieme che scavalcano used_event = 4: una notifica.
+        // Two buffers together that jump over used_event = 4: one notification.
         r.write_u16(used_event, 4).unwrap();
         for i in 3..5u16 {
             put_desc(&mut r, DESC, i, 0x5000, 1, 0, 0);
@@ -604,7 +604,7 @@ mod tests {
         put_desc(&mut r, table, 0, 0x5000, 2, DESC_F_NEXT, 2);
         put_desc(&mut r, table, 2, 0x5100, 2, DESC_F_NEXT, 1);
         put_desc(&mut r, table, 1, 0x5200, 4, DESC_F_WRITE, 0);
-        // WRITE sul descrittore indiretto va ignorato, NEXT anche.
+        // WRITE on the indirect descriptor must be ignored, NEXT too.
         put_desc(&mut r, DESC, 6, table, 48, DESC_F_INDIRECT | DESC_F_WRITE | DESC_F_NEXT, 7);
         offer(&mut r, 8, 6);
         let c = q.pop(&mut r).unwrap().unwrap();

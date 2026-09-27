@@ -1,6 +1,6 @@
 [package]
 name = "vetro-mmu"
-description = "Tabelle delle pagine stage 1 e TLB software."
+description = "Stage 1 page tables and software TLB."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

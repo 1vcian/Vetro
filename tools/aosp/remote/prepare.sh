@@ -1,19 +1,19 @@
 #!/bin/sh
-# Sulla VM di build (lanciato da tools/aosp/sync.sh): applica le patch di
-# ~/$WORK/patches al tree AOSP e scarica microG. Idempotente: una patch già
-# applicata si salta, un APK con lo sha256 giusto non si riscarica.
-# Le patch stanno in patches/<percorso del progetto>/NNNN-*.patch (prefissi
-# a/ e b/ relativi alla radice del progetto).
+# On the build VM (launched by tools/aosp/sync.sh): applies the patches in
+# ~/$WORK/patches to the AOSP tree and downloads microG. Idempotent: a patch already
+# applied is skipped, an APK with the right sha256 is not downloaded again.
+# Patches live in patches/<project path>/NNNN-*.patch (a/ and b/
+# prefixes relative to the project root).
 set -eu
 cd
 tree="$HOME/${VETRO_AOSP_TREE:-aosp}"
 work="$HOME/${VETRO_AOSP_WORK:-vetro-aosp}"
 
-# CA di sviluppo (ADR 0030, tools/aosp/dev-ca.sh): nei due trust store restano
-# solo i file creati dalle patch attuali. Dopo un cambio di CA la patch vecchia
-# non si "disapplica" da sola: il suo file (non tracciato) si toglie qui, così
-# l'immagine non si fida più della CA precedente. I file della patch attuale
-# non si toccano (niente ricompilazione inutile dell'APEX).
+# Development CA (ADR 0030, tools/aosp/dev-ca.sh): only the files created by the
+# current patches stay in the two trust stores. After a CA change the old patch
+# does not "unapply" itself: its (untracked) file is removed here, so
+# the image no longer trusts the previous CA. The current patch's files
+# are left alone (no needless APEX rebuild).
 for d in external/conscrypt:apex/ca-certificates/files system/ca-certificates:files; do
   proj="${d%%:*}"
   sub="${d#*:}"
@@ -21,7 +21,7 @@ for d in external/conscrypt:apex/ca-certificates/files system/ca-certificates:fi
   git -C "$tree/$proj" ls-files --others --exclude-standard -- "$sub" | while read -r f; do
     if ! printf '%s\n' "$keep" | grep -qxF "$f"; then
       rm -f "$tree/$proj/$f"
-      echo "tolto $proj/$f (CA non più nelle patch)"
+      echo "removed $proj/$f (CA no longer in the patches)"
     fi
   done
 done
@@ -31,12 +31,12 @@ find . -name '*.patch' | sed 's|^\./||' | sort | while read -r p; do
   proj="$(dirname "$p")"
   patch="$work/patches/$p"
   if git -C "$tree/$proj" apply --check -R "$patch" 2>/dev/null; then
-    echo "patch già applicata: $p"
+    echo "patch already applied: $p"
   elif git -C "$tree/$proj" apply --check "$patch"; then
     git -C "$tree/$proj" apply "$patch"
-    echo "patch applicata: $p"
+    echo "patch applied: $p"
   else
-    echo "ERRORE: la patch $p non si applica a $proj" >&2
+    echo "ERROR: patch $p does not apply to $proj" >&2
     exit 1
   fi
 done
@@ -47,15 +47,15 @@ mkdir -p "$dest"
 grep -v '^#' "$lock" | while read -r file sha url; do
   [ -n "$file" ] || continue
   if [ -f "$dest/$file" ] && echo "$sha  $dest/$file" | sha256sum -c --status; then
-    echo "microG: $file già presente"
+    echo "microG: $file already present"
     continue
   fi
   curl -fsSL --retry 3 -o "$dest/$file.tmp" "$url"
   if ! echo "$sha  $dest/$file.tmp" | sha256sum -c --status; then
-    echo "ERRORE: sha256 di $file diverso da microg.lock" >&2
+    echo "ERROR: sha256 of $file differs from microg.lock" >&2
     rm -f "$dest/$file.tmp"
     exit 1
   fi
   mv "$dest/$file.tmp" "$dest/$file"
-  echo "microG: $file scaricato"
+  echo "microG: $file downloaded"
 done

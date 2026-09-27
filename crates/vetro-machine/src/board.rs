@@ -1,6 +1,6 @@
-//! Ciò che sta fuori dalla CPU: RAM, piattaforma e contatore del tempo.
-//! Implementa la memoria fisica vista dalla MMU e l'ambiente della CPU
-//! ([`CpuEnv`]): timer generico, interfaccia CPU del GIC, linea IRQ.
+//! What lies outside the CPU: RAM, platform and time counter.
+//! Implements the physical memory seen by the MMU and the CPU environment
+//! ([`CpuEnv`]): generic timer, GIC CPU interface, IRQ line.
 
 use core::cell::RefCell;
 
@@ -109,19 +109,19 @@ static FREE_REGIONS: std::sync::Mutex<Vec<(usize, usize)>> = std::sync::Mutex::n
 /// RAM piece size for whole-RAM operations (hash, comparisons).
 pub const RAM_CHUNK: usize = 1 << 28;
 
-/// La RAM del guest, da `map::RAM_BASE`.
+/// The guest RAM, from `map::RAM_BASE`.
 ///
-/// Sorveglia le pagine da cui il JIT ha tradotto codice
-/// ([`watch_code`](Self::watch_code)): ogni scrittura che passa da qui (CPU,
-/// DMA dei dispositivi, caricamento delle immagini) le segna sporche. Per
-/// questo i byte si scrivono solo con [`write`](Self::write).
+/// Watches the pages from which the JIT translated code
+/// ([`watch_code`](Self::watch_code)): every write that goes through here (CPU,
+/// device DMA, image loading) marks them dirty. That is
+/// why bytes are written only with [`write`](Self::write).
 pub struct Ram {
     bytes: Store,
-    /// Un bit per pagina da 4 KiB: sorvegliata.
+    /// One bit per 4 KiB page: watched.
     code: Vec<u64>,
-    /// Pagine sorvegliate.
+    /// Watched pages.
     watched: usize,
-    /// Pagine fisiche (`pa >> 12`) sorvegliate e poi scritte.
+    /// Physical pages (`pa >> 12`) watched and then written.
     dirty: Vec<u64>,
 }
 
@@ -131,7 +131,7 @@ impl Ram {
         Ram { bytes: Store::new(size), code: vec![0; pages.div_ceil(64)], watched: 0, dirty: Vec::new() }
     }
 
-    /// Byte di RAM.
+    /// RAM bytes.
     pub fn size(&self) -> u64 {
         self.bytes.len as u64
     }
@@ -190,7 +190,7 @@ impl Ram {
         self.size() == other.size() && self.chunks().zip(other.chunks()).all(|(a, b)| a == b)
     }
 
-    /// Sorveglia la pagina fisica `page` (`pa >> 12`); falso se non è RAM.
+    /// Watches the physical page `page` (`pa >> 12`); false if it is not RAM.
     pub fn watch_code(&mut self, page: u64) -> bool {
         let Some(i) = (page << 12).checked_sub(map::RAM_BASE).map(|o| (o >> 12) as usize) else {
             return false;
@@ -206,7 +206,7 @@ impl Ram {
         true
     }
 
-    /// Vero se la pagina fisica `page` è sorvegliata.
+    /// True if the physical page `page` is watched.
     pub fn is_watched(&self, page: u64) -> bool {
         match (page << 12).checked_sub(map::RAM_BASE) {
             Some(o) if o < self.size() => {
@@ -217,13 +217,13 @@ impl Ram {
         }
     }
 
-    /// Aggiunge a `out` le pagine sorvegliate scritte da allora.
+    /// Appends to `out` the watched pages written since then.
     pub fn take_code_dirty(&mut self, out: &mut Vec<u64>) {
         out.append(&mut self.dirty);
     }
 
-    /// Segna sporche (e non più sorvegliate) le pagine di `[o, o+len)`
-    /// (offset nella RAM); vero se ce n'era almeno una.
+    /// Marks dirty (and no longer watched) the pages of `[o, o+len)`
+    /// (offset into RAM); true if there was at least one.
     #[inline]
     fn touch(&mut self, o: usize, len: usize) -> bool {
         if self.watched == 0 || len == 0 {
@@ -242,14 +242,14 @@ impl Ram {
         hit
     }
 
-    /// Scrittura che dice anche se ha toccato codice sorvegliato: `None`
-    /// fuori dalla RAM.
+    /// A write that also says whether it touched watched code: `None`
+    /// outside RAM.
     pub fn write_watched(&mut self, pa: u64, data: &[u8]) -> Option<bool> {
         let o = self.range(pa, data.len())?;
         self.bytes.get_mut(o, data.len()).copy_from_slice(data);
         Some(self.touch(o, data.len()))
     }
-    /// Offset in `bytes` di `[pa, pa+len)`, se tutto dentro la RAM.
+    /// Offset in `bytes` of `[pa, pa+len)`, if entirely inside RAM.
     #[inline]
     fn range(&self, pa: u64, len: usize) -> Option<usize> {
         let off = pa.checked_sub(map::RAM_BASE)?;
@@ -273,11 +273,11 @@ impl Ram {
 
 // ---- Snapshot (M6, ADR 0015) -------------------------------------------------
 
-/// I byte della RAM a pagine da 4 KiB: le pagine a zero non occupano nulla,
-/// le altre sono compresse (`vetro_snapshot::compress`). La sorveglianza
-/// delle pagine di codice non è stato del guest: al ripristino ogni pagina
-/// sorvegliata risulta scritta, così il JIT scarta i blocchi tradotti dalla
-/// RAM di prima.
+/// The RAM bytes in 4 KiB pages: zero pages take no space,
+/// the others are compressed (`vetro_snapshot::compress`). Watching
+/// code pages is not guest state: on restore every watched page
+/// counts as written, so the JIT discards the blocks translated from the
+/// earlier RAM.
 impl vetro_snapshot::Snapshot for Ram {
     /// The same format as [`vetro_snapshot::compress`] on the whole RAM,
     /// written page by page ([`Ram::save_chunks`]).
@@ -356,25 +356,25 @@ impl GuestRam for Ram {
     }
 }
 
-/// RAM, piattaforma e tempo.
+/// RAM, platform and time.
 pub struct Board {
     pub ram: Ram,
     pub virt: Virt,
-    /// Valore corrente di CNTPCT_EL0.
+    /// Current value of CNTPCT_EL0.
     pub cntpct: u64,
-    /// Qualcosa può aver cambiato il livello di una linea di interrupt
-    /// (accesso MMIO, registro del timer): va chiamato `update_irqs`.
+    /// Something may have changed the level of an interrupt line
+    /// (MMIO access, timer register): `update_irqs` must be called.
     pub(crate) irq_dirty: bool,
-    /// Un accesso a uno slot virtio-mmio: il dispositivo va servito.
+    /// An access to a virtio-mmio slot: the device must be serviced.
     pub(crate) virtio_dirty: bool,
-    /// Livello della linea IRQ del GIC, se già calcolato: la CPU lo legge
-    /// prima di ogni istruzione con PSTATE.I = 0, e `Gic::irq_line` scorre
-    /// tutti gli interrupt. Si azzera a ogni operazione che può cambiare lo
-    /// stato del GIC (MMIO, ICC_*, `update_irqs`, virtio).
+    /// Level of the GIC IRQ line, if already computed: the CPU reads it
+    /// before every instruction with PSTATE.I = 0, and `Gic::irq_line` walks
+    /// all interrupts. It is cleared by every operation that can change the
+    /// GIC state (MMIO, ICC_*, `update_irqs`, virtio).
     pub(crate) irq_cache: Option<bool>,
-    /// Dopo l'ultimo servizio virtio una richiesta di virtio-blk aspetta
-    /// dati dall'host (`BlockError::NotReady`): la macchina non esegue
-    /// istruzioni finché non arrivano (`Stop::Blocked`).
+    /// After the last virtio service a virtio-blk request is waiting for
+    /// data from the host (`BlockError::NotReady`): the machine executes no
+    /// instructions until they arrive (`Stop::Blocked`).
     pub(crate) host_wait: bool,
 }
 
@@ -391,14 +391,14 @@ impl Board {
         }
     }
 
-    /// Porta al GIC i livelli di tutte le linee.
+    /// Brings the levels of all lines to the GIC.
     pub fn update_irqs(&mut self) {
         self.virt.update_irqs(self.cntpct);
         self.irq_cache = None;
         self.irq_dirty = false;
     }
 
-    /// Fa lavorare i dispositivi virtio sopra la RAM.
+    /// Runs the virtio devices on top of RAM.
     pub fn service_virtio(&mut self) {
         let Board { ram, virt, .. } = self;
         virt.service_virtio(ram);
@@ -410,12 +410,12 @@ impl Board {
         self.irq_dirty = true;
     }
 
-    /// Pilota la linea d'ingresso `line` del GPIO PL061: la 3
-    /// (`vetro_platform::pl061::POWER_KEY_LINE`) è il tasto di spegnimento
-    /// (`gpio-keys`, KEY_POWER). L'interrupt arriva al guest prima della
-    /// prossima istruzione. È un ingresso dell'host: l'host passa da
-    /// `Machine::gpio_input` (o `Machine::input`), che lo registra per il
-    /// replay (M10, ADR 0019); chiamato qui direttamente sfugge al log.
+    /// Drives input line `line` of the PL061 GPIO: line 3
+    /// (`vetro_platform::pl061::POWER_KEY_LINE`) is the power key
+    /// (`gpio-keys`, KEY_POWER). The interrupt reaches the guest before the
+    /// next instruction. It is a host input: the host goes through
+    /// `Machine::gpio_input` (or `Machine::input`), which records it for
+    /// replay (M10, ADR 0019); called here directly it escapes the log.
     pub fn gpio_input(&mut self, line: u32, level: bool) {
         self.virt.gpio_mut().set_input(line, level);
         self.irq_cache = None;
@@ -436,8 +436,8 @@ fn mmio_size(len: usize) -> Option<u8> {
     matches!(len, 1 | 2 | 4 | 8).then_some(len as u8)
 }
 
-/// La memoria fisica: RAM, altrimenti il bus MMIO (un accesso da 1, 2, 4 o
-/// 8 byte; ciò che non risponde è un decode error).
+/// Physical memory: RAM, otherwise the MMIO bus (an access of 1, 2, 4 or
+/// 8 bytes; whatever does not respond is a decode error).
 pub(crate) struct Phys<'a>(pub &'a RefCell<Board>);
 
 impl PhysMemory for Phys<'_> {
@@ -469,8 +469,8 @@ impl PhysMemory for Phys<'_> {
     }
 }
 
-/// La memoria fisica per il JIT: la sola RAM, con le pagine di codice
-/// sorvegliate.
+/// Physical memory for the JIT: RAM only, with the code pages
+/// watched.
 impl SysPhys for Phys<'_> {
     fn ram_read(&mut self, pa: u64, buf: &mut [u8]) -> bool {
         self.0.borrow().ram.read(pa, buf)
@@ -493,10 +493,10 @@ impl SysPhys for Phys<'_> {
     }
 }
 
-/// L'ambiente della CPU: linea IRQ del GIC, timer generico, ICC_*.
+/// The CPU environment: GIC IRQ line, generic timer, ICC_*.
 pub(crate) struct Env<'a>(pub &'a RefCell<Board>);
 
-/// INTID "nessun interrupt" dell'interfaccia CPU.
+/// The CPU interface's "no interrupt" INTID.
 const SPURIOUS: u64 = 1023;
 
 impl CpuEnv for Env<'_> {
@@ -535,10 +535,10 @@ impl CpuEnv for Env<'_> {
             IccSreEl1 => v.gic().read_sre(),
             IccIgrpen1El1 => v.gic().read_igrpen1(),
             IccAp1r0El1 => v.gic().read_ap1r0(),
-            // Il GIC di Vetro ha solo il gruppo 1 (Linux non usa il gruppo 0).
+            // Vetro's GIC has only group 1 (Linux does not use group 0).
             IccIar0El1 | IccHppir0El1 => SPURIOUS,
             IccBpr0El1 | IccAp0r0El1 | IccIgrpen0El1 => 0,
-            // Registri di sola scrittura: la CPU non li legge mai.
+            // Write-only registers: the CPU never reads them.
             IccEoir0El1 | IccEoir1El1 | IccDirEl1 | IccSgi1rEl1 | IccAsgi1rEl1 | IccSgi0rEl1 => 0,
         }
     }
@@ -566,8 +566,8 @@ impl CpuEnv for Env<'_> {
             IccSreEl1 => v.gic_mut().write_sre(value),
             IccIgrpen1El1 => v.gic_mut().write_igrpen1(value),
             IccAp1r0El1 => v.gic_mut().write_ap1r0(value),
-            // Gruppo 0 assente; CNTFRQ/CNTPCT/CNTVCT e le letture pure non
-            // arrivano qui (la CPU rifiuta la scrittura).
+            // Group 0 absent; CNTFRQ/CNTPCT/CNTVCT and the read-only ones do not
+            // get here (the CPU rejects the write).
             _ => {}
         }
     }
@@ -629,41 +629,41 @@ mod tests {
         b
     }
 
-    /// La linea IRQ in cache segue ogni cambiamento del GIC: timer che scade
-    /// (`update_irqs`), acknowledge (lettura di ICC_IAR1), EOI (scrittura) e
-    /// accessi MMIO. Senza gli azzeramenti la CPU vedrebbe il livello vecchio.
+    /// The cached IRQ line follows every GIC change: timer expiring
+    /// (`update_irqs`), acknowledge (read of ICC_IAR1), EOI (write) and
+    /// MMIO accesses. Without the clears the CPU would see the stale level.
     #[test]
     fn linea_irq_in_cache_segue_il_gic() {
         let b = board_with_vtimer_enabled();
         let mut env = Env(&b);
         b.borrow_mut().update_irqs();
         assert!(!env.irq_line());
-        assert_eq!(b.borrow().irq_cache, Some(false), "il livello resta in cache");
+        assert_eq!(b.borrow().irq_cache, Some(false), "the level stays cached");
 
         env.write_sysreg(EnvReg::CntvCvalEl0, 100);
         env.write_sysreg(EnvReg::CntvCtlEl0, CTL_ENABLE);
         b.borrow_mut().cntpct = 100;
         b.borrow_mut().update_irqs();
-        assert!(env.irq_line(), "il timer scaduto alza la linea");
+        assert!(env.irq_line(), "the expired timer raises the line");
 
         assert_eq!(env.read_sysreg(EnvReg::IccIar1El1), u64::from(map::PPI_VTIMER));
-        assert!(!env.irq_line(), "dopo l'acknowledge l'interrupt è attivo, non più in attesa");
+        assert!(!env.irq_line(), "after the acknowledge the interrupt is active, no longer pending");
 
         env.write_sysreg(EnvReg::CntvCtlEl0, 0);
         b.borrow_mut().update_irqs();
         env.write_sysreg(EnvReg::IccEoir1El1, u64::from(map::PPI_VTIMER));
         assert!(!env.irq_line());
 
-        // Un accesso MMIO al GIC azzera la cache: un SGI di nuovo pendente.
+        // An MMIO access to the GIC clears the cache: an SGI pending again.
         let mut phys = Phys(&b);
         phys.write(map::GICR_BASE + GICR_SGI_BASE + GICR_ISENABLER0, &1u32.to_le_bytes()).unwrap();
         phys.write(map::GICR_BASE + GICR_SGI_BASE + GICR_ISPENDR0, &1u32.to_le_bytes()).unwrap();
-        assert!(env.irq_line(), "SGI 0 abilitato e reso pendente via MMIO");
+        assert!(env.irq_line(), "SGI 0 enabled and made pending via MMIO");
     }
 
-    /// Il tasto di spegnimento premuto dall'host: `gpio_input` segna le linee
-    /// da aggiornare (il ciclo di `Machine::run` chiama `update_irqs` prima
-    /// della prossima istruzione) e l'INTID 39 arriva alla CPU.
+    /// The power key pressed by the host: `gpio_input` marks the lines
+    /// to update (the `Machine::run` loop calls `update_irqs` before
+    /// the next instruction) and INTID 39 reaches the CPU.
     #[test]
     fn tasto_di_spegnimento_dall_host() {
         use vetro_platform::pl061;
@@ -682,7 +682,7 @@ mod tests {
         let mut env = Env(&b);
         assert!(!env.irq_line());
         b.borrow_mut().gpio_input(pl061::POWER_KEY_LINE, true);
-        assert!(b.borrow().irq_dirty, "le linee vanno riportate al GIC");
+        assert!(b.borrow().irq_dirty, "the lines must be brought to the GIC");
         b.borrow_mut().update_irqs();
         assert!(env.irq_line());
         assert_eq!(env.read_sysreg(EnvReg::IccIar1El1), u64::from(intid));

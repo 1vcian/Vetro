@@ -1,16 +1,16 @@
-//! Il modello dell'ispettore di rete: dai frame ai flussi, agli scambi DNS
-//! e alle richieste HTTP con corpo decodificato e timing (le fasi
-//! dell'HAR), più i nomi TLS (SNI) dei flussi cifrati.
+//! The network inspector model: from frames to flows, DNS exchanges
+//! and HTTP requests with decoded body and timing (the HAR
+//! phases), plus the TLS names (SNI) of encrypted flows.
 //!
-//! I tempi sono quelli dei frame al confine di virtio-net, cioè visti dal
-//! guest: `dns` va dalla domanda alla risposta del DNS che ha dato
-//! l'indirizzo del server (solo per la prima connessione che lo usa),
-//! `connect` dal SYN all'ACK che chiude l'handshake (solo per la prima
-//! richiesta di una connessione), `send` dal primo all'ultimo byte della
-//! richiesta, `wait` dall'ultimo byte della richiesta al primo della
-//! risposta, `receive` fino all'ultimo byte della risposta. `blocked` è ciò
-//! che resta fra l'inizio e il primo byte della richiesta. Il totale è la
-//! somma delle fasi, come chiede l'HAR.
+//! The times are those of the frames at the virtio-net boundary, i.e. as seen by the
+//! guest: `dns` goes from the query to the answer of the DNS that gave
+//! the server address (only for the first connection using it),
+//! `connect` from the SYN to the ACK that completes the handshake (only for the first
+//! request of a connection), `send` from the first to the last byte of the
+//! request, `wait` from the last byte of the request to the first of the
+//! response, `receive` up to the last byte of the response. `blocked` is what
+//! remains between the start and the first byte of the request. The total is the
+//! sum of the phases, as HAR requires.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -22,10 +22,10 @@ use super::dns::{self, DnsExchange};
 use super::flow::{Flows, TcpFlow};
 use super::http::{self, Request, Response};
 
-/// Le fasi di una richiesta, in microsecondi di tempo del guest.
+/// The phases of a request, in microseconds of guest time.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Timings {
-    /// Inizio della richiesta (domanda DNS, SYN o primo byte).
+    /// Start of the request (DNS query, SYN or first byte).
     pub started_us: u64,
     pub blocked_us: Option<u64>,
     pub dns_us: Option<u64>,
@@ -36,7 +36,7 @@ pub struct Timings {
 }
 
 impl Timings {
-    /// Somma delle fasi presenti.
+    /// Sum of the phases present.
     pub fn total_us(&self) -> u64 {
         self.blocked_us.unwrap_or(0)
             + self.dns_us.unwrap_or(0)
@@ -47,16 +47,16 @@ impl Timings {
     }
 }
 
-/// Una richiesta HTTP con la sua risposta (se arrivata).
+/// An HTTP request with its response (if it arrived).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HttpExchange {
-    /// Posizione nella lista delle richieste (ordine di inizio).
+    /// Position in the list of requests (order of start).
     pub index: usize,
-    /// Indice del flusso TCP.
+    /// Index of the TCP flow.
     pub flow: usize,
     pub client: SocketAddrV4,
     pub server: SocketAddrV4,
-    /// Nome risolto dal DNS per l'indirizzo del server, se c'è.
+    /// Name resolved by DNS for the server address, if any.
     pub resolved_name: Option<String>,
     pub url: String,
     pub request: Request,
@@ -64,23 +64,23 @@ pub struct HttpExchange {
     pub request_body: Decoded,
     pub response_body: Option<Decoded>,
     pub timings: Timings,
-    /// Prima richiesta della sua connessione.
+    /// First request of its connection.
     pub first_on_connection: bool,
-    /// Ricostruita dal testo in chiaro degli hook TLS (M7), non dai frame.
+    /// Reconstructed from the plaintext of the TLS hooks (M7), not from the frames.
     pub secure: bool,
-    /// Attribuzione (solo per le richieste HTTPS dagli hook TLS): processo
-    /// e libreria che ha cifrato.
+    /// Attribution (only for HTTPS requests from the TLS hooks): process
+    /// and library that encrypted.
     pub attribution: Option<Attribution>,
 }
 
-/// Chi ha fatto una richiesta HTTPS (dagli hook TLS).
+/// Who made an HTTPS request (from the TLS hooks).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Attribution {
     pub pid: i32,
     pub tid: i32,
     pub process: String,
     pub package: Option<String>,
-    /// Libreria TLS: `libssl` di sistema o Conscrypt.
+    /// TLS library: the system `libssl` or Conscrypt.
     pub library: String,
 }
 
@@ -89,13 +89,13 @@ impl HttpExchange {
         self.response.as_ref().map(|r| r.status)
     }
 
-    /// `Content-Type` della risposta.
+    /// `Content-Type` of the response.
     pub fn mime(&self) -> Option<&str> {
         self.response.as_ref().and_then(|r| r.headers.get("content-type"))
     }
 }
 
-/// Un flusso TLS con il nome chiesto nel ClientHello.
+/// A TLS flow with the name requested in the ClientHello.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TlsFlow {
     pub flow: usize,
@@ -104,7 +104,7 @@ pub struct TlsFlow {
     pub started_us: u64,
 }
 
-/// Una riga della lista dell'ispettore.
+/// A row of the inspector list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RequestRow {
     pub index: usize,
@@ -113,7 +113,7 @@ pub struct RequestRow {
     pub url: String,
     pub status: Option<u16>,
     pub mime: Option<String>,
-    /// Corpo decodificato della richiesta e della risposta, in byte.
+    /// Decoded body of the request and of the response, in bytes.
     pub request_bytes: usize,
     pub response_bytes: usize,
     pub request_kind: &'static str,
@@ -126,7 +126,7 @@ impl fmt::Display for RequestRow {
         let t = self.timings.total_us();
         write!(
             f,
-            "[{:6}.{:06}] #{} {} {} -> {} {} ({} B {}, risposta {} B {}) {}.{:03} ms",
+            "[{:6}.{:06}] #{} {} {} -> {} {} ({} B {}, response {} B {}) {}.{:03} ms",
             self.started_us / 1_000_000,
             self.started_us % 1_000_000,
             self.index,
@@ -144,7 +144,7 @@ impl fmt::Display for RequestRow {
     }
 }
 
-/// Tutto ciò che l'analisi ricava da una cattura.
+/// Everything the analysis derives from a capture.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NetworkAnalysis {
     pub frames: usize,
@@ -154,7 +154,7 @@ pub struct NetworkAnalysis {
     pub tls: Vec<TlsFlow>,
 }
 
-/// Il nome del server nel ClientHello TLS (estensione server_name).
+/// The server name in the TLS ClientHello (server_name extension).
 pub fn tls_sni(s: &[u8]) -> Option<String> {
     // Record handshake, ClientHello.
     if s.len() < 9 || s[0] != 0x16 || s[1] != 3 || s[5] != 1 {
@@ -191,7 +191,7 @@ fn span(flow: &TcpFlow, from_client: bool, start: usize, end: usize) -> (u64, u6
 }
 
 impl NetworkAnalysis {
-    /// Analizza una cattura (frame in ordine di tempo).
+    /// Analyses a capture (frames in time order).
     pub fn from_frames(frames: &[Frame]) -> Self {
         let flows = Flows::from_frames(frames);
         let dns = dns::exchanges(&flows.udp);
@@ -200,8 +200,8 @@ impl NetworkAnalysis {
         let mut tls = Vec::new();
         for f in &flows.tcp {
             let start = f.syn_at.unwrap_or(f.first_at);
-            // L'ultima risposta DNS con l'indirizzo del server arrivata prima
-            // della connessione.
+            // The last DNS answer with the server address that arrived before
+            // the connection.
             let lookup = dns
                 .iter()
                 .enumerate()
@@ -302,11 +302,11 @@ impl NetworkAnalysis {
         NetworkAnalysis { frames: frames.len(), flows, dns, http, tls }
     }
 
-    /// Unisce le richieste HTTPS ricostruite dal testo in chiaro degli hook
-    /// TLS (M7): ogni conversazione contribuisce le sue richieste, poi la
-    /// lista si riordina e reindicizza. Il flusso di una conversazione è
-    /// quello TCP con la stessa 4-tupla, se c'è, altrimenti un indice a
-    /// parte.
+    /// Merges the HTTPS requests reconstructed from the plaintext of the TLS
+    /// hooks (M7): every conversation contributes its requests, then the
+    /// list is re-sorted and re-indexed. The flow of a conversation is
+    /// the TCP one with the same 4-tuple, if any, otherwise a separate
+    /// index.
     pub fn merge_tls(&mut self, convs: &[super::tls::TlsConversation]) {
         for (i, c) in convs.iter().enumerate() {
             let flow = self
@@ -323,7 +323,7 @@ impl NetworkAnalysis {
         }
     }
 
-    /// La lista dell'ispettore: una riga per richiesta, in ordine di inizio.
+    /// The inspector list: one row per request, in order of start.
     pub fn requests(&self) -> Vec<RequestRow> {
         self.http
             .iter()
@@ -355,8 +355,8 @@ pub(crate) mod tests {
         s.parse().unwrap()
     }
 
-    /// Una sessione come quella del guest: DNS, handshake, GET e POST sulla
-    /// stessa connessione, chiusura.
+    /// A session like the guest's: DNS, handshake, GET and POST on the
+    /// same connection, close.
     pub(crate) fn session() -> Vec<Frame> {
         let (g, dns_s, srv) = (sa("10.0.2.15:4000"), sa("10.0.2.3:53"), sa("198.18.0.1:8080"));
         let c = sa("10.0.2.15:40000");
@@ -402,7 +402,7 @@ pub(crate) mod tests {
             x.timings,
             Timings {
                 started_us: 1_000,
-                // Da 1_000 al primo byte (2_500), meno dns e connect.
+                // From 1_000 to the first byte (2_500), minus dns and connect.
                 blocked_us: Some(1_000),
                 dns_us: Some(300),
                 connect_us: Some(200),
@@ -430,14 +430,14 @@ pub(crate) mod tests {
         let rows = a.requests();
         assert_eq!(
             rows[0].to_string(),
-            "[     0.001000] #0 GET http://api.example:8080/v1/items?id=7&q=a+b -> 200 application/json (0 B vuoto, risposta 13 B json) 2.400 ms"
+            "[     0.001000] #0 GET http://api.example:8080/v1/items?id=7&q=a+b -> 200 application/json (0 B empty, response 13 B json) 2.400 ms"
         );
-        assert_eq!(rows[1].response_kind, "vuoto");
+        assert_eq!(rows[1].response_kind, "empty");
     }
 
     #[test]
     fn sni_del_client_hello() {
-        // ClientHello minimo con server_name "Esempio.org".
+        // Minimal ClientHello with server_name "Esempio.org".
         let name = b"Esempio.org";
         let mut sni = vec![0, 0];
         let list_len = (3 + name.len()) as u16;

@@ -1,7 +1,7 @@
-//! Formati sul filo: Ethernet II, ARP, IPv4, ICMP, UDP, TCP e checksum.
+//! Wire formats: Ethernet II, ARP, IPv4, ICMP, UDP, TCP and checksums.
 //!
-//! Solo quello che serve al gateway virtuale. I parser non allocano e non
-//! vanno mai in panic su input arbitrari: un frame malformato diventa `None`.
+//! Only what the virtual gateway needs. The parsers don't allocate and never
+//! panic on arbitrary input: a malformed frame becomes `None`.
 
 use std::net::Ipv4Addr;
 
@@ -18,7 +18,7 @@ pub const IPV4_HEADER_LEN: usize = 20;
 pub const UDP_HEADER_LEN: usize = 8;
 pub const TCP_HEADER_LEN: usize = 20;
 
-/// Indirizzo MAC.
+/// MAC address.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Mac(pub [u8; 6]);
 
@@ -54,12 +54,12 @@ fn mac_at(b: &[u8], at: usize) -> Mac {
 }
 
 // ---------------------------------------------------------------------------
-// Checksum di Internet (RFC 1071)
+// Internet checksum (RFC 1071)
 // ---------------------------------------------------------------------------
 
-/// Somma a complemento a uno non ancora ripiegata.
+/// One's complement sum not yet folded.
 fn sum_words(data: &[u8], mut acc: u32) -> u32 {
-    // Pacchetti fino a 64 KiB: la somma sta in u32 senza traboccare.
+    // Packets up to 64 KiB: the sum fits in u32 without overflowing.
     let (words, rest) = data.as_chunks::<2>();
     for w in words {
         acc += u32::from(u16::from_be_bytes(*w));
@@ -77,13 +77,13 @@ fn fold(mut acc: u32) -> u16 {
     !(acc as u16)
 }
 
-/// Checksum di Internet di `data`. Su un'intestazione che contiene già il
-/// campo corretto il risultato è 0.
+/// Internet checksum of `data`. On a header that already contains the
+/// correct field the result is 0.
 pub fn checksum(data: &[u8]) -> u16 {
     fold(sum_words(data, 0))
 }
 
-/// Checksum di TCP o UDP con la pseudo-intestazione IPv4.
+/// TCP or UDP checksum with the IPv4 pseudo-header.
 pub fn transport_checksum(src: Ipv4Addr, dst: Ipv4Addr, proto: u8, segment: &[u8]) -> u16 {
     let mut acc = sum_words(&src.octets(), 0);
     acc = sum_words(&dst.octets(), acc);
@@ -96,7 +96,7 @@ pub fn transport_checksum(src: Ipv4Addr, dst: Ipv4Addr, proto: u8, segment: &[u8
 // Ethernet
 // ---------------------------------------------------------------------------
 
-/// Intestazione Ethernet II (senza VLAN: il guest non ne usa).
+/// Ethernet II header (without VLAN: the guest doesn't use it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EthHeader {
     pub dst: Mac,
@@ -175,13 +175,13 @@ pub struct Ipv4Header {
     pub proto: u8,
     pub ttl: u8,
     pub ident: u16,
-    /// Bit MF o offset diverso da zero: è un frammento.
+    /// MF bit or non-zero offset: it is a fragment.
     pub fragment: bool,
     pub checksum_ok: bool,
 }
 
-/// Analizza un pacchetto IPv4 e restituisce intestazione e payload (tagliato
-/// alla lunghezza totale dichiarata, ignorando il padding Ethernet).
+/// Parses an IPv4 packet and returns header and payload (cut
+/// to the declared total length, ignoring Ethernet padding).
 pub fn parse_ipv4(p: &[u8]) -> Option<(Ipv4Header, &[u8])> {
     if p.len() < IPV4_HEADER_LEN || p[0] >> 4 != 4 {
         return None;
@@ -204,7 +204,7 @@ pub fn parse_ipv4(p: &[u8]) -> Option<(Ipv4Header, &[u8])> {
     Some((h, &p[ihl..total]))
 }
 
-/// Costruisce un pacchetto IPv4 senza opzioni, con DF impostato.
+/// Builds an IPv4 packet without options, with DF set.
 pub fn build_ipv4(src: Ipv4Addr, dst: Ipv4Addr, proto: u8, ident: u16, payload: &[u8]) -> Vec<u8> {
     let total = IPV4_HEADER_LEN + payload.len();
     let mut p = Vec::with_capacity(total);
@@ -233,7 +233,7 @@ pub const ICMP_DEST_UNREACHABLE: u8 = 3;
 pub const ICMP_ECHO_REQUEST: u8 = 8;
 pub const ICMP_PORT_UNREACHABLE: u8 = 3;
 
-/// Messaggio ICMP con checksum calcolato.
+/// ICMP message with the checksum computed.
 pub fn build_icmp(ty: u8, code: u8, rest_of_header: [u8; 4], data: &[u8]) -> Vec<u8> {
     let mut m = Vec::with_capacity(8 + data.len());
     m.extend_from_slice(&[ty, code, 0, 0]);
@@ -264,7 +264,7 @@ pub fn parse_udp(src: Ipv4Addr, dst: Ipv4Addr, s: &[u8]) -> Option<(UdpHeader, &
         return None;
     }
     let s = &s[..len];
-    // Checksum 0 in IPv4 significa "non calcolato".
+    // Checksum 0 in IPv4 means "not computed".
     let checksum_ok = be16(s, 6) == 0 || transport_checksum(src, dst, PROTO_UDP, s) == 0;
     let h = UdpHeader { src_port: be16(s, 0), dst_port: be16(s, 2), checksum_ok };
     Some((h, &s[UDP_HEADER_LEN..]))
@@ -296,7 +296,7 @@ pub const TCP_RST: u8 = 0x04;
 pub const TCP_PSH: u8 = 0x08;
 pub const TCP_ACK: u8 = 0x10;
 
-/// Segmento TCP analizzato (intestazione e opzioni che ci interessano).
+/// Parsed TCP segment (header and the options we care about).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TcpHeader {
     pub src_port: u16,
@@ -305,7 +305,7 @@ pub struct TcpHeader {
     pub ack: u32,
     pub flags: u8,
     pub window: u16,
-    /// Opzione MSS, presente di solito solo nel SYN.
+    /// MSS option, usually present only in the SYN.
     pub mss: Option<u16>,
     pub checksum_ok: bool,
 }
@@ -356,7 +356,7 @@ pub fn parse_tcp(src: Ipv4Addr, dst: Ipv4Addr, s: &[u8]) -> Option<(TcpHeader, &
     Some((h, &s[off..]))
 }
 
-/// Segmento TCP da costruire.
+/// TCP segment to build.
 #[derive(Clone, Copy, Debug)]
 pub struct TcpOut<'a> {
     pub src: Ipv4Addr,
@@ -399,7 +399,7 @@ mod tests {
 
     #[test]
     fn checksum_rfc1071_example() {
-        // Esempio della RFC 1071, sezione 3: somma 0xddf2, checksum 0x220d.
+        // Example from RFC 1071, section 3: sum 0xddf2, checksum 0x220d.
         let data = [0x00, 0x01, 0xf2, 0x03, 0xf4, 0xf5, 0xf6, 0xf7];
         assert_eq!(checksum(&data), 0x220d);
     }
@@ -435,7 +435,7 @@ mod tests {
         assert_eq!(h.mss, Some(1400));
         assert!(h.checksum_ok);
         for n in 0..s.len() {
-            // Nessun panic su input troncati.
+            // No panic on truncated input.
             let _ = parse_tcp(a, b, &s[..n]);
             let _ = parse_ipv4(&s[..n]);
             let _ = parse_udp(a, b, &s[..n]);

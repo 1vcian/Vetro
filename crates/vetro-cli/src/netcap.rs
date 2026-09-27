@@ -1,7 +1,7 @@
-//! Cattura di rete di `vetro boot` (M7, ADR 0016): `--pcap`, `--har` e
-//! `--net-requests`. I frame vengono dal punto di cattura di virtio-net
-//! (`Machine::net_tap`), con il tempo virtuale del guest; l'analisi è
-//! quella di `vetro_analysis::net`.
+//! Network capture of `vetro boot` (M7, ADR 0016): `--pcap`, `--har` and
+//! `--net-requests`. The frames come from virtio-net's capture point
+//! (`Machine::net_tap`), with the guest's virtual time; the analysis is
+//! that of `vetro_analysis::net`.
 
 use std::io;
 use std::path::PathBuf;
@@ -11,31 +11,31 @@ use vetro_analysis::net::pcapng::{self, PcapngOptions};
 use vetro_analysis::net::{Capture, Direction, NetworkAnalysis, TlsConversation};
 use vetro_machine::{FrameDir, Machine, TappedFrame};
 
-/// Cosa esportare a fine esecuzione.
+/// What to export at the end of the run.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NetCapture {
     pub pcap: Option<PathBuf>,
     pub har: Option<PathBuf>,
-    /// Stampa su stderr la lista dell'ispettore (una riga per richiesta).
+    /// Prints the inspector's list to stderr (one line per request).
     pub requests: bool,
     capture: Capture,
-    /// Conversazioni TLS in chiaro dagli hook (M7): finiscono nell'HAR e
-    /// nella lista come le richieste in chiaro.
+    /// Decrypted TLS conversations from the hooks (M7): they end up in the HAR and
+    /// in the list like the plaintext requests.
     tls: Vec<TlsConversation>,
 }
 
 impl NetCapture {
-    /// Serve la cattura?
+    /// Is the capture needed?
     pub fn wanted(&self) -> bool {
         self.pcap.is_some() || self.har.is_some() || self.requests
     }
 
-    /// Le conversazioni TLS in chiaro da unire (dagli hook di M7).
+    /// The decrypted TLS conversations to merge (from the M7 hooks).
     pub fn set_tls(&mut self, tls: Vec<TlsConversation>) {
         self.tls = tls;
     }
 
-    /// Aggiunge i frame catturati finora dalla macchina.
+    /// Adds the frames captured so far by the machine.
     pub fn collect(&mut self, m: &mut Machine) {
         for f in m.net_tap_take() {
             self.push(f);
@@ -54,15 +54,15 @@ impl NetCapture {
         &self.capture
     }
 
-    /// Scrive i file richiesti e stampa la lista; restituisce le righe di
-    /// riepilogo per stderr.
+    /// Writes the requested files and prints the list; returns the summary
+    /// lines for stderr.
     pub fn finish(&self) -> io::Result<Vec<String>> {
         let mut out = Vec::new();
         let frames = self.capture.frames();
         if let Some(p) = &self.pcap {
             std::fs::write(p, pcapng::write(frames, &PcapngOptions::default()))
                 .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", p.display())))?;
-            out.push(format!("pcapng: {} frame in {}", frames.len(), p.display()));
+            out.push(format!("pcapng: {} frames in {}", frames.len(), p.display()));
         }
         if self.har.is_some() || self.requests {
             let mut a = NetworkAnalysis::from_frames(frames);
@@ -75,15 +75,15 @@ impl NetCapture {
             if let Some(p) = &self.har {
                 std::fs::write(p, a.to_har(&HarOptions::default()))
                     .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", p.display())))?;
-                out.push(format!("har: {} richieste in {}", a.http.len(), p.display()));
+                out.push(format!("har: {} requests in {}", a.http.len(), p.display()));
             }
         }
         Ok(out)
     }
 }
 
-/// Riscrive `--pcap FILE` e `--har FILE` (valore separato) come
-/// `--pcap=FILE`, la forma delle altre opzioni di `boot`.
+/// Rewrites `--pcap FILE` and `--har FILE` (separate value) as
+/// `--pcap=FILE`, the form of the other `boot` options.
 pub fn join_values(args: &[String]) -> Vec<String> {
     let mut out = Vec::with_capacity(args.len());
     let mut it = args.iter();

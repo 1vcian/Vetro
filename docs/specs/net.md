@@ -1,152 +1,153 @@
 # Spec — vetro-net
 
-## Perimetro
-Stack di rete lato host: la parte "dall'altra parte del cavo" di virtio-net.
-Gateway virtuale IPv4 come la rete user di QEMU, TCP e UDP terminati lato
-host (come slirp), backend a trait (`Upstream`) con sinkhole e relay,
-registro degli eventi per l'analisi. Scelte in ADR 0007.
+## Scope
+Host-side network stack: the "other end of the cable" of virtio-net.
+Virtual IPv4 gateway like QEMU's user network, TCP and UDP terminated on the
+host (like slirp), trait-based backend (`Upstream`) with sinkhole and relay,
+event log for analysis. Choices in ADR 0007.
 
-## Rete virtuale (valori predefiniti di `NetConfig`)
+## Virtual network (`NetConfig` defaults)
 | | |
 |---|---|
 | Guest (via DHCP) | 10.0.2.15/24 |
 | Gateway | 10.0.2.2, MAC 52:55:0a:00:02:02 |
-| DNS | 10.0.2.3 (stesso MAC) |
-| MTU | 1500, MSS annunciato 1460 |
-| Lease DHCP | 86400 s (T1 metà, T2 7/8) |
+| DNS | 10.0.2.3 (same MAC) |
+| MTU | 1500, advertised MSS 1460 |
+| DHCP lease | 86400 s (T1 half, T2 7/8) |
 
-- **ARP**: risposte solo per gateway e DNS; mai per l'indirizzo del guest
-  (i probe ARP del client DHCP non devono vedere conflitti).
-- **DHCP** (RFC 2131): DISCOVER→OFFER, REQUEST→ACK (NAK se l'indirizzo non
-  è quello del guest; silenzio se il server id è di un altro server),
-  INFORM→ACK; RELEASE e DECLINE solo registrati. Risposte ≥ 300 byte, in
-  broadcast IP se il client non ha ancora `ciaddr`.
-- **ICMP**: echo verso gateway e DNS sempre risposto; verso l'esterno lo
-  decide `Upstream::ping`. UDP verso porte del gateway senza servizio: ICMP
+- **ARP**: replies only for gateway and DNS; never for the guest's address
+  (the DHCP client's ARP probes must not see conflicts).
+- **DHCP** (RFC 2131): DISCOVER→OFFER, REQUEST→ACK (NAK if the address is
+  not the guest's; silence if the server id belongs to another server),
+  INFORM→ACK; RELEASE and DECLINE only logged. Replies ≥ 300 bytes, as IP
+  broadcast if the client does not have `ciaddr` yet.
+- **ICMP**: echo to gateway and DNS always answered; towards the outside
+  `Upstream::ping` decides. UDP to gateway ports with no service: ICMP
   port unreachable.
-- **UDP**: ogni quadrupla è un flusso con un `ConnId`; chiuso dopo
-  `udp_idle_timeout_us` (60 s) di inattività. Il DNS è un flusso UDP verso
-  10.0.2.3:53, risposto dall'upstream; lo stack ne decodifica domande e
-  risposte (record A) per il registro.
-- **TCP**: ogni SYN crea una connessione, aperta verso l'upstream; il
-  SYN-ACK parte solo quando l'upstream risponde `Connected` (RST se
-  `Refused` o dopo `tcp_connect_timeout_us`, 75 s). Dettagli del TCP in
-  ADR 0007 e in testa a `src/tcp.rs`.
-- **Non supportato** (contato in `Stats`, mai in panic): IPv6 (il guest non
-  riceve Router Advertisement e resta con il solo link-local; il sinkhole
-  risponde alle domande AAAA senza record, così le app ripiegano su IPv4),
-  frammenti IPv4 (Linux usa DF e PMTU; il DNS su UDP sta sotto l'MTU),
-  multicast e broadcast diversi da DHCP, VLAN, opzioni TCP diverse da MSS.
-- Con `verify_checksums` (predefinito) i pacchetti con checksum errato si
-  scartano: la piattaforma non deve offrire `VIRTIO_NET_F_CSUM` al guest, o
-  deve completare i checksum parziali prima di chiamare `receive`.
+- **UDP**: every 4-tuple is a flow with a `ConnId`; closed after
+  `udp_idle_timeout_us` (60 s) of inactivity. DNS is a UDP flow to
+  10.0.2.3:53, answered by the upstream; the stack decodes its questions and
+  answers (A records) for the log.
+- **TCP**: every SYN creates a connection, opened towards the upstream; the
+  SYN-ACK is sent only when the upstream answers `Connected` (RST if
+  `Refused` or after `tcp_connect_timeout_us`, 75 s). TCP details in
+  ADR 0007 and at the top of `src/tcp.rs`.
+- **Not supported** (counted in `Stats`, never a panic): IPv6 (the guest
+  receives no Router Advertisement and stays with link-local only; the
+  sinkhole answers AAAA questions with no records, so apps fall back to IPv4),
+  IPv4 fragments (Linux uses DF and PMTU; DNS over UDP stays below the MTU),
+  multicast and broadcast other than DHCP, VLAN, TCP options other than MSS.
+- With `verify_checksums` (default) packets with a wrong checksum are
+  dropped: the platform must not offer `VIRTIO_NET_F_CSUM` to the guest, or
+  must complete partial checksums before calling `receive`.
 
-## Interfaccia pubblica
+## Public interface
 - `Stack<U: Upstream>`:
   - `new(NetConfig, U)`;
-  - `receive(now, &frame)`: frame Ethernet trasmesso dal guest (esegue anche
-    un `poll`);
-  - `poll(now)`: timer (ritrasmissioni, TIME-WAIT, attese, flussi UDP) e
-    scambi con l'upstream;
-  - `pop_frame() -> Option<Vec<u8>>`: prossimo frame per il guest;
-  - `next_deadline() -> Option<VirtualTime>`: entro quando richiamare `poll`
-    (l'upstream asincrono richiede un `poll` anche quando ha dati nuovi);
+  - `receive(now, &frame)`: Ethernet frame transmitted by the guest (also
+    runs a `poll`);
+  - `poll(now)`: timers (retransmissions, TIME-WAIT, waits, UDP flows) and
+    exchanges with the upstream;
+  - `pop_frame() -> Option<Vec<u8>>`: next frame for the guest;
+  - `next_deadline() -> Option<VirtualTime>`: by when to call `poll` again
+    (an asynchronous upstream also needs a `poll` when it has new data);
   - `events()`, `take_events()`, `stats()`, `upstream()`, `upstream_mut()`.
-- `VirtualTime`: microsecondi di tempo virtuale, non decrescente, fornito da
-  chi chiama. `ConnId`: `u64` unico per TCP e UDP, crescente da 1.
-  `Flow { guest, remote }`: quadrupla vista dal guest.
-- `trait Upstream` (sans-I/O, mai richiamato dallo stack in modo
-  rientrante): `tcp_open`, `tcp_status` (`Pending`/`Connected`/`Refused`),
-  `tcp_write` (restituisce i byte accettati: contropressione),
-  `tcp_read` (`Data(n)`/`WouldBlock`/`Eof`/`Reset`), `tcp_shutdown` (FIN del
-  guest), `tcp_close(reset)` (ultima chiamata per quell'id), `udp_send`,
+- `VirtualTime`: microseconds of virtual time, non-decreasing, supplied by
+  the caller. `ConnId`: `u64` unique across TCP and UDP, increasing from 1.
+  `Flow { guest, remote }`: 4-tuple as seen by the guest.
+- `trait Upstream` (sans-I/O, never called by the stack reentrantly):
+  `tcp_open`, `tcp_status` (`Pending`/`Connected`/`Refused`),
+  `tcp_write` (returns the bytes accepted: backpressure),
+  `tcp_read` (`Data(n)`/`WouldBlock`/`Eof`/`Reset`), `tcp_shutdown` (guest
+  FIN), `tcp_close(reset)` (last call for that id), `udp_send`,
   `udp_recv`, `udp_close`, `ping`.
-- `Sinkhole` (`SinkholeConfig`): accetta tutto salvo `refused_ports`;
-  risposte `TcpReply { on_connect, on_data, close_after_reply }` per porta
-  (predefinita: HTTP 200 vuoto sulla 80); chiude quando il guest chiude;
-  DNS A → indirizzi finti in 198.18.0.0/15 in ordine di prima domanda
-  (198.18.0.1, .2, …), nomi in minuscolo; registra connessioni
-  (`TcpRecord`: nome risolto, byte del guest, chiusura), flussi UDP e
-  domande DNS.
-- `Relay` (trasporto non bloccante di `RelayMessage`), `RelayUpstream<R>`
-  (adattatore `Upstream` → messaggi), `MemoryRelay` (relay di prova: echo
-  TCP/UDP, DNS da tabella). Codifica sul filo e controllo di flusso
-  host↔relay: M7.
-- Moduli di formato pubblici (`wire`, `dhcp`, `dns`) per test e strumenti.
-- Inoltro di porte (host → guest, sezione sotto): `host_connect`,
+- `Sinkhole` (`SinkholeConfig`): accepts everything except `refused_ports`;
+  `TcpReply { on_connect, on_data, close_after_reply }` responses per port
+  (default: empty HTTP 200 on port 80); closes when the guest closes;
+  DNS A → fake addresses in 198.18.0.0/15 in order of first question
+  (198.18.0.1, .2, …), names lowercased; logs connections
+  (`TcpRecord`: resolved name, guest bytes, close), UDP flows and
+  DNS questions.
+- `Relay` (non-blocking transport of `RelayMessage`), `RelayUpstream<R>`
+  (`Upstream` → messages adapter), `MemoryRelay` (test relay: TCP/UDP
+  echo, DNS from a table). Wire encoding and host↔relay flow control:
+  M7.
+- Public format modules (`wire`, `dhcp`, `dns`) for tests and tools.
+- Port forwarding (host → guest, section below): `host_connect`,
   `host_send`, `host_recv`, `host_shutdown`, `host_abort`, `host_conn`
-  (`HostConnInfo`, `HostConnState`), `host_conns`, `host_release`; modulo
+  (`HostConnInfo`, `HostConnState`), `host_conns`, `host_release`; module
   `hostfwd` (`HOST_BUFFER`, `FIRST_EPHEMERAL_PORT`).
 
-## Inoltro di porte: connessioni dall'host verso il guest
-Come `-netdev user,hostfwd=tcp:…` di QEMU: l'host apre una connessione TCP
-verso un servizio del guest (per esempio adbd sulla 5555). Lo stack fa da
-client TCP verso il guest; nessun socket vero nel core, tutto sincrono.
+## Port forwarding: connections from the host to the guest
+Like QEMU's `-netdev user,hostfwd=tcp:…`: the host opens a TCP connection
+to a guest service (for example adbd on 5555). The stack acts as a TCP
+client towards the guest; no real socket in the core, everything synchronous.
 
-- `host_connect(porta) -> Option<ConnId>`: SYN da **10.0.2.2** (il gateway,
-  come slirp traduce le connessioni da localhost) verso
-  `guest_ip:porta`, da una porta effimera deterministica (49152, 49153, …,
-  saltando le quadruple in uso). L'id è dello stesso contatore delle
-  connessioni del guest. Il SYN parte al **prossimo `poll`**: tutte le
-  azioni dell'host hanno effetto lì.
-- Dal SYN-ACK la connessione è la stessa macchina a stati di `tcp.rs` (in
-  più solo lo stato `SynSent`: SYN con MSS 1460 e finestra 65535,
-  ritrasmesso con l'RTO della RFC 6298 e il raddoppio; rinuncia dopo
-  `tcp_connect_timeout_us` senza RST; RST|ACK valido del guest = `Refused`;
-  ACK sbagliato = RST; apertura simultanea non gestita). Al posto
-  dell'upstream c'è il lato host (`HostSide`): due code di byte.
-- `host_send` accetta al più `HOST_BUFFER` (256 KiB) in coda e restituisce
-  quanti byte ha preso (contropressione verso l'host); lo stack li manda
-  al ritmo della finestra del guest. `host_recv` legge i byte del guest:
-  anche questa coda tiene al più 256 KiB, oltre i quali la finestra
-  annunciata al guest si chiude finché l'host non legge (l'aggiornamento
-  di finestra parte al `poll` successivo).
-- `host_shutdown`: FIN dopo i byte in coda (poi TIME-WAIT di 4 s se il
-  guest chiude dopo). `host_abort`: RST al guest (`RemoteReset`); prima
-  del SYN, chiusura senza pacchetti. `host_release`: dimentica una
-  connessione chiusa (se è viva la interrompe prima).
+- `host_connect(port) -> Option<ConnId>`: SYN from **10.0.2.2** (the gateway,
+  the way slirp translates connections from localhost) to
+  `guest_ip:port`, from a deterministic ephemeral port (49152, 49153, …,
+  skipping 4-tuples in use). The id comes from the same counter as the
+  guest's connections. The SYN goes out at the **next `poll`**: all host
+  actions take effect there.
+- From the SYN-ACK on, the connection is the same state machine as `tcp.rs`
+  (the only addition is the `SynSent` state: SYN with MSS 1460 and window
+  65535, retransmitted with the RFC 6298 RTO and doubling; gives up after
+  `tcp_connect_timeout_us` without RST; valid RST|ACK from the guest =
+  `Refused`; wrong ACK = RST; simultaneous open not handled). In place of
+  the upstream there is the host side (`HostSide`): two byte queues.
+- `host_send` accepts at most `HOST_BUFFER` (256 KiB) in the queue and
+  returns how many bytes it took (backpressure towards the host); the stack
+  sends them at the pace of the guest's window. `host_recv` reads the guest's
+  bytes: this queue also holds at most 256 KiB, beyond which the window
+  advertised to the guest closes until the host reads (the window update
+  goes out at the next `poll`).
+- `host_shutdown`: FIN after the queued bytes (then a 4 s TIME-WAIT if the
+  guest closes afterwards). `host_abort`: RST to the guest (`RemoteReset`);
+  before the SYN, close without packets. `host_release`: forgets a
+  closed connection (if it is alive, it aborts it first).
 - `host_conn(id)`: `state` (`Connecting`, `Open`, `Closed(CloseReason)`:
   `Normal`, `Refused`, `GuestReset`, `RemoteReset`, `Timeout`),
-  `readable`, `writable`, `guest_eof` (FIN del guest e tutto letto),
+  `readable`, `writable`, `guest_eof` (guest FIN and everything read),
   `unsent`, `flow`.
-- Registro: `TcpConnect { id, flow }` al posto di `TcpOpen` (riga
-  `tcp 1 dall'host 10.0.2.2:49152 -> 10.0.2.15:5555`), poi gli stessi
-  `TcpEstablished`, `TcpData` (`ToRemote` = byte del guest verso l'host) e
+- Log: `TcpConnect { id, flow }` in place of `TcpOpen` (line
+  `tcp 1 from host 10.0.2.2:49152 -> 10.0.2.15:5555`), then the same
+  `TcpEstablished`, `TcpData` (`ToRemote` = guest bytes towards the host) and
   `TcpClosed`.
-- Serve il MAC del guest, imparato dal suo primo frame (in pratica il
-  DHCP): prima, i segmenti andrebbero in broadcast e Linux li scarterebbe.
-- Determinismo: stesse chiamate agli stessi istanti → stessi frame e
-  registro. Le chiamate dell'host sono **ingressi**: in `vetro-machine`
-  passano da `Machine::input` con `Input::HostNet` (che forza un `poll`
-  prima della prossima istruzione) e si registrano con il numero di
-  istruzione, come i byte della console (M10, ADR 0019).
+- The guest's MAC is needed, learned from its first frame (in practice
+  DHCP): before that, segments would go out as broadcast and Linux would
+  drop them.
+- Determinism: same calls at the same instants → same frames and log. Host
+  calls are **inputs**: in `vetro-machine` they go through `Machine::input`
+  with `Input::HostNet` (which forces a `poll` before the next instruction)
+  and are recorded with the instruction number, like console bytes (M10,
+  ADR 0019).
 
-Piattaforme:
-- nativo: `vetro boot --hostfwd=tcp:[ADDR]:PORTA-[10.0.2.15]:PORTA_GUEST`
-  (ripetibile; senza indirizzo ascolta su 127.0.0.1; porta 0 = scelta dal
-  sistema, stampata su stderr come `vetro: hostfwd tcp 127.0.0.1:PORTA ->
-  10.0.2.15:5555`). I socket veri sono in `vetro-cli` (`src/hostfwd.rs`):
-  un thread accetta, uno per connessione legge (con un limite di 1 MiB
-  letti e non ancora presi dallo stack), uno scrive (idem, 1 MiB); tutto
-  entra nella macchina **tra un quanto e l'altro** (2 milioni di
-  istruzioni) nel ciclo di `vetro boot`, che tocca lo stack solo se c'è
-  qualcosa da fare (senza connessioni `--hostfwd` non cambia
-  l'esecuzione). Chiusure verso il client come slirp: FIN dopo `Normal` e
-  `Refused` (nessuno in ascolto: il client vede subito la fine del
-  flusso), RST (SO_LINGER 0) dopo un reset o un timeout; un RST del client
-  diventa `host_abort`.
-- browser: `vetro_net_*` di vetro-wasm (ABI 5, `docs/specs/wasm.md`) e
+Platforms:
+- native: `vetro boot --hostfwd=tcp:[ADDR]:PORT-[10.0.2.15]:GUEST_PORT`
+  (repeatable; without an address it listens on 127.0.0.1; port 0 = chosen
+  by the system, printed on stderr as `vetro: hostfwd tcp 127.0.0.1:PORT ->
+  10.0.2.15:5555`). The real sockets are in `vetro-cli` (`src/hostfwd.rs`):
+  one thread accepts, one per connection reads (with a limit of 1 MiB read
+  and not yet taken by the stack), one writes (likewise, 1 MiB); everything
+  enters the machine **between one quantum and the next** (2 million
+  instructions) in the `vetro boot` loop, which touches the stack only if
+  there is something to do (without `--hostfwd` connections execution does
+  not change). Closes towards the client like slirp: FIN after `Normal` and
+  `Refused` (nobody listening: the client sees the end of the stream
+  immediately), RST (SO_LINGER 0) after a reset or a timeout; an RST from the
+  client becomes `host_abort`.
+- browser: vetro-wasm's `vetro_net_*` (ABI 5, `docs/specs/wasm.md`) and
   `GuestSocket` in `web/node/vetro.mjs`.
 
-## Come adb userà l'inoltro (M5/M6)
-adbd nel guest Android ascolta su TCP 5555 (`service.adb.tcp.port=5555`,
-`docs/research/m5-immagini-android.md`).
-- Nativo: `vetro boot … --hostfwd=tcp:127.0.0.1:5555-:5555`, poi
-  `adb connect 127.0.0.1:5555` con l'adb vero dell'host: il protocollo ADB
-  (CNXN, AUTH con la chiave RSA di `~/.android/adbkey`, OPEN/WRTE/OKAY/
-  CLSE) passa trasparente sulla connessione inoltrata. Come con QEMU
-  (`hostfwd=tcp::5555-:5555`); l'emulatore di Android Studio usa invece
-  la coppia 5554/5555 sulla console, che qui non c'è.
+## How adb will use forwarding (M5/M6)
+adbd in the Android guest listens on TCP 5555 (`service.adb.tcp.port=5555`,
+`docs/research/m5-android-images.md`).
+- Native: `vetro boot … --hostfwd=tcp:127.0.0.1:5555-:5555`, then
+  `adb connect 127.0.0.1:5555` with the host's real adb: the ADB protocol
+  (CNXN, AUTH with the RSA key from `~/.android/adbkey`, OPEN/WRTE/OKAY/
+  CLSE) passes transparently over the forwarded connection. As with QEMU
+  (`hostfwd=tcp::5555-:5555`); the Android Studio emulator instead uses
+  the 5554/5555 pair for the console, which does not exist here.
 - Browser (done, ADR 0028): the JS ADB client in `web/node/adb.mjs` over
   `GuestSocket` (`connectGuest(5555)`): 24-byte messages + data,
   `shell,v2,raw:` (stdout, stderr, exit code), `sync:` for push, install =
@@ -159,124 +160,123 @@ adbd nel guest Android ascolta su TCP 5555 (`service.adb.tcp.port=5555`,
   (`tests/web/adb-tcp.mjs`), against adbd in the guest from Node
   (`tests/web/android.mjs`) and in the app (`tests/web/android-chrome.mjs`).
 
-## Registro degli eventi (`NetEvent { at, kind }`)
+## Event log (`NetEvent { at, kind }`)
 `Dhcp`, `IcmpEcho`, `TcpOpen`, `TcpEstablished`,
-`TcpData { dir, len }` (solo byte nuovi: dal guest quando entrano in ordine,
-verso il guest quando lo stack li prende dall'upstream), `TcpClosed { reason,
-bytes_to_remote, bytes_to_guest }`, `UdpOpen`, `UdpData`, `UdpClosed`,
-`DnsQuery { txid, name, qtype }`, `DnsAnswer { rcode, addrs }`,
-`TcpConnect` (connessione aperta dall'host, inoltro di porte). Il contenuto
-dei byte non è nel registro: lo tiene l'upstream (il sinkhole lo conserva).
+`TcpData { dir, len }` (new bytes only: from the guest when they arrive in
+order, towards the guest when the stack takes them from the upstream),
+`TcpClosed { reason, bytes_to_remote, bytes_to_guest }`, `UdpOpen`, `UdpData`,
+`UdpClosed`, `DnsQuery { txid, name, qtype }`, `DnsAnswer { rcode, addrs }`,
+`TcpConnect` (connection opened by the host, port forwarding). The byte
+contents are not in the log: the upstream holds them (the sinkhole keeps them).
 
-`NetEvent`, `Flow` e `Mac` hanno `Display`: una riga per evento con il
-tempo virtuale in secondi (`[     1.500000] tcp 3 syn 10.0.2.15:40000 ->
-198.18.0.1:80`), usata da `vetro boot --net-events`.
+`NetEvent`, `Flow` and `Mac` implement `Display`: one line per event with the
+virtual time in seconds (`[     1.500000] tcp 3 syn 10.0.2.15:40000 ->
+198.18.0.1:80`), used by `vetro boot --net-events`.
 
-## Collegamento alla macchina (`vetro-machine`, M5)
+## Wiring into the machine (`vetro-machine`, M5)
 - `Devices::net: Option<NetSetup>` (`mac`, `NetConfig`, `SinkholeConfig`);
-  il default ha la rete, montata dopo GPU, tastiera e tablet (slot 28, come
-  il quarto `-device` di QEMU). MAC del guest predefinito
-  `52:54:00:12:34:56`, quello che QEMU dà al primo `virtio-net-device`.
-- Backend di virtio-net: `NetLink` (`send` → `Stack::receive`, `recv` →
-  `Stack::pop_frame`). virtio-net offre solo MAC, STATUS e MRG_RXBUF: niente
-  `VIRTIO_NET_F_CSUM`, quindi il guest calcola tutti i checksum.
-- Tempo: `VirtualTime` = CNTPCT della macchina in microsecondi (per
-  difetto; la scadenza `next_deadline` diventa il primo CNTPCT che la
-  raggiunge). Nessun orologio dell'host. In `Machine::sync_irqs`, prima di
-  servire i dispositivi, lo stack riceve l'istante corrente; alla sua
-  scadenza si chiama `poll` e, se ci sono frame, virtio-net viene servito.
-  La scadenza dello stack entra nella prossima scadenza della macchina
-  insieme a quella del timer: limita i blocchi del JIT e fa da sveglia per
-  la WFI (il guest inattivo salta direttamente lì). Stesse istruzioni con e
-  senza JIT.
-- Accesso dell'host: `Machine::input(Input::HostNet(..))` e
-  `Input::NetFrame` (ingressi registrati, ADR 0019),
-  `Machine::net(|stack| …)` (mutabile, forza un `poll`; durante una
-  registrazione è un evento opaco che ferma il replay) e
-  `Machine::net_view(|stack| …)` (sola lettura, non cambia l'esecuzione:
-  registro, statistiche, `upstream().tcp_connections()`).
-- CLI: `vetro boot` ha la rete di default; `--no-net` la toglie, `--net` la
-  rimette anche con `--no-devices`, `--net-events` stampa il registro su
+  the default has the network, mounted after GPU, keyboard and tablet (slot
+  28, like QEMU's fourth `-device`). Default guest MAC
+  `52:54:00:12:34:56`, the one QEMU gives to the first `virtio-net-device`.
+- virtio-net backend: `NetLink` (`send` → `Stack::receive`, `recv` →
+  `Stack::pop_frame`). virtio-net offers only MAC, STATUS and MRG_RXBUF: no
+  `VIRTIO_NET_F_CSUM`, so the guest computes all checksums.
+- Time: `VirtualTime` = the machine's CNTPCT in microseconds (rounded
+  down; the `next_deadline` deadline becomes the first CNTPCT that reaches
+  it). No host clock. In `Machine::sync_irqs`, before servicing the devices,
+  the stack receives the current instant; at its deadline `poll` is called
+  and, if there are frames, virtio-net is serviced. The stack's deadline
+  enters the machine's next deadline together with the timer's: it bounds
+  the JIT blocks and acts as the wake-up for WFI (an idle guest jumps
+  straight there). Same instructions with and without the JIT.
+- Host access: `Machine::input(Input::HostNet(..))` and
+  `Input::NetFrame` (recorded inputs, ADR 0019),
+  `Machine::net(|stack| …)` (mutable, forces a `poll`; during a
+  recording it is an opaque event that stops replay) and
+  `Machine::net_view(|stack| …)` (read-only, does not change execution:
+  log, statistics, `upstream().tcp_connections()`).
+- CLI: `vetro boot` has the network by default; `--no-net` removes it, `--net`
+  puts it back even with `--no-devices`, `--net-events` prints the log on
   stderr (`vetro-net: …`).
-- Il relay (M7) sarà un altro upstream dietro lo stesso `NetLink`.
-- Cattura (M7, ADR 0016): `Machine::net_tap(on)` e `net_tap_take()`
-  copiano i frame Ethernet che passano da `NetLink` nei due versi, con
-  l'istante virtuale; solo osservazione (non cambia l'esecuzione, fuori
-  dagli snapshot). L'analisi è in `vetro-analysis` (`docs/specs/analysis.md`).
+- The relay (M7) will be another upstream behind the same `NetLink`.
+- Capture (M7, ADR 0016): `Machine::net_tap(on)` and `net_tap_take()`
+  copy the Ethernet frames passing through `NetLink` in both directions, with
+  the virtual instant; observation only (does not change execution, outside
+  snapshots). The analysis is in `vetro-analysis` (`docs/specs/analysis.md`).
 
-## Invarianti
-- Compila in `wasm32-unknown-unknown`; nessuna dipendenza a runtime; niente
-  `std::time`, thread, I/O, `HashMap` (le tabelle sono `BTreeMap`, l'ordine
-  dei frame prodotti è per `ConnId`).
-- Determinismo: stesse chiamate con stessi argomenti → stessi frame e stesso
-  registro. Gli ISN TCP derivano da `NetConfig::seed` e dal `ConnId`
-  (SplitMix64); gli ident IP sono un contatore.
-- Nessun panic su frame arbitrari (i parser restituiscono `None`).
-- Ogni pacchetto prodotto ha checksum corretti, DF, TTL 64.
+## Invariants
+- Compiles to `wasm32-unknown-unknown`; no runtime dependencies; no
+  `std::time`, threads, I/O, `HashMap` (tables are `BTreeMap`, the order
+  of produced frames is by `ConnId`).
+- Determinism: same calls with same arguments → same frames and same
+  log. TCP ISNs derive from `NetConfig::seed` and the `ConnId`
+  (SplitMix64); IP idents are a counter.
+- No panic on arbitrary frames (parsers return `None`).
+- Every produced packet has correct checksums, DF, TTL 64.
 
-## Test
-`cargo test -p vetro-net`: finto guest che costruisce i frame (DHCP con il
-codificatore di smoltcp, ARP, ICMP, DNS, UDP, TCP) e verifica risposte e
-registro; ogni frame prodotto è validato da `smoltcp::wire` e da checksum
-ricalcolati nel test. TCP: handshake, SYN e SYN-ACK ritrasmessi,
-ritrasmissione con raddoppio, esaurimento con RST, finestra zero e sonde,
-contropressione dell'upstream, MSS e finestra del guest rispettati, fuori
-ordine e sovrapposizioni, RST (validi e fuori finestra), ACK di sfida,
-chiusure da entrambi i lati con TIME-WAIT, trasferimento contemporaneo nei
-due versi con il 20% di frame persi, determinismo con lo stesso seme.
+## Tests
+`cargo test -p vetro-net`: a fake guest that builds frames (DHCP with
+smoltcp's encoder, ARP, ICMP, DNS, UDP, TCP) and checks replies and
+log; every produced frame is validated by `smoltcp::wire` and by checksums
+recomputed in the test. TCP: handshake, retransmitted SYN and SYN-ACK,
+retransmission with doubling, exhaustion with RST, zero window and probes,
+upstream backpressure, guest MSS and window respected, out of
+order and overlaps, RST (valid and out of window), challenge ACK,
+closes from both sides with TIME-WAIT, simultaneous transfer in
+both directions with 20% of frames lost, determinism with the same seed.
 
-Con il kernel guest Linux 6.18 (`cargo test --release -p vetro-boot-tests`,
-BusyBox nell'initramfs, `udhcpc` con `/usr/share/udhcpc/default.script`):
-- `vetro.rs` (autotest, confrontato con QEMU `-netdev user`): lease DHCP
-  (10.0.2.15/24, router 10.0.2.2, DNS 10.0.2.3, 86400 s), tabella delle
-  rotte, `resolv.conf`, ping a gateway e DNS: stesso log;
-- `net.rs` (solo Vetro, perché QEMU manda DNS e TCP sulla rete vera):
-  `nslookup` riceve 198.18.0.1; `wget` fa una GET breve, una GET da 300 KB
-  (somma `cksum` uguale a quella dell'host) e una POST da 108 KB (corpo
-  ritrovato byte per byte nel sinkhole); ping al gateway e a un indirizzo
-  finto; l'host verifica DHCP, domande e risposte DNS, connessioni con nome
-  risolto, byte nel registro uguali a quelli del sinkhole, chiusure
-  `Normal`, nessun checksum errato; due esecuzioni danno stesso log, stesse
-  istruzioni, stesso registro;
+With the Linux 6.18 guest kernel (`cargo test --release -p vetro-boot-tests`,
+BusyBox in the initramfs, `udhcpc` with `/usr/share/udhcpc/default.script`):
+- `vetro.rs` (self-test, compared with QEMU `-netdev user`): DHCP lease
+  (10.0.2.15/24, router 10.0.2.2, DNS 10.0.2.3, 86400 s), routing
+  table, `resolv.conf`, ping to gateway and DNS: same log;
+- `net.rs` (Vetro only, because QEMU sends DNS and TCP to the real network):
+  `nslookup` receives 198.18.0.1; `wget` does a short GET, a 300 KB GET
+  (`cksum` sum equal to the host's) and a 108 KB POST (body found again
+  byte for byte in the sinkhole); ping to the gateway and to a fake
+  address; the host checks DHCP, DNS questions and answers, connections with
+  resolved name, bytes in the log equal to those in the sinkhole, `Normal`
+  closes, no wrong checksums; two runs give the same log, same
+  instructions, same event log;
 - `crates/vetro-cli/tests/boot_net.rs`: `vetro boot --no-devices --net
-  --net-events`, DHCP e una GET, eventi letti da stderr.
+  --net-events`, DHCP and a GET, events read from stderr.
 
-Inoltro di porte:
-- `crates/vetro-net/tests/hostfwd.rs` (finto guest server): SYN dal
-  gateway con la prima porta effimera, handshake e registro, eco di 200 KB
-  oltre finestra e coda, contropressione in entrambi i versi (finestra
-  chiusa e riaperta), chiusura dall'host con TIME-WAIT e dal guest, RST|ACK
-  del guest (`Refused`, e un RST con ACK sbagliato ignorato), SYN
-  ritrasmesso e timeout a 75 s, reset dall'host e dal guest, rilascio,
-  determinismo;
-- `tests/boot/tests/hostfwd.rs` (kernel M3, API diretta tra un quanto e
-  l'altro): `nc -n -v -l -p 5555 -e cat` nel guest, riga `connect to
-  10.0.2.15:5555 from 10.0.2.2:…`, eco breve e di 200 KB, chiusura pulita,
-  porta senza servizio (`Refused`), servizio che scrive e chiude per primo,
-  reset dall'host (`cat: read error: Connection reset by peer` nel guest) e
-  dal guest (servizio che esce con dati non letti: `GuestReset`), due
-  esecuzioni uguali. Confronto con QEMU
-  (`-netdev user,hostfwd=tcp:127.0.0.1:PORTA-:5555`, stesso `nc`): stesse
-  righe `listening on 0.0.0.0:5555 ...` e `connect to 10.0.2.15:5555 from
-  10.0.2.2:PORTA (10.0.2.2:PORTA)` (porta sorgente a parte) e stessa eco.
-  Su macOS il client gira dentro il container di QEMU (`docker exec`,
-  `VETRO_ORACLE_NAME`), perché le connessioni che Docker inoltra
-  arriverebbero dal suo gateway (172.17.0.1) e non da localhost;
+Port forwarding:
+- `crates/vetro-net/tests/hostfwd.rs` (fake guest server): SYN from the
+  gateway with the first ephemeral port, handshake and log, 200 KB echo
+  beyond window and queue, backpressure in both directions (window
+  closed and reopened), close from the host with TIME-WAIT and from the guest,
+  RST|ACK from the guest (`Refused`, and an RST with a wrong ACK ignored),
+  retransmitted SYN and timeout at 75 s, reset from the host and from the
+  guest, release, determinism;
+- `tests/boot/tests/hostfwd.rs` (M3 kernel, direct API between one quantum
+  and the next): `nc -n -v -l -p 5555 -e cat` in the guest, line `connect to
+  10.0.2.15:5555 from 10.0.2.2:…`, short and 200 KB echo, clean close,
+  port with no service (`Refused`), service that writes and closes first,
+  reset from the host (`cat: read error: Connection reset by peer` in the
+  guest) and from the guest (service that exits with unread data:
+  `GuestReset`), two identical runs. Comparison with QEMU
+  (`-netdev user,hostfwd=tcp:127.0.0.1:PORT-:5555`, same `nc`): same
+  lines `listening on 0.0.0.0:5555 ...` and `connect to 10.0.2.15:5555 from
+  10.0.2.2:PORT (10.0.2.2:PORT)` (source port aside) and same echo.
+  On macOS the client runs inside the QEMU container (`docker exec`,
+  `VETRO_ORACLE_NAME`), because connections forwarded by Docker
+  would come from its gateway (172.17.0.1) and not from localhost;
 - `crates/vetro-cli/tests/boot_hostfwd.rs`: `vetro boot --hostfwd=
-  tcp:127.0.0.1:0-:5555` con un `TcpStream` vero: eco di 200 KB con
-  chiusura ordinata nei due versi, porta senza servizio (il client vede la
-  chiusura), RST del client visto dal guest;
-- `tests/web/hostfwd.mjs`: lo stesso con `GuestSocket` in Node (JIT e
-  interprete).
+  tcp:127.0.0.1:0-:5555` with a real `TcpStream`: 200 KB echo with
+  orderly close in both directions, port with no service (the client sees
+  the close), client RST seen by the guest;
+- `tests/web/hostfwd.mjs`: the same with `GuestSocket` in Node (JIT and
+  interpreter).
 
 ## Snapshot (M6, ADR 0015)
 
-`Stack<U: Upstream + Snapshot>` e `Sinkhole` implementano
-`vetro_snapshot::Snapshot` (file `stack/snapshot.rs`, `tcp/snapshot.rs`,
-`sinkhole/snapshot.rs`, figli dei moduli per vedere i campi privati): MAC
-del guest, frame in uscita, connessioni TCP complete (stato, sequenze,
-finestre, congestione, dati in transito, RTO e timer), flussi UDP, indici,
-`next_id`, `ip_ident`, contatori, registro degli eventi, connessioni aperte
-dall'host (inoltro di porte: code, porta effimera successiva) e stato
-dell'upstream. La configurazione non si salva. Chi aggiunge un campo allo
-stato lo aggiunge anche lì e incrementa `vetro_snapshot::FORMAT_VERSION`.
+`Stack<U: Upstream + Snapshot>` and `Sinkhole` implement
+`vetro_snapshot::Snapshot` (files `stack/snapshot.rs`, `tcp/snapshot.rs`,
+`sinkhole/snapshot.rs`, child modules so they can see the private fields):
+guest MAC, outgoing frames, complete TCP connections (state, sequences,
+windows, congestion, in-flight data, RTO and timers), UDP flows, indexes,
+`next_id`, `ip_ident`, counters, event log, connections opened by the host
+(port forwarding: queues, next ephemeral port) and upstream state. The
+configuration is not saved. Whoever adds a field to the state also adds it
+there and bumps `vetro_snapshot::FORMAT_VERSION`.

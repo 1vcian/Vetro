@@ -1,16 +1,16 @@
-//! Estensioni crittografiche: vettori noti (FIPS-197), verificati anche
-//! contro QEMU.
+//! Cryptographic extensions: known vectors (FIPS-197), also verified
+//! against QEMU.
 
 use vetro_isa_tests::case;
 
-/// Byte di uno stato AES (ordine di memoria) come valore del registro.
+/// Bytes of an AES state (memory order) as the register value.
 fn st(b: [u8; 16]) -> u128 {
     u128::from_le_bytes(b)
 }
 
 #[test]
 fn aes128_first_round_fips197() {
-    // FIPS-197 C.1: plaintext 00112233..., chiave 00010203...
+    // FIPS-197 C.1: plaintext 00112233..., key 00010203...
     let pt =
         st([0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]);
     let key =

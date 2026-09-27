@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="it">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -13,7 +13,7 @@
 <body>
   <header>
     <h1>Vetro</h1>
-    <span id="status">pronto</span>
+    <span id="status">ready</span>
   </header>
 
   <form id="setup">
@@ -34,7 +34,7 @@
         <input name="coldBoot" type="checkbox"> cold boot (advanced: about 45 minutes, no snapshot download)</label>
     </fieldset>
     <fieldset id="linux-fields">
-      <legend>Macchina</legend>
+      <legend>Machine</legend>
       <label>Kernel (Image)
         <input name="kernelUrl" value="../guest/Image" spellcheck="false">
         <input name="kernelFile" type="file">
@@ -43,58 +43,58 @@
         <input name="initrdUrl" value="../guest/initramfs.cpio.gz" spellcheck="false">
         <input name="initrdFile" type="file">
       </label>
-      <label>Disco (virtio-blk, facoltativo)
-        <input name="diskUrl" placeholder="URL con HTTP Range, es. ../disks/system.img" spellcheck="false">
+      <label>Disk (virtio-blk, optional)
+        <input name="diskUrl" placeholder="URL with HTTP Range, e.g. ../disks/system.img" spellcheck="false">
         <input name="diskFile" type="file">
       </label>
-      <label>Riga di comando
+      <label>Command line
         <input name="cmdline" value="console=ttyAMA0" spellcheck="false">
       </label>
     </fieldset>
     <fieldset>
-      <legend>Opzioni</legend>
+      <legend>Options</legend>
       <label>RAM (MiB) <input name="ramMiB" type="number" value="1024" min="64" step="64"></label>
-      <label>Schermo <input name="width" type="number" value="1280" min="64"> x <input name="height" type="number" value="800" min="64"></label>
-      <label>Puntatore
+      <label>Screen <input name="width" type="number" value="1280" min="64"> x <input name="height" type="number" value="800" min="64"></label>
+      <label>Pointer
         <select name="pointer">
           <option value="tablet">tablet (mouse)</option>
           <option value="multitouch">touchscreen</option>
         </select>
       </label>
-      <label>Blocchi del disco
+      <label>Disk blocks
         <select name="blockKiB">
           <option value="64">64 KiB</option>
           <option value="1024" selected>1 MiB</option>
         </select>
       </label>
-      <label title="virtio-net con lo stack di vetro-net e il sinkhole (DHCP 10.0.2.15)"><input name="net" type="checkbox" checked> rete</label>
-      <label title="virtio-vsock e il demone vetro-files del guest (ADR 0020)"><input name="files" type="checkbox" checked> gestore dei file</label>
+      <label title="virtio-net with the vetro-net stack and the sinkhole (DHCP 10.0.2.15)"><input name="net" type="checkbox" checked> network</label>
+      <label title="virtio-vsock and the guest vetro-files daemon (ADR 0020)"><input name="files" type="checkbox" checked> file manager</label>
       <label><input name="jit" type="checkbox" checked> JIT</label>
-      <label><input name="realtime" type="checkbox" checked> tempo reale</label>
-      <label><input name="opfs" type="checkbox" checked> cache OPFS</label>
-      <label title="Le scritture del guest sui dischi restano fra una sessione e l'altra (OPFS)"><input name="persist" type="checkbox" checked> dischi persistenti</label>
-      <label title="Dal secondo avvio la macchina riparte dallo snapshot salvato in OPFS"><input name="snapshot" type="checkbox" checked> snapshot in cache</label>
+      <label><input name="realtime" type="checkbox" checked> real time</label>
+      <label><input name="opfs" type="checkbox" checked> OPFS cache</label>
+      <label title="The guest's writes to the disks persist from one session to the next (OPFS)"><input name="persist" type="checkbox" checked> persistent disks</label>
+      <label title="From the second boot the machine resumes from the snapshot saved in OPFS"><input name="snapshot" type="checkbox" checked> cached snapshot</label>
       <label><input name="webgpu" type="checkbox"> WebGPU</label>
     </fieldset>
-    <button type="submit">Avvia</button>
-    <button id="forget" type="button" title="Cancella da OPFS snapshot, dischi persistenti e cache dei blocchi">Cancella dati salvati</button>
+    <button type="submit">Start</button>
+    <button id="forget" type="button" title="Deletes snapshots, persistent disks and the block cache from OPFS">Delete saved data</button>
   </form>
 
   <main id="machine" hidden>
     <section id="screen-box">
       <div id="screen-wrap">
-        <canvas id="screen" width="1280" height="800" tabindex="0" title="Clic per mandare tastiera e mouse al guest"></canvas>
+        <canvas id="screen" width="1280" height="800" tabindex="0" title="Click to send keyboard and mouse to the guest"></canvas>
         <canvas id="cursor" width="64" height="64" hidden></canvas>
         <div id="screen-off" role="status">
-          <p><strong>Il guest non sta disegnando</strong> (scanout spento): questa demo usa la console seriale, il riquadro di testo della pagina.
-            Lo schermo si accende quando un programma disegna (con Android, il telefono).</p>
+          <p><strong>The guest is not drawing</strong> (scanout off): this demo uses the serial console, the text box of the page.
+            The screen turns on when a program draws (with Android, the phone).</p>
           <p id="screen-android" hidden><strong>The system is booting</strong>: the screen turns on when the graphics start (surfaceflinger); the phases are in the panel next to it.</p>
-          <button id="screen-demo" type="button" title="Digita nella console: timeout 30 vetro-dev drm-hold. Il motivo resta 30 s di tempo del guest; Invio nella console lo chiude prima">Disegna un motivo di prova</button>
+          <button id="screen-demo" type="button" title="Types in the console: timeout 30 vetro-dev drm-hold. The pattern stays for 30 s of guest time; Enter in the console closes it earlier">Draw a test pattern</button>
         </div>
       </div>
       <div id="controls">
-        <button id="power" type="button" title="Tasto di accensione (GPIO 3, KEY_POWER): tieni premuto">Tasto di accensione</button>
-        <button id="save" type="button" title="Salva ora lo snapshot della macchina e i dischi (OPFS)">Salva stato</button>
+        <button id="power" type="button" title="Power button (GPIO 3, KEY_POWER): hold it down">Power button</button>
+        <button id="save" type="button" title="Save the machine snapshot and the disks now (OPFS)">Save state</button>
         <span id="snapinfo"></span>
         <span id="stats"></span>
       </div>
@@ -123,24 +123,24 @@
     </section>
     <section id="files-box" hidden>
       <div id="files-head">
-        <strong>File del guest</strong>
-        <span id="files-status">spento</span>
+        <strong>Guest files</strong>
+        <span id="files-status">off</span>
       </div>
-      <label id="files-roots-label">Radici <input id="files-roots" spellcheck="false" title="Percorsi separati da virgole: le cartelle da mostrare"></label>
+      <label id="files-roots-label">Roots <input id="files-roots" spellcheck="false" title="Comma-separated paths: the folders to show"></label>
       <div id="files-tree" role="tree"></div>
       <div id="files-view">
         <div id="files-bar">
-          <span id="files-path">nessun file aperto</span>
-          <select id="files-mode" title="Visualizzatore">
-            <option value="text">testo</option>
+          <span id="files-path">no file open</span>
+          <select id="files-mode" title="Viewer">
+            <option value="text">text</option>
             <option value="json">JSON</option>
             <option value="xml">XML</option>
-            <option value="hex">esadecimale</option>
-            <option value="image">immagine</option>
+            <option value="hex">hexadecimal</option>
+            <option value="image">image</option>
             <option value="sqlite">SQLite</option>
           </select>
-          <button id="files-save" type="button" disabled title="Scrive il file nel guest (scrittura atomica: proprietario, modo e contesto SELinux restano)">Salva</button>
-          <button id="files-reload" type="button">Ricarica</button>
+          <button id="files-save" type="button" disabled title="Writes the file into the guest (atomic write: owner, mode and SELinux context are kept)">Save</button>
+          <button id="files-reload" type="button">Reload</button>
         </div>
         <div id="files-info"></div>
         <div id="files-message"></div>
@@ -148,44 +148,44 @@
       </div>
     </section>
     <section id="console-box">
-      <pre id="console" tabindex="0" title="Console seriale: clic e scrivi"></pre>
+      <pre id="console" tabindex="0" title="Serial console: click and type"></pre>
     </section>
     <section id="analysis-box">
       <nav id="tabs" role="tablist">
-        <button type="button" role="tab" data-tab="net" aria-selected="true">Rete <span id="tab-count-net"></span></button>
+        <button type="button" role="tab" data-tab="net" aria-selected="true">Network <span id="tab-count-net"></span></button>
         <button type="button" role="tab" data-tab="timeline" aria-selected="false">Timeline</button>
-        <button type="button" role="tab" data-tab="replay" aria-selected="false">Registrazione</button>
+        <button type="button" role="tab" data-tab="replay" aria-selected="false">Recording</button>
       </nav>
       <div id="tab-net" class="tab" role="tabpanel">
         <div class="toolbar">
-          <input id="net-filter" placeholder="filtra: metodo, host, percorso, stato, tipo" spellcheck="false">
-          <select id="net-method" title="Metodo"><option value="">tutti i metodi</option></select>
-          <select id="net-status" title="Stato della risposta">
-            <option value="">tutti gli stati</option>
+          <input id="net-filter" placeholder="filter: method, host, path, status, type" spellcheck="false">
+          <select id="net-method" title="Method"><option value="">all methods</option></select>
+          <select id="net-status" title="Response status">
+            <option value="">all statuses</option>
             <option value="2">2xx</option>
             <option value="3">3xx</option>
             <option value="4">4xx</option>
             <option value="5">5xx</option>
-            <option value="none">senza risposta</option>
+            <option value="none">no response</option>
           </select>
-          <select id="net-kind" title="Tipo del corpo (richiesta o risposta)">
-            <option value="">tutti i corpi</option>
+          <select id="net-kind" title="Body type (request or response)">
+            <option value="">all bodies</option>
             <option value="json">JSON</option>
             <option value="form">form</option>
             <option value="multipart">multipart</option>
             <option value="protobuf">protobuf</option>
-            <option value="testo">testo</option>
-            <option value="binario">binario</option>
+            <option value="text">text</option>
+            <option value="binary">binary</option>
           </select>
-          <button id="net-har" type="button" title="Scarica la cattura come HAR 1.2">Esporta HAR</button>
-          <button id="net-pcap" type="button" title="Scarica i frame di virtio-net come pcapng (Wireshark)">Esporta pcapng</button>
-          <button id="net-clear" type="button" class="quiet" title="Svuota la cattura">Svuota</button>
+          <button id="net-har" type="button" title="Download the capture as HAR 1.2">Export HAR</button>
+          <button id="net-pcap" type="button" title="Download the virtio-net frames as pcapng (Wireshark)">Export pcapng</button>
+          <button id="net-clear" type="button" class="quiet" title="Clear the capture">Clear</button>
           <span id="net-info" class="dim"></span>
         </div>
         <div class="split">
           <div class="table-wrap">
             <table id="net-table">
-              <thead><tr><th>#</th><th>inizio</th><th>metodo</th><th>host</th><th>percorso</th><th>stato</th><th>richiesta</th><th>risposta</th><th>tipo</th><th>durata</th><th class="wf">cascata</th></tr></thead>
+              <thead><tr><th>#</th><th>start</th><th>method</th><th>host</th><th>path</th><th>status</th><th>request</th><th>response</th><th>type</th><th>duration</th><th class="wf">waterfall</th></tr></thead>
               <tbody></tbody>
             </table>
           </div>
@@ -194,49 +194,49 @@
       </div>
       <div id="tab-timeline" class="tab" role="tabpanel" hidden>
         <div class="toolbar">
-          <label title="Un effetto è attribuito all'ultimo ingresso di comando entro questa finestra di tempo del guest (euristica, ADR 0023)">finestra <input id="tl-window" type="number" value="3000" min="1" step="100"> ms</label>
+          <label title="An effect is attributed to the last command input within this window of guest time (heuristic, ADR 0023)">window <input id="tl-window" type="number" value="3000" min="1" step="100"> ms</label>
           <label><input id="tl-http" type="checkbox" checked> http</label>
           <label><input id="tl-dns" type="checkbox" checked> dns</label>
           <label><input id="tl-tls" type="checkbox" checked> tls</label>
           <label><input id="tl-file" type="checkbox" checked> file</label>
           <label><input id="tl-console" type="checkbox" checked> console</label>
-          <label title="Mostra anche i singoli caratteri battuti (non causano effetti di rete o sui file)"><input id="tl-weak" type="checkbox"> caratteri singoli</label>
-          <button id="tl-clear" type="button" class="quiet">Svuota</button>
+          <label title="Also show the single typed characters (they cause no network or file effects)"><input id="tl-weak" type="checkbox"> single characters</label>
+          <button id="tl-clear" type="button" class="quiet">Clear</button>
           <span id="tl-info" class="dim"></span>
         </div>
-        <svg id="tl-track" width="100%" height="72" role="img" aria-label="Asse del tempo del guest"></svg>
+        <svg id="tl-track" width="100%" height="72" role="img" aria-label="Guest time axis"></svg>
         <div id="tl-list"></div>
       </div>
       <div id="tab-replay" class="tab" role="tabpanel" hidden>
         <div class="toolbar">
-          <button id="rr-record" type="button" title="Registra gli ingressi da ora (con keyframe per il salto a un'istruzione)">Registra</button>
-          <label title="Istruzioni fra due keyframe (snapshot completi, in OPFS)">keyframe ogni <input id="rr-kf" type="number" value="200" min="1"> M istruzioni</label>
-          <button id="rr-replay" type="button" disabled title="Rifà la registrazione dal primo keyframe e confronta lo stato alla fine">Rigioca</button>
-          <button id="rr-download" type="button" disabled title="Scarica il log con i keyframe">Scarica log</button>
-          <label class="file-button" title="Carica un log scaricato prima (stessa macchina)">Carica log <input id="rr-load" type="file" accept=".vrec"></label>
+          <button id="rr-record" type="button" title="Record the inputs from now on (with keyframes for jumping to an instruction)">Record</button>
+          <label title="Instructions between two keyframes (full snapshots, in OPFS)">keyframe every <input id="rr-kf" type="number" value="200" min="1"> M instructions</label>
+          <button id="rr-replay" type="button" disabled title="Replays the recording from the first keyframe and compares the state at the end">Replay</button>
+          <button id="rr-download" type="button" disabled title="Download the log with the keyframes">Download log</button>
+          <label class="file-button" title="Load a previously downloaded log (same machine)">Load log <input id="rr-load" type="file" accept=".vrec"></label>
         </div>
         <div class="toolbar">
-          <label>Vai all'istruzione <input id="rr-step" type="number" min="0" spellcheck="false"></label>
-          <button id="rr-goto" type="button" disabled>Vai</button>
-          <button id="rr-continue" type="button" disabled title="Continua il replay fino alla fine">Continua</button>
+          <label>Go to instruction <input id="rr-step" type="number" min="0" spellcheck="false"></label>
+          <button id="rr-goto" type="button" disabled>Go</button>
+          <button id="rr-continue" type="button" disabled title="Continue the replay to the end">Continue</button>
           <span id="rr-status" class="dim"></span>
         </div>
         <div class="rr-cols">
           <div>
-            <h4>Registri</h4>
-            <pre id="rr-regs" class="mono-box">(fermati a un'istruzione per vederli)</pre>
+            <h4>Registers</h4>
+            <pre id="rr-regs" class="mono-box">(stop at an instruction to see them)</pre>
           </div>
           <div>
-            <h4>Memoria</h4>
+            <h4>Memory</h4>
             <div class="toolbar">
-              <label>indirizzo virtuale <input id="rr-va" placeholder="0xffff…" spellcheck="false"></label>
+              <label>virtual address <input id="rr-va" placeholder="0xffff…" spellcheck="false"></label>
               <label>byte <input id="rr-len" type="number" value="256" min="1" max="65536"></label>
-              <button id="rr-read" type="button">Leggi</button>
+              <button id="rr-read" type="button">Read</button>
             </div>
             <pre id="rr-mem" class="mono-box"></pre>
           </div>
         </div>
-        <h4>Ingressi registrati <span id="rr-events-count" class="dim"></span></h4>
+        <h4>Recorded inputs <span id="rr-events-count" class="dim"></span></h4>
         <div id="rr-events"></div>
       </div>
     </section>

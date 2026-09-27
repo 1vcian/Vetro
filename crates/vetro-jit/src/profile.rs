@@ -1,9 +1,9 @@
-//! Contatori per classe delle istruzioni eseguite dall'interprete mentre il
-//! JIT è attivo (le uscite dalle regioni e il codice freddo): servono a
-//! scegliere che cosa tradurre (M4, ADR 0026). Si attivano con
-//! `JitConfig::profile` / `SysJitConfig::profile` (in `vetro`, con la
-//! variabile d'ambiente `VETRO_JIT_PROFILE=1`), e non cambiano nulla
-//! dell'esecuzione.
+//! Per-class counters of the instructions executed by the interpreter while
+//! the JIT is active (region exits and cold code): they are used to
+//! choose what to translate (M4, ADR 0026). They are enabled with
+//! `JitConfig::profile` / `SysJitConfig::profile` (in `vetro`, with the
+//! environment variable `VETRO_JIT_PROFILE=1`), and change nothing
+//! about execution.
 
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -13,15 +13,15 @@ use vetro_cpu::simd::{FpInsn, IntInsn, SimdInsn, VecMemInsn};
 
 use crate::translate::{Kind, SysTarget, kind_in};
 
-/// Nome della variante (`Foo` di `Foo { .. }`).
+/// Name of the variant (`Foo` of `Foo { .. }`).
 fn variant<T: Debug>(x: &T) -> String {
     let s = format!("{x:?}");
     s.split([' ', '{', '(']).next().unwrap_or("").to_string()
 }
 
-/// Classe di un'istruzione: la variante e i campi che decidono
-/// l'operazione (non i registri). Le istruzioni SIMD/FP hanno classi
-/// fini, le altre la sola variante (e il registro per MRS/MSR).
+/// Class of an instruction: the variant and the fields that decide
+/// the operation (not the registers). SIMD/FP instructions have fine
+/// classes, the others only the variant (and the register for MRS/MSR).
 pub fn class(insn: &Insn) -> String {
     match *insn {
         Insn::Simd(SimdInsn::Fp(f)) => match f {
@@ -111,7 +111,7 @@ pub fn class(insn: &Insn) -> String {
     }
 }
 
-/// Contatori per classe.
+/// Per-class counters.
 #[derive(Clone, Debug, Default)]
 pub struct Profile {
     counts: HashMap<String, u64>,
@@ -119,25 +119,25 @@ pub struct Profile {
 }
 
 impl Profile {
-    /// Conta l'istruzione `w`; `sys` come per [`kind_in`]: la classe dice
-    /// anche se il JIT la saprebbe tradurre (allora è codice freddo o un
-    /// passo dopo un'uscita, non un'istruzione mancante).
+    /// Counts instruction `w`; `sys` as for [`kind_in`]: the class also says
+    /// whether the JIT would know how to translate it (then it is cold code or a
+    /// step after an exit, not a missing instruction).
     pub fn note(&mut self, w: u32, sys: Option<SysTarget>) {
         let insn = vetro_cpu::decode(w);
         let mut c = class(&insn);
         if kind_in(&insn, sys) != Kind::Unsupported {
-            c.push_str(" [tradotta]");
+            c.push_str(" [translated]");
         }
         *self.counts.entry(c).or_default() += 1;
         self.total += 1;
     }
 
-    /// Istruzioni contate.
+    /// Instructions counted.
     pub fn total(&self) -> u64 {
         self.total
     }
 
-    /// Le `n` classi più frequenti, in ordine decrescente.
+    /// The `n` most frequent classes, in decreasing order.
     pub fn top(&self, n: usize) -> Vec<(String, u64)> {
         let mut v: Vec<(String, u64)> = self.counts.iter().map(|(k, &c)| (k.clone(), c)).collect();
         v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
@@ -145,9 +145,9 @@ impl Profile {
         v
     }
 
-    /// Resoconto leggibile delle `n` classi più frequenti.
+    /// Readable report of the `n` most frequent classes.
     pub fn report(&self, n: usize) -> String {
-        let mut s = format!("istruzioni dell'interprete col JIT attivo: {}\n", self.total);
+        let mut s = format!("interpreter instructions with the JIT active: {}\n", self.total);
         for (c, k) in self.top(n) {
             s += &format!("{k:>12} {:5.1}%  {c}\n", 100.0 * k as f64 / self.total.max(1) as f64);
         }
@@ -160,8 +160,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn classi_senza_registri() {
-        // fadd d0, d1, d2 e fadd d3, d4, d5 (tools/a64asm.sh): stessa classe.
+    fn classes_without_registers() {
+        // fadd d0, d1, d2 and fadd d3, d4, d5 (tools/a64asm.sh): same class.
         let a = class(&vetro_cpu::decode(0x1e622820));
         let b = class(&vetro_cpu::decode(0x1e652883));
         assert_eq!(a, b);
@@ -172,6 +172,6 @@ mod tests {
         p.note(0x91000421, None); // add x1, x1, #1
         assert_eq!(p.total(), 3);
         assert_eq!(p.top(1)[0].1, 2);
-        assert!(p.report(5).contains("AddSubImm [tradotta]"), "{}", p.report(5));
+        assert!(p.report(5).contains("AddSubImm [translated]"), "{}", p.report(5));
     }
 }

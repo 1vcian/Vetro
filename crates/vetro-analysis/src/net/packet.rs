@@ -1,5 +1,5 @@
-//! Intestazioni Ethernet II, IPv4, TCP e UDP. Nessun panic su byte
-//! arbitrari: ciò che non si capisce resta `None`/`Other`.
+//! Ethernet II, IPv4, TCP and UDP headers. No panics on arbitrary
+//! bytes: what is not understood stays `None`/`Other`.
 
 use std::net::{Ipv4Addr, SocketAddrV4};
 
@@ -9,7 +9,7 @@ pub const PROTO_ICMP: u8 = 1;
 pub const PROTO_TCP: u8 = 6;
 pub const PROTO_UDP: u8 = 17;
 
-/// Bit dei flag TCP.
+/// TCP flag bits.
 pub mod tcp_flags {
     pub const FIN: u8 = 0x01;
     pub const SYN: u8 = 0x02;
@@ -44,9 +44,9 @@ pub struct Ipv4<'a> {
     pub dst: Ipv4Addr,
     pub protocol: u8,
     pub ttl: u8,
-    /// Frammento (MF o offset diverso da zero): il carico non è completo.
+    /// Fragment (MF or non-zero offset): the payload is not complete.
     pub fragment: bool,
-    /// Carico secondo la lunghezza totale (il padding Ethernet è tolto).
+    /// Payload according to the total length (the Ethernet padding is removed).
     pub payload: &'a [u8],
 }
 
@@ -128,7 +128,7 @@ pub fn udp(p: &[u8]) -> Option<Udp<'_>> {
     })
 }
 
-/// Un frame decodificato fino al livello di trasporto.
+/// A frame decoded up to the transport layer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Packet<'a> {
     Tcp {
@@ -141,14 +141,14 @@ pub enum Packet<'a> {
         dst: SocketAddrV4,
         payload: &'a [u8],
     },
-    /// IPv4 con un altro protocollo (ICMP...) o frammentato.
+    /// IPv4 with another protocol (ICMP...) or fragmented.
     OtherIpv4 {
         src: Ipv4Addr,
         dst: Ipv4Addr,
         protocol: u8,
     },
     Arp,
-    /// Ethertype sconosciuto (IPv6 compreso) o frame malformato.
+    /// Unknown ethertype (IPv6 included) or malformed frame.
     Other,
 }
 
@@ -186,8 +186,8 @@ pub fn parse(frame: &[u8]) -> Packet<'_> {
     }
 }
 
-/// Costruttori di frame per i test (checksum a zero: l'analisi non li
-/// controlla).
+/// Frame builders for the tests (zero checksums: the analysis does not
+/// check them).
 #[cfg(test)]
 pub mod build {
     use std::net::SocketAddrV4;
@@ -244,7 +244,7 @@ mod tests {
             p => panic!("{p:?}"),
         }
         let mut f = build::udp(sa("10.0.2.15:1000"), sa("10.0.2.3:53"), b"dns");
-        f.extend([0; 10]); // padding Ethernet
+        f.extend([0; 10]); // Ethernet padding
         assert_eq!(
             parse(&f),
             Packet::Udp { src: sa("10.0.2.15:1000"), dst: sa("10.0.2.3:53"), payload: b"dns" }

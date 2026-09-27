@@ -1,9 +1,9 @@
 #!/bin/sh
-# Avvia il kernel guest di M3 sotto qemu-system-aarch64 (l'oracolo) e controlla
-# marcatori, shell e spegnimento: è il test di tests/boot, qui con i valori
-# giusti delle variabili. Su macOS usa il container, su Linux QEMU nativo.
-#   tools/guest-kernel/qemu-boot.sh            # verifica
-#   tools/guest-kernel/qemu-boot.sh --update   # riscrive il log di riferimento
+# Boots the M3 guest kernel under qemu-system-aarch64 (the oracle) and checks
+# markers, shell and power-off: it is the tests/boot test, here with the right
+# values of the variables. On macOS it uses the container, on Linux native QEMU.
+#   tools/guest-kernel/qemu-boot.sh            # check
+#   tools/guest-kernel/qemu-boot.sh --update   # rewrites the reference log
 set -eu
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 if [ -z "${VETRO_QEMU_SYSTEM_AARCH64:-}" ] && ! command -v qemu-system-aarch64 >/dev/null 2>&1; then

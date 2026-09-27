@@ -1,4 +1,4 @@
-//! Adattatore da MMU + memoria fisica all'interfaccia `vetro_cpu::Memory`.
+//! Adapter from MMU + physical memory to the `vetro_cpu::Memory` interface.
 
 use vetro_cpu::{Access, MemFault, Memory};
 
@@ -7,16 +7,16 @@ use crate::mmu::Mmu;
 use crate::regs::PAGE_SIZE;
 use crate::walk::{BusError, PhysMemory};
 
-/// Memoria virtuale di un core: traduce ogni accesso con la MMU e lo esegue
-/// sulla memoria fisica. Si costruisce per il tempo di uno o più `step`.
+/// Virtual memory of a core: translates every access with the MMU and performs it
+/// on physical memory. Built for the duration of one or more `step`s.
 ///
-/// Un accesso a cavallo di due pagine traduce prima tutte le pagine: se una
-/// fallisce non si scrive nulla. Un abort esterno sul secondo pezzo di una
-/// scrittura lascia invece scritto il primo.
+/// An access straddling two pages translates all the pages first: if one
+/// fails nothing is written. An external abort on the second piece of a
+/// write instead leaves the first one written.
 pub struct VirtMemory<'a, P: PhysMemory + ?Sized> {
     pub mmu: &'a mut Mmu,
     pub phys: &'a mut P,
-    /// Privilegio degli accessi (0 o 1).
+    /// Privilege of the accesses (0 or 1).
     pub el: u8,
 }
 
@@ -25,7 +25,7 @@ impl<'a, P: PhysMemory + ?Sized> VirtMemory<'a, P> {
         VirtMemory { mmu, phys, el }
     }
 
-    /// Fault dettagliato (con ESR e FAR) dell'ultimo accesso fallito.
+    /// Detailed fault (with ESR and FAR) of the last failed access.
     pub fn last_fault(&self) -> Option<Fault> {
         self.mmu.last_fault()
     }
@@ -42,8 +42,8 @@ impl<'a, P: PhysMemory + ?Sized> VirtMemory<'a, P> {
         }
     }
 
-    /// Chiama `f(phys, pa, offset, len)` per ogni pezzo dell'accesso che sta
-    /// in una pagina.
+    /// Calls `f(phys, pa, offset, len)` for every piece of the access that fits
+    /// in one page.
     fn access(
         &mut self,
         va: u64,

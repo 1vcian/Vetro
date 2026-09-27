@@ -1,4 +1,4 @@
-//! Lo stack con il relay di prova in memoria.
+//! The stack with the in-memory test relay.
 
 mod common;
 
@@ -50,7 +50,7 @@ fn tcp_echo_through_relay_and_close() {
     let seg = out.into_iter().map(Out::tcp).find(|s| !s.payload.is_empty()).unwrap();
     assert_eq!(seg.payload, b"echo me");
     c.take(&seg);
-    // FIN del guest: il relay chiude il suo verso, lo stack manda FIN.
+    // Guest FIN: the relay closes its direction, the stack sends FIN.
     s.receive(t(2), &c.fin());
     let fin = drain(&mut s).into_iter().map(Out::tcp).find(|s| s.fin).unwrap();
     c.take(&fin);
@@ -73,7 +73,7 @@ fn tcp_echo_through_relay_and_close() {
     ));
 }
 
-/// Relay pilotato a mano dal test: niente risposte automatiche.
+/// Relay driven by hand by the test: no automatic answers.
 #[derive(Default)]
 struct Manual {
     sent: Vec<RelayMessage>,
@@ -109,19 +109,19 @@ fn pending_connect_waits_for_relay_then_times_out() {
     let b = Client::new(44003, dst);
     s.receive(t(0), &a.syn());
     s.receive(t(0), &b.syn());
-    assert!(drain(&mut s).is_empty(), "in attesa del relay: nessun SYN-ACK");
-    // SYN ritrasmesso: ancora niente.
+    assert!(drain(&mut s).is_empty(), "waiting for the relay: no SYN-ACK");
+    // SYN retransmitted: still nothing.
     s.receive(t(1000), &a.syn());
     assert!(drain(&mut s).is_empty());
 
-    // Il relay apre la prima connessione: SYN-ACK al giro di poll.
+    // The relay opens the first connection: SYN-ACK at the poll round.
     s.upstream_mut().relay_mut().inbox.push_back(RelayMessage::TcpConnected { id: 1 });
     s.poll(t(1500));
     let synack = drain(&mut s).remove(0).tcp();
     assert!(synack.syn && synack.dst.port() == 44002);
     s.receive(t(1500), &a.on_syn_ack(&synack));
 
-    // La seconda non riceve mai risposta: RST dopo 75 s.
+    // The second never gets an answer: RST after 75 s.
     assert_eq!(s.next_deadline(), Some(t(75_000)));
     s.poll(t(75_000));
     let rst = drain(&mut s).remove(0).tcp();

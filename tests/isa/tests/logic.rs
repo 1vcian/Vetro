@@ -1,7 +1,7 @@
-//! Operazioni logiche con immediati a maschera di bit e registri.
+//! Logical operations with bitmask immediates and registers.
 //!
-//! Codifiche generate con `tools/a64asm.sh`; valori attesi verificati
-//! anche contro QEMU quando l'oracolo è disponibile.
+//! Encodings generated with `tools/a64asm.sh`; expected values verified
+//! also against QEMU when the oracle is available.
 
 use vetro_isa_tests::case;
 

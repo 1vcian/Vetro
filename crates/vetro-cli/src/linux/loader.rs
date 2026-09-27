@@ -1,12 +1,12 @@
-//! Caricamento di un ELF statico e stack iniziale (argv, envp, auxv).
+//! Loading of a static ELF and initial stack (argv, envp, auxv).
 
 use super::mm::{Mm, STACK_SIZE, STACK_TOP};
 use crate::elf::{self, LoadError, PAGE};
 use vetro_cpu::{Perm, UserMemory};
 
-/// Pagina del trampolino di ritorno dai gestori di segnale (il `sigtramp`
-/// del vDSO di Linux arm64): usato quando sa_restorer non è impostato.
-/// Sta sopra lo stack, sotto il limite dei 48 bit.
+/// Page of the return trampoline from signal handlers (the `sigtramp`
+/// of the arm64 Linux vDSO): used when sa_restorer is not set.
+/// It sits above the stack, below the 48-bit limit.
 pub const SIGTRAMP: u64 = 0x0000_7fff_ffff_e000;
 
 /// `mov x8, #139` (rt_sigreturn); `svc #0`.
@@ -18,7 +18,7 @@ pub struct Image {
     pub sp: u64,
 }
 
-/// HWCAP della Cortex-A53, come li riporta QEMU `-cpu cortex-a53`:
+/// HWCAP of the Cortex-A53, as QEMU `-cpu cortex-a53` reports them:
 /// FP, ASIMD, AES, PMULL, SHA1, SHA2, CRC32, CPUID.
 pub const HWCAP: u64 = (1 << 0) | (1 << 1) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 11);
 
@@ -75,7 +75,7 @@ fn setup_stack(
     let mut top = STACK_TOP;
     let mut push = |mem: &mut UserMemory, b: &[u8]| {
         top -= b.len() as u64;
-        mem.poke(top, b).expect("stack mappato");
+        mem.poke(top, b).expect("stack mapped");
         top
     };
     let cstr = |s: &[u8]| {
@@ -122,7 +122,7 @@ fn setup_stack(
     }
     let sp = (top - words.len() as u64 * 8) & !15;
     for (i, w) in words.iter().enumerate() {
-        mem.poke(sp + i as u64 * 8, &w.to_le_bytes()).expect("stack mappato");
+        mem.poke(sp + i as u64 * 8, &w.to_le_bytes()).expect("stack mapped");
     }
     sp
 }

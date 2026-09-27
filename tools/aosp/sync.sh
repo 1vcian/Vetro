@@ -1,17 +1,17 @@
 #!/bin/sh
-# Porta guest/aosp sulla VM di build e prepara il tree AOSP (idempotente):
-#   guest/aosp/device/vetro  -> $TREE/device/vetro   (copia esatta)
+# Brings guest/aosp to the build VM and prepares the AOSP tree (idempotent):
+#   guest/aosp/device/vetro  -> $TREE/device/vetro   (exact copy)
 #   guest/kernel/initramfs/vetro-files.c -> $TREE/device/vetro/vetro_arm64/vetro-files/
-#   guest/aosp/vendor/vetro  -> $TREE/vendor/vetro   (copia esatta, tranne i prebuilt scaricati)
+#   guest/aosp/vendor/vetro  -> $TREE/vendor/vetro   (exact copy, except the downloaded prebuilts)
 #   guest/aosp/patches, tools/aosp/remote -> ~/$WORK
-# poi, sulla VM, applica le patch (salta quelle già applicate) e scarica le
-# release di microG con lo sha256 di microg.lock (tools/aosp/remote/prepare.sh).
-# Prima controlla la CA di sviluppo (tools/aosp/dev-ca.sh: certificato e patch
-# coerenti) e scrive in ~/$WORK/sync.rev il commit di Vetro sincronizzato
-# (ultimo commit di guest/aosp, tools/aosp e vetro-files.c, con "-dirty" se
-# ci sono modifiche non committate): la build lo registra in build-info.txt e
-# upload.sh ne ricava la versione.
-# Uso: tools/aosp/sync.sh      (vedi common.sh per le variabili)
+# then, on the VM, applies the patches (skipping those already applied) and downloads the
+# microG releases with the sha256 from microg.lock (tools/aosp/remote/prepare.sh).
+# First it checks the development CA (tools/aosp/dev-ca.sh: certificate and patches
+# consistent) and writes to ~/$WORK/sync.rev the synced Vetro commit
+# (last commit of guest/aosp, tools/aosp and vetro-files.c, with "-dirty" if
+# there are uncommitted changes): the build records it in build-info.txt and
+# upload.sh derives the version from it.
+# Usage: tools/aosp/sync.sh      (see common.sh for the variables)
 set -eu
 . "$(cd "$(dirname "$0")" && pwd)/common.sh"
 g="$root/guest/aosp"
@@ -24,7 +24,7 @@ if [ -n "$(git -C "$root" status --porcelain -- $paths)" ]; then rev="$rev-dirty
 vm "mkdir -p $VETRO_AOSP_TREE/device/vetro $VETRO_AOSP_TREE/vendor/vetro $VETRO_AOSP_WORK"
 vm_rsync -a --delete --exclude '/vetro_arm64/vetro-files/vetro-files.c' \
   "$g/device/vetro/" "$VETRO_AOSP_HOST:$VETRO_AOSP_TREE/device/vetro/"
-# Il demone del gestore dei file (ADR 0020) ha un solo sorgente, in guest/kernel.
+# The file manager daemon (ADR 0020) has a single source, in guest/kernel.
 vm_rsync -a "$root/guest/kernel/initramfs/vetro-files.c" \
   "$VETRO_AOSP_HOST:$VETRO_AOSP_TREE/device/vetro/vetro_arm64/vetro-files/vetro-files.c"
 vm_rsync -a --delete --exclude '/microg/prebuilt/' "$g/vendor/vetro/" "$VETRO_AOSP_HOST:$VETRO_AOSP_TREE/vendor/vetro/"
@@ -32,4 +32,4 @@ vm_rsync -a --delete "$g/patches/" "$VETRO_AOSP_HOST:$VETRO_AOSP_WORK/patches/"
 vm_rsync -a --delete "$here/remote/" "$VETRO_AOSP_HOST:$VETRO_AOSP_WORK/remote/"
 vm "VETRO_AOSP_TREE=$VETRO_AOSP_TREE VETRO_AOSP_WORK=$VETRO_AOSP_WORK sh $VETRO_AOSP_WORK/remote/prepare.sh"
 vm "echo $rev > $VETRO_AOSP_WORK/sync.rev"
-echo "sincronizzato: Vetro $rev -> $VETRO_AOSP_HOST"
+echo "synced: Vetro $rev -> $VETRO_AOSP_HOST"

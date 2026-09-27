@@ -1,28 +1,28 @@
-//! Frame catturati al confine di virtio-net.
+//! Frames captured at the virtio-net boundary.
 //!
-//! La marca temporale è il tempo virtuale del guest in microsecondi (quello
-//! dello stack di rete, CNTPCT convertito): stesse istruzioni, stessi
-//! istanti. Il verso è visto dal guest.
+//! The timestamp is the guest virtual time in microseconds (that of the
+//! network stack, converted CNTPCT): same instructions, same
+//! instants. The direction is as seen by the guest.
 
-/// Verso di un frame rispetto al guest.
+/// Direction of a frame relative to the guest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Direction {
-    /// Trasmesso dal guest (in pcapng: `outbound` sull'interfaccia del guest).
+    /// Transmitted by the guest (in pcapng: `outbound` on the guest interface).
     FromGuest,
-    /// Consegnato al guest (`inbound`).
+    /// Delivered to the guest (`inbound`).
     ToGuest,
 }
 
-/// Un frame Ethernet completo (senza FCS).
+/// A complete Ethernet frame (without FCS).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Frame {
-    /// Tempo virtuale del guest in microsecondi.
+    /// Guest virtual time in microseconds.
     pub at_us: u64,
     pub dir: Direction,
     pub data: Vec<u8>,
 }
 
-/// Una cattura: frame in ordine di tempo (non decrescente).
+/// A capture: frames in time order (non-decreasing).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Capture {
     frames: Vec<Frame>,
@@ -33,8 +33,8 @@ impl Capture {
         Capture::default()
     }
 
-    /// Aggiunge un frame. Un istante nel passato (non dovrebbe succedere)
-    /// diventa quello dell'ultimo frame, così l'ordine resta monotono.
+    /// Adds a frame. An instant in the past (should not happen)
+    /// becomes that of the last frame, so the order stays monotonic.
     pub fn push(&mut self, at_us: u64, dir: Direction, data: Vec<u8>) {
         let at_us = self.frames.last().map_or(at_us, |f| at_us.max(f.at_us));
         self.frames.push(Frame { at_us, dir, data });

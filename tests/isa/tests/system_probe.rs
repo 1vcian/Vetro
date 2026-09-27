@@ -1,14 +1,14 @@
-//! Sonda bare-metal della modalità sistema contro QEMU.
+//! Bare-metal system-mode probe against QEMU.
 //!
-//! `system/probe.bin` (da `system/probe.S`) legge registri ID, maschere di
-//! scrittura, sindromi di eccezioni a EL1 e da EL0, AT e fault della MMU, e
-//! stampa tutto sulla PL011. `system/probe.expected` è l'uscita registrata
-//! da `qemu-system-aarch64 -M virt,gic-version=3 -cpu cortex-a53` (versione
-//! in `system/probe.qemu`, rigenerabile con `system/build.sh`). Qui la
-//! stessa immagine gira su Vetro (CPU in modalità sistema + `vetro-mmu`) e
-//! l'uscita deve coincidere riga per riga: con l'interprete e col JIT della
-//! modalità sistema (`vetro_jit::SysJit` su wasmtime, soglia 0: ogni blocco
-//! si traduce subito), che deve dare anche le stesse istruzioni.
+//! `system/probe.bin` (from `system/probe.S`) reads ID registers, write
+//! masks, exception syndromes at EL1 and from EL0, AT and MMU faults, and
+//! prints everything on the PL011. `system/probe.expected` is the output recorded
+//! from `qemu-system-aarch64 -M virt,gic-version=3 -cpu cortex-a53` (version
+//! in `system/probe.qemu`, regenerable with `system/build.sh`). Here the
+//! same image runs on Vetro (CPU in system mode + `vetro-mmu`) and
+//! the output must match line by line: with the interpreter and with the system-mode
+//! JIT (`vetro_jit::SysJit` on wasmtime, threshold 0: every block
+//! is translated immediately), which must also give the same instructions.
 
 use std::collections::BTreeMap;
 
@@ -26,13 +26,13 @@ const RAM_BASE: u64 = 0x4000_0000;
 const RAM_SIZE: u64 = 128 << 20;
 const UART: u64 = 0x0900_0000;
 
-/// RAM di `-m 128M` più il solo registro dati della PL011 (le altre
-/// periferiche non servono alla sonda). Il resto dà decode error.
+/// RAM of `-m 128M` plus only the PL011 data register (the other
+/// peripherals are not needed by the probe). The rest gives a decode error.
 #[derive(Default)]
 struct Board {
     pages: BTreeMap<u64, Box<[u8; 4096]>>,
     out: Vec<u8>,
-    /// Pagine con codice tradotto dal JIT, e quelle scritte da allora.
+    /// Pages with code translated by the JIT, and those written since then.
     watched: std::collections::BTreeSet<u64>,
     dirty: Vec<u64>,
 }
@@ -46,7 +46,7 @@ impl Board {
 impl PhysMemory for Board {
     fn read(&mut self, pa: u64, buf: &mut [u8]) -> Result<(), BusError> {
         if (UART..UART + 0x1000).contains(&pa) {
-            buf.fill(0); // FR = 0: FIFO mai piena
+            buf.fill(0); // FR = 0: FIFO never full
             return Ok(());
         }
         for (k, b) in buf.iter_mut().enumerate() {
@@ -81,8 +81,8 @@ impl PhysMemory for Board {
     }
 }
 
-/// La stessa memoria vista dal JIT: RAM soltanto (la PL011 va
-/// all'interprete), senza TLB software (la RAM non è contigua).
+/// The same memory as seen by the JIT: RAM only (the PL011 goes
+/// to the interpreter), without a software TLB (the RAM is not contiguous).
 impl SysPhys for Board {
     fn ram_read(&mut self, pa: u64, buf: &mut [u8]) -> bool {
         (Self::ram(pa) && Self::ram(pa + buf.len() as u64 - 1)) && self.read(pa, buf).is_ok()
@@ -121,8 +121,8 @@ impl CpuEnv for NoEnv {
 const PSCI_SYSTEM_OFF: u64 = 0x8400_0008;
 const PSCI_NOT_SUPPORTED: u64 = -1i64 as u64;
 
-/// Esegue la sonda (col JIT se `jit`); restituisce l'uscita della PL011 e
-/// le istruzioni eseguite fino a SYSTEM_OFF.
+/// Runs the probe (with the JIT if `jit`); returns the PL011 output and
+/// the instructions executed up to SYSTEM_OFF.
 fn run_probe(jit: bool) -> (String, u64) {
     let mut board = Board::default();
     board.write(LOAD, PROBE).unwrap();
@@ -137,8 +137,8 @@ fn run_probe(jit: bool) -> (String, u64) {
     let mut steps = 0u64;
     const LIMIT: u64 = 2_000_000;
     while steps < LIMIT {
-        // Come `Machine::run`: blocchi tradotti fra un passo e l'altro
-        // (qui nessun interrupt).
+        // Like `Machine::run`: translated blocks between one step and the next
+        // (no interrupts here).
         if let Some(j) = sj.as_mut()
             && next == Next::Jit
             && !cpu.sys.il
@@ -166,16 +166,16 @@ fn run_probe(jit: bool) -> (String, u64) {
                 done = true;
                 break;
             }
-            // Come il PSCI di QEMU per una funzione sconosciuta.
+            // Like QEMU's PSCI for an unknown function.
             SysEvent::Hvc(_) => cpu.x[0] = PSCI_NOT_SUPPORTED,
-            other => panic!("evento inatteso {other:?} a PC {:#x}", cpu.pc),
+            other => panic!("unexpected event {other:?} at PC {:#x}", cpu.pc),
         }
     }
     let got = String::from_utf8_lossy(&board.out).into_owned();
-    assert!(done, "la sonda non è arrivata a SYSTEM_OFF (JIT: {jit}); uscita finora:\n{got}");
+    assert!(done, "the probe did not reach SYSTEM_OFF (JIT: {jit}); output so far:\n{got}");
     if let Some(j) = &sj {
         let s = j.stats();
-        assert!(s.jit_steps > steps / 4, "il JIT deve aver eseguito una parte della sonda: {s:?}");
+        assert!(s.jit_steps > steps / 4, "the JIT must have executed part of the probe: {s:?}");
     }
     (got, steps)
 }
@@ -185,7 +185,7 @@ fn sonda_di_sistema_uguale_a_qemu() {
     let (got, steps) = run_probe(false);
     check(&got);
     let (jit, jit_steps) = run_probe(true);
-    assert_eq!(jit_steps, steps, "istruzioni diverse col JIT");
+    assert_eq!(jit_steps, steps, "instructions differ with the JIT");
     check(&jit);
 }
 
@@ -193,7 +193,7 @@ fn check(got: &str) {
     let ours: Vec<&str> = got.lines().collect();
     for (i, (g, w)) in ours.iter().zip(EXPECTED.lines()).enumerate() {
         let ctx = ours[i.saturating_sub(3)..(i + 6).min(ours.len())].join("\n");
-        assert_eq!(*g, w, "riga {}: Vetro e QEMU divergono; Vetro:\n{ctx}", i + 1);
+        assert_eq!(*g, w, "line {}: Vetro and QEMU diverge; Vetro:\n{ctx}", i + 1);
     }
-    assert_eq!(got.lines().count(), EXPECTED.lines().count(), "numero di righe diverso");
+    assert_eq!(got.lines().count(), EXPECTED.lines().count(), "different number of lines");
 }

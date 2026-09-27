@@ -18,7 +18,7 @@ fn frame(len: usize, seed: u8) -> Vec<u8> {
     (0..len).map(|i| (i as u8).wrapping_mul(3).wrapping_add(seed)).collect()
 }
 
-/// Pubblica `n` buffer di ricezione da `len` byte; restituisce gli indirizzi.
+/// Publishes `n` receive buffers of `len` bytes; returns the addresses.
 fn post_rx(d: &mut Driver<VirtioMmio>, n: usize, len: u32) -> Vec<u64> {
     (0..n)
         .map(|_| {
@@ -39,7 +39,7 @@ fn configurazione_e_feature() {
     assert_eq!(d.features & (F_MAC | F_STATUS | F_MRG_RXBUF), F_MAC | F_STATUS | F_MRG_RXBUF);
     let d = driver(false, u64::MAX);
     assert_eq!(d.features & F_MRG_RXBUF, 0);
-    assert_eq!(d.features & 0x3F_FFFF & !(F_MAC | F_STATUS), 0, "niente offload");
+    assert_eq!(d.features & 0x3F_FFFF & !(F_MAC | F_STATUS), 0, "no offloads");
 }
 
 #[test]
@@ -49,7 +49,7 @@ fn trasmissione() {
     let h = d.buf(&[0; NET_HDR_LEN]);
     let p = d.buf(&f);
     let head = d.add(TXQ, &[(h, NET_HDR_LEN as u32, false), (p, 60, false)]);
-    // Intestazione e dati nello stesso buffer, via tabella indiretta.
+    // Header and data in the same buffer, via an indirect table.
     let g = frame(1514, 9);
     let hp = d.buf(&[vec![0; NET_HDR_LEN], g.clone()].concat());
     let head2 = d.add_indirect(TXQ, &[(hp, 1526, false)]);
@@ -69,7 +69,7 @@ fn trasmissione_senza_intestazione_e_un_errore() {
     assert!(matches!(d.t.last_error(), Some(QueueError::Malformed(_))));
     assert_ne!(d.t.rd(STATUS) & STATUS_DEVICE_NEEDS_RESET, 0);
 
-    // Descrittore enorme: rifiutato prima di leggere (e allocare) nulla.
+    // Huge descriptor: refused before reading (and allocating) anything.
     let mut d = driver(true, u64::MAX);
     let p = d.buf(&[0; 16]);
     d.add(TXQ, &[(p, u32::MAX, false)]);
@@ -101,7 +101,7 @@ fn ricezione_senza_buffer_lascia_i_frame_nel_backend() {
     let mut d = driver(false, u64::MAX);
     backend(&mut d).rx.push_back(frame(60, 0));
     d.service();
-    assert_eq!(backend(&mut d).rx.len(), 1, "nessun buffer: il frame resta");
+    assert_eq!(backend(&mut d).rx.len(), 1, "no buffer: the frame stays");
     post_rx(&mut d, 1, 1526);
     d.service();
     assert_eq!(backend(&mut d).rx.len(), 0);
@@ -115,7 +115,7 @@ fn frame_troppo_grande_senza_mrg_si_scarta() {
     backend(&mut d).rx.extend([frame(200, 0), frame(50, 7)]);
     d.service();
     assert_eq!(d.t.device_as::<VirtioNet>().unwrap().rx_dropped(), 1);
-    // Il buffer è rimasto al driver e ha ricevuto il frame successivo.
+    // The buffer stayed with the driver and received the next frame.
     assert_eq!(d.pop_used(RXQ).map(|u| u.1), Some(62));
     assert_eq!(d.mem(bufs[0] + NET_HDR_LEN as u64, 50), frame(50, 7));
 }
@@ -131,7 +131,7 @@ fn ricezione_con_mrg_rxbuf_su_piu_buffer() {
     assert_eq!(d.irq(), INT_VRING);
     let lens: Vec<u32> = (0..3).map(|_| d.pop_used(RXQ).unwrap().1).collect();
     assert_eq!(lens, [64, 64, 34]);
-    assert_eq!(d.pop_used(RXQ), None, "il quarto buffer resta libero");
+    assert_eq!(d.pop_used(RXQ), None, "the fourth buffer stays free");
     let all = [d.mem(bufs[0], 64), d.mem(bufs[1], 64), d.mem(bufs[2], 34)].concat();
     assert_eq!(u16::from_le_bytes([all[10], all[11]]), 3, "num_buffers");
     assert_eq!(&all[NET_HDR_LEN..], &f[..]);
@@ -164,8 +164,8 @@ fn link_giu_e_su() {
     assert_eq!(d.irq(), INT_CONFIG);
     assert_eq!(d.t.cfg(6, 2), 0);
     assert_eq!(d.t.rd(CONFIG_GENERATION), gen0.wrapping_add(1));
-    assert_eq!(backend(&mut d).rx.len(), 1, "link giù: niente ricezione");
-    // Con il link giù la trasmissione si scarta ma il buffer torna.
+    assert_eq!(backend(&mut d).rx.len(), 1, "link down: no receiving");
+    // With the link down transmission is discarded but the buffer comes back.
     let p = d.buf(&[0; 72]);
     d.add(TXQ, &[(p, 72, false)]);
     d.service();

@@ -1,27 +1,27 @@
-//! TLB software e istruzioni TLBI del regime EL1&0.
+//! Software TLB and TLBI instructions of the EL1&0 regime.
 //!
-//! Cache a corrispondenza diretta, deterministica (nessun hash casuale):
-//! uno slot per pagina da 4 KiB, scelto dai bit bassi del numero di pagina.
-//! Ogni voce ricorda però la pagina o il blocco interi da cui viene, così una
-//! TLBI per VA dentro un blocco da 2 MiB o 1 GiB toglie tutte le voci di quel
-//! blocco. Si mettono in cache solo i walk riusciti (i fault di traduzione,
-//! AF e address size non entrano mai, come richiede l'architettura); i
-//! permessi si controllano a ogni accesso dai bit AP/XN salvati.
+//! Direct-mapped cache, deterministic (no random hash):
+//! one slot per 4 KiB page, chosen by the low bits of the page number.
+//! Each entry however remembers the whole page or block it comes from, so a
+//! TLBI by VA within a 2 MiB or 1 GiB block removes all the entries of that
+//! block. Only successful walks are cached (translation, AF and address
+//! size faults never enter, as the architecture requires); the
+//! permissions are checked on every access from the saved AP/XN bits.
 
 pub use vetro_cpu::sys::TlbiOp;
 
 use crate::regs::MmuRegs;
 use crate::walk::{Perms, Translation};
 
-/// VA[55:0]: la parte dell'indirizzo che identifica una voce. I bit 63:56
-/// sono il tag (con TBI) o copie del bit 55 (verificate prima del lookup).
+/// VA[55:0]: the part of the address that identifies an entry. Bits 63:56
+/// are the tag (with TBI) or copies of bit 55 (verified before the lookup).
 pub(crate) const VA_MASK: u64 = (1 << 56) - 1;
 
 const ENTRIES: usize = 512;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TlbEntry {
-    /// Base della pagina o del blocco, in VA[55:0].
+    /// Base of the page or block, in VA[55:0].
     va_base: u64,
     size: u64,
     pa_base: u64,
@@ -43,8 +43,8 @@ impl TlbEntry {
             asid: t.asid,
             global: !t.ng,
             level: t.level,
-            perms: t.perms.expect("solo walk a MMU accesa"),
-            attr_index: t.attr_index.expect("solo walk a MMU accesa"),
+            perms: t.perms.expect("only walks with the MMU on"),
+            attr_index: t.attr_index.expect("only walks with the MMU on"),
             sh: t.sh,
         }
     }
@@ -53,8 +53,8 @@ impl TlbEntry {
         key.wrapping_sub(self.va_base) < self.size
     }
 
-    /// Ricostruisce la traduzione per `key`. MAIR si rilegge adesso
-    /// (l'architettura permette sia questo sia di tenerlo in cache).
+    /// Rebuilds the translation for `key`. MAIR is re-read now
+    /// (the architecture allows both this and keeping it cached).
     pub(crate) fn translation(&self, key: u64, regs: &MmuRegs) -> Translation {
         Translation {
             pa: self.pa_base + (key - self.va_base),
@@ -70,28 +70,28 @@ impl TlbEntry {
     }
 }
 
-/// VA[55:12] dal registro di una TLBI (Xt[43:0]).
+/// VA[55:12] from the register of a TLBI (Xt[43:0]).
 fn tlbi_va(xt: u64) -> u64 {
     (xt & ((1 << 44) - 1)) << 12
 }
 
-/// ASID dal registro di una TLBI (Xt[63:48]).
+/// ASID from the register of a TLBI (Xt[63:48]).
 fn tlbi_asid(xt: u64) -> u16 {
     (xt >> 48) as u16
 }
 
-/// TLB di un core.
+/// TLB of a core.
 #[derive(Clone, Debug)]
 pub struct Tlb {
     entries: Vec<Option<TlbEntry>>,
-    /// Generazione di ogni slot: cresce a ogni modifica dello slot
-    /// (inserimento, TLBI, svuotamento). La cache delle traduzioni recenti
-    /// della [`Mmu`](crate::Mmu) è valida solo finché lo slot da cui viene
-    /// non cambia.
+    /// Generation of each slot: grows on every change to the slot
+    /// (insertion, TLBI, flush). The cache of recent translations
+    /// of the [`Mmu`](crate::Mmu) is valid only as long as the slot it comes from
+    /// does not change.
     gens: Box<[u64; ENTRIES]>,
-    /// Invalidazioni eseguite (TLBI e svuotamenti), anche a vuoto: chi
-    /// tiene copie delle traduzioni fuori dal TLB (la TLB software del JIT)
-    /// le scarta quando cambia.
+    /// Invalidations performed (TLBI and flushes), even no-op ones: whoever
+    /// keeps copies of translations outside the TLB (the JIT's software TLB)
+    /// discards them when this changes.
     flushes: u64,
 }
 
@@ -111,7 +111,7 @@ impl Tlb {
         (key >> 12) as usize & (ENTRIES - 1)
     }
 
-    /// Generazione dello slot `slot`.
+    /// Generation of slot `slot`.
     #[inline]
     pub(crate) fn generation(&self, slot: usize) -> u64 {
         self.gens[slot]
@@ -127,13 +127,13 @@ impl Tlb {
         self.gens[s] += 1;
     }
 
-    /// Numero di invalidazioni eseguite finora ([`tlbi`](Self::tlbi) e
+    /// Number of invalidations performed so far ([`tlbi`](Self::tlbi) and
     /// [`flush_all`](Self::flush_all)).
     pub fn flushes(&self) -> u64 {
         self.flushes
     }
 
-    /// Numero di voci valide.
+    /// Number of valid entries.
     pub fn len(&self) -> usize {
         self.entries.iter().filter(|e| e.is_some()).count()
     }
@@ -151,7 +151,7 @@ impl Tlb {
         }
     }
 
-    /// Svuota tutto (VMALLE1).
+    /// Flushes everything (VMALLE1).
     pub fn flush_all(&mut self) {
         self.flushes += 1;
         self.entries.fill(None);
@@ -160,27 +160,27 @@ impl Tlb {
         }
     }
 
-    /// Voci che contengono `va` e sono globali o di `asid` (VAE1, VALE1).
+    /// Entries that contain `va` and are global or of `asid` (VAE1, VALE1).
     pub fn flush_va(&mut self, va: u64, asid: u16) {
         let key = va & VA_MASK;
         self.remove_if(|e| e.contains(key) && (e.global || e.asid == asid));
     }
 
-    /// Voci non globali di `asid` (ASIDE1).
+    /// Non-global entries of `asid` (ASIDE1).
     pub fn flush_asid(&mut self, asid: u16) {
         self.remove_if(|e| !e.global && e.asid == asid);
     }
 
-    /// Voci che contengono `va`, di qualunque ASID (VAAE1, VAALE1).
+    /// Entries that contain `va`, of any ASID (VAAE1, VAALE1).
     pub fn flush_va_all_asids(&mut self, va: u64) {
         let key = va & VA_MASK;
         self.remove_if(|e| e.contains(key));
     }
 
-    /// Esegue una TLBI con il valore di Xt (ignorato da VMALLE1). Le
-    /// varianti "last level" coincidono con le altre perché il TLB contiene
-    /// solo foglie (nessuna cache dei livelli intermedi); le varianti IS
-    /// agiscono qui come quelle locali.
+    /// Executes a TLBI with the value of Xt (ignored by VMALLE1). The
+    /// "last level" variants coincide with the others because the TLB contains
+    /// only leaves (no cache of intermediate levels); the IS variants
+    /// act here like the local ones.
     pub fn tlbi(&mut self, op: TlbiOp, xt: u64) {
         use TlbiOp::*;
         self.flushes += 1;
@@ -195,13 +195,13 @@ impl Tlb {
 
 // ---- Snapshot (M6, ADR 0015) -------------------------------------------------
 
-/// Le voci del TLB entrano nello snapshot: sono stato osservabile (un guest
-/// che cambia le tabelle senza TLBI vede ancora la traduzione vecchia, e
-/// una voce assente dopo il ripristino cambierebbe il risultato). Le
-/// generazioni degli slot no: servono solo alla cache delle traduzioni
-/// recenti della MMU, che al ripristino riparte vuota. `flushes` nemmeno:
-/// al ripristino cresce, così chi tiene copie delle traduzioni (la TLB
-/// software del JIT) le scarta.
+/// TLB entries go into the snapshot: they are observable state (a guest
+/// that changes the tables without a TLBI still sees the old translation, and
+/// an entry missing after restore would change the result). The slot
+/// generations do not: they only serve the MMU's cache of recent
+/// translations, which restarts empty on restore. Nor does `flushes`:
+/// on restore it grows, so whoever keeps copies of translations (the JIT's
+/// software TLB) discards them.
 impl vetro_snapshot::Snapshot for Tlb {
     fn save(&self, w: &mut vetro_snapshot::Writer) {
         let valid = self.entries.iter().enumerate().filter_map(|(i, e)| e.map(|e| (i, e)));
@@ -226,14 +226,14 @@ impl vetro_snapshot::Snapshot for Tlb {
         use vetro_snapshot::Error;
         let n = r.u32()? as usize;
         if n > ENTRIES {
-            return Err(Error::invalid(format!("{n} voci nel TLB")));
+            return Err(Error::invalid(format!("{n} entries in the TLB")));
         }
         self.entries.fill(None);
         let mut last = None;
         for _ in 0..n {
             let slot = r.u32()? as usize;
             if slot >= ENTRIES || last.is_some_and(|l| slot <= l) {
-                return Err(Error::invalid(format!("slot del TLB {slot}")));
+                return Err(Error::invalid(format!("TLB slot {slot}")));
             }
             last = Some(slot);
             let e = TlbEntry {
@@ -248,7 +248,7 @@ impl vetro_snapshot::Snapshot for Tlb {
                 sh: r.u8()?,
             };
             if !e.size.is_power_of_two() || e.va_base & (e.size - 1) != 0 || e.attr_index > 7 {
-                return Err(Error::invalid(format!("voce del TLB {e:?}")));
+                return Err(Error::invalid(format!("TLB entry {e:?}")));
             }
             self.entries[slot] = Some(e);
         }

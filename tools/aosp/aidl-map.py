@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Mappa AIDL dell'immagine AOSP di Vetro (M8, decoder Binder).
+"""AIDL map of the Vetro AOSP image (M8, Binder decoder).
 
-Dai jar di /system/framework estratti dall'immagine (tools/aosp/aidl-map.sh)
-legge con `dexdump -f` le costanti che AIDL genera negli stub:
-`TRANSACTION_<metodo>` di `<interfaccia>$Stub` (codice -> metodo) e, per le
-interfacce scritte a mano come android.content.IContentProvider, le costanti
-`<NOME>_TRANSACTION` dell'interfaccia. Il descrittore è il nome della classe
-dell'interfaccia (quello che writeInterfaceToken mette in testa al Parcel).
+From the /system/framework jars extracted from the image (tools/aosp/aidl-map.sh)
+reads with `dexdump -f` the constants that AIDL generates in the stubs:
+`TRANSACTION_<method>` of `<interface>$Stub` (code -> method) and, for
+hand-written interfaces like android.content.IContentProvider, the interface's
+`<NAME>_TRANSACTION` constants. The descriptor is the interface's class
+name (the one writeInterfaceToken puts at the head of the Parcel).
 
-Uscita, una riga per metodo, ordinata: `descrittore<TAB>codice<TAB>metodo`.
-Uso: aidl-map.py DEXDUMP FILE.dex... > mappa.tsv
+Output, one line per method, sorted: `descriptor<TAB>code<TAB>method`.
+Usage: aidl-map.py DEXDUMP FILE.dex... > map.tsv
 """
 import re
 import subprocess

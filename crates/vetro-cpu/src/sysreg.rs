@@ -1,29 +1,29 @@
-//! Registri di sistema: nomi e codifiche `(op0, op1, CRn, CRm, op2)` di MRS e
-//! MSR (Arm ARM, C5.3 e D17).
+//! System registers: names and encodings `(op0, op1, CRn, CRm, op2)` of MRS and
+//! MSR (Arm ARM, C5.3 and D17).
 //!
-//! Il decoder riconosce qui tutti i registri che Vetro modella, a qualunque
-//! livello di eccezione; chi esegue decide l'accesso (EL0 o EL1, sola lettura
-//! o sola scrittura, trap). In modalità utente valgono solo quelli di M1
-//! (vedi [`SysReg::is_el0_legacy`]); il canale di debug di EL0 è UNDEFINED
-//! come in QEMU user (vedi [`SysReg::is_el0_dcc`]); gli altri restano
-//! `Unimplemented` come prima della modalità sistema.
+//! The decoder recognises here all the registers that Vetro models, at any
+//! exception level; the executor decides on access (EL0 or EL1, read-only
+//! or write-only, trap). In user mode only those of M1 apply
+//! (see [`SysReg::is_el0_legacy`]); the EL0 debug channel is UNDEFINED
+//! as in QEMU user (see [`SysReg::is_el0_dcc`]); the others stay
+//! `Unimplemented` as before system mode.
 
-/// Registri di sistema modellati.
+/// Modelled system registers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SysReg {
-    // --- Accessibili a EL0 fin da M1 ---
+    // --- Accessible at EL0 since M1 ---
     Nzcv,
     TpidrEl0,
-    /// Sola lettura a EL0, lettura e scrittura a EL1.
+    /// Read-only at EL0, read and write at EL1.
     TpidrroEl0,
     Fpcr,
     Fpsr,
-    /// Sola lettura: dimensione del blocco di DC ZVA.
+    /// Read-only: DC ZVA block size.
     DczidEl0,
-    /// Sola lettura: geometria delle cache.
+    /// Read-only: cache geometry.
     CtrEl0,
 
-    // --- PSTATE e registri speciali ---
+    // --- PSTATE and special registers ---
     Daif,
     CurrentEl,
     SpSel,
@@ -31,7 +31,7 @@ pub enum SysReg {
     ElrEl1,
     SpsrEl1,
 
-    // --- Controllo del sistema e MMU ---
+    // --- System control and MMU ---
     SctlrEl1,
     ActlrEl1,
     CpacrEl1,
@@ -42,7 +42,7 @@ pub enum SysReg {
     AmairEl1,
     ContextidrEl1,
 
-    // --- Eccezioni ---
+    // --- Exceptions ---
     VbarEl1,
     EsrEl1,
     FarEl1,
@@ -54,7 +54,7 @@ pub enum SysReg {
     TpidrEl1,
     CntkctlEl1,
 
-    // --- Identificazione ---
+    // --- Identification ---
     MidrEl1,
     MpidrEl1,
     RevidrEl1,
@@ -62,55 +62,55 @@ pub enum SysReg {
     ClidrEl1,
     CcsidrEl1,
     CsselrEl1,
-    /// Spazio degli ID (op0 = 3, op1 = 0, CRn = 0, CRm = 1..=7): indice
-    /// `CRm * 8 + op2`. Le codifiche riservate valgono zero.
+    /// ID space (op0 = 3, op1 = 0, CRn = 0, CRm = 1..=7): index
+    /// `CRm * 8 + op2`. Reserved encodings are zero.
     Id(u8),
 
-    // --- Debug (solo memoria dei valori, niente eccezioni di debug) ---
+    // --- Debug (value storage only, no debug exceptions) ---
     MdscrEl1,
     MdccintEl1,
     OslarEl1,
     OslsrEl1,
     OsdlrEl1,
     MdrarEl1,
-    /// DBGBVR<n>_EL1, n < 6 sulla Cortex-A53.
+    /// DBGBVR<n>_EL1, n < 6 on the Cortex-A53.
     DbgbvrEl1(u8),
     DbgbcrEl1(u8),
-    /// DBGWVR<n>_EL1, n < 4 sulla Cortex-A53.
+    /// DBGWVR<n>_EL1, n < 4 on the Cortex-A53.
     DbgwvrEl1(u8),
     DbgwcrEl1(u8),
-    /// OSDTRRX_EL1, OSDTRTX_EL1, OSECCR_EL1: RAZ/WI a EL1 (QEMU non
-    /// implementa il canale di comunicazione di debug né EDECCR).
+    /// OSDTRRX_EL1, OSDTRTX_EL1, OSECCR_EL1: RAZ/WI at EL1 (QEMU implements
+    /// neither the debug communication channel nor EDECCR).
     DbgRazWiEl1,
-    /// MDCCSR_EL0: sola lettura, vale zero; leggibile da EL0 se
-    /// MDSCR_EL1.TDCC = 0, altrimenti trap a EL1.
+    /// MDCCSR_EL0: read-only, reads as zero; readable from EL0 if
+    /// MDSCR_EL1.TDCC = 0, otherwise trap to EL1.
     MdccsrEl0,
-    /// DBGDTR_EL0 e DBGDTRRX_EL0/DBGDTRTX_EL0: RAZ/WI, accessibili da EL0
-    /// come MDCCSR_EL0.
+    /// DBGDTR_EL0 and DBGDTRRX_EL0/DBGDTRTX_EL0: RAZ/WI, accessible from EL0
+    /// like MDCCSR_EL0.
     DbgdtrEl0,
-    /// DBGCLAIMSET_EL1: legge sempre 0xff, la scrittura accende i bit [7:0].
+    /// DBGCLAIMSET_EL1: always reads 0xff, writing sets bits [7:0].
     DbgclaimsetEl1,
-    /// DBGCLAIMCLR_EL1: legge i bit di CLAIM, la scrittura li spegne.
+    /// DBGCLAIMCLR_EL1: reads the CLAIM bits, writing clears them.
     DbgclaimclrEl1,
     PmuserenrEl0,
 
-    // --- IMPLEMENTATION DEFINED della Cortex-A53 (come QEMU) ---
+    // --- Cortex-A53 IMPLEMENTATION DEFINED (like QEMU) ---
     /// L2CTLR, L2ECTLR, L2ACTLR, CPUACTLR, CPUECTLR, CPUMERRSR, L2MERRSR:
-    /// RAZ/WI a EL1.
+    /// RAZ/WI at EL1.
     ImpDefEl1,
-    /// CBAR_EL1: base delle periferiche (il distributore del GIC), sola lettura.
+    /// CBAR_EL1: peripheral base (the GIC distributor), read-only.
     CbarEl1,
 
-    /// Registro gestito dall'ambiente (timer generico, interfaccia CPU del
-    /// GIC): la CPU controlla l'accesso e passa lettura e scrittura a
+    /// Register handled by the environment (generic timer, GIC CPU
+    /// interface): the CPU checks the access and passes read and write to
     /// [`CpuEnv`](crate::sys::CpuEnv).
     Env(EnvReg),
 }
 
-/// Registri che la CPU non tiene in sé: li implementa la piattaforma.
+/// Registers the CPU does not keep itself: the platform implements them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EnvReg {
-    // Timer generico.
+    // Generic timer.
     CntfrqEl0,
     CntpctEl0,
     CntvctEl0,
@@ -120,7 +120,7 @@ pub enum EnvReg {
     CntvTvalEl0,
     CntvCtlEl0,
     CntvCvalEl0,
-    // Interfaccia CPU del GICv3 (gruppo 0 e 1).
+    // GICv3 CPU interface (group 0 and 1).
     IccPmrEl1,
     IccIar0El1,
     IccEoir0El1,
@@ -143,7 +143,7 @@ pub enum EnvReg {
     IccIgrpen1El1,
 }
 
-/// Direzioni ammesse da un registro.
+/// Directions allowed by a register.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rw {
     ReadWrite,
@@ -152,7 +152,7 @@ pub enum Rw {
 }
 
 impl EnvReg {
-    /// Registri del timer generico (accesso da EL0 governato da CNTKCTL_EL1).
+    /// Generic timer registers (EL0 access governed by CNTKCTL_EL1).
     pub fn is_timer(self) -> bool {
         use EnvReg::*;
         matches!(
@@ -182,20 +182,20 @@ impl EnvReg {
 }
 
 impl SysReg {
-    /// I registri che il decoder di M1 conosceva: gli unici eseguiti in
-    /// modalità utente.
+    /// The registers the M1 decoder knew: the only ones executed in
+    /// user mode.
     pub fn is_el0_legacy(self) -> bool {
         use SysReg::*;
         matches!(self, Nzcv | TpidrEl0 | TpidrroEl0 | Fpcr | Fpsr | DczidEl0 | CtrEl0)
     }
 
-    /// Canale di debug di EL0 (MDCCSR_EL0, DBGDTR*_EL0). In modalità utente
-    /// è UNDEFINED (SIGILL): QEMU user, come Linux, accende MDSCR_EL1.TDCC.
+    /// EL0 debug channel (MDCCSR_EL0, DBGDTR*_EL0). In user mode
+    /// it is UNDEFINED (SIGILL): QEMU user, like Linux, sets MDSCR_EL1.TDCC.
     pub fn is_el0_dcc(self) -> bool {
         matches!(self, SysReg::MdccsrEl0 | SysReg::DbgdtrEl0)
     }
 
-    /// Direzioni ammesse a EL1 (a EL0 decidono le regole di accesso).
+    /// Directions allowed at EL1 (at EL0 the access rules decide).
     pub fn rw(self) -> Rw {
         use SysReg::*;
         match self {
@@ -207,22 +207,22 @@ impl SysReg {
         }
     }
 
-    /// Codifiche di registri che la Cortex-A53 ha ma Vetro non modella
-    /// ancora: la PMU (PMUv3). Tutto il resto fuori da [`SysReg::lookup`] non
-    /// esiste sulla A53 (estensioni successive o codifiche libere) ed è
-    /// UNDEFINED, come in QEMU.
+    /// Encodings of registers that the Cortex-A53 has but Vetro does not model
+    /// yet: the PMU (PMUv3). Everything else outside [`SysReg::lookup`] does not
+    /// exist on the A53 (later extensions or free encodings) and is
+    /// UNDEFINED, as in QEMU.
     pub fn is_unmodelled_a53(op0: u32, op1: u32, crn: u32, crm: u32, _op2: u32) -> bool {
         op0 == 3 && matches!((op1, crn, crm), (3, 9, 12..=14) | (0, 9, 14) | (3, 14, 8..=15))
     }
 
-    /// Registro dalla codifica di MRS/MSR, se Vetro lo modella.
+    /// Register from the MRS/MSR encoding, if Vetro models it.
     pub fn lookup(op0: u32, op1: u32, crn: u32, crm: u32, op2: u32) -> Option<SysReg> {
         use EnvReg::*;
         use SysReg::*;
         Some(match (op0, op1, crn, crm, op2) {
-            // Debug (op0 = 2), come QEMU (debug_cp_reginfo). La Cortex-A53
-            // ha 6 breakpoint e 4 watchpoint; DBGPRCR_EL1, DBGAUTHSTATUS_EL1
-            // e DBGVCR32_EL2 in QEMU non esistono (UNDEFINED).
+            // Debug (op0 = 2), like QEMU (debug_cp_reginfo). The Cortex-A53
+            // has 6 breakpoints and 4 watchpoints; DBGPRCR_EL1, DBGAUTHSTATUS_EL1
+            // and DBGVCR32_EL2 do not exist in QEMU (UNDEFINED).
             (2, 0, 0, 0 | 3 | 6, 2) => DbgRazWiEl1,
             (2, 3, 0, 1, 0) => MdccsrEl0,
             (2, 3, 0, 4 | 5, 0) => DbgdtrEl0,
@@ -239,7 +239,7 @@ impl SysReg {
             (2, 0, 1, 1, 4) => OslsrEl1,
             (2, 0, 1, 3, 4) => OsdlrEl1,
 
-            // Identificazione.
+            // Identification.
             (3, 0, 0, 0, 0) => MidrEl1,
             (3, 0, 0, 0, 5) => MpidrEl1,
             (3, 0, 0, 0, 6) => RevidrEl1,
@@ -251,7 +251,7 @@ impl SysReg {
             (3, 3, 0, 0, 1) => CtrEl0,
             (3, 3, 0, 0, 7) => DczidEl0,
 
-            // Controllo e MMU.
+            // Control and MMU.
             (3, 0, 1, 0, 0) => SctlrEl1,
             (3, 0, 1, 0, 1) => ActlrEl1,
             (3, 0, 1, 0, 2) => CpacrEl1,
@@ -264,7 +264,7 @@ impl SysReg {
             (3, 0, 13, 0, 4) => TpidrEl1,
             (3, 0, 14, 1, 0) => CntkctlEl1,
 
-            // PSTATE e registri speciali.
+            // PSTATE and special registers.
             (3, 0, 4, 0, 0) => SpsrEl1,
             (3, 0, 4, 0, 1) => ElrEl1,
             (3, 0, 4, 1, 0) => SpEl0,
@@ -275,7 +275,7 @@ impl SysReg {
             (3, 3, 4, 4, 0) => Fpcr,
             (3, 3, 4, 4, 1) => Fpsr,
 
-            // Eccezioni.
+            // Exceptions.
             (3, 0, 5, 1, 0) => Afsr0El1,
             (3, 0, 5, 1, 1) => Afsr1El1,
             (3, 0, 5, 2, 0) => EsrEl1,
@@ -287,14 +287,14 @@ impl SysReg {
 
             (3, 3, 9, 14, 0) => PmuserenrEl0,
 
-            // IMPLEMENTATION DEFINED della Cortex-A53 (QEMU:
+            // Cortex-A53 IMPLEMENTATION DEFINED (QEMU:
             // cortex_a72_a57_a53_cp_reginfo).
             (3, 1, 11, 0, 2 | 3) | (3, 1, 15, 0, 0) | (3, 1, 15, 2, 0..=3) => ImpDefEl1,
             (3, 1, 15, 3, 0) => CbarEl1,
             (3, 3, 13, 0, 2) => TpidrEl0,
             (3, 3, 13, 0, 3) => TpidrroEl0,
 
-            // Timer generico.
+            // Generic timer.
             (3, 3, 14, 0, 0) => Env(CntfrqEl0),
             (3, 3, 14, 0, 1) => Env(CntpctEl0),
             (3, 3, 14, 0, 2) => Env(CntvctEl0),
@@ -305,8 +305,8 @@ impl SysReg {
             (3, 3, 14, 3, 1) => Env(CntvCtlEl0),
             (3, 3, 14, 3, 2) => Env(CntvCvalEl0),
 
-            // GICv3, interfaccia a registri di sistema (5 bit di priorità:
-            // esistono solo AP0R0 e AP1R0).
+            // GICv3, system register interface (5 priority bits:
+            // only AP0R0 and AP1R0 exist).
             (3, 0, 4, 6, 0) => Env(IccPmrEl1),
             (3, 0, 12, 8, 0) => Env(IccIar0El1),
             (3, 0, 12, 8, 1) => Env(IccEoir0El1),

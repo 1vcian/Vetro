@@ -1,17 +1,17 @@
-//! Avvio del kernel guest di M3 con console su stdio, marcatori e tempi
-//! limite.
+//! Boot of the M3 guest kernel with the console on stdio, markers and time
+//! limits.
 //!
-//! Il kernel e l'initramfs vengono da `tools/guest-kernel/build.sh`
-//! (`target/guest-kernel`). L'oracolo è `qemu-system-aarch64`: nativo su
-//! Linux, `tools/guest-kernel/qemu-system-aarch64-docker.sh` su macOS
-//! (variabile `VETRO_QEMU_SYSTEM_AARCH64`).
+//! The kernel and the initramfs come from `tools/guest-kernel/build.sh`
+//! (`target/guest-kernel`). The oracle is `qemu-system-aarch64`: native on
+//! Linux, `tools/guest-kernel/qemu-system-aarch64-docker.sh` on macOS
+//! (variable `VETRO_QEMU_SYSTEM_AARCH64`).
 //!
-//! Variabili:
-//! - `VETRO_REQUIRE_ORACLE=1`: senza oracolo il test fallisce invece di
-//!   saltare;
-//! - `VETRO_REQUIRE_GUEST_KERNEL=1`: idem se manca `target/guest-kernel`;
-//! - `VETRO_BOOT_TIMEOUT`: secondi concessi a ogni fase (default 180);
-//! - `VETRO_BOOT_UPDATE_REFERENCE=1`: riscrive il log di riferimento in
+//! Variables:
+//! - `VETRO_REQUIRE_ORACLE=1`: without the oracle the test fails instead of
+//!   being skipped;
+//! - `VETRO_REQUIRE_GUEST_KERNEL=1`: likewise if `target/guest-kernel` is missing;
+//! - `VETRO_BOOT_TIMEOUT`: seconds granted to each phase (default 180);
+//! - `VETRO_BOOT_UPDATE_REFERENCE=1`: rewrites the reference log in
 //!   `guest/kernel/reference/`.
 
 use std::io::{Read, Write};
@@ -20,18 +20,18 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::{Duration, Instant};
 
-/// Stampato da `/init` appena parte (guest/kernel/initramfs/init).
+/// Printed by `/init` as soon as it starts (guest/kernel/initramfs/init).
 pub const BOOT_MARKER: &str = "VETRO-BOOT-OK";
-/// Fine dell'autotest riuscito (guest/kernel/initramfs/autotest.sh).
+/// End of a successful autotest (guest/kernel/initramfs/autotest.sh).
 pub const AUTOTEST_OK: &str = "VETRO-AUTOTEST-FINE: ok";
-/// Fine dell'autotest in generale (anche con errori).
+/// End of the autotest in general (also with errors).
 pub const AUTOTEST_END: &str = "VETRO-AUTOTEST-FINE";
-/// Il prompt di ash (BusyBox) pronto a leggere: dopo `# ` l'editor di riga
-/// chiede la posizione del cursore (`ESC[6n`), e solo allora il terminale è
-/// in modo raw e l'eco lo fa ash. L'ingresso si manda dopo questa sequenza,
-/// sotto QEMU come sotto Vetro. Mandato prima (qemu-system-aarch64 nativo,
-/// CI), ash trova l'ingresso già in attesa, salta `ESC[6n` e il kernel ne fa
-/// l'eco in modo canonico: il log dipende dai tempi dell'host.
+/// The ash (BusyBox) prompt ready to read: after `# ` the line editor
+/// asks for the cursor position (`ESC[6n`), and only then the terminal is
+/// in raw mode and ash does the echo. Input is sent after this sequence,
+/// under QEMU as under Vetro. Sent earlier (native qemu-system-aarch64,
+/// CI), ash finds the input already waiting, skips `ESC[6n` and the kernel
+/// echoes it in canonical mode: the log depends on the host's timing.
 pub const SHELL_PROMPT: &str = "# \x1b[6n";
 
 pub fn repo_root() -> PathBuf {
@@ -42,7 +42,7 @@ fn env_is_1(name: &str) -> bool {
     std::env::var(name).is_ok_and(|v| v == "1")
 }
 
-/// Salta il test (con `SKIP`) o fallisce se la variabile `require` vale 1.
+/// Skips the test (with `SKIP`) or fails if the variable `require` is 1.
 pub fn skip_or_fail(require: &str, msg: &str) {
     if env_is_1(require) {
         panic!("{msg} ({require}=1)");
@@ -50,14 +50,14 @@ pub fn skip_or_fail(require: &str, msg: &str) {
     eprintln!("SKIP: {msg}");
 }
 
-/// `Image` e `initramfs.cpio.gz`, se costruiti.
+/// `Image` and `initramfs.cpio.gz`, if built.
 pub fn guest_kernel() -> Option<(PathBuf, PathBuf)> {
     let dir = repo_root().join("target/guest-kernel");
     let (image, initrd) = (dir.join("Image"), dir.join("initramfs.cpio.gz"));
     (image.is_file() && initrd.is_file()).then_some((image, initrd))
 }
 
-/// Il comando di `qemu-system-aarch64`: variabile o PATH.
+/// The `qemu-system-aarch64` command: variable or PATH.
 pub fn qemu_system() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("VETRO_QEMU_SYSTEM_AARCH64") {
         return Some(PathBuf::from(p));
@@ -71,7 +71,7 @@ pub fn timeout() -> Duration {
     Duration::from_secs(secs)
 }
 
-/// Una macchina guest in esecuzione con la console su stdin/stdout.
+/// A running guest machine with the console on stdin/stdout.
 pub struct Console {
     child: Child,
     stdin: Option<ChildStdin>,
@@ -97,7 +97,7 @@ impl Console {
         Ok(Console { child, stdin, rx, log: Vec::new(), start: Instant::now() })
     }
 
-    /// Tutto quello che la console ha stampato finora.
+    /// Everything the console has printed so far.
     pub fn log(&self) -> String {
         String::from_utf8_lossy(&self.log).into_owned()
     }
@@ -106,9 +106,9 @@ impl Console {
         self.start.elapsed()
     }
 
-    /// Aspetta che `needle` compaia dopo la posizione `from` del log;
-    /// restituisce la posizione subito dopo, o `None` allo scadere del tempo
-    /// o alla fine dell'uscita.
+    /// Waits for `needle` to appear after position `from` of the log;
+    /// returns the position right after it, or `None` when the time runs out
+    /// or at the end of the output.
     pub fn wait_for(&mut self, needle: &str, from: usize, limit: Duration) -> Option<usize> {
         let deadline = Instant::now() + limit;
         loop {
@@ -123,11 +123,11 @@ impl Console {
         }
     }
 
-    /// Come [`Console::wait_for`], ma aspetta anche la fine della riga che
-    /// contiene `needle`: la seriale arriva a pezzi, e la riga
-    /// `VETRO-AUTOTEST-FINE: ok` può arrivare spezzata dopo il marcatore.
-    /// Restituisce la posizione dopo il `\n` e la riga da `needle` in poi,
-    /// senza `\r`/`\n` finali.
+    /// Like [`Console::wait_for`], but also waits for the end of the line that
+    /// contains `needle`: the serial arrives in pieces, and the line
+    /// `VETRO-AUTOTEST-FINE: ok` may arrive split after the marker.
+    /// Returns the position after the `\n` and the line from `needle` on,
+    /// without trailing `\r`/`\n`.
     pub fn wait_line(&mut self, needle: &str, from: usize, limit: Duration) -> Option<(usize, String)> {
         let deadline = Instant::now() + limit;
         let at = self.wait_for(needle, from, limit)?;
@@ -137,16 +137,16 @@ impl Console {
         Some((end, line.trim_end_matches(['\r', '\n']).to_string()))
     }
 
-    /// Scrive sulla console del guest (come dalla tastiera).
+    /// Writes to the guest's console (as from the keyboard).
     pub fn send(&mut self, text: &str) {
         let stdin = self.stdin.as_mut().expect("stdin chiuso");
         stdin.write_all(text.as_bytes()).unwrap();
         stdin.flush().unwrap();
     }
 
-    /// Aspetta la fine del processo; allo scadere lo termina (prima SIGTERM,
-    /// che il wrapper Docker inoltra a QEMU, poi SIGKILL). `true` se è uscito
-    /// da solo.
+    /// Waits for the process to end; when the time runs out it terminates it (first SIGTERM,
+    /// which the Docker wrapper forwards to QEMU, then SIGKILL). `true` if it exited
+    /// by itself.
     pub fn finish(&mut self, limit: Duration) -> bool {
         self.stdin.take();
         let deadline = Instant::now() + limit;
@@ -194,29 +194,29 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
-/// Normalizza un log di avvio per il confronto con il riferimento: toglie i
-/// `\r` della seriale (le righe restano quelle del guest).
+/// Normalises a boot log for the comparison with the reference: removes the
+/// serial's `\r` (the lines stay those of the guest).
 pub fn normalize(log: &str) -> String {
     log.replace("\r\n", "\n").replace('\r', "\n")
 }
 
-/// Opzioni di `qemu-system-aarch64` per la stessa macchina di Vetro: virt
-/// con GICv3 senza ITS (Vetro non ha LPI), Cortex-A53, 1 GiB, senza la
-/// scheda di rete PCI che QEMU aggiunge da sé (Vetro non ha PCI, e la sua ROM
-/// `efi-virtio.rom` non c'è sui runner senza ipxe-qemu).
+/// `qemu-system-aarch64` options for the same machine as Vetro: virt
+/// with GICv3 without ITS (Vetro has no LPIs), Cortex-A53, 1 GiB, without the
+/// PCI network card that QEMU adds by itself (Vetro has no PCI, and its ROM
+/// `efi-virtio.rom` isn't on the runners without ipxe-qemu).
 ///
-/// I dispositivi virtio sono quelli di `vetro_machine::Devices::default`,
-/// nello stesso ordine (quindi negli stessi slot): GPU, tastiera, tablet,
-/// rete. La rete è la user di QEMU (slirp), con gli stessi indirizzi del
-/// gateway di `vetro-net` (10.0.2.15/.2/.3) e lo stesso MAC del guest; lo
-/// stesso esito vale solo per DHCP e ping al gateway (l'autotest): DNS e TCP
-/// in QEMU escono sulla rete vera, in Vetro vanno al sinkhole
+/// The virtio devices are those of `vetro_machine::Devices::default`,
+/// in the same order (hence in the same slots): GPU, keyboard, tablet,
+/// network. The network is QEMU's user network (slirp), with the same addresses as the
+/// `vetro-net` gateway (10.0.2.15/.2/.3) and the same guest MAC; the
+/// same outcome holds only for DHCP and ping to the gateway (the autotest): DNS and TCP
+/// in QEMU go out on the real network, in Vetro they go to the sinkhole
 /// (`tests/boot/tests/net.rs`).
-/// `force-legacy=false` perché il virtio-mmio di Vetro è la versione 2
-/// (virtio 1.x); QEMU di default presenta la versione 1 legacy, e i driver
-/// di GPU e input (che vogliono VIRTIO_F_VERSION_1) non partirebbero.
-/// Niente vsock: `vhost-vsock-device` vuole `/dev/vhost-vsock` dell'host, che
-/// né Docker Desktop né i runner hanno; virtio-vsock si prova solo sotto
+/// `force-legacy=false` because Vetro's virtio-mmio is version 2
+/// (virtio 1.x); by default QEMU presents the legacy version 1, and the GPU
+/// and input drivers (which want VIRTIO_F_VERSION_1) would not start.
+/// No vsock: `vhost-vsock-device` wants the host's `/dev/vhost-vsock`, which
+/// neither Docker Desktop nor the runners have; virtio-vsock is tested only under
 /// Vetro (`tests/boot/tests/devices.rs`).
 pub const QEMU_MACHINE: [&str; 20] = [
     "-M",
@@ -241,26 +241,26 @@ pub const QEMU_MACHINE: [&str; 20] = [
     "virtio-net-device,netdev=n",
 ];
 
-/// Differenze note tra l'avvio sotto QEMU e sotto Vetro, con il motivo.
-/// Una riga che contiene uno di questi testi si ignora nel confronto.
+/// Known differences between the boot under QEMU and under Vetro, with the reason.
+/// A line that contains one of these texts is ignored in the comparison.
 pub const KNOWN_DIFFERENCES: &[(&str, &str)] = &[
-    // Il GICv3 di QEMU dichiara gli LPI (GICD_TYPER.LPIS) anche con its=off;
-    // quello di Vetro no, e Linux non stampa nulla.
-    ("ITS: No ITS available", "QEMU dichiara gli LPI senza ITS"),
-    // Vetro non esegue AArch32 (ADR 0005): ID_AA64PFR0_EL1.EL0 = 1.
-    ("CPU features: detected: 32-bit EL0 Support", "niente AArch32 in Vetro (ADR 0005)"),
+    // QEMU's GICv3 declares LPIs (GICD_TYPER.LPIS) even with its=off;
+    // Vetro's doesn't, and Linux prints nothing.
+    ("ITS: No ITS available", "QEMU declares LPIs without ITS"),
+    // Vetro doesn't execute AArch32 (ADR 0005): ID_AA64PFR0_EL1.EL0 = 1.
+    ("CPU features: detected: 32-bit EL0 Support", "no AArch32 in Vetro (ADR 0005)"),
 ];
 
-/// Righe il cui contenuto numerico dipende dalla dimensione del device tree
-/// di QEMU, che descrive anche dispositivi che Vetro non ha (PCIe, fw-cfg,
-/// flash, GPIO): pochi KiB di memoria in più riservati. Si confrontano senza
-/// i numeri.
+/// Lines whose numeric contents depend on the size of QEMU's device tree,
+/// which also describes devices that Vetro doesn't have (PCIe, fw-cfg,
+/// flash, GPIO): a few KiB more of reserved memory. They are compared without
+/// the numbers.
 pub const MEMORY_LINES: &[&str] = &["Memory: ", "rootfs on / type rootfs", "devtmpfs on /dev type devtmpfs"];
 
-/// Righe di un log pronte per il confronto: senza tempi del kernel, senza le
-/// differenze note, senza i numeri delle righe di memoria, in ordine
-/// alfabetico (l'ordine di alcuni initcall asincroni dipende dai tempi reali
-/// dell'host sotto QEMU).
+/// Lines of a log ready for the comparison: without kernel timestamps, without the
+/// known differences, without the numbers of the memory lines, in alphabetical
+/// order (the order of some asynchronous initcalls depends on the host's real
+/// timing under QEMU).
 pub fn comparable_lines(log: &str) -> Vec<String> {
     let mut v: Vec<String> = normalize(log)
         .lines()
@@ -279,7 +279,7 @@ pub fn comparable_lines(log: &str) -> Vec<String> {
     v
 }
 
-/// Toglie `[    1.234567] ` in testa a una riga del kernel.
+/// Removes `[    1.234567] ` at the head of a kernel line.
 fn strip_timestamp(l: &str) -> &str {
     let t = l.trim_start();
     if let Some(rest) = t.strip_prefix('[')
@@ -292,8 +292,8 @@ fn strip_timestamp(l: &str) -> &str {
     l
 }
 
-/// Differenze tra due insiemi di righe (`-` solo nel primo, `+` solo nel
-/// secondo), per i messaggi dei test.
+/// Differences between two sets of lines (`-` only in the first, `+` only in the
+/// second), for the test messages.
 pub fn line_diff(a: &[String], b: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     let (mut i, mut j) = (0, 0);
@@ -341,12 +341,12 @@ mod tests {
 
     #[test]
     fn riga_spezzata_dalla_seriale() {
-        // Il marcatore arriva prima del resto della riga, come dalla PL011
-        // sotto qemu-system-aarch64 nativo (CI): la riga va letta intera.
+        // The marker arrives before the rest of the line, as from the PL011
+        // under native qemu-system-aarch64 (CI): the line must be read whole.
         let mut cmd = Command::new("sh");
         cmd.args(["-c", "printf 'x\\r\\nVETRO-AUTOTEST-FINE'; sleep 0.5; printf ': ok\\r\\nresto'"]);
         let mut con = Console::spawn(cmd).unwrap();
-        // Il controllo di prima (marcatore, poi `contains`) vede la riga a metà.
+        // The earlier check (marker, then `contains`) sees the line halfway.
         assert!(con.wait_for(AUTOTEST_END, 0, Duration::from_secs(10)).is_some());
         assert!(!con.log().contains(AUTOTEST_OK));
         let (end, line) = con.wait_line(AUTOTEST_END, 0, Duration::from_secs(10)).unwrap();

@@ -1,6 +1,6 @@
-//! Ingresso nelle eccezioni a EL1 e ritorno (ERET): pseudocodice
-//! `AArch64.TakeException` e `AArch64.ExceptionReturn` (Arm ARM, D1.10-11),
-//! senza EL2/EL3 né AArch32.
+//! Exception entry to EL1 and return (ERET): pseudocode
+//! `AArch64.TakeException` and `AArch64.ExceptionReturn` (Arm ARM, D1.10-11),
+//! without EL2/EL3 or AArch32.
 
 use crate::state::Cpu;
 
@@ -26,16 +26,16 @@ pub mod ec {
     pub const BRK: u64 = 0x3c;
 }
 
-/// ESR_EL1.IL: istruzione a 32 bit (sempre, in AArch64).
+/// ESR_EL1.IL: 32-bit instruction (always, in AArch64).
 pub(crate) const IL: u64 = 1 << 25;
 
-/// ESR_EL1 per `class` e `iss`.
+/// ESR_EL1 for `class` and `iss`.
 #[inline]
 pub(crate) fn esr(class: u64, iss: u64) -> u64 {
     class << 26 | IL | iss
 }
 
-/// Tipo di eccezione: sceglie l'offset dentro il gruppo di vettori.
+/// Exception type: selects the offset within the vector group.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExceptionKind {
     Sync,
@@ -56,13 +56,13 @@ impl ExceptionKind {
 }
 
 impl Cpu {
-    /// Prende un'eccezione a EL1. `esr` e `far` si scrivono solo se presenti
-    /// (IRQ e FIQ non toccano ESR_EL1; FAR_EL1 resta com'è quando
-    /// l'architettura lo dice UNKNOWN, come fa QEMU). `preferred` va in
+    /// Takes an exception to EL1. `esr` and `far` are written only if present
+    /// (IRQ and FIQ do not touch ESR_EL1; FAR_EL1 stays as it is when
+    /// the architecture says UNKNOWN, as QEMU does). `preferred` goes into
     /// ELR_EL1.
     ///
-    /// Serve anche alla piattaforma, per esempio per consegnare un
-    /// Undefined dopo una HVC che non vuole gestire.
+    /// Also used by the platform, for example to deliver an
+    /// Undefined after an HVC it does not want to handle.
     pub fn take_exception(
         &mut self,
         kind: ExceptionKind,
@@ -72,11 +72,11 @@ impl Cpu {
     ) {
         let from_el = self.sys.el;
         let group = if from_el == 0 {
-            0x400 // da EL0 in AArch64
+            0x400 // from EL0 in AArch64
         } else if self.sys.spsel {
-            0x200 // EL1 con SP_EL1
+            0x200 // EL1 with SP_EL1
         } else {
-            0x000 // EL1 con SP_EL0
+            0x000 // EL1 with SP_EL0
         };
         self.sys.spsr_el1 = self.pstate_spsr();
         self.sys.elr_el1 = preferred;
@@ -92,11 +92,11 @@ impl Cpu {
         self.pc = self.sys.vbar_el1.wrapping_add(group + kind.offset());
     }
 
-    /// ERET da EL1. Un SPSR che chiede AArch32, EL2/EL3 o EL0 con SP_EL1 è
-    /// un ritorno illegale: EL e SP non cambiano, PSTATE.IL = 1 e la
-    /// prossima istruzione prende un'eccezione di stato illegale. NZCV e DAIF
-    /// si ripristinano comunque. Il monitor esclusivo locale si azzera; a
-    /// ELR si applica il Top Byte Ignore del nuovo livello (come QEMU).
+    /// ERET from EL1. An SPSR that asks for AArch32, EL2/EL3 or EL0 with SP_EL1 is
+    /// an illegal return: EL and SP do not change, PSTATE.IL = 1 and the
+    /// next instruction takes an illegal state exception. NZCV and DAIF
+    /// are restored anyway. The local exclusive monitor is cleared; the
+    /// Top Byte Ignore of the new level is applied to ELR (like QEMU).
     pub(crate) fn exception_return(&mut self) {
         let s = self.sys.spsr_el1;
         let target = self.sys.elr_el1;

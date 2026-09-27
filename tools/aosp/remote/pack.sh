@@ -1,9 +1,9 @@
 #!/bin/bash
-# Sulla VM di build (lanciato da tools/aosp/fetch.sh): raccoglie in
-# ~/$WORK/out gli artefatti della build da portare sul Mac. Solo copie: il
-# disco si compone sul Mac (tools/aosp/mkdisk.sh), così la VM resta accesa il
-# meno possibile. vbmeta non serve: il fstab non chiede AVB e il bootloader di
-# Vetro (ADR 0018) e QEMU non lo leggono.
+# On the build VM (launched by tools/aosp/fetch.sh): collects in
+# ~/$WORK/out the build artifacts to bring to the Mac. Copies only: the
+# disk is assembled on the Mac (tools/aosp/mkdisk.sh), so the VM stays on as
+# little as possible. vbmeta is not needed: the fstab does not ask for AVB and
+# Vetro's bootloader (ADR 0018) and QEMU do not read it.
 set -euo pipefail
 cd
 tree="$HOME/${VETRO_AOSP_TREE:-aosp}"
@@ -12,35 +12,35 @@ product="${VETRO_AOSP_PRODUCT:-vetro_arm64}"
 p="$tree/out/target/product/$product"
 o="$work/out"
 
-# Controlli sul risultato prima di copiare (ADR 0030): se uno manca la build
-# non è quella voluta e fetch.sh si ferma.
-fail() { echo "ERRORE: $*" >&2; exit 1; }
-# CA di sviluppo: il nome <hash>.0 viene dalla patch di conscrypt.
+# Checks on the result before copying (ADR 0030): if one fails the build
+# is not the intended one and fetch.sh stops.
+fail() { echo "ERROR: $*" >&2; exit 1; }
+# Development CA: the <hash>.0 name comes from the conscrypt patch.
 ca="$(sed -n 's|^+++ b/apex/ca-certificates/files/||p' "$work"/patches/external/conscrypt/*.patch)"
-[ -n "$ca" ] || fail "nessuna CA di sviluppo nelle patch di external/conscrypt"
+[ -n "$ca" ] || fail "no development CA in the external/conscrypt patches"
 capex="$p/system/apex/com.android.conscrypt.capex"
 [ -f "$capex" ] || capex="$p/system/apex/com.android.conscrypt.apex"
-# apex_build_info.pb elenca i file del payload (canned_fs_config). Niente
-# `| grep -q`: con pipefail il SIGPIPE di unzip farebbe fallire il controllo.
+# apex_build_info.pb lists the payload files (canned_fs_config). No
+# `| grep -q`: with pipefail unzip's SIGPIPE would make the check fail.
 info="$(unzip -p "$capex" apex_build_info.pb | tr -c '[:print:]' '\n')"
 case "$info" in
   *"/cacerts/$ca"*) ;;
-  *) fail "$ca non è nell'APEX di conscrypt ($capex)" ;;
+  *) fail "$ca is not in the conscrypt APEX ($capex)" ;;
 esac
-[ -f "$p/system/etc/security/cacerts/$ca" ] || fail "$ca non è in /system/etc/security/cacerts"
-# Marchi: overlay installati, QuickSearchBox no, sfondo e sua proprietà.
+[ -f "$p/system/etc/security/cacerts/$ca" ] || fail "$ca is not in /system/etc/security/cacerts"
+# Branding: overlays installed, no QuickSearchBox, wallpaper and its property.
 for f in product/overlay/VetroFrameworkOverlay.apk product/overlay/VetroPackageInstallerOverlay.apk product/media/wallpaper/vetro.png; do
-  [ -f "$p/$f" ] || fail "manca /$f"
+  [ -f "$p/$f" ] || fail "/$f missing"
 done
-[ ! -e "$p/product/app/QuickSearchBox" ] || fail "QuickSearchBox è ancora in /product/app"
-grep -qx 'ro.config.wallpaper=/product/media/wallpaper/vetro.png' "$p/product/etc/build.prop" || fail "manca ro.config.wallpaper in product/etc/build.prop"
-grep -qx 'ro.product.system.brand=Vetro' "$p/system/build.prop" || fail "ro.product.system.brand non è Vetro"
+[ ! -e "$p/product/app/QuickSearchBox" ] || fail "QuickSearchBox is still in /product/app"
+grep -qx 'ro.config.wallpaper=/product/media/wallpaper/vetro.png' "$p/product/etc/build.prop" || fail "ro.config.wallpaper missing in product/etc/build.prop"
+grep -qx 'ro.product.system.brand=Vetro' "$p/system/build.prop" || fail "ro.product.system.brand is not Vetro"
 rm -rf "$o"
 mkdir -p "$o/props"
 for f in boot.img vendor_boot.img init_boot.img super.img userdata.img; do
   cp --sparse=always "$p/$f" "$o/$f"
 done
-# Proprietà per i controlli sul Mac (variante ISA di ART, fingerprint...).
+# Properties for the checks on the Mac (ART ISA variant, fingerprint...).
 for part in system vendor product system_ext odm; do
   for f in "$p/$part/build.prop" "$p/$part/etc/build.prop"; do [ -f "$f" ] && cp "$f" "$o/props/$part.build.prop"; done
 done

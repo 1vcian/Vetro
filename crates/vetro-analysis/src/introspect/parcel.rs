@@ -1,17 +1,17 @@
-//! Parcel di Binder (M8): lettura dei tipi di base (`libbinder`,
-//! `Parcel.cpp`) e dell'intestazione di una chiamata AIDL.
+//! Binder Parcel (M8): reading of the basic types (`libbinder`,
+//! `Parcel.cpp`) and of the header of an AIDL call.
 //!
-//! Formato: tutto allineato a 4 byte, little-endian. `String16` = int32
-//! lunghezza in unità UTF-16 (-1 = null), le unità, un terminatore a 0,
-//! riempimento fino a 4. Intestazione di `writeInterfaceToken` (Android
-//! 11+): int32 politica di strict mode, int32 uid della work source, int32
-//! `'SYST'` (o `'VNDR'`), poi il descrittore come `String16`.
+//! Format: everything aligned to 4 bytes, little-endian. `String16` = int32
+//! length in UTF-16 units (-1 = null), the units, a 0 terminator,
+//! padding up to 4. Header of `writeInterfaceToken` (Android
+//! 11+): int32 strict mode policy, int32 work source uid, int32
+//! `'SYST'` (or `'VNDR'`), then the descriptor as `String16`.
 
-/// `'SYST'` e `'VNDR'` come li scrive `Parcel::writeInterfaceToken`.
+/// `'SYST'` and `'VNDR'` as `Parcel::writeInterfaceToken` writes them.
 pub const HEADER_SYSTEM: u32 = 0x5359_5354;
 pub const HEADER_VENDOR: u32 = 0x564e_4452;
 
-/// Un lettore sequenziale di un Parcel.
+/// A sequential reader of a Parcel.
 #[derive(Clone, Debug)]
 pub struct Parcel<'a> {
     data: &'a [u8],
@@ -43,7 +43,7 @@ impl<'a> Parcel<'a> {
         Some(i64::from_le_bytes(b.try_into().ok()?))
     }
 
-    /// `String16`: `Some(None)` per il null.
+    /// `String16`: `Some(None)` for null.
     pub fn string16(&mut self) -> Option<Option<String>> {
         let save = self.pos;
         let len = self.i32()?;
@@ -65,7 +65,7 @@ impl<'a> Parcel<'a> {
         Some(Some(String::from_utf16_lossy(&units)))
     }
 
-    /// Intestazione di una chiamata AIDL: descrittore dell'interfaccia.
+    /// Header of an AIDL call: interface descriptor.
     pub fn interface_header(&mut self) -> Option<InterfaceHeader> {
         let save = self.pos;
         let strict_mode = self.i32()?;
@@ -76,7 +76,7 @@ impl<'a> Parcel<'a> {
         {
             return Some(InterfaceHeader { strict_mode, work_source_uid: work_source, descriptor: d });
         }
-        // Formati più vecchi (senza intestazione o senza work source).
+        // Older formats (no header or no work source).
         for skip in [8usize, 4] {
             self.pos = save + skip;
             if let Some(Some(d)) = self.string16()
@@ -90,14 +90,14 @@ impl<'a> Parcel<'a> {
     }
 }
 
-/// Descrittore credibile: nome Java/AIDL (lettere, cifre, `.`, `_`, `$`, `/`).
+/// Credible descriptor: Java/AIDL name (letters, digits, `.`, `_`, `$`, `/`).
 pub fn plausible_descriptor(d: &str) -> bool {
     !d.is_empty()
         && d.len() <= 256
         && d.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '$' | '/' | '@' | ':'))
 }
 
-/// L'intestazione di `writeInterfaceToken`.
+/// The `writeInterfaceToken` header.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InterfaceHeader {
     pub strict_mode: i32,
@@ -105,15 +105,15 @@ pub struct InterfaceHeader {
     pub descriptor: String,
 }
 
-/// Tutte le stringhe `String16` leggibili nel Parcel (a ogni offset
-/// allineato a 4): per l'ispettore privacy, che cerca chiavi note
-/// (`android_id`, autorità dei provider) senza conoscere la firma del
-/// metodo.
+/// All `String16` strings readable in the Parcel (at every 4-aligned
+/// offset): for the privacy inspector, which looks for known keys
+/// (`android_id`, provider authorities) without knowing the method's
+/// signature.
 pub fn strings16(data: &[u8]) -> Vec<(usize, String)> {
     let mut out = Vec::new();
     let mut o = 0usize;
     while o + 4 <= data.len() {
-        let len = i32::from_le_bytes(data[o..o + 4].try_into().expect("4 byte"));
+        let len = i32::from_le_bytes(data[o..o + 4].try_into().expect("4 bytes"));
         if (2..=512).contains(&len) {
             let n = len as usize;
             if let Some(raw) = data.get(o + 4..o + 4 + n * 2)
@@ -136,7 +136,7 @@ pub fn strings16(data: &[u8]) -> Vec<(usize, String)> {
 pub(crate) mod tests {
     use super::*;
 
-    /// Costruisce un Parcel come `Parcel.java`.
+    /// Builds a Parcel like `Parcel.java`.
     #[derive(Default)]
     pub(crate) struct Builder(pub Vec<u8>);
 
@@ -173,14 +173,14 @@ pub(crate) mod tests {
         assert_eq!(r.i32(), Some(0));
         let s: Vec<String> = strings16(&p).into_iter().map(|x| x.1).collect();
         assert_eq!(s, ["android.content.IClipboard", "com.vetro.probe"]);
-        // Null e troncati: niente panic.
+        // Null and truncated: no panic.
         let mut n = Parcel::new(&[0xff, 0xff, 0xff, 0xff]);
         assert_eq!(n.string16(), Some(None));
         for cut in 0..p.len() {
             let _ = Parcel::new(&p[..cut]).interface_header();
             let _ = strings16(&p[..cut]);
         }
-        // Senza intestazione SYST (formato vecchio, dopo strict mode).
+        // Without the SYST header (old format, after strict mode).
         let old = Builder::default().i32(0).s16("android.os.IFoo").0;
         assert_eq!(Parcel::new(&old).interface_header().unwrap().descriptor, "android.os.IFoo");
     }

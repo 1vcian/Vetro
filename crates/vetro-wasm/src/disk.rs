@@ -1,70 +1,70 @@
-//! Dischi virtio-blk i cui dati arrivano dall'host JavaScript (M5): un
-//! file locale, un URL letto a pezzi con HTTP Range, una cache OPFS.
+//! virtio-blk disks whose data comes from the JavaScript host (M5): a
+//! local file, a URL read in pieces with HTTP Range, an OPFS cache.
 //!
-//! [`HostDisk`] conosce solo la dimensione del disco e i blocchi (da
-//! `block_size` byte, allineati) che il JS gli ha già dato. Una lettura che
-//! tocca un blocco mancante risponde [`BlockError::NotReady`] e mette il
-//! blocco nella lista dei richiesti: virtio-blk tiene la richiesta in
-//! sospeso, la macchina si ferma con `Stop::Blocked` senza eseguire altre
-//! istruzioni, il JS prende la lista ([`HostDisk::take_wanted`]), procura i
-//! blocchi (OPFS, poi rete) e li consegna ([`HostDisk::fill`]); al quanto
-//! successivo la richiesta si ripete da capo e si completa allo stesso
-//! numero di istruzioni di un disco locale (ADR 0014).
+//! [`HostDisk`] knows only the disk size and the blocks (of
+//! `block_size` bytes, aligned) that JS has already given it. A read that
+//! touches a missing block answers [`BlockError::NotReady`] and puts the
+//! block in the list of requested ones: virtio-blk keeps the request
+//! pending, the machine stops with `Stop::Blocked` without executing other
+//! instructions, JS takes the list ([`HostDisk::take_wanted`]), obtains the
+//! blocks (OPFS, then network) and delivers them ([`HostDisk::fill`]); at the next
+//! quantum the request is repeated from scratch and completes at the same
+//! instruction count as a local disk (ADR 0014).
 //!
-//! Le scritture del guest vanno nel [`CowBackend`] sopra (in memoria, M6
-//! le renderà persistenti): [`HostDisk`] è in sola lettura.
+//! The guest's writes go into the [`CowBackend`] on top (in memory, M6
+//! will make them persistent): [`HostDisk`] is read-only.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use vetro_platform::virtio::{BLK_SECTOR_SIZE, BlockBackend, BlockError};
 
-/// Contatori di un disco, nell'ordine di `vetro_disk_stats`.
+/// Counters of a disk, in the order of `vetro_disk_stats`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DiskStats {
-    /// Letture che hanno trovato un blocco mancante (ogni ripetizione conta).
+    /// Reads that found a missing block (every repetition counts).
     pub misses: u64,
-    /// Blocchi consegnati dal JS.
+    /// Blocks delivered by JS.
     pub fills: u64,
-    /// Blocchi tolti dalla cache per far posto.
+    /// Blocks evicted from the cache to make room.
     pub evictions: u64,
-    /// Blocchi che il JS non è riuscito a procurare (errore di I/O al guest).
+    /// Blocks that JS failed to obtain (I/O error to the guest).
     pub failures: u64,
 }
 
-/// Disco in sola lettura con i dati forniti dall'host a blocchi.
+/// Read-only disk with the data provided by the host in blocks.
 pub struct HostDisk {
     size: u64,
     block: u64,
-    /// Blocchi presenti.
+    /// Blocks present.
     cache: BTreeMap<u64, Box<[u8]>>,
-    /// Ordine d'arrivo, per togliere i più vecchi oltre `max_blocks`.
+    /// Order of arrival, to evict the oldest beyond `max_blocks`.
     order: VecDeque<u64>,
-    /// 0 = nessun limite.
+    /// 0 = no limit.
     max_blocks: usize,
-    /// Richiesti e non ancora consegnati.
+    /// Requested and not yet delivered.
     requested: BTreeSet<u64>,
-    /// Richiesti dopo l'ultimo [`take_wanted`](Self::take_wanted).
+    /// Requested after the last [`take_wanted`](Self::take_wanted).
     wanted: Vec<u64>,
-    /// Blocchi che il JS non ha potuto procurare.
+    /// Blocks that JS could not obtain.
     failed: BTreeSet<u64>,
     pub stats: DiskStats,
 }
 
-/// Perché [`HostDisk::new`] o [`HostDisk::fill`] rifiuta.
+/// Why [`HostDisk::new`] or [`HostDisk::fill`] refuses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DiskError {
-    /// `block_size` non è una potenza di due multipla di 512.
+    /// `block_size` is not a power of two multiple of 512.
     BadBlockSize,
-    /// Blocco oltre la fine del disco.
+    /// Block past the end of the disk.
     OutOfRange,
-    /// Lunghezza diversa da quella del blocco (l'ultimo può essere corto).
+    /// Length other than the block's (the last one may be short).
     BadLength,
 }
 
 impl HostDisk {
-    /// Disco di `size` byte (arrotondati per difetto a 512, come QEMU per i
-    /// dischi raw) a blocchi da `block_size` byte; al più `max_blocks`
-    /// blocchi in memoria (0 = nessun limite).
+    /// Disk of `size` bytes (rounded down to 512, as QEMU does for
+    /// raw disks) in blocks of `block_size` bytes; at most `max_blocks`
+    /// blocks in memory (0 = no limit).
     pub fn new(size: u64, block_size: u32, max_blocks: usize) -> Result<Self, DiskError> {
         let block = u64::from(block_size);
         if !block.is_power_of_two() || block < BLK_SECTOR_SIZE {
@@ -87,12 +87,12 @@ impl HostDisk {
         self.block
     }
 
-    /// Numero di blocchi del disco (l'ultimo può essere corto).
+    /// Number of blocks of the disk (the last one may be short).
     pub fn blocks(&self) -> u64 {
         self.size.div_ceil(self.block)
     }
 
-    /// Byte del blocco `b`.
+    /// Bytes of block `b`.
     pub fn block_len(&self, b: u64) -> usize {
         (self.size - b * self.block).min(self.block) as usize
     }
@@ -101,21 +101,21 @@ impl HostDisk {
         self.cache.len()
     }
 
-    /// I blocchi richiesti dall'ultima chiamata: ognuno compare una volta
-    /// sola finché non viene consegnato o dichiarato fallito.
+    /// The blocks requested since the last call: each one appears only
+    /// once until it is delivered or declared failed.
     pub fn take_wanted(&mut self) -> Vec<u64> {
         core::mem::take(&mut self.wanted)
     }
 
-    /// Rimette `b` nella lista dei richiesti (non consegnato da chi l'aveva
-    /// preso).
+    /// Puts `b` back into the list of requested ones (not delivered by whoever had
+    /// taken it).
     pub fn requeue(&mut self, b: u64) {
         if self.requested.contains(&b) && !self.wanted.contains(&b) {
             self.wanted.push(b);
         }
     }
 
-    /// Consegna il blocco `b` (anche non richiesto: lettura anticipata).
+    /// Delivers block `b` (even if not requested: read-ahead).
     pub fn fill(&mut self, b: u64, data: &[u8]) -> Result<(), DiskError> {
         if b >= self.blocks() {
             return Err(DiskError::OutOfRange);
@@ -137,8 +137,8 @@ impl HostDisk {
         Ok(())
     }
 
-    /// Il JS non è riuscito a procurare il blocco `b`: la richiesta che lo
-    /// aspetta finisce con un errore di I/O (stato IOERR al guest).
+    /// JS failed to obtain block `b`: the request waiting for it
+    /// ends with an I/O error (IOERR status to the guest).
     pub fn fail(&mut self, b: u64) {
         self.requested.remove(&b);
         self.failed.insert(b);
@@ -165,8 +165,8 @@ impl BlockBackend for HostDisk {
             return Ok(());
         }
         let (first, last) = (start / self.block, (end - 1) / self.block);
-        // Prima tutti i mancanti dell'intervallo, così il JS li chiede
-        // insieme.
+        // First all the missing ones of the range, so JS requests them
+        // together.
         let mut missing = false;
         for b in first..=last {
             if self.failed.contains(&b) {
@@ -219,11 +219,11 @@ mod tests {
         wanted.len()
     }
 
-    /// Lettura a cavallo di due blocchi: prima NotReady con entrambi i
-    /// blocchi richiesti una volta sola, poi i dati giusti.
+    /// Read straddling two blocks: first NotReady with both
+    /// blocks requested only once, then the right data.
     #[test]
     fn blocchi_mancanti_richiesti_poi_letti() {
-        let img = image(3 * 4096 + 1024 + 100); // ultimo blocco corto, coda non allineata
+        let img = image(3 * 4096 + 1024 + 100); // short last block, unaligned tail
         let mut d = HostDisk::new(img.len() as u64, 4096, 0).unwrap();
         assert_eq!(d.size(), 3 * 4096 + 1024);
         assert_eq!(d.blocks(), 4);
@@ -231,11 +231,11 @@ mod tests {
         let mut buf = vec![0u8; 2048];
         assert_eq!(d.read_sectors(7, &mut buf), Err(BlockError::NotReady));
         assert_eq!(d.read_sectors(7, &mut buf), Err(BlockError::NotReady));
-        assert_eq!(d.take_wanted(), [0, 1], "ogni blocco richiesto una volta sola");
+        assert_eq!(d.take_wanted(), [0, 1], "every block requested only once");
         assert!(d.take_wanted().is_empty());
         d.fill(0, &img[..4096]).unwrap();
         assert_eq!(d.read_sectors(7, &mut buf), Err(BlockError::NotReady));
-        assert!(d.take_wanted().is_empty(), "il blocco 1 è già stato chiesto");
+        assert!(d.take_wanted().is_empty(), "block 1 has already been requested");
         d.fill(1, &img[4096..8192]).unwrap();
         assert_eq!(d.read_sectors(7, &mut buf), Ok(()));
         assert_eq!(buf, img[7 * 512..7 * 512 + 2048]);
@@ -263,8 +263,8 @@ mod tests {
         assert_eq!(d.write_sectors(0, &buf), Err(BlockError::ReadOnly));
     }
 
-    /// Oltre il limite si tolgono i blocchi più vecchi, che poi si
-    /// richiedono di nuovo.
+    /// Beyond the limit the oldest blocks are evicted, and are then
+    /// requested again.
     #[test]
     fn cache_limitata() {
         let img = image(4 * 4096);

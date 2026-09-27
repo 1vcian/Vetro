@@ -1,12 +1,12 @@
-//! Ispettore privacy di base (M8): quali chiamate Binder toccano dati
-//! sensibili. Le regole guardano interfaccia e metodo (dalla mappa AIDL)
-//! e, per i content provider, le stringhe del Parcel (autorità, chiavi
-//! come `android_id`), perché lì il metodo da solo (`query`, `call`) non
-//! dice che cosa si legge.
+//! Basic privacy inspector (M8): which Binder calls touch sensitive
+//! data. The rules look at interface and method (from the AIDL map)
+//! and, for content providers, at the Parcel strings (authorities, keys
+//! such as `android_id`), because there the method alone (`query`, `call`)
+//! does not say what is being read.
 
 use std::fmt;
 
-/// Categoria di dato sensibile.
+/// Category of sensitive data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Category {
     Location,
@@ -25,21 +25,21 @@ pub enum Category {
 impl Category {
     pub fn name(self) -> &'static str {
         match self {
-            Category::Location => "posizione",
-            Category::Contacts => "contatti",
-            Category::CallLog => "registro chiamate",
+            Category::Location => "location",
+            Category::Contacts => "contacts",
+            Category::CallLog => "call log",
             Category::Sms => "sms",
-            Category::Calendar => "calendario",
-            Category::Clipboard => "appunti",
-            Category::Identifier => "identificativo",
-            Category::Camera => "fotocamera",
-            Category::Microphone => "microfono",
-            Category::Accounts => "account",
-            Category::InstalledApps => "app installate",
+            Category::Calendar => "calendar",
+            Category::Clipboard => "clipboard",
+            Category::Identifier => "identifier",
+            Category::Camera => "camera",
+            Category::Microphone => "microphone",
+            Category::Accounts => "accounts",
+            Category::InstalledApps => "installed apps",
         }
     }
 
-    /// Nome stabile per JSON ed esportazioni.
+    /// Stable name for JSON and exports.
     pub fn id(self) -> &'static str {
         match self {
             Category::Location => "location",
@@ -57,11 +57,11 @@ impl Category {
     }
 }
 
-/// Un accesso sensibile riconosciuto.
+/// A recognised sensitive access.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sensitive {
     pub category: Category,
-    /// Che cosa, in breve: `ANDROID_ID`, `getPrimaryClip`, `IMEI`, ...
+    /// What, in short: `ANDROID_ID`, `getPrimaryClip`, `IMEI`, ...
     pub what: String,
 }
 
@@ -75,14 +75,14 @@ fn s(category: Category, what: impl Into<String>) -> Sensitive {
     Sensitive { category, what: what.into() }
 }
 
-/// Le chiavi di `Settings` che sono identificativi.
+/// The `Settings` keys that are identifiers.
 const ID_SETTINGS: &[(&str, &str)] = &[
     ("android_id", "ANDROID_ID"),
-    ("bluetooth_address", "indirizzo Bluetooth"),
-    ("bluetooth_name", "nome Bluetooth"),
+    ("bluetooth_address", "Bluetooth address"),
+    ("bluetooth_name", "Bluetooth name"),
 ];
 
-/// Autorità dei provider sensibili.
+/// Authorities of sensitive providers.
 const AUTHORITIES: &[(&str, Category)] = &[
     ("com.android.contacts", Category::Contacts),
     ("contacts", Category::Contacts),
@@ -93,12 +93,12 @@ const AUTHORITIES: &[(&str, Category)] = &[
     ("com.android.calendar", Category::Calendar),
 ];
 
-/// Metodi di provider che leggono o scrivono dati.
+/// Provider methods that read or write data.
 const PROVIDER_DATA: &[&str] =
     &["query", "insert", "update", "delete", "bulkInsert", "applyBatch", "openFile", "openAssetFile", "call"];
 
-/// Classifica una chiamata. `method` è il nome dalla mappa AIDL, se c'è;
-/// `strings` le stringhe del Parcel.
+/// Classifies a call. `method` is the name from the AIDL map, if any;
+/// `strings` the Parcel strings.
 pub fn classify(descriptor: &str, method: Option<&str>, strings: &[String]) -> Vec<Sensitive> {
     let m = method.unwrap_or("");
     let mut out = Vec::new();
@@ -107,9 +107,9 @@ pub fn classify(descriptor: &str, method: Option<&str>, strings: &[String]) -> V
     match descriptor {
         "android.content.IClipboard" => {
             if starts(&["getPrimaryClip", "hasPrimaryClip", "hasClipboardText"]) {
-                out.push(s(Category::Clipboard, format!("lettura ({m})")));
+                out.push(s(Category::Clipboard, format!("read ({m})")));
             } else if starts(&["setPrimaryClip"]) {
-                out.push(s(Category::Clipboard, format!("scrittura ({m})")));
+                out.push(s(Category::Clipboard, format!("write ({m})")));
             }
         }
         "android.location.ILocationManager" => {
@@ -132,15 +132,15 @@ pub fn classify(descriptor: &str, method: Option<&str>, strings: &[String]) -> V
             } else if m.contains("Meid") {
                 Some("MEID")
             } else if m.starts_with("getDeviceId") {
-                Some("ID del dispositivo (IMEI/MEID)")
+                Some("device ID (IMEI/MEID)")
             } else if m.contains("SubscriberId") {
                 Some("IMSI")
             } else if m.contains("IccSerial") {
-                Some("seriale della SIM (ICCID)")
+                Some("SIM serial (ICCID)")
             } else if m.contains("Line1Number") || m.contains("PhoneNumber") {
-                Some("numero di telefono")
+                Some("phone number")
             } else if m.starts_with("getCellLocation") || m.starts_with("getAllCellInfo") {
-                out.push(s(Category::Location, format!("celle radio ({m})")));
+                out.push(s(Category::Location, format!("cell towers ({m})")));
                 None
             } else {
                 None
@@ -150,12 +150,12 @@ pub fn classify(descriptor: &str, method: Option<&str>, strings: &[String]) -> V
             }
         }
         "android.os.IDeviceIdentifiersPolicyService" if m.starts_with("getSerial") => {
-            out.push(s(Category::Identifier, format!("numero di serie ({m})")));
+            out.push(s(Category::Identifier, format!("serial number ({m})")));
         }
         "android.hardware.ICameraService" if m.starts_with("connect") => {
             out.push(s(Category::Camera, m));
         }
-        "android.media.IAudioRecord" => out.push(s(Category::Microphone, format!("registrazione ({m})"))),
+        "android.media.IAudioRecord" => out.push(s(Category::Microphone, format!("recording ({m})"))),
         "android.accounts.IAccountManager" if m.starts_with("getAccounts") => {
             out.push(s(Category::Accounts, m));
         }

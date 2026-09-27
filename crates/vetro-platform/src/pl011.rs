@@ -1,18 +1,18 @@
-//! UART PL011 (ARM DDI0183).
+//! PL011 UART (ARM DDI0183).
 //!
-//! Modello funzionale, come QEMU: la trasmissione è istantanea (la FIFO di
-//! uscita è sempre vuota) e i byte finiscono in un buffer letto dall'host;
-//! la ricezione pesca da una coda di input riempita dall'host. Baud rate e
-//! formato di linea si memorizzano ma non hanno effetto.
+//! Functional model, like QEMU: transmission is instantaneous (the transmit
+//! FIFO is always empty) and bytes end up in a buffer read by the host;
+//! reception draws from an input queue filled by the host. Baud rate and
+//! line format are stored but have no effect.
 //!
-//! Scelte, dove il manuale lascia margine o QEMU semplifica:
-//! - la trasmissione avviene anche con UARTEN o TXE spenti (serve alla
-//!   earlycon, come in QEMU);
-//! - la ricezione avviene solo con UARTEN e RXE accesi: prima di allora i
-//!   byte restano nella coda dell'host, non si perdono;
-//! - l'interrupt RX scatta appena la FIFO contiene un byte (soglia 1, come
-//!   QEMU) e cade quando la FIFO si svuota; IFLS si memorizza soltanto;
-//! - TXRIS si alza a ogni scrittura in DR e si abbassa solo con ICR.
+//! Choices, where the manual leaves room or QEMU simplifies:
+//! - transmission happens even with UARTEN or TXE off (needed by the
+//!   earlycon, as in QEMU);
+//! - reception happens only with UARTEN and RXE on: until then the
+//!   bytes stay in the host queue, they are not lost;
+//! - the RX interrupt fires as soon as the FIFO holds one byte (threshold 1, like
+//!   QEMU) and drops when the FIFO empties; IFLS is only stored;
+//! - TXRIS rises on every write to DR and drops only with ICR.
 
 use std::collections::VecDeque;
 
@@ -32,44 +32,44 @@ pub const RIS: u64 = 0x03C;
 pub const MIS: u64 = 0x040;
 pub const ICR: u64 = 0x044;
 pub const DMACR: u64 = 0x048;
-/// Primo registro di identificazione (PeriphID0); seguono PeriphID1-3 e CellID0-3.
+/// First identification register (PeriphID0); PeriphID1-3 and CellID0-3 follow.
 pub const PERIPH_ID0: u64 = 0xFE0;
 
-/// Bit di FR.
+/// FR bits.
 pub const FR_BUSY: u32 = 1 << 3;
 pub const FR_RXFE: u32 = 1 << 4;
 pub const FR_TXFF: u32 = 1 << 5;
 pub const FR_RXFF: u32 = 1 << 6;
 pub const FR_TXFE: u32 = 1 << 7;
 
-/// Bit di LCR_H: abilitazione delle FIFO.
+/// LCR_H bit: FIFO enable.
 pub const LCR_H_FEN: u32 = 1 << 4;
 
-/// Bit di CR.
+/// CR bits.
 pub const CR_UARTEN: u32 = 1 << 0;
 pub const CR_LBE: u32 = 1 << 7;
 pub const CR_TXE: u32 = 1 << 8;
 pub const CR_RXE: u32 = 1 << 9;
 
-/// Bit degli interrupt (IMSC, RIS, MIS, ICR).
+/// Interrupt bits (IMSC, RIS, MIS, ICR).
 pub const INT_RX: u32 = 1 << 4;
 pub const INT_TX: u32 = 1 << 5;
 pub const INT_RT: u32 = 1 << 6;
 pub const INT_MASK: u32 = 0x7FF;
 
-/// Profondità della FIFO di ricezione con LCR_H.FEN acceso.
+/// Depth of the receive FIFO with LCR_H.FEN on.
 pub const FIFO_DEPTH: usize = 16;
 
-/// PeriphID0-3 e CellID0-3 (gli stessi valori di QEMU).
+/// PeriphID0-3 and CellID0-3 (the same values as QEMU).
 const ID: [u8; 8] = [0x11, 0x10, 0x14, 0x00, 0x0D, 0xF0, 0x05, 0xB1];
 
 #[derive(Clone, Debug)]
 pub struct Pl011 {
-    /// Byte che l'host vuole far arrivare al guest, non ancora nella FIFO.
+    /// Bytes the host wants to deliver to the guest, not yet in the FIFO.
     input: VecDeque<u8>,
-    /// FIFO di ricezione (dato a 8 bit + 4 bit di errore, qui sempre zero).
+    /// Receive FIFO (8-bit data + 4 error bits, always zero here).
     rx_fifo: VecDeque<u16>,
-    /// Byte trasmessi dal guest, in attesa che l'host li legga.
+    /// Bytes transmitted by the guest, waiting for the host to read them.
     output: Vec<u8>,
     rsr: u32,
     ilpr: u32,
@@ -90,7 +90,7 @@ impl Default for Pl011 {
 }
 
 impl Pl011 {
-    /// UART allo stato di reset (CR = 0x300, IFLS = 0x12).
+    /// UART in its reset state (CR = 0x300, IFLS = 0x12).
     pub fn new() -> Self {
         Self {
             input: VecDeque::new(),
@@ -109,29 +109,29 @@ impl Pl011 {
         }
     }
 
-    /// Accoda byte in ingresso per il guest.
+    /// Queues input bytes for the guest.
     pub fn push_input(&mut self, bytes: &[u8]) {
         self.input.extend(bytes);
         self.fill_rx();
     }
 
-    /// Byte in ingresso non ancora letti dal guest (coda host + FIFO).
+    /// Input bytes not yet read by the guest (host queue + FIFO).
     pub fn pending_input(&self) -> usize {
         self.input.len() + self.rx_fifo.len()
     }
 
-    /// Uscita accumulata dal guest, senza consumarla.
+    /// Output accumulated by the guest, without consuming it.
     pub fn output(&self) -> &[u8] {
         &self.output
     }
 
-    /// Consuma e restituisce l'uscita accumulata.
+    /// Consumes and returns the accumulated output.
     pub fn take_output(&mut self) -> Vec<u8> {
         core::mem::take(&mut self.output)
     }
 
-    /// Livello della linea IRQ verso il GIC (UARTINTR): alto se un
-    /// interrupt non mascherato è attivo.
+    /// Level of the IRQ line to the GIC (UARTINTR): high if an
+    /// unmasked interrupt is active.
     pub fn irq_level(&self) -> bool {
         self.ris & self.imsc != 0
     }
@@ -144,7 +144,7 @@ impl Pl011 {
         self.cr & (CR_UARTEN | CR_RXE) == CR_UARTEN | CR_RXE
     }
 
-    /// Sposta byte dalla coda dell'host alla FIFO finché c'è posto.
+    /// Moves bytes from the host queue to the FIFO while there is room.
     fn fill_rx(&mut self) {
         if !self.rx_enabled() {
             return;
@@ -203,7 +203,7 @@ impl Pl011 {
             DR => {
                 let byte = v as u8;
                 if self.cr & CR_LBE != 0 {
-                    // Loopback: il byte torna nella FIFO di ricezione.
+                    // Loopback: the byte goes back into the receive FIFO.
                     if self.rx_fifo.len() < self.fifo_depth() {
                         self.rx_fifo.push_back(u16::from(byte));
                         self.ris |= INT_RX;
@@ -219,8 +219,8 @@ impl Pl011 {
             FBRD => self.fbrd = v & 0x3F,
             LCR_H => {
                 if (self.lcr_h ^ v) & LCR_H_FEN != 0 {
-                    // Cambiare FEN svuota la FIFO (come QEMU); i byte già
-                    // passati alla FIFO vanno persi, la coda dell'host no.
+                    // Changing FEN empties the FIFO (like QEMU); bytes already
+                    // moved to the FIFO are lost, the host queue is not.
                     self.rx_fifo.clear();
                     self.ris &= !(INT_RX | INT_RT);
                 }
@@ -251,7 +251,7 @@ impl MmioDevice for Pl011 {
     }
 
     fn write(&mut self, offset: u64, size: u8, value: u64) {
-        // Solo accessi allineati al registro (DR accetta anche 8 e 16 bit).
+        // Only register-aligned accesses (DR also accepts 8 and 16 bits).
         if offset >= 0x1000 || size > 4 || offset & 3 != 0 {
             return;
         }
@@ -261,8 +261,8 @@ impl MmioDevice for Pl011 {
 
 // ---- Snapshot (M6, ADR 0015) -------------------------------------------------
 
-/// Registri, FIFO di ricezione, ingresso dell'host non ancora nella FIFO e
-/// uscita non ancora letta dall'host.
+/// Registers, receive FIFO, host input not yet in the FIFO and
+/// output not yet read by the host.
 impl vetro_snapshot::Snapshot for Pl011 {
     fn save(&self, w: &mut vetro_snapshot::Writer) {
         w.seq(&self.input, |w, &b| w.u8(b));
@@ -349,7 +349,7 @@ mod tests {
         assert_eq!(u.read(DR, 4), u64::from(b'a'));
         assert!(u.irq_level());
         assert_eq!(u.read(DR, 1), u64::from(b'b'));
-        assert!(!u.irq_level(), "la FIFO vuota abbassa RX");
+        assert!(!u.irq_level(), "the empty FIFO lowers RX");
         assert_ne!(u.read(FR, 4) as u32 & FR_RXFE, 0);
     }
 
@@ -369,12 +369,12 @@ mod tests {
         let mut u = Pl011::new();
         u.write(CR, 4, u64::from(CR_UARTEN | CR_RXE));
         u.push_input(&[1, 2, 3]);
-        assert_ne!(u.read(FR, 4) as u32 & FR_RXFF, 0, "senza FEN la FIFO ha un posto");
+        assert_ne!(u.read(FR, 4) as u32 & FR_RXFF, 0, "without FEN the FIFO has one slot");
         assert_eq!(u.read(DR, 4), 1);
         assert_eq!(u.read(DR, 4), 2);
         u.write(LCR_H, 4, u64::from(LCR_H_FEN));
         u.push_input(&[0u8; 20]);
-        // 3 era nella FIFO: cambiare FEN lo scarta (come QEMU).
+        // 3 was in the FIFO: changing FEN discards it (like QEMU).
         assert_eq!(u.rx_fifo.len(), FIFO_DEPTH);
         assert_eq!(u.pending_input(), 20);
         assert_ne!(u.read(FR, 4) as u32 & FR_RXFF, 0);
@@ -384,7 +384,7 @@ mod tests {
     fn icr_e_maschere() {
         let mut u = Pl011::new();
         u.write(DR, 4, u64::from(b'z'));
-        assert!(!u.irq_level(), "TX non abilitato in IMSC");
+        assert!(!u.irq_level(), "TX not enabled in IMSC");
         u.write(IMSC, 4, 0xFFFF_FFFF);
         assert_eq!(u.read(IMSC, 4), u64::from(INT_MASK));
         assert!(u.irq_level());
@@ -411,7 +411,7 @@ mod tests {
         assert_eq!(u.read(IBRD, 4), 0x13);
         assert_eq!(u.read(FBRD, 4), 0x3F);
         assert_eq!(u.read(LCR_H, 4), 0x70);
-        // Scritture non allineate ignorate, letture a byte ammesse.
+        // Unaligned writes ignored, byte reads allowed.
         u.write(IBRD + 1, 1, 0xAA);
         assert_eq!(u.read(IBRD, 4), 0x13);
         assert_eq!(u.read(CR + 1, 1), 0x03);

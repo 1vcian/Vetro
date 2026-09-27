@@ -1,9 +1,9 @@
-//! Segnali: azioni, maschere, consegna e ritorno dal gestore.
+//! Signals: actions, masks, delivery and return from the handler.
 //!
-//! Il frame sullo stack del guest ha il layout di Linux arm64
+//! The frame on the guest stack has the arm64 Linux layout
 //! (arch/arm64/kernel/signal.c): `struct rt_sigframe { siginfo; ucontext }`
-//! con `sigcontext.__reserved` che contiene un `fpsimd_context` e il
-//! terminatore, seguito da un frame record {x29, x30}.
+//! with `sigcontext.__reserved` containing an `fpsimd_context` and the
+//! terminator, followed by a frame record {x29, x30}.
 
 #![allow(clippy::needless_range_loop)]
 
@@ -29,7 +29,7 @@ pub struct SigAction {
     pub mask: u64,
 }
 
-/// Azioni dei segnali, condivise tra i thread di un processo.
+/// Signal actions, shared between the threads of a process.
 #[derive(Clone)]
 pub struct SigHand {
     pub actions: [SigAction; 65],
@@ -41,20 +41,20 @@ impl Default for SigHand {
     }
 }
 
-/// Stato dei segnali di un thread.
+/// Signal state of a thread.
 #[derive(Clone, Debug)]
 pub struct SigState {
     pub mask: u64,
     pub pending: u64,
-    /// siginfo dei segnali in attesa: (mittente, codice, indirizzo).
+    /// siginfo of the pending signals: (sender, code, address).
     pub info: Vec<(i32, i32, u64)>,
     pub altstack: (u64, u64, u32),
-    /// Scadenza di ITIMER_REAL (ns monotoni) e periodo.
+    /// ITIMER_REAL deadline (monotonic ns) and period.
     pub alarm: Option<u64>,
     pub alarm_interval: u64,
-    /// Maschera da ripristinare dopo rt_sigsuspend.
+    /// Mask to restore after rt_sigsuspend.
     pub saved_mask: Option<u64>,
-    /// Syscall bloccata interrotta da un segnale: EINTR o riavvio.
+    /// Blocked syscall interrupted by a signal: EINTR or restart.
     pub interrupted: Option<Wait>,
 }
 
@@ -78,7 +78,7 @@ pub fn bit(s: i32) -> u64 {
     1u64 << (s - 1)
 }
 
-/// Segnali che non si possono bloccare né catturare.
+/// Signals that can be neither blocked nor caught.
 pub const UNBLOCKABLE: u64 = (1 << (sig::SIGKILL - 1)) | (1 << (sig::SIGSTOP - 1));
 
 #[derive(PartialEq, Eq)]
@@ -101,7 +101,7 @@ fn default_action(s: i32) -> Default_ {
     }
 }
 
-// Offset nel frame.
+// Offsets in the frame.
 const SIGINFO_SIZE: u64 = 128;
 const UC_MCONTEXT: u64 = 176; // offsetof(ucontext, uc_mcontext)
 const SC_RESERVED: u64 = 288; // offsetof(sigcontext, __reserved)
@@ -110,9 +110,9 @@ const FPSIMD_MAGIC: u32 = 0x4650_8001;
 const FPSIMD_SIZE: u32 = 528;
 
 impl Kernel {
-    /// Manda `s` al processo (thread group) `tgid`.
+    /// Sends `s` to the process (thread group) `tgid`.
     pub fn send_to_process(&mut self, tgid: i32, s: i32, from: i32, code: i32) -> bool {
-        // Preferisci un thread che non blocca il segnale.
+        // Prefer a thread that does not block the signal.
         let threads: Vec<usize> = (0..self.tasks.len())
             .filter(|&i| {
                 self.tasks[i].tgid == tgid
@@ -130,8 +130,8 @@ impl Kernel {
             return;
         }
         let act = self.tasks[t].sighand.borrow().actions[s as usize];
-        // Un segnale ignorato non resta in attesa (salvo SIGCHLD con SIG_DFL,
-        // che è comunque ignorato).
+        // An ignored signal does not stay pending (except SIGCHLD with SIG_DFL,
+        // which is ignored anyway).
         if act.handler == SIG_IGN && s != sig::SIGKILL && s != sig::SIGSTOP {
             return;
         }
@@ -143,8 +143,8 @@ impl Kernel {
         st.info[s as usize] = (from, code, addr);
     }
 
-    /// Segnale sincrono da un'eccezione della CPU: se è bloccato o ignorato
-    /// si torna all'azione di default (come force_sig_fault).
+    /// Synchronous signal from a CPU exception: if it is blocked or ignored
+    /// it goes back to the default action (like force_sig_fault).
     pub fn force_signal(&mut self, t: usize, s: i32) {
         let addr = match self.tasks[t].fault {
             Some((_, Exception::DataAbort { addr, .. }))
@@ -163,8 +163,8 @@ impl Kernel {
         self.tasks[t].sig.mask &= !bit(s);
         let code = match s {
             sig::SIGSEGV => 1, // SEGV_MAPERR
-            // BUS_ADRERR per l'accesso oltre la fine di un file mappato,
-            // BUS_ADRALN per l'allineamento.
+            // BUS_ADRERR for access past the end of a mapped file,
+            // BUS_ADRALN for alignment.
             sig::SIGBUS if matches!(self.tasks[t].fault, Some((_, Exception::DataAbort { .. }))) => 2,
             sig::SIGBUS => 1,
             sig::SIGILL => 1,  // ILL_ILLOPC
@@ -173,7 +173,7 @@ impl Kernel {
         };
         if self.cfg.strace {
             eprintln!(
-                "[{}] --- signal {s} (si_addr={addr:#x}) a pc={:#x}: {:?} ---",
+                "[{}] --- signal {s} (si_addr={addr:#x}) at pc={:#x}: {:?} ---",
                 self.tasks[t].tid, self.tasks[t].cpu.pc, self.tasks[t].fault
             );
         }
@@ -183,7 +183,7 @@ impl Kernel {
         self.deliver_signals(t);
     }
 
-    /// Vero se il task bloccato ha un segnale che lo deve svegliare.
+    /// True if the blocked task has a signal that must wake it.
     pub fn signal_wakes(&self, t: usize) -> bool {
         let st = &self.tasks[t].sig;
         st.pending & !(st.mask & !UNBLOCKABLE) != 0
@@ -211,7 +211,7 @@ impl Kernel {
         self.next_alarm = next;
     }
 
-    /// Consegna il primo segnale non bloccato. Vero se ne ha consegnato uno.
+    /// Delivers the first unblocked signal. True if it delivered one.
     pub fn deliver_signals(&mut self, t: usize) -> bool {
         let deliverable = {
             let st = &self.tasks[t].sig;
@@ -227,14 +227,14 @@ impl Kernel {
         if s == sig::SIGKILL || act.handler == SIG_DFL {
             match default_action(s) {
                 Default_::Ign | Default_::Cont | Default_::Stop => {
-                    // La syscall interrotta si riavvia da sola (pc sull'SVC).
+                    // The interrupted syscall restarts by itself (pc on the SVC).
                     self.tasks[t].sig.interrupted = None;
                     return false;
                 }
                 d => {
-                    // Il bit "core dumped" (0x80) si accende solo se il core
-                    // verrebbe scritto: binfmt_elf vuole RLIMIT_CORE di almeno
-                    // una pagina (min_coredump).
+                    // The "core dumped" bit (0x80) is set only if the core
+                    // would be written: binfmt_elf wants RLIMIT_CORE of at least
+                    // one page (min_coredump).
                     let core = d == Default_::Core && self.tasks[t].rlimits[4].0 >= 4096;
                     let tgid = self.tasks[t].tgid;
                     self.kill_process(tgid, s | if core { 0x80 } else { 0 });
@@ -246,13 +246,13 @@ impl Kernel {
             self.tasks[t].sig.interrupted = None;
             return false;
         }
-        // Una syscall bloccata (pc sull'SVC) viene riavviata con SA_RESTART,
-        // altrimenti restituisce EINTR.
+        // A blocked syscall (pc on the SVC) is restarted with SA_RESTART,
+        // otherwise it returns EINTR.
         if let Some(w) = self.tasks[t].sig.interrupted.take() {
             let restart = act.flags & SA_RESTART != 0
                 && !matches!(w, Wait::Signal | Wait::Sleep { .. } | Wait::SigWait { .. });
             if !restart {
-                // nanosleep/clock_nanosleep relativi: il tempo che restava.
+                // Relative nanosleep/clock_nanosleep: the time that was left.
                 if let Wait::Sleep { until } = w {
                     let (nr, x) = (self.tasks[t].cpu.x[8], self.tasks[t].cpu.x);
                     let rem = match nr {
@@ -281,7 +281,7 @@ impl Kernel {
             }
         }
         if let Err(()) = self.setup_frame(t, s, act, info) {
-            // Stack del gestore non scrivibile: SIGSEGV forzato.
+            // Handler stack not writable: forced SIGSEGV.
             let tgid = self.tasks[t].tgid;
             self.kill_process(tgid, sig::SIGSEGV);
             return true;
@@ -289,7 +289,7 @@ impl Kernel {
         if act.flags & SA_RESETHAND != 0 {
             self.tasks[t].sighand.borrow_mut().actions[s as usize].handler = SIG_DFL;
         }
-        // Un task fermo in attesa di un segnale riparte.
+        // A task stopped waiting for a signal resumes.
         if matches!(self.tasks[t].state, State::Blocked(_)) {
             self.tasks[t].state = State::Runnable;
         }
@@ -350,7 +350,7 @@ impl Kernel {
         for r in 0..32 {
             put(fp + 16 + 16 * r as u64, &cpu.v[r].to_le_bytes());
         }
-        // terminatore: magic 0, size 0 (già a zero)
+        // terminator: magic 0, size 0 (already zero)
 
         {
             let mm = self.tasks[t].mm.clone();
@@ -367,7 +367,7 @@ impl Kernel {
         task.cpu.x[1] = frame;
         task.cpu.x[2] = frame + SIGINFO_SIZE;
         task.cpu.x[29] = record;
-        // Senza SA_RESTORER Linux torna al sigtramp del vDSO.
+        // Without SA_RESTORER Linux returns to the vDSO's sigtramp.
         task.cpu.x[30] = if act.flags & SA_RESTORER != 0 { act.restorer } else { super::loader::SIGTRAMP };
         task.cpu.sp = frame;
         task.cpu.pc = act.handler;
@@ -380,7 +380,7 @@ impl Kernel {
         Ok(())
     }
 
-    /// rt_sigreturn: ripristina lo stato dal frame a `sp`.
+    /// rt_sigreturn: restores the state from the frame at `sp`.
     pub(super) fn sigreturn(&mut self, t: usize) -> Result<(), ()> {
         let frame = self.tasks[t].cpu.sp;
         let mut b = vec![0u8; FRAME_SIZE as usize];
@@ -413,7 +413,7 @@ impl Kernel {
         Ok(())
     }
 
-    /// Syscall rt_sigaction.
+    /// The rt_sigaction syscall.
     pub fn sys_sigaction(&mut self, t: usize, s: i64, act: u64, oact: u64) -> SysResult {
         if !(1..=64).contains(&s) || (act != 0 && (s as i32 == sig::SIGKILL || s as i32 == sig::SIGSTOP)) {
             return Err(EINVAL);
@@ -429,7 +429,7 @@ impl Kernel {
                 mask: read_u64(&mut mm.mem, act + 24)? & !UNBLOCKABLE,
             };
             self.tasks[t].sighand.borrow_mut().actions[s as usize] = new;
-            // Impostare SIG_IGN scarta i segnali in attesa.
+            // Setting SIG_IGN discards the pending signals.
             if new.handler == SIG_IGN {
                 let tgid = self.tasks[t].tgid;
                 for task in self.tasks.iter_mut().filter(|x| x.tgid == tgid) {
@@ -466,8 +466,8 @@ impl Kernel {
         Ok(0)
     }
 
-    /// rt_sigtimedwait(set, info, timeout, sigsetsize): il segnale preso, o
-    /// l'attesa in cui bloccarsi.
+    /// rt_sigtimedwait(set, info, timeout, sigsetsize): the signal taken, or
+    /// the wait to block in.
     pub fn sys_sigtimedwait(&mut self, t: usize, a: [u64; 6]) -> Result<Result<i64, Wait>, i64> {
         if a[3] != 8 {
             return Err(EINVAL);
@@ -503,7 +503,7 @@ impl Kernel {
         Ok(Err(Wait::SigWait { set, until: self.tasks[t].deadline }))
     }
 
-    /// Il task è in attesa di un segnale (pause, sigsuspend).
+    /// The task is waiting for a signal (pause, sigsuspend).
     pub fn block_for_signal(&mut self, t: usize) {
         self.tasks[t].state = State::Blocked(Wait::Signal);
     }

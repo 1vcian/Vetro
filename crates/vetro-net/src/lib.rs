@@ -1,21 +1,21 @@
-//! Stack di rete lato host di Vetro: gateway virtuale, TCP/UDP terminati
-//! lato host (come slirp), sinkhole e interfaccia verso il relay.
+//! Vetro's host-side network stack: virtual gateway, TCP/UDP terminated
+//! on the host side (like slirp), sinkhole and interface to the relay.
 //!
-//! Il guest (Linux) scambia frame Ethernet con il dispositivo virtio-net;
-//! [`Stack`] sta dall'altra parte del cavo. Risponde ad ARP, DHCP e ICMP come
-//! la rete "user" di QEMU (guest 10.0.2.15, gateway 10.0.2.2, DNS 10.0.2.3),
-//! termina ogni connessione TCP e ogni flusso UDP del guest e ne consegna i
-//! dati a un [`Upstream`]: il [`Sinkhole`] (tutto finto e registrato) o un
-//! [`RelayUpstream`] (verso il relay WebSocket di M7). Nel verso opposto,
-//! [`Stack::host_connect`] apre connessioni dall'host verso i servizi TCP del
-//! guest (inoltro di porte come `hostfwd` di QEMU: la base per adb).
+//! The guest (Linux) exchanges Ethernet frames with the virtio-net device;
+//! [`Stack`] sits at the other end of the cable. It answers ARP, DHCP and ICMP like
+//! QEMU's "user" network (guest 10.0.2.15, gateway 10.0.2.2, DNS 10.0.2.3),
+//! terminates every TCP connection and every UDP flow of the guest and delivers the
+//! data to an [`Upstream`]: the [`Sinkhole`] (all fake and recorded) or a
+//! [`RelayUpstream`] (to M7's WebSocket relay). In the opposite direction,
+//! [`Stack::host_connect`] opens connections from the host to the guest's TCP
+//! services (port forwarding like QEMU's `hostfwd`: the basis for adb).
 //!
-//! Determinismo: nessun orologio dell'host e nessuna casualità non seminata.
-//! Il tempo arriva come parametro ([`VirtualTime`]), i numeri di sequenza
-//! iniziali derivano da `NetConfig::seed`, le tabelle sono `BTreeMap`.
-//! Stesse chiamate con stessi argomenti producono gli stessi frame e lo stesso
-//! registro degli eventi. Interfaccia e invarianti in `docs/specs/net.md`,
-//! scelte in `docs/adr/0007-stack-di-rete-senza-smoltcp.md`.
+//! Determinism: no host clock and no unseeded randomness.
+//! Time arrives as a parameter ([`VirtualTime`]), the initial sequence
+//! numbers derive from `NetConfig::seed`, the tables are `BTreeMap`s.
+//! The same calls with the same arguments produce the same frames and the same
+//! event log. Interface and invariants in `docs/specs/net.md`,
+//! choices in `docs/adr/0007-network-stack-without-smoltcp.md`.
 
 pub mod dhcp;
 pub mod dns;
@@ -38,8 +38,8 @@ pub use stack::{NetConfig, Stack, Stats};
 pub use upstream::{TcpRead, TcpStatus, Upstream};
 pub use wire::Mac;
 
-/// Tempo virtuale in microsecondi, fornito da chi chiama (la piattaforma).
-/// Deve essere non decrescente tra una chiamata e la successiva.
+/// Virtual time in microseconds, provided by the caller (the platform).
+/// It must be non-decreasing between one call and the next.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VirtualTime(pub u64);
 
@@ -66,12 +66,12 @@ impl VirtualTime {
     }
 }
 
-/// Identificativo di una connessione TCP o di un flusso UDP, unico per tutta
-/// la vita dello stack e assegnato in ordine crescente da 1.
+/// Identifier of a TCP connection or UDP flow, unique for the whole
+/// life of the stack and assigned in increasing order from 1.
 pub type ConnId = u64;
 
-/// Quadrupla di una connessione vista dal guest: `guest` è l'estremo nel
-/// guest, `remote` la destinazione che il guest crede di contattare.
+/// Four-tuple of a connection as seen by the guest: `guest` is the endpoint in the
+/// guest, `remote` the destination the guest believes it is contacting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Flow {
     pub guest: SocketAddrV4,

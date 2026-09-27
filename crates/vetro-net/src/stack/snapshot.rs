@@ -1,14 +1,14 @@
-//! Stato dello stack negli snapshot della macchina (M6, ADR 0015): MAC del
-//! guest, frame in uscita, connessioni TCP (sequenze, finestre, timer, dati
-//! in transito), flussi UDP, indici, contatori, registro degli eventi e
-//! stato dell'upstream, connessioni aperte dall'host (inoltro di porte:
-//! code nei due versi, richieste in attesa). La configurazione (`NetConfig`) non si salva: è
-//! quella con cui lo stack è stato costruito, e la macchina la controlla con
-//! l'hash della sua configurazione.
+//! State of the stack in the machine's snapshots (M6, ADR 0015): the guest's
+//! MAC, outgoing frames, TCP connections (sequences, windows, timers, data
+//! in transit), UDP flows, indices, counters, event log and
+//! upstream state, connections opened by the host (port forwarding:
+//! queues in both directions, pending requests). The configuration (`NetConfig`) is not saved: it is
+//! the one the stack was built with, and the machine checks it with
+//! the hash of its configuration.
 //!
-//! In un file a parte (figlio di `stack`, per vedere i campi privati) così
-//! le modifiche allo stack e quelle al formato non si pestano i piedi: chi
-//! aggiunge un campo allo stato deve aggiungerlo anche qui (e cambiare
+//! In a separate file (child of `stack`, to see the private fields) so
+//! changes to the stack and changes to the format don't step on each other: whoever
+//! adds a field to the state must add it here too (and change
 //! `vetro_snapshot::FORMAT_VERSION`).
 
 use std::net::{Ipv4Addr, SocketAddrV4};
@@ -23,7 +23,7 @@ use crate::upstream::Upstream;
 use crate::wire::Mac;
 use crate::{Flow, VirtualTime};
 
-// ---- Pezzi comuni (usati anche da tcp e sinkhole) ---------------------------
+// ---- Common pieces (also used by tcp and sinkhole) ----------------------------
 
 pub(crate) fn put_ip(w: &mut Writer, a: Ipv4Addr) {
     w.raw(&a.octets());
@@ -79,7 +79,7 @@ fn get_dir(r: &mut Reader<'_>) -> Result<Direction> {
     match r.u8()? {
         0 => Ok(Direction::ToRemote),
         1 => Ok(Direction::ToGuest),
-        v => Err(Error::invalid(format!("verso {v}"))),
+        v => Err(Error::invalid(format!("direction {v}"))),
     }
 }
 
@@ -102,11 +102,11 @@ pub(crate) fn get_reason(r: &mut Reader<'_>) -> Result<CloseReason> {
         3 => CloseReason::Refused,
         4 => CloseReason::Timeout,
         5 => CloseReason::Idle,
-        v => return Err(Error::invalid(format!("motivo di chiusura {v}"))),
+        v => return Err(Error::invalid(format!("close reason {v}"))),
     })
 }
 
-// ---- Registro degli eventi --------------------------------------------------
+// ---- Event log --------------------------------------------------------------
 
 fn put_event(w: &mut Writer, e: &NetEvent) {
     put_time(w, e.at);
@@ -203,7 +203,7 @@ fn get_event(r: &mut Reader<'_>) -> Result<NetEvent> {
                 2 => DhcpMessage::Nak,
                 3 => DhcpMessage::Release,
                 4 => DhcpMessage::Decline,
-                v => return Err(Error::invalid(format!("messaggio DHCP {v}"))),
+                v => return Err(Error::invalid(format!("DHCP message {v}"))),
             },
             mac: Mac(r.raw(6)?.try_into().expect("6 byte")),
             ip: get_ip(r)?,
@@ -237,7 +237,7 @@ fn get_event(r: &mut Reader<'_>) -> Result<NetEvent> {
             addrs: r.seq(4, get_ip)?,
         },
         11 => EventKind::TcpConnect { id: r.u64()?, flow: get_flow(r)? },
-        v => return Err(Error::invalid(format!("evento di rete {v}"))),
+        v => return Err(Error::invalid(format!("network event {v}"))),
     };
     Ok(NetEvent { at, kind })
 }
@@ -318,7 +318,7 @@ impl<U: Upstream + Snapshot> Snapshot for Stack<U> {
             let id = r.u64()?;
             let c = TcpConn::restore(r)?;
             if c.id != id {
-                return Err(Error::invalid(format!("connessione {} sotto la chiave {id}", c.id)));
+                return Err(Error::invalid(format!("connection {} under key {id}", c.id)));
             }
             self.tcp.insert(id, c);
         }
@@ -375,17 +375,17 @@ mod tests {
     use crate::stack::NetConfig;
     use crate::wire;
 
-    /// Un giro di DHCP e una connessione TCP a metà: lo stack salvato e
-    /// ripristinato in uno nuovo dà gli stessi byte e, dagli stessi frame,
-    /// le stesse risposte e lo stesso registro di quello originale.
+    /// A DHCP round and a TCP connection halfway: the stack saved and
+    /// restored into a new one gives the same bytes and, from the same frames,
+    /// the same answers and the same log as the original.
     #[test]
     fn stack_ripristinato_prosegue_uguale() {
         let cfg = NetConfig { seed: 7, ..NetConfig::default() };
         let mut a = Stack::new(cfg.clone(), Sinkhole::new(SinkholeConfig::default()));
         let guest = Mac([0x52, 0x54, 0, 0x12, 0x34, 0x56]);
         let t0 = VirtualTime::from_millis(5);
-        // SYN del guest verso 198.18.0.9:80 (con l'MSS), senza DHCP: lo
-        // stack impara il MAC dal frame.
+        // Guest SYN to 198.18.0.9:80 (with the MSS), without DHCP: the
+        // stack learns the MAC from the frame.
         let remote = Ipv4Addr::new(198, 18, 0, 9);
         let seg = wire::build_tcp(&wire::TcpOut {
             src: cfg.guest_ip,
@@ -402,7 +402,7 @@ mod tests {
         let ip = wire::build_ipv4(cfg.guest_ip, remote, wire::PROTO_TCP, 1, &seg);
         let syn = wire::build_eth(cfg.gateway_mac, guest, wire::ETHERTYPE_IPV4, &ip);
         a.receive(t0, &syn);
-        assert!(a.pending_frames() > 0, "SYN-ACK in uscita");
+        assert!(a.pending_frames() > 0, "SYN-ACK outgoing");
         assert_eq!(a.tcp_connections(), 1);
         assert!(matches!(a.events()[0].kind, EventKind::TcpOpen { .. }));
 
@@ -417,7 +417,7 @@ mod tests {
         b.save(&mut w2);
         assert_eq!(w2.into_bytes(), bytes);
 
-        // Da qui in poi i due stack vanno di pari passo, timer compresi.
+        // From here on the two stacks go in lockstep, timers included.
         assert_eq!(a.next_deadline(), b.next_deadline());
         let later = VirtualTime::from_secs(3);
         a.poll(later);
@@ -429,7 +429,7 @@ mod tests {
         while let Some(f) = b.pop_frame() {
             fb.push(f);
         }
-        assert!(fa.len() >= 2, "SYN-ACK e ritrasmissione");
+        assert!(fa.len() >= 2, "SYN-ACK and retransmission");
         assert_eq!(fa, fb);
         assert_eq!(a.events(), b.events());
     }

@@ -1,22 +1,22 @@
-//! ELF a 64 bit little endian: simboli dai byte del file (`.symtab`,
-//! `.dynsym`) o dall'immagine caricata in memoria (tabella dinamica
-//! trovata da `PT_DYNAMIC`, numero di simboli da `DT_HASH` o
-//! `DT_GNU_HASH`). Serve a risolvere i nomi delle funzioni dello spazio
-//! utente (libc, BoringSSL, libbinder, libart, programmi statici non
-//! strippati) per i punti di aggancio.
+//! 64-bit little-endian ELF: symbols from the file bytes (`.symtab`,
+//! `.dynsym`) or from the image loaded in memory (dynamic table
+//! found via `PT_DYNAMIC`, number of symbols from `DT_HASH` or
+//! `DT_GNU_HASH`). Used to resolve the names of user-space functions
+//! (libc, BoringSSL, libbinder, libart, unstripped static programs)
+//! for the hook points.
 
-/// Un simbolo.
+/// A symbol.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ElfSym {
     pub name: String,
-    /// Valore: indirizzo virtuale del file, o già spostato per la memoria.
+    /// Value: virtual address from the file, or already relocated for memory.
     pub value: u64,
     pub size: u64,
-    /// `STT_*` (2 = funzione, 1 = oggetto).
+    /// `STT_*` (2 = function, 1 = object).
     pub kind: u8,
-    /// `STB_*` (0 locale, 1 globale, 2 debole).
+    /// `STB_*` (0 local, 1 global, 2 weak).
     pub bind: u8,
-    /// Indice della sezione (0 = non definito).
+    /// Section index (0 = undefined).
     pub shndx: u16,
 }
 
@@ -26,7 +26,7 @@ pub const ET_DYN: u16 = 3;
 pub const PT_LOAD: u32 = 1;
 pub const PT_DYNAMIC: u32 = 2;
 
-/// Intestazione ELF e programma.
+/// ELF header and program header.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ElfHeader {
     pub e_type: u16,
@@ -39,7 +39,7 @@ pub struct ElfHeader {
     pub shstrndx: u16,
 }
 
-/// Una voce della tabella dei programmi.
+/// An entry of the program header table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Phdr {
     pub p_type: u32,
@@ -69,7 +69,7 @@ fn cstr(b: &[u8], o: usize) -> String {
     String::from_utf8_lossy(&s[..end]).into_owned()
 }
 
-/// Legge l'intestazione ELF dai primi 64 byte.
+/// Reads the ELF header from the first 64 bytes.
 pub fn header(b: &[u8]) -> Option<ElfHeader> {
     if b.get(..4)? != b"\x7fELF" || *b.get(4)? != 2 || *b.get(5)? != 1 {
         return None;
@@ -86,7 +86,7 @@ pub fn header(b: &[u8]) -> Option<ElfHeader> {
     })
 }
 
-/// Una voce di 56 byte della tabella dei programmi.
+/// A 56-byte entry of the program header table.
 pub fn phdr(b: &[u8]) -> Option<Phdr> {
     Some(Phdr {
         p_type: u32_at(b, 0)?,
@@ -99,7 +99,7 @@ pub fn phdr(b: &[u8]) -> Option<Phdr> {
     })
 }
 
-/// Le voci di 24 byte di una tabella dei simboli con le sue stringhe.
+/// The 24-byte entries of a symbol table with its strings.
 fn parse_syms(tab: &[u8], strs: &[u8], bias: u64) -> Vec<ElfSym> {
     tab.as_chunks::<24>()
         .0
@@ -125,8 +125,8 @@ fn parse_syms(tab: &[u8], strs: &[u8], bias: u64) -> Vec<ElfSym> {
         .collect()
 }
 
-/// Simboli dai byte del file: `.symtab` e `.dynsym`, con i valori del
-/// file (indirizzi virtuali di collegamento).
+/// Symbols from the file bytes: `.symtab` and `.dynsym`, with the file's
+/// values (link-time virtual addresses).
 pub fn file_symbols(b: &[u8]) -> Vec<ElfSym> {
     let Some(h) = header(b) else { return Vec::new() };
     let mut out = Vec::new();
@@ -151,7 +151,7 @@ pub fn file_symbols(b: &[u8]) -> Vec<ElfSym> {
     out
 }
 
-/// Lettura della memoria di un processo: `read(va, buf)`.
+/// Reading a process's memory: `read(va, buf)`.
 pub trait VirtRead {
     fn read_virt(&self, va: u64, buf: &mut [u8]) -> bool;
 }
@@ -167,9 +167,9 @@ fn rd(m: &impl VirtRead, va: u64, len: usize) -> Option<Vec<u8>> {
     m.read_virt(va, &mut b).then_some(b)
 }
 
-/// Spostamento di un'immagine caricata a `base` (indirizzo della prima
-/// pagina, con l'intestazione): 0 per `ET_EXEC`, altrimenti `base` meno
-/// l'indirizzo virtuale del primo `PT_LOAD` (arrotondato alla pagina).
+/// Load bias of an image loaded at `base` (address of the first
+/// page, with the header): 0 for `ET_EXEC`, otherwise `base` minus
+/// the virtual address of the first `PT_LOAD` (rounded down to the page).
 pub fn load_bias(h: &ElfHeader, phdrs: &[Phdr], base: u64) -> u64 {
     if h.e_type == ET_EXEC {
         return 0;
@@ -178,7 +178,7 @@ pub fn load_bias(h: &ElfHeader, phdrs: &[Phdr], base: u64) -> u64 {
     base.wrapping_sub(first)
 }
 
-/// Intestazione e programma di un'immagine in memoria a `base`.
+/// Header and program headers of an image in memory at `base`.
 pub fn loaded_headers(m: &impl VirtRead, base: u64) -> Option<(ElfHeader, Vec<Phdr>)> {
     let h = header(&rd(m, base, 64)?)?;
     let n = usize::from(h.phnum).min(256);
@@ -187,8 +187,8 @@ pub fn loaded_headers(m: &impl VirtRead, base: u64) -> Option<(ElfHeader, Vec<Ph
     Some((h, phdrs))
 }
 
-/// Simboli dinamici di un'immagine caricata a `base` (valori già
-/// spostati: indirizzi del processo).
+/// Dynamic symbols of an image loaded at `base` (values already
+/// relocated: process addresses).
 pub fn dynamic_symbols(m: &impl VirtRead, base: u64) -> Vec<ElfSym> {
     dynamic_symbols_inner(m, base).unwrap_or_default()
 }
@@ -203,7 +203,7 @@ fn dynamic_symbols_inner(m: &impl VirtRead, base: u64) -> Option<Vec<ElfSym>> {
     for e in dynb.as_chunks::<16>().0 {
         let tag = u64_at(e, 0)?;
         let val = u64_at(e, 8)?;
-        // Il linker può aver già spostato i puntatori (glibc lo fa).
+        // The linker may have already relocated the pointers (glibc does).
         let ptr = if bias != 0 && val >= bias { val } else { val.wrapping_add(bias) };
         match tag {
             0 => break,
@@ -231,8 +231,8 @@ fn dynamic_symbols_inner(m: &impl VirtRead, base: u64) -> Option<Vec<ElfSym>> {
     Some(parse_syms(&tab, &strs, bias))
 }
 
-/// Numero di simboli da una tabella `DT_GNU_HASH`: il massimo indice
-/// raggiunto dalle catene.
+/// Number of symbols from a `DT_GNU_HASH` table: the highest index
+/// reached by the chains.
 fn gnu_hash_count(m: &impl VirtRead, at: u64) -> Option<u64> {
     let hdr = rd(m, at, 16)?;
     let nbuckets = u64::from(u32_at(&hdr, 0)?);
@@ -258,7 +258,7 @@ fn gnu_hash_count(m: &impl VirtRead, at: u64) -> Option<u64> {
     None
 }
 
-/// Cerca una funzione per nome (prima i simboli definiti).
+/// Looks up a function by name (defined symbols first).
 pub fn find<'a>(syms: &'a [ElfSym], name: &str) -> Option<&'a ElfSym> {
     syms.iter().find(|s| s.name == name && s.shndx != 0)
 }
@@ -267,7 +267,7 @@ pub fn find<'a>(syms: &'a [ElfSym], name: &str) -> Option<&'a ElfSym> {
 pub(crate) mod tests {
     use super::*;
 
-    /// Un ELF minimo con .symtab (e .strtab) per i test.
+    /// A minimal ELF with .symtab (and .strtab) for the tests.
     pub(crate) fn tiny_elf(e_type: u16, syms: &[(&str, u64)]) -> Vec<u8> {
         let mut strtab = vec![0u8];
         let mut symtab = vec![0u8; 24];
@@ -277,7 +277,7 @@ pub(crate) mod tests {
             strtab.push(0);
             let mut e = vec![0u8; 24];
             e[0..4].copy_from_slice(&off.to_le_bytes());
-            e[4] = 0x12; // globale, funzione
+            e[4] = 0x12; // global, function
             e[6..8].copy_from_slice(&1u16.to_le_bytes());
             e[8..16].copy_from_slice(&v.to_le_bytes());
             e[16..24].copy_from_slice(&4u64.to_le_bytes());
@@ -328,8 +328,8 @@ pub(crate) mod tests {
         }
     }
 
-    /// Un'immagine caricata con PT_DYNAMIC, DT_GNU_HASH e simboli
-    /// dinamici, letta dalla "memoria" del processo.
+    /// A loaded image with PT_DYNAMIC, DT_GNU_HASH and dynamic
+    /// symbols, read from the process "memory".
     #[test]
     fn simboli_dinamici_dalla_memoria() {
         let base = 0x7f00_0000_0000u64;
@@ -355,8 +355,8 @@ pub(crate) mod tests {
             img[0x1000 + 16 * i..0x1008 + 16 * i].copy_from_slice(&t.to_le_bytes());
             img[0x1008 + 16 * i..0x1010 + 16 * i].copy_from_slice(&v.to_le_bytes());
         }
-        // GNU_HASH: 1 bucket, symoffset 1, 1 parola di bloom, shift 0;
-        // bucket[0] = 1; catene: simbolo 1 (continua), simbolo 2 (fine).
+        // GNU_HASH: 1 bucket, symoffset 1, 1 bloom word, shift 0;
+        // bucket[0] = 1; chains: symbol 1 (continues), symbol 2 (end).
         let gh: [u32; 4] = [1, 1, 1, 0];
         for (i, v) in gh.iter().enumerate() {
             img[0x1100 + 4 * i..0x1104 + 4 * i].copy_from_slice(&v.to_le_bytes());

@@ -1,184 +1,186 @@
-# ADR 0015 — Snapshot della macchina: formato, contenuto, determinismo
+# ADR 0015 — Machine snapshot: format, contents, determinism
 
-- Stato: accettata (M6, prima parte, 2026-09-26).
+- Status: accepted (M6, first part, 2026-09-26).
 
-## Contesto
-M6 chiede la home di Android in meno di 15 s dal secondo avvio: si parte da
-uno snapshot della macchina già avviata. M10 (record & replay, salto a un
-evento) avrà bisogno della stessa cosa, con un requisito più forte: da uno
-snapshot si deve ripartire **esattamente** come se la macchina non si fosse
-mai fermata, istruzione per istruzione. La macchina è già deterministica
-(tempo = istruzioni, ADR 0011; tempo fermo sui dischi, ADR 0014), quindi
-basta che lo snapshot contenga tutto lo stato che influisce sul futuro.
+## Context
+M6 asks for the Android home screen in under 15 s from the second boot: we
+start from a snapshot of the already-booted machine. M10 (record & replay,
+jump to an event) will need the same thing, with a stronger requirement:
+from a snapshot we must resume **exactly** as if the machine had never
+stopped, instruction by instruction. The machine is already deterministic
+(time = instructions, ADR 0011; stopped time on disks, ADR 0014), so it is
+enough for the snapshot to contain all the state that affects the future.
 
-Lo stato è sparso in sei crate (`vetro-cpu`, `vetro-mmu`, `vetro-platform`,
-`vetro-net`, `vetro-machine`, e i backend dell'host in `vetro-cli` e
-`vetro-wasm`), con campi privati. Serve un formato senza dipendenze
-esterne che compili anche per wasm32.
+The state is spread across six crates (`vetro-cpu`, `vetro-mmu`,
+`vetro-platform`, `vetro-net`, `vetro-machine`, and the host backends in
+`vetro-cli` and `vetro-wasm`), with private fields. We need a format with
+no external dependencies that also compiles for wasm32.
 
-## Decisione
+## Decision
 
-### Il crate `vetro-snapshot`
-- Senza dipendenze. Dà `Writer`/`Reader` (interi little endian a larghezza
-  fissa, booleani stretti 0/1, byte con lunghezza, opzioni, sequenze,
-  **sezioni** con etichetta di 4 byte e lunghezza), il trait
+### The `vetro-snapshot` crate
+- No dependencies. It provides `Writer`/`Reader` (fixed-width little
+  endian integers, strict 0/1 booleans, length-prefixed bytes, options,
+  sequences, **sections** with a 4-byte tag and a length), the trait
   `Snapshot { save(&self, &mut Writer); restore(&mut self, &mut Reader) }`,
-  l'intestazione del file e la compressione.
-- Ogni crate implementa `Snapshot` per il proprio stato, accanto al codice
-  che lo possiede (i campi restano privati): `Cpu`, `SysState`, `Mmu`,
+  the file header and the compression.
+- Each crate implements `Snapshot` for its own state, next to the code
+  that owns it (fields stay private): `Cpu`, `SysState`, `Mmu`,
   `Tlb`, `GenericTimer`, `Gic`, `Pl011`, `Pl031`, `Pl061`, `Virtqueue`,
   `VirtioMmio`, `Virt`, `Stack<U: Snapshot>`, `Sinkhole`, `Ram`.
-  `vetro-machine` mette insieme le sezioni (`Machine::save`,
+  `vetro-machine` assembles the sections (`Machine::save`,
   `Machine::load_state`, `Machine::restore`).
-- `restore` parte sempre da un oggetto **costruito con la stessa
-  configurazione** e lo porta nello stato salvato. Ciò che è configurazione
-  (dimensioni, CID, MAC, capacità dei dischi, numero di code) si scrive e al
-  ripristino si **controlla** (`Reader::expect_u64`), non si sovrascrive.
+- `restore` always starts from an object **built with the same
+  configuration** and brings it to the saved state. Whatever is
+  configuration (sizes, CID, MAC, disk capacities, number of queues) is
+  written and on restore is **checked** (`Reader::expect_u64`), not
+  overwritten.
 
-### Interfacce che cambiano (`docs/specs/platform.md`)
-- `VirtioDevice` ha due metodi obbligatori, `save_state` e
-  `restore_state`: ogni dispositivo deve dire il suo stato (un dispositivo
-  che se ne dimenticasse non compila).
-- `BlockBackend`, `NetBackend`, `ConsoleBackend` hanno `save_state` e
-  `restore_state` con implementazione vuota: di norma un backend è un
-  **collegamento** verso l'esterno che l'host ricrea prima del ripristino.
-  Chi tiene dati scritti dal guest li salva: `MemBackend` scrivibile (tutto
-  il contenuto; in sola lettura solo l'hash, per controllare che sia la
-  stessa immagine), `CowBackend` (i cluster scritti, poi la base),
-  `QueueNet`, `BufferConsole`, `NetLink` di `vetro-machine` (lo stack di
-  rete intero). `DisplayBackend` non cambia: al ripristino la GPU gli
-  rimanda immagine e cursore di ogni scanout.
+### Interfaces that change (`docs/specs/platform.md`)
+- `VirtioDevice` has two mandatory methods, `save_state` and
+  `restore_state`: every device must report its state (a device that
+  forgot to would not compile).
+- `BlockBackend`, `NetBackend`, `ConsoleBackend` have `save_state` and
+  `restore_state` with an empty implementation: as a rule a backend is a
+  **link** to the outside that the host recreates before the restore.
+  Whoever holds data written by the guest saves it: writable `MemBackend`
+  (the whole content; read-only, only the hash, to check it is the same
+  image), `CowBackend` (the written clusters, then the base),
+  `QueueNet`, `BufferConsole`, `NetLink` from `vetro-machine` (the whole
+  network stack). `DisplayBackend` does not change: on restore the GPU
+  sends it again the image and cursor of every scanout.
 
-### Formato del file (versione 1)
+### File format (version 1)
 ```
-"VETROSNP"  u32 versione  u64 hash della configurazione
-u64 lunghezza del contenuto  u64 somma di controllo del contenuto
-contenuto: sezioni MACH, CPU , MMU , PLAT, RAM  (in quest'ordine)
+"VETROSNP"  u32 version  u64 configuration hash
+u64 content length  u64 content checksum
+content: sections MACH, CPU , MMU , PLAT, RAM  (in this order)
 ```
-- **Versione** (`vetro_snapshot::FORMAT_VERSION`): cambia a ogni modifica
-  di ciò che si scrive. Uno snapshot di un'altra versione si rifiuta con
-  `Error::Version` e un messaggio chiaro; niente conversioni (gli snapshot
-  sono cache, si rifanno).
-- **Hash della configurazione**: RAM, ora iniziale e seme
-  (`MachineConfig`), `Devices` (le configurazioni annidate di GPU e rete
-  nella loro forma `Debug`, stabile), e per ognuno dei 32 slot virtio tipo,
-  feature offerte e dimensioni delle code (copre i dischi montati dall'host
-  dopo la costruzione). Diverso = `Error::Config`, macchina non toccata.
-- **Somma di controllo** (`hash64`, FNV-1a su parole con rimescolamento
-  finale, non crittografica): un file rovinato dà `Error::Checksum`.
-- **Dati grandi** (RAM, pixel delle risorse della GPU, cluster
-  copy-on-write, dischi in memoria) a blocchi da 4 KiB: i blocchi a zero
-  non si scrivono, gli altri con un LZ77 semplice (`vetro_snapshot::lz`,
-  gettoni LEB128 di letterali o copie, anche sovrapposte = RLE), o crudi se
-  non conviene. Il compressore è goloso e dipende solo dal blocco.
+- **Version** (`vetro_snapshot::FORMAT_VERSION`): changes with every
+  modification of what is written. A snapshot of another version is
+  rejected with `Error::Version` and a clear message; no conversions
+  (snapshots are caches, they get redone).
+- **Configuration hash**: RAM, initial time and seed (`MachineConfig`),
+  `Devices` (the nested GPU and network configurations in their `Debug`
+  form, which is stable), and for each of the 32 virtio slots the type,
+  offered features and queue sizes (this covers disks mounted by the host
+  after construction). Different = `Error::Config`, machine untouched.
+- **Checksum** (`hash64`, FNV-1a on words with a final mix,
+  not cryptographic): a corrupted file gives `Error::Checksum`.
+- **Large data** (RAM, pixels of GPU resources, copy-on-write clusters,
+  in-memory disks) in 4 KiB blocks: zero blocks are not written, the
+  others with a simple LZ77 (`vetro_snapshot::lz`, LEB128 tokens of
+  literals or copies, overlapping too = RLE), or raw if it does not pay
+  off. The compressor is greedy and depends only on the block.
 
-### Che cosa c'è
-| Sezione | Contenuto |
+### What is in it
+| Section | Contents |
 |---|---|
-| `MACH` | istruzioni eseguite (l'orologio), scadenze in cache del timer e dello stack di rete, WFI in sospeso (ADR 0014), CNTPCT, linee da aggiornare, virtio da servire, disco in attesa |
-| `CPU ` | X0–X30, SP, PC, NZCV, TPIDR*, V0–V31, FPCR/FPSR, monitor esclusivo, PSTATE, SP_EL0/1, tutti i registri di sistema di EL1 e di debug, SError in attesa, configurazione (PSCI, MPIDR) |
-| `MMU ` | PARange (controllato), SCTLR/TCR/TTBR0/TTBR1/MAIR, **le voci del TLB** |
-| `PLAT` | timer (CTL/CVAL dei due canali, CNTVOFF), GIC (ogni INTID, distributore, interfaccia CPU, priorità attive), PL011 (registri, FIFO di ricezione, ingresso dell'host non ancora in FIFO, uscita non letta), PL031, PL061, e per ogni slot virtio il trasporto (selettori, feature negoziate, stato, interrupt, generazione, ultimo errore), le code (dimensione, pronta, indirizzi, `last_avail`, `used_idx`, `signalled_used`, EVENT_IDX e INDIRECT) e il dispositivo |
-| `RAM ` | tutta la RAM, pagine a zero omesse |
+| `MACH` | executed instructions (the clock), cached deadlines of the timer and of the network stack, pending WFI (ADR 0014), CNTPCT, lines to update, virtio to serve, waiting disk |
+| `CPU ` | X0–X30, SP, PC, NZCV, TPIDR*, V0–V31, FPCR/FPSR, exclusive monitor, PSTATE, SP_EL0/1, all EL1 and debug system registers, pending SError, configuration (PSCI, MPIDR) |
+| `MMU ` | PARange (checked), SCTLR/TCR/TTBR0/TTBR1/MAIR, **the TLB entries** |
+| `PLAT` | timer (CTL/CVAL of both channels, CNTVOFF), GIC (every INTID, distributor, CPU interface, active priorities), PL011 (registers, receive FIFO, host input not yet in the FIFO, unread output), PL031, PL061, and for each virtio slot the transport (selectors, negotiated features, status, interrupts, generation, last error), the queues (size, ready, addresses, `last_avail`, `used_idx`, `signalled_used`, EVENT_IDX and INDIRECT) and the device |
+| `RAM ` | all the RAM, zero pages omitted |
 
-Dispositivi: **virtio-blk** la richiesta in sospeso (catena di descrittori)
-e il backend; **virtio-net** link, MRG_RXBUF negoziato, frame in attesa di
-buffer, e lo stack di `vetro-net` (MAC del guest, frame in uscita, ogni
-connessione TCP con stato, sequenze, finestre, controllo di congestione,
-dati in transito, RTO e timer; flussi UDP; indici; contatori; registro
-degli eventi; il sinkhole con tutto ciò che ha registrato e i nomi finti
-assegnati) più l'istante corrente; **virtio-gpu** risorse (pixel, backing,
-scanout), scanout (risoluzione chiesta, risorsa, rettangolo, cursore con
-immagine), eventi; **virtio-input** finestra di configurazione, eventi in
-coda, LED, stato; **virtio-vsock** porte in ascolto, connessioni con crediti
-e dati, backlog, pacchetti di controllo, prossima porta; **virtio-console**
-il backend.
+Devices: **virtio-blk** the pending request (descriptor chain) and the
+backend; **virtio-net** link, negotiated MRG_RXBUF, frames waiting for a
+buffer, and the `vetro-net` stack (guest MAC, outgoing frames, every TCP
+connection with state, sequences, windows, congestion control, data in
+flight, RTO and timers; UDP flows; indices; counters; event log; the
+sinkhole with everything it recorded and the fake names assigned) plus the
+current instant; **virtio-gpu** resources (pixels, backing, scanout),
+scanouts (requested resolution, resource, rectangle, cursor with image),
+events; **virtio-input** configuration window, queued events, LEDs,
+state; **virtio-vsock** listening ports, connections with credits and
+data, backlog, control packets, next port; **virtio-console** the backend.
 
-Casualità: non c'è una sorgente di casualità con stato. Il seme della
-macchina è configurazione (va nel device tree, cioè in RAM); gli ISN del
-TCP derivano dal seme della rete (configurazione) e dal contatore delle
-connessioni (salvato).
+Randomness: there is no stateful source of randomness. The machine seed
+is configuration (it goes into the device tree, i.e. into RAM); TCP ISNs
+derive from the network seed (configuration) and from the connection
+counter (saved).
 
-### Che cosa non c'è, e perché non cambia niente
-- **Il JIT.** Blocchi, cache dei salti, TLB software e contatori di
-  "calore" non entrano: il risultato del JIT è per costruzione quello
-  dell'interprete (ADR 0013). Al ripristino, anche sopra una macchina che
-  ha già un JIT con blocchi tradotti: ogni pagina sorvegliata risulta
-  scritta (i blocchi si scartano), il contatore di invalidazioni del TLB
-  (`Tlb::flushes`) cresce (nuova epoca, TLB software vuota), e l'interprete
-  riparte da `Next::Jit`.
-- **Cache senza effetti osservabili**: le traduzioni recenti della MMU
-  (valide solo finché lo slot del TLB non cambia: ripartono vuote, e le
-  generazioni degli slot non servono), il livello in cache della linea IRQ,
-  l'ultimo fault di `VirtMemory` (solo diagnosi in modalità utente), la
-  bitmap delle pagine sorvegliate dal JIT.
-- **I backend esterni**: display (`MemDisplay`, `WebDisplay`), file dei
-  dischi (`FileBackend`), immagini via HTTP (`HostDisk` e la sua cache di
-  blocchi), il relay. L'host li ricollega prima del ripristino; il loro
-  stato non è stato del guest. La base di un disco copy-on-write è un
-  collegamento: se ne controlla la dimensione.
-- **Il quanto in corso**: si salva solo fra due `Machine::run`. Dentro una
-  WFI la macchina salta già alla scadenza prima di tornare, quindi il
-  confine è sempre pulito; l'unico caso a metà è la WFI interrotta da
-  `Stop::Blocked`, che è stato (`wfi_pending`).
+### What is not in it, and why it changes nothing
+- **The JIT.** Blocks, branch caches, software TLB and "heat" counters
+  are not included: the JIT's result is by construction that of the
+  interpreter (ADR 0013). On restore, even on top of a machine that
+  already has a JIT with translated blocks: every watched page is marked
+  written (the blocks are discarded), the TLB invalidation counter
+  (`Tlb::flushes`) grows (new epoch, empty software TLB), and the
+  interpreter resumes from `Next::Jit`.
+- **Caches without observable effects**: the MMU's recent translations
+  (valid only as long as the TLB slot does not change: they start empty,
+  and the slot generations are not needed), the cached level of the IRQ
+  line, the last fault of `VirtMemory` (diagnostics only in user mode),
+  the bitmap of pages watched by the JIT.
+- **External backends**: display (`MemDisplay`, `WebDisplay`), disk files
+  (`FileBackend`), images over HTTP (`HostDisk` and its block cache), the
+  relay. The host reconnects them before the restore; their state is not
+  guest state. The base of a copy-on-write disk is a link: its size is
+  checked.
+- **The quantum in progress**: saving happens only between two
+  `Machine::run`. Inside a WFI the machine already jumps to the deadline
+  before returning, so the boundary is always clean; the only half-way
+  case is the WFI interrupted by `Stop::Blocked`, which is state
+  (`wfi_pending`).
 
-### Il TLB entra, anche se "si potrebbe ricostruire vuoto"
-Un TLB vuoto al ripristino cambierebbe il risultato per un guest che
-modifica le tabelle senza TLBI (il walk vedrebbe la tabella nuova dove la
-macchina originale usava la voce vecchia), e più in generale per ogni
-sequenza che l'architettura lascia al TLB. È poco (al più 512 voci), quindi
-si salva: `tlb_nello_snapshot` (vetro-mmu) lo verifica con una voce stantia.
-Col JIT il TLB vede meno accessi che con l'interprete (differenza già
-ammessa dall'ADR 0013): i test d'equivalenza col JIT confrontano tutto
-tranne il TLB.
+### The TLB is included, even though "it could be rebuilt empty"
+An empty TLB on restore would change the result for a guest that modifies
+the tables without TLBI (the walk would see the new table where the
+original machine used the old entry), and more generally for every
+sequence the architecture leaves to the TLB. It is small (at most 512
+entries), so it is saved: `tlb_nello_snapshot` (vetro-mmu) checks it with
+a stale entry. With the JIT the TLB sees fewer accesses than with the
+interpreter (a difference already allowed by ADR 0013): the JIT
+equivalence tests compare everything except the TLB.
 
-### Garanzie
-1. Salvare non cambia la macchina, e due salvataggi nello stesso punto
-   danno gli stessi byte (niente tabelle hash, niente orologi, niente
-   puntatori; le mappe sono `BTreeMap`).
-2. Una macchina ripristinata risalva esattamente i byte letti.
-3. Salva a N istruzioni, ripristina in una macchina nuova (o in una usata),
-   continua: stesso log della console, stesso numero di istruzioni finale,
-   stessa RAM e stesso stato di ogni dispositivo dell'esecuzione senza
-   interruzioni, col JIT o senza prima e dopo.
-4. Uno snapshot incompatibile (versione, configurazione, file rovinato) si
-   rifiuta con un errore che dice il motivo; con i primi tre la macchina non
-   cambia. Un errore più avanti (contenuto incoerente con una somma giusta)
-   lascia la macchina da scartare.
+### Guarantees
+1. Saving does not change the machine, and two saves at the same point
+   give the same bytes (no hash tables, no clocks, no pointers; maps are
+   `BTreeMap`).
+2. A restored machine re-saves exactly the bytes it read.
+3. Save at N instructions, restore into a new machine (or a used one),
+   continue: same console log, same final instruction count, same RAM and
+   same state of every device as the uninterrupted run, with or without
+   the JIT before and after.
+4. An incompatible snapshot (version, configuration, corrupted file) is
+   rejected with an error stating the reason; with the first three the
+   machine does not change. An error further on (content inconsistent
+   with a correct checksum) leaves the machine to be discarded.
 
-## Verifica
-- `vetro-machine`, `salva_e_ripristina_in_molti_punti`: sonda bare-metal
-  con GICv3, timer, IRQ, SVC, WFI ed esclusive; 19 tagli e 5 casi limite
-  trovati un'istruzione alla volta (monitor esclusivo armato, dentro il
-  gestore d'interrupt, interrupt attivo con IRQ mascherati, dopo la SVC,
-  dopo la WFI). La sonda accumula l'ELR di ogni interrupt, così ogni
-  istruzione in più o in meno dopo il ripristino si vede (senza il monitor
-  nello snapshot il test fallisce). Più: ripristino sopra una macchina
-  usata, snapshot incompatibili, richiesta virtio-blk in volo (`Blocked`).
-- `tests/boot/tests/snapshot.rs` sul kernel guest di M3: avvio fino allo
-  spegnimento, rete (300 KB verso il guest, POST, ping, TIME-WAIT), disco
-  (md5sum, scrittura con `dd`, copy-on-write), GPU/input/vsock; tagli a
-  numeri d'istruzione fissi e a qualche quanto da un punto del copione,
-  con macchina nuova o ritorno indietro sulla stessa, interprete → JIT →
-  interprete. Log, istruzioni, CPU, RAM e stato dei dispositivi uguali
-  all'esecuzione senza tagli; registro di rete, sinkhole, scanout e
-  cursore visti dall'host uguali.
-- `crates/vetro-cli/tests/boot_snapshot.rs`: `--save-at` e `--restore` in
-  due processi; il seguito coincide con l'avvio originale.
-- `vetro-wasm`, `snapshot_dall_api`: l'API C (ABI 4).
+## Verification
+- `vetro-machine`, `salva_e_ripristina_in_molti_punti`: bare-metal probe
+  with GICv3, timer, IRQ, SVC, WFI and exclusives; 19 cuts and 5 edge
+  cases found one instruction at a time (exclusive monitor armed, inside
+  the interrupt handler, active interrupt with IRQs masked, after the SVC,
+  after the WFI). The probe accumulates the ELR of every interrupt, so
+  every extra or missing instruction after the restore shows up (without
+  the monitor in the snapshot the test fails). Plus: restore on top of a
+  used machine, incompatible snapshots, in-flight virtio-blk request
+  (`Blocked`).
+- `tests/boot/tests/snapshot.rs` on the M3 guest kernel: boot up to
+  shutdown, network (300 KB to the guest, POST, ping, TIME-WAIT), disk
+  (md5sum, write with `dd`, copy-on-write), GPU/input/vsock; cuts at
+  fixed instruction numbers and a few quanta after a point in the script,
+  with a new machine or going back on the same one, interpreter → JIT →
+  interpreter. Log, instructions, CPU, RAM and device state equal to the
+  uncut run; network log, sinkhole, scanout and cursor as seen by the
+  host equal.
+- `crates/vetro-cli/tests/boot_snapshot.rs`: `--save-at` and `--restore`
+  in two processes; the continuation matches the original boot.
+- `vetro-wasm`, `snapshot_dall_api`: the C API (ABI 4).
 
-## Conseguenze
-- Chi aggiunge un campo di stato a un dispositivo, allo stack di rete o
-  alla CPU lo aggiunge anche al suo `save`/`restore` e incrementa
-  `FORMAT_VERSION`. I test di equivalenza lo trovano solo se il campo
-  influisce sul futuro nei loro scenari: il controllo "risalva gli stessi
-  byte" no (un campo dimenticato in entrambi passa).
-- `vetro-net` tiene la serializzazione in file figli (`stack/snapshot.rs`,
-  `tcp/snapshot.rs`, `sinkhole/snapshot.rs`) per non intrecciarsi con chi
-  lavora sullo stack.
-- Misure alla shell del kernel guest (RAM 1 GiB, release, macOS su Apple
-  silicon): snapshot di 10,1 MiB (30,6 MiB di pagine non a zero),
-  salvataggio 206 ms, ripristino 172 ms (`docs/progress/M6.md`).
-- Seconda parte di M6: snapshot di Android avviato e sua cache nel browser
-  (OPFS), livello copy-on-write persistente fra le sessioni, trascinamento
-  dell'APK.
+## Consequences
+- Whoever adds a state field to a device, to the network stack or to the
+  CPU also adds it to its `save`/`restore` and increments
+  `FORMAT_VERSION`. The equivalence tests find it only if the field
+  affects the future in their scenarios: the "re-saves the same bytes"
+  check does not (a field forgotten in both passes).
+- `vetro-net` keeps the serialization in child files (`stack/snapshot.rs`,
+  `tcp/snapshot.rs`, `sinkhole/snapshot.rs`) so as not to get tangled
+  with whoever works on the stack.
+- Measurements at the guest kernel shell (RAM 1 GiB, release, macOS on
+  Apple silicon): 10.1 MiB snapshot (30.6 MiB of non-zero pages), save
+  206 ms, restore 172 ms (`docs/progress/M6.md`).
+- Second part of M6: snapshot of booted Android and its cache in the
+  browser (OPFS), persistent copy-on-write layer across sessions, APK
+  drag and drop.

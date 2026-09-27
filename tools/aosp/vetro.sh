@@ -1,17 +1,17 @@
 #!/bin/sh
-# Avvia l'immagine AOSP di Vetro (target/aosp, tools/aosp/fetch.sh) sotto
-# `vetro boot`, con la macchina, i dispositivi (stessi slot virtio-mmio) e la
-# riga di comando di tools/aosp/qemu.sh. Il disco resta intatto
-# (copy-on-write in memoria): ogni avvio è un primo avvio.
-# adb: `adb connect 127.0.0.1:5555` (--hostfwd verso adbd, TCP 5555).
-# Uso: tools/aosp/vetro.sh [secondi di guest] > vetro.log  (seriale su stdout,
-# statistiche su stderr). VETRO_JIT=1 usa il JIT di sistema (ADR 0013),
-# VETRO_AOSP_APPEND aggiunge parametri, VETRO_VETRO_EXTRA opzioni di vetro.
+# Boots the Vetro AOSP image (target/aosp, tools/aosp/fetch.sh) under
+# `vetro boot`, with the machine, devices (same virtio-mmio slots) and
+# command line of tools/aosp/qemu.sh. The disk stays untouched
+# (copy-on-write in memory): every boot is a first boot.
+# adb: `adb connect 127.0.0.1:5555` (--hostfwd to adbd, TCP 5555).
+# Usage: tools/aosp/vetro.sh [guest seconds] > vetro.log  (serial on stdout,
+# statistics on stderr). VETRO_JIT=1 uses the system JIT (ADR 0013),
+# VETRO_AOSP_APPEND adds parameters, VETRO_VETRO_EXTRA vetro options.
 set -eu
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 a="$root/target/aosp"
-# Immagini e disco (VETRO_AOSP_IMAGES, VETRO_AOSP_DISK: per provare una copia).
+# Images and disk (VETRO_AOSP_IMAGES, VETRO_AOSP_DISK: to try a copy).
 o="${VETRO_AOSP_IMAGES:-$a/out}"
 disk="${VETRO_AOSP_DISK:-$a/disk.img}"
 vetro="${VETRO_BIN:-$root/target/release/vetro}"

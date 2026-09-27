@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// M5: connessioni dal JS verso un servizio TCP del guest (vetro-wasm ABI 5,
-// `GuestSocket` di web/node/vetro.mjs), la base per un client ADB in JS.
-// Nel guest `nc -n -v -l -p 5555 -e cat` (l'eco); dal JS:
-//   - il guest vede la connessione arrivare da 10.0.2.2;
-//   - eco di 200 KB (più della finestra e della coda), byte per byte;
-//   - chiusura ordinata (stato Closed/Normal) e rilascio;
-//   - una porta senza servizio: Closed/Refused;
-//   - istruzioni e log uguali in due esecuzioni.
+// M5: connections from JS to a TCP service of the guest (vetro-wasm ABI 5,
+// `GuestSocket` of web/node/vetro.mjs), the basis for an ADB client in JS.
+// In the guest `nc -n -v -l -p 5555 -e cat` (the echo); from JS:
+//   - the guest sees the connection arrive from 10.0.2.2;
+//   - echo of 200 KB (more than the window and the queue), byte by byte;
+//   - orderly close (state Closed/Normal) and release;
+//   - a port without a service: Closed/Refused;
+//   - instructions and log equal in two runs.
 //
 //   node tests/web/hostfwd.mjs [--no-jit]
 
@@ -48,26 +48,26 @@ async function session(x, kernel) {
       shut = true;
     }
     if (sock.state().state === 'Closed') break;
-    check(m.steps < limit, `eco ferma a ${echoed} byte:\n${s.tail()}`);
+    check(m.steps < limit, `echo stuck at ${echoed} bytes:\n${s.tail()}`);
     const stop = await s.quantum();
-    check(stop === 'Budget', `${stop} durante l'eco`);
+    check(stop === 'Budget', `${stop} during the echo`);
   }
   const st = sock.state();
-  check(st.reason === 'Normal', `chiusura ${JSON.stringify(st)}`);
+  check(st.reason === 'Normal', `close ${JSON.stringify(st)}`);
   const echo = Buffer.concat(got);
-  check(echo.length === data.length && echo.equals(Buffer.from(data)), `eco diversa (${echo.length} byte)`);
+  check(echo.length === data.length && echo.equals(Buffer.from(data)), `echo differs (${echo.length} bytes)`);
   sock.release();
-  check(sock.state().state === 'Unknown', 'connessione non rilasciata');
+  check(sock.state().state === 'Unknown', 'connection not released');
   at = await s.until(SHELL_PROMPT, at);
   const conn = s.text(0, at).split('\n').find((l) => l.startsWith('connect to'));
-  check(/^connect to 10\.0\.2\.15:5555 from 10\.0\.2\.2:49152 /.test(conn ?? ''), `riga di nc: ${conn}`);
+  check(/^connect to 10\.0\.2\.15:5555 from 10\.0\.2\.2:49152 /.test(conn ?? ''), `nc line: ${conn}`);
 
   const refused = m.connectGuest(5556);
   while (refused.state().state !== 'Closed') {
     const stop = await s.quantum();
-    check(stop === 'Budget', `${stop} in attesa del rifiuto`);
+    check(stop === 'Budget', `${stop} while waiting for the refusal`);
   }
-  check(refused.state().reason === 'Refused', `porta senza servizio: ${JSON.stringify(refused.state())}`);
+  check(refused.state().reason === 'Refused', `port without a service: ${JSON.stringify(refused.state())}`);
   refused.release();
   await s.poweroff(at);
   return { steps: m.steps, log: s.log };
@@ -78,6 +78,6 @@ run(async () => {
   const kernel = guestKernel();
   const a = await session(exports, kernel);
   const b = await session(exports, kernel);
-  check(a.steps === b.steps && a.log === b.log, `esecuzioni diverse: ${a.steps} e ${b.steps} istruzioni`);
-  console.log(`hostfwd: eco di 200 KB dal JS, chiusura, rifiuto; ${a.steps} istruzioni in due esecuzioni uguali`);
+  check(a.steps === b.steps && a.log === b.log, `runs differ: ${a.steps} and ${b.steps} instructions`);
+  console.log(`hostfwd: 200 KB echo from JS, close, refusal; ${a.steps} instructions in two identical runs`);
 });

@@ -1,8 +1,8 @@
-//! Lock POSIX sui file (fcntl F_GETLK/F_SETLK/F_SETLKW).
+//! POSIX file locks (fcntl F_GETLK/F_SETLK/F_SETLKW).
 //!
-//! I processi guest vivono tutti nello stesso processo host, quindi i lock
-//! dell'host non distinguerebbero i proprietari: la tabella è nostra, per
-//! (dispositivo, inode), con regioni `[start, end)` per processo.
+//! The guest processes all live in the same host process, so the host's
+//! locks would not tell the owners apart: the table is our own, by
+//! (device, inode), with `[start, end)` regions per process.
 
 use super::abi::*;
 use super::fs::Kind;
@@ -16,7 +16,7 @@ pub const F_UNLCK: i16 = 2;
 pub struct Lock {
     pub owner: Pid,
     pub start: u64,
-    /// Esclusivo; `u64::MAX` = fino all'infinito.
+    /// Exclusive; `u64::MAX` = up to infinity.
     pub end: u64,
     pub kind: i16,
 }
@@ -24,10 +24,10 @@ pub struct Lock {
 #[derive(Default)]
 pub struct LockTable {
     files: std::collections::HashMap<(u64, u64), Vec<Lock>>,
-    /// Chi è fermo in F_SETLKW, e su quale richiesta (per trovare i cicli).
+    /// Who is stopped in F_SETLKW, and on which request (to find cycles).
     waiting: std::collections::HashMap<Pid, ((u64, u64), u64, u64, i16)>,
-    /// Proprietari OFD (id negativi) e la loro descrizione di file: quando
-    /// l'ultimo riferimento sparisce i lock si rilasciano.
+    /// OFD owners (negative ids) and their file description: when
+    /// the last reference goes away the locks are released.
     ofd: std::collections::HashMap<Pid, std::rc::Weak<std::cell::RefCell<super::fs::OpenFile>>>,
     next_ofd: Pid,
 }
@@ -39,8 +39,8 @@ impl LockTable {
         })
     }
 
-    /// Applica un lock (o lo sblocco) del proprietario, dividendo e fondendo
-    /// le sue regioni come fa Linux.
+    /// Applies a lock (or unlock) of the owner, splitting and merging
+    /// its regions like Linux does.
     fn apply(&mut self, key: (u64, u64), owner: Pid, start: u64, end: u64, kind: i16) {
         let list = self.files.entry(key).or_default();
         let mut out = Vec::with_capacity(list.len() + 2);
@@ -59,7 +59,7 @@ impl LockTable {
         if kind != F_UNLCK {
             out.push(Lock { owner, start, end, kind });
         }
-        // Fondi le regioni contigue o sovrapposte dello stesso proprietario e tipo.
+        // Merge the contiguous or overlapping regions of the same owner and type.
         out.sort_by_key(|l| (l.owner, l.kind, l.start));
         let mut merged: Vec<Lock> = Vec::with_capacity(out.len());
         for l in out {
@@ -73,14 +73,14 @@ impl LockTable {
             }
             merged.push(l);
         }
-        // Come la lista di Linux: per proprietario, in ordine di inizio
-        // (F_GETLK restituisce il primo conflitto).
+        // Like Linux's list: by owner, in start order
+        // (F_GETLK returns the first conflict).
         merged.sort_by_key(|l| (l.owner, l.start));
         *list = merged;
     }
 
-    /// Vero se aspettare `blocker` chiuderebbe un ciclo di attese che torna a
-    /// `owner` (posix_locks_deadlock, con lo stesso limite di passi).
+    /// True if waiting for `blocker` would close a cycle of waits that comes back to
+    /// `owner` (posix_locks_deadlock, with the same step limit).
     fn deadlock(&self, owner: Pid, mut blocker: Pid) -> bool {
         for _ in 0..10 {
             if blocker == owner {
@@ -95,7 +95,7 @@ impl LockTable {
         false
     }
 
-    /// Toglie i lock delle descrizioni OFD ormai chiuse.
+    /// Removes the locks of OFD descriptions that are already closed.
     fn purge_ofd(&mut self) {
         let dead: Vec<Pid> =
             self.ofd.iter().filter(|(_, w)| w.strong_count() == 0).map(|(&o, _)| o).collect();
@@ -105,7 +105,7 @@ impl LockTable {
         }
     }
 
-    /// Il proprietario OFD di una descrizione di file (assegnato alla prima volta).
+    /// The OFD owner of a file description (assigned the first time).
     fn ofd_owner(&mut self, f: &std::rc::Rc<std::cell::RefCell<super::fs::OpenFile>>) -> Pid {
         let id = f.borrow().ofd_owner;
         if id != 0 {
@@ -119,7 +119,7 @@ impl LockTable {
         id
     }
 
-    /// Rilascia tutti i lock di `owner` (su un file o ovunque).
+    /// Releases all the locks of `owner` (on one file or everywhere).
     pub fn release(&mut self, owner: Pid, key: Option<(u64, u64)>) {
         if key.is_none() {
             self.waiting.remove(&owner);
@@ -132,11 +132,11 @@ impl LockTable {
     }
 }
 
-/// L'"inode" su cui stanno i lock di un file aperto. Per i file dell'host è
-/// (dispositivo, inode). Per gli oggetti del kernel emulato è l'oggetto
-/// condiviso: la pipe, di cui entrambi i capi hanno lo stesso inode come in
-/// Linux, o la console. Non la singola descrizione, il cui indirizzo si
-/// riusa dopo la chiusura.
+/// The "inode" the locks of an open file sit on. For host files it is
+/// (device, inode). For objects of the emulated kernel it is the shared
+/// object: the pipe, whose two ends have the same inode as in
+/// Linux, or the console. Not the single description, whose address is
+/// reused after closing.
 fn lock_key(kind: &Kind) -> Option<(u64, u64)> {
     use std::os::unix::fs::MetadataExt;
     Some(match kind {
@@ -155,7 +155,7 @@ fn lock_key(kind: &Kind) -> Option<(u64, u64)> {
 }
 
 fn path_hash(p: &std::path::Path) -> u64 {
-    // FNV-1a: deterministico (niente RandomState).
+    // FNV-1a: deterministic (no RandomState).
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in p.as_os_str().as_encoded_bytes() {
         h = (h ^ u64::from(*b)).wrapping_mul(0x100_0000_01b3);
@@ -163,15 +163,15 @@ fn path_hash(p: &std::path::Path) -> u64 {
     h
 }
 
-/// Esito di F_SETLKW quando deve aspettare.
+/// Outcome of F_SETLKW when it has to wait.
 pub enum LockResult {
     Done(i64),
     Wait,
 }
 
 impl Kernel {
-    /// fcntl per i lock: `cmd` è F_GETLK (5), F_SETLK (6), F_SETLKW (7) o le
-    /// varianti OFD F_OFD_GETLK (36), F_OFD_SETLK (37), F_OFD_SETLKW (38).
+    /// fcntl for locks: `cmd` is F_GETLK (5), F_SETLK (6), F_SETLKW (7) or the
+    /// OFD variants F_OFD_GETLK (36), F_OFD_SETLK (37), F_OFD_SETLKW (38).
     pub(super) fn fcntl_lock(&mut self, t: usize, fd: i64, cmd: u64, arg: u64) -> Result<LockResult, i64> {
         let f = self.tasks[t].files.borrow().get(fd)?;
         let mm = self.tasks[t].mm.clone();
@@ -193,7 +193,7 @@ impl Kernel {
         let ofd = matches!(cmd, 36..=38);
         let cmd = if ofd { cmd - 31 } else { cmd };
         if ofd && i32::from_le_bytes(raw[24..28].try_into().unwrap()) != 0 {
-            return Err(EINVAL); // l_pid deve essere 0
+            return Err(EINVAL); // l_pid must be 0
         }
         self.locks.purge_ofd();
         let kind = i16::from_le_bytes([raw[0], raw[1]]);
@@ -232,7 +232,7 @@ impl Kernel {
                         out[8..16].copy_from_slice(&(l.start as i64).to_le_bytes());
                         let len = if l.end == u64::MAX { 0 } else { (l.end - l.start) as i64 };
                         out[16..24].copy_from_slice(&len.to_le_bytes());
-                        // I lock OFD non hanno un processo: l_pid = -1.
+                        // OFD locks have no process: l_pid = -1.
                         let pid = if l.owner < 0 { -1 } else { l.owner };
                         out[24..28].copy_from_slice(&pid.to_le_bytes());
                     }
@@ -266,10 +266,10 @@ impl Kernel {
         }
     }
 
-    /// Toglie le attese registrate da F_SETLKW che non esistono più: un'attesa
-    /// interrotta da un segnale (EINTR) o finita senza tornare qui non deve
-    /// far vedere un ciclo che non c'è. Resta solo chi ha un thread fermo in
-    /// fcntl (Wait::Retry sulla syscall 25).
+    /// Removes the waits recorded by F_SETLKW that no longer exist: a wait
+    /// interrupted by a signal (EINTR) or finished without coming back here must not
+    /// show a cycle that is not there. Only those with a thread stopped in
+    /// fcntl remain (Wait::Retry on syscall 25).
     fn prune_waiting(&mut self, me: usize) {
         let tasks = &self.tasks;
         self.locks.waiting.retain(|&owner, _| {
@@ -282,8 +282,8 @@ impl Kernel {
         });
     }
 
-    /// Alla chiusura di un descrittore: Linux rilascia tutti i lock POSIX del
-    /// processo su quel file.
+    /// On closing a descriptor: Linux releases all the process's POSIX locks
+    /// on that file.
     pub(super) fn release_locks_on_close(
         &mut self,
         t: usize,
@@ -321,10 +321,10 @@ mod tests {
         let k = (1, 2);
         t.apply(k, 2, 9, 15, F_WRLCK);
         t.apply(k, 3, 17, 23, F_WRLCK);
-        // 2 aspetta il lock di 3: nessun ciclo.
+        // 2 waits for 3's lock: no cycle.
         assert!(!t.deadlock(2, 3));
         t.waiting.insert(2, (k, 17, 23, F_WRLCK));
-        // 3 che aspetta 2 chiuderebbe il ciclo.
+        // 3 waiting for 2 would close the cycle.
         assert!(t.deadlock(3, 2));
         assert!(!t.deadlock(4, 2));
     }

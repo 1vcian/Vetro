@@ -1,28 +1,28 @@
-//! Bus MMIO: instrada letture e scritture fisiche verso i dispositivi in
-//! base a intervalli di indirizzi.
+//! MMIO bus: routes physical reads and writes to the devices based
+//! on address ranges.
 
 use core::any::Any;
 use core::fmt;
 
-/// Dispositivo mappato in memoria. `offset` è relativo alla base della
-/// regione; `size` è 1, 2, 4 o 8 byte. I valori stanno nei bit bassi.
+/// Memory-mapped device. `offset` is relative to the base of the
+/// region; `size` is 1, 2, 4 or 8 bytes. Values sit in the low bits.
 ///
-/// `Any` come supertrait permette all'host di ritrovare il tipo concreto
-/// con [`Bus::device_mut`] (es. per svuotare l'uscita della UART).
+/// `Any` as a supertrait lets the host recover the concrete type
+/// with [`Bus::device_mut`] (e.g. to drain the UART output).
 pub trait MmioDevice: Any {
     fn read(&mut self, offset: u64, size: u8) -> u64;
     fn write(&mut self, offset: u64, size: u8, value: u64);
 }
 
-/// Identificativo stabile di un dispositivo mappato (ordine di inserimento).
+/// Stable identifier of a mapped device (insertion order).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct DeviceId(usize);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BusError {
-    /// La regione ha dimensione zero o supera la fine dello spazio a 64 bit.
+    /// The region has zero size or goes past the end of the 64-bit space.
     InvalidRange { base: u64, size: u64 },
-    /// La regione si sovrappone a una già mappata.
+    /// The region overlaps an already mapped one.
     Overlap { base: u64, size: u64, existing: &'static str },
 }
 
@@ -30,10 +30,10 @@ impl fmt::Display for BusError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             BusError::InvalidRange { base, size } => {
-                write!(f, "intervallo non valido: base {base:#x}, dimensione {size:#x}")
+                write!(f, "invalid range: base {base:#x}, size {size:#x}")
             }
             BusError::Overlap { base, size, existing } => {
-                write!(f, "la regione {base:#x}+{size:#x} si sovrappone a {existing}")
+                write!(f, "region {base:#x}+{size:#x} overlaps {existing}")
             }
         }
     }
@@ -52,13 +52,13 @@ impl Region {
     }
 }
 
-/// Bus MMIO. Le regioni non si sovrappongono; una lettura o scrittura deve
-/// stare tutta dentro una regione, altrimenti non raggiunge nessuno.
+/// MMIO bus. Regions do not overlap; a read or write must
+/// lie entirely inside one region, otherwise it reaches nobody.
 #[derive(Default)]
 pub struct Bus {
-    /// Dispositivi in ordine di inserimento (l'indice è il `DeviceId`).
+    /// Devices in insertion order (the index is the `DeviceId`).
     regions: Vec<Region>,
-    /// Indici di `regions` ordinati per base, per la ricerca binaria.
+    /// Indices into `regions` sorted by base, for binary search.
     by_base: Vec<usize>,
 }
 
@@ -67,7 +67,7 @@ impl Bus {
         Self::default()
     }
 
-    /// Mappa `device` su `[base, base + size)`.
+    /// Maps `device` onto `[base, base + size)`.
     pub fn map(
         &mut self,
         base: u64,
@@ -89,7 +89,7 @@ impl Bus {
         Ok(DeviceId(id))
     }
 
-    /// Dispositivo e offset per un accesso di `size` byte a `addr`.
+    /// Device and offset for an access of `size` bytes at `addr`.
     pub fn find(&self, addr: u64, size: u8) -> Option<(DeviceId, u64)> {
         let pos = self.by_base.partition_point(|&i| self.regions[i].base <= addr);
         let idx = *self.by_base.get(pos.checked_sub(1)?)?;
@@ -98,14 +98,14 @@ impl Bus {
         (last < r.end()).then_some((DeviceId(idx), addr - r.base))
     }
 
-    /// Lettura MMIO. `None` se nessun dispositivo copre l'accesso: la CPU lo
-    /// tratterà come errore esterno (SError/abort sincrono) in M3.
+    /// MMIO read. `None` if no device covers the access: the CPU will
+    /// treat it as an external error (SError/synchronous abort) in M3.
     pub fn read(&mut self, addr: u64, size: u8) -> Option<u64> {
         let (DeviceId(i), off) = self.find(addr, size)?;
         Some(self.regions[i].device.read(off, size) & size_mask(size))
     }
 
-    /// Scrittura MMIO. `false` se nessun dispositivo copre l'accesso.
+    /// MMIO write. `false` if no device covers the access.
     pub fn write(&mut self, addr: u64, size: u8, value: u64) -> bool {
         match self.find(addr, size) {
             Some((DeviceId(i), off)) => {
@@ -116,25 +116,25 @@ impl Bus {
         }
     }
 
-    /// Nome, base e dimensione di una regione.
+    /// Name, base and size of a region.
     pub fn region(&self, id: DeviceId) -> Option<(&'static str, u64, u64)> {
         self.regions.get(id.0).map(|r| (r.name, r.base, r.size))
     }
 
-    /// Accesso tipizzato a un dispositivo mappato.
+    /// Typed access to a mapped device.
     pub fn device<T: MmioDevice>(&self, id: DeviceId) -> Option<&T> {
         let dev: &dyn Any = self.regions.get(id.0)?.device.as_ref();
         dev.downcast_ref::<T>()
     }
 
-    /// Accesso tipizzato e mutabile a un dispositivo mappato.
+    /// Typed, mutable access to a mapped device.
     pub fn device_mut<T: MmioDevice>(&mut self, id: DeviceId) -> Option<&mut T> {
         let dev: &mut dyn Any = self.regions.get_mut(id.0)?.device.as_mut();
         dev.downcast_mut::<T>()
     }
 }
 
-/// Maschera dei bit validi per un accesso di `size` byte.
+/// Mask of the valid bits for an access of `size` bytes.
 pub fn size_mask(size: u8) -> u64 {
     match size {
         1 => 0xFF,
@@ -144,9 +144,9 @@ pub fn size_mask(size: u8) -> u64 {
     }
 }
 
-/// Registro a 32 bit dentro un accesso: restituisce il valore letto da un
-/// registro allineato a 4 byte quando l'accesso è di 1, 2 o 4 byte (i byte
-/// giusti già spostati in basso). Utile ai dispositivi AMBA a 32 bit.
+/// 32-bit register inside an access: returns the value read from a
+/// 4-byte aligned register when the access is 1, 2 or 4 bytes (the right
+/// bytes already shifted down). Useful for 32-bit AMBA devices.
 pub(crate) fn sub_word(word: u32, offset: u64, size: u8) -> u64 {
     let shift = (offset & 3) * 8;
     (u64::from(word) >> shift) & size_mask(size)
@@ -156,7 +156,7 @@ pub(crate) fn sub_word(word: u32, offset: u64, size: u8) -> u64 {
 mod tests {
     use super::*;
 
-    /// Dispositivo di prova: memoria di 16 byte e registro dell'ultimo accesso.
+    /// Test device: 16 bytes of memory and a record of the last access.
     #[derive(Default)]
     struct Scratch {
         mem: [u8; 16],
@@ -200,7 +200,7 @@ mod tests {
         bus.map(0x1000, 16, "a", Box::new(Scratch::default())).unwrap();
         assert_eq!(bus.read(0xFFF, 1), None);
         assert_eq!(bus.read(0x1010, 1), None);
-        // Accesso a cavallo della fine della regione.
+        // Access straddling the end of the region.
         assert_eq!(bus.read(0x100C, 8), None);
         assert!(!bus.write(0x2000, 4, 1));
         assert_eq!(bus.read(u64::MAX, 8), None);
@@ -226,7 +226,7 @@ mod tests {
             bus.map(u64::MAX, 2, "e", Box::new(Scratch::default())),
             Err(BusError::InvalidRange { .. })
         ));
-        // Regione adiacente: ammessa.
+        // Adjacent region: allowed.
         assert!(bus.map(0x1100, 0x10, "f", Box::new(Scratch::default())).is_ok());
     }
 

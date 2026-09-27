@@ -1,13 +1,13 @@
-//! Disposizione delle strutture del kernel che servono all'introspezione,
-//! ricavata dal BTF ([`super::btf`]).
+//! Layout of the kernel structures that introspection needs,
+//! derived from BTF ([`super::btf`]).
 //!
-//! Ogni offset viene dal BTF del kernel che gira: niente tabelle scritte a
-//! mano per versione. I campi opzionali (`Option`) mancano in alcune
-//! configurazioni (per esempio `anon_name` senza `CONFIG_ANON_VMA_NAME`).
+//! Every offset comes from the BTF of the running kernel: no hand-written
+//! per-version tables. The optional fields (`Option`) are missing in some
+//! configurations (for example `anon_name` without `CONFIG_ANON_VMA_NAME`).
 
 use super::btf::Btf;
 
-/// Offset (in byte) dei campi usati, e dimensioni.
+/// Offsets (in bytes) of the fields used, and sizes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Layout {
     // task_struct
@@ -27,7 +27,7 @@ pub struct Layout {
     pub task_thread_node: u64,
     pub task_stack: u64,
     pub task_exit_state: u64,
-    /// `stack_vm_area` (con `CONFIG_VMAP_STACK`).
+    /// `stack_vm_area` (with `CONFIG_VMAP_STACK`).
     pub task_stack_vm_area: Option<u64>,
     // signal_struct
     pub signal_thread_head: u64,
@@ -61,7 +61,7 @@ pub struct Layout {
     pub vma_ops: u64,
     pub vma_private_data: u64,
     pub vma_anon_name: Option<u64>,
-    /// `anon_vma_name.name` (dopo il kref).
+    /// `anon_vma_name.name` (after the kref).
     pub anon_name_name: Option<u64>,
     pub special_mapping_name: u64,
     // file, path, dentry, inode
@@ -102,7 +102,7 @@ pub struct Layout {
     pub xarray_head: u64,
     pub xa_node_shift: u64,
     pub xa_node_slots: u64,
-    /// Socket (per gli hook TLS: descrittore -> quadrupla), se il BTF li ha.
+    /// Sockets (for the TLS hooks: descriptor -> 4-tuple), if the BTF has them.
     pub sock: Option<SockLayout>,
 }
 
@@ -132,19 +132,19 @@ impl SockLayout {
     }
 }
 
-/// Il campo che manca, per il messaggio d'errore.
+/// The missing field, for the error message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MissingField(pub String);
 
 impl core::fmt::Display for MissingField {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "campo del kernel non trovato nel BTF: {}", self.0)
+        write!(f, "kernel field not found in BTF: {}", self.0)
     }
 }
 
 impl Layout {
-    /// Tutti gli offset dal BTF: errore al primo campo obbligatorio che
-    /// manca.
+    /// All offsets from BTF: error at the first mandatory field that is
+    /// missing.
     pub fn from_btf(b: &Btf) -> Result<Layout, MissingField> {
         let off = |s: &str, p: &str| b.offset_of(s, p).ok_or_else(|| MissingField(format!("{s}.{p}")));
         let size = |s: &str| b.struct_size(s).ok_or_else(|| MissingField(format!("sizeof({s})")));

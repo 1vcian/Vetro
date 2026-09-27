@@ -1,39 +1,39 @@
-//! La macchina virt completa (M3): una CPU AArch64 in modalità sistema
-//! (`vetro-cpu`), la MMU stage 1 (`vetro-mmu`), la piattaforma virt
-//! (`vetro-platform`) e la RAM, legate da un ciclo di esecuzione con tempo
-//! deterministico (ADR 0011).
+//! The complete virt machine (M3): an AArch64 CPU in system mode
+//! (`vetro-cpu`), the stage 1 MMU (`vetro-mmu`), the virt platform
+//! (`vetro-platform`) and RAM, tied together by an execution loop with
+//! deterministic time (ADR 0011).
 //!
-//! - [`boot`]: dove vanno kernel, initramfs e device tree, e come parte la
-//!   CPU (come `hw/arm/boot.c` di QEMU).
-//! - [`android`]: il lavoro del bootloader Android (`boot.img`,
-//!   `vendor_boot.img`, `init_boot.img`, bootconfig) davanti a [`boot`]
+//! - [`boot`]: where the kernel, initramfs and device tree go, and how the
+//!   CPU starts (like QEMU's `hw/arm/boot.c`).
+//! - [`android`]: the Android bootloader's work (`boot.img`,
+//!   `vendor_boot.img`, `init_boot.img`, bootconfig) in front of [`boot`]
 //!   ([`Machine::load_android`]).
-//! - [`Machine`]: costruzione, caricamento di un kernel Linux, esecuzione a
-//!   quanti ([`Machine::run`]), console PL011, dispositivi virtio di M5
-//!   ([`Devices`]: GPU, tastiera, tablet o touchscreen, rete, vsock) con
-//!   l'accesso dell'host ([`Machine::gpu`], [`Machine::keyboard`],
+//! - [`Machine`]: construction, loading a Linux kernel, execution in
+//!   quanta ([`Machine::run`]), PL011 console, the M5 virtio devices
+//!   ([`Devices`]: GPU, keyboard, tablet or touchscreen, network, vsock) with
+//!   host access ([`Machine::gpu`], [`Machine::keyboard`],
 //!   [`Machine::pointer`], [`Machine::net`], [`Machine::vsock`]).
-//! - [`net`]: virtio-net collegato allo stack di `vetro-net` (gateway come la
-//!   rete user di QEMU, sinkhole), nel tempo virtuale della macchina.
+//! - [`net`]: virtio-net connected to the `vetro-net` stack (gateway like
+//!   QEMU's user network, sinkhole), in the machine's virtual time.
 //!
-//! - [`record`]: record & replay (M10, ADR 0019): ogni ingresso dell'host
-//!   passa da [`Machine::input`] e si registra con il numero d'istruzione;
-//!   il replay lo riapplica alla stessa istruzione, e [`Machine::goto`]
-//!   riporta la macchina a un'istruzione qualsiasi della registrazione.
+//! - [`record`]: record & replay (M10, ADR 0019): every host input goes
+//!   through [`Machine::input`] and is recorded with the instruction number;
+//!   replay reapplies it at the same instruction, and [`Machine::goto`]
+//!   brings the machine back to any instruction of the recording.
 //!
-//! - [`hooks`] e [`introspect`]: introspezione del guest dall'esterno
-//!   (ADR 0027): syscall di EL0 e punti d'arresto invisibili osservati dal
-//!   ciclo della macchina senza cambiare l'esecuzione, e la lettura del
-//!   kernel Linux (processi, mappe, file) con `vetro-analysis`.
+//! - [`hooks`] and [`introspect`]: introspection of the guest from outside
+//!   (ADR 0027): EL0 syscalls and invisible breakpoints observed by the
+//!   machine loop without changing execution, and reading the Linux
+//!   kernel (processes, maps, files) with `vetro-analysis`.
 //!
-//! Col JIT ([`Machine::set_jit`], ADR 0012 e 0013) i blocchi tradotti si
-//! alternano all'interprete fra un evento della piattaforma e l'altro: stesso
-//! numero di istruzioni, interrupt negli stessi punti.
+//! With the JIT ([`Machine::set_jit`], ADR 0012 and 0013) translated blocks
+//! alternate with the interpreter between one platform event and the next:
+//! same instruction count, interrupts at the same points.
 //!
-//! Il tempo del guest è il numero di istruzioni eseguite: CNTPCT avanza di 5
-//! ogni 8 istruzioni, cioè 62,5 MHz con una CPU nominale da 100 MHz (lo stesso
-//! passo del livello user mode, ADR 0010). Una WFI senza interrupt pronti
-//! salta direttamente alla prossima scadenza del timer.
+//! Guest time is the number of executed instructions: CNTPCT advances by 5
+//! every 8 instructions, i.e. 62.5 MHz with a nominal 100 MHz CPU (the same
+//! step as the user mode layer, ADR 0010). A WFI with no pending interrupts
+//! jumps straight to the next timer deadline.
 
 pub mod analysis;
 pub mod android;

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-# Estrae una partizione logica da super.img non sparso (metadati LP di
-# Android: geometria, intestazione, tabelle partizioni ed estensioni).
-# Uso: lp-extract.py super.raw NOME uscita.img  (senza NOME: elenca)
+# Extracts a logical partition from a non-sparse super.img (Android LP
+# metadata: geometry, header, partition and extent tables).
+# Usage: lp-extract.py super.raw NAME output.img  (without NAME: lists)
 import struct, sys
 f = open(sys.argv[1], 'rb')
-f.seek(4096 + 4096 * 2)  # geometria (4096) + copia; metadati primari dopo 2 geometrie
+f.seek(4096 + 4096 * 2)  # geometry (4096) + copy; primary metadata after 2 geometries
 hdr = f.read(256)
 magic, major, minor, hsize = struct.unpack_from('<IHHI', hdr, 0)
 assert magic == 0x414C5030, hex(magic)
-# tabelle: partitions, extents, groups (offset, num, entry_size) dopo checksum
+# tables: partitions, extents, groups (offset, num, entry_size) after checksum
 tabs_off = 4 + 2 + 2 + 4 + 32 + 4 + 32
 parts = struct.unpack_from('<III', hdr, tabs_off)
 exts = struct.unpack_from('<III', hdr, tabs_off + 12)

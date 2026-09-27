@@ -1,6 +1,6 @@
 [package]
 name = "vetro-machine"
-description = "La macchina virt completa: CPU in modalità sistema, MMU, piattaforma e RAM, con tempo deterministico."
+description = "The complete virt machine: CPU in system mode, MMU, platform and RAM, with deterministic time."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,7 +13,7 @@ vetro-platform = { path = "../vetro-platform" }
 vetro-jit = { path = "../vetro-jit" }
 vetro-net = { path = "../vetro-net" }
 vetro-snapshot = { path = "../vetro-snapshot" }
-# Introspezione (ADR 0027): senza dipendenze, compila anche in wasm.
+# Introspection (ADR 0027): no dependencies, also builds for wasm.
 vetro-analysis = { path = "../vetro-analysis" }
 
 [lints]

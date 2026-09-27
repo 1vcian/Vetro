@@ -1,4 +1,4 @@
-//! IPC System V: memoria condivisa (shmget, shmat, shmdt, shmctl).
+//! System V IPC: shared memory (shmget, shmat, shmdt, shmctl).
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -32,7 +32,7 @@ pub struct Segment {
 #[derive(Default)]
 pub struct Ipc {
     segs: Vec<Option<Segment>>,
-    /// Attacchi: (spazio d'indirizzamento, indirizzo, id).
+    /// Attachments: (address space, address, id).
     attached: Vec<(Rc<RefCell<Mm>>, u64, usize)>,
 }
 
@@ -118,7 +118,7 @@ impl Kernel {
     }
 
     pub(super) fn sys_shmctl(&mut self, t: usize, id: u64, cmd: u64, buf: u64) -> SysResult {
-        let cmd = cmd & 0xff; // IPC_64 ignorato: il layout è sempre quello a 64 bit
+        let cmd = cmd & 0xff; // IPC_64 ignored: the layout is always the 64-bit one
         let seg = self.ipc.segs.get_mut(id as usize).and_then(|s| s.as_mut()).ok_or(EINVAL)?;
         match cmd {
             IPC_RMID => {
@@ -130,7 +130,7 @@ impl Kernel {
             }
             IPC_STAT => {
                 let mut b = [0u8; 112];
-                // SAFETY: getuid/getgid non hanno precondizioni.
+                // SAFETY: getuid/getgid have no preconditions.
                 let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
                 b[0..4].copy_from_slice(&seg.key.to_le_bytes());
                 for (off, v) in [(4, uid), (8, gid), (12, uid), (16, gid), (20, seg.mode)] {

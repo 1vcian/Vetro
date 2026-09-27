@@ -1,35 +1,35 @@
-//! HTTP/1.1 (RFC 9112) sopra un flusso TCP ricostruito: richieste dal
-//! cliente, risposte dal server, abbinate in ordine (pipelining compreso).
+//! HTTP/1.1 (RFC 9112) over a reconstructed TCP flow: requests from the
+//! client, responses from the server, paired in order (pipelining included).
 //!
-//! Corpo: `Transfer-Encoding: chunked`, `Content-Length`, oppure (solo
-//! risposte) fino alla chiusura; niente corpo per HEAD, 1xx, 204 e 304; le
-//! risposte 1xx sono intermedie e non consumano la richiesta. Il corpo
-//! decodificato toglie anche `Content-Encoding` gzip/x-gzip e deflate;
-//! altre codifiche (br, zstd) restano com'erano, annotate.
-//! Messaggi troncati dalla fine della cattura restano con `complete: false`.
+//! Body: `Transfer-Encoding: chunked`, `Content-Length`, or (only
+//! responses) up to the close; no body for HEAD, 1xx, 204 and 304; the
+//! 1xx responses are interim and don't consume the request. The decoded
+//! body also strips `Content-Encoding` gzip/x-gzip and deflate;
+//! other encodings (br, zstd) stay as they were, annotated.
+//! Messages truncated by the end of the capture stay with `complete: false`.
 
 use super::inflate;
 
-/// Metodi riconosciuti all'inizio di un flusso per considerarlo HTTP.
+/// Methods recognised at the start of a flow to consider it HTTP.
 pub const METHODS: &[&str] =
     &["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH", "CONNECT", "TRACE"];
 
-/// Limite delle intestazioni di un messaggio.
+/// Limit on the headers of a message.
 const MAX_HEAD: usize = 64 << 10;
 
-/// Il flusso del cliente comincia con una richiesta HTTP/1.x?
+/// Does the client's flow start with an HTTP/1.x request?
 pub fn looks_like_request(stream: &[u8]) -> bool {
     METHODS
         .iter()
         .any(|m| stream.len() > m.len() && stream.starts_with(m.as_bytes()) && stream[m.len()] == b' ')
 }
 
-/// Intestazioni in ordine, con il nome come arrivato.
+/// Headers in order, with the name as it arrived.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Headers(pub Vec<(String, String)>);
 
 impl Headers {
-    /// Primo valore del campo `name` (senza distinzione di maiuscole).
+    /// First value of field `name` (case-insensitive).
     pub fn get(&self, name: &str) -> Option<&str> {
         self.0.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
     }
@@ -38,26 +38,26 @@ impl Headers {
         self.0.iter().filter(move |(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
     }
 
-    /// Il campo contiene il token `tok` in una lista separata da virgole?
+    /// Does the field contain the token `tok` in a comma-separated list?
     pub fn has_token(&self, name: &str, tok: &str) -> bool {
         self.get_all(name).flat_map(|v| v.split(',')).any(|t| t.trim().eq_ignore_ascii_case(tok))
     }
 }
 
-/// Il corpo di un messaggio, come trasferito e decodificato.
+/// The body of a message, as transferred and decoded.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Body {
-    /// Byte del corpo sul filo (con le cornici di `chunked`).
+    /// Body bytes on the wire (with the `chunked` framing).
     pub wire_len: usize,
-    /// Corpo dopo `Transfer-Encoding` (quello che `Content-Encoding`
-    /// descrive).
+    /// Body after `Transfer-Encoding` (what `Content-Encoding`
+    /// describes).
     pub raw: Vec<u8>,
-    /// Corpo dopo `Content-Encoding` (uguale a `raw` se identità).
+    /// Body after `Content-Encoding` (equal to `raw` if identity).
     pub decoded: Vec<u8>,
-    /// Codifica applicata con successo ("gzip", "deflate"), se c'è.
+    /// Encoding applied successfully ("gzip", "deflate"), if any.
     pub content_encoding: Option<String>,
-    /// Perché `decoded` non è decodificato (codifica sconosciuta o dati
-    /// corrotti).
+    /// Why `decoded` is not decoded (unknown encoding or corrupted
+    /// data).
     pub decode_error: Option<String>,
     pub chunked: bool,
 }
@@ -69,7 +69,7 @@ pub struct Request {
     pub version: String,
     pub headers: Headers,
     pub body: Body,
-    /// Offset nel flusso: inizio, fine delle intestazioni, fine.
+    /// Offset in the flow: start, end of the headers, end.
     pub start: usize,
     pub head_end: usize,
     pub end: usize,
@@ -87,7 +87,7 @@ pub struct Response {
     pub head_end: usize,
     pub end: usize,
     pub complete: bool,
-    /// Risposte 1xx arrivate prima di questa (100 Continue...).
+    /// 1xx responses that arrived before this one (100 Continue...).
     pub interim: Vec<u16>,
 }
 
@@ -97,7 +97,7 @@ struct Head {
     end: usize,
 }
 
-/// Intestazioni a partire da `pos`; `None` se incomplete o malformate.
+/// Headers starting at `pos`; `None` if incomplete or malformed.
 fn head(s: &[u8], pos: usize) -> Option<Head> {
     let window = &s[pos..s.len().min(pos + MAX_HEAD)];
     let n = window.windows(4).position(|w| w == b"\r\n\r\n")?;
@@ -113,7 +113,7 @@ fn head(s: &[u8], pos: usize) -> Option<Head> {
         } else if l.starts_with([' ', '\t'])
             && let Some(last) = headers.0.last_mut()
         {
-            // Riga di continuazione (obs-fold).
+            // Continuation line (obs-fold).
             last.1.push(' ');
             last.1.push_str(l.trim());
         }
@@ -121,7 +121,7 @@ fn head(s: &[u8], pos: usize) -> Option<Head> {
     Some(Head { line, headers, end: pos + n + 4 })
 }
 
-/// Esito della lettura di un corpo: (raw, fine, completo).
+/// Outcome of reading a body: (raw, end, complete).
 fn chunked(s: &[u8], mut pos: usize) -> (Vec<u8>, usize, bool) {
     let mut raw = Vec::new();
     loop {
@@ -131,7 +131,7 @@ fn chunked(s: &[u8], mut pos: usize) -> (Vec<u8>, usize, bool) {
         let Ok(size) = usize::from_str_radix(size, 16) else { return (raw, s.len(), false) };
         pos += nl + 2;
         if size == 0 {
-            // Trailer fino a una riga vuota.
+            // Trailer up to an empty line.
             loop {
                 let Some(nl) = s[pos..].windows(2).position(|w| w == b"\r\n") else {
                     return (raw, s.len(), false);
@@ -190,7 +190,7 @@ fn body(s: &[u8], at: usize, framing: Framing, headers: &Headers, eof: bool) -> 
             "gzip" | "x-gzip" => inflate::gunzip(&decoded),
             "deflate" => inflate::zlib_or_raw(&decoded),
             other => {
-                b.decode_error = Some(format!("Content-Encoding {other} non supportato"));
+                b.decode_error = Some(format!("Content-Encoding {other} not supported"));
                 break;
             }
         };
@@ -201,7 +201,7 @@ fn body(s: &[u8], at: usize, framing: Framing, headers: &Headers, eof: bool) -> 
             }
             Err(e) => {
                 b.decode_error =
-                    Some(format!("{c}: {e}{}", if complete { "" } else { " (corpo incompleto)" }));
+                    Some(format!("{c}: {e}{}", if complete { "" } else { " (incomplete body)" }));
                 break;
             }
         }
@@ -221,12 +221,12 @@ fn content_length(h: &Headers) -> Option<usize> {
     h.get("content-length").and_then(|v| v.split(',').next()?.trim().parse().ok())
 }
 
-/// Le richieste nel flusso del cliente.
+/// The requests in the client's flow.
 pub fn parse_requests(s: &[u8]) -> Vec<Request> {
     let mut out = Vec::new();
     let mut pos = 0;
     while pos < s.len() {
-        // Righe vuote fra un messaggio e l'altro sono tollerate.
+        // Blank lines between one message and the next are tolerated.
         while s[pos..].starts_with(b"\r\n") {
             pos += 2;
         }
@@ -275,8 +275,8 @@ pub fn parse_requests(s: &[u8]) -> Vec<Request> {
     out
 }
 
-/// Le risposte nel flusso del server; `methods` sono i metodi delle
-/// richieste in ordine (per HEAD), `eof` dice se il server ha chiuso.
+/// The responses in the server's flow; `methods` are the methods of the
+/// requests in order (for HEAD), `eof` says whether the server closed.
 pub fn parse_responses(s: &[u8], methods: &[&str], eof: bool) -> Vec<Response> {
     let mut out = Vec::new();
     let mut pos = 0;
@@ -364,18 +364,18 @@ mod tests {
         let p = parse_responses(resp, &["POST", "HEAD", "GET"], false);
         assert_eq!(p.iter().map(|r| r.status).collect::<Vec<_>>(), [201, 200, 204]);
         assert_eq!(p[0].interim, [100]);
-        assert!(p[1].body.raw.is_empty() && p[1].complete, "HEAD senza corpo");
+        assert!(p[1].body.raw.is_empty() && p[1].complete, "HEAD without a body");
     }
 
     #[test]
     fn chunked_con_estensioni_e_trailer() {
         let resp = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4;x=y\r\nWiki\r\n6\r\npedia \r\nE\r\nin \r\n\r\nchunks.\r\n0\r\nX-T: 1\r\n\r\nHTTP/1.1 200 OK\r\n";
         let p = parse_responses(resp, &["GET", "GET"], false);
-        assert_eq!(p.len(), 1, "la seconda è troncata e senza intestazioni complete");
+        assert_eq!(p.len(), 1, "the second is truncated and without complete headers");
         assert_eq!(p[0].body.decoded, b"Wikipedia in \r\n\r\nchunks.");
         assert!(p[0].body.chunked && p[0].complete);
         assert_eq!(&resp[p[0].end..], b"HTTP/1.1 200 OK\r\n");
-        // Troncato a metà di un pezzo.
+        // Truncated halfway through a chunk.
         let cut = &resp[..60];
         let p = parse_responses(cut, &["GET"], false);
         assert!(!p[0].complete);

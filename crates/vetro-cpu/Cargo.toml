@@ -1,6 +1,6 @@
 [package]
 name = "vetro-cpu"
-description = "Decoder, interprete e stato dei registri AArch64."
+description = "AArch64 decoder, interpreter and register state."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

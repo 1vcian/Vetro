@@ -1,21 +1,21 @@
-# Test LTP su cui qemu-aarch64 (user mode) si discosta dal kernel Linux: per
-# questi l'oracolo è l'esecuzione nativa su un host Linux aarch64 (job linux
-# della CI); altrove sono saltati. Ogni voce è verificata confrontando nativo
-# e QEMU nello stesso ambiente (da utente non privilegiato).
-# Formato: nome  # esito nativo / esito QEMU: motivo
-clone02          # nativo 2 TPASS / QEMU TFAIL: la clone emulata non si comporta come quella del kernel
-clone05          # nativo TPASS / QEMU TFAIL: idem (CLONE_VFORK)
-clone08          # nativo 3 TPASS / QEMU nessuno: CLONE_PARENT e *_SETTID emulati diversamente
-fcntl40          # nativo 3 TPASS / QEMU TFAIL: F_CREATED_QUERY non implementato in QEMU
-fcntl40_64       # come fcntl40
-futex_wait03     # nativo TPASS / QEMU TBROK: stato dei thread in /proc diverso sotto QEMU
-futex_waitv01    # nativo 9 TPASS / QEMU TCONF: futex_waitv (449) non implementata in QEMU
-futex_waitv02    # come futex_waitv01
-futex_waitv03    # come futex_waitv01
-getcwd01         # nativo 5 TPASS / QEMU TFAIL: getcwd con buffer non valido
-kill11           # nativo 24 TPASS / QEMU TCONF: l'harness avvia QEMU con `ulimit -c 0` (anche il limite hard)
-mmap08           # nativo TPASS / QEMU TFAIL: controlla la lunghezza prima del descrittore (EINVAL invece di EBADF)
-mmap17           # nativo TPASS / QEMU TFAIL: MAP_FIXED_NOREPLACE non rispettato
-mmap20           # nativo TPASS / QEMU TFAIL: MAP_SHARED_VALIDATE con flag ignoti dà EINVAL invece di EOPNOTSUPP
-mremap03         # nativo TPASS / QEMU TFAIL: mremap su un intervallo non mappato
-waitpid01        # nativo 146 TPASS / QEMU TCONF: come kill11 (core dump)
+# LTP tests on which qemu-aarch64 (user mode) departs from the Linux kernel: for
+# these the oracle is the native run on an aarch64 Linux host (the CI linux
+# job); elsewhere they are skipped. Every entry is verified by comparing native
+# and QEMU in the same environment (as an unprivileged user).
+# Format: name  # native outcome / QEMU outcome: reason
+clone02          # native 2 TPASS / QEMU TFAIL: the emulated clone doesn't behave like the kernel's
+clone05          # native TPASS / QEMU TFAIL: same (CLONE_VFORK)
+clone08          # native 3 TPASS / QEMU none: CLONE_PARENT and *_SETTID emulated differently
+fcntl40          # native 3 TPASS / QEMU TFAIL: F_CREATED_QUERY not implemented in QEMU
+fcntl40_64       # like fcntl40
+futex_wait03     # native TPASS / QEMU TBROK: thread state in /proc differs under QEMU
+futex_waitv01    # native 9 TPASS / QEMU TCONF: futex_waitv (449) not implemented in QEMU
+futex_waitv02    # like futex_waitv01
+futex_waitv03    # like futex_waitv01
+getcwd01         # native 5 TPASS / QEMU TFAIL: getcwd with an invalid buffer
+kill11           # native 24 TPASS / QEMU TCONF: the harness starts QEMU with `ulimit -c 0` (the hard limit too)
+mmap08           # native TPASS / QEMU TFAIL: checks the length before the descriptor (EINVAL instead of EBADF)
+mmap17           # native TPASS / QEMU TFAIL: MAP_FIXED_NOREPLACE not honoured
+mmap20           # native TPASS / QEMU TFAIL: MAP_SHARED_VALIDATE with unknown flags gives EINVAL instead of EOPNOTSUPP
+mremap03         # native TPASS / QEMU TFAIL: mremap on an unmapped range
+waitpid01        # native 146 TPASS / QEMU TCONF: like kill11 (core dump)

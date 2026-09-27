@@ -1,9 +1,9 @@
-//! Decoder AArch64 (Arm ARM, sezione C4 "A64 Instruction Set Encoding").
+//! AArch64 decoder (Arm ARM, section C4 "A64 Instruction Set Encoding").
 //!
-//! Livello ARMv8.0 con le estensioni della Cortex-A53 (ADR 0005). Ogni
-//! codifica produce una di tre cose: un'istruzione eseguibile, `Undefined`
-//! (UNDEFINED per l'architettura a questo livello) o `Unimplemented`
-//! (valida ma non ancora scritta da noi).
+//! ARMv8.0 level with the Cortex-A53 extensions (ADR 0005). Every
+//! encoding produces one of three things: an executable instruction, `Undefined`
+//! (UNDEFINED for the architecture at this level) or `Unimplemented`
+//! (valid but not yet written by us).
 
 use crate::bits::{bit, decode_bit_masks, field, sext};
 
@@ -49,7 +49,7 @@ pub enum CselOp {
 pub enum Dp1Op {
     Rbit,
     Rev16,
-    /// REV32 (64 bit) o REV (32 bit): inverte i byte di ogni parola.
+    /// REV32 (64 bits) or REV (32 bits): reverses the bytes of each word.
     Rev32,
     Rev64,
     Clz,
@@ -64,7 +64,7 @@ pub enum Dp2Op {
     Lsrv,
     Asrv,
     Rorv,
-    /// CRC32{B,H,W,X}: `bytes` byte di Rm; `c` = CRC32C.
+    /// CRC32{B,H,W,X}: `bytes` bytes of Rm; `c` = CRC32C.
     Crc32 {
         bytes: u8,
         c: bool,
@@ -98,7 +98,7 @@ pub enum CcmpOperand {
 
 pub use crate::sysreg::{EnvReg, SysReg};
 
-/// Campo di PSTATE scritto da MSR (immediato).
+/// PSTATE field written by MSR (immediate).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PstateField {
     SpSel,
@@ -106,7 +106,7 @@ pub enum PstateField {
     DaifClr,
 }
 
-/// Traduzione d'indirizzo (AT) del regime EL1&0.
+/// Address translation (AT) of the EL1&0 regime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AtOp {
     S1e1r,
@@ -115,7 +115,7 @@ pub enum AtOp {
     S1e0w,
 }
 
-/// Istruzioni di sistema (SYS) accessibili solo a EL1.
+/// System instructions (SYS) accessible only at EL1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SysOp {
     Tlbi(crate::sys::TlbiOp),
@@ -131,8 +131,8 @@ pub enum SysOp {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MemOp {
     Store,
-    /// Load con estensione a zero (o di segno) fino a 64 bit, oppure di
-    /// segno fino a 32 bit (`dst64 = false`, parte alta azzerata).
+    /// Load with zero (or sign) extension up to 64 bits, or with sign
+    /// extension up to 32 bits (`dst64 = false`, upper part cleared).
     Load {
         signed: bool,
         dst64: bool,
@@ -311,29 +311,29 @@ pub enum Insn {
     Svc {
         imm: u16,
     },
-    /// UNDEFINED a EL0; a EL1 chiamata all'hypervisor (PSCI).
+    /// UNDEFINED at EL0; at EL1 a call to the hypervisor (PSCI).
     Hvc {
         imm: u16,
     },
-    /// UNDEFINED a EL0; a EL1 chiamata al monitor (PSCI).
+    /// UNDEFINED at EL0; at EL1 a call to the monitor (PSCI).
     Smc {
         imm: u16,
     },
     Brk {
         imm: u16,
     },
-    /// Ritorno da eccezione (UNDEFINED a EL0).
+    /// Exception return (UNDEFINED at EL0).
     Eret,
-    /// In modalità utente è un NOP.
+    /// In user mode it is a NOP.
     Wfi,
-    /// Come in QEMU è sempre un NOP (mai in attesa, quindi mai trappato).
+    /// As in QEMU it is always a NOP (never waits, hence never trapped).
     Wfe,
-    /// MSR (immediato) su SPSel o DAIF: `imm` è CRm.
+    /// MSR (immediate) on SPSel or DAIF: `imm` is CRm.
     MsrImm {
         field: PstateField,
         imm: u8,
     },
-    /// Istruzione SYS riservata a EL1 (TLBI, AT, manutenzione cache).
+    /// SYS instruction reserved to EL1 (TLBI, AT, cache maintenance).
     Sys {
         op: SysOp,
         rt: u8,
@@ -344,8 +344,8 @@ pub enum Insn {
     DcZva {
         rt: u8,
     },
-    /// DC CVAC/CVAU/CIVAC, IC IVAU: nessun effetto osservabile (come in
-    /// QEMU); a EL0 si possono trappare con SCTLR_EL1.UCI = 0.
+    /// DC CVAC/CVAU/CIVAC, IC IVAU: no observable effect (as in
+    /// QEMU); at EL0 they can be trapped with SCTLR_EL1.UCI = 0.
     CacheMaint,
     Mrs {
         reg: SysReg,
@@ -356,14 +356,14 @@ pub enum Insn {
         rt: u8,
     },
 
-    /// `size` = log2 dei byte (0..=3).
+    /// `size` = log2 of the bytes (0..=3).
     LdSt {
         size: u8,
         op: MemOp,
         addr: AddrMode,
         rt: u8,
         rn: u8,
-        /// LDTR/STTR: a EL1 l'accesso si controlla come se fosse da EL0.
+        /// LDTR/STTR: at EL1 the access is checked as if it were from EL0.
         unpriv: bool,
     },
     LdLiteral {
@@ -382,7 +382,7 @@ pub enum Insn {
         rt2: u8,
         rn: u8,
     },
-    /// LDXR/LDAXR/STXR/STLXR e le versioni a coppia. `size` per elemento.
+    /// LDXR/LDAXR/STXR/STLXR and the pair versions. `size` per element.
     Exclusive {
         size: u8,
         load: bool,
@@ -423,7 +423,7 @@ pub fn decode(w: u32) -> Insn {
         0b0100 | 0b0110 | 0b1100 | 0b1110 => ldst(w),
         0b0101 | 0b1101 => dp_reg(w),
         0b0111 | 0b1111 => crate::simd::decode_dp(w),
-        // 0000 riservato (UDF, SME), 0010 SVE, 0001/0011 non allocati.
+        // 0000 reserved (UDF, SME), 0010 SVE, 0001/0011 unallocated.
         _ => Undefined,
     }
 }
@@ -499,7 +499,7 @@ fn dp_imm(w: u32) -> Insn {
             }
             Insn::Extract { sf, lsb: imms as u8, rm: r(w, 16), rn, rd }
         }
-        // 011: add/sub con tag (MTE) e min/max immediati (CSSC).
+        // 011: add/sub with tag (MTE) and min/max immediate (CSSC).
         _ => Undefined,
     }
 }
@@ -525,7 +525,7 @@ fn branch_sys(w: u32) -> Insn {
     match op0 {
         0b010 => {
             if bit(w, 25) || bit(w, 24) || bit(w, 4) {
-                return Undefined; // o1=1 non allocato, o0=1 è BC.cond (FEAT_HBC)
+                return Undefined; // o1=1 unallocated, o0=1 is BC.cond (FEAT_HBC)
             }
             Insn::BCond { cond: field(w, 3, 0) as u8, offset: sext(field(w, 23, 5) as u64, 19) << 2 }
         }
@@ -548,8 +548,8 @@ fn branch_reg(w: u32) -> Insn {
     if w == 0xD69F_03E0 {
         return Insn::Eret;
     }
-    // opc(24:21) op2(20:16)=11111 op3(15:10)=0 Rn op4(4:0)=0; il resto è
-    // PAuth o DRPS: non disponibili (o fuori dallo stato di debug) su v8.0.
+    // opc(24:21) op2(20:16)=11111 op3(15:10)=0 Rn op4(4:0)=0; the rest is
+    // PAuth or DRPS: not available (or outside debug state) on v8.0.
     if field(w, 20, 16) != 0b11111 || field(w, 15, 10) != 0 || field(w, 4, 0) != 0 {
         return Undefined;
     }
@@ -569,8 +569,8 @@ fn exception(w: u32) -> Insn {
         (0b000, 0, 0b10) => Insn::Hvc { imm },
         (0b000, 0, 0b11) => Insn::Smc { imm },
         (0b001, 0, 0b00) => Insn::Brk { imm },
-        // HLT è UNDEFINED con halting disabilitato; DCPSx fuori dallo stato
-        // di debug.
+        // HLT is UNDEFINED with halting disabled; DCPSx outside debug
+        // state.
         _ => Undefined,
     }
 }
@@ -589,8 +589,8 @@ fn system(w: u32) -> Insn {
                 return Undefined;
             }
             match (crn, op1) {
-                // HINT: gli hint non allocati si comportano come NOP (così
-                // anche PAC*SP, BTI ecc. su una CPU v8.0).
+                // HINT: unallocated hints behave as NOP (so
+                // do PAC*SP, BTI etc. on a v8.0 CPU).
                 (0b0010, 0b011) => match (crm, op2) {
                     (0, 0b010) => Insn::Wfe,
                     (0, 0b011) => Insn::Wfi,
@@ -601,7 +601,7 @@ fn system(w: u32) -> Insn {
                     0b100..=0b110 => Insn::Barrier,
                     _ => Undefined,
                 },
-                // MSR (immediato) su PSTATE: su v8.0 solo SPSel e DAIF.
+                // MSR (immediate) on PSTATE: on v8.0 only SPSel and DAIF.
                 (0b0100, 0b000) if op2 == 0b101 => Insn::MsrImm { field: PstateField::SpSel, imm: crm as u8 },
                 (0b0100, 0b011) if op2 == 0b110 => {
                     Insn::MsrImm { field: PstateField::DaifSet, imm: crm as u8 }
@@ -614,7 +614,7 @@ fn system(w: u32) -> Insn {
         }
         0b01 => {
             if l {
-                return Undefined; // SYSL: nessuna codifica allocata su v8.0
+                return Undefined; // SYSL: no allocated encoding on v8.0
             }
             let op = match (op1, crn, crm, op2) {
                 (3, 7, 4, 1) => return Insn::DcZva { rt },
@@ -636,7 +636,7 @@ fn system(w: u32) -> Insn {
         _ => {
             let Some(reg) = SysReg::lookup(op0, op1, crn, crm, op2) else {
                 return if SysReg::is_unmodelled_a53(op0, op1, crn, crm, op2) {
-                    Unimplemented("MRS/MSR registro di sistema")
+                    Unimplemented("MRS/MSR system register")
                 } else {
                     Undefined
                 };
@@ -644,7 +644,7 @@ fn system(w: u32) -> Insn {
             if l {
                 Insn::Mrs { reg, rt }
             } else if matches!(reg, SysReg::DczidEl0 | SysReg::CtrEl0) {
-                Undefined // sola lettura a ogni livello
+                Undefined // read-only at every level
             } else {
                 Insn::Msr { reg, rt }
             }
@@ -667,7 +667,7 @@ fn ldst(w: u32) -> Insn {
         }
         0b011 => {
             if bit(w, 24) {
-                return Undefined; // RCpc / MTE: non su v8.0
+                return Undefined; // RCpc / MTE: not on v8.0
             }
             let offset = sext(field(w, 23, 5) as u64, 19) << 2;
             let (size, op) = match field(w, 31, 30) {
@@ -696,7 +696,7 @@ fn ldst(w: u32) -> Insn {
             Insn::LdStPair { size, load, signed, index, offset, rt, rt2: r(w, 10), rn }
         }
         _ => {
-            // 0b111: registro.
+            // 0b111: register.
             let size = field(w, 31, 30) as u8;
             let opc = field(w, 23, 22);
             if bit(w, 24) {
@@ -715,7 +715,7 @@ fn ldst(w: u32) -> Insn {
             }
             if bit(w, 21) {
                 if field(w, 11, 10) != 0b10 {
-                    return Undefined; // atomiche LSE, load con PAuth
+                    return Undefined; // LSE atomics, loads with PAuth
                 }
                 let extend = field(w, 15, 13) as u8;
                 if extend & 0b010 == 0 {
@@ -750,7 +750,7 @@ fn ldst(w: u32) -> Insn {
     }
 }
 
-/// Operazione di load/store intera da `size` e `opc`.
+/// Integer load/store operation from `size` and `opc`.
 fn mem_op(size: u8, opc: u32, prfm_ok: bool) -> Option<MemOp> {
     Some(match (opc, size) {
         (0b00, _) => MemOp::Store,

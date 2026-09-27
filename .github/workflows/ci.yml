@@ -3,20 +3,20 @@ name: ci
 on:
   push:
   pull_request:
-  # Giro completo ogni notte (tutti i job, kselftest compresi) e a mano.
+  # Full run every night (all jobs, kselftest included) and by hand.
   schedule:
     - cron: "0 3 * * *"
   workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
-  # In CI uno skip dell'oracolo è un fallimento.
+  # In CI an oracle skip is a failure.
   VETRO_REQUIRE_ORACLE: "1"
 
 jobs:
-  # Quali job servono (ADR 0025): si guarda cosa cambia rispetto al commit
-  # precedente (push) o alla base (PR). Tutto gira comunque di notte, a mano,
-  # su un push che crea il branch, o con "[ci full]" nel messaggio di commit.
+  # Which jobs are needed (ADR 0025): we look at what changes relative to the
+  # previous commit (push) or the base (PR). Everything runs anyway at night, by hand,
+  # on a push that creates the branch, or with "[ci full]" in the commit message.
   changes:
     runs-on: ubuntu-24.04
     outputs:
@@ -44,9 +44,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Toolchain (da rust-toolchain.toml)
+      - name: Toolchain (from rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
-      - name: Oracolo QEMU
+      - name: QEMU oracle
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-user
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
@@ -59,13 +59,13 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Toolchain (da rust-toolchain.toml)
+      - name: Toolchain (from rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --target wasm32-unknown-unknown --workspace --exclude vetro-cli --exclude vetro-diff --exclude vetro-isa-tests --exclude vetro-linux-tests --exclude vetro-jit-native
 
-  # Binari Linux arm64 (BusyBox, programmi C) confrontati con QEMU. Gira su
-  # un runner arm64: il container Alpine che compila i binari è nativo.
+  # Linux arm64 binaries (BusyBox, C programs) compared with QEMU. Runs on
+  # an arm64 runner: the Alpine container that compiles the binaries is native.
   linux:
     needs: changes
     if: needs.changes.outputs.linux == 'true'
@@ -74,35 +74,35 @@ jobs:
       VETRO_REQUIRE_GUEST_BINS: "1"
     steps:
       - uses: actions/checkout@v4
-      - name: Toolchain (da rust-toolchain.toml)
+      - name: Toolchain (from rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
-      - name: Oracolo QEMU
+      - name: QEMU oracle
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-user
       - uses: Swatinem/rust-cache@v2
-      - name: Binari guest
+      - name: Guest binaries
         run: tools/guest-bins/build.sh
-      - name: RISU (immagini e tracce di QEMU)
+      - name: RISU (QEMU images and traces)
         run: tools/risu/build.sh
       - name: LTP (build)
         run: tools/ltp/build.sh
       - run: cargo test --release -p vetro-linux-tests
         env:
           VETRO_LTP_FULL: "1"
-      # M4: gli stessi test col JIT (soglia 0: ogni blocco si traduce subito).
-      - name: Test Linux col JIT
+      # M4: the same tests with the JIT (threshold 0: every block is translated at once).
+      - name: Linux tests with the JIT
         run: cargo test --release -p vetro-linux-tests
         env:
           VETRO_LTP_FULL: "1"
           VETRO_JIT: "1"
           VETRO_JIT_THRESHOLD: "0"
 
-  # Il lint TypeScript (tsc --noEmit) si aggiunge quando nasce web/ (M5).
+  # The TypeScript lint (tsc --noEmit) is added when web/ is born (M5).
 
-  # M3: il kernel guest (Linux + initramfs) si avvia fino alla shell sotto
-  # qemu-system-aarch64 (riferimento) e sotto Vetro, con lo stesso log.
-  # Il kernel si ricompila solo se cambiano configurazione o script.
-  # Con solo web/ cambiato girano soltanto il kernel (dalla cache) e i test
-  # web; i kselftest (i più lunghi) solo se cambia il kernel guest.
+  # M3: the guest kernel (Linux + initramfs) boots to the shell under
+  # qemu-system-aarch64 (reference) and under Vetro, with the same log.
+  # The kernel is rebuilt only if the configuration or scripts change.
+  # With only web/ changed, only the kernel (from the cache) and the web tests
+  # run; kselftest (the longest) only if the guest kernel changes.
   boot:
     needs: changes
     if: needs.changes.outputs.boot == 'true' || needs.changes.outputs.web == 'true'
@@ -110,17 +110,17 @@ jobs:
     env:
       VETRO_REQUIRE_GUEST_KERNEL: "1"
       VETRO_REQUIRE_SYSTEM_ORACLE: "1"
-      # kselftest nel guest sotto QEMU e sotto Vetro (tests/boot/tests/kselftest.rs).
+      # kselftest in the guest under QEMU and under Vetro (tests/boot/tests/kselftest.rs).
       VETRO_KSELFTEST: ${{ needs.changes.outputs.kernel == 'true' && '1' || '0' }}
-      # pcapng e HAR riletti da tshark, har-validator e haralyzer in Docker
+      # pcapng and HAR reread by tshark, har-validator and haralyzer in Docker
       # (tests/boot/tests/analysis.rs, tools/analysis/check.sh, ADR 0016).
       VETRO_REQUIRE_ANALYSIS_TOOLS: "1"
     steps:
       - uses: actions/checkout@v4
-      - name: Toolchain (da rust-toolchain.toml)
+      - name: Toolchain (from rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
-      # qemu-user: oracolo delle syscall nel test di introspezione (ADR 0027).
-      - name: Oracolo QEMU (sistema e utente)
+      # qemu-user: syscall oracle in the introspection test (ADR 0027).
+      - name: QEMU oracle (system and user)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-system-arm qemu-user
       - uses: Swatinem/rust-cache@v2
       - uses: actions/cache@v4
@@ -136,47 +136,47 @@ jobs:
           key: guest-bins-${{ hashFiles('tools/guest-bins/**', 'tests/linux/c/**') }}
       - name: Guest binaries
         run: test -f target/guest-bins/busybox || tools/guest-bins/build.sh
-      # kselftest.sh usa i sorgenti estratti da build.sh nel volume Docker:
-      # si costruiscono insieme, e insieme vanno in cache.
-      - name: Kernel guest, initramfs e kselftest
+      # kselftest.sh uses the sources extracted by build.sh in the Docker volume:
+      # they are built together, and cached together.
+      - name: Guest kernel, initramfs and kselftest
         run: |
           set -o pipefail
           test -f target/guest-kernel/initramfs-kselftest.cpio.gz \
             || { tools/guest-kernel/build.sh && tools/guest-kernel/kselftest.sh; } 2>&1 | tee boot-build.log
-      # I log dei job si leggono solo da autenticati: in caso di errore le
-      # ultime righe diventano annotazioni, visibili dall'API pubblica.
-      - name: Avvio sotto QEMU e sotto Vetro
+      # Job logs can only be read when authenticated: on failure the
+      # last lines become annotations, visible from the public API.
+      - name: Boot under QEMU and under Vetro
         if: needs.changes.outputs.boot == 'true'
         run: |
           set -o pipefail
           cargo test --release -p vetro-boot-tests -- --nocapture --test-threads=1 2>&1 | tee boot-test.log
-      # M4 (ADR 0013): lo stesso avvio col JIT della modalità sistema
-      # (wasmtime) deve dare le stesse istruzioni e lo stesso log, byte per
-      # byte, dell'interprete (il test esegue entrambi e li confronta).
-      - name: Avvio sotto Vetro col JIT
+      # M4 (ADR 0013): the same boot with the system-mode JIT
+      # (wasmtime) must give the same instructions and the same log, byte for
+      # byte, as the interpreter (the test runs both and compares them).
+      - name: Boot under Vetro with the JIT
         if: needs.changes.outputs.boot == 'true'
         run: |
           set -o pipefail
           cargo test --release -p vetro-boot-tests --test vetro -- --nocapture 2>&1 | tee boot-jit.log
-          grep -E '^(interprete|JIT \(soglia)' boot-jit.log | sed 's/^/::notice title=JIT nativo::/'
+          grep -E '^(interpreter|JIT \(threshold)' boot-jit.log | sed 's/^/::notice title=native JIT::/'
         env:
           VETRO_JIT: "1"
-      # M4: la stessa macchina compilata a wasm32, in Node (V8), con
-      # l'interprete e col JIT. Stesse istruzioni e stesso log
-      # dell'interprete nativo; il passo fallisce se il JIT in V8 è più lento
-      # dell'interprete nativo misurato qui (soglia di M4, ADR 0012).
+      # M4: the same machine compiled to wasm32, in Node (V8), with
+      # the interpreter and with the JIT. Same instructions and same log
+      # as the native interpreter; the step fails if the JIT in V8 is slower
+      # than the native interpreter measured here (M4 threshold, ADR 0012).
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Avvio in WebAssembly (Node), col JIT, e tempi
+      - name: Boot in WebAssembly (Node), with the JIT, and timings
         run: |
           set -o pipefail
           tools/wasm-boot.sh --jit 2>&1 | tee wasm-boot.log
-          grep -A4 '^==> tempi' wasm-boot.log | sed 's/^/::notice title=tempi di avvio::/'
-      # M5: l'app web e l'API dei dispositivi di vetro-wasm in Node: disco
-      # via HTTP Range (stesse istruzioni e stesso log di un disco locale),
-      # framebuffer e ingressi; l'app in Chrome headless se il runner ce l'ha.
-      - name: App web (Node, Chrome headless se c'è)
+          grep -A4 '^==> timings' wasm-boot.log | sed 's/^/::notice title=boot timings::/'
+      # M5: the web app and the vetro-wasm device API in Node: disk
+      # via HTTP Range (same instructions and same log as a local disk),
+      # framebuffer and inputs; the app in headless Chrome if the runner has it.
+      - name: Web app (Node, headless Chrome if available)
         run: |
           set -o pipefail
           tools/web-test.sh 2>&1 | tee web-test.log
@@ -187,18 +187,18 @@ jobs:
             echo "::error title=$f::$(grep -vE '^\s*$' "$f" | tail -n 60 | awk '{gsub(/%/, "%25"); gsub(/\r/, ""); printf "%s%%0A", $0}')"
           done
 
-  # Il sito di GitHub Pages (tools/pages/build.sh): l'app web col kernel guest
-  # e i sorgenti GPL. Si costruisce e si prova (Chrome, sotto /Vetro/ senza
-  # COOP/COEP, come lo serve Pages) quando cambia qualcosa che finisce nel
-  # sito; si pubblica solo da main e solo se nessun job è fallito. Il kernel guest è quello messo in
-  # cache dal job boot (stessa chiave).
+  # The GitHub Pages site (tools/pages/build.sh): the web app with the guest kernel
+  # and the GPL sources. It is built and tested (Chrome, under /Vetro/ without
+  # COOP/COEP, as Pages serves it) when something that ends up in the
+  # site changes; it is published only from main and only if no job failed.
+  # The guest kernel is the one cached by the boot job (same key).
   pages:
     needs: [changes, native, wasm, linux, boot]
     if: always() && !failure() && !cancelled() && needs.changes.outputs.site == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Toolchain (da rust-toolchain.toml)
+      - name: Toolchain (from rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
       - uses: actions/cache/restore@v4
@@ -209,11 +209,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Sito
+      - name: Site
         run: |
           set -o pipefail
           tools/pages/build.sh 2>&1 | tee pages-build.log
-      - name: Sito nel browser
+      - name: Site in the browser
         run: |
           set -o pipefail
           node tests/web/pages.mjs 2>&1 | tee pages-test.log

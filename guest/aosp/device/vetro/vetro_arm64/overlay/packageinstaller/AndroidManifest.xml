@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Overlay statico del programma di installazione (ADR 0030): primo piano
-     dell'icona adattiva (app_icon_foreground, il robot di AOSP) con la V di
-     Vetro; lo sfondo resta il colore d'accento del sistema. -->
+<!-- Static package installer overlay (ADR 0030): replaces the foreground
+     of the adaptive icon (app_icon_foreground, the AOSP robot) with the Vetro
+     V; the background stays the system accent colour. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="vetro.overlay.packageinstaller">
     <application android:hasCode="false" />

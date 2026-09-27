@@ -1,13 +1,13 @@
-//! Testo in chiaro di TLS dagli hook (M7): le conversazioni catturate agli
-//! hook di `SSL_write`/`SSL_read` diventano richieste HTTP decodificate e
-//! si uniscono a quelle in chiaro nell'ispettore e nell'HAR.
+//! TLS plaintext from the hooks (M7): the conversations captured at the
+//! `SSL_write`/`SSL_read` hooks become decoded HTTP requests and
+//! join the cleartext ones in the inspector and in the HAR.
 //!
-//! La cattura di rete (ADR 0016) di una connessione TLS è cifrata: qui il
-//! testo in chiaro non viene dai frame ma dagli hook, con la connessione
-//! (4-tupla), il processo e la libreria già risolti dalla macchina
-//! (`SSL*` -> fd -> socket). Ogni conversazione è una connessione: i
-//! blocchi verso il server (`SSL_write`) sono la richiesta, quelli dal
-//! server (`SSL_read`) la risposta.
+//! The network capture (ADR 0016) of a TLS connection is encrypted: here the
+//! plaintext does not come from the frames but from the hooks, with the connection
+//! (4-tuple), the process and the library already resolved by the machine
+//! (`SSL*` -> fd -> socket). Each conversation is one connection: the
+//! blocks towards the server (`SSL_write`) are the request, those from the
+//! server (`SSL_read`) the response.
 
 use std::net::SocketAddrV4;
 
@@ -15,34 +15,34 @@ use super::body;
 use super::http;
 use super::inspector::{Attribution, HttpExchange, Timings};
 
-/// Un blocco di testo in chiaro di una connessione TLS.
+/// A block of plaintext of a TLS connection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TlsMessage {
-    /// Tempo del guest (microsecondi), come i frame della cattura.
+    /// Guest time (microseconds), like the capture frames.
     pub at_us: u64,
-    /// Verso il server (`SSL_write`) o dal server (`SSL_read`).
+    /// Towards the server (`SSL_write`) or from the server (`SSL_read`).
     pub to_server: bool,
     pub data: Vec<u8>,
 }
 
-/// Una connessione TLS in chiaro, con attribuzione.
+/// A plaintext TLS connection, with attribution.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TlsConversation {
     pub client: SocketAddrV4,
     pub server: SocketAddrV4,
-    /// Nome del server (SNI o Host), se noto.
+    /// Server name (SNI or Host), if known.
     pub host: Option<String>,
     pub pid: i32,
     pub tid: i32,
     pub process: String,
     pub package: Option<String>,
-    /// `libssl` di sistema o Conscrypt (APEX).
+    /// System `libssl` or Conscrypt (APEX).
     pub library: String,
     pub messages: Vec<TlsMessage>,
 }
 
-/// Un verso ricostruito: byte e, per ogni offset, l'istante in cui è
-/// arrivato (come `flow::Stream`).
+/// A reassembled direction: bytes and, for each offset, the instant it
+/// arrived (like `flow::Stream`).
 #[derive(Default)]
 struct Side {
     bytes: Vec<u8>,
@@ -78,8 +78,8 @@ impl TlsConversation {
         (req, resp)
     }
 
-    /// Le richieste HTTP di questa connessione, come [`HttpExchange`]
-    /// (`secure`), pronte per l'ispettore.
+    /// The HTTP requests of this connection, as [`HttpExchange`]
+    /// (`secure`), ready for the inspector.
     pub fn exchanges(&self, flow: usize) -> Vec<HttpExchange> {
         let (req, resp) = self.sides();
         if !http::looks_like_request(&req.bytes) {
@@ -159,7 +159,7 @@ mod tests {
             tid: 4250,
             process: "com.vetro.probe".into(),
             package: Some("com.vetro.probe".into()),
-            library: "libssl (sistema)".into(),
+            library: "libssl (system)".into(),
             messages: vec![
                 TlsMessage {
                     at_us: 1000,

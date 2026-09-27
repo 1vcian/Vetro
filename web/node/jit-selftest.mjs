@@ -1,13 +1,13 @@
 #!/usr/bin/env node
-// Prova del ponte JIT di vetro-wasm (docs/specs/wasm.md): Rust chiama
-// vetro_jit.compile/run (web/node/jit-engine.mjs), il modulo generato gira su
-// JitState nella memoria di vetro-wasm e chiama env.ld / env.st, cioè gli
-// export vetro_jit_ld / vetro_jit_st, che tornano all'Host in Rust.
+// Test of vetro-wasm's JIT bridge (docs/specs/wasm.md): Rust calls
+// vetro_jit.compile/run (web/node/jit-engine.mjs), the generated module runs on
+// JitState in vetro-wasm's memory and calls env.ld / env.st, i.e. the
+// exports vetro_jit_ld / vetro_jit_st, which go back to the Host in Rust.
 //
-// Il modulo di prova lo scrive questo file con un piccolo codificatore (il
-// traduttore vero è dell'agente JIT, crates/vetro-jit). Il blocco b0 fa
+// The test module is written by this file with a small encoder (the
+// real translator belongs to the JIT agent, crates/vetro-jit). Block b0 does
 //   x2 = ld(x0, 8) + x1;  st(x0 + 8, 8, x2);  pc += 12;  steps += 3
-// e vetro_jit_selftest restituisce il valore scritto: 37 + 5 = 42.
+// and vetro_jit_selftest returns the value written: 37 + 5 = 42.
 //
 //   node web/node/jit-selftest.mjs [--wasm FILE]
 
@@ -20,7 +20,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const i = process.argv.indexOf('--wasm');
 const wasmPath = i >= 0 ? process.argv[i + 1] : join(root, 'target/wasm32-unknown-unknown/release/vetro_wasm.wasm');
 
-// Codifica minima di un modulo WASM (spec 1.0, sezione 5).
+// Minimal encoding of a WASM module (spec 1.0, section 5).
 const uleb = (n) => {
   const out = [];
   do {
@@ -56,7 +56,7 @@ const op = {
   drop: [0x1a],
   end: [0x0b],
 };
-// Offset di JitState (docs/specs/jit.md).
+// JitState offsets (docs/specs/jit.md).
 const X0 = 0, X1 = 8, PC = 256, STEPS = 264;
 
 function testModule() {
@@ -64,16 +64,16 @@ function testModule() {
   const imports = section(
     2,
     vec([
-      [...str('env'), ...str('mem'), 0x02, 0x00, 0x01], // memoria, min 1 pagina
-      [...str('env'), ...str('ld'), 0x00, 0], // funzione 0, tipo 0
-      [...str('env'), ...str('st'), 0x00, 1], // funzione 1, tipo 1
+      [...str('env'), ...str('mem'), 0x02, 0x00, 0x01], // memory, min 1 page
+      [...str('env'), ...str('ld'), 0x00, 0], // function 0, type 0
+      [...str('env'), ...str('st'), 0x00, 1], // function 1, type 1
     ]),
   );
   const funcs = section(3, vec([[2]]));
   const exports = section(7, vec([[...str('b0'), 0x00, 2]]));
   const s = op.get(0);
   const body = [
-    0, // nessun locale
+    0, // no locals
     // st(state, x0 + 8, 8, ld(state, x0, 8) + x1)
     ...s,
     ...s, ...op.load64(X0), ...op.i64(8), ...op.add64,
@@ -96,7 +96,7 @@ const [p, n] = copyIn(x, testModule());
 const r = x.vetro_jit_selftest(p, n);
 x.vetro_free(p, n);
 if (r !== 42n || jit.stats.modules !== 1) {
-  console.error(`ERRORE: vetro_jit_selftest = ${r} (atteso 42), moduli compilati ${jit.stats.modules}`);
+  console.error(`ERROR: vetro_jit_selftest = ${r} (expected 42), compiled modules ${jit.stats.modules}`);
   process.exit(1);
 }
-console.log('ponte JIT: ok (Rust -> vetro_jit.compile/run -> modulo generato -> env.ld/env.st -> Rust)');
+console.log('JIT bridge: ok (Rust -> vetro_jit.compile/run -> generated module -> env.ld/env.st -> Rust)');

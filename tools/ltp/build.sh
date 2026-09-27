@@ -1,20 +1,20 @@
 #!/bin/sh
-# LTP per Vetro: compila (musl, statico) una selezione dei test di syscall
-# del Linux Test Project in target/ltp/bin. Il test
-# tests/linux/tests/ltp.rs li esegue su Vetro e su QEMU e confronta l'esito.
+# LTP for Vetro: builds (musl, static) a selection of the syscall tests
+# of the Linux Test Project in target/ltp/bin. The test
+# tests/linux/tests/ltp.rs runs them on Vetro and on QEMU and compares the outcome.
 set -eu
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT="$ROOT/target/ltp"
 TAG="20260529"
 mkdir -p "$OUT/bin"
-# La cache della CI può restituire target/ a metà: se il clone non è sano o
-# non è al tag giusto, si rifà da capo.
+# The CI cache may return a half-finished target/: if the clone is not healthy or
+# not at the right tag, it is redone from scratch.
 if ! { git -C "$OUT/src" fsck --no-progress --no-dangling >/dev/null 2>&1 &&
        [ "$(git -C "$OUT/src" describe --tags --exact-match 2>/dev/null)" = "$TAG" ]; }; then
   rm -rf "$OUT/src"
   git clone -q --depth 1 -b "$TAG" https://github.com/linux-test-project/ltp.git "$OUT/src"
 fi
-# Directory di testcases/kernel/syscalls da compilare.
+# Directories of testcases/kernel/syscalls to build.
 DIRS="$(tr '\n' ' ' < "$ROOT/tools/ltp/syscalls.txt")"
 docker build -q -t vetro-guest-bins:latest "$ROOT/tools/guest-bins" >/dev/null
 docker run --rm --platform linux/arm64 -v "$OUT:/ltp" -w /ltp/src vetro-guest-bins:latest sh -euc "

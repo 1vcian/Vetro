@@ -1,30 +1,30 @@
-//! LZ77 semplice per blocchi piccoli (una pagina da 4 KiB), senza
-//! dipendenze.
+//! Simple LZ77 for small blocks (one 4 KiB page), with no
+//! dependencies.
 //!
-//! Il blocco compresso è una sequenza di gettoni, ciascuno un intero
-//! LEB128 `t`:
-//! - `t` pari: `t >> 1` byte letterali (almeno 1), che seguono;
-//! - `t` dispari: una copia di `(t >> 1) + MIN_MATCH` byte da `d` byte
-//!   indietro nell'uscita, con `d` (LEB128, almeno 1) subito dopo. La
-//!   copia può sovrapporsi a sé stessa: con `d = 1` è una ripetizione (RLE).
+//! The compressed block is a sequence of tokens, each an LEB128
+//! integer `t`:
+//! - even `t`: `t >> 1` literal bytes (at least 1), which follow;
+//! - odd `t`: a copy of `(t >> 1) + MIN_MATCH` bytes from `d` bytes
+//!   back in the output, with `d` (LEB128, at least 1) right after. The
+//!   copy may overlap itself: with `d = 1` it is a repetition (RLE).
 //!
-//! Il compressore è goloso, con una tabella di hash di 4 byte: sceglie
-//! sempre la stessa codifica per gli stessi byte (niente dipende da
-//! indirizzi o da blocchi precedenti), quindi due salvataggi dello stesso
-//! stato danno gli stessi byte.
+//! The compressor is greedy, with a 4-byte hash table: it always picks
+//! the same encoding for the same bytes (nothing depends on
+//! addresses or on previous blocks), so two saves of the same
+//! state give the same bytes.
 
 use crate::{Error, Result};
 
-/// Copia più corta che conviene codificare.
+/// Shortest copy worth encoding.
 pub const MIN_MATCH: usize = 4;
 const HASH_BITS: u32 = 12;
 
-/// Tabella di hash riutilizzabile fra un blocco e l'altro (non cambia il
-/// risultato: le voci di un blocco precedente non valgono per il
-/// successivo).
+/// Hash table reusable from one block to the next (it does not change the
+/// result: the entries of a previous block are not valid for the
+/// next one).
 pub struct Table {
     slots: Vec<u32>,
-    /// Le voci valide del blocco corrente valgono almeno `base`.
+    /// The valid entries of the current block are at least `base`.
     base: u32,
 }
 
@@ -39,7 +39,7 @@ impl Table {
         Table { slots: vec![0; 1 << HASH_BITS], base: 1 }
     }
 
-    /// Inizio di un blocco lungo `len`: le voci precedenti non valgono più.
+    /// Start of a block of length `len`: the previous entries are no longer valid.
     fn start(&mut self, len: usize) -> u32 {
         let next = u64::from(self.base) + len as u64 + 1;
         if next >= u64::from(u32::MAX) {
@@ -74,7 +74,7 @@ fn get_varint(src: &[u8], pos: &mut usize) -> Result<u64> {
             return Ok(v);
         }
     }
-    Err(Error::invalid("intero LEB128 troppo lungo"))
+    Err(Error::invalid("LEB128 integer too long"))
 }
 
 fn literals(out: &mut Vec<u8>, lit: &[u8]) {
@@ -85,10 +85,10 @@ fn literals(out: &mut Vec<u8>, lit: &[u8]) {
 }
 
 fn word(b: &[u8], i: usize) -> u32 {
-    u32::from_le_bytes(b[i..i + 4].try_into().expect("4 byte"))
+    u32::from_le_bytes(b[i..i + 4].try_into().expect("4 bytes"))
 }
 
-/// Comprime `src` accodando a `out`.
+/// Compresses `src`, appending to `out`.
 pub fn compress(src: &[u8], out: &mut Vec<u8>, t: &mut Table) {
     let base = t.start(src.len());
     let n = src.len();
@@ -118,16 +118,16 @@ pub fn compress(src: &[u8], out: &mut Vec<u8>, t: &mut Table) {
     literals(out, &src[lit_start..]);
 }
 
-/// Decomprime `src` in `dst`, che deve risultare riempito esattamente.
+/// Decompresses `src` into `dst`, which must end up filled exactly.
 pub fn decompress(src: &[u8], dst: &mut [u8]) -> Result<()> {
-    let bad = |what: &str| Error::invalid(format!("blocco compresso: {what}"));
+    let bad = |what: &str| Error::invalid(format!("compressed block: {what}"));
     let (mut p, mut o) = (0usize, 0usize);
     while p < src.len() {
         let t = get_varint(src, &mut p)?;
         if t & 1 == 0 {
             let len = (t >> 1) as usize;
             if len == 0 || len > dst.len() - o || len > src.len() - p {
-                return Err(bad("letterali oltre il blocco"));
+                return Err(bad("literals past the block"));
             }
             dst[o..o + len].copy_from_slice(&src[p..p + len]);
             p += len;
@@ -136,7 +136,7 @@ pub fn decompress(src: &[u8], dst: &mut [u8]) -> Result<()> {
             let len = (t >> 1).saturating_add(MIN_MATCH as u64);
             let d = get_varint(src, &mut p)?;
             if d == 0 || d > o as u64 || len > (dst.len() - o) as u64 {
-                return Err(bad("copia fuori dal blocco"));
+                return Err(bad("copy outside the block"));
             }
             let (len, d) = (len as usize, d as usize);
             if d >= len {
@@ -150,7 +150,7 @@ pub fn decompress(src: &[u8], dst: &mut [u8]) -> Result<()> {
         }
     }
     if o != dst.len() {
-        return Err(bad("più corto del previsto"));
+        return Err(bad("shorter than expected"));
     }
     Ok(())
 }
@@ -166,7 +166,7 @@ mod tests {
         let mut d = vec![0u8; src.len()];
         decompress(&c, &mut d).unwrap();
         assert_eq!(d, src);
-        // Deterministico e indipendente dalla storia della tabella.
+        // Deterministic and independent of the table's history.
         let mut c2 = Vec::new();
         compress(src, &mut c2, &mut t);
         assert_eq!(c, c2);
@@ -177,7 +177,7 @@ mod tests {
     fn andata_e_ritorno() {
         assert_eq!(roundtrip(&[]), 0);
         roundtrip(b"abc");
-        assert!(roundtrip(&[7u8; 4096]) < 16, "una ripetizione è un gettone");
+        assert!(roundtrip(&[7u8; 4096]) < 16, "a repetition is one token");
         let text: Vec<u8> = b"la macchina e' deterministica. ".iter().cycle().take(4096).copied().collect();
         assert!(roundtrip(&text) < 100);
         let noise: Vec<u8> = (0..4096u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 11) as u8).collect();
@@ -190,9 +190,9 @@ mod tests {
     #[test]
     fn rifiuta_blocchi_rovinati() {
         let mut d = [0u8; 8];
-        assert!(decompress(&[0x08, 1, 2, 3], &mut d).is_err(), "letterali oltre l'ingresso");
-        assert!(decompress(&[0x03, 0x01], &mut d).is_err(), "copia prima dell'inizio");
-        assert!(decompress(&[0x02, 1], &mut d).is_err(), "troppo corto");
-        assert!(decompress(&[0x80], &mut d).is_err(), "intero troncato");
+        assert!(decompress(&[0x08, 1, 2, 3], &mut d).is_err(), "literals past the input");
+        assert!(decompress(&[0x03, 0x01], &mut d).is_err(), "copy before the start");
+        assert!(decompress(&[0x02, 1], &mut d).is_err(), "too short");
+        assert!(decompress(&[0x80], &mut d).is_err(), "truncated integer");
     }
 }

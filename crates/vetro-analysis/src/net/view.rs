@@ -1,11 +1,11 @@
-//! L'ispettore di rete in JSON, per l'app web (M7, ADR 0023): la lista
-//! delle richieste ([`requests_json`]) e il dettaglio di una richiesta
-//! ([`exchange_json`]) con intestazioni e corpi decodificati. Il formato è
-//! in `docs/specs/analysis.md`; i campi sono in camelCase come le API del
-//! JS che li legge.
+//! The network inspector in JSON, for the web app (M7, ADR 0023): the list
+//! of requests ([`requests_json`]) and the detail of a request
+//! ([`exchange_json`]) with headers and decoded bodies. The format is
+//! in `docs/specs/analysis.md`; the fields are in camelCase like the APIs of the
+//! JS that reads them.
 //!
-//! Deterministico (stesso ingresso, stessi byte) e senza dipendenze, come
-//! il resto di `net`.
+//! Deterministic (same input, same bytes) and without dependencies, like
+//! the rest of `net`.
 
 use std::fmt::Write as _;
 
@@ -16,14 +16,14 @@ use super::http::{Body, Headers};
 use super::inspector::{HttpExchange, NetworkAnalysis, Timings};
 use super::json::quote_into;
 
-/// Byte del corpo decodificato messi in `base64` nel dettaglio (oltre, il
-/// dettaglio dice `truncated`).
+/// Bytes of the decoded body put in `base64` in the detail (beyond that, the
+/// detail says `truncated`).
 pub const BODY_BASE64_LIMIT: usize = 256 * 1024;
 
-/// Caratteri della resa testuale di un corpo nel dettaglio.
+/// Characters of the textual rendering of a body in the detail.
 pub const BODY_TEXT_LIMIT: usize = 512 * 1024;
 
-/// Host e percorso (con la query) di un URL `schema://host/percorso`.
+/// Host and path (with the query) of a URL `scheme://host/path`.
 pub fn split_url(url: &str) -> (&str, &str) {
     let rest = url.split_once("://").map_or(url, |(_, r)| r);
     match rest.find('/') {
@@ -84,7 +84,7 @@ fn headers(out: &mut String, h: &Headers) {
     out.push(']');
 }
 
-/// Taglia `s` a `max` byte su un confine di carattere.
+/// Cuts `s` to `max` bytes on a character boundary.
 fn cut(s: &str, max: usize) -> (&str, bool) {
     if s.len() <= max {
         return (s, false);
@@ -96,7 +96,7 @@ fn cut(s: &str, max: usize) -> (&str, bool) {
     (&s[..end], true)
 }
 
-/// Il corpo decodificato: resa testuale e, secondo il tipo, la struttura.
+/// The decoded body: textual rendering and, depending on the type, the structure.
 fn decoded(out: &mut String, d: &Decoded) {
     out.push_str("\"kind\":");
     q(out, d.kind());
@@ -153,7 +153,7 @@ fn decoded(out: &mut String, d: &Decoded) {
     }
 }
 
-/// JSON compatto di un valore, e se supera il limite del testo.
+/// Compact JSON of a value, and whether it exceeds the text limit.
 fn cut_json(v: &super::json::Value) -> (String, bool) {
     let s = v.to_compact();
     let long = s.len() > BODY_TEXT_LIMIT;
@@ -181,7 +181,7 @@ fn body_json(out: &mut String, b: &Body, content_type: Option<&str>, d: &Decoded
     let _ = write!(out, ",\"truncated\":{}}}", n < b.decoded.len());
 }
 
-/// Una riga della lista (anche dentro il dettaglio).
+/// A row of the list (also inside the detail).
 fn row(out: &mut String, x: &HttpExchange) {
     let (host, path) = split_url(&x.url);
     let _ = write!(out, "{{\"i\":{},\"flow\":{},\"method\":", x.index, x.flow);
@@ -235,8 +235,8 @@ fn row(out: &mut String, x: &HttpExchange) {
     out.push('}');
 }
 
-/// La lista dell'ispettore: richieste HTTP (in ordine di inizio), scambi
-/// DNS e flussi TLS.
+/// The inspector list: HTTP requests (in order of start), DNS
+/// exchanges and TLS flows.
 ///
 /// ```json
 /// {"frames":N,"requests":[{"i":0,"method":"POST","url":"...","host":"...",
@@ -290,9 +290,9 @@ pub fn requests_json(a: &NetworkAnalysis) -> String {
     out
 }
 
-/// Il dettaglio di una richiesta: la riga della lista più `request` e
-/// `response` (linea iniziale, intestazioni in ordine, corpo con la resa
-/// del decodificatore e i byte in base64).
+/// The detail of a request: the row of the list plus `request` and
+/// `response` (first line, headers in order, body with the rendering
+/// of the decoder and the bytes in base64).
 pub fn exchange_json(x: &HttpExchange) -> String {
     let mut out = String::new();
     out.push_str("{\"row\":");
@@ -347,13 +347,13 @@ mod tests {
         assert_eq!(split_url("h/p"), ("h", "/p"));
     }
 
-    /// La lista e il dettaglio sono JSON validi (il nostro parser) con i
-    /// campi che la pagina usa; il corpo JSON della risposta c'è anche come
-    /// valore, il form come coppie.
+    /// The list and the detail are valid JSON (our parser) with the
+    /// fields the page uses; the JSON body of the response is also there as a
+    /// value, the form as pairs.
     #[test]
     fn lista_e_dettaglio_in_json() {
         let a = NetworkAnalysis::from_frames(&session());
-        let list = json::parse(requests_json(&a).as_bytes()).expect("lista JSON");
+        let list = json::parse(requests_json(&a).as_bytes()).expect("JSON list");
         let Some(Value::Array(reqs)) = list.get("requests") else { panic!("{list:?}") };
         assert_eq!(reqs.len(), 2);
         let r0 = &reqs[0];
@@ -369,7 +369,7 @@ mod tests {
         assert_eq!(dns[0].get("name").and_then(Value::as_str), Some("api.example"));
         assert_eq!(dns[0].get("addrs"), Some(&Value::Array(vec![Value::String("198.18.0.1".into())])));
 
-        let d = json::parse(exchange_json(&a.http[0]).as_bytes()).expect("dettaglio JSON");
+        let d = json::parse(exchange_json(&a.http[0]).as_bytes()).expect("JSON detail");
         let resp = d.get("response").unwrap();
         let body = resp.get("body").unwrap();
         assert_eq!(body.get("kind").and_then(Value::as_str), Some("json"));
@@ -397,8 +397,8 @@ mod tests {
         assert_eq!(d.get("response").unwrap().get("status"), Some(&Value::Number("204".into())));
     }
 
-    /// Multipart con una parte JSON e protobuf senza schema: la struttura
-    /// e la resa testuale arrivano nel dettaglio.
+    /// Multipart with a JSON part and schemaless protobuf: the structure
+    /// and the textual rendering arrive in the detail.
     #[test]
     fn corpi_multipart_e_protobuf() {
         let mp = b"--xx\r\nContent-Disposition: form-data; name=\"f\"; filename=\"a.json\"\r\nContent-Type: application/json\r\n\r\n{\"k\":1}\r\n--xx--\r\n";

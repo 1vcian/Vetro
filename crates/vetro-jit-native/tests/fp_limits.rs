@@ -1,20 +1,20 @@
-//! Casi limite della virgola mobile nel JIT (ADR 0026): ogni istruzione
-//! con un percorso veloce (o in linea) gira da sola nel JIT e
-//! nell'interprete su coppie di valori speciali (zeri, denormali, il più
-//! piccolo normale e i suoi vicini, 1 ± ulp, massimi, infiniti, NaN
-//! silenziosi e segnalanti, limiti degli interi), con FPCR (FZ, DN,
-//! arrotondamenti) e FPSR (IXC a 0 o a 1) diversi. CPU intera identica,
-//! FPSR compreso. Fra i casi: il prodotto minuscolo che si arrotonda al
-//! più piccolo normale (l'Arm segnala UFC: il percorso veloce deve
-//! lasciarlo all'interprete), le somme inesatte con IXC a 0, le
-//! conversioni ai bordi degli interi.
+//! Floating-point edge cases in the JIT (ADR 0026): every instruction
+//! with a fast (or inline) path runs alone in the JIT and
+//! in the interpreter on pairs of special values (zeros, denormals, the
+//! smallest normal and its neighbours, 1 ± ulp, maxima, infinities, quiet
+//! and signalling NaNs, integer limits), with various FPCR (FZ, DN,
+//! rounding modes) and FPSR (IXC at 0 or 1). Whole CPU identical,
+//! FPSR included. Among the cases: the tiny product that rounds to the
+//! smallest normal (Arm signals UFC: the fast path must
+//! leave it to the interpreter), inexact sums with IXC at 0,
+//! conversions at the integer boundaries.
 
 use vetro_cpu::{Cpu, Perm, UserMemory};
 use vetro_jit::{JitConfig, JitCpu};
 use vetro_jit_native::NativeEngine;
 
 const CODE: u64 = 0x40_0000;
-/// brk #0: chiude la regione dopo l'istruzione in prova.
+/// brk #0: closes the region after the instruction under test.
 const BRK: u32 = 0xd420_0000;
 
 const S: [u32; 27] = [
@@ -95,15 +95,15 @@ const X: [u64; 13] = [
     12345,
 ];
 
-/// Tipo degli operandi di un'istruzione in prova.
+/// Operand type of an instruction under test.
 #[derive(Clone, Copy)]
 enum T {
     S,
     D,
 }
 
-/// Istruzioni in prova (codifiche da tools/a64asm.sh): V1, V2, V3 e X1
-/// sorgenti, V0 e X0 destinazioni.
+/// Instructions under test (encodings from tools/a64asm.sh): V1, V2, V3 and X1
+/// sources, V0 and X0 destinations.
 const CASES: &[(u32, T, &str)] = &[
     (0x1e220820, T::S, "fmul s0, s1, s2"),
     (0x1e620820, T::D, "fmul d0, d1, d2"),
@@ -190,8 +190,8 @@ const CASES: &[(u32, T, &str)] = &[
     (0x1e250020, T::S, "fcvtau w0, s1"),
 ];
 
-/// Registro V con `vals` ripetuti nelle corsie (a partire dal primo), e
-/// con le corsie oltre la prima diverse fra loro.
+/// V register with `vals` repeated in the lanes (starting from the first), and
+/// with the lanes past the first differing from each other.
 fn vreg(t: T, vals: &[u64], k: usize) -> u128 {
     match t {
         T::S => {
@@ -213,12 +213,12 @@ fn run_one(jit: &mut JitCpu<NativeEngine>, word: u32, cpu: &Cpu) -> (Cpu, Cpu) {
     let mut mem = UserMemory::new();
     mem.map(CODE, code, Perm::RX).unwrap();
     let mut want = cpu.clone();
-    want.step(&mut mem.clone()).expect("un passo dell'interprete");
+    want.step(&mut mem.clone()).expect("one interpreter step");
     let mut got = cpu.clone();
     let before = jit.stats.jit_steps;
     let (n, r) = jit.run(&mut got, &mut mem, 1);
     assert_eq!((n, r), (1, Ok(())));
-    assert_eq!(jit.stats.jit_steps, before + 1, "{word:#010x} non eseguita dal JIT");
+    assert_eq!(jit.stats.jit_steps, before + 1, "{word:#010x} not executed by the JIT");
     (want, got)
 }
 
@@ -238,7 +238,7 @@ fn casi_limite_come_interprete() {
             for j in 0..n {
                 for (fi, &fpcr) in fpcrs.iter().enumerate() {
                     for fpsr in [0u32, 0x10] {
-                        // Terzo operando (FMA, accumulatore): pochi valori.
+                        // Third operand (FMA, accumulator): few values.
                         let k3 = (i * 3 + j + fi) % n;
                         let mut cpu = Cpu::new();
                         cpu.pc = CODE;
@@ -275,13 +275,13 @@ fn casi_limite_come_interprete() {
             }
         }
     }
-    eprintln!("{runs} casi; {:?}", jit.stats);
+    eprintln!("{runs} cases; {:?}", jit.stats);
 }
 
-/// I percorsi veloci servono davvero: con valori normali, FPCR = 0 e IXC
-/// già a 1 nessuna istruzione della tabella chiama `env.simd` (un
-/// percorso veloce rotto, che ripiega sempre sull'interprete, darebbe
-/// comunque risultati giusti: lo trova solo questo test).
+/// The fast paths really are used: with normal values, FPCR = 0 and IXC
+/// already at 1 no instruction in the table calls `env.simd` (a
+/// broken fast path, which always falls back to the interpreter, would
+/// still give correct results: only this test finds it).
 #[test]
 fn percorsi_veloci_usati() {
     let mut jit = JitCpu::new(NativeEngine::new(), JitConfig { hot_threshold: 0, ..JitConfig::default() });
@@ -305,13 +305,13 @@ fn percorsi_veloci_usati() {
         let before = vetro_jit::helper::calls();
         let (want, got) = run_one(&mut jit, word, &cpu);
         assert_eq!(want, got, "{name}");
-        assert_eq!(vetro_jit::helper::calls(), before, "{name}: ha chiamato env.simd");
+        assert_eq!(vetro_jit::helper::calls(), before, "{name}: called env.simd");
     }
 }
 
-/// FMA (arrotondamento a dispari in singola, FMA emulata in doppia) su
-/// terne casuali: mantisse qualsiasi, esponenti vicini (cancellazioni) e
-/// lontani, con e senza IXC. Bit per bit come l'interprete.
+/// FMA (round-to-odd in single, emulated FMA in double) on
+/// random triples: arbitrary mantissas, close exponents (cancellations) and
+/// distant ones, with and without IXC. Bit for bit like the interpreter.
 #[test]
 fn fma_casuali_come_interprete() {
     let mut jit = JitCpu::new(NativeEngine::new(), JitConfig { hot_threshold: 0, ..JitConfig::default() });
@@ -323,7 +323,7 @@ fn fma_casuali_come_interprete() {
             self.0 ^= self.0 << 17;
             self.0
         }
-        /// f64 con esponente vicino a `base` (cancellazioni) o qualsiasi.
+        /// f64 with exponent close to `base` (cancellations) or arbitrary.
         fn d(&mut self, base: u64) -> u64 {
             let r = self.next();
             let e = if r & 3 == 0 { (r >> 2) % 0x7fe + 1 } else { base + (r >> 2) % 60 - 30 };
@@ -364,7 +364,7 @@ fn fma_casuali_come_interprete() {
         let (want, got) = run_one(&mut jit, word, &cpu);
         assert!(
             want == got,
-            "{word:#010x} v1={:#x} v2={:#x} v3={:#x} v0={:#x}: interprete {:#x}/{:#x}, JIT {:#x}/{:#x}",
+            "{word:#010x} v1={:#x} v2={:#x} v3={:#x} v0={:#x}: interpreter {:#x}/{:#x}, JIT {:#x}/{:#x}",
             cpu.v[1],
             cpu.v[2],
             cpu.v[3],
@@ -377,11 +377,11 @@ fn fma_casuali_come_interprete() {
     }
 }
 
-/// Il doppio arrotondamento che l'arrotondamento a dispari evita: il
-/// prodotto esatto è un punto medio (1 + 2^-24 in singola, 1 + 2^-53 in
-/// doppia: 24929 × 673 = 2^24 + 1, 321 × 28059810762433 = 2^53 + 1) e
-/// l'addendo minuscolo lo sposta appena sopra. La FMA corretta arrotonda in
-/// su; senza l'arrotondamento a dispari si arrotonderebbe al pari, in giù.
+/// The double rounding that round-to-odd avoids: the
+/// exact product is a midpoint (1 + 2^-24 in single, 1 + 2^-53 in
+/// double: 24929 × 673 = 2^24 + 1, 321 × 28059810762433 = 2^53 + 1) and
+/// the tiny addend moves it just above. The correct FMA rounds
+/// up; without round-to-odd it would round to even, down.
 #[test]
 fn fma_doppio_arrotondamento() {
     let mut jit = JitCpu::new(NativeEngine::new(), JitConfig { hot_threshold: 0, ..JitConfig::default() });
@@ -403,15 +403,15 @@ fn fma_doppio_arrotondamento() {
         cpu.fpsr = 0x10;
         let before = vetro_jit::helper::calls();
         let (i, j) = run_one(&mut jit, word, &cpu);
-        assert_eq!(i.v[0], want, "{word:#x}: l'interprete arrotonda in su");
+        assert_eq!(i.v[0], want, "{word:#x}: the interpreter rounds up");
         assert_eq!(i, j, "{word:#x}");
-        assert_eq!(vetro_jit::helper::calls(), before, "{word:#x}: percorso veloce");
+        assert_eq!(vetro_jit::helper::calls(), before, "{word:#x}: fast path");
     }
 }
 
-/// Il prodotto minuscolo che si arrotonda al più piccolo normale: l'Arm
-/// segnala UFC e IXC (minuscolità prima dell'arrotondamento), il WASM dà
-/// un normale. Con FPSR a IXC il percorso veloce, se lo accettasse, perderebbe
+/// The tiny product that rounds to the smallest normal: Arm
+/// signals UFC and IXC (tininess before rounding), WASM gives
+/// a normal. With FPSR at IXC the fast path, if it accepted it, would lose
 /// UFC.
 #[test]
 fn minuscolo_arrotondato_al_normale() {
@@ -431,7 +431,7 @@ fn minuscolo_arrotondato_al_normale() {
         cpu.v[2] = b;
         cpu.fpsr = 0x10;
         let (want, got) = run_one(&mut jit, word, &cpu);
-        assert_eq!(want.fpsr & 0x8, 0x8, "{word:#x}: l'interprete segnala UFC");
+        assert_eq!(want.fpsr & 0x8, 0x8, "{word:#x}: the interpreter signals UFC");
         assert_eq!(want, got, "{word:#x}");
     }
 }

@@ -1,26 +1,26 @@
-// Il motore JIT di vetro-wasm in JavaScript (ADR 0012 e 0013,
-// docs/specs/jit.md, docs/specs/wasm.md). Corrisponde al trait
+// vetro-wasm's JIT engine in JavaScript (ADR 0012 and 0013,
+// docs/specs/jit.md, docs/specs/wasm.md). It corresponds to the trait
 // `vetro_jit::Engine`:
 //
-// - compile(bytes): WebAssembly.Module, istanziato subito con
-//   env.mem = la memoria di vetro-wasm, env.ld / env.st = gli export
-//   vetro_jit_ld / vetro_jit_st di vetro-wasm (che fanno MMU, permessi e
-//   bus) e, per il dispatcher, env.tbl = la tabella dei blocchi (funcref,
-//   TABLE_SIZE voci);
-// - place(id, count, base): mette gli export b0..b<count-1> del modulo nella
-//   tabella dalla voce `base` (il dispatcher li chiama con call_indirect);
-// - run(id, index, state): il codice d'uscita di `b<index>(state)`;
-// - entry(id, index): mette `b<index>` nella tabella delle funzioni di
-//   vetro-wasm, da cui Rust lo chiama direttamente (senza JS a ogni corsa);
-// - reset(): scarta tutte le istanze e ricrea la tabella;
-// - memory: è la memoria lineare di vetro-wasm, dove stanno `JitState`, la
-//   cache dei salti, la TLB software e la RAM del guest.
+// - compile(bytes): WebAssembly.Module, instantiated right away with
+//   env.mem = vetro-wasm's memory, env.ld / env.st = the exports
+//   vetro_jit_ld / vetro_jit_st of vetro-wasm (which do MMU, permissions and
+//   bus) and, for the dispatcher, env.tbl = the block table (funcref,
+//   TABLE_SIZE entries);
+// - place(id, count, base): puts the exports b0..b<count-1> of the module into the
+//   table from entry `base` (the dispatcher calls them with call_indirect);
+// - run(id, index, state): the exit code of `b<index>(state)`;
+// - entry(id, index): puts `b<index>` into vetro-wasm's function table,
+//   from which Rust calls it directly (without JS at every run);
+// - reset(): discards all instances and recreates the table;
+// - memory: it is vetro-wasm's linear memory, where `JitState`, the
+//   jump cache, the software TLB and the guest RAM live.
 //
-// vetro-wasm lo chiama tramite gli import `vetro_jit.compile/entry/place/drop/reset`
-// (crates/vetro-wasm/src/jit.rs). Nessuna dipendenza: solo l'API
-// WebAssembly, uguale in Node e nel browser.
+// vetro-wasm calls it through the imports `vetro_jit.compile/entry/place/drop/reset`
+// (crates/vetro-wasm/src/jit.rs). No dependencies: only the
+// WebAssembly API, the same in Node and in the browser.
 
-/** Voci della tabella dei blocchi (`vetro_jit::engine::TABLE_SIZE`). */
+/** Entries of the block table (`vetro_jit::engine::TABLE_SIZE`). */
 export const TABLE_SIZE = 1 << 18;
 
 /**
@@ -34,10 +34,10 @@ export const TABLE_SIZE = 1 << 18;
 export const CODE_BUDGET = 96 << 20;
 
 export class JitEngine {
-  #vetro = null; // export dell'istanza di vetro-wasm
+  #vetro = null; // exports of the vetro-wasm instance
   #table = null;
-  #instances = new Map(); // indice -> export del modulo generato
-  #rt = {}; // export del modulo di runtime (import `rt.*` dei moduli)
+  #instances = new Map(); // index -> exports of the generated module
+  #rt = {}; // exports of the runtime module (imports `rt.*` of the modules)
   #next = 0;
   /** Bytes compiled since the last reset, and the limit. */
   #since = 0;
@@ -45,14 +45,14 @@ export class JitEngine {
   /** Entries of vetro-wasm's function table handed out with `entry`, and the free ones. */
   #entries = [];
   #free = [];
-  /** Moduli compilati, byte e azzeramenti, per i benchmark. */
+  /** Compiled modules, bytes and resets, for the benchmarks. */
   stats = { modules: 0, bytes: 0, resets: 0, compileMs: 0, refused: 0 };
 
   constructor({ budget = CODE_BUDGET } = {}) {
     this.#budget = budget;
   }
 
-  /** Da chiamare appena istanziato vetro-wasm (gli import servono prima). */
+  /** To be called right after instantiating vetro-wasm (the imports are needed first). */
   attach(vetroExports) {
     this.#vetro = vetroExports;
   }
@@ -62,7 +62,7 @@ export class JitEngine {
     return this.#table;
   }
 
-  /** Compila e istanzia un modulo generato; restituisce il suo indice. */
+  /** Compiles and instantiates a generated module; returns its index. */
   compile(bytes) {
     const v = this.#vetro;
     if (this.#since > 0 && this.#since + bytes.length > this.#budget) {
@@ -85,8 +85,8 @@ export class JitEngine {
   }
 
   /**
-   * Installa il modulo di runtime (ADR 0024): i suoi export diventano gli
-   * import `rt.*` dei moduli compilati dopo; resta anche dopo `reset`.
+   * Installs the runtime module (ADR 0024): its exports become the
+   * imports `rt.*` of the modules compiled afterwards; it stays even after `reset`.
    */
   runtime(bytes) {
     const v = this.#vetro;
@@ -97,7 +97,7 @@ export class JitEngine {
     this.#rt = instance.exports;
   }
 
-  /** Esegue il blocco `b<index>` del modulo `id` sul JitState all'indirizzo `state`. */
+  /** Runs block `b<index>` of module `id` on the JitState at address `state`. */
   run(id, index, state) {
     return this.#instances.get(id)[`b${index}`](state);
   }
@@ -106,14 +106,14 @@ export class JitEngine {
     this.#instances.delete(id);
   }
 
-  /** Mette `b0..b<count-1>` del modulo `id` nella tabella da `base`. */
+  /** Puts `b0..b<count-1>` of module `id` into the table from `base`. */
   place(id, count, base) {
     const x = this.#instances.get(id);
     const t = this.#tbl();
     for (let i = 0; i < count; i++) t.set(base + i, x[`b${i}`]);
   }
 
-  /** Scarta istanze e tabella: i moduli successivi usano una tabella nuova. */
+  /** Discards instances and table: the following modules use a new table. */
   reset() {
     this.#instances.clear();
     this.#table = null;
@@ -132,10 +132,10 @@ export class JitEngine {
   }
 
   /**
-   * Mette `b<index>` del modulo `id` in una voce nuova della tabella delle
-   * funzioni di vetro-wasm (`__indirect_function_table`, esportata ed
-   * estendibile): da lì Rust la chiama come un puntatore a funzione, senza
-   * passare da JS a ogni corsa. Restituisce la voce.
+   * Puts `b<index>` of module `id` into a new entry of vetro-wasm's
+   * function table (`__indirect_function_table`, exported and
+   * growable): from there Rust calls it as a function pointer, without
+   * going through JS at every run. Returns the entry.
    */
   entry(id, index) {
     const t = this.#vetro.__indirect_function_table;
@@ -145,11 +145,11 @@ export class JitEngine {
     return i;
   }
 
-  /** Gli import `vetro_jit` da passare all'istanziazione di vetro-wasm. */
+  /** The `vetro_jit` imports to pass when instantiating vetro-wasm. */
   imports() {
     return {
       compile: (ptr, len) => {
-        // Copia: la memoria può crescere, e il modulo resta valido.
+        // Copy: the memory can grow, and the module stays valid.
         const bytes = new Uint8Array(this.#vetro.memory.buffer, ptr >>> 0, len).slice();
         try {
           return this.compile(bytes);

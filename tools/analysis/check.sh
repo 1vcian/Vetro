@@ -1,22 +1,22 @@
 #!/bin/sh
-# Rilegge con strumenti esterni le esportazioni di vetro-analysis (ADR 0016),
-# in un container Debian (tools/analysis/Dockerfile, costruito al primo uso):
+# Reads back the vetro-analysis exports with external tools (ADR 0016),
+# in a Debian container (tools/analysis/Dockerfile, built on first use):
 #   check.sh FILE.pcapng FILE.har
-# Righe prodotte (una per fatto, facili da confrontare nei test):
-#   CAPINFOS-PACKETS n          capinfos: pacchetti nel file
-#   TCPDUMP-PACKETS n           tcpdump -r: pacchetti letti
-#   TSHARK-REQUEST metodo uri   tshark: richieste HTTP decodificate
-#   TSHARK-RESPONSE codice      tshark: risposte HTTP
-#   HAR-VALID                   har-validator (schema HAR 1.2) accetta il file
-#   HARALYZER n                 haralyzer (Python) apre il file: n voci
-#   HARALYZER-ENTRY metodo url stato
-# VETRO_HTTP_PORTS (porte separate da virgole) dice a tshark di decodificare
-# come HTTP anche porte diverse dalle solite.
+# Lines produced (one per fact, easy to compare in the tests):
+#   CAPINFOS-PACKETS n          capinfos: packets in the file
+#   TCPDUMP-PACKETS n           tcpdump -r: packets read
+#   TSHARK-REQUEST method uri   tshark: decoded HTTP requests
+#   TSHARK-RESPONSE code        tshark: HTTP responses
+#   HAR-VALID                   har-validator (HAR 1.2 schema) accepts the file
+#   HARALYZER n                 haralyzer (Python) opens the file: n entries
+#   HARALYZER-ENTRY method url status
+# VETRO_HTTP_PORTS (comma-separated ports) tells tshark to decode
+# also ports other than the usual ones as HTTP.
 set -eu
 IMAGE="${VETRO_ANALYSIS_IMAGE:-vetro-analysis-tools:latest}"
 here="$(cd "$(dirname "$0")" && pwd)"
 if [ $# -ne 2 ]; then
-  echo "uso: $0 FILE.pcapng FILE.har" >&2
+  echo "usage: $0 FILE.pcapng FILE.har" >&2
   exit 2
 fi
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then

@@ -1,11 +1,11 @@
-//! Test differenziali di programmi Linux arm64: lo stesso binario, con gli
-//! stessi argomenti, ambiente, stdin e directory di lavoro, gira su Vetro e
-//! su `qemu-aarch64`. Si confrontano codice d'uscita (o segnale), stdout,
-//! stderr e i file lasciati nella directory di lavoro.
+//! Differential tests of Linux arm64 programs: the same binary, with the
+//! same arguments, environment, stdin and working directory, runs on Vetro and
+//! on `qemu-aarch64`. Exit code (or signal), stdout,
+//! stderr and the files left in the working directory are compared.
 //!
-//! I binari vengono da `tools/guest-bins/build.sh` (in `target/guest-bins`,
-//! o `VETRO_GUEST_BINS`). Se mancano i test stampano SKIP; con
-//! `VETRO_REQUIRE_GUEST_BINS=1` (in CI) falliscono.
+//! The binaries come from `tools/guest-bins/build.sh` (in `target/guest-bins`,
+//! or `VETRO_GUEST_BINS`). If they are missing the tests print SKIP; with
+//! `VETRO_REQUIRE_GUEST_BINS=1` (in CI) they fail.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -14,27 +14,27 @@ use std::time::Duration;
 use vetro_cli::linux::{Config, Exit};
 use vetro_diff::qemu;
 
-/// Directory dei binari guest.
+/// Directory of the guest binaries.
 pub fn guest_bins() -> PathBuf {
     std::env::var_os("VETRO_GUEST_BINS")
         .map(PathBuf::from)
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/guest-bins"))
 }
 
-/// Percorso di un binario guest, oppure `None` (SKIP) se manca.
+/// Path of a guest binary, or `None` (SKIP) if it is missing.
 pub fn guest_bin(name: &str, test: &str) -> Option<PathBuf> {
     let p = guest_bins().join(name);
     if p.is_file() {
         return Some(std::fs::canonicalize(p).unwrap());
     }
     if std::env::var("VETRO_REQUIRE_GUEST_BINS").is_ok_and(|v| v == "1") {
-        panic!("{test}: binario guest {name} mancante (tools/guest-bins/build.sh)");
+        panic!("{test}: guest binary {name} missing (tools/guest-bins/build.sh)");
     }
-    eprintln!("SKIP {test}: {} mancante, esegui tools/guest-bins/build.sh", p.display());
+    eprintln!("SKIP {test}: {} missing, run tools/guest-bins/build.sh", p.display());
     None
 }
 
-/// Esito confrontabile di un processo.
+/// Comparable outcome of a process.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Status {
     Exited(i32),
@@ -47,8 +47,8 @@ pub struct Run {
     pub status: Status,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
-    /// File della directory di lavoro dopo l'esecuzione: percorso → contenuto
-    /// (le directory hanno contenuto vuoto e percorso che finisce con '/').
+    /// Files of the working directory after the run: path → contents
+    /// (directories have empty contents and a path that ends with '/').
     pub files: BTreeMap<String, Vec<u8>>,
 }
 
@@ -77,8 +77,8 @@ pub fn case(name: &str, prog: &Path, args: &[&str]) -> Case {
 }
 
 impl Case {
-    /// Variabile d'ambiente del guest; `{wd}` nel valore diventa la
-    /// directory di lavoro.
+    /// Guest environment variable; `{wd}` in the value becomes the
+    /// working directory.
     pub fn env(mut self, k: &str, v: &str) -> Self {
         self.env.push((k.into(), v.into()));
         self
@@ -89,19 +89,19 @@ impl Case {
         self
     }
 
-    /// File iniziale nella directory di lavoro (sottodirectory con '/').
+    /// Initial file in the working directory (subdirectories with '/').
     pub fn file(mut self, path: &str, data: &[u8]) -> Self {
         self.files.push((path.into(), data.to_vec()));
         self
     }
 
-    /// Link simbolico iniziale nella directory di lavoro.
+    /// Initial symbolic link in the working directory.
     pub fn link(mut self, path: &str, target: &Path) -> Self {
         self.links.push((path.into(), target.to_path_buf()));
         self
     }
 
-    /// Non confrontare stderr (messaggi che includono dati dell'host).
+    /// Do not compare stderr (messages that include host data).
     pub fn ignore_stderr(mut self) -> Self {
         self.compare_stderr = false;
         self
@@ -182,10 +182,10 @@ impl Case {
                 let st = match (o.signal(), o.exit_code) {
                     (Some(s), _) => Status::Signaled(s),
                     (None, Some(c)) => Status::Exited(c),
-                    (None, None) => Status::Other("terminato senza codice".into()),
+                    (None, None) => Status::Other("terminated without a code".into()),
                 };
                 let mut stderr = o.stderr;
-                // Il messaggio di QEMU sul segnale non fa parte dell'output del guest.
+                // QEMU's message about the signal is not part of the guest's output.
                 if let Some(i) = find(&stderr, b"qemu: uncaught target signal") {
                     stderr.truncate(i);
                 }
@@ -196,15 +196,15 @@ impl Case {
         Run { status, stdout, stderr, files: snapshot(&dir) }
     }
 
-    /// Esegue su Vetro e su QEMU e pretende esiti identici. Senza oracolo
-    /// esegue solo Vetro e restituisce il suo esito.
+    /// Runs on Vetro and on QEMU and demands identical outcomes. Without the oracle
+    /// it runs only Vetro and returns its outcome.
     pub fn check(self) -> Run {
         let ours = self.run_vetro();
         let Some(q) = qemu::locate_or_skip(&self.name) else { return ours };
         let theirs = self.run_qemu(&q);
         let mut diff = String::new();
         if ours.status != theirs.status {
-            diff += &format!("  esito: vetro={:?} qemu={:?}\n", ours.status, theirs.status);
+            diff += &format!("  outcome: vetro={:?} qemu={:?}\n", ours.status, theirs.status);
         }
         if ours.stdout != theirs.stdout {
             diff += &format!(
@@ -228,11 +228,11 @@ impl Case {
             );
             for (k, v) in &ours.files {
                 if theirs.files.get(k) != Some(v) {
-                    diff += &format!("    diverso: {k}\n");
+                    diff += &format!("    differs: {k}\n");
                 }
             }
         }
-        assert!(diff.is_empty(), "{}: Vetro e QEMU divergono\n{diff}", self.name);
+        assert!(diff.is_empty(), "{}: Vetro and QEMU diverge\n{diff}", self.name);
         ours
     }
 }

@@ -286,7 +286,7 @@ async function main() {
   check(out === 'Success' && adbd.installed?.length === apk.length && adbd.installed.every((x, i) => x === apk[i]), 'install: 300 KB push and pm install');
   check(adbd.opened.includes('sync:') && adbd.quit && adbd.files.size === 0, 'install: sync with QUIT, temporary file removed');
   check(adbd.commands.some((x) => x.startsWith('pm install -r /data/local/tmp/prova.apk')), 'install: pm install -r');
-  const bad = await drive(c, c.install(enc.encode('non un apk')).then(() => null, (err) => err));
+  const bad = await drive(c, c.install(enc.encode('not an apk')).then(() => null, (err) => err));
   check(bad instanceof Error && bad.message.includes('INSTALL_FAILED_INVALID_APK'), 'install: pm error reported');
   const fail = await drive(c, c.push('/proc/x', enc.encode('x')).then(() => null, (err) => err));
   check(fail instanceof Error && fail.message.includes('read-only file system'), 'push: device FAIL reported');

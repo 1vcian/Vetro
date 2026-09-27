@@ -1,14 +1,14 @@
-//! `env.simd` (ADR 0026): le istruzioni SIMD/FP senza accessi alla memoria
-//! che le regioni non traducono in linea le esegue l'interprete stesso
-//! (`vetro_cpu::simd::exec_dp`) sui registri V, FPCR e FPSR di `JitState`,
-//! senza uscire dalla regione. La semantica è quindi quella
-//! dell'interprete per costruzione (NaN, arrotondamenti, flag cumulativi,
-//! denormali, FZ, DN).
+//! `env.simd` (ADR 0026): the SIMD/FP instructions without memory accesses
+//! that the regions do not translate inline are executed by the interpreter
+//! itself (`vetro_cpu::simd::exec_dp`) on the V registers, FPCR and FPSR of
+//! `JitState`, without leaving the region. The semantics are therefore those
+//! of the interpreter by construction (NaN, rounding, cumulative flags,
+//! denormals, FZ, DN).
 //!
-//! Registri generali e NZCV restano nelle variabili della regione: chi
-//! chiama passa il registro generale letto dall'istruzione (`x`) e NZCV
-//! (`nzcv`), e riceve il registro generale scritto o il nuovo NZCV, come dice
-//! [`io`].
+//! General registers and NZCV stay in the region's variables: the caller
+//! passes the general register read by the instruction (`x`) and NZCV
+//! (`nzcv`), and receives the written general register or the new NZCV, as
+//! [`io`] says.
 
 use std::cell::RefCell;
 
@@ -17,29 +17,29 @@ use vetro_cpu::{Cpu, Insn};
 
 use crate::state::off;
 
-/// Che cosa scrive un'istruzione oltre ai registri V e a FPSR.
+/// What an instruction writes besides the V registers and FPSR.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Out {
-    /// Niente.
+    /// Nothing.
     None,
-    /// Il registro generale (31 = XZR, scartato): `env.simd` ne
-    /// restituisce il valore.
+    /// The general register (31 = XZR, discarded): `env.simd` returns
+    /// its value.
     X(u8),
-    /// NZCV: `env.simd` lo restituisce nei bit 31:28.
+    /// NZCV: `env.simd` returns it in bits 31:28.
     Nzcv,
 }
 
-/// Registri generali e NZCV di un'istruzione SIMD/FP senza memoria.
+/// General registers and NZCV of a SIMD/FP instruction without memory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Io {
-    /// Registro generale letto (31 = XZR).
+    /// General register read (31 = XZR).
     pub x_in: Option<u8>,
-    /// Legge NZCV (condizione di FCCMP/FCSEL).
+    /// Reads NZCV (condition of FCCMP/FCSEL).
     pub nzcv_in: bool,
     pub out: Out,
 }
 
-/// Registri generali e NZCV letti e scritti da `i`.
+/// General registers and NZCV read and written by `i`.
 pub fn io(i: &SimdInsn) -> Io {
     let none = Io { x_in: None, nzcv_in: false, out: Out::None };
     match *i {
@@ -60,13 +60,13 @@ pub fn io(i: &SimdInsn) -> Io {
     }
 }
 
-/// V0..V31 dal formato di `JitState` (little-endian, 16 byte ciascuno).
+/// V0..V31 from the `JitState` format (little-endian, 16 bytes each).
 #[inline]
 fn copy_v_in(v: &mut [u128; 32], b: &[u8]) {
     assert_eq!(b.len(), 512);
     if cfg!(target_endian = "little") {
-        // SAFETY: `v` è di 512 byte; su un host little-endian un u128 ha in
-        // memoria gli stessi byte del formato di `JitState`.
+        // SAFETY: `v` is 512 bytes; on a little-endian host a u128 has in
+        // memory the same bytes as the `JitState` format.
         unsafe { core::ptr::copy_nonoverlapping(b.as_ptr(), v.as_mut_ptr().cast::<u8>(), 512) };
     } else {
         for (r, d) in v.iter_mut().enumerate() {
@@ -75,12 +75,12 @@ fn copy_v_in(v: &mut [u128; 32], b: &[u8]) {
     }
 }
 
-/// V0..V31 nel formato di `JitState`.
+/// V0..V31 in the `JitState` format.
 #[inline]
 fn copy_v_out(b: &mut [u8], v: &[u128; 32]) {
     assert_eq!(b.len(), 512);
     if cfg!(target_endian = "little") {
-        // SAFETY: come in `copy_v_in`.
+        // SAFETY: as in `copy_v_in`.
         unsafe { core::ptr::copy_nonoverlapping(v.as_ptr().cast::<u8>(), b.as_mut_ptr(), 512) };
     } else {
         for (r, s) in v.iter().enumerate() {
@@ -90,42 +90,42 @@ fn copy_v_out(b: &mut [u8], v: &[u128; 32]) {
 }
 
 thread_local! {
-    /// CPU di appoggio: si copiano dentro e fuori solo registri V, FPCR,
-    /// FPSR, NZCV e il registro generale letto.
+    /// Scratch CPU: only the V registers, FPCR, FPSR, NZCV and the general
+    /// register read are copied in and out.
     static SCRATCH: RefCell<Cpu> = RefCell::new(Cpu::new());
-    /// Chiamate a [`exec`] da questo thread.
+    /// Calls to [`exec`] from this thread.
     static CALLS: core::cell::Cell<u64> = const { core::cell::Cell::new(0) };
 }
 
-/// Chiamate a `env.simd` fatte finora da questo thread: i test verificano
-/// così che i percorsi veloci in linea e del runtime servano davvero.
+/// Calls to `env.simd` made so far by this thread: the tests use it to
+/// check that the fast inline and runtime paths really work.
 pub fn calls() -> u64 {
     CALLS.get()
 }
 
 thread_local! {
-    /// Con [`profile`] attivo: chiamate per classe d'istruzione.
+    /// With [`profile`] active: calls per instruction class.
     static PROFILE: RefCell<Option<crate::profile::Profile>> = const { RefCell::new(None) };
 }
 
-/// Conta per classe le istruzioni eseguite da `env.simd` (per le misure,
-/// `VETRO_JIT_PROFILE=1`).
+/// Counts per class the instructions executed by `env.simd` (for
+/// measurements, `VETRO_JIT_PROFILE=1`).
 pub fn profile(on: bool) {
     PROFILE.with_borrow_mut(|p| *p = on.then(crate::profile::Profile::default));
 }
 
-/// Resoconto delle classi più frequenti eseguite da `env.simd`.
+/// Report of the most frequent classes executed by `env.simd`.
 pub fn profile_report(n: usize) -> Option<String> {
     PROFILE.with_borrow(|p| p.as_ref().map(|p| p.report(n)))
 }
 
-/// `env.simd(state, word, x, nzcv) -> valore`: esegue l'istruzione `word`
-/// (SIMD/FP senza memoria) sul `JitState` a `mem[at..]`, i cui registri V
-/// devono essere validi (`v_valid`). Restituisce il registro generale
-/// scritto o NZCV ([`Out`]), altrimenti 0.
+/// `env.simd(state, word, x, nzcv) -> value`: executes instruction `word`
+/// (SIMD/FP without memory) on the `JitState` at `mem[at..]`, whose V
+/// registers must be valid (`v_valid`). Returns the written general register
+/// or NZCV ([`Out`]), otherwise 0.
 pub fn exec(mem: &mut [u8], at: usize, word: u32, x: u64, nzcv: u32) -> u64 {
     let Insn::Simd(i) = vetro_cpu::decode(word) else {
-        panic!("env.simd con un'istruzione non SIMD: {word:#010x}");
+        panic!("env.simd with a non-SIMD instruction: {word:#010x}");
     };
     CALLS.set(CALLS.get() + 1);
     PROFILE.with_borrow_mut(|p| {
@@ -173,14 +173,14 @@ mod tests {
         (JitState::load(&mem, 16), r)
     }
 
-    /// Stessi registri e flag dell'interprete (codifiche da tools/a64asm.sh).
+    /// Same registers and flags as the interpreter (encodings from tools/a64asm.sh).
     #[test]
-    fn come_interprete() {
+    fn same_as_interpreter() {
         let mut cpu = Cpu::new();
         cpu.v[1] = 0x3ff0_0000_0000_0000; // 1.0
         cpu.v[2] = 0x3fb9_9999_9999_999a; // 0.1
         cpu.x[3] = 7;
-        // fadd d0, d1, d2 (inesatta: IXC); fcmp d1, d2; scvtf d4, x3;
+        // fadd d0, d1, d2 (inexact: IXC); fcmp d1, d2; scvtf d4, x3;
         // fcvtzs x5, d1
         for (w, x) in [(0x1e622820u32, 0), (0x1e622020, 0), (0x9e620064, 7), (0x9e780025, 0)] {
             let (s, r) = run(&cpu, w, x);

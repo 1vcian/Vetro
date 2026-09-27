@@ -1,7 +1,7 @@
-//! Move wide, bitfield, estrazione e indirizzi relativi al PC.
+//! Move wide, bitfield, extraction and PC-relative addresses.
 //!
-//! Codifiche generate con `tools/a64asm.sh`; valori attesi verificati
-//! anche contro QEMU quando l'oracolo è disponibile.
+//! Encodings generated with `tools/a64asm.sh`; expected values verified
+//! also against QEMU when the oracle is available.
 
 use vetro_isa_tests::{BODY, case};
 

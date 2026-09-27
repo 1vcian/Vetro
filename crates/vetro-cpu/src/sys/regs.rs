@@ -1,6 +1,6 @@
-//! MRS e MSR in modalità sistema: controlli di accesso e semantica dei
-//! registri. Maschere e valori di reset come QEMU `-cpu cortex-a53`
-//! (verificati scrivendo tutti uno e rileggendo).
+//! MRS and MSR in system mode: access checks and register
+//! semantics. Masks and reset values like QEMU `-cpu cortex-a53`
+//! (verified by writing all ones and reading back).
 
 use crate::state::{Cpu, FPCR_MASK, FPSR_MASK};
 use crate::sysreg::{EnvReg, Rw, SysReg};
@@ -8,22 +8,22 @@ use crate::sysreg::{EnvReg, Rw, SysReg};
 use super::state::{cntkctl, daif, sctlr};
 use super::{CpuEnv, SysBus, id};
 
-/// Perché un accesso a un registro di sistema non si esegue.
+/// Why an access to a system register is not executed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Deny {
     /// UNDEFINED (EC 0x00).
     Undefined,
-    /// Trap a EL1 con EC 0x18 (sindrome dalla codifica).
+    /// Trap to EL1 with EC 0x18 (syndrome from the encoding).
     Trap,
 }
 
-/// MDSCR_EL1.TDCC: accessi al canale di debug da EL0 in trap a EL1.
+/// MDSCR_EL1.TDCC: debug channel accesses from EL0 trap to EL1.
 fn mdscr_tdcc(mdscr: u64) -> bool {
     mdscr & 1 << 12 != 0
 }
 
 impl Cpu {
-    /// Controlla un MRS (`write` = falso) o MSR al livello corrente.
+    /// Checks an MRS (`write` = false) or MSR at the current level.
     pub(crate) fn sysreg_access(&self, reg: SysReg, write: bool) -> Result<(), Deny> {
         use SysReg::*;
         match (reg.rw(), write) {
@@ -49,15 +49,15 @@ impl Cpu {
             Nzcv | TpidrEl0 | Fpcr | Fpsr | DczidEl0 => Ok(()),
             TpidrroEl0 | PmuserenrEl0 if write => Err(Deny::Undefined),
             TpidrroEl0 | PmuserenrEl0 => Ok(()),
-            // Canale di debug: come QEMU (access_tdcc), trap se MDSCR_EL1.TDCC.
+            // Debug channel: like QEMU (access_tdcc), trap if MDSCR_EL1.TDCC.
             MdccsrEl0 | DbgdtrEl0 if mdscr_tdcc(self.sys.mdscr_el1) => Err(Deny::Trap),
             MdccsrEl0 | DbgdtrEl0 => Ok(()),
             CtrEl0 if sctlr & sctlr::UCT != 0 => Ok(()),
             Daif if sctlr & sctlr::UMA != 0 => Ok(()),
             CtrEl0 | Daif => Err(Deny::Trap),
             Env(e) => match e {
-                // Come QEMU: prima la trap per CNTKCTL, poi la scrittura
-                // (possibile solo al livello più alto) è UNDEFINED.
+                // Like QEMU: first the trap for CNTKCTL, then the write
+                // (possible only at the highest level) is UNDEFINED.
                 EnvReg::CntfrqEl0 => {
                     enabled(cntkctl::EL0PCTEN | cntkctl::EL0VCTEN)?;
                     if write { Err(Deny::Undefined) } else { Ok(()) }
@@ -72,7 +72,7 @@ impl Cpu {
         }
     }
 
-    /// MRS già autorizzato.
+    /// Already authorised MRS.
     pub(crate) fn sysreg_read<E: CpuEnv + ?Sized>(&mut self, reg: SysReg, env: &mut E) -> u64 {
         use SysReg::*;
         let s = &self.sys;
@@ -83,7 +83,7 @@ impl Cpu {
             Fpcr => u64::from(self.fpcr),
             Fpsr => u64::from(self.fpsr),
             DczidEl0 => {
-                // DZP = 1 quando DC ZVA è proibito al livello corrente.
+                // DZP = 1 when DC ZVA is prohibited at the current level.
                 let dzp = s.el == 0 && s.sctlr_el1 & sctlr::DZE == 0;
                 id::DCZID_BS | u64::from(dzp) << 4
             }
@@ -108,7 +108,7 @@ impl Cpu {
             TpidrEl1 => s.tpidr_el1,
             CntkctlEl1 => s.cntkctl_el1,
             CsselrEl1 => s.csselr_el1,
-            // RAZ/WI in QEMU per la Cortex-A53.
+            // RAZ/WI in QEMU for the Cortex-A53.
             ActlrEl1 | AmairEl1 | Afsr0El1 | Afsr1El1 | MdccintEl1 | ImpDefEl1 | DbgRazWiEl1 | MdccsrEl0
             | DbgdtrEl0 => 0,
             DbgclaimsetEl1 => 0xff,
@@ -126,7 +126,7 @@ impl Cpu {
             CcsidrEl1 => id::CCSIDR_EL1.get(s.csselr_el1 as usize).copied().unwrap_or(0),
             Id(i) => id::id_reg(i, s.cfg.gicv3),
             MdscrEl1 => s.mdscr_el1,
-            // OSLM = 0b10 (bit 3), OSLK nel bit 1.
+            // OSLM = 0b10 (bit 3), OSLK in bit 1.
             OslsrEl1 => 0b1000 | u64::from(s.oslk) << 1,
             OsdlrEl1 => s.osdlr_el1,
             DbgbvrEl1(n) => s.dbgbvr[n as usize],
@@ -134,13 +134,13 @@ impl Cpu {
             DbgwvrEl1(n) => s.dbgwvr[n as usize],
             DbgwcrEl1(n) => s.dbgwcr[n as usize],
             PmuserenrEl0 => s.pmuserenr_el0,
-            OslarEl1 => unreachable!("sola scrittura, escluso da sysreg_access"),
+            OslarEl1 => unreachable!("write-only, excluded by sysreg_access"),
             Env(e) => env.read_sysreg(e),
         }
     }
 
-    /// MSR già autorizzato. Le scritture di SCTLR_EL1 e TCR_EL1 svuotano il
-    /// TLB (come QEMU).
+    /// Already authorised MSR. Writes to SCTLR_EL1 and TCR_EL1 flush the
+    /// TLB (like QEMU).
     pub(crate) fn sysreg_write<B: SysBus + ?Sized, E: CpuEnv + ?Sized>(
         &mut self,
         reg: SysReg,
@@ -177,7 +177,7 @@ impl Cpu {
             Ttbr1El1 => s.ttbr1_el1 = v,
             MairEl1 => s.mair_el1 = v,
             ContextidrEl1 => s.contextidr_el1 = v,
-            // I bit [10:5] restano: QEMU azzera solo i 5 bassi.
+            // Bits [10:5] stay: QEMU clears only the low 5.
             VbarEl1 => s.vbar_el1 = v & !0x1f,
             EsrEl1 => s.esr_el1 = v,
             FarEl1 => s.far_el1 = v,
@@ -199,7 +199,7 @@ impl Cpu {
             Env(e) => env.write_sysreg(e, v),
             DczidEl0 | CtrEl0 | CurrentEl | IsrEl1 | RvbarEl1 | MidrEl1 | MpidrEl1 | RevidrEl1 | AidrEl1
             | ClidrEl1 | CcsidrEl1 | Id(_) | OslsrEl1 | MdrarEl1 | CbarEl1 | MdccsrEl0 => {
-                unreachable!("sola lettura, escluso da sysreg_access")
+                unreachable!("read-only, excluded by sysreg_access")
             }
         }
     }

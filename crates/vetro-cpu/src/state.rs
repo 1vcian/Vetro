@@ -1,12 +1,12 @@
-//! Stato architetturale: registri di EL0 e, per la modalità sistema,
+//! Architectural state: EL0 registers and, for system mode,
 //! [`SysState`](crate::sys::SysState).
 
-/// Monitor esclusivo locale: impostato da LDXR/LDAXR/LDXP, consumato da
-/// STXR/STLXR/STXP (vedi docs/specs/cpu.md, "Esclusive").
+/// Local exclusive monitor: set by LDXR/LDAXR/LDXP, consumed by
+/// STXR/STLXR/STXP (see docs/specs/cpu.md, "Exclusives").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Monitor {
     pub addr: u64,
-    /// Byte totali dell'accesso (per le coppie, entrambi gli elementi).
+    /// Total bytes of the access (for pairs, both elements).
     pub bytes: u32,
     pub value: u128,
 }
@@ -14,27 +14,27 @@ pub struct Monitor {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Cpu {
     pub x: [u64; 31],
-    /// Stack pointer in uso: SP_EL0 in modalità utente; in modalità sistema
-    /// SP_EL0 o SP_EL1 secondo PSTATE (l'altro sta in `sys.sp_el`).
+    /// Stack pointer in use: SP_EL0 in user mode; in system mode
+    /// SP_EL0 or SP_EL1 depending on PSTATE (the other one is in `sys.sp_el`).
     pub sp: u64,
     pub pc: u64,
-    /// Flag N, Z, C, V nei bit 31:28 (stesso formato di `MRS Xt, NZCV`).
+    /// N, Z, C, V flags in bits 31:28 (same format as `MRS Xt, NZCV`).
     pub nzcv: u32,
     pub tpidr_el0: u64,
     pub tpidrro_el0: u64,
     pub monitor: Option<Monitor>,
-    /// Registri SIMD/FP V0–V31.
+    /// SIMD/FP registers V0–V31.
     pub v: [u128; 32],
     pub fpcr: u32,
     pub fpsr: u32,
-    /// PSTATE oltre NZCV e registri di EL1 (modalità sistema).
+    /// PSTATE beyond NZCV and EL1 registers (system mode).
     pub sys: crate::sys::SysState,
 }
 
-/// Bit scrivibili di FPCR su Cortex-A53: AHP, DN, FZ, RMode. Le abilitazioni
-/// delle trap sono RAZ/WI (niente trap FP), Len/Stride sono RES0 in AArch64.
+/// Writable FPCR bits on Cortex-A53: AHP, DN, FZ, RMode. The trap
+/// enables are RAZ/WI (no FP traps), Len/Stride are RES0 in AArch64.
 pub const FPCR_MASK: u32 = 0x07C0_0000;
-/// Bit di FPSR: QC, IDC e i flag cumulativi IXC, UFC, OFC, DZC, IOC.
+/// FPSR bits: QC, IDC and the cumulative flags IXC, UFC, OFC, DZC, IOC.
 pub const FPSR_MASK: u32 = 0x0800_009F;
 
 pub const N: u32 = 1 << 31;
@@ -47,19 +47,19 @@ impl Cpu {
         Self::default()
     }
 
-    /// Registro generale; 31 vale XZR.
+    /// General register; 31 is XZR.
     #[inline]
     pub fn xr(&self, r: u8) -> u64 {
         if r == 31 { 0 } else { self.x[r as usize] }
     }
 
-    /// Registro generale; 31 vale SP.
+    /// General register; 31 is SP.
     #[inline]
     pub fn xsp(&self, r: u8) -> u64 {
         if r == 31 { self.sp } else { self.x[r as usize] }
     }
 
-    /// Scrive un registro; 31 (XZR) scarta il valore.
+    /// Writes a register; 31 (XZR) discards the value.
     #[inline]
     pub fn set_x(&mut self, r: u8, v: u64) {
         if r != 31 {
@@ -67,7 +67,7 @@ impl Cpu {
         }
     }
 
-    /// Scrive un registro; 31 vale SP.
+    /// Writes a register; 31 is SP.
     #[inline]
     pub fn set_xsp(&mut self, r: u8, v: u64) {
         if r == 31 {

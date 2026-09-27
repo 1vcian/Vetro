@@ -1,6 +1,6 @@
-//! Inoltro di porte: connessioni aperte dall'host verso un servizio TCP del
-//! finto guest (`Stack::host_connect`), come `hostfwd` di QEMU. Il finto
-//! guest è il server: risponde al SYN del gateway, riscontra, fa l'eco.
+//! Port forwarding: connections opened by the host to a TCP service of the
+//! fake guest (`Stack::host_connect`), like QEMU's `hostfwd`. The fake
+//! guest is the server: it answers the gateway's SYN, acknowledges, echoes.
 
 mod common;
 
@@ -14,8 +14,8 @@ use vetro_net::{
 
 const PORT: u16 = 5555;
 
-/// Stack che conosce già il MAC del guest (dal suo primo frame, come dopo
-/// il DHCP): i segmenti verso il guest vanno al suo MAC.
+/// Stack that already knows the guest's MAC (from its first frame, as after
+/// DHCP): segments to the guest go to its MAC.
 fn stack() -> Stack<Sinkhole> {
     let mut s = Stack::new(config(), Sinkhole::new(SinkholeConfig::default()));
     s.receive(t(0), &Guest::arp_request(GW_IP));
@@ -29,29 +29,29 @@ fn segs(s: &mut Stack<Sinkhole>) -> Vec<TcpSeg> {
 
 fn one(s: &mut Stack<Sinkhole>) -> TcpSeg {
     let mut v = segs(s);
-    assert_eq!(v.len(), 1, "atteso un segmento: {v:?}");
+    assert_eq!(v.len(), 1, "expected one segment: {v:?}");
     v.remove(0)
 }
 
 fn state(s: &Stack<Sinkhole>, id: ConnId) -> HostConnState {
-    s.host_conn(id).expect("connessione dell'host").state
+    s.host_conn(id).expect("host connection").state
 }
 
-/// Il servizio del guest: un `Client` del finto guest con la porta del
-/// servizio come sorgente e il gateway come destinazione.
+/// The guest's service: a `Client` of the fake guest with the service port
+/// as source and the gateway as destination.
 fn server_for(syn: &TcpSeg) -> Client {
-    assert!(syn.syn && syn.ack.is_none() && !syn.rst, "atteso SYN: {syn:?}");
+    assert!(syn.syn && syn.ack.is_none() && !syn.rst, "expected SYN: {syn:?}");
     let mut c = Client::new(syn.dst.port(), syn.src);
     c.seq = 7_000_000;
     c.ack = syn.seq.wrapping_add(1);
     c
 }
 
-/// Handshake completo verso la porta del guest; restituisce id e server.
+/// Full handshake to the guest port; returns id and server.
 fn open(s: &mut Stack<Sinkhole>, now: u64) -> (ConnId, Client) {
     let id = s.host_connect(PORT).unwrap();
     assert_eq!(state(s, id), HostConnState::Connecting);
-    assert!(drain(s).is_empty(), "il SYN parte al poll");
+    assert!(drain(s).is_empty(), "the SYN leaves at poll");
     s.poll(t(now));
     let syn = one(s);
     let mut g = server_for(&syn);
@@ -63,8 +63,8 @@ fn open(s: &mut Stack<Sinkhole>, now: u64) -> (ConnId, Client) {
     (id, g)
 }
 
-/// Il guest prende e riscontra tutto ciò che lo stack gli manda, finché
-/// lo stack tace. Restituisce i byte ricevuti e se è arrivato il FIN.
+/// The guest takes and acknowledges everything the stack sends it, until
+/// the stack is silent. Returns the bytes received and whether the FIN arrived.
 fn guest_takes(s: &mut Stack<Sinkhole>, g: &mut Client, now: u64) -> (Vec<u8>, bool) {
     let (mut data, mut fin) = (Vec::new(), false);
     loop {
@@ -90,14 +90,14 @@ fn handshake_dal_gateway_come_qemu() {
     let id = s.host_connect(PORT).unwrap();
     s.poll(t(5));
     let syn = one(&mut s);
-    assert_eq!(syn.src, SocketAddrV4::new(GW_IP, 49152), "dal gateway, prima porta effimera");
+    assert_eq!(syn.src, SocketAddrV4::new(GW_IP, 49152), "from the gateway, first ephemeral port");
     assert_eq!(syn.dst, SocketAddrV4::new(GUEST_IP, PORT));
     assert_eq!((syn.mss, syn.window), (Some(1460), 65_535));
     let g = server_for(&syn);
     s.receive(t(6), &g.segment(g.seq, F_SYN | F_ACK, b""));
     let ack = one(&mut s);
     assert!(!ack.syn && !ack.fin && ack.payload.is_empty());
-    assert_eq!(ack.ack, Some(g.seq + 1), "ACK del SYN del guest");
+    assert_eq!(ack.ack, Some(g.seq + 1), "ACK of the guest's SYN");
     let info = s.host_conn(id).unwrap();
     assert_eq!(info.state, HostConnState::Open);
     assert_eq!((info.readable, info.writable, info.guest_eof), (0, HOST_BUFFER, false));
@@ -106,8 +106,8 @@ fn handshake_dal_gateway_come_qemu() {
         s.events().iter().map(|e| (e.at, e.kind.clone())).collect::<Vec<_>>(),
         [(t(5), EventKind::TcpConnect { id, flow }), (t(6), EventKind::TcpEstablished { id })]
     );
-    assert_eq!(s.events()[0].to_string(), "[     0.005000] tcp 1 dall'host 10.0.2.2:49152 -> 10.0.2.15:5555");
-    // La seconda connessione prende la porta effimera successiva.
+    assert_eq!(s.events()[0].to_string(), "[     0.005000] tcp 1 from host 10.0.2.2:49152 -> 10.0.2.15:5555");
+    // The second connection takes the next ephemeral port.
     s.host_connect(PORT).unwrap();
     s.poll(t(7));
     assert_eq!(one(&mut s).src.port(), 49153);
@@ -122,11 +122,11 @@ fn eco_di_200_kb_oltre_la_finestra() {
     let mut buf = vec![0u8; 70_000];
     while echoed.len() < data.len() {
         now += 1;
-        assert!(now < 10_000, "eco ferma a {} byte", echoed.len());
+        assert!(now < 10_000, "echo stuck at {} bytes", echoed.len());
         sent += s.host_send(id, &data[sent..]);
         s.poll(t(now));
-        // Il guest riceve (al più un segmento da MSS alla volta, entro la
-        // sua finestra) e rimanda indietro gli stessi byte.
+        // The guest receives (at most one MSS-sized segment at a time, within
+        // its window) and sends the same bytes back.
         let (got, fin) = guest_takes(&mut s, &mut g, now);
         assert!(!fin);
         for chunk in got.chunks(1460) {
@@ -137,7 +137,7 @@ fn eco_di_200_kb_oltre_la_finestra() {
         let n = s.host_recv(id, &mut buf);
         echoed.extend_from_slice(&buf[..n]);
     }
-    assert_eq!(echoed, data, "eco byte per byte");
+    assert_eq!(echoed, data, "echo byte for byte");
     let to_guest: usize = s
         .events()
         .iter()
@@ -154,8 +154,8 @@ fn eco_di_200_kb_oltre_la_finestra() {
 fn contropressione_verso_l_host() {
     let mut s = stack();
     let (id, mut g) = open(&mut s, 0);
-    // Il guest manda più di quanto l'host tenga in coda: la finestra si
-    // chiude quando buffer della connessione e coda dell'host sono pieni.
+    // The guest sends more than the host keeps queued: the window
+    // closes when the connection buffer and the host queue are full.
     let chunk = vec![0x5a; 1460];
     let start = g.seq;
     let mut last_window = u16::MAX;
@@ -163,18 +163,18 @@ fn contropressione_verso_l_host() {
         s.receive(t(1), &g.send(&chunk));
         let ack = one(&mut s);
         last_window = ack.window;
-        // Ciò che non è stato preso il guest lo rimanderà.
+        // Whatever was not taken the guest will resend.
         g.seq = ack.ack.unwrap();
         if ack.window == 0 {
             break;
         }
     }
     let accepted = g.seq.wrapping_sub(start) as usize;
-    assert_eq!(last_window, 0, "finestra chiusa");
+    assert_eq!(last_window, 0, "window closed");
     let info = s.host_conn(id).unwrap();
     assert_eq!(info.readable, HOST_BUFFER);
-    assert_eq!(accepted, HOST_BUFFER + 65_535, "coda dell'host più finestra massima");
-    // L'host legge: al poll la finestra si riapre con un aggiornamento.
+    assert_eq!(accepted, HOST_BUFFER + 65_535, "host queue plus maximum window");
+    // The host reads: at poll the window reopens with an update.
     let mut buf = vec![0u8; 100_000];
     assert_eq!(s.host_recv(id, &mut buf), 100_000);
     s.poll(t(2));
@@ -189,20 +189,20 @@ fn chiusura_dall_host_con_time_wait() {
     let (id, mut g) = open(&mut s, 0);
     assert_eq!(s.host_send(id, b"ciao"), 4);
     s.host_shutdown(id);
-    assert_eq!(s.host_send(id, b"x"), 0, "verso chiuso");
+    assert_eq!(s.host_send(id, b"x"), 0, "direction closed");
     s.poll(t(1));
     let (got, fin) = guest_takes(&mut s, &mut g, 1);
     assert_eq!((got.as_slice(), fin), (&b"ciao"[..], true));
-    // Il guest risponde e chiude.
+    // The guest answers and closes.
     s.receive(t(2), &g.send(b"ciao"));
     assert_eq!(one(&mut s).ack, Some(g.seq));
     s.receive(t(2), &g.fin());
-    assert_eq!(one(&mut s).ack, Some(g.seq), "ACK del FIN del guest");
+    assert_eq!(one(&mut s).ack, Some(g.seq), "ACK of the guest's FIN");
     let mut buf = [0u8; 16];
     assert_eq!(s.host_recv(id, &mut buf), 4);
     let info = s.host_conn(id).unwrap();
     assert!(info.guest_eof);
-    assert_eq!(info.state, HostConnState::Open, "TIME-WAIT: ancora viva");
+    assert_eq!(info.state, HostConnState::Open, "TIME-WAIT: still alive");
     s.poll(t(4002));
     assert_eq!(state(&s, id), HostConnState::Closed(CloseReason::Normal));
     assert!(s.events().iter().any(|e| e.kind
@@ -220,7 +220,7 @@ fn chiusura_dal_guest() {
     s.receive(t(1), &g.fin());
     let _ = segs(&mut s);
     let info = s.host_conn(id).unwrap();
-    assert!(!info.guest_eof, "prima i dati");
+    assert!(!info.guest_eof, "data first");
     let mut buf = [0u8; 16];
     assert_eq!(s.host_recv(id, &mut buf), 5);
     assert!(s.host_conn(id).unwrap().guest_eof);
@@ -240,14 +240,14 @@ fn nessuno_in_ascolto_rifiutata() {
     let id = s.host_connect(PORT).unwrap();
     s.poll(t(1));
     let syn = one(&mut s);
-    // Linux risponde RST|ACK a un SYN verso una porta chiusa.
+    // Linux answers RST|ACK to a SYN to a closed port.
     let mut g = server_for(&syn);
     s.receive(t(1), &g.segment(0, F_RST | F_ACK, b""));
     assert_eq!(state(&s, id), HostConnState::Closed(CloseReason::Refused));
     assert!(drain(&mut s).is_empty());
     assert_eq!(s.tcp_connections(), 0);
     assert_eq!(s.host_send(id, b"x"), 0);
-    // Un RST con ACK sbagliato si ignora.
+    // An RST with a wrong ACK is ignored.
     let id2 = s.host_connect(PORT).unwrap();
     s.poll(t(2));
     let syn2 = one(&mut s);
@@ -263,12 +263,12 @@ fn syn_ritrasmesso_poi_timeout() {
     let id = s.host_connect(PORT).unwrap();
     s.poll(t(0));
     let first = one(&mut s);
-    assert_eq!(s.next_deadline(), Some(t(1000)), "RTO iniziale 1 s");
+    assert_eq!(s.next_deadline(), Some(t(1000)), "initial RTO 1 s");
     s.poll(t(1000));
     let again = one(&mut s);
     assert_eq!((again.seq, again.syn), (first.seq, true));
-    assert_eq!(s.next_deadline(), Some(t(3000)), "RTO raddoppiato");
-    // Nessuna risposta per 75 s: si rinuncia senza RST.
+    assert_eq!(s.next_deadline(), Some(t(3000)), "RTO doubled");
+    // No answer for 75 s: give up without RST.
     let mut now = 3000;
     while state(&s, id) == HostConnState::Connecting {
         now = s.next_deadline().unwrap().as_micros() / 1000;
@@ -289,7 +289,7 @@ fn reset_dall_host_e_dal_guest() {
     s.poll(t(1));
     let rst = one(&mut s);
     assert!(rst.rst && rst.payload.is_empty(), "{rst:?}");
-    assert_eq!(rst.seq, g.ack, "RST con la sequenza attesa dal guest");
+    assert_eq!(rst.seq, g.ack, "RST with the sequence expected by the guest");
     assert_eq!(state(&s, id), HostConnState::Closed(CloseReason::RemoteReset));
 
     let (id, g) = open(&mut s, 2);
@@ -297,14 +297,14 @@ fn reset_dall_host_e_dal_guest() {
     assert_eq!(state(&s, id), HostConnState::Closed(CloseReason::GuestReset));
     assert!(drain(&mut s).is_empty());
 
-    // Rilascio di una connessione viva: RST e sparisce.
+    // Release of a live connection: RST and it disappears.
     let (id, _) = open(&mut s, 4);
     s.host_release(id);
-    assert!(s.host_conn(id).is_some(), "fino al poll");
+    assert!(s.host_conn(id).is_some(), "until the poll");
     s.poll(t(5));
     assert!(one(&mut s).rst);
     assert!(s.host_conn(id).is_none());
-    // Interrotta prima del SYN: nessun pacchetto.
+    // Interrupted before the SYN: no packet.
     let id = s.host_connect(PORT).unwrap();
     s.host_abort(id);
     s.poll(t(6));
@@ -329,9 +329,9 @@ fn deterministico() {
     assert_eq!(run(), run());
 }
 
-/// Snapshot a metà: SYN chiesto e non partito, poi connessione stabilita con
-/// byte in coda nei due versi. Lo stack ripristinato risalva gli stessi byte
-/// e prosegue come l'originale (frame, stato dell'host, registro).
+/// Snapshot halfway: SYN requested and not sent, then connection established with
+/// bytes queued in both directions. The restored stack saves the same bytes again
+/// and continues like the original (frames, host state, log).
 #[test]
 fn snapshot_a_meta_connessione() {
     use vetro_snapshot::{Reader, Snapshot, Writer};
@@ -345,7 +345,7 @@ fn snapshot_a_meta_connessione() {
         r.finish().unwrap();
         let mut w2 = Writer::new();
         n.save(&mut w2);
-        assert_eq!(w2.into_bytes(), bytes, "risalvataggio");
+        assert_eq!(w2.into_bytes(), bytes, "saved again");
         n
     }
     let mut a = stack();
@@ -354,7 +354,7 @@ fn snapshot_a_meta_connessione() {
     assert_eq!(b.host_conn(pending), a.host_conn(pending));
     a.poll(t(1));
     b.poll(t(1));
-    assert_eq!(segs(&mut a), segs(&mut b), "il SYN parte anche dalla copia");
+    assert_eq!(segs(&mut a), segs(&mut b), "the SYN leaves from the copy too");
     a.host_abort(pending);
     a.poll(t(1));
     let _ = segs(&mut a);

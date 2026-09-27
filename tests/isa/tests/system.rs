@@ -1,7 +1,7 @@
-//! Registri di sistema a EL0, hint, barriere, DC ZVA, eccezioni.
+//! System registers at EL0, hints, barriers, DC ZVA, exceptions.
 //!
-//! Codifiche generate con `tools/a64asm.sh`; valori attesi verificati
-//! anche contro QEMU quando l'oracolo è disponibile.
+//! Encodings generated with `tools/a64asm.sh`; expected values verified
+//! also against QEMU when the oracle is available.
 
 use vetro_isa_tests::{SIGBUS, SIGILL, SIGTRAP, case};
 
@@ -174,8 +174,8 @@ fn misaligned_branch_target_is_sigbus() {
 
 #[test]
 fn debug_comms_channel_at_el0_is_sigill() {
-    // QEMU user, come Linux, accende MDSCR_EL1.TDCC: ogni accesso da EL0 al
-    // canale di debug dà SIGILL.
+    // QEMU user, like Linux, turns on MDSCR_EL1.TDCC: every access from EL0 to the
+    // debug channel gives SIGILL.
     for (name, insn) in [
         ("mrs_mdccsr_el0_is_sigill", 0xd5330100),   // mrs x0, MDCCSR_EL0
         ("mrs_dbgdtr_el0_is_sigill", 0xd5330401),   // mrs x1, DBGDTR_EL0

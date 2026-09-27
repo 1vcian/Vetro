@@ -1,14 +1,14 @@
-//! virtio-console (virtio v1.2, §5.3) con una sola porta.
+//! virtio-console (virtio v1.2, §5.3) with a single port.
 //!
-//! Senza VIRTIO_CONSOLE_F_MULTIPORT: code 0 = ricezione e 1 = trasmissione
-//! della porta 0, niente messaggi di controllo. Nel guest diventa
-//! `/dev/hvc0`; in M5 ci passerà adb. Feature offerta: EMERG_WRITE (una
-//! scrittura di `emerg_wr` nella configurazione emette un byte anche prima
-//! che le code siano pronte).
+//! Without VIRTIO_CONSOLE_F_MULTIPORT: queues 0 = receive and 1 = transmit
+//! of port 0, no control messages. In the guest it becomes
+//! `/dev/hvc0`; in M5 adb will go through it. Feature offered: EMERG_WRITE (a
+//! write of `emerg_wr` in the configuration emits a byte even before
+//! the queues are ready).
 //!
-//! RX: si estrae una catena solo se ci sono buffer liberi, e il backend
-//! riempie al massimo lo spazio scrivibile; se non ha nulla la catena torna
-//! nell'available ring.
+//! RX: a chain is popped only if there are free buffers, and the backend
+//! fills at most the writable space; if it has nothing the chain goes back
+//! into the available ring.
 
 use core::any::Any;
 use std::collections::VecDeque;
@@ -19,29 +19,29 @@ pub const F_SIZE: u64 = 1 << 0;
 pub const F_MULTIPORT: u64 = 1 << 1;
 pub const F_EMERG_WRITE: u64 = 1 << 2;
 
-/// Offset di `emerg_wr` nella configurazione.
+/// Offset of `emerg_wr` in the configuration.
 pub const CFG_EMERG_WR: u64 = 8;
 
 const RXQ: usize = 0;
 const TXQ: usize = 1;
-/// Byte massimi per catena in ricezione e per pezzo in trasmissione.
+/// Maximum bytes per chain on receive and per chunk on transmit.
 const CHUNK: u64 = 64 * 1024;
 
-/// Flusso di byte della porta, visto dal dispositivo.
+/// Byte stream of the port, as seen by the device.
 pub trait ConsoleBackend: Any {
-    /// Byte scritti dal guest.
+    /// Bytes written by the guest.
     fn write(&mut self, data: &[u8]);
-    /// Riempie `buf` con i byte in arrivo per il guest; 0 se non ce ne sono.
+    /// Fills `buf` with the bytes arriving for the guest; 0 if there are none.
     fn read(&mut self, buf: &mut [u8]) -> usize;
-    /// Stato del backend negli snapshot (M6, ADR 0015): di norma nessuno (un
-    /// collegamento che l'host ricrea).
+    /// Backend state in snapshots (M6, ADR 0015): usually none (a
+    /// link that the host recreates).
     fn save_state(&self, _w: &mut vetro_snapshot::Writer) {}
     fn restore_state(&mut self, _r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
         Ok(())
     }
 }
 
-/// Backend in memoria: `input` verso il guest, `output` dal guest.
+/// In-memory backend: `input` towards the guest, `output` from the guest.
 #[derive(Clone, Debug, Default)]
 pub struct BufferConsole {
     pub input: VecDeque<u8>,
@@ -84,7 +84,7 @@ impl VirtioConsole {
         self.backend.as_mut()
     }
 
-    /// Accesso tipizzato al backend.
+    /// Typed access to the backend.
     pub fn backend_as_mut<T: ConsoleBackend>(&mut self) -> Option<&mut T> {
         let b: &mut dyn Any = self.backend.as_mut();
         b.downcast_mut()
@@ -92,7 +92,7 @@ impl VirtioConsole {
 
     fn config_bytes(&self) -> [u8; 12] {
         let mut c = [0u8; 12];
-        // cols e rows a 0 (niente F_SIZE); max_nr_ports = 1.
+        // cols and rows at 0 (no F_SIZE); max_nr_ports = 1.
         c[4..8].copy_from_slice(&1u32.to_le_bytes());
         c
     }
@@ -125,7 +125,7 @@ impl VirtioDevice for VirtioConsole {
         let (queues, ram) = (&mut *ctx.queues, &mut *ctx.ram);
         let tx = &mut queues[TXQ];
         while let Some(c) = tx.pop(ram)? {
-            // A pezzi: la lunghezza dei descrittori la decide il guest.
+            // In pieces: the length of the descriptors is decided by the guest.
             let mut buf = vec![0u8; c.readable_len().min(CHUNK) as usize];
             let mut off = 0u64;
             loop {
@@ -153,7 +153,7 @@ impl VirtioDevice for VirtioConsole {
         Ok(())
     }
 
-    /// Il dispositivo non ha stato proprio: solo quello del backend.
+    /// The device has no state of its own: only the backend's.
     fn save_state(&self, w: &mut vetro_snapshot::Writer) {
         self.backend.save_state(w);
     }

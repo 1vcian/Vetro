@@ -1,20 +1,20 @@
-//! virtio-net (virtio v1.2, §5.1), senza offload.
+//! virtio-net (virtio v1.2, §5.1), without offloads.
 //!
-//! Code: 0 = ricezione, 1 = trasmissione (niente coda di controllo, niente
-//! multiqueue). Feature: MAC, STATUS e, se abilitato, MRG_RXBUF. Nessun
-//! checksum né GSO: l'intestazione `virtio_net_hdr` (12 byte con
-//! VERSION_1) è sempre a zero tranne `num_buffers`.
+//! Queues: 0 = receive, 1 = transmit (no control queue, no
+//! multiqueue). Features: MAC, STATUS and, if enabled, MRG_RXBUF. No
+//! checksum and no GSO: the `virtio_net_hdr` header (12 bytes with
+//! VERSION_1) is always zero except `num_buffers`.
 //!
-//! Scelte:
-//! - TX: un buffer più corto dell'intestazione, o più lungo di
-//!   intestazione + [`MAX_FRAME`], è un errore della coda (come
-//!   `virtio_error` di QEMU); con il link giù i frame si scartano;
-//! - RX: il backend viene interrogato solo se ci sono buffer liberi e con
-//!   il link su, così i frame restano nel backend finché il guest non può
-//!   riceverli. Con MRG_RXBUF un frame si distribuisce su più catene; se
-//!   non bastano si rimettono nell'available ring e il frame aspetta. Senza
-//!   MRG_RXBUF un frame che non entra nella catena si scarta (e la catena
-//!   resta al driver), contato in [`VirtioNet::rx_dropped`].
+//! Choices:
+//! - TX: a buffer shorter than the header, or longer than
+//!   header + [`MAX_FRAME`], is a queue error (like QEMU's
+//!   `virtio_error`); with the link down frames are discarded;
+//! - RX: the backend is polled only if there are free buffers and
+//!   the link is up, so frames stay in the backend until the guest can
+//!   receive them. With MRG_RXBUF a frame is spread over several chains; if
+//!   they are not enough they go back into the available ring and the frame waits. Without
+//!   MRG_RXBUF a frame that doesn't fit in the chain is discarded (and the chain
+//!   stays with the driver), counted in [`VirtioNet::rx_dropped`].
 
 use core::any::Any;
 use std::collections::VecDeque;
@@ -25,34 +25,34 @@ pub const F_MAC: u64 = 1 << 5;
 pub const F_MRG_RXBUF: u64 = 1 << 15;
 pub const F_STATUS: u64 = 1 << 16;
 
-/// `virtio_net_hdr` con VERSION_1 (compreso `num_buffers`).
+/// `virtio_net_hdr` with VERSION_1 (including `num_buffers`).
 pub const NET_HDR_LEN: usize = 12;
-/// Bit di `status` nella configurazione.
+/// Bits of `status` in the configuration.
 pub const S_LINK_UP: u16 = 1;
-/// Frame più lungo accettato in trasmissione (senza GSO un frame ethernet
-/// sta ben sotto; il limite evita allocazioni decise dal guest).
+/// Longest frame accepted for transmission (without GSO an ethernet frame
+/// is well below; the limit avoids allocations decided by the guest).
 pub const MAX_FRAME: usize = 65535;
 
 const RXQ: usize = 0;
 const TXQ: usize = 1;
 
-/// Rete vista dal dispositivo: frame ethernet senza intestazione virtio.
+/// Network as seen by the device: ethernet frames without the virtio header.
 pub trait NetBackend: Any {
-    /// Frame trasmesso dal guest.
+    /// Frame transmitted by the guest.
     fn send(&mut self, frame: &[u8]);
-    /// Prossimo frame per il guest, se c'è. Chiamato solo quando il guest
-    /// ha buffer di ricezione liberi.
+    /// Next frame for the guest, if any. Called only when the guest
+    /// has free receive buffers.
     fn recv(&mut self) -> Option<Vec<u8>>;
-    /// Stato del backend negli snapshot (M6, ADR 0015): di norma nessuno (un
-    /// collegamento verso l'esterno che l'host ricrea). Lo stack di rete
-    /// della macchina e le code in memoria salvano il loro.
+    /// Backend state in snapshots (M6, ADR 0015): usually none (a
+    /// link to the outside that the host recreates). The machine's network
+    /// stack and the in-memory queues save theirs.
     fn save_state(&self, _w: &mut vetro_snapshot::Writer) {}
     fn restore_state(&mut self, _r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
         Ok(())
     }
 }
 
-/// Backend in memoria: `rx` verso il guest, `tx` dal guest.
+/// In-memory backend: `rx` towards the guest, `tx` from the guest.
 #[derive(Clone, Debug, Default)]
 pub struct QueueNet {
     pub rx: VecDeque<Vec<u8>>,
@@ -90,7 +90,7 @@ pub struct VirtioNet {
 }
 
 impl VirtioNet {
-    /// Dispositivo con link su, code da 256 (come QEMU) e MRG_RXBUF offerto.
+    /// Device with the link up, 256-entry queues (like QEMU) and MRG_RXBUF offered.
     pub fn new(backend: Box<dyn NetBackend>, mac: [u8; 6]) -> Self {
         Self {
             backend,
@@ -105,7 +105,7 @@ impl VirtioNet {
         }
     }
 
-    /// Offre o no VIRTIO_NET_F_MRG_RXBUF.
+    /// Offers VIRTIO_NET_F_MRG_RXBUF or not.
     pub fn with_mrg_rxbuf(mut self, offer: bool) -> Self {
         self.offer_mrg = offer;
         self
@@ -115,13 +115,13 @@ impl VirtioNet {
         self.backend.as_mut()
     }
 
-    /// Accesso tipizzato al backend, in sola lettura.
+    /// Typed access to the backend, read-only.
     pub fn backend_as<T: NetBackend>(&self) -> Option<&T> {
         let b: &dyn Any = self.backend.as_ref();
         b.downcast_ref()
     }
 
-    /// Accesso tipizzato al backend.
+    /// Typed access to the backend.
     pub fn backend_as_mut<T: NetBackend>(&mut self) -> Option<&mut T> {
         let b: &mut dyn Any = self.backend.as_mut();
         b.downcast_mut()
@@ -135,8 +135,8 @@ impl VirtioNet {
         self.link_up
     }
 
-    /// Cambia lo stato del link; il driver lo saprà al prossimo `service`
-    /// con un interrupt di configurazione.
+    /// Changes the link state; the driver will learn it at the next `service`
+    /// with a configuration interrupt.
     pub fn set_link_up(&mut self, up: bool) {
         if up != self.link_up {
             self.link_up = up;
@@ -144,7 +144,7 @@ impl VirtioNet {
         }
     }
 
-    /// Frame scartati in ricezione perché non entravano nei buffer.
+    /// Frames discarded on receive because they didn't fit in the buffers.
     pub fn rx_dropped(&self) -> u64 {
         self.rx_dropped
     }
@@ -161,10 +161,10 @@ impl VirtioNet {
     fn transmit(&mut self, q: &mut Virtqueue, ram: &mut dyn GuestRam) -> Result<(), QueueError> {
         while let Some(c) = q.pop(ram)? {
             if c.readable_len() < NET_HDR_LEN as u64 {
-                return Err(QueueError::Malformed("intestazione virtio-net incompleta"));
+                return Err(QueueError::Malformed("incomplete virtio-net header"));
             }
             if c.readable_len() > (NET_HDR_LEN + MAX_FRAME) as u64 {
-                return Err(QueueError::Malformed("frame virtio-net oltre 64 KiB"));
+                return Err(QueueError::Malformed("virtio-net frame over 64 KiB"));
             }
             let frame = c.read_to_vec(ram, NET_HDR_LEN as u64)?;
             if self.link_up {
@@ -186,7 +186,7 @@ impl VirtioNet {
                 None => return Ok(()),
             };
             let need = (NET_HDR_LEN + frame.len()) as u64;
-            // Catene necessarie: una sola senza MRG_RXBUF.
+            // Chains needed: just one without MRG_RXBUF.
             let mut chains = Vec::new();
             let mut room = 0u64;
             while room < need && (self.mrg || chains.is_empty()) {
@@ -254,8 +254,8 @@ impl VirtioDevice for VirtioNet {
         self.receive(&mut queues[RXQ], ram)
     }
 
-    /// Link, MRG_RXBUF negoziato, frame in attesa di buffer, contatore e
-    /// stato del backend. MAC e offerta di MRG_RXBUF sono configurazione.
+    /// Link, negotiated MRG_RXBUF, frame waiting for buffers, counter and
+    /// backend state. MAC and the MRG_RXBUF offer are configuration.
     fn save_state(&self, w: &mut vetro_snapshot::Writer) {
         w.raw(&self.mac);
         w.u64(u64::from(self.offer_mrg));
@@ -269,9 +269,9 @@ impl VirtioDevice for VirtioNet {
 
     fn restore_state(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
         if r.raw(6)? != self.mac {
-            return Err(vetro_snapshot::Error::invalid("MAC di virtio-net diverso"));
+            return Err(vetro_snapshot::Error::invalid("different virtio-net MAC"));
         }
-        r.expect_u64("offerta di MRG_RXBUF", u64::from(self.offer_mrg))?;
+        r.expect_u64("MRG_RXBUF offer", u64::from(self.offer_mrg))?;
         self.link_up = r.bool()?;
         self.link_changed = r.bool()?;
         self.mrg = r.bool()?;

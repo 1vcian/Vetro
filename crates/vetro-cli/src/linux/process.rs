@@ -1,4 +1,4 @@
-//! Processi e thread: clone, execve, exit, wait4.
+//! Processes and threads: clone, execve, exit, wait4.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -24,7 +24,7 @@ pub const CLONE_CHILD_SETTID: u64 = 0x1000000;
 const WNOHANG: u64 = 1;
 
 impl Kernel {
-    /// clone(flags, stack, ptid, tls, ctid) come su arm64.
+    /// clone(flags, stack, ptid, tls, ctid) as on arm64.
     pub fn sys_clone(
         &mut self,
         t: usize,
@@ -109,8 +109,8 @@ impl Kernel {
         }
         self.tasks.push(child);
         if flags & CLONE_VFORK != 0 {
-            // Il genitore riprende quando il figlio esegue exec o esce; la
-            // syscall restituisce comunque il tid del figlio.
+            // The parent resumes when the child execs or exits; the
+            // syscall returns the child's tid anyway.
             self.tasks[t].cpu.x[0] = tid as u64;
             self.tasks[t].state = State::Blocked(Wait::Vfork { child: tid });
         }
@@ -120,7 +120,7 @@ impl Kernel {
     pub fn sys_execve(&mut self, t: usize, path: &str, argv: Vec<Vec<u8>>, envp: Vec<Vec<u8>>) -> SysResult {
         let image = std::fs::read(path).map_err(|e| host_errno(&e))?;
         if image.len() >= 2 && &image[..2] == b"#!" {
-            // Script: #!interprete [argomento] percorso argv[1..]
+            // Script: #!interpreter [argument] path argv[1..]
             let line_end = image.iter().position(|&c| c == b'\n').unwrap_or(image.len()).min(256);
             let line = String::from_utf8_lossy(&image[2..line_end]).trim().to_string();
             let mut parts = line.splitn(2, char::is_whitespace);
@@ -136,7 +136,7 @@ impl Kernel {
         let random = self.random_bytes(16);
         let img = loader::load(&image, &argv, &envp, path, &random).map_err(|_| ENOEXEC)?;
         let tgid = self.tasks[t].tgid;
-        // Gli altri thread del processo spariscono.
+        // The other threads of the process disappear.
         for i in 0..self.tasks.len() {
             if i != t && self.tasks[i].tgid == tgid && self.tasks[i].state != State::Dead {
                 self.tasks[i].state = State::Dead;
@@ -149,7 +149,7 @@ impl Kernel {
         cpu.sp = img.sp;
         task.cpu = cpu;
         task.files.borrow_mut().close_on_exec();
-        // Le azioni con gestore tornano al default; restano quelle ignorate.
+        // Actions with a handler go back to the default; ignored ones stay.
         let mut sh = task.sighand.borrow().clone();
         for a in sh.actions.iter_mut() {
             if a.handler != SIG_IGN {
@@ -165,7 +165,7 @@ impl Kernel {
         Ok(0)
     }
 
-    /// Esito di wait4 per un figlio in stato zombie, se c'è.
+    /// Outcome of wait4 for a child in zombie state, if any.
     fn reap(&mut self, parent_tgid: Pid, pid: i32) -> Option<(Pid, i32)> {
         let i = self.tasks.iter().position(|c| {
             c.ppid == parent_tgid
@@ -206,7 +206,7 @@ impl Kernel {
         })
     }
 
-    /// wait4. `Ok(None)` = bloccati.
+    /// wait4. `Ok(None)` = blocked.
     pub fn sys_wait4(
         &mut self,
         t: usize,
@@ -218,7 +218,7 @@ impl Kernel {
         if options & !(1 | 2 | 8 | 0x2000_0000 | 0x4000_0000 | 0x8000_0000) != 0 {
             return Err(EINVAL);
         }
-        // -INT_MIN non è un gruppo valido.
+        // -INT_MIN is not a valid group.
         if pid == i32::MIN {
             return Err(ESRCH);
         }
@@ -238,7 +238,7 @@ impl Kernel {
         Ok(None)
     }
 
-    /// Termina il thread `t` (exit).
+    /// Terminates thread `t` (exit).
     pub fn exit_thread(&mut self, t: usize, status: i32) {
         let tgid = self.tasks[t].tgid;
         self.finish_thread(t);
@@ -251,7 +251,7 @@ impl Kernel {
         }
     }
 
-    /// Termina tutti i thread del processo (exit_group o segnale fatale).
+    /// Terminates all the threads of the process (exit_group or fatal signal).
     pub fn exit_group(&mut self, tgid: Pid, status: i32) {
         for i in 0..self.tasks.len() {
             if self.tasks[i].tgid == tgid
@@ -290,13 +290,13 @@ impl Kernel {
         self.flush_shared();
         self.locks.release(tgid, None);
         let Some(leader) = self.tasks.iter().position(|x| x.tid == tgid) else { return };
-        // Chiudere i descrittori libera le pipe (EOF per i lettori).
+        // Closing the descriptors frees the pipes (EOF for the readers).
         let empty = Rc::new(RefCell::new(FdTable::default()));
         for task in self.tasks.iter_mut().filter(|x| x.tgid == tgid) {
             task.files = empty.clone();
             task.sig.alarm = None;
         }
-        // Orfani al processo iniziale.
+        // Orphans go to the initial process.
         let init = self.init;
         for task in self.tasks.iter_mut() {
             if task.ppid == tgid && task.tgid != tgid {

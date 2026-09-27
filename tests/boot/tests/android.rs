@@ -1,27 +1,27 @@
-//! Il kernel guest si avvia dalle immagini Android (M5): `boot.img`,
-//! `vendor_boot.img` e `init_boot.img` v4 costruite da `mkbootimg.py` di AOSP
-//! (`tools/mkbootimg/`) intorno all'`Image` e all'initramfs di
-//! `tools/guest-kernel/build.sh`, come le costruisce una build GKI:
+//! The guest kernel boots from Android images (M5): v4 `boot.img`,
+//! `vendor_boot.img` and `init_boot.img` built by AOSP's `mkbootimg.py`
+//! (`tools/mkbootimg/`) around the `Image` and the initramfs of
+//! `tools/guest-kernel/build.sh`, the way a GKI build builds them:
 //!
-//! - `boot.img`: il kernel compresso con `gzip -9` (come `boot-gz.img`);
-//! - `init_boot.img`: il ramdisk generico, cioè l'initramfs del guest
-//!   ricompresso in LZ4 legacy (il formato del GKI);
-//! - `vendor_boot.img`: tre ramdisk nella tabella, `dlkm` (cpio non
-//!   compresso), `reco` (tipo recovery, da non caricare) e `plat` (LZ4 legacy,
-//!   con un `/init` sbagliato che il generico deve coprire), la riga di
-//!   comando del vendor e una sezione bootconfig.
+//! - `boot.img`: the kernel compressed with `gzip -9` (like `boot-gz.img`);
+//! - `init_boot.img`: the generic ramdisk, i.e. the guest initramfs
+//!   recompressed in legacy LZ4 (the GKI format);
+//! - `vendor_boot.img`: three ramdisks in the table, `dlkm` (uncompressed
+//!   cpio), `reco` (recovery type, not to be loaded) and `plat` (legacy LZ4,
+//!   with a wrong `/init` that the generic one must cover), the vendor
+//!   command line and a bootconfig section.
 //!
-//! Il bootloader di Vetro (`vetro_machine::android`) aggiunge due
-//! `androidboot.*` e un parametro normale. Il guest deve vedere la riga di
-//! comando e `/proc/bootconfig` attesi, i file dei ramdisk giusti e non quello
-//! di recovery. Poi lo stesso spacchettamento (`Image`, initrd col blocco
-//! bootconfig, riga di comando) va a `qemu-system-aarch64 -kernel -initrd
-//! -append`: i due log, senza tempi e senza le differenze note, devono
-//! coincidere.
+//! Vetro's bootloader (`vetro_machine::android`) adds two
+//! `androidboot.*` and a normal parameter. The guest must see the expected command
+//! line and `/proc/bootconfig`, the right ramdisk files and not the
+//! recovery one. Then the same unpacking (`Image`, initrd with the bootconfig
+//! block, command line) goes to `qemu-system-aarch64 -kernel -initrd
+//! -append`: the two logs, without timings and without the known differences, must
+//! match.
 //!
-//! Servono il kernel guest (`VETRO_REQUIRE_GUEST_KERNEL`), `python3` e `gzip`
-//! (`VETRO_REQUIRE_ORACLE`) e, per il confronto, qemu-system-aarch64
-//! (`VETRO_REQUIRE_SYSTEM_ORACLE`). Solo in release.
+//! Needs the guest kernel (`VETRO_REQUIRE_GUEST_KERNEL`), `python3` and `gzip`
+//! (`VETRO_REQUIRE_ORACLE`) and, for the comparison, qemu-system-aarch64
+//! (`VETRO_REQUIRE_SYSTEM_ORACLE`). Release only.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -32,8 +32,8 @@ use vetro_machine::android::{AndroidBoot, BootOptions, bootconfig, decompress};
 use vetro_machine::{Machine, MachineConfig, Stop};
 
 const PHASE_BUDGET: u64 = 6_000_000_000;
-/// Comandi dati alla shell del guest; il marcatore finale non compare
-/// nell'eco (lì c'è `$((6*7))`).
+/// Commands given to the guest's shell; the final marker doesn't appear
+/// in the echo (there it is `$((6*7))`).
 const SCRIPT: &str = "cat /proc/cmdline; cat /proc/bootconfig; cat /vendor-plat /vendor-dlkm; \
                       ls /vendor-recovery; echo VETRO-ANDROID-$((6*7))\n";
 const END: &str = "VETRO-ANDROID-42";
@@ -41,15 +41,15 @@ const BOOT_CMDLINE: &str = "console=ttyAMA0 vetro.noautotest";
 const VENDOR_CMDLINE: &str = "vetro.vendor=1";
 const VENDOR_BOOTCONFIG: &str = "androidboot.hardware=vetro\nandroidboot.boot_devices=a003e00.virtio_mmio\n";
 const PARAMS: &str = "androidboot.serialno=VETRO0001 vetro.bootloader=1 androidboot.slot_suffix=_a";
-/// Riga di comando attesa: boot, vendor, parametri normali del bootloader,
-/// `bootconfig` aggiunto dal bootloader.
+/// Expected command line: boot, vendor, normal bootloader parameters,
+/// `bootconfig` added by the bootloader.
 const CMDLINE: &str = "console=ttyAMA0 vetro.noautotest vetro.vendor=1 vetro.bootloader=1 bootconfig";
-/// `/proc/bootconfig` atteso: la sezione del vendor, poi i parametri del
-/// bootloader.
+/// Expected `/proc/bootconfig`: the vendor section, then the bootloader
+/// parameters.
 const PROC_BOOTCONFIG: &str = "androidboot.hardware = \"vetro\"\nandroidboot.boot_devices = \"a003e00.virtio_mmio\"\n\
                                androidboot.serialno = \"VETRO0001\"\nandroidboot.slot_suffix = \"_a\"\n";
 
-/// Archivio cpio newc con file regolari nella radice.
+/// newc cpio archive with regular files in the root.
 fn cpio(files: &[(&str, u32, &[u8])]) -> Vec<u8> {
     let mut out = Vec::new();
     let mut entry = |ino: usize, name: &str, mode: u32, data: &[u8]| {
@@ -83,8 +83,8 @@ fn cpio(files: &[(&str, u32, &[u8])]) -> Vec<u8> {
     out
 }
 
-/// LZ4 legacy (`lz4 -l`) con blocchi di soli letterali: valido per ogni
-/// decompressore LZ4, compreso quello del kernel.
+/// Legacy LZ4 (`lz4 -l`) with blocks of only literals: valid for every
+/// LZ4 decompressor, including the kernel's.
 fn lz4_legacy_literals(data: &[u8]) -> Vec<u8> {
     let mut out = decompress::LZ4_LEGACY_MAGIC.to_le_bytes().to_vec();
     for chunk in data.chunks(8 << 20) {
@@ -133,7 +133,7 @@ fn mkbootimg(args: &[&str]) -> Result<(), String> {
     if o.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&o.stderr).into_owned()) }
 }
 
-/// Le tre immagini, in `dir`. `None` se mancano gli strumenti.
+/// The three images, in `dir`. `None` if the tools are missing.
 fn build_images(dir: &Path, image: &[u8], initramfs_gz: &[u8]) -> Option<(Vec<u8>, Vec<u8>, Vec<u8>)> {
     let kernel_gz = gzip9(image)?;
     let generic = lz4_legacy_literals(&decompress::gunzip(initramfs_gz).expect("initramfs gzip"));
@@ -204,10 +204,10 @@ fn build_images(dir: &Path, image: &[u8], initramfs_gz: &[u8]) -> Option<(Vec<u8
     Some((read(&boot), read(&vendor), read(&init)))
 }
 
-/// Il guest sotto Vetro fino alla fine dei comandi, poi `poweroff -f`.
+/// The guest under Vetro until the end of the commands, then `poweroff -f`.
 fn run_vetro(a: &AndroidBoot) -> String {
     let mut m = Machine::new(&MachineConfig::default());
-    m.load_android(a).expect("caricamento del kernel");
+    m.load_android(a).expect("kernel load");
     let mut log = Vec::new();
     let until = |m: &mut Machine, log: &mut Vec<u8>, needle: &str, from: usize| -> usize {
         let limit = m.steps + PHASE_BUDGET;
@@ -220,8 +220,8 @@ fn run_vetro(a: &AndroidBoot) -> String {
             let stop = m.run(1_000_000);
             log.extend(m.console_output());
             let tail = || normalize(&String::from_utf8_lossy(log));
-            assert!(m.steps < limit, "{needle:?} non arrivato; console:\n{}", tail());
-            assert_eq!(stop, Stop::Budget, "in attesa di {needle:?}; console:\n{}", tail());
+            assert!(m.steps < limit, "{needle:?} did not arrive; console:\n{}", tail());
+            assert_eq!(stop, Stop::Budget, "while waiting for {needle:?}; console:\n{}", tail());
         }
     };
     let at = until(&mut m, &mut log, BOOT_MARKER, 0);
@@ -239,11 +239,11 @@ fn run_vetro(a: &AndroidBoot) -> String {
         }
     };
     let log = normalize(&String::from_utf8_lossy(&log));
-    assert_eq!(stop, Stop::PowerOff, "poweroff -f non ha spento la macchina:\n{log}");
+    assert_eq!(stop, Stop::PowerOff, "poweroff -f did not turn the machine off:\n{log}");
     log
 }
 
-/// Lo stesso sotto QEMU coi file spacchettati.
+/// The same under QEMU with the unpacked files.
 fn run_qemu(qemu: &Path, image: &Path, initrd: &Path, cmdline: &str) -> String {
     let mut cmd = Command::new(qemu);
     cmd.args(QEMU_MACHINE)
@@ -253,39 +253,39 @@ fn run_qemu(qemu: &Path, image: &Path, initrd: &Path, cmdline: &str) -> String {
         .arg(initrd)
         .args(["-append", cmdline]);
     let limit = timeout();
-    let mut con = Console::spawn(cmd).expect("avvio di qemu-system-aarch64");
+    let mut con = Console::spawn(cmd).expect("start of qemu-system-aarch64");
     let fail =
         |con: &Console, what: &str| -> ! { panic!("QEMU: {what}; console:\n{}", normalize(&con.log())) };
-    let Some(at) = con.wait_for(BOOT_MARKER, 0, limit) else { fail(&con, "nessun marcatore di avvio") };
-    let Some(prompt) = con.wait_for(SHELL_PROMPT, at, limit) else { fail(&con, "nessun prompt") };
+    let Some(at) = con.wait_for(BOOT_MARKER, 0, limit) else { fail(&con, "no boot marker") };
+    let Some(prompt) = con.wait_for(SHELL_PROMPT, at, limit) else { fail(&con, "no prompt") };
     con.send(SCRIPT);
-    let Some(end) = con.wait_for(END, prompt, limit) else { fail(&con, "comandi non finiti") };
+    let Some(end) = con.wait_for(END, prompt, limit) else { fail(&con, "commands not finished") };
     if con.wait_for(SHELL_PROMPT, end, limit).is_none() {
-        fail(&con, "nessun prompt dopo i comandi");
+        fail(&con, "no prompt after the commands");
     }
     con.send("poweroff -f\n");
     let exited = con.finish(Duration::from_secs(30));
-    assert!(exited, "QEMU non si è spento dopo poweroff -f");
+    assert!(exited, "QEMU did not power off after poweroff -f");
     normalize(&con.log())
 }
 
-/// Controlli sul log di un avvio (Vetro o QEMU).
+/// Checks on the log of a boot (Vetro or QEMU).
 fn check_guest_view(who: &str, log: &str) {
-    assert!(log.contains("VETRO-BOOT-OK"), "{who}: /init del generico non partito:\n{log}");
-    assert!(!log.contains("VENDOR-INIT-SBAGLIATO"), "{who}: è partito l'/init del vendor");
-    assert!(log.contains("Load bootconfig: "), "{who}: il kernel non ha caricato il bootconfig:\n{log}");
-    // Uscita dei comandi: dall'ultima riga di comando in /proc/cmdline al
-    // marcatore finale.
+    assert!(log.contains("VETRO-BOOT-OK"), "{who}: /init of the generic ramdisk did not start:\n{log}");
+    assert!(!log.contains("VENDOR-INIT-SBAGLIATO"), "{who}: the vendor's /init started");
+    assert!(log.contains("Load bootconfig: "), "{who}: the kernel did not load the bootconfig:\n{log}");
+    // Output of the commands: from the last command line in /proc/cmdline to the
+    // final marker.
     let start = log
         .rfind(&format!("\n{CMDLINE}\n"))
-        .unwrap_or_else(|| panic!("{who}: /proc/cmdline diverso:\n{log}"));
+        .unwrap_or_else(|| panic!("{who}: /proc/cmdline differs:\n{log}"));
     let end = log.rfind(END).unwrap();
     let out = &log[start + 1..end];
     let want = format!(
         "{CMDLINE}\n{PROC_BOOTCONFIG}ramdisk plat del vendor\nramdisk dlkm del vendor\n\
          ls: /vendor-recovery: No such file or directory\n"
     );
-    assert_eq!(out, want, "{who}: il guest non vede quello che il bootloader ha preparato");
+    assert_eq!(out, want, "{who}: the guest doesn't see what the bootloader prepared");
 }
 
 #[test]
@@ -293,13 +293,13 @@ fn android_boot_images_like_qemu() {
     if cfg!(debug_assertions) {
         return skip_or_fail(
             "VETRO_REQUIRE_GUEST_KERNEL",
-            "avvio sotto Vetro solo in release (cargo test --release)",
+            "boot under Vetro only in release (cargo test --release)",
         );
     }
     let Some((image_path, initrd_path)) = guest_kernel() else {
         return skip_or_fail(
             "VETRO_REQUIRE_GUEST_KERNEL",
-            "target/guest-kernel mancante: esegui tools/guest-kernel/build.sh",
+            "target/guest-kernel missing: run tools/guest-kernel/build.sh",
         );
     };
     let (image, initramfs) = (std::fs::read(&image_path).unwrap(), std::fs::read(&initrd_path).unwrap());
@@ -308,15 +308,18 @@ fn android_boot_images_like_qemu() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let Some((boot, vendor, init)) = build_images(&dir, &image, &initramfs) else {
-        return skip_or_fail("VETRO_REQUIRE_ORACLE", "servono python3 (tools/mkbootimg/mkbootimg.py) e gzip");
+        return skip_or_fail(
+            "VETRO_REQUIRE_ORACLE",
+            "python3 (tools/mkbootimg/mkbootimg.py) and gzip are needed",
+        );
     };
 
     let opts = BootOptions { params: PARAMS.into(), recovery: false };
-    let a = AndroidBoot::from_images(&boot, Some(&vendor), Some(&init), &opts).expect("immagini Android");
+    let a = AndroidBoot::from_images(&boot, Some(&vendor), Some(&init), &opts).expect("Android images");
     assert_eq!(a.kernel_format, decompress::Format::Gzip);
-    assert_eq!(a.kernel, image, "il kernel decompresso non è l'Image di partenza");
+    assert_eq!(a.kernel, image, "the decompressed kernel is not the original Image");
     assert_eq!(a.cmdline, CMDLINE);
-    let (len, _) = bootconfig::split(&a.initrd).expect("blocco bootconfig in coda all'initrd");
+    let (len, _) = bootconfig::split(&a.initrd).expect("bootconfig block at the end of the initrd");
     eprintln!(
         "ramdisk: {:?}; initrd {} byte, bootconfig {} byte",
         a.ramdisks,
@@ -333,10 +336,10 @@ fn android_boot_images_like_qemu() {
     let Some(qemu) = qemu_system() else {
         return skip_or_fail(
             "VETRO_REQUIRE_SYSTEM_ORACLE",
-            "qemu-system-aarch64 assente (su macOS: VETRO_QEMU_SYSTEM_AARCH64=tools/guest-kernel/qemu-system-aarch64-docker.sh)",
+            "qemu-system-aarch64 missing (on macOS: VETRO_QEMU_SYSTEM_AARCH64=tools/guest-kernel/qemu-system-aarch64-docker.sh)",
         );
     };
-    // Lo stesso spacchettamento come file per -kernel e -initrd.
+    // The same unpacking as files for -kernel and -initrd.
     let (ki, ii) = (dir.join("Image"), dir.join("initrd"));
     std::fs::write(&ki, &a.kernel).unwrap();
     std::fs::write(&ii, &a.initrd).unwrap();
@@ -350,7 +353,7 @@ fn android_boot_images_like_qemu() {
     let diff = line_diff(&comparable_lines(&qlog), &comparable_lines(&vlog));
     assert!(
         diff.is_empty(),
-        "il log di Vetro differisce da quello di QEMU (- solo QEMU, + solo Vetro):\n{}",
+        "Vetro's log differs from QEMU's (- only QEMU, + only Vetro):\n{}",
         diff.join("\n")
     );
 }
