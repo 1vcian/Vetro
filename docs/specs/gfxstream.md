@@ -147,10 +147,33 @@ presented frames as ImageBitmaps (`frame3d`); `drawBitmap` on both
 presenters. Without WebGL2 (or below the limits) it falls back to
 SwiftShader and says why (`gpu` message, `vetroState.gpu`).
 
+## Snapshots (snapshot.rs)
+Written only by a machine whose GPU has virgl (the 2D format is unchanged).
+Data: the pipes (service state, pending input, unread replies, the render
+thread's current context and surfaces), resources, scanouts, puids, and the
+whole `Gl` (names, shaders with their text, programs with their link results
+and uniform values, per-context state vectors, vertex array and framebuffer
+records, texture/renderbuffer/sampler specifications, surfaces, ColorBuffers,
+images, owners). Contents read back at save time, in one batch through the
+executor (`ReadTexture` for ColorBuffers, `ReadTextureLevel` as RGBA8 for 2D
+and cube levels of 8-bit unsigned formats, `ReadBufferData` for buffers),
+compressed. A restore sends `ResetAll`, recreates every object under its old
+id (textures with their levels and parameters, buffers with `BufferUpload`,
+renderbuffer storage, samplers, shaders compiled, programs relinked with the
+same attribute locations and uniform values, framebuffer attachments,
+vertex arrays, surfaces), uploads the contents, then `ResetState`; the first
+call of each context applies its state vector again. Not restored: depth and
+stencil contents, renderbuffer contents, float or packed-format texture
+contents, 3D and array texture contents, queries, transform feedback.
+Readbacks at save time are host reads (like screenshots), not guest inputs.
+In the page the Worker still turns snapshots off on this path until the
+snapshot key and the prebuilt snapshot (ADR 0031) cover it.
+
 ## Natively
-`vetro boot --gpu=gfxstream [--gl-record=FILE]`: virgl GPU, the boot
-parameters, `vetro-gl:` log lines on stderr, counters at exit; the recording
-replays in Chrome with `node tests/web/gl.mjs --recording=FILE`.
+`vetro boot --gpu=gfxstream [--gl-record=FILE] [--gl-trace=1]`: virgl GPU,
+the boot parameters, `vetro-gl:` log lines on stderr (with `--gl-trace=1`
+every call and pipe event), counters at exit; the recording replays in
+Chrome with `node tests/web/gl.mjs --recording=FILE`.
 
 ## Tests
 - `cargo test -p vetro-platform gpu`: virtio-gpu 3D (features, capsets,
@@ -160,10 +183,15 @@ replays in Chrome with `node tests/web/gl.mjs --recording=FILE`.
   transitions, GLSL scanning, pipes and renderControl, a window surface and a
   program, BGRA transfers, context switches, the synthetic scene.
 - `node tests/web/gl.mjs`: the synthetic scene on Chrome's SwiftShader WebGL2
-  must equal the expected image exactly.
+  must equal the expected image exactly; then a snapshot with GPU resources:
+  phase A replays the scene and the save's readback batch in WebGL2, phase B
+  (`examples/snapshot.rs`) saves with those bytes, restores into a new
+  renderer and lets the guest redraw with its old program, texture alias and
+  vertex array; replayed on a fresh WebGL2 context the window must equal the
+  expected image.
 
 ## Missing (next slices)
-Snapshots of the decoder state (restore refuses today), readbacks in the
-replay log, native fence sync, host composition, compressed textures (ETC2),
+Readbacks in the replay log, snapshots in the page, native fence sync, host
+composition, compressed textures (ETC2),
 YUV buffers, program binaries, transform feedback varyings, uniform block
 data sizes beyond a bound, Vulkan (gfxstream Vulkan → WebGPU, separate ADR).
