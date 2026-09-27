@@ -30,6 +30,9 @@
 //   5. third session: resumes from the snapshot instead of booting the kernel
 //      (time measured), the console answers, the write is there, the file
 //      manager reconnects to the snapshot's daemon.
+//   6. the AOSP image selector (`?os=android`, not started): the default
+//      version (ANDROID_VERSIONS[0]) in the manifest field, the previous one
+//      selectable, "other" for a typed URL.
 //
 // Chrome: VETRO_CHROME, otherwise the usual paths. Without Chrome the test
 // says SKIP (it is not a passed test) and exits with 0, or with 1 if
@@ -43,6 +46,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { appMounts, serve } from '../../tools/web-serve.mjs';
 import { check, Fail, root, run } from './lib.mjs';
+import { ANDROID_VERSIONS, DEFAULT_MANIFEST } from '../../web/node/android.mjs';
 import { closeChrome, findChrome, launch, openPage } from './chrome.mjs';
 
 const SIZE = 2 * 1024 * 1024 + 4096;
@@ -271,6 +275,22 @@ run(async () => {
       `OPFS read ${t.read.toFixed(0)} ms, restore ${t.restore.toFixed(0)} ms; snapshot ${(boot3.size / 2 ** 20).toFixed(1)} MiB), ` +
       `first command run at ${(answeredMs / 1000).toFixed(2)} s; first boot from scratch ${(coldMs / 1000).toFixed(2)} s; ` +
       `Range requests ${ranges.length - before3}`);
+    // 6. The AOSP image selector (the machine is not started).
+    await cdp.send('Target.closeTarget', { targetId });
+    ({ page, targetId } = await openPage(cdp, `${srv.url}/app/?os=android`));
+    const SELECTOR = `(() => { const f = document.getElementById('setup')?.elements;
+      return f?.androidVersion?.options.length > 1 && { version: f.androidVersion.value, manifest: f.manifestUrl.value, options: [...f.androidVersion.options].map((o) => o.value) }; })()`;
+    const sel = await page.waitFor('AOSP version selector', () => page.eval(SELECTOR), 30_000);
+    check(sel.manifest === DEFAULT_MANIFEST && sel.version === DEFAULT_MANIFEST, `default image: ${JSON.stringify(sel)}`);
+    check(JSON.stringify(sel.options) === JSON.stringify([...ANDROID_VERSIONS.map((v) => v.manifest), '']), `versions offered: ${JSON.stringify(sel.options)}`);
+    const pick = (value) => page.eval(`(() => { const f = document.getElementById('setup').elements; f.androidVersion.value = ${JSON.stringify(value)};
+      f.androidVersion.dispatchEvent(new Event('change')); return f.manifestUrl.value; })()`);
+    const previous = ANDROID_VERSIONS.find((v) => v.version.endsWith('-bd09e2f')).manifest;
+    check((await pick(previous)) === previous, 'bd09e2f selected: the manifest field follows');
+    const typed = await page.eval(`(() => { const f = document.getElementById('setup').elements; f.manifestUrl.value = '/aosp/manifest.json';
+      f.manifestUrl.dispatchEvent(new Event('change')); return f.androidVersion.value; })()`);
+    check(typed === '', `a typed URL selects "other": ${JSON.stringify(typed)}`);
+    console.log(`AOSP image selector: default ${ANDROID_VERSIONS[0].version}, ${ANDROID_VERSIONS.length} versions offered`);
     console.log('app in the browser: ok');
   } finally {
     await srv.close();

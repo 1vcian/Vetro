@@ -70,7 +70,7 @@ const SCREEN = `(() => {
   for (let y = 0; y < c.height; y += 16) for (let x = 0; x < c.width; x += 16) colors.add(at(x, y).join());
   return { w: c.width, h: c.height, center: at(c.width >> 1, c.height >> 1), colors: colors.size, off: !document.getElementById('screen-off').hidden };
 })()`;
-const near = (a, b) => colorSeen(a, b) !== null;
+const near = colorSeen;
 const BLU = [0x15, 0x65, 0xc0];
 const ARANCIONE = [0xef, 0x6c, 0x00];
 
