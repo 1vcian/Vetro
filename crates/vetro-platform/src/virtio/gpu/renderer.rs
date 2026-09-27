@@ -58,7 +58,9 @@ pub struct Backing<'a> {
 }
 
 impl<'a> Backing<'a> {
-    pub(super) fn new(ram: &'a mut dyn GuestRam, ents: &'a [(u64, u32)]) -> Self {
+    /// The entries were checked by ATTACH_BACKING (renderers' tests build
+    /// their own).
+    pub fn new(ram: &'a mut dyn GuestRam, ents: &'a [(u64, u32)]) -> Self {
         Self { ram, ents }
     }
 
