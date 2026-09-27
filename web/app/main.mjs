@@ -708,6 +708,8 @@ async function start() {
     net: el.net.checked,
     files: el.files.checked,
     jit: el.jit.checked,
+    // ADR 0038 (experimental): JIT modules compiled in a nested Worker.
+    jitBackground: q.get('jitbg') === '1',
     realtime: el.realtime.checked,
     opfs: el.opfs.checked,
     snapshot: el.snapshot.checked,

@@ -267,7 +267,8 @@ async function start(c) {
   const times = {};
   status('loading vetro-wasm');
   const wasm = await (await fetch(c.wasmUrl)).arrayBuffer();
-  ({ exports } = await instantiate(wasm));
+  let jitEngine;
+  ({ exports, jit: jitEngine } = await instantiate(wasm));
   times.wasm = performance.now() - t0;
   if (c.android) android = await prepareAndroid(c);
   const kernel = android ? null : await bytesOf(c.kernel, 'the kernel');
@@ -363,6 +364,7 @@ async function start(c) {
     times.total = performance.now() - t0;
     post({ type: 'cold', times });
   }
+  if (c.jit && c.jitBackground) await jitEngine.startBackground();
   if (c.jit) m.setJit();
   if (c.files) openFiles();
   if (c.net) m.capture(true);
