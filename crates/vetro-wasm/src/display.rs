@@ -1,31 +1,31 @@
-//! Il display di virtio-gpu per la pagina (M5): per ogni scanout
-//! un'immagine RGBA (4 byte per pixel, righe da `width * 4` byte) che JS
-//! legge direttamente dalla memoria del modulo, l'unione dei rettangoli
-//! cambiati dall'ultima lettura, un contatore di aggiornamenti e il
-//! cursore. Sostituisce `MemDisplay` nella GPU della macchina di
-//! vetro-wasm; al guest non cambia niente.
+//! The virtio-gpu display for the page (M5): for every scanout
+//! an RGBA image (4 bytes per pixel, rows of `width * 4` bytes) that JS
+//! reads directly from the module's memory, the union of the rectangles
+//! changed since the last read, an update counter and the
+//! cursor. It replaces `MemDisplay` in the GPU of the vetro-wasm
+//! machine; nothing changes for the guest.
 
 use vetro_platform::virtio::gpu::Cursor;
 use vetro_platform::virtio::{DisplayBackend, Frame, Rect};
 
-/// Lato del cursore di virtio-gpu.
+/// Side of the virtio-gpu cursor.
 pub const CURSOR_SIZE: u32 = 64;
 
 #[derive(Clone, Debug, Default)]
 pub struct Screen {
     pub width: u32,
     pub height: u32,
-    /// Lo scanout mostra un'immagine.
+    /// The scanout shows an image.
     pub on: bool,
     pub rgba: Vec<u8>,
-    /// Aggiornamenti (anche lo spegnimento), per sapere se ridisegnare.
+    /// Updates (including turning off), to know whether to redraw.
     pub updates: u64,
-    /// Unione dei rettangoli cambiati non ancora letti.
+    /// Union of the changed rectangles not read yet.
     pub dirty: Option<Rect>,
     pub cursor: Cursor,
-    /// Immagine del cursore in RGBA (vuota se non c'è).
+    /// Cursor image in RGBA (empty if there is none).
     pub cursor_rgba: Vec<u8>,
-    /// Cambi del cursore (forma o posizione).
+    /// Cursor changes (shape or position).
     pub cursor_updates: u64,
 }
 
@@ -56,7 +56,7 @@ impl WebDisplay {
         &mut self.screens[i]
     }
 
-    /// Toglie e restituisce il rettangolo cambiato.
+    /// Removes and returns the changed rectangle.
     pub fn take_dirty(&mut self, scanout: u32) -> Option<Rect> {
         self.screens.get_mut(scanout as usize)?.dirty.take()
     }
@@ -98,7 +98,7 @@ impl DisplayBackend for WebDisplay {
         let s = self.screen_mut(scanout);
         s.cursor_updates += 1;
         if cursor.image != s.cursor.image {
-            // B8G8R8A8 come la risorsa (vedi `Cursor::image`).
+            // B8G8R8A8 like the resource (see `Cursor::image`).
             s.cursor_rgba =
                 cursor.image.as_chunks::<4>().0.iter().flat_map(|p| [p[2], p[1], p[0], p[3]]).collect();
         }
@@ -111,12 +111,12 @@ mod tests {
     use super::*;
     use vetro_platform::virtio::PixelFormat;
 
-    /// Conversione in RGBA, rettangoli uniti fino alla lettura, cambio di
-    /// dimensione che ridisegna tutto, spegnimento.
+    /// Conversion to RGBA, rectangles merged until the read, a size
+    /// change that redraws everything, turning off.
     #[test]
     fn immagine_rgba_e_rettangoli_cambiati() {
         let (w, h) = (4u32, 3u32);
-        // B8G8R8X8, stride più largo della riga.
+        // B8G8R8X8, stride wider than the row.
         let stride = 20u32;
         let data: Vec<u8> = (0..stride * h).map(|i| i as u8).collect();
         let f = Frame { width: w, height: h, stride, format: PixelFormat::B8G8R8X8, data: &data };
@@ -127,7 +127,7 @@ mod tests {
         assert_eq!(s.rgba.len(), 48);
         // Pixel (1, 1): byte 24..28 = [24, 25, 26, 27] -> R=26 G=25 B=24 X->255.
         assert_eq!(&s.rgba[(4 + 1) * 4..(4 + 1) * 4 + 4], &[26, 25, 24, 255]);
-        assert_eq!(d.take_dirty(0), Some(Rect::new(0, 0, 4, 3)), "prima immagine: tutto");
+        assert_eq!(d.take_dirty(0), Some(Rect::new(0, 0, 4, 3)), "first image: everything");
         d.update(0, &f, Rect::new(0, 0, 1, 1));
         d.update(0, &f, Rect::new(2, 1, 2, 2));
         assert_eq!(d.take_dirty(0), Some(Rect::new(0, 0, 4, 3)));

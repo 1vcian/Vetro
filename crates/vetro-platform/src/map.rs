@@ -1,51 +1,51 @@
-//! Mappa della memoria e numeri di interrupt della piattaforma virt.
+//! Memory map and interrupt numbers of the virt platform.
 //!
-//! Stessi indirizzi e stesse linee della macchina `virt` di QEMU
-//! (hw/arm/virt.c), limitati a ciò che Vetro emula.
+//! Same addresses and same lines as QEMU's `virt` machine
+//! (hw/arm/virt.c), limited to what Vetro emulates.
 
-/// Distributore GICv3 (GICD), 64 KiB.
+/// GICv3 distributor (GICD), 64 KiB.
 pub const GICD_BASE: u64 = 0x0800_0000;
 pub const GICD_SIZE: u64 = 0x1_0000;
-/// Redistributore GICv3 (GICR): due frame da 64 KiB (RD e SGI) per CPU.
+/// GICv3 redistributor (GICR): two 64 KiB frames (RD and SGI) per CPU.
 pub const GICR_BASE: u64 = 0x080A_0000;
 pub const GICR_SIZE_PER_CPU: u64 = 0x2_0000;
-/// UART PL011.
+/// PL011 UART.
 pub const UART_BASE: u64 = 0x0900_0000;
 pub const UART_SIZE: u64 = 0x1000;
-/// RTC PL031.
+/// PL031 RTC.
 pub const RTC_BASE: u64 = 0x0901_0000;
 pub const RTC_SIZE: u64 = 0x1000;
-/// GPIO PL061 (linea 3: tasto di spegnimento, `gpio-keys`).
+/// PL061 GPIO (line 3: power key, `gpio-keys`).
 pub const GPIO_BASE: u64 = 0x0903_0000;
 pub const GPIO_SIZE: u64 = 0x1000;
-/// Trasporti virtio-mmio: 32 slot da 0x200 byte.
+/// virtio-mmio transports: 32 slots of 0x200 bytes.
 pub const VIRTIO_BASE: u64 = 0x0A00_0000;
 pub const VIRTIO_SLOT_SIZE: u64 = 0x200;
 pub const VIRTIO_SLOTS: u64 = 32;
-/// Inizio della RAM del guest.
+/// Start of guest RAM.
 pub const RAM_BASE: u64 = 0x4000_0000;
 
-/// Primo INTID degli SPI: lo SPI `n` ha INTID `SPI_BASE + n`.
+/// First SPI INTID: SPI `n` has INTID `SPI_BASE + n`.
 pub const SPI_BASE: u32 = 32;
-/// SPI della UART (INTID 33).
+/// UART SPI (INTID 33).
 pub const UART_SPI: u32 = 1;
-/// SPI dell'RTC (INTID 34).
+/// RTC SPI (INTID 34).
 pub const RTC_SPI: u32 = 2;
-/// SPI del GPIO (INTID 39).
+/// GPIO SPI (INTID 39).
 pub const GPIO_SPI: u32 = 7;
-/// SPI del primo slot virtio-mmio (INTID 48); lo slot `k` usa `16 + k`.
+/// SPI of the first virtio-mmio slot (INTID 48); slot `k` uses `16 + k`.
 pub const VIRTIO_SPI_BASE: u32 = 16;
 
-/// PPI del timer virtuale (INTID 27).
+/// Virtual timer PPI (INTID 27).
 pub const PPI_VTIMER: u32 = 27;
-/// PPI del timer fisico non sicuro (INTID 30).
+/// Non-secure physical timer PPI (INTID 30).
 pub const PPI_PTIMER: u32 = 30;
-/// PPI del timer fisico sicuro (INTID 29): solo per il device tree.
+/// Secure physical timer PPI (INTID 29): device tree only.
 pub const PPI_SEC_PTIMER: u32 = 29;
-/// PPI del timer dell'hypervisor (INTID 26): solo per il device tree.
+/// Hypervisor timer PPI (INTID 26): device tree only.
 pub const PPI_HYP_TIMER: u32 = 26;
 
-/// Frequenza di default di CNTFRQ_EL0 (62,5 MHz, come QEMU con cortex-a53).
+/// Default CNTFRQ_EL0 frequency (62.5 MHz, like QEMU with cortex-a53).
 pub const CNTFRQ_HZ: u32 = 62_500_000;
-/// Clock fisso della PL011 dichiarato nel device tree (24 MHz, come QEMU).
+/// Fixed PL011 clock declared in the device tree (24 MHz, like QEMU).
 pub const UART_CLOCK_HZ: u32 = 24_000_000;

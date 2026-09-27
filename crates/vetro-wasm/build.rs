@@ -1,6 +1,6 @@
-//! Solo per wasm32: esporta la tabella delle funzioni del modulo e la rende
-//! estendibile. Il motore JIT in JS vi mette il dispatcher dei blocchi, che
-//! Rust chiama poi come un puntatore a funzione, senza passare da JS
+//! Only for wasm32: exports the module's function table and makes it
+//! growable. The JS JIT engine puts the block dispatcher in it, which
+//! Rust then calls as a function pointer, without going through JS
 //! (`src/jit.rs`, ADR 0013).
 
 fn main() {

@@ -1,7 +1,7 @@
-//! Stato della CPU negli snapshot (M6, ADR 0015): tutti i registri
-//! architetturali, SIMD/FP, PSTATE, registri di sistema e monitor
-//! esclusivo. La CPU non ha stato nascosto (cache di decodifica o simili):
-//! quello che si salva è tutto quello che c'è.
+//! CPU state in snapshots (M6, ADR 0015): all the architectural
+//! registers, SIMD/FP, PSTATE, system registers and the exclusive
+//! monitor. The CPU has no hidden state (decode cache or similar):
+//! what gets saved is everything there is.
 
 use vetro_snapshot::{Error, Reader, Result, Snapshot, Writer};
 
@@ -91,7 +91,7 @@ impl Snapshot for SysState {
         self.mode = match r.u8()? {
             0 => Mode::User,
             1 => Mode::System,
-            v => return Err(Error::invalid(format!("modalità della CPU {v}"))),
+            v => return Err(Error::invalid(format!("CPU mode {v}"))),
         };
         self.cfg.restore(r)?;
         self.el = r.u8()?;
@@ -189,9 +189,9 @@ impl Snapshot for Cpu {
 mod tests {
     use super::*;
 
-    /// Ogni campo passa per lo snapshot: una CPU con tutti i registri
-    /// diversi da zero torna identica (se un campo mancasse, resterebbe al
-    /// valore della CPU di destinazione).
+    /// Every field goes through the snapshot: a CPU with all registers
+    /// nonzero comes back identical (if a field were missing, it would keep the
+    /// value of the destination CPU).
     #[test]
     fn cpu_completa_andata_e_ritorno() {
         let mut c = Cpu::new();
@@ -258,10 +258,10 @@ mod tests {
         assert_eq!(d, c);
         let mut w2 = Writer::new();
         d.save(&mut w2);
-        assert_eq!(w2.into_bytes(), bytes, "stessi byte dopo il ripristino");
-        // Un EL impossibile si rifiuta.
+        assert_eq!(w2.into_bytes(), bytes, "same bytes after restore");
+        // An impossible EL is rejected.
         let mut bad = bytes.clone();
-        // Dalla fine: SError, PMUSERENR, CLAIM, DBG*, OSDLR, OSLK, 17 registri, SP_EL*, IL, DAIF, SPSel.
+        // From the end: SError, PMUSERENR, CLAIM, DBG*, OSDLR, OSLK, 17 registers, SP_EL*, IL, DAIF, SPSel.
         let el_at = bytes.len() - (5 + 8 + 1 + 20 * 8 + 8 + 1) - 17 * 8 - 16 - 1 - 4 - 1 - 1;
         assert_eq!(bad[el_at], 0);
         bad[el_at] = 2;

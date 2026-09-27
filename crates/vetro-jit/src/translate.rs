@@ -1,24 +1,24 @@
-//! Traduttore: da una regione di istruzioni decodificate (i blocchi base di
-//! una pagina, ADR 0024) a una funzione WASM con l'ABI di docs/specs/jit.md,
-//! più il modulo di runtime ([`runtime`]) e il dispatcher ([`dispatcher`]).
+//! Translator: from a region of decoded instructions (the base blocks of
+//! a page, ADR 0024) to a WASM function with the ABI of docs/specs/jit.md,
+//! plus the runtime module ([`runtime`]) and the dispatcher ([`dispatcher`]).
 //!
-//! La semantica di ogni istruzione tradotta è quella di
-//! `vetro_cpu::exec` (stessi flag, stessi troncamenti a 32 bit, stessi casi
-//! di XZR/SP); la parità si verifica con i test di `vetro-jit-native` e di
+//! The semantics of every translated instruction are those of
+//! `vetro_cpu::exec` (same flags, same 32-bit truncations, same
+//! XZR/SP cases); parity is checked with the tests of `vetro-jit-native` and of
 //! `tests/diff`.
 //!
-//! Dentro la regione i registri stanno in variabili locali: si caricano
-//! all'inizio quelli letti o scritti e si riscrivono in `JitState` nella
-//! coda comune a tutte le uscite. Un'uscita per fault (dopo un accesso
-//! fallito) lascia i registri delle istruzioni precedenti, `pc` e `steps`
-//! dell'istruzione che ha fallito: lo stato è quello che l'interprete
-//! avrebbe prima di eseguirla. I flag NZCV sono pigri: operandi e tipo
-//! dell'ultima istruzione che li scrive, calcolati solo se servono.
+//! Inside the region the registers live in local variables: those read or
+//! written are loaded at the start and written back to `JitState` in the
+//! tail shared by all exits. A fault exit (after a failed
+//! access) leaves the registers of the preceding instructions, and `pc` and `steps`
+//! of the instruction that failed: the state is the one the interpreter
+//! would have before executing it. The NZCV flags are lazy: operands and kind
+//! of the last instruction that writes them, computed only if needed.
 //!
-//! Il codice è compatto (in V8 la compilazione costa in proporzione ai
-//! byte): i percorsi lenti e gli accessi a coppie, Q e non allineati stanno
-//! nel runtime, compilato una volta; il percorso veloce della TLB software
-//! degli accessi allineati resta nella regione.
+//! The code is compact (in V8 compilation costs in proportion to the
+//! bytes): the slow paths and the pair, Q and unaligned accesses live
+//! in the runtime, compiled once; the software TLB fast path
+//! for aligned accesses stays in the region.
 
 use crate::engine::TABLE_SIZE;
 use crate::state::{area, off};
@@ -35,36 +35,36 @@ use vetro_cpu::sysreg::EnvReg;
 mod fp;
 mod vec;
 
-/// PSTATE.{D,A,I,F} nei bit 9:6 (come `SysState::daif`).
+/// PSTATE.{D,A,I,F} in bits 9:6 (like `SysState::daif`).
 const DAIF_ALL: u32 = 0x3c0;
 
-/// Percorso veloce della TLB in linea nelle regioni (esperimento).
+/// Inline TLB fast path in the regions (experiment).
 const INLINE_TLB: bool = true;
 
-/// Istruzioni massime per blocco (ADR 0012).
+/// Maximum instructions per block (ADR 0012).
 pub const MAX_BLOCK: usize = 64;
 
-/// `size` di `st` per DC ZVA: azzera i 64 byte (allineati) all'indirizzo,
-/// con le regole di `zero_block` (fault di allineamento su memoria Device).
+/// `size` of `st` for DC ZVA: zeroes the 64 (aligned) bytes at the address,
+/// with the rules of `zero_block` (alignment fault on Device memory).
 pub const ZVA_BYTES: u32 = 64;
 
-/// Come si comporta un'istruzione per il traduttore.
+/// How an instruction behaves for the translator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
-    /// Tradotta, il blocco continua. I salti condizionati (B.cond,
-    /// CBZ/CBNZ, TBZ/TBNZ) sono di questo tipo: presi escono dal blocco
-    /// ("uscita laterale"), altrimenti il blocco prosegue.
+    /// Translated, the block continues. Conditional branches (B.cond,
+    /// CBZ/CBNZ, TBZ/TBNZ) are of this kind: when taken they leave the block
+    /// ("side exit"), otherwise the block goes on.
     Linear,
-    /// Tradotta, e chiude il blocco (salto incondizionato).
+    /// Translated, and closes the block (unconditional branch).
     Branch,
-    /// Chiude il blocco con il codice `SVC`, senza essere eseguita:
-    /// l'esegue l'interprete.
+    /// Closes the block with the `SVC` code, without being executed:
+    /// the interpreter executes it.
     Svc,
-    /// Non tradotta: il blocco finisce prima e la esegue l'interprete.
+    /// Not translated: the block ends before it and the interpreter executes it.
     Unsupported,
 }
 
-/// Classificazione di un'istruzione.
+/// Classification of an instruction.
 pub fn kind(insn: &Insn) -> Kind {
     use Kind::*;
     match *insn {
@@ -91,7 +91,7 @@ pub fn kind(insn: &Insn) -> Kind {
         | Insn::LdStPair { .. }
         | Insn::LoadAcquire { .. }
         | Insn::StoreRelease { .. }
-        // Esclusive col monitor in JitState (anche in modalità utente, ADR
+        // Exclusives with the monitor in JitState (also in user mode, ADR
         // 0026).
         | Insn::Exclusive { .. }
         | Insn::BCond { .. }
@@ -100,15 +100,15 @@ pub fn kind(insn: &Insn) -> Kind {
         Insn::Dp2 { .. } => Linear,
         Insn::Mrs { reg: SysReg::Nzcv, .. } | Insn::Msr { reg: SysReg::Nzcv, .. } => Linear,
         Insn::LdSt { .. } => Linear,
-        // SIMD (ADR 0024): load/store di registri V singoli e in coppia,
-        // DUP/INS/UMOV/SMOV, MOVI/MVNI/ORR/BIC immediati.
+        // SIMD (ADR 0024): loads/stores of single and paired V registers,
+        // DUP/INS/UMOV/SMOV, immediate MOVI/MVNI/ORR/BIC.
         Insn::Simd(SimdInsn::Mem(VecMemInsn::Reg { .. } | VecMemInsn::Pair { .. })) => Linear,
-        // LD1/ST1 di uno o più registri interi, LD1R, LD1/ST1 di una corsia,
-        // LD2..LD4/ST2..ST4 di strutture multiple (ADR 0026); le strutture
-        // singole interlacciate (LD2 di una corsia, LD2R...) no.
+        // LD1/ST1 of one or more integer registers, LD1R, LD1/ST1 of one lane,
+        // LD2..LD4/ST2..ST4 of multiple structures (ADR 0026); the interleaved
+        // single structures (LD2 of one lane, LD2R...) no.
         Insn::Simd(SimdInsn::Mem(VecMemInsn::Multi { .. } | VecMemInsn::Single { selem: 1, .. })) => Linear,
-        // Tutte le istruzioni SIMD/FP senza memoria (ADR 0026): quelle
-        // senza una forma in linea le esegue l'interprete dalla regione
+        // All SIMD/FP instructions without memory (ADR 0026): those
+        // without an inline form are executed by the interpreter from the region
         // (`env.simd`, [`crate::helper`]).
         Insn::Simd(SimdInsn::Int(_) | SimdInsn::Fp(_) | SimdInsn::Crypto(_)) => Linear,
         Insn::B { .. } | Insn::BranchReg { .. } => Branch,
@@ -117,41 +117,41 @@ pub fn kind(insn: &Insn) -> Kind {
     }
 }
 
-/// Parametri di un blocco della modalità sistema: il livello di eccezione e
-/// il Top Byte Ignore delle due metà dello spazio virtuale (TCR_EL1.TBI0 e
-/// TBI1), che decide l'indirizzo dei salti (`AArch64.BranchAddr`).
+/// Parameters of a system-mode block: the exception level and
+/// the Top Byte Ignore of the two halves of the virtual space (TCR_EL1.TBI0 and
+/// TBI1), which decides the branch address (`AArch64.BranchAddr`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SysTarget {
     pub el: u8,
     pub tbi0: bool,
     pub tbi1: bool,
-    /// PSTATE.SP (a EL1: SP_EL0 si legge con MRS solo se vale 1).
+    /// PSTATE.SP (at EL1: SP_EL0 is read with MRS only if it is 1).
     pub spsel: bool,
-    /// Istruzioni FP/SIMD permesse a questo EL (CPACR_EL1.FPEN): senza, le
-    /// traduce solo l'interprete (trap).
+    /// FP/SIMD instructions allowed at this EL (CPACR_EL1.FPEN): without it, only
+    /// the interpreter handles them (trap).
     pub fp: bool,
-    /// CNTKCTL_EL1.EL0PCTEN (bit 0) ed EL0VCTEN (bit 1): a EL0 MRS di
-    /// CNTPCT/CNTVCT si traduce solo se permesso (ADR 0026).
+    /// CNTKCTL_EL1.EL0PCTEN (bit 0) and EL0VCTEN (bit 1): at EL0 MRS of
+    /// CNTPCT/CNTVCT is translated only if allowed (ADR 0026).
     pub cntk: u8,
 }
 
-/// Da dove legge un MRS tradotto.
+/// Where a translated MRS reads from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MrsSrc {
-    /// CNTPCT (`virt` falso) o CNTVCT dal numero di istruzioni (ADR 0026).
+    /// CNTPCT (`virt` false) or CNTVCT from the instruction count (ADR 0026).
     Counter {
         virt: bool,
     },
-    /// Campo di `JitState`.
+    /// Field of `JitState`.
     State(u32),
-    /// Campo a 32 bit di `JitState`.
+    /// 32-bit field of `JitState`.
     State32(u32),
     Const(u64),
 }
 
-/// MRS che un blocco della modalità sistema esegue da sé: i registri che
-/// cambiano solo con MSR tradotti (o fra una corsa e l'altra), con i
-/// permessi di `sysreg_access` per il livello del blocco.
+/// MRS that a system-mode block executes by itself: the registers that
+/// change only with translated MSRs (or between one run and the next), with the
+/// permissions of `sysreg_access` for the block's level.
 fn sys_mrs(reg: SysReg, s: SysTarget) -> Option<MrsSrc> {
     let el1 = s.el == 1;
     Some(match reg {
@@ -173,8 +173,8 @@ fn sys_mrs(reg: SysReg, s: SysTarget) -> Option<MrsSrc> {
     })
 }
 
-/// MSR che un blocco della modalità sistema esegue da sé: campo di
-/// `JitState` da scrivere.
+/// MSR that a system-mode block executes by itself: field of
+/// `JitState` to write.
 fn sys_msr(reg: SysReg, s: SysTarget) -> Option<u32> {
     let el1 = s.el == 1;
     Some(match reg {
@@ -184,36 +184,36 @@ fn sys_msr(reg: SysReg, s: SysTarget) -> Option<u32> {
         SysReg::SpEl0 if el1 && s.spsel => off::SP_EL0,
         SysReg::ElrEl1 if el1 => off::ELR_EL1,
         SysReg::SpsrEl1 if el1 => off::SPSR_EL1,
-        // MSR DAIF: a parte (può smascherare interrupt).
+        // MSR DAIF: separately (it may unmask interrupts).
         SysReg::Daif if el1 => off::DAIF,
         _ => return None,
     })
 }
 
 impl SysTarget {
-    /// `AArch64.BranchAddr` come `Cpu::branch_addr`: con TBI attivo per la
-    /// metà di `t` il tag si toglie estendendo il bit 55.
+    /// `AArch64.BranchAddr` like `Cpu::branch_addr`: with TBI active for the
+    /// half of `t` the tag is removed by extending bit 55.
     pub fn branch_addr(&self, t: u64) -> u64 {
         let tbi = if t >> 55 & 1 != 0 { self.tbi1 } else { self.tbi0 };
         if tbi { ((t << 8) as i64 >> 8) as u64 } else { t }
     }
 }
 
-/// Classificazione di un'istruzione in modalità utente (`sys = None`) o
-/// sistema. In modalità sistema restano all'interprete anche WFI (attesa
-/// degli interrupt), LDTR/STTR (permessi di EL0) e le manutenzioni delle
-/// cache a EL0 (SCTLR_EL1.UCI); si traducono in più le esclusive (il
-/// monitor sta in `JitState`), DC ZVA e alcuni MRS/MSR ([`sys_mrs`],
-/// [`sys_msr`]).
+/// Classification of an instruction in user mode (`sys = None`) or
+/// system mode. In system mode WFI (waiting for
+/// interrupts), LDTR/STTR (EL0 permissions) and cache maintenance
+/// at EL0 (SCTLR_EL1.UCI) also stay with the interpreter; in addition the exclusives (the
+/// monitor is in `JitState`), DC ZVA and some MRS/MSR ([`sys_mrs`],
+/// [`sys_msr`]) are translated.
 pub fn kind_in(insn: &Insn, sys: Option<SysTarget>) -> Kind {
     if let Some(s) = sys {
         match *insn {
             Insn::Wfi | Insn::LdSt { unpriv: true, .. } => return Kind::Unsupported,
-            // Trap di CPACR_EL1.FPEN: all'interprete.
+            // CPACR_EL1.FPEN trap: to the interpreter.
             Insn::Simd(_) if !s.fp => return Kind::Unsupported,
             Insn::CacheMaint if s.el == 0 => return Kind::Unsupported,
             Insn::DcZva { .. } => return Kind::Linear,
-            // DAIFSet/DAIFClr a EL1 (DAIFClr esce con YIELD).
+            // DAIFSet/DAIFClr at EL1 (DAIFClr exits with YIELD).
             Insn::MsrImm { field: PstateField::DaifSet | PstateField::DaifClr, .. } if s.el == 1 => {
                 return Kind::Linear;
             }
@@ -229,21 +229,21 @@ pub fn kind_in(insn: &Insn, sys: Option<SysTarget>) -> Kind {
     kind(insn)
 }
 
-/// Un blocco base: istruzioni consecutive (già decodificate) da `pc`.
-/// Finisce con un salto (anche condizionato), una SVC, o prima di
-/// un'istruzione che non si traduce, dell'inizio di un altro blocco della
-/// regione, della fine della pagina o dopo [`MAX_BLOCK`] istruzioni.
+/// A base block: consecutive (already decoded) instructions from `pc`.
+/// It ends with a branch (conditional too), an SVC, or before
+/// an instruction that is not translated, the start of another block of the
+/// region, the end of the page or after [`MAX_BLOCK`] instructions.
 #[derive(Clone, Debug)]
 pub struct Bb {
     pub pc: u64,
     pub insns: Vec<Insn>,
-    /// Le parole delle istruzioni (per `env.simd`).
+    /// The instruction words (for `env.simd`).
     pub words: Vec<u32>,
 }
 
 impl Bb {
-    /// Istruzioni eseguite al massimo da una corsa del blocco (l'eventuale
-    /// SVC finale non si esegue).
+    /// Instructions executed at most by one run of the block (the possible
+    /// final SVC is not executed).
     pub fn max_steps(&self) -> u64 {
         let n = self.insns.len();
         match self.insns.last() {
@@ -253,31 +253,31 @@ impl Bb {
     }
 }
 
-/// Una regione da tradurre in una funzione (ADR 0024): i blocchi base di
-/// una pagina raggiungibili dall'ingresso `pc` con salti diretti (anche
-/// cicli), con i parametri della modalità sistema. I salti fra blocchi
-/// della regione restano dentro la funzione; ogni altro salto è un'uscita.
+/// A region to translate into a function (ADR 0024): the base blocks of
+/// a page reachable from entry `pc` with direct branches (loops
+/// too), with the system-mode parameters. Branches between blocks
+/// of the region stay inside the function; every other branch is an exit.
 #[derive(Clone, Debug)]
 pub struct Region {
     pub pc: u64,
-    /// In ordine di indirizzo; uno inizia a `pc`.
+    /// In address order; one starts at `pc`.
     pub bbs: Vec<Bb>,
     pub sys: Option<SysTarget>,
 }
 
-/// Istruzioni massime di una regione.
+/// Maximum instructions of a region.
 pub const MAX_REGION: usize = 64;
 
-/// Blocchi base di una regione che possono farne da ingresso.
+/// Base blocks of a region that can act as its entry.
 pub const MAX_ENTRIES: usize = 64;
 
-/// Salti condizionati (B.cond, CBZ/CBNZ, TBZ/TBNZ): chiudono un blocco base.
+/// Conditional branches (B.cond, CBZ/CBNZ, TBZ/TBNZ): they close a base block.
 pub fn is_cond_branch(insn: &Insn) -> bool {
     matches!(insn, Insn::BCond { .. } | Insn::Cbz { .. } | Insn::Tbz { .. })
 }
 
-/// Destinazione di un salto diretto (B, BL, salti condizionati) a `pc`,
-/// con `AArch64.BranchAddr` in modalità sistema.
+/// Target of a direct branch (B, BL, conditional branches) at `pc`,
+/// with `AArch64.BranchAddr` in system mode.
 pub fn direct_target(insn: &Insn, pc: u64, sys: Option<SysTarget>) -> Option<u64> {
     let off = match *insn {
         Insn::B { offset, .. } => offset,
@@ -292,8 +292,8 @@ pub fn direct_target(insn: &Insn, pc: u64, sys: Option<SysTarget>) -> Option<u64
 }
 
 impl Region {
-    /// Una sequenza lineare di istruzioni da `pc`, divisa in blocchi base
-    /// dopo ogni salto e SVC (per i test).
+    /// A linear sequence of instructions from `pc`, split into base blocks
+    /// after every branch and SVC (for the tests).
     pub fn linear(pc: u64, words: Vec<u32>, sys: Option<SysTarget>) -> Region {
         let mut bbs = Vec::new();
         let mut cur = Bb { pc, insns: Vec::new(), words: Vec::new() };
@@ -313,23 +313,23 @@ impl Region {
         Region { pc, bbs, sys }
     }
 
-    /// Il blocco d'ingresso.
+    /// The entry block.
     pub fn entry(&self) -> &Bb {
-        self.bbs.iter().find(|b| b.pc == self.pc).expect("blocco d'ingresso")
+        self.bbs.iter().find(|b| b.pc == self.pc).expect("entry block")
     }
 
-    /// Passi massimi del blocco d'ingresso: una corsa che vi entra ne fa
-    /// almeno uno se il limite li concede (ogni altro blocco controlla da
-    /// sé il limite di passi).
+    /// Maximum steps of the entry block: a run that enters it executes
+    /// at least one if the limit allows it (every other block checks
+    /// the step limit by itself).
     pub fn max_steps(&self) -> u64 {
         self.entry().max_steps()
     }
 
-    /// Ingressi della regione: (indirizzo, indice del blocco base, passi
-    /// massimi del blocco) per ogni blocco base che esegue almeno
-    /// un'istruzione e ha indice minore di [`MAX_ENTRIES`] (la cache dei
-    /// salti tiene l'indice in 6 bit). Chi chiama la regione scrive
-    /// l'indice in `JitState::entry`.
+    /// Entries of the region: (address, base block index, maximum
+    /// steps of the block) for every base block that executes at least
+    /// one instruction and has an index lower than [`MAX_ENTRIES`] (the jump
+    /// cache keeps the index in 6 bits). Whoever calls the region writes
+    /// the index into `JitState::entry`.
     pub fn entries(&self) -> Vec<(u64, u32, u64)> {
         self.bbs
             .iter()
@@ -339,12 +339,12 @@ impl Region {
             .collect()
     }
 
-    /// Indice del blocco base d'ingresso.
+    /// Index of the base entry block.
     pub fn entry_index(&self) -> u32 {
-        self.bbs.iter().position(|b| b.pc == self.pc).expect("blocco d'ingresso") as u32
+        self.bbs.iter().position(|b| b.pc == self.pc).expect("entry block") as u32
     }
 
-    /// Istruzioni della regione.
+    /// Instructions of the region.
     pub fn len(&self) -> usize {
         self.bbs.iter().map(|b| b.insns.len()).sum()
     }
@@ -354,14 +354,14 @@ impl Region {
     }
 }
 
-/// Scopre la regione che inizia a `pc`: dall'ingresso segue il codice in
-/// sequenza e i salti diretti (presi e non presi) che restano nella pagina
-/// di `pc`, fino a `max` istruzioni. `fetch(a)` dà la parola all'indirizzo
-/// `a` (della stessa pagina), o `None` se non si può leggere.
+/// Discovers the region that starts at `pc`: from the entry it follows the code in
+/// sequence and the direct branches (taken and not taken) that stay within the page
+/// of `pc`, up to `max` instructions. `fetch(a)` gives the word at address
+/// `a` (of the same page), or `None` if it cannot be read.
 ///
-/// Restituisce la regione e la sua firma (posizione e lunghezza di ogni
-/// blocco, poi le parole: lo stesso codice allo stesso indirizzo ha la
-/// stessa firma), o `None` se la prima istruzione non si traduce o è una
+/// Returns the region and its signature (position and length of every
+/// block, then the words: the same code at the same address has the
+/// same signature), or `None` if the first instruction is not translated or is an
 /// SVC.
 pub fn discover(
     pc: u64,
@@ -375,9 +375,9 @@ pub fn discover(
     }
     let page = pc >> 12;
     let in_page = |a: u64| a >> 12 == page && a.is_multiple_of(4);
-    // Inizi di blocco dai salti; gli altri (al più MAX_REGION / MAX_BLOCK)
-    // li aggiunge la divisione dei blocchi lunghi: tutti restano sotto
-    // MAX_ENTRIES e ogni blocco base può fare da ingresso.
+    // Block starts from the branches; the others (at most MAX_REGION / MAX_BLOCK)
+    // are added by splitting the long blocks: all stay below
+    // MAX_ENTRIES and every base block can act as an entry.
     const MAX_LEADERS: usize = MAX_ENTRIES - MAX_REGION / MAX_BLOCK;
     let mut decoded: BTreeMap<u64, (u32, Insn)> = BTreeMap::new();
     let mut leaders: BTreeSet<u64> = BTreeSet::new();
@@ -387,8 +387,8 @@ pub fn discover(
         let mut a = s;
         while in_page(a) && decoded.len() < max {
             if a != s && decoded.contains_key(&a) {
-                // Codice già visto: un inizio (se c'è posto; altrimenti il
-                // blocco base lo ripete).
+                // Code already seen: a start (if there is room; otherwise the
+                // base block repeats it).
                 if leaders.len() < MAX_LEADERS {
                     leaders.insert(a);
                 }
@@ -418,7 +418,7 @@ pub fn discover(
                     break;
                 }
                 _ if is_cond_branch(&insn) => {
-                    let t = direct_target(&insn, a, sys).expect("salto diretto");
+                    let t = direct_target(&insn, a, sys).expect("direct branch");
                     follow(t);
                     follow(a.wrapping_add(4));
                     break;
@@ -431,8 +431,8 @@ pub fn discover(
     if !decoded.contains_key(&pc) {
         return None;
     }
-    // Blocchi base: da ogni inizio, fino a un salto, a un altro inizio o a
-    // un buco; al più MAX_BLOCK istruzioni (poi un inizio nuovo).
+    // Base blocks: from every start, up to a branch, another start or
+    // a hole; at most MAX_BLOCK instructions (then a new start).
     let mut bbs = Vec::new();
     let mut todo: Vec<u64> = leaders.iter().copied().filter(|l| decoded.contains_key(l)).collect();
     let mut seen: BTreeSet<u64> = todo.iter().copied().collect();
@@ -470,44 +470,44 @@ pub fn discover(
     Some((Region { pc, bbs, sys }, sig))
 }
 
-/// Variabili locali: 0 = puntatore a `JitState`, 1..=31 x0..x30, 32 SP,
-/// 33 NZCV (i32), poi temporanei.
+/// Local variables: 0 = pointer to `JitState`, 1..=31 x0..x30, 32 SP,
+/// 33 NZCV (i32), then temporaries.
 const L_STATE: u32 = 0;
 const L_NZCV: u32 = 33;
 const L_T64: u32 = 34;
 const N_T64: u32 = 18;
-/// `steps` all'inizio del blocco base in corso.
+/// `steps` at the start of the current base block.
 const L_STEPS: u32 = L_T64 + 10;
-/// `limit` di `JitState` (regioni con più blocchi).
+/// `limit` of `JitState` (regions with several blocks).
 const L_LIMIT: u32 = L_T64 + 13;
-/// Inizio della pagina della regione: base dei `pc` passati ai percorsi
-/// lenti e delle uscite.
+/// Start of the region's page: base of the `pc`s passed to the slow
+/// paths and to the exits.
 const L_PC0: u32 = L_T64 + 14;
-/// Flag pigri (ADR 0024): operandi e risultato dell'ultima istruzione che
-/// scrive NZCV, e il suo tipo in `L_FK` (0 = NZCV già in `L_NZCV`).
+/// Lazy flags (ADR 0024): operands and result of the last instruction that
+/// writes NZCV, and its kind in `L_FK` (0 = NZCV already in `L_NZCV`).
 const L_FA: u32 = L_T64 + 15;
 const L_FB: u32 = L_T64 + 16;
 const L_FR: u32 = L_T64 + 17;
-/// Uscita in corso: nuovo `pc`, passi fatti e codice (per la coda comune).
+/// Current exit: new `pc`, steps done and code (for the shared tail).
 const L_EXIT_PC: u32 = L_T64 + 11;
 const L_EXIT_DONE: u32 = L_T64 + 12;
 const L_T32: u32 = L_T64 + N_T64;
 const N_T32: u32 = 7;
 const L_EXIT_CODE: u32 = L_T32 + 4;
-/// Prossimo blocco base (indice) per il `br_table` della regione.
+/// Next base block (index) for the region's `br_table`.
 const L_NEXT: u32 = L_T32 + 5;
 const L_FK: u32 = L_T32 + 6;
-/// Temporanei v128 (SIMD in linea, ADR 0026).
+/// v128 temporaries (inline SIMD, ADR 0026).
 const L_V0: u32 = L_T32 + N_T32;
 const N_V128: u32 = 6;
 
-/// Codice d'uscita interno: STOP dopo l'istruzione corrente, di cui lo
-/// store ha già salvato `pc` e `steps` (la coda li porta all'istruzione
-/// successiva ed esce con `STOP`).
+/// Internal exit code: STOP after the current instruction, whose
+/// store has already saved `pc` and `steps` (the tail moves them to the next
+/// instruction and exits with `STOP`).
 const EXIT_STOP_SAVED: u32 = 0x10;
-const _: () = assert!(EXIT_STOP_SAVED > crate::YIELD, "codice interno distinto da quelli dell'ABI");
+const _: () = assert!(EXIT_STOP_SAVED > crate::YIELD, "internal code distinct from the ABI ones");
 
-/// Tipi dei flag pigri (`L_FK`): somma, differenza, logica, a 64 o 32 bit.
+/// Lazy flag kinds (`L_FK`): addition, subtraction, logical, 64 or 32 bits.
 const FK_ADD64: i32 = crate::state::fk::ADD64 as i32;
 const FK_SUB64: i32 = crate::state::fk::SUB64 as i32;
 const FK_ADD32: i32 = crate::state::fk::ADD32 as i32;
@@ -515,18 +515,18 @@ const FK_SUB32: i32 = crate::state::fk::SUB32 as i32;
 const FK_LOGIC64: i32 = crate::state::fk::LOGIC64 as i32;
 const FK_LOGIC32: i32 = crate::state::fk::LOGIC32 as i32;
 
-/// Che cosa sa il traduttore di NZCV nel punto corrente.
+/// What the translator knows about NZCV at the current point.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Fl {
-    /// Dipende dal percorso: `L_FK` dice se è pigro.
+    /// Depends on the path: `L_FK` says whether it is lazy.
     Unknown,
     /// In `L_NZCV` (`L_FK` = 0).
     Materialized,
-    /// Pigro, del tipo dato (`L_FK` ha lo stesso valore).
+    /// Lazy, of the given kind (`L_FK` has the same value).
     Lazy(i32),
 }
 
-/// Bit dei registri nelle maschere di lettura/scrittura: 0..=30 x, 31 SP,
+/// Register bits in the read/write masks: 0..=30 x, 31 SP,
 /// 32 NZCV.
 const B_SP: u32 = 31;
 const B_NZCV: u32 = 32;
@@ -540,18 +540,18 @@ const fn t32(i: u32) -> u32 {
     L_T32 + i
 }
 
-/// Genera il modulo WASM con un blocco per elemento di `blocks`: la
-/// funzione del blocco `i` si esporta come `b<i>`. In modalità sistema il
-/// motore le mette poi nella tabella del dispatcher (`Engine::place`).
+/// Generates the WASM module with one block per element of `blocks`: the
+/// function of block `i` is exported as `b<i>`. In system mode the
+/// engine then places them in the dispatcher's table (`Engine::place`).
 pub fn module(blocks: &[Region], memory: MemoryImport) -> Vec<u8> {
     use ValType::*;
     let mut m = Module::new();
     let t_blk = m.ty(&[I32], &[I32]);
     m.import_memory("env", "mem", memory);
-    // Prima le funzioni (che scelgono quali `rt.fp<k>` importare), poi gli
-    // import: quelli fissi (0..F_FP0) e i percorsi veloci usati, negli indici
-    // assegnati dalle regioni (ADR 0026: importarli tutti costerebbe ~1,5 KB
-    // per modulo).
+    // First the functions (which choose which `rt.fp<k>` to import), then the
+    // imports: the fixed ones (0..F_FP0) and the fast paths used, at the indices
+    // assigned by the regions (ADR 0026: importing them all would cost ~1.5 KB
+    // per module).
     let mut used = Vec::new();
     let funcs: Vec<Func> = blocks.iter().map(|b| function_with(b, &mut used)).collect();
     for id in (0..F_FP0).chain(used.iter().copied()) {
@@ -566,50 +566,50 @@ pub fn module(blocks: &[Region], memory: MemoryImport) -> Vec<u8> {
     m.encode()
 }
 
-/// Funzioni del modulo di runtime (ADR 0024), importate da ogni modulo di
-/// regioni come `rt.<nome>` negli indici `0..N_RT` (nello stesso ordine):
-/// i percorsi lenti e gli accessi alla memoria fuori dal codice delle
-/// regioni, compilati una volta sola.
+/// Functions of the runtime module (ADR 0024), imported by every region
+/// module as `rt.<name>` at indices `0..N_RT` (in the same order):
+/// the slow paths and the memory accesses outside the regions'
+/// code, compiled only once.
 const F_SAVE: u32 = 0;
 const F_LD_SLOW: u32 = 1;
 const F_ST_SLOW: u32 = 2;
 const F_NZCV: u32 = 3;
-/// Accessi della modalità sistema con la TLB software (percorso veloce e
-/// lento): per EL (0, 1) e dimensione (1, 2, 4, 8 byte).
+/// System-mode accesses with the software TLB (fast and
+/// slow path): per EL (0, 1) and size (1, 2, 4, 8 bytes).
 const F_LD_TLB: u32 = 4;
 const F_ST_TLB: u32 = 12;
-/// Coppie (LDP/STP) con la TLB software: per EL e dimensione (4, 8 byte).
+/// Pairs (LDP/STP) with the software TLB: per EL and size (4, 8 bytes).
 const F_LDP_TLB: u32 = 20;
 const F_STP_TLB: u32 = 24;
-/// Coppie senza TLB (modalità utente).
+/// Pairs without TLB (user mode).
 const F_LDP_SLOW: u32 = 28;
 const F_STP_SLOW: u32 = 29;
-/// Fine di una regione: `pc`, `steps` e codice d'uscita in `JitState`.
+/// End of a region: `pc`, `steps` and exit code in `JitState`.
 const F_FINISH: u32 = 30;
-/// Registri SIMD/FP in `JitState` se non ci sono già (`env.vsync`).
+/// SIMD/FP registers into `JitState` if they are not there yet (`env.vsync`).
 const F_VSYNC: u32 = 31;
-/// Accessi Q (16 byte): per EL con la TLB software, e senza.
+/// Q accesses (16 bytes): per EL with the software TLB, and without.
 const F_LDQ_TLB: u32 = 32;
 const F_LDQ_SLOW: u32 = 34;
 const F_STQ_TLB: u32 = 35;
 const F_STQ_SLOW: u32 = 37;
-/// Metà da 8 byte di un Q allineato a 8 ma non a 16: TLB degli accessi non
-/// allineati (`area::tlb_u`), poi l'host (per EL).
+/// 8-byte half of a Q aligned to 8 but not to 16: TLB of the unaligned
+/// accesses (`area::tlb_u`), then the host (per EL).
 const F_LDU: u32 = 38;
 const F_STU: u32 = 40;
-/// `simd(state, parola, x, nzcv) -> valore`: `env.simd` (ADR 0026).
+/// `simd(state, word, x, nzcv) -> value`: `env.simd` (ADR 0026).
 const F_SIMD: u32 = 42;
-/// Percorsi veloci della virgola mobile (`rt.fp<k>`, [`fp::rt_ops`]).
+/// Floating-point fast paths (`rt.fp<k>`, [`fp::rt_ops`]).
 const F_FP0: u32 = 43;
 
-/// Funzioni del runtime.
+/// Runtime functions.
 fn n_rt() -> u32 {
     F_FP0 + fp::rt_ops().len() as u32
 }
 
-/// Bit di `size` per `env.ld`/`env.st`: metà di un accesso da 16 byte non
-/// allineato a 16. L'host tratta la metà come non allineata (SCTLR_EL1.A,
-/// memoria Device), come l'interprete tratta l'accesso intero.
+/// Bit of `size` for `env.ld`/`env.st`: half of a 16-byte access not
+/// aligned to 16. The host treats the half as unaligned (SCTLR_EL1.A,
+/// Device memory), as the interpreter treats the whole access.
 pub const SIZE_PART_OF_MISALIGNED: u32 = 0x80;
 
 fn f_tlb(base: u32, el: u8, bytes: u32) -> u32 {
@@ -620,7 +620,7 @@ fn f_pair(base: u32, el: u8, bytes: u32) -> u32 {
     base + el as u32 * 2 + (bytes == 8) as u32
 }
 
-/// Nome e firma della funzione `id` del runtime.
+/// Name and signature of runtime function `id`.
 fn rt_sig(id: u32) -> (String, Vec<ValType>, Vec<ValType>) {
     use ValType::*;
     let el_n = |base: u32, per: u32| {
@@ -664,29 +664,29 @@ fn rt_sig(id: u32) -> (String, Vec<ValType>, Vec<ValType>) {
         F_STQ_SLOW => ("stq_slow".into(), vec![I32, I64, I64, I64, I64, I64, I32], vec![I32]),
         F_SIMD => ("simd".into(), vec![I32, I32, I64, I32], vec![I64]),
         _ if id >= F_FP0 && id < n_rt() => fp::rt_sig((id - F_FP0) as usize),
-        _ => unreachable!("funzione del runtime sconosciuta: {id}"),
+        _ => unreachable!("unknown runtime function: {id}"),
     }
 }
 
-/// Il modulo di runtime (ADR 0024): importa `env.mem`, `env.ld` ed `env.st`
-/// ed esporta le funzioni `rt.*` che i moduli di regioni importano. Il
-/// motore lo istanzia una volta ([`crate::Engine::runtime`]).
+/// The runtime module (ADR 0024): imports `env.mem`, `env.ld` and `env.st`
+/// and exports the `rt.*` functions that the region modules import. The
+/// engine instantiates it once ([`crate::Engine::runtime`]).
 ///
-/// - `save(state, pc0, steps, packed)`: `pc` = `pc0 + (packed & 0xfff)` e
-///   `steps` = `steps + (packed >> 12)` in `JitState` (prima di un accesso
-///   che può fallire: la spec li vuole salvati durante `ld`/`st`);
-/// - `ld_slow(state, va, size, pc0, steps, packed) -> (valore, fault)`:
-///   `save` e `env.ld`; `fault` è `exit_detail` (0 se riuscito);
-/// - `st_slow(state, va, size, valore, pc0, steps, packed) -> esito`:
-///   `save` e `env.st`; 0, `FAULT` o `STOP`;
-/// - `nzcv(k, a, b, r, vecchio) -> NZCV`: i flag di un'istruzione di tipo
-///   `k` (`FK_*`) con operandi `a`, `b` e risultato `r` (troncati a 32 bit
-///   per i tipi a 32), o `vecchio` se `k` = 0;
-/// - `ld<el>_<n>`, `st<el>_<n>`: come `ld_slow`/`st_slow` con la TLB
-///   software dell'EL prima (accessi allineati a pagine nella TLB);
-/// - `ldp<el>_<n>`, `stp<el>_<n>`, `ldp_slow`, `stp_slow`: le coppie, due
-///   accessi a `va` e `va + n` (il secondo non si fa se il primo fallisce;
-///   un load in coppia non restituisce nulla se uno dei due fallisce).
+/// - `save(state, pc0, steps, packed)`: `pc` = `pc0 + (packed & 0xfff)` and
+///   `steps` = `steps + (packed >> 12)` in `JitState` (before an access
+///   that may fail: the spec wants them saved during `ld`/`st`);
+/// - `ld_slow(state, va, size, pc0, steps, packed) -> (value, fault)`:
+///   `save` and `env.ld`; `fault` is `exit_detail` (0 if successful);
+/// - `st_slow(state, va, size, value, pc0, steps, packed) -> outcome`:
+///   `save` and `env.st`; 0, `FAULT` or `STOP`;
+/// - `nzcv(k, a, b, r, old) -> NZCV`: the flags of an instruction of kind
+///   `k` (`FK_*`) with operands `a`, `b` and result `r` (truncated to 32 bits
+///   for the 32-bit kinds), or `old` if `k` = 0;
+/// - `ld<el>_<n>`, `st<el>_<n>`: like `ld_slow`/`st_slow` with the EL's
+///   software TLB first (aligned accesses to pages in the TLB);
+/// - `ldp<el>_<n>`, `stp<el>_<n>`, `ldp_slow`, `stp_slow`: the pairs, two
+///   accesses at `va` and `va + n` (the second is not done if the first fails;
+///   a pair load returns nothing if either of the two fails).
 pub fn runtime(memory: MemoryImport) -> Vec<u8> {
     use ValType::*;
     let mut m = Module::new();
@@ -698,7 +698,7 @@ pub fn runtime(memory: MemoryImport) -> Vec<u8> {
     let vsync = m.import_func("env", "vsync", t_vsync);
     let t_simd = m.ty(&[I32, I32, I64, I32], &[I64]);
     let simd = m.import_func("env", "simd", t_simd);
-    // Indice nel runtime della funzione `id` (dopo gli import `env.*`).
+    // Index in the runtime of function `id` (after the `env.*` imports).
     fn rt(id: u32) -> u32 {
         id + 4
     }
@@ -728,7 +728,7 @@ pub fn runtime(memory: MemoryImport) -> Vec<u8> {
     f.if_(I32 as u8).local_get(0).i32_load(off::EXIT_DETAIL).else_().i32_const(0).end();
     def(&mut m, F_ST_SLOW, f);
 
-    // nzcv(k 0, a 1, b 2, r 3, vecchio 4); locale 5: bit del segno (i64).
+    // nzcv(k 0, a 1, b 2, r 3, old 4); local 5: sign bit (i64).
     let (k, a, b, r, old, sh) = (0, 1, 2, 3, 4, 5);
     let mut f = Func { locals: vec![(1, I64)], ..Func::default() };
     f.local_get(k).op(op::I32_EQZ).if_(BLOCK_EMPTY).local_get(old).op(op::RETURN).end();
@@ -740,17 +740,17 @@ pub fn runtime(memory: MemoryImport) -> Vec<u8> {
     f.local_get(r).local_get(sh).op(op::I64_SHR_U).op(op::I32_WRAP_I64).i32_const(1).op(op::I32_AND);
     f.i32_const(31).op(op::I32_SHL);
     f.local_get(r).op(op::I64_EQZ).i32_const(30).op(op::I32_SHL).op(op::I32_OR);
-    // C << 29 | V << 28 (0 per la logica)
+    // C << 29 | V << 28 (0 for logical)
     f.local_get(k).i32_const(FK_LOGIC64).op(op::I32_GE_U).if_(I32 as u8).i32_const(0).else_();
     f.local_get(k).i32_const(1).op(op::I32_AND).if_(I32 as u8);
-    // somma: C = r < a; V = (!(a ^ b) & (a ^ r)) >> sh
+    // addition: C = r < a; V = (!(a ^ b) & (a ^ r)) >> sh
     f.local_get(r).local_get(a).op(op::I64_LT_U).i32_const(29).op(op::I32_SHL);
     f.local_get(a).local_get(b).op(op::I64_XOR).i64_const(-1).op(op::I64_XOR);
     f.local_get(a).local_get(r).op(op::I64_XOR).op(op::I64_AND);
     f.local_get(sh).op(op::I64_SHR_U).op(op::I32_WRAP_I64).i32_const(1).op(op::I32_AND);
     f.i32_const(28).op(op::I32_SHL).op(op::I32_OR);
     f.else_();
-    // differenza: C = a >= b; V = ((a ^ b) & (a ^ r)) >> sh
+    // subtraction: C = a >= b; V = ((a ^ b) & (a ^ r)) >> sh
     f.local_get(a).local_get(b).op(op::I64_GE_U).i32_const(29).op(op::I32_SHL);
     f.local_get(a).local_get(b).op(op::I64_XOR);
     f.local_get(a).local_get(r).op(op::I64_XOR).op(op::I64_AND);
@@ -761,8 +761,8 @@ pub fn runtime(memory: MemoryImport) -> Vec<u8> {
     f.op(op::I32_OR);
     def(&mut m, F_NZCV, f);
 
-    // ld<el>_<n>(state 0, va 1, pc0 2, steps 3, packed 4) e
-    // st<el>_<n>(state 0, va 1, valore 2, pc0 3, steps 4, packed 5).
+    // ld<el>_<n>(state 0, va 1, pc0 2, steps 3, packed 4) and
+    // st<el>_<n>(state 0, va 1, value 2, pc0 3, steps 4, packed 5).
     for write in [false, true] {
         for el in 0..2u8 {
             for lg in 0..4u32 {
@@ -770,7 +770,7 @@ pub fn runtime(memory: MemoryImport) -> Vec<u8> {
                 let tlb = area::tlb(el, write);
                 let (va, e) = (1, if write { 6 } else { 5 });
                 let mut f = Func { locals: vec![(1, I32)], ..Func::default() };
-                // e = state + ((va >> 12) & 511) * 16; colpo se tag == va & (!0xfff | (n - 1))
+                // e = state + ((va >> 12) & 511) * 16; hit if tag == va & (!0xfff | (n - 1))
                 f.local_get(va).i64_const(8).op(op::I64_SHR_U).op(op::I32_WRAP_I64);
                 f.i32_const(((area::TLB_ENTRIES - 1) << 4) as i32).op(op::I32_AND);
                 f.local_get(0).op(op::I32_ADD).local_tee(e).i64_load(tlb);
@@ -784,8 +784,8 @@ pub fn runtime(memory: MemoryImport) -> Vec<u8> {
                 }
                 f.op(op::RETURN).end();
                 if bytes > 1 {
-                    // Non allineato: TLB degli accessi non allineati, se non
-                    // sconfina nella pagina successiva.
+                    // Unaligned: TLB of the unaligned accesses, if it does not
+                    // cross into the next page.
                     let tu = area::tlb_u(el, write);
                     f.local_get(va).op(op::I32_WRAP_I64).i32_const(bytes as i32 - 1).op(op::I32_AND);
                     f.local_get(e)
@@ -818,8 +818,8 @@ pub fn runtime(memory: MemoryImport) -> Vec<u8> {
         }
     }
 
-    // Coppie: parametri state 0, va 1, [size 2,] valori (store), pc0,
-    // steps, packed. Il secondo accesso è a `va + n` (`n` = size se c'è).
+    // Pairs: parameters state 0, va 1, [size 2,] values (store), pc0,
+    // steps, packed. The second access is at `va + n` (`n` = size if present).
     let second = |f: &mut Func, dynamic: bool, n: u32| {
         f.local_get(0).local_get(1);
         if dynamic {
@@ -885,9 +885,9 @@ pub fn runtime(memory: MemoryImport) -> Vec<u8> {
     pair_ld(&mut m, F_LDP_SLOW, F_LD_SLOW, true, 0);
     pair_st(&mut m, F_STP_SLOW, F_ST_SLOW, true, 0);
 
-    // finish(state 0, codice 1, pc 2, steps 3) -> codice: per FAULT `pc` e
-    // `steps` sono già salvati; per EXIT_STOP_SAVED sono quelli dello
-    // store, e passano all'istruzione successiva (codice STOP).
+    // finish(state 0, code 1, pc 2, steps 3) -> code: for FAULT `pc` and
+    // `steps` are already saved; for EXIT_STOP_SAVED they are those of the
+    // store, and move to the next instruction (code STOP).
     let mut f = Func::default();
     f.local_get(1).i32_const(FAULT as i32).op(op::I32_EQ).if_(BLOCK_EMPTY);
     f.i32_const(FAULT as i32).op(op::RETURN).end();
@@ -900,20 +900,20 @@ pub fn runtime(memory: MemoryImport) -> Vec<u8> {
     f.local_get(1);
     def(&mut m, F_FINISH, f);
 
-    // vsync(state): i registri SIMD/FP dall'host, una volta per corsa.
+    // vsync(state): the SIMD/FP registers from the host, once per run.
     let mut f = Func::default();
     f.local_get(0).i32_load(off::V_VALID).op(op::I32_EQZ).if_(BLOCK_EMPTY);
     f.local_get(0).call(vsync).end();
     def(&mut m, F_VSYNC, f);
 
-    // Accessi Q (16 byte) come due da 8, con le regole dell'accesso intero
-    // di `SysMem::access`: a cavallo di pagina FAULT (l'interprete traduce
-    // tutte le pagine prima di scrivere); in modalità sistema, se allineato
-    // a 8 ma non a 16, le metà vanno all'host marcate come non allineate
-    // (`SIZE_PART_OF_MISALIGNED`); altrimenti le metà usano la TLB (quelle
-    // non allineate a 8 finiscono comunque all'host, come non allineate).
-    // ldq(state 0, va 1, pc0 2, steps 3, packed 4) -> (basso, alto, fault)
-    // stq(state 0, va 1, basso 2, alto 3, pc0 4, steps 5, packed 6) -> esito
+    // Q accesses (16 bytes) as two of 8, with the rules of the whole access
+    // of `SysMem::access`: crossing a page FAULT (the interpreter translates
+    // all pages before writing); in system mode, if aligned
+    // to 8 but not to 16, the halves go to the host marked as unaligned
+    // (`SIZE_PART_OF_MISALIGNED`); otherwise the halves use the TLB (those
+    // not aligned to 8 end up at the host anyway, as unaligned).
+    // ldq(state 0, va 1, pc0 2, steps 3, packed 4) -> (low, high, fault)
+    // stq(state 0, va 1, low 2, high 3, pc0 4, steps 5, packed 6) -> outcome
     for (id, el) in [(F_LDQ_TLB, Some(0u8)), (F_LDQ_TLB + 1, Some(1)), (F_LDQ_SLOW, None)] {
         let (pc0, steps, packed, v, x, v2) = (2, 3, 4, 5, 6, 7);
         let mut f = Func { locals: vec![(1, I64), (1, I32), (1, I64)], ..Func::default() };
@@ -1012,9 +1012,9 @@ pub fn runtime(memory: MemoryImport) -> Vec<u8> {
         def(&mut m, id, f);
     }
 
-    // ldu<el>(state 0, va 1, pc0 2, steps 3, packed 4) -> (valore, fault) e
-    // stu<el>(state 0, va 1, valore 2, pc0 3, steps 4, packed 5) -> esito:
-    // `va` allineato a 8, metà di un Q non allineato a 16.
+    // ldu<el>(state 0, va 1, pc0 2, steps 3, packed 4) -> (value, fault) and
+    // stu<el>(state 0, va 1, value 2, pc0 3, steps 4, packed 5) -> outcome:
+    // `va` aligned to 8, half of a Q not aligned to 16.
     for write in [false, true] {
         for el in 0..2u8 {
             let tu = area::tlb_u(el, write);
@@ -1043,24 +1043,24 @@ pub fn runtime(memory: MemoryImport) -> Vec<u8> {
         }
     }
 
-    // simd(state, parola, x, nzcv) -> valore: `env.simd`.
+    // simd(state, word, x, nzcv) -> value: `env.simd`.
     let mut f = Func::default();
     f.local_get(0).local_get(1).local_get(2).local_get(3).call(simd);
     def(&mut m, F_SIMD, f);
 
-    // Percorsi veloci della virgola mobile (ADR 0026).
+    // Floating-point fast paths (ADR 0026).
     for k in 0..fp::rt_ops().len() {
         def(&mut m, F_FP0 + k as u32, fp::build(k, simd));
     }
     m.encode()
 }
 
-/// Il dispatcher della modalità sistema, esportato come `b0`: a partire
-/// da `pc` cerca il blocco nella cache dei salti ([`area::JC`]) e lo chiama
-/// dalla tabella, finché trova blocchi validi per `ctx` che stanno nel
-/// limite di passi e finiscono con `NEXT`. Una voce assente la chiede
-/// all'host (`env.resolve`). Restituisce `NEXT` (voce assente anche per
-/// l'host, o limite) o il codice d'uscita del blocco.
+/// The system-mode dispatcher, exported as `b0`: starting
+/// from `pc` it looks up the block in the jump cache ([`area::JC`]) and calls it
+/// from the table, as long as it finds blocks valid for `ctx` that fit within the
+/// step limit and end with `NEXT`. A missing entry is requested
+/// from the host (`env.resolve`). Returns `NEXT` (entry missing for the host too,
+/// or limit) or the exit code of the block.
 pub fn dispatcher(memory: MemoryImport) -> Vec<u8> {
     use ValType::*;
     let mut m = Module::new();
@@ -1068,7 +1068,7 @@ pub fn dispatcher(memory: MemoryImport) -> Vec<u8> {
     m.import_memory("env", "mem", memory);
     m.import_table("env", "tbl", TABLE_SIZE);
     let resolve = m.import_func("env", "resolve", t);
-    // locali: 0 stato, 1 pc (i64), 2 voce (i32), 3 w (i32), 4 codice (i32)
+    // locals: 0 state, 1 pc (i64), 2 entry (i32), 3 w (i32), 4 code (i32)
     let (s, pc, e, w, code) = (0, 1, 2, 3, 4);
     let mut f = Func { locals: vec![(1, I64), (3, I32)], ..Func::default() };
     f.loop_(BLOCK_EMPTY);
@@ -1077,21 +1077,21 @@ pub fn dispatcher(memory: MemoryImport) -> Vec<u8> {
     f.i64_const(2).op(op::I64_SHR_U).op(op::I32_WRAP_I64);
     f.i32_const((area::JC_ENTRIES - 1) as i32).op(op::I32_AND).i32_const(4).op(op::I32_SHL);
     f.local_get(s).op(op::I32_ADD).local_set(e);
-    // voce di un altro pc o di un altro contesto: la chiede all'host
-    // (`env.resolve`), che la scrive se il blocco c'è; altrimenti all'host.
+    // entry of another pc or of another context: request it from the host
+    // (`env.resolve`), which writes it if the block exists; otherwise to the host.
     f.local_get(e).i64_load(area::JC).local_get(pc).op(op::I64_NE);
     f.local_get(e).i32_load(area::JC + 8).local_get(s).i32_load(off::CTX).op(op::I32_NE);
     f.op(op::I32_OR).if_(BLOCK_EMPTY);
     f.local_get(s).call(resolve).op(op::I32_EQZ);
     f.if_(BLOCK_EMPTY).i32_const(crate::NEXT as i32).op(op::RETURN).end();
     f.end();
-    // steps + passi massimi del blocco > limit: all'host
+    // steps + maximum steps of the block > limit: to the host
     f.local_get(e).i32_load(area::JC + 12).local_set(w);
     f.local_get(s).i64_load(off::STEPS);
     f.local_get(w).i32_const(0xff).op(op::I32_AND).op(op::I64_EXTEND_I32_U).op(op::I64_ADD);
     f.local_get(s).i64_load(off::LIMIT).op(op::I64_GT_U);
     f.if_(BLOCK_EMPTY).i32_const(crate::NEXT as i32).op(op::RETURN).end();
-    // entry = w >> 26; codice = tabella[(w >> 8) & (TABLE_SIZE - 1)](s)
+    // entry = w >> 26; code = table[(w >> 8) & (TABLE_SIZE - 1)](s)
     f.local_get(s).local_get(w).i32_const(26).op(op::I32_SHR_U).i32_store(off::ENTRY);
     f.local_get(s).local_get(w).i32_const(8).op(op::I32_SHR_U);
     f.i32_const((TABLE_SIZE - 1) as i32).op(op::I32_AND).call_indirect(t);
@@ -1104,34 +1104,34 @@ pub fn dispatcher(memory: MemoryImport) -> Vec<u8> {
     m.encode()
 }
 
-/// Funzione WASM di una regione.
+/// WASM function of a region.
 ///
-/// Struttura: un blocco esterno da cui escono tutte le uscite verso la
-/// coda comune; dentro, con più blocchi base, un `loop` con un `br_table`
-/// sull'indice del prossimo blocco base (`L_NEXT`). Il codice dei blocchi
-/// base segue l'ordine degli indirizzi, quindi il passaggio al successivo
-/// in memoria è gratuito; gli altri salti interni impostano `L_NEXT` e
-/// tornano al `loop`. Ogni blocco base controlla prima di iniziare che i
-/// suoi passi stiano nel limite (`limit`), altrimenti esce con `NEXT` al
-/// suo inizio: il numero di istruzioni resta esatto anche nei cicli.
+/// Structure: an outer block from which all exits leave towards the
+/// shared tail; inside, with several base blocks, a `loop` with a `br_table`
+/// on the index of the next base block (`L_NEXT`). The code of the base
+/// blocks follows address order, so falling through to the next one
+/// in memory is free; the other internal branches set `L_NEXT` and
+/// return to the `loop`. Every base block checks before starting that its
+/// steps fit within the limit (`limit`), otherwise it exits with `NEXT` at
+/// its start: the instruction count stays exact even in loops.
 pub fn function(r: &Region) -> Func {
     function_with(r, &mut Vec::new())
 }
 
-/// Come [`function`]; `used` sono le funzioni `rt.fp<k>` (indici del
-/// runtime) che il modulo importa dopo quelle fisse, nell'ordine: la
-/// regione le chiama con l'indice `F_FP0 + posizione` e aggiunge quelle
-/// che mancano.
+/// Like [`function`]; `used` are the `rt.fp<k>` functions (runtime
+/// indices) that the module imports after the fixed ones, in order: the
+/// region calls them with index `F_FP0 + position` and adds those
+/// that are missing.
 fn function_with(r: &Region, used: &mut Vec<u32>) -> Func {
     assert!(!r.bbs.is_empty() && r.len() <= MAX_REGION.max(MAX_BLOCK));
-    // Il `loop` serve con più blocchi base o con un blocco che salta a sé.
+    // The `loop` is needed with several base blocks or with a block that jumps to itself.
     let multi = r.bbs.len() > 1
         || r.bbs[0].insns.last().and_then(|i| {
             let at = r.bbs[0].pc.wrapping_add(4 * (r.bbs[0].insns.len() as u64 - 1));
             direct_target(i, at, r.sys)
         }) == Some(r.bbs[0].pc);
     let mut body = Func::default();
-    // Tutte le uscite escono da questo blocco verso la coda comune.
+    // All exits leave this block towards the shared tail.
     body.block(BLOCK_EMPTY);
     let mut t = Tx {
         f: body,
@@ -1174,16 +1174,16 @@ fn function_with(r: &Region, used: &mut Vec<u32>) -> Func {
     }
     t.f.end();
     debug_assert_eq!(t.f.depth, 0);
-    // Coda comune: si riscrivono tutti i registri che la regione scrive
-    // (quelli non ancora scritti al punto d'uscita hanno il valore
-    // d'ingresso), poi `pc`, `steps` e il codice.
-    // Per FAULT `pc` e `steps` li ha già salvati il percorso lento (o
+    // Shared tail: all registers the region writes are written back
+    // (those not yet written at the exit point have the entry
+    // value), then `pc`, `steps` and the code.
+    // For FAULT `pc` and `steps` have already been saved by the slow path (or
     // `exit_fault`).
     let all = t.written;
     *used = std::mem::take(&mut t.fp_used);
     t.flush();
     let f = &mut t.f;
-    // NEXT (il caso comune) senza chiamate; gli altri con `rt.finish`.
+    // NEXT (the common case) without calls; the others with `rt.finish`.
     f.local_get(L_EXIT_CODE).if_(ValType::I32 as u8);
     f.local_get(L_STATE).local_get(L_EXIT_CODE).local_get(L_EXIT_PC);
     f.local_get(L_STEPS).local_get(L_EXIT_DONE).op(op::I64_ADD).call(F_FINISH);
@@ -1192,14 +1192,14 @@ fn function_with(r: &Region, used: &mut Vec<u32>) -> Func {
     f.local_get(L_STATE).local_get(L_STEPS).local_get(L_EXIT_DONE).op(op::I64_ADD).i64_store(off::STEPS);
     f.i32_const(NEXT as i32);
     f.end();
-    // Prologo: `steps`, `limit`, il blocco d'ingresso e i registri letti o
-    // scritti.
+    // Prologue: `steps`, `limit`, the entry block and the registers read or
+    // written.
     let load = t.read | all;
     let mut pro = Func::default();
     pro.local_get(L_STATE).i64_load(off::STEPS).local_set(L_STEPS);
     pro.i64_const(t.pc0 as i64).local_set(L_PC0);
     if t.simd {
-        // Registri SIMD/FP in JitState (una volta per corsa).
+        // SIMD/FP registers in JitState (once per run).
         pro.local_get(L_STATE).call(F_VSYNC);
     }
     if multi {
@@ -1229,60 +1229,60 @@ fn function_with(r: &Region, used: &mut Vec<u32>) -> Func {
     pro
 }
 
-/// Traduttore di una regione.
+/// Translator of a region.
 struct Tx {
     f: Func,
-    /// Registri letti dalla regione (da caricare nel prologo).
+    /// Registers read by the region (to load in the prologue).
     read: u64,
-    /// Registri scritti dalla regione (da riscrivere nella coda).
+    /// Registers written by the region (to write back in the tail).
     written: u64,
-    /// Indirizzo dell'istruzione corrente.
+    /// Address of the current instruction.
     pc: u64,
-    /// Parola dell'istruzione corrente.
+    /// Word of the current instruction.
     word: u32,
-    /// Indice dell'istruzione corrente nel blocco base.
+    /// Index of the current instruction in the base block.
     index: u64,
-    /// Inizio della pagina (valore di `L_PC0`).
+    /// Start of the page (value of `L_PC0`).
     pc0: u64,
-    /// Stato dei flag nel punto corrente.
+    /// State of the flags at the current point.
     fl: Fl,
-    /// SP già controllato allineato a 16 nel blocco base, e non cambiato da
-    /// allora (modalità sistema).
+    /// SP already checked to be aligned to 16 in the base block, and not changed since
+    /// (system mode).
     sp_ok: bool,
-    /// Modalità sistema: accessi con la TLB software, allineamento di SP,
-    /// TBI sui salti.
+    /// System mode: accesses with the software TLB, SP alignment,
+    /// TBI on branches.
     sys: Option<SysTarget>,
-    /// Inizio di ogni blocco base → indice.
+    /// Start of every base block → index.
     bb_index: std::collections::HashMap<u64, usize>,
-    /// Blocco base corrente.
+    /// Current base block.
     cur: usize,
-    /// Profondità del `loop` della regione (0 se c'è un solo blocco base).
+    /// Depth of the region's `loop` (0 if there is only one base block).
     loop_depth: u32,
-    /// La regione usa i registri SIMD/FP (`JitState::v`).
+    /// The region uses the SIMD/FP registers (`JitState::v`).
     simd: bool,
-    /// Percorso veloce della TLB in linea (altrimenti sempre `rt.*`).
+    /// Inline TLB fast path (otherwise always `rt.*`).
     inline_tlb: bool,
-    /// Funzioni `rt.fp<k>` importate dal modulo, oltre a quelle fisse.
+    /// `rt.fp<k>` functions imported by the module, besides the fixed ones.
     fp_used: Vec<u32>,
 }
 
-/// Da dove viene il nuovo `pc` di un'uscita.
+/// Where the new `pc` of an exit comes from.
 enum PcSrc {
     Const(u64),
-    /// Valore in cima allo stack (i64), consumato.
+    /// Value on top of the stack (i64), consumed.
     Stack,
 }
 
 impl Tx {
-    /// Codice di un blocco base.
+    /// Code of a base block.
     fn bb(&mut self, bb: &Bb, multi: bool) {
-        // All'inizio di un blocco base flag e allineamento di SP dipendono
-        // dal percorso.
+        // At the start of a base block the flags and SP alignment depend
+        // on the path.
         self.fl = Fl::Unknown;
         self.sp_ok = false;
         let steps = bb.max_steps();
         if multi && steps > 0 {
-            // Passi oltre il limite: uscita all'inizio del blocco base.
+            // Steps beyond the limit: exit at the start of the base block.
             self.f.local_get(L_STEPS).i64_const(steps as i64).op(op::I64_ADD);
             self.f.local_get(L_LIMIT).op(op::I64_GT_U).if_(BLOCK_EMPTY);
             self.exit_const(NEXT, bb.pc, 0);
@@ -1293,27 +1293,27 @@ impl Tx {
             self.pc = bb.pc.wrapping_add(4 * i as u64);
             self.word = bb.words[i];
             let k = kind_in(insn, self.sys);
-            assert!(k != Kind::Unsupported, "istruzione non traducibile nel blocco: {insn:?}");
+            assert!(k != Kind::Unsupported, "untranslatable instruction in the block: {insn:?}");
             if k == Kind::Svc {
-                assert_eq!(i + 1, bb.insns.len(), "SVC non in fondo al blocco");
+                assert_eq!(i + 1, bb.insns.len(), "SVC not at the end of the block");
                 self.exit_const(SVC, self.pc, self.index);
                 return;
             }
             self.insn(insn);
             if k == Kind::Branch || is_cond_branch(insn) {
-                assert_eq!(i + 1, bb.insns.len(), "salto non in fondo al blocco");
+                assert_eq!(i + 1, bb.insns.len(), "branch not at the end of the block");
                 return;
             }
         }
-        // Il blocco base continua all'istruzione successiva.
+        // The base block continues at the next instruction.
         let n = bb.insns.len() as u64;
         self.index = n;
         self.jump(bb.pc.wrapping_add(4 * n), n, true);
     }
 
-    /// Salto a `target` (costante) dopo `done` istruzioni del blocco base:
-    /// dentro la regione se `target` inizia un suo blocco base (senza
-    /// codice se è il successivo e `fall`), altrimenti uscita con `NEXT`.
+    /// Branch to `target` (constant) after `done` instructions of the base block:
+    /// inside the region if `target` starts one of its base blocks (with no
+    /// code if it is the next one and `fall`), otherwise exit with `NEXT`.
     fn jump(&mut self, target: u64, done: u64, fall: bool) {
         let Some(&j) = self.bb_index.get(&target) else {
             self.exit_const(NEXT, target, done);
@@ -1329,9 +1329,9 @@ impl Tx {
         f.br(rel);
     }
 
-    // --- registri -----------------------------------------------------
+    // --- registers ----------------------------------------------------
 
-    /// `xr(r)`: 31 vale XZR.
+    /// `xr(r)`: 31 is XZR.
     fn get_x(&mut self, r: u8) {
         if r == 31 {
             self.f.i64_const(0);
@@ -1341,13 +1341,13 @@ impl Tx {
         }
     }
 
-    /// `xsp(r)`: 31 vale SP.
+    /// `xsp(r)`: 31 is SP.
     fn get_xsp(&mut self, r: u8) {
         self.read |= 1 << r;
         self.f.local_get(1 + r as u32);
     }
 
-    /// `set_x(r, top)`: 31 (XZR) scarta.
+    /// `set_x(r, top)`: 31 (XZR) discards.
     fn set_x(&mut self, r: u8) {
         if r == 31 {
             self.f.op(op::DROP);
@@ -1357,7 +1357,7 @@ impl Tx {
         }
     }
 
-    /// `set_xsp(r, top)`: 31 vale SP.
+    /// `set_xsp(r, top)`: 31 is SP.
     fn set_xsp(&mut self, r: u8) {
         self.written |= 1 << r;
         if r == 31 {
@@ -1366,13 +1366,13 @@ impl Tx {
         self.f.local_set(1 + r as u32);
     }
 
-    /// NZCV (i32) sullo stack, calcolato se pigro.
+    /// NZCV (i32) on the stack, computed if lazy.
     fn get_nzcv(&mut self) {
         self.materialize();
         self.f.local_get(L_NZCV);
     }
 
-    /// NZCV = cima dello stack (i32): non più pigro.
+    /// NZCV = top of the stack (i32): no longer lazy.
     fn set_nzcv(&mut self) {
         self.read |= 1 << B_NZCV;
         self.written |= 1 << B_NZCV;
@@ -1381,7 +1381,7 @@ impl Tx {
         self.fl = Fl::Materialized;
     }
 
-    /// Porta NZCV in `L_NZCV` se è (o può essere) pigro.
+    /// Brings NZCV into `L_NZCV` if it is (or may be) lazy.
     fn materialize(&mut self) {
         self.read |= 1 << B_NZCV;
         if self.fl == Fl::Materialized {
@@ -1400,7 +1400,7 @@ impl Tx {
         self.fl = Fl::Materialized;
     }
 
-    /// Flag pigri di tipo `k`: operandi già in `L_FA`, `L_FB` e risultato
+    /// Lazy flags of kind `k`: operands already in `L_FA`, `L_FB` and result
     /// in `L_FR`.
     fn set_lazy(&mut self, k: i32) {
         self.read |= 1 << B_NZCV;
@@ -1409,16 +1409,16 @@ impl Tx {
         self.fl = Fl::Lazy(k);
     }
 
-    /// Tronca a 32 bit (estensione a zero) se `!sf`.
+    /// Truncates to 32 bits (zero extension) if `!sf`.
     fn trunc(&mut self, sf: bool) {
         if !sf {
             self.f.i64_const(0xffff_ffff).op(op::I64_AND);
         }
     }
 
-    // --- uscite -------------------------------------------------------
+    // --- exits --------------------------------------------------------
 
-    /// Riscrive in `JitState` i registri scritti finora.
+    /// Writes back into `JitState` the registers written so far.
     fn flush(&mut self) {
         for r in 0..=B_SP {
             if self.written & (1 << r) != 0 {
@@ -1426,8 +1426,8 @@ impl Tx {
             }
         }
         if self.written & (1 << B_NZCV) != 0 {
-            // I flag pigri passano alla regione successiva (e all'host) così
-            // come sono.
+            // The lazy flags pass to the next region (and to the host) as
+            // they are.
             let f = &mut self.f;
             f.local_get(L_STATE).local_get(L_NZCV).i32_store(off::NZCV);
             f.local_get(L_STATE).local_get(L_FK).i32_store(off::FK);
@@ -1437,12 +1437,12 @@ impl Tx {
         }
     }
 
-    /// Uscita con codice `code`, nuovo `pc` e `steps` aumentato di `done`
-    /// (istruzioni fatte nel blocco base): salto alla coda comune (fine
-    /// della funzione), che riscrive i registri e `JitState`.
+    /// Exit with code `code`, new `pc` and `steps` increased by `done`
+    /// (instructions done in the base block): jump to the shared tail (end
+    /// of the function), which writes back the registers and `JitState`.
     fn exit(&mut self, code: u32, pc: PcSrc, done: u64) {
         if let PcSrc::Const(v) = pc {
-            // Relativo all'inizio della pagina: costanti più corte.
+            // Relative to the start of the page: shorter constants.
             let d = v.wrapping_sub(self.pc0) as i64;
             if d.unsigned_abs() < 1 << 20 {
                 self.f.local_get(L_PC0).i64_const(d).op(op::I64_ADD);
@@ -1451,8 +1451,8 @@ impl Tx {
             }
         }
         self.f.local_set(L_EXIT_PC);
-        // Le locali partono da zero e si scrivono solo prima di uscire:
-        // `done` = 0 e `NEXT` (0) non servono.
+        // The locals start at zero and are written only before exiting:
+        // `done` = 0 and `NEXT` (0) are not needed.
         if done != 0 {
             self.f.i64_const(done as i64).local_set(L_EXIT_DONE);
         }
@@ -1460,7 +1460,7 @@ impl Tx {
             self.f.i32_const(code as i32).local_set(L_EXIT_CODE);
         }
         let depth = self.f.depth;
-        debug_assert!(depth >= 1, "uscita fuori dal blocco comune");
+        debug_assert!(depth >= 1, "exit outside the shared block");
         self.f.br(depth - 1);
     }
 
@@ -1468,15 +1468,15 @@ impl Tx {
         self.exit(code, PcSrc::Const(pc), done);
     }
 
-    /// Argomenti `pc0, steps, packed` dei percorsi lenti per l'istruzione
-    /// corrente.
+    /// Arguments `pc0, steps, packed` of the slow paths for the current
+    /// instruction.
     fn slow_args(&mut self) {
         let packed = (self.pc & 0xfff) as i32 | (self.index as i32) << 12;
         self.f.local_get(L_PC0).local_get(L_STEPS).i32_const(packed);
     }
 
-    /// Uscita per fault dell'istruzione corrente (registri come prima):
-    /// salva `pc` e `steps` e lascia decidere l'interprete.
+    /// Fault exit of the current instruction (registers as before):
+    /// saves `pc` and `steps` and lets the interpreter decide.
     fn exit_fault(&mut self) {
         self.f.local_get(L_STATE);
         self.slow_args();
@@ -1484,16 +1484,16 @@ impl Tx {
         self.exit_fault_saved();
     }
 
-    /// Uscita per fault con `pc` e `steps` già salvati (percorsi lenti).
+    /// Fault exit with `pc` and `steps` already saved (slow paths).
     fn exit_fault_saved(&mut self) {
         self.f.i32_const(FAULT as i32).local_set(L_EXIT_CODE);
         let depth = self.f.depth;
         self.f.br(depth - 1);
     }
 
-    /// Salto condizionato a `target` con la condizione (i32) in cima allo
-    /// stack; chiude sempre il blocco base: preso va a `target`, altrimenti
-    /// all'istruzione successiva (dentro la regione o con un'uscita).
+    /// Conditional branch to `target` with the condition (i32) on top of the
+    /// stack; it always closes the base block: taken it goes to `target`, otherwise
+    /// to the next instruction (inside the region or with an exit).
     fn cond_branch(&mut self, target: u64) {
         let target = self.target(target);
         let next = self.pc.wrapping_add(4);
@@ -1504,17 +1504,17 @@ impl Tx {
         self.jump(next, done, true);
     }
 
-    /// Chiude il blocco dopo un salto: `pc` in cima allo stack.
+    /// Closes the block after a branch: `pc` on top of the stack.
     fn exit_branch(&mut self) {
         let done = self.index + 1;
         self.exit(NEXT, PcSrc::Stack, done);
     }
 
-    // --- aritmetica ---------------------------------------------------
+    // --- arithmetic ---------------------------------------------------
 
-    /// `AddWithCarry(x, y, carry)` con x in `t64(0)`, y in `t64(1)`:
-    /// risultato (troncato se `!sf`) in `t64(2)`; se `flags`, NZCV nella
-    /// variabile dei flag. `carry`: `Some(c)` costante, `None` = flag C.
+    /// `AddWithCarry(x, y, carry)` with x in `t64(0)`, y in `t64(1)`:
+    /// result (truncated if `!sf`) in `t64(2)`; if `flags`, NZCV in the
+    /// flags variable. `carry`: `Some(c)` constant, `None` = flag C.
     fn add_with_carry(&mut self, sf: bool, carry: Option<bool>, flags: bool) {
         let (x, y, r) = (t64(0), t64(1), t64(2));
         if carry.is_none() {
@@ -1582,10 +1582,10 @@ impl Tx {
         self.set_nzcv();
     }
 
-    /// `add_sub(x, y, sub, setflags, sf)` con x in `t64(0)` e y in
-    /// `t64(1)`: risultato in `t64(2)`.
-    /// Con `setflags` i flag sono pigri (ADR 0024): operandi troncati in
-    /// `L_FA`, `L_FB`, risultato in `L_FR`.
+    /// `add_sub(x, y, sub, setflags, sf)` with x in `t64(0)` and y in
+    /// `t64(1)`: result in `t64(2)`.
+    /// With `setflags` the flags are lazy (ADR 0024): truncated operands in
+    /// `L_FA`, `L_FB`, result in `L_FR`.
     fn add_sub(&mut self, sub: bool, setflags: bool, sf: bool) {
         let (x, y, r) = (t64(0), t64(1), t64(2));
         let o = if sub { op::I64_SUB } else { op::I64_ADD };
@@ -1611,8 +1611,8 @@ impl Tx {
         self.set_lazy(k);
     }
 
-    /// ADDS/SUBS con operandi (troncati) in `L_FA`, `L_FB`: risultato in
-    /// `L_FR` e in `rd` (XZR scarta), flag pigri.
+    /// ADDS/SUBS with (truncated) operands in `L_FA`, `L_FB`: result in
+    /// `L_FR` and in `rd` (XZR discards), lazy flags.
     fn flag_op(&mut self, sub: bool, sf: bool, rd: u8) {
         self.f.local_get(L_FA).local_get(L_FB).op(if sub { op::I64_SUB } else { op::I64_ADD });
         self.trunc(sf);
@@ -1631,17 +1631,17 @@ impl Tx {
         self.set_lazy(k);
     }
 
-    /// Flag di AND/BIC con risultato (troncato) in cima allo stack, che
-    /// resta.
+    /// Flags of AND/BIC with the (truncated) result on top of the stack, which
+    /// stays there.
     fn logic_flags(&mut self, sf: bool) {
         self.f.local_tee(L_FR);
         self.set_lazy(if sf { FK_LOGIC64 } else { FK_LOGIC32 });
     }
 
-    /// `shift_reg(top, shift, amount, sf)`: valore in cima allo stack.
+    /// `shift_reg(top, shift, amount, sf)`: value on top of the stack.
     fn shift_reg(&mut self, shift: Shift, amount: u8, sf: bool) {
         if amount == 0 {
-            // Ogni shift di 0 è l'identità (a 32 bit tronca).
+            // Every shift by 0 is the identity (at 32 bits it truncates).
             self.trunc(sf);
             return;
         }
@@ -1666,7 +1666,7 @@ impl Tx {
         }
     }
 
-    /// `extend_reg(top, extend, shift)` a 64 bit.
+    /// `extend_reg(top, extend, shift)` at 64 bits.
     fn extend_reg(&mut self, extend: u8, shift: u8) {
         let f = &mut self.f;
         match extend {
@@ -1683,8 +1683,8 @@ impl Tx {
         }
     }
 
-    /// Lascia sullo stack (i32) `ConditionHolds(cond)`. Con i flag pigri
-    /// di tipo noto la condizione si calcola dagli operandi.
+    /// Leaves on the stack (i32) `ConditionHolds(cond)`. With lazy flags
+    /// of known kind the condition is computed from the operands.
     fn cond(&mut self, cond: u8) {
         if cond >> 1 == 7 {
             self.f.i32_const(1);
@@ -1701,7 +1701,7 @@ impl Tx {
         }
     }
 
-    /// Condizione `c` (senza il bit di negazione) dai bit di `L_NZCV`.
+    /// Condition `c` (without the negation bit) from the bits of `L_NZCV`.
     fn cond_nzcv(&mut self, c: u8) {
         let f = &mut self.f;
         let flag = |f: &mut Func, sh: i32| {
@@ -1732,12 +1732,12 @@ impl Tx {
         }
     }
 
-    /// Condizione `c` (senza il bit di negazione) dai flag pigri di tipo
-    /// `k`: `L_FA`, `L_FB`, `L_FR` (troncati a 32 bit per i tipi a 32).
+    /// Condition `c` (without the negation bit) from the lazy flags of kind
+    /// `k`: `L_FA`, `L_FB`, `L_FR` (truncated to 32 bits for the 32-bit kinds).
     fn cond_lazy(&mut self, k: i32, c: u8) {
         let w32 = matches!(k, FK_ADD32 | FK_SUB32 | FK_LOGIC32);
         let f = &mut self.f;
-        // Bit del segno di L_FR (N).
+        // Sign bit of L_FR (N).
         let n = |f: &mut Func| {
             if w32 {
                 f.local_get(L_FR).op(op::I32_WRAP_I64).i32_const(0).op(op::I32_LT_S);
@@ -1745,7 +1745,7 @@ impl Tx {
                 f.local_get(L_FR).i64_const(0).op(op::I64_LT_S);
             }
         };
-        // Confronto con segno di L_FA e L_FB.
+        // Signed comparison of L_FA and L_FB.
         let scmp = |f: &mut Func, o32: u8, o64: u8| {
             if w32 {
                 f.local_get(L_FA).op(op::I32_WRAP_I64).local_get(L_FB).op(op::I32_WRAP_I64).op(o32);
@@ -1753,7 +1753,7 @@ impl Tx {
                 f.local_get(L_FA).local_get(L_FB).op(o64);
             }
         };
-        // V dalla formula (somma se `add`).
+        // V from the formula (addition if `add`).
         let v = |f: &mut Func, add: bool| {
             f.local_get(L_FA).local_get(L_FB).op(op::I64_XOR);
             if add {
@@ -1799,7 +1799,7 @@ impl Tx {
                 }
             },
             _ => match c {
-                // Somma: C = r < a.
+                // Addition: C = r < a.
                 0 => {
                     f.local_get(L_FR).op(op::I64_EQZ);
                 }
@@ -1827,18 +1827,18 @@ impl Tx {
         }
     }
 
-    // --- memoria ------------------------------------------------------
+    // --- memory -------------------------------------------------------
 
-    /// Load di `bytes` byte dall'indirizzo in `addr`: valore esteso a zero
-    /// sullo stack; esce con FAULT se l'accesso fallisce. In modalità
-    /// sistema passa dalla TLB software (`rt.ld<el>_<n>`), altrimenti
-    /// dall'host (`rt.ld_slow`).
+    /// Load of `bytes` bytes from the address in `addr`: value zero-extended
+    /// on the stack; exits with FAULT if the access fails. In system
+    /// mode it goes through the software TLB (`rt.ld<el>_<n>`), otherwise
+    /// through the host (`rt.ld_slow`).
     fn ld(&mut self, addr: u32, bytes: u32) {
         if let Some(sys) = self.sys
             && self.inline_tlb
         {
-            // Colpo nella TLB degli accessi allineati: in linea; altrimenti
-            // `rt.ld<el>_<n>` (TLB non allineata, host).
+            // Hit in the TLB of aligned accesses: inline; otherwise
+            // `rt.ld<el>_<n>` (unaligned TLB, host).
             let tlb = area::tlb(sys.el, false);
             self.tlb_hit(addr, bytes, tlb);
             self.f.if_(ValType::I64 as u8);
@@ -1870,12 +1870,12 @@ impl Tx {
         self.f.end();
     }
 
-    /// Store di `bytes` byte del valore in `val` all'indirizzo in `addr`
-    /// (DC ZVA con `bytes` = [`ZVA_BYTES`], sempre dall'host); se è un
-    /// fault esce con FAULT. Una scrittura su codice sorvegliato (STOP): con
-    /// `stop` = `None` esce subito dopo l'istruzione (store unico, senza
-    /// altro da fare dopo), altrimenti lo segna in `t32(stop)` (0 se no)
-    /// per [`stop_after`](Self::stop_after).
+    /// Store of `bytes` bytes of the value in `val` at the address in `addr`
+    /// (DC ZVA with `bytes` = [`ZVA_BYTES`], always through the host); if it is a
+    /// fault it exits with FAULT. A write to watched code (STOP): with
+    /// `stop` = `None` it exits right after the instruction (single store, with
+    /// nothing else to do afterwards), otherwise it records it in `t32(stop)` (0 if not)
+    /// for [`stop_after`](Self::stop_after).
     fn st(&mut self, addr: u32, bytes: u32, val: u32, stop: Option<u32>) {
         if let Some(sys) = self.sys
             && self.inline_tlb
@@ -1913,10 +1913,10 @@ impl Tx {
         self.st_result(stop);
     }
 
-    /// Lascia sullo stack (i32) il colpo nella TLB software `tlb` per un
-    /// accesso di `bytes` byte all'indirizzo in `addr`, allineato: il tag
-    /// della voce è la pagina di `addr` e i bit bassi sotto `bytes` sono
-    /// zero. L'indirizzo della voce resta in `t32(2)`.
+    /// Leaves on the stack (i32) the hit in software TLB `tlb` for an
+    /// aligned access of `bytes` bytes at the address in `addr`: the tag
+    /// of the entry is the page of `addr` and the low bits below `bytes` are
+    /// zero. The entry's address stays in `t32(2)`.
     fn tlb_hit(&mut self, addr: u32, bytes: u32, tlb: u32) {
         let f = &mut self.f;
         f.local_get(addr).i64_const(8).op(op::I64_SHR_U).op(op::I32_WRAP_I64);
@@ -1926,8 +1926,8 @@ impl Tx {
         f.op(op::I64_EQ);
     }
 
-    /// Esito di uno store (0, FAULT o STOP) sullo stack: fault → uscita;
-    /// STOP → uscita dopo l'istruzione (`stop` = `None`) o segnato in
+    /// Outcome of a store (0, FAULT or STOP) on the stack: fault → exit;
+    /// STOP → exit after the instruction (`stop` = `None`) or recorded in
     /// `t32(stop)`.
     fn st_result(&mut self, stop: Option<u32>) {
         let s = stop.unwrap_or(0);
@@ -1940,8 +1940,8 @@ impl Tx {
         }
     }
 
-    /// Coppia di load di `bytes` byte (4 o 8) da `addr` e `addr + bytes`:
-    /// i due valori sullo stack (esce con FAULT se uno fallisce).
+    /// Pair of loads of `bytes` bytes (4 or 8) from `addr` and `addr + bytes`:
+    /// the two values on the stack (exits with FAULT if one fails).
     fn ld_pair(&mut self, addr: u32, bytes: u32) {
         self.f.local_get(L_STATE).local_get(addr);
         match self.sys {
@@ -1960,7 +1960,7 @@ impl Tx {
         self.f.end();
     }
 
-    /// Coppia di store dei valori in `v1` e `v2`, come [`st`](Self::st).
+    /// Pair of stores of the values in `v1` and `v2`, like [`st`](Self::st).
     fn st_pair(&mut self, addr: u32, bytes: u32, v1: u32, v2: u32, stop: Option<u32>) {
         self.f.local_get(L_STATE).local_get(addr);
         match self.sys {
@@ -1978,10 +1978,10 @@ impl Tx {
         self.st_result(stop);
     }
 
-    /// Modalità sistema, base SP: con SP non allineato a 16 esce con FAULT
-    /// e l'interprete decide (SCTLR_EL1.SA/SA0, `CheckSPAlignment`).
-    /// Una volta per blocco base finché SP non cambia in modo che possa
-    /// perdere l'allineamento (`sp_ok`).
+    /// System mode, SP base: with SP not aligned to 16 exits with FAULT
+    /// and the interpreter decides (SCTLR_EL1.SA/SA0, `CheckSPAlignment`).
+    /// Once per base block as long as SP does not change in a way that could
+    /// lose the alignment (`sp_ok`).
     fn sp_check(&mut self, rn: u8) {
         if self.sys.is_none() || rn != 31 || self.sp_ok {
             return;
@@ -1993,15 +1993,15 @@ impl Tx {
         self.sp_ok = true;
     }
 
-    /// Dopo il writeback della base SP di `offset` byte: SP resta allineato
-    /// se lo era e `offset` è multiplo di 16.
+    /// After the writeback of the SP base by `offset` bytes: SP stays aligned
+    /// if it was and `offset` is a multiple of 16.
     fn sp_writeback(&mut self, rn: u8, was_ok: bool, offset: i64) {
         if rn == 31 && was_ok && offset % 16 == 0 {
             self.sp_ok = true;
         }
     }
 
-    /// Indirizzo di un salto preso con destinazione costante.
+    /// Address of a taken branch with a constant target.
     fn target(&self, t: u64) -> u64 {
         match self.sys {
             Some(s) => s.branch_addr(t),
@@ -2009,8 +2009,8 @@ impl Tx {
         }
     }
 
-    /// `AArch64.BranchAddr` sulla destinazione in `t64(3)` (modalità
-    /// sistema con TBI), che resta in `t64(3)`.
+    /// `AArch64.BranchAddr` on the target in `t64(3)` (system
+    /// mode with TBI), which stays in `t64(3)`.
     fn branch_addr_dyn(&mut self) {
         let Some(s) = self.sys else { return };
         let f = &mut self.f;
@@ -2039,8 +2039,8 @@ impl Tx {
         f.local_set(t64(3));
     }
 
-    /// Dopo gli store dell'istruzione corrente (e il writeback): se uno ha
-    /// chiesto di fermarsi, esce con STOP dopo l'istruzione.
+    /// After the stores of the current instruction (and the writeback): if one
+    /// asked to stop, exits with STOP after the instruction.
     fn stop_after(&mut self, stops: &[u32]) {
         for (i, &s) in stops.iter().enumerate() {
             self.f.local_get(t32(s));
@@ -2057,31 +2057,31 @@ impl Tx {
 
     // --- SIMD (ADR 0024) ------------------------------------------------
 
-    /// Offset in `JitState` della metà bassa (`hi` = falso) o alta di Vr.
+    /// Offset in `JitState` of the low (`hi` = false) or high half of Vr.
     fn v_off(r: u8, hi: bool) -> u32 {
         off::V + 16 * r as u32 + if hi { 8 } else { 0 }
     }
 
-    /// Metà di Vr (i64) sullo stack.
+    /// Half of Vr (i64) on the stack.
     fn get_v(&mut self, r: u8, hi: bool) {
         self.simd = true;
         self.f.local_get(L_STATE).i64_load(Self::v_off(r, hi));
     }
 
-    /// Metà di Vr = locale `l` (i64).
+    /// Half of Vr = local `l` (i64).
     fn set_v(&mut self, r: u8, hi: bool, l: u32) {
         self.simd = true;
         self.f.local_get(L_STATE).local_get(l).i64_store(Self::v_off(r, hi));
     }
 
-    /// Metà di Vr = costante.
+    /// Half of Vr = constant.
     fn set_v_const(&mut self, r: u8, hi: bool, v: i64) {
         self.simd = true;
         self.f.local_get(L_STATE).i64_const(v).i64_store(Self::v_off(r, hi));
     }
 
-    /// Load di 16 byte (Q) da `addr`: metà bassa e alta sullo stack (esce
-    /// con FAULT se l'accesso fallisce, o se va rifatto dall'interprete).
+    /// Load of 16 bytes (Q) from `addr`: low and high half on the stack (exits
+    /// with FAULT if the access fails, or if it must be redone by the interpreter).
     fn ld_q(&mut self, addr: u32) {
         self.f.local_get(L_STATE).local_get(addr);
         self.slow_args();
@@ -2094,7 +2094,7 @@ impl Tx {
         self.f.end();
     }
 
-    /// Store di 16 byte (Q) delle metà in `lo` e `hi`, come [`st`](Self::st).
+    /// Store of 16 bytes (Q) of the halves in `lo` and `hi`, like [`st`](Self::st).
     fn st_q(&mut self, addr: u32, lo: u32, hi: u32, stop: Option<u32>) {
         self.f.local_get(L_STATE).local_get(addr).local_get(lo).local_get(hi);
         self.slow_args();
@@ -2105,15 +2105,15 @@ impl Tx {
         self.st_result(stop);
     }
 
-    /// Load/store dei registri V (`VecMemInsn::Reg` e `Pair`), come
-    /// `simd::ldst::exec`: indirizzo, accessi, registri scritti solo dopo
-    /// l'ultimo accesso, poi il writeback della base.
+    /// Load/store of the V registers (`VecMemInsn::Reg` and `Pair`), like
+    /// `simd::ldst::exec`: address, accesses, registers written only after
+    /// the last access, then the writeback of the base.
     fn vec_mem(&mut self, m: VecMemInsn) {
         match m {
             VecMemInsn::Reg { scale, load, addr, rt, rn } => {
                 self.sp_check(rn);
                 let was_ok = self.sp_ok;
-                // indirizzo in t64(4), base nuova in t64(6)
+                // address in t64(4), new base in t64(6)
                 let (writeback, wb_off) = match addr {
                     AddrMode::Imm { offset, index } => {
                         self.get_xsp(rn);
@@ -2210,7 +2210,7 @@ impl Tx {
                         self.st_pair(t64(4), bytes, t64(7), t64(3), writeback.then_some(0));
                     }
                 } else {
-                    // Due Q: a `addr` e a `addr + 16`.
+                    // Two Qs: at `addr` and at `addr + 16`.
                     self.f.local_get(t64(4)).i64_const(16).op(op::I64_ADD).local_set(t64(8));
                     if load {
                         self.ld_q(t64(4));
@@ -2248,11 +2248,11 @@ impl Tx {
                 }
             }
             VecMemInsn::Multi { .. } | VecMemInsn::Single { .. } => self.vec_struct(m),
-            other => unreachable!("load/store SIMD non tradotto: {other:?}"),
+            other => unreachable!("SIMD load/store not translated: {other:?}"),
         }
     }
 
-    /// Elemento `index` di `es` bit di Vn sullo stack (esteso a zero).
+    /// Element `index` of `es` bits of Vn on the stack (zero-extended).
     fn v_elem(&mut self, rn: u8, index: u8, es: u32) {
         let bit = index as u32 * es;
         self.get_v(rn, bit >= 64);
@@ -2265,7 +2265,7 @@ impl Tx {
         }
     }
 
-    /// Vd.<es>[index] = valore in `l` (i64), il resto invariato.
+    /// Vd.<es>[index] = value in `l` (i64), the rest unchanged.
     fn v_insert(&mut self, rd: u8, index: u8, es: u32, l: u32) {
         let bit = index as u32 * es;
         let (hi, sh) = (bit >= 64, bit % 64);
@@ -2281,12 +2281,12 @@ impl Tx {
         self.f.i64_store(Self::v_off(rd, hi));
     }
 
-    /// Istruzioni SIMD intere tradotte (`simd::int::exec`).
+    /// Translated integer SIMD instructions (`simd::int::exec`).
     fn vec_int(&mut self, i: IntInsn) {
         match i {
             IntInsn::Copy { op: cop, scalar, q, esize, index, index2, rn, rd } => {
                 let es = esize as u32;
-                // Replica di `x` (t64(0)) su 64 bit.
+                // Replication of `x` (t64(0)) over 64 bits.
                 let rep = |t: &mut Tx| {
                     t.f.local_get(t64(0));
                     let m: u64 = match es {
@@ -2375,14 +2375,14 @@ impl Tx {
                 half(self, false);
                 half(self, true);
             }
-            other => unreachable!("istruzione SIMD non tradotta: {other:?}"),
+            other => unreachable!("SIMD instruction not translated: {other:?}"),
         }
     }
 
-    /// Istruzione SIMD/FP senza memoria eseguita dall'interprete dalla
-    /// regione (`rt.simd` → `env.simd`, [`crate::helper`]): passa il
-    /// registro generale letto e NZCV, e scrive il registro generale o NZCV
-    /// restituito.
+    /// SIMD/FP instruction without memory executed by the interpreter from the
+    /// region (`rt.simd` → `env.simd`, [`crate::helper`]): passes the
+    /// general register read and NZCV, and writes the general register or NZCV
+    /// returned.
     fn simd_helper(&mut self, s: &SimdInsn) {
         let io = crate::helper::io(s);
         self.simd = true;
@@ -2411,12 +2411,12 @@ impl Tx {
         }
     }
 
-    /// CNTPCT (o CNTVCT se `virt`) dell'istruzione corrente sullo stack
-    /// (i64), come la macchina (`Machine::counter`): il numero di istruzioni
-    /// `s` = `time_base` + passi fatti, e CNTPCT = s / 8 × 5 + (s mod 8) × 5
-    /// / 8 (62,5 MHz su 100 MHz nominali); CNTVCT = CNTPCT - CNTVOFF. Senza
-    /// `time_ok` (l'host non ha dato l'orologio) esce e lo legge
-    /// l'interprete.
+    /// CNTPCT (or CNTVCT if `virt`) of the current instruction on the stack
+    /// (i64), like the machine (`Machine::counter`): the instruction count
+    /// `s` = `time_base` + steps done, and CNTPCT = s / 8 × 5 + (s mod 8) × 5
+    /// / 8 (62.5 MHz out of a nominal 100 MHz); CNTVCT = CNTPCT - CNTVOFF. Without
+    /// `time_ok` (the host did not provide the clock) it exits and the
+    /// interpreter reads it.
     fn counter(&mut self, virt: bool) {
         self.f.local_get(L_STATE).i32_load(off::TIME_OK).op(op::I32_EQZ).if_(BLOCK_EMPTY);
         self.exit_fault();
@@ -2441,8 +2441,8 @@ impl Tx {
         }
     }
 
-    /// Se la cima dello stack (i32) non è zero (interrupt smascherati), esce
-    /// con YIELD dopo l'istruzione corrente.
+    /// If the top of the stack (i32) is not zero (interrupts unmasked), exits
+    /// with YIELD after the current instruction.
     fn yield_if(&mut self) {
         self.f.if_(BLOCK_EMPTY);
         let (next, done) = (self.pc.wrapping_add(4), self.index + 1);
@@ -2450,7 +2450,7 @@ impl Tx {
         self.f.end();
     }
 
-    /// Estende un valore caricato di `1 << size` byte come chiede `op`.
+    /// Extends a loaded value of `1 << size` bytes as `op` requires.
     fn extend_load(&mut self, size: u8, op_: MemOp) {
         if let MemOp::Load { signed: true, dst64 } = op_ {
             let f = &mut self.f;
@@ -2466,7 +2466,7 @@ impl Tx {
         }
     }
 
-    // --- istruzioni ---------------------------------------------------
+    // --- instructions -------------------------------------------------
 
     fn insn(&mut self, insn: &Insn) {
         let pc = self.pc;
@@ -2522,8 +2522,8 @@ impl Tx {
                 self.f.i64_const(base.wrapping_add(imm as u64) as i64);
                 self.set_x(rd);
             }
-            // UBFM/SBFM nelle forme più comuni (LSL, LSR, ASR, UBFX, SBFX,
-            // UBFIZ, SBFIZ, estensioni): shift e maschere dirette.
+            // UBFM/SBFM in the most common forms (LSL, LSR, ASR, UBFX, SBFX,
+            // UBFIZ, SBFIZ, extensions): direct shifts and masks.
             Insn::Bitfield { sf, op: bop @ (BfOp::Ubfm | BfOp::Sbfm), r, s, rn, rd, .. } => {
                 let (d, r, s) = (if sf { 64i64 } else { 32 }, r as i64, s as i64);
                 self.get_x(rn);
@@ -2536,8 +2536,8 @@ impl Tx {
                         if left {
                             f.i64_const(mask).op(op::I64_AND).i64_const(sh).op(op::I64_SHL);
                         } else {
-                            // La maschera (al più 32 - r bit a 32 bit) toglie
-                            // anche i bit alti di Wn.
+                            // The mask (at most 32 - r bits at 32 bits) also removes
+                            // the high bits of Wn.
                             if sh != 0 {
                                 f.i64_const(sh).op(op::I64_SHR_U);
                             }
@@ -2545,7 +2545,7 @@ impl Tx {
                         }
                     }
                     (_, true) => {
-                        // Estensione del segno dei bit [s:r] (o [s:0] poi a sinistra).
+                        // Sign extension of bits [s:r] (or [s:0] then to the left).
                         f.i64_const(63 - s).op(op::I64_SHL);
                         if s >= r {
                             f.i64_const(63 - s + r).op(op::I64_SHR_S);
@@ -2817,8 +2817,8 @@ impl Tx {
             }
 
             Insn::Mrs { reg, rt } => {
-                let s = self.sys.expect("MRS di sistema solo in modalità sistema");
-                match sys_mrs(reg, s).expect("classificato da kind_in") {
+                let s = self.sys.expect("system MRS only in system mode");
+                match sys_mrs(reg, s).expect("classified by kind_in") {
                     MrsSrc::State(o) => {
                         self.f.local_get(L_STATE).i64_load(o);
                     }
@@ -2833,11 +2833,11 @@ impl Tx {
                 self.set_x(rt);
             }
             Insn::Msr { reg, rt } => {
-                let s = self.sys.expect("MSR di sistema solo in modalità sistema");
-                let o = sys_msr(reg, s).expect("classificato da kind_in");
+                let s = self.sys.expect("system MSR only in system mode");
+                let o = sys_msr(reg, s).expect("classified by kind_in");
                 if reg == SysReg::Daif {
-                    // Come `sysreg_write`: DAIF = Xt & DAIF_ALL; se un bit passa
-                    // da 1 a 0 esce con YIELD dopo l'istruzione.
+                    // Like `sysreg_write`: DAIF = Xt & DAIF_ALL; if a bit goes
+                    // from 1 to 0 it exits with YIELD after the instruction.
                     self.f.local_get(L_STATE).i32_load(off::DAIF).local_set(t32(0));
                     self.get_x(rt);
                     self.f.op(op::I32_WRAP_I64).i32_const(DAIF_ALL as i32).op(op::I32_AND).local_set(t32(1));
@@ -2851,7 +2851,7 @@ impl Tx {
                 }
             }
             Insn::MsrImm { field, imm } => {
-                // DAIFSet / DAIFClr a EL1 (kind_in), come `step_system`.
+                // DAIFSet / DAIFClr at EL1 (kind_in), like `step_system`.
                 let bits = (imm as u32 & 0xf) << 6;
                 self.f.local_get(L_STATE).local_get(L_STATE).i32_load(off::DAIF).local_tee(t32(0));
                 if field == PstateField::DaifSet {
@@ -2867,7 +2867,7 @@ impl Tx {
             }
             Insn::DcZva { rt } => {
                 if self.sys.is_some_and(|s| s.el == 0) {
-                    // DCZID_EL0.DZP (SCTLR_EL1.DZE a 0): trap nell'interprete.
+                    // DCZID_EL0.DZP (SCTLR_EL1.DZE at 0): trap in the interpreter.
                     self.f.local_get(L_STATE).i64_load(off::DCZID).i64_const(16).op(op::I64_AND);
                     self.f.op(op::I32_WRAP_I64).if_(BLOCK_EMPTY);
                     self.exit_fault();
@@ -2876,8 +2876,8 @@ impl Tx {
                 self.get_x(rt);
                 self.f.i64_const(!63).op(op::I64_AND).local_set(t64(4));
                 self.f.i64_const(0).local_set(t64(7));
-                // Sempre dall'host: 64 byte, e fault di allineamento su
-                // memoria Device come `zero_block`.
+                // Always through the host: 64 bytes, and alignment fault on
+                // Device memory like `zero_block`.
                 self.st(t64(4), ZVA_BYTES, t64(7), None);
             }
             Insn::LdSt { size, op: mop, addr, rt, rn, unpriv: _ } => {
@@ -2955,7 +2955,7 @@ impl Tx {
                 self.set_x(rt);
             }
             Insn::LdStPair { size, load, signed, index, offset, rt, rt2, rn } => {
-                // indirizzo in t64(4), base nuova (writeback) in t64(6)
+                // address in t64(4), new base (writeback) in t64(6)
                 self.sp_check(rn);
                 let was_ok = self.sp_ok;
                 self.get_xsp(rn);
@@ -3024,17 +3024,17 @@ impl Tx {
             Insn::Simd(SimdInsn::Int(i)) if self.vec_int_inline(i) => {}
             Insn::Simd(SimdInsn::Fp(f)) if self.fp_inline(f) => {}
             Insn::Simd(s) => self.simd_helper(&s),
-            other => unreachable!("istruzione non traducibile: {other:?}"),
+            other => unreachable!("untranslatable instruction: {other:?}"),
         }
     }
 
-    /// LDXR/LDAXR/STXR/STLXR e le coppie, con il monitor in `JitState`,
-    /// come `Cpu::execute`: allineamento all'accesso intero (altrimenti
-    /// FAULT e l'interprete dà l'eccezione), il load attiva il monitor, lo
-    /// store riesce se il monitor è per lo stesso indirizzo e la stessa
-    /// dimensione e la memoria ha ancora il valore letto; il monitor si
-    /// spegne dopo lo store (anche fallito). Nessuno stato cambia prima
-    /// dell'ultimo accesso che può fallire.
+    /// LDXR/LDAXR/STXR/STLXR and the pairs, with the monitor in `JitState`,
+    /// like `Cpu::execute`: alignment to the whole access (otherwise
+    /// FAULT and the interpreter raises the exception), the load activates the monitor, the
+    /// store succeeds if the monitor is for the same address and the same
+    /// size and memory still holds the value read; the monitor is
+    /// turned off after the store (even a failed one). No state changes before
+    /// the last access that can fail.
     #[allow(clippy::too_many_arguments)]
     fn exclusive(&mut self, size: u8, load: bool, pair: bool, rs: u8, rt: u8, rt2: u8, rn: u8) {
         self.sp_check(rn);
@@ -3046,7 +3046,7 @@ impl Tx {
         if total == 16 {
             self.f.local_get(t64(4)).i64_const(8).op(op::I64_ADD).local_set(t64(8));
         }
-        // Valore di `total` byte in (lo, hi): da `ld` o nuovo.
+        // Value of `total` bytes in (lo, hi): from `ld` or new.
         let load_pair = |t: &mut Tx, lo: u32, hi: u32| {
             if total <= 8 {
                 t.ld(t64(4), total);
@@ -3082,7 +3082,7 @@ impl Tx {
             }
             return;
         }
-        // Nuovo valore.
+        // New value.
         if pair && elem == 4 {
             self.get_x(rt);
             self.f.i64_const(0xffff_ffff).op(op::I64_AND);
@@ -3099,7 +3099,7 @@ impl Tx {
             }
             self.f.local_set(hi);
         }
-        // ok (t32(3)) = monitor per questo accesso e memoria invariata.
+        // ok (t32(3)) = monitor for this access and memory unchanged.
         self.f.i32_const(0).local_set(t32(3));
         self.f.i32_const(0).local_set(t32(0)).i32_const(0).local_set(t32(1));
         let f = &mut self.f;
@@ -3125,8 +3125,8 @@ impl Tx {
         if total == 16 { self.stop_after(&[0, 1]) } else { self.stop_after(&[0]) }
     }
 
-    /// Se l'indirizzo in `t64(4)` non è allineato a `1 << size`, esce con
-    /// FAULT: l'interprete riesegue e dà l'eccezione di allineamento.
+    /// If the address in `t64(4)` is not aligned to `1 << size`, exits with
+    /// FAULT: the interpreter re-executes and raises the alignment exception.
     fn misaligned_fault(&mut self, size: u8) {
         if size == 0 {
             return;
@@ -3137,10 +3137,10 @@ impl Tx {
         self.f.end();
     }
 
-    /// Dp1 sul valore in cima allo stack.
+    /// Dp1 on the value on top of the stack.
     fn dp1(&mut self, sf: bool, dop: Dp1Op) {
         let f = &mut self.f;
-        // passo di scambio: ((v >> s) & m) | ((v & m) << s)
+        // swap step: ((v >> s) & m) | ((v & m) << s)
         let swap64 = |f: &mut Func, s: i64, m: u64| {
             f.local_tee(t64(0)).i64_const(s).op(op::I64_SHR_U).i64_const(m as i64).op(op::I64_AND);
             f.local_get(t64(0)).i64_const(m as i64).op(op::I64_AND).i64_const(s).op(op::I64_SHL);
@@ -3209,8 +3209,8 @@ impl Tx {
         }
     }
 
-    /// Dp2 con x in `t64(0)` e y in `t64(1)` (già troncati): risultato
-    /// sullo stack.
+    /// Dp2 with x in `t64(0)` and y in `t64(1)` (already truncated): result
+    /// on the stack.
     fn dp2(&mut self, sf: bool, dop: Dp2Op) {
         let (x, y) = (t64(0), t64(1));
         let f = &mut self.f;
@@ -3238,8 +3238,8 @@ impl Tx {
                 }
             }
             Dp2Op::Lslv | Dp2Op::Lsrv | Dp2Op::Asrv | Dp2Op::Rorv => {
-                // Il conteggio modulo la dimensione coincide con la maschera
-                // del conteggio delle istruzioni WASM.
+                // The count modulo the size coincides with the mask
+                // of the count of the WASM instructions.
                 if sf {
                     f.local_get(x).local_get(y);
                     f.op(match dop {
@@ -3260,7 +3260,7 @@ impl Tx {
                 }
             }
             Dp2Op::Crc32 { bytes, c } => {
-                // Come `exec::crc32`: un byte alla volta, un bit alla volta.
+                // Like `exec::crc32`: one byte at a time, one bit at a time.
                 let poly: u32 = if c { 0x82F6_3B78 } else { 0xEDB8_8320 };
                 let (crc, k, n) = (t32(0), t32(1), t32(3));
                 f.local_get(x).op(op::I32_WRAP_I64).local_set(crc);
@@ -3283,8 +3283,8 @@ impl Tx {
         }
     }
 
-    /// Dp3 con a in `t64(0)`, m in `t64(1)`, n in `t64(2)`: risultato
-    /// sullo stack (non troncato).
+    /// Dp3 with a in `t64(0)`, m in `t64(1)`, n in `t64(2)`: result
+    /// on the stack (not truncated).
     fn dp3(&mut self, dop: Dp3Op) {
         let (a, m, n) = (t64(0), t64(1), t64(2));
         match dop {
@@ -3319,8 +3319,8 @@ impl Tx {
         }
     }
 
-    /// Parte alta del prodotto senza segno a 128 bit di `a` e `b`, sullo
-    /// stack. Usa i temporanei 3..=8.
+    /// High part of the unsigned 128-bit product of `a` and `b`, on the
+    /// stack. Uses temporaries 3..=8.
     fn umulh(&mut self, a: u32, b: u32) {
         let (a0, a1, b0, b1, mid, p) = (t64(3), t64(4), t64(5), t64(6), t64(7), t64(8));
         let f = &mut self.f;
@@ -3355,15 +3355,15 @@ mod tests {
     use vetro_cpu::decode;
 
     fn validate(bytes: &[u8]) {
-        wasmparser::Validator::new().validate_all(bytes).expect("modulo WASM non valido");
+        wasmparser::Validator::new().validate_all(bytes).expect("invalid WASM module");
     }
 
-    /// Ogni istruzione traducibile produce un modulo valido. Le codifiche
-    /// coprono tutte le varianti del decoder per le classi tradotte.
+    /// Every translatable instruction produces a valid module. The encodings
+    /// cover all decoder variants for the translated classes.
     #[test]
     fn every_translatable_encoding_validates() {
-        // Scorre codifiche pseudo-casuali: per ognuna traducibile, un blocco
-        // con quella sola istruzione (più una di chiusura) deve validare.
+        // Walks pseudo-random encodings: for each translatable one, a block
+        // with that single instruction (plus a closing one) must validate.
         let mut seed = 0x1234_5678_9abc_def0u64;
         let mut count = 0;
         let mut blocks = Vec::new();
@@ -3381,7 +3381,7 @@ mod tests {
             if blocks.len() == 64 {
                 let mem = MemoryImport { min: 1, shared_max: None };
                 validate(&module(&blocks, mem));
-                // Gli stessi in modalità sistema, nella tabella.
+                // The same in system mode, in the table.
                 for i in 0..4 {
                     let sys = SysTarget {
                         el: (i & 1) as u8,
@@ -3403,8 +3403,8 @@ mod tests {
         }
     }
 
-    /// Le istruzioni SIMD/FP (in linea o con `env.simd`, ADR 0026): ogni
-    /// codifica valida produce una regione valida, da sola.
+    /// The SIMD/FP instructions (inline or with `env.simd`, ADR 0026): every
+    /// valid encoding produces a valid region, on its own.
     #[test]
     fn simd_encodings_validate() {
         let mut seed = 0x0bad_cafe_1234_5678u64;
@@ -3414,7 +3414,7 @@ mod tests {
             seed ^= seed << 13;
             seed ^= seed >> 7;
             seed ^= seed << 17;
-            // Classi SIMD/FP: bit 27:25 = x111.
+            // SIMD/FP classes: bits 27:25 = x111.
             let w = (seed as u32 & !(7 << 25)) | 7 << 25;
             let insn = decode(w);
             if !matches!(insn, Insn::Simd(_)) || kind(&insn) == Kind::Unsupported {
@@ -3445,7 +3445,7 @@ mod tests {
     }
 
     #[test]
-    fn branch_addr_come_la_cpu() {
+    fn branch_addr_like_the_cpu() {
         let t = 0x5a00_0000_0040_1000u64;
         let n = 0x5a80_0000_0040_1000u64;
         let s = |tbi0, tbi1| SysTarget { el: 0, tbi0, tbi1, spsel: false, fp: true, cntk: 0 };
@@ -3456,10 +3456,10 @@ mod tests {
         assert_eq!(s(true, true).branch_addr(t), 0x0000_0000_0040_1000);
     }
 
-    /// In modalità sistema WFI, LDTR/STTR e le manutenzioni delle cache a
-    /// EL0 restano all'interprete.
+    /// In system mode WFI, LDTR/STTR and cache maintenance at
+    /// EL0 stay with the interpreter.
     #[test]
-    fn istruzioni_solo_interprete_in_modalita_sistema() {
+    fn interpreter_only_insns_in_system_mode() {
         let el0 = Some(SysTarget { el: 0, tbi0: false, tbi1: false, spsel: false, fp: true, cntk: 0 });
         let el1 = Some(SysTarget { el: 1, tbi0: false, tbi1: false, spsel: true, fp: true, cntk: 0 });
         assert_eq!(kind_in(&Insn::Wfi, None), Kind::Linear);
@@ -3472,9 +3472,9 @@ mod tests {
         assert_eq!(kind_in(&ldtr, el1), Kind::Unsupported);
     }
 
-    /// Dimensione del codice generato (ADR 0024): la compilazione pesa in
-    /// V8 in proporzione ai byte. Istruzioni tipiche del kernel a EL1, una
-    /// regione ciascuna; il limite ferma le regressioni.
+    /// Size of the generated code (ADR 0024): compilation in V8 weighs
+    /// in proportion to the bytes. Typical kernel instructions at EL1, one
+    /// region each; the limit stops regressions.
     #[test]
     fn codice_compatto() {
         let words = [
@@ -3500,14 +3500,14 @@ mod tests {
         validate(&m);
         let body: usize = r.bbs.len();
         let per = function(&r).code.len() / words.len();
-        // Prima delle regioni (ADR 0012-0013) erano circa 130.
-        assert!(per <= 80, "{per} byte per istruzione ({body} blocchi base)");
+        // Before regions (ADR 0012-0013) it was about 130.
+        assert!(per <= 80, "{per} bytes per instruction ({body} base blocks)");
     }
 
-    /// Regioni: un ciclo resta nella funzione, i salti fuori pagina e i
-    /// ritorni escono, ogni blocco base con passi è un ingresso.
+    /// Regions: a loop stays in the function, off-page branches and
+    /// returns exit, every base block with steps is an entry.
     #[test]
-    fn regione_con_ciclo() {
+    fn region_with_loop() {
         // mov x0, #10; l: subs x0, x0, #1; b.ne l; ret (tools/a64asm.sh)
         let words = [0xd2800140u32, 0xf1000400, 0x54ffffe1, 0xd65f03c0];
         let (r, sig) =
@@ -3519,18 +3519,18 @@ mod tests {
             [(0x1000, 1), (0x1004, 2), (0x100c, 1)]
         );
         assert_eq!(r.max_steps(), 1);
-        assert_eq!(sig.len(), 3 + 4, "posizione e lunghezza di ogni blocco, poi le parole");
+        assert_eq!(sig.len(), 3 + 4, "position and length of every block, then the words");
         validate(&module(&[r], MemoryImport { min: 1, shared_max: None }));
-        // Un blocco che salta a sé (b .) ha il suo ciclo.
+        // A block that jumps to itself (b .) has its own loop.
         let (r, _) = discover(0x2000, None, MAX_REGION, |a| (a == 0x2000).then_some(0x14000000)).unwrap();
         assert_eq!(r.bbs.len(), 1);
         validate(&module(&[r], MemoryImport { min: 1, shared_max: None }));
-        // SVC in testa: niente regione.
+        // SVC at the head: no region.
         assert!(discover(0x3000, None, MAX_REGION, |_| Some(0xd4000001)).is_none());
     }
 
     #[test]
-    fn ciclo_valida() {
+    fn loop_validates() {
         let words = [0xd2800140u32, 0xf1000400, 0x54ffffe1, 0xd65f03c0];
         let (r, _) =
             discover(0x1000, None, MAX_REGION, |a| words.get(((a - 0x1000) / 4) as usize).copied()).unwrap();

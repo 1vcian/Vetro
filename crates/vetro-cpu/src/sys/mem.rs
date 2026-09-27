@@ -1,22 +1,22 @@
-//! Adattatore fra l'interprete (trait [`Memory`]) e il [`SysBus`] in
-//! modalità sistema: controlli di allineamento, traduzione pagina per
-//! pagina, accessi fisici e fault dettagliati per ESR/FAR.
+//! Adapter between the interpreter ([`Memory`] trait) and the [`SysBus`] in
+//! system mode: alignment checks, page-by-page translation,
+//! physical accesses and detailed faults for ESR/FAR.
 
 use crate::mem::{Access, MemFault, Memory};
 
 use super::state::sctlr;
 use super::{AccessReq, BusFault, SysBus, TranslationRegs};
 
-/// Dimensione delle pagine da tradurre separatamente (granulo 4 KiB: un
-/// accesso non attraversa mai più di un confine di blocco più grande).
+/// Size of the pages to translate separately (4 KiB granule: an
+/// access never crosses more than one boundary of a larger block).
 const PAGE: u64 = 4096;
 
-/// Fault dell'ultimo accesso fallito, con quello che serve alla sindrome.
+/// Fault of the last failed access, with what the syndrome needs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Pending {
     Abort {
-        /// Indirizzo virtuale per FAR_EL1 (per un accesso a cavallo di due
-        /// pagine, il primo byte della pagina che fallisce, come QEMU).
+        /// Virtual address for FAR_EL1 (for an access straddling two
+        /// pages, the first byte of the page that fails, like QEMU).
         va: u64,
         fsc: u8,
         ea: bool,
@@ -46,9 +46,9 @@ impl<'a, B: SysBus + ?Sized> SysMem<'a, B> {
         MemFault { addr: va, access }
     }
 
-    /// Esegue un accesso di `len` byte: `op(bus, pa, offset, n)` per ogni
-    /// pezzo dentro una pagina. `privilege` è il livello dei permessi;
-    /// `device_fault` forza il fault di allineamento su memoria Device
+    /// Performs an access of `len` bytes: `op(bus, pa, offset, n)` for every
+    /// piece within a page. `privilege` is the permission level;
+    /// `device_fault` forces the alignment fault on Device memory
     /// (DC ZVA).
     fn access(
         &mut self,
@@ -70,15 +70,15 @@ impl<'a, B: SysBus + ?Sized> SysMem<'a, B> {
             }
             let big = if self.el == 0 { sctlr::E0E } else { sctlr::EE };
             if self.regs.sctlr & big != 0 {
-                let f = BusFault::Unimplemented("accessi ai dati big-endian (SCTLR_EL1.EE/E0E)");
+                let f = BusFault::Unimplemented("big-endian data accesses (SCTLR_EL1.EE/E0E)");
                 return Err(self.fail(va, access, f));
             }
         }
         let chunk = |va: u64, rest: usize| rest.min((PAGE - (va & (PAGE - 1))) as usize);
         let req = AccessReq { access, el: privilege, aligned };
         let regs = self.regs;
-        // A cavallo di pagina: prima si traducono tutte le pagine, così un
-        // fault di traduzione o di permesso non lascia scritture parziali.
+        // Straddling a page: all pages are translated first, so a
+        // translation or permission fault leaves no partial writes.
         let crosses = chunk(va, len) < len;
         if crosses {
             let mut off = 0;
@@ -133,9 +133,9 @@ impl<B: SysBus + ?Sized> Memory for SysMem<'_, B> {
     fn fetch(&mut self, addr: u64) -> Result<u32, MemFault> {
         let mut w = [0u8; 4];
         let el = self.el;
-        // Caso comune (in `step_system` il PC è sempre allineato): la parola
-        // sta in una pagina, quindi una traduzione e una lettura di 4 byte,
-        // gli stessi passi di `access` senza il giro generico.
+        // Common case (in `step_system` the PC is always aligned): the word
+        // fits in one page, hence one translation and one 4-byte read,
+        // the same steps as `access` without the generic path.
         if addr & 3 == 0 {
             let req = AccessReq { access: Access::Fetch, el, aligned: true };
             let pa = match self.bus.translate(&self.regs, addr, req) {

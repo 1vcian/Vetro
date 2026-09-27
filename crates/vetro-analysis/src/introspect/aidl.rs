@@ -1,19 +1,19 @@
-//! Nomi dei metodi AIDL (M8): descrittore dell'interfaccia + codice della
-//! transazione -> nome del metodo.
+//! AIDL method names (M8): interface descriptor + transaction code ->
+//! method name.
 //!
-//! La tabella `aidl_aosp15.tsv` viene dagli stub compilati dell'immagine
-//! AOSP 15 di Vetro (`tools/aosp/aidl-map.sh`: costanti `TRANSACTION_*`
-//! dei `$Stub` e `*_TRANSACTION` di `IContentProvider` nei jar di
-//! `/system/framework`), così i codici sono quelli dell'immagine che gira.
-//! Interfacce solo native (C++/NDK, HAL) e quelle dei jar negli APEX non ci
-//! sono: per loro resta il codice numerico.
+//! The `aidl_aosp15.tsv` table comes from the compiled stubs of Vetro's
+//! AOSP 15 image (`tools/aosp/aidl-map.sh`: `TRANSACTION_*` constants of
+//! the `$Stub`s and `*_TRANSACTION` of `IContentProvider` in the jars of
+//! `/system/framework`), so the codes are those of the running image.
+//! Native-only interfaces (C++/NDK, HAL) and those of the jars in the APEXes
+//! are not there: for them the numeric code remains.
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 const TABLE: &str = include_str!("aidl_aosp15.tsv");
 
-/// Codici riservati di `IBinder` (`B_PACK_CHARS`).
+/// Reserved `IBinder` codes (`B_PACK_CHARS`).
 pub const FIRST_CALL_TRANSACTION: u32 = 1;
 pub const LAST_CALL_TRANSACTION: u32 = 0x00ff_ffff;
 
@@ -21,7 +21,7 @@ const fn pack(s: &[u8; 4]) -> u32 {
     (s[0] as u32) << 24 | (s[1] as u32) << 16 | (s[2] as u32) << 8 | s[3] as u32
 }
 
-/// Nome di un codice riservato di `IBinder`, se lo è.
+/// Name of a reserved `IBinder` code, if it is one.
 pub fn reserved_code(code: u32) -> Option<&'static str> {
     Some(match code {
         c if c == pack(b"_PNG") => "PING_TRANSACTION",
@@ -54,8 +54,8 @@ fn table() -> &'static BTreeMap<&'static str, BTreeMap<u32, &'static str>> {
     })
 }
 
-/// Il metodo `code` dell'interfaccia `descriptor`, se è nella tabella (o
-/// è un codice riservato di `IBinder`).
+/// Method `code` of interface `descriptor`, if it is in the table (or
+/// is a reserved `IBinder` code).
 pub fn method(descriptor: &str, code: u32) -> Option<&'static str> {
     if let Some(r) = reserved_code(code) {
         return Some(r);
@@ -63,12 +63,12 @@ pub fn method(descriptor: &str, code: u32) -> Option<&'static str> {
     table().get(descriptor)?.get(&code).copied()
 }
 
-/// L'interfaccia è nella tabella.
+/// The interface is in the table.
 pub fn known_interface(descriptor: &str) -> bool {
     table().contains_key(descriptor)
 }
 
-/// Numero di interfacce e di metodi della tabella.
+/// Number of interfaces and of methods in the table.
 pub fn table_size() -> (usize, usize) {
     let t = table();
     (t.len(), t.values().map(BTreeMap::len).sum())

@@ -1,5 +1,5 @@
-// Regressioni del kernel emulato trovate in revisione (M2/M3): ogni caso
-// stampa il proprio esito; Vetro e QEMU devono stampare lo stesso
+// Regressions of the emulated kernel found in review (M2/M3): each case
+// prints its own outcome; Vetro and QEMU must print the same
 // (tests/linux/tests/regress.rs).
 #define _GNU_SOURCE
 #include <errno.h>
@@ -30,7 +30,7 @@ static void res(const char *what, long r) {
         printf("%s: %ld\n", what, r);
 }
 
-// /proc/self/fd/N si segue solo dove Linux segue l'ultimo componente.
+// /proc/self/fd/N is followed only where Linux follows the last component.
 static void proc_fd_links(void) {
     int fd = open("f", O_CREAT | O_RDWR, 0644);
     char p[64];
@@ -50,7 +50,7 @@ static void proc_fd_links(void) {
     unlink("f");
 }
 
-// Tempi enormi (tv_sec vicino a INT64_MAX) non devono traboccare.
+// Huge times (tv_sec close to INT64_MAX) must not overflow.
 static void huge_timeouts(void) {
     struct timespec huge = {INT64_MAX, 0};
     sigset_t set;
@@ -67,14 +67,14 @@ static void huge_timeouts(void) {
     res("nanosleep breve", nanosleep(&rq, &rem));
 }
 
-// mremap: MREMAP_FIXED fuori dallo spazio d'indirizzamento, DONTUNMAP.
+// mremap: MREMAP_FIXED outside the address space, DONTUNMAP.
 static void mremap_cases(void) {
     long pg = 4096;
     char *p = mmap(NULL, pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     p[0] = 7;
-    // Solo se fallisce: l'errno dipende dalla versione di QEMU (8.x ENOMEM,
-    // 10 EINVAL come Linux); il difetto era che riusciva, su un indirizzo
-    // avvolto.
+    // Only if it fails: the errno depends on the QEMU version (8.x ENOMEM,
+    // 10 EINVAL like Linux); the bug was that it succeeded, on a wrapped
+    // address.
     void *r = mremap(p, pg, 2 * pg, MREMAP_MAYMOVE | MREMAP_FIXED, (void *)0xfffffffffffff000UL);
     printf("mremap FIXED oltre la fine fallisce: %d\n", r == MAP_FAILED);
     r = mremap(p, pg, 2 * pg, MREMAP_DONTUNMAP);
@@ -89,7 +89,7 @@ static void mremap_cases(void) {
     }
 }
 
-// Lock su una pipe: si rilasciano alla chiusura come sui file.
+// Locks on a pipe: they are released on close as on files.
 static void pipe_locks(void) {
     int fds[2];
     struct flock fl = {.l_type = F_WRLCK, .l_whence = SEEK_SET, .l_start = 0, .l_len = 0};
@@ -113,8 +113,8 @@ static void pipe_locks(void) {
 
 static void on_alarm(int s) { (void)s; }
 
-// F_SETLKW interrotta (EINTR) non deve lasciare un'attesa fantasma che fa
-// dare EDEADLK a un altro processo.
+// An interrupted F_SETLKW (EINTR) must not leave a phantom wait that makes
+// another process get EDEADLK.
 static void setlkw_eintr(void) {
     int fd = open("lk", O_CREAT | O_RDWR, 0644);
     ftruncate(fd, 16);
@@ -130,14 +130,14 @@ static void setlkw_eintr(void) {
         fcntl(fd, F_SETLK, &b);
         write(to_parent[1], "r", 1);
         read(to_child[0], &x, 1);
-        // Il genitore non aspetta più: F_SETLKW deve bloccarsi, non EDEADLK.
+        // The parent no longer waits: F_SETLKW must block, not EDEADLK.
         int r = fcntl(fd, F_SETLKW, &a);
         _exit(r == 0 ? 0 : errno);
     }
     read(to_parent[0], &x, 1);
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
-    sa.sa_handler = on_alarm; // senza SA_RESTART
+    sa.sa_handler = on_alarm; // without SA_RESTART
     sigaction(SIGALRM, &sa, NULL);
     sigset_t set;
     sigemptyset(&set);
@@ -157,7 +157,7 @@ static void setlkw_eintr(void) {
     unlink("lk");
 }
 
-// RLIMIT_NOFILE a 0: nessun nuovo descrittore.
+// RLIMIT_NOFILE at 0: no new descriptor.
 static void nofile_zero(void) {
     pid_t c = fork();
     if (c == 0) {
@@ -171,7 +171,7 @@ static void nofile_zero(void) {
     res("open con RLIMIT_NOFILE = 0 (0 = EMFILE)", WEXITSTATUS(st));
 }
 
-// /proc/self/pagemap: pagine toccate e non toccate, offset enorme.
+// /proc/self/pagemap: touched and untouched pages, huge offset.
 static void pagemap(void) {
     int fd = open("/proc/self/pagemap", O_RDONLY);
     char *p = mmap(NULL, 2 * 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -185,8 +185,8 @@ static void pagemap(void) {
     close(fd);
 }
 
-// pwritev su un file con una MAP_SHARED: la mappatura vede i dati;
-// preadv su un descrittore O_PATH: EBADF.
+// pwritev on a file with a MAP_SHARED: the mapping sees the data;
+// preadv on an O_PATH descriptor: EBADF.
 static void vectored_io(void) {
     int fd = open("m", O_CREAT | O_RDWR | O_TRUNC, 0644);
     ftruncate(fd, 4096);
@@ -205,7 +205,7 @@ static void vectored_io(void) {
     unlink("m");
 }
 
-// fstat di un O_PATH|O_NOFOLLOW su un link simbolico: il link stesso.
+// fstat of an O_PATH|O_NOFOLLOW on a symbolic link: the link itself.
 static void opath_symlink(void) {
     symlink("bersaglio", "ln");
     int fd = open("ln", O_PATH | O_NOFOLLOW);
@@ -215,7 +215,7 @@ static void opath_symlink(void) {
     unlink("ln");
 }
 
-// F_SETOWN: INT_MIN non è un gruppo valido.
+// F_SETOWN: INT_MIN is not a valid group.
 static void setown(void) {
     int fds[2];
     pipe(fds);

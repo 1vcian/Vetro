@@ -1,10 +1,10 @@
-//! Esecuzione nativa di programmi Linux arm64 statici in user mode.
+//! Native execution of static arm64 Linux programs in user mode.
 //!
-//! [`linux`] emula il kernel: processi, thread, file, memoria, segnali e
-//! tempo virtuale. È il banco di prova della CPU prima dell'avvio del kernel
-//! vero (M3) e il motore dei test differenziali contro QEMU.
+//! [`linux`] emulates the kernel: processes, threads, files, memory, signals and
+//! virtual time. It is the CPU's test bench before booting the real
+//! kernel (M3) and the engine of the differential tests against QEMU.
 
-/// Il caricatore del kernel sta in `vetro-machine` (serve anche al browser).
+/// The kernel loader lives in `vetro-machine` (the browser needs it too).
 pub use vetro_machine::boot;
 pub mod analysis;
 pub mod disk;
@@ -16,33 +16,33 @@ pub mod netcap;
 
 use linux::{Config, Exit, Kernel};
 
-/// Risultato di un'esecuzione completa.
+/// Result of a complete run.
 pub struct Outcome {
     pub exit: Exit,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
-    /// Istruzioni eseguite (tutti i processi).
+    /// Instructions executed (all processes).
     pub steps: u64,
-    /// Contatori del JIT, se attivo.
+    /// JIT counters, if enabled.
     pub jit: Option<vetro_jit::JitStats>,
 }
 
-/// Esegue un ELF con gli argomenti e l'ambiente dati.
-/// Porta il limite soft dei descrittori dell'host al massimo consentito: ogni
-/// file aperto dal guest è un descrittore dell'host, e il guest deve arrivare
-/// al proprio RLIMIT_NOFILE (EMFILE) prima che l'host finisca i suoi.
-/// Restituisce il limite soft di prima.
+/// Runs an ELF with the given arguments and environment.
+/// Raises the host's soft descriptor limit to the maximum allowed: every
+/// file opened by the guest is a host descriptor, and the guest must reach
+/// its own RLIMIT_NOFILE (EMFILE) before the host runs out of its own.
+/// Returns the previous soft limit.
 pub fn raise_fd_limit() -> u64 {
     let mut r = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
     let before;
-    // SAFETY: `r` è una struct rlimit valida per get/setrlimit.
+    // SAFETY: `r` is a valid struct rlimit for get/setrlimit.
     unsafe {
         if libc::getrlimit(libc::RLIMIT_NOFILE, &mut r) != 0 {
             return 1024;
         }
         before = r.rlim_cur;
         if r.rlim_cur < r.rlim_max {
-            // macOS rifiuta valori oltre OPEN_MAX anche con hard illimitato.
+            // macOS rejects values above OPEN_MAX even with an unlimited hard limit.
             r.rlim_cur = r.rlim_max.min(1 << 20);
             if libc::setrlimit(libc::RLIMIT_NOFILE, &r) != 0 {
                 r.rlim_cur = 10240;
@@ -66,7 +66,7 @@ pub fn run_elf(
     k.spawn(image, &argv, &envp, exe)?;
     let exit = k.run();
     if let Some(p) = k.jit_profile() {
-        eprintln!("vetro: {}vetro: chiamate a env.simd: {}", p.report(40), vetro_jit::helper::calls());
+        eprintln!("vetro: {}vetro: calls to env.simd: {}", p.report(40), vetro_jit::helper::calls());
         if let Some(r) = vetro_jit::helper::profile_report(20) {
             eprint!("vetro: env.simd, {r}");
         }

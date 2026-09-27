@@ -1,15 +1,15 @@
-//! Binder grezzo: i comandi di `ioctl(BINDER_WRITE_READ)` e le
-//! transazioni che contengono, con i byte del Parcel. È la base del
-//! decoder di M8 (mappatura AIDL): qui solo la struttura del protocollo
-//! (`include/uapi/linux/android/binder.h`), a 64 bit.
+//! Raw Binder: the commands of `ioctl(BINDER_WRITE_READ)` and the
+//! transactions they contain, with the Parcel bytes. It is the base of
+//! M8's decoder (AIDL mapping): here only the protocol structure
+//! (`include/uapi/linux/android/binder.h`), 64-bit.
 //!
-//! Ogni comando è un codice `_IOC` seguito dal suo carico, lungo quanto
-//! dice il campo dimensione del codice: la lista si divide senza tabelle.
+//! Each command is an `_IOC` code followed by its payload, as long as the
+//! code's size field says: the list splits without tables.
 
 /// `_IOWR('b', 1, struct binder_write_read)`.
 pub const BINDER_WRITE_READ: u64 = 0xc030_6201;
 
-/// `struct binder_write_read` (48 byte).
+/// `struct binder_write_read` (48 bytes).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct WriteRead {
     pub write_size: u64,
@@ -35,7 +35,7 @@ impl WriteRead {
     }
 }
 
-/// Un comando del flusso di scrittura (`BC_*`) o di lettura (`BR_*`).
+/// A command of the write stream (`BC_*`) or of the read stream (`BR_*`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Command {
     pub code: u32,
@@ -92,7 +92,7 @@ const BR: [&str; 21] = [
 ];
 
 impl Command {
-    /// Tipo `_IOC` (`'c'` per BC, `'r'` per BR).
+    /// `_IOC` type (`'c'` for BC, `'r'` for BR).
     pub fn ioc_type(&self) -> u8 {
         (self.code >> 8) as u8
     }
@@ -101,8 +101,8 @@ impl Command {
         self.code as u8
     }
 
-    /// Nome del comando (`BR_TRANSACTION_SEC_CTX` si distingue dalla
-    /// dimensione).
+    /// Command name (`BR_TRANSACTION_SEC_CTX` is told apart by its
+    /// size).
     pub fn name(&self) -> String {
         let nr = usize::from(self.nr());
         match self.ioc_type() {
@@ -114,7 +114,7 @@ impl Command {
         .unwrap_or_else(|| format!("0x{:08x}", self.code))
     }
 
-    /// Porta una transazione (o una risposta).
+    /// Carries a transaction (or a reply).
     pub fn transaction(&self) -> Option<Transaction> {
         let reply = match (self.ioc_type(), self.nr()) {
             (b'c', 0 | 17) | (b'r', 2) => false,
@@ -146,12 +146,12 @@ impl Command {
     }
 }
 
-/// Divide un flusso di comandi binder.
+/// Splits a stream of binder commands.
 pub fn commands(buf: &[u8]) -> Vec<Command> {
     let mut out = Vec::new();
     let mut p = 0usize;
     while p + 4 <= buf.len() && out.len() < 4096 {
-        let code = u32::from_le_bytes(buf[p..p + 4].try_into().expect("4 byte"));
+        let code = u32::from_le_bytes(buf[p..p + 4].try_into().expect("4 bytes"));
         let size = (code >> 16 & 0x3fff) as usize;
         p += 4;
         let Some(payload) = buf.get(p..p + size) else { break };
@@ -161,18 +161,18 @@ pub fn commands(buf: &[u8]) -> Vec<Command> {
     out
 }
 
-/// Flag `TF_ONE_WAY`.
+/// `TF_ONE_WAY` flag.
 pub const TF_ONE_WAY: u32 = 1;
 
-/// Una transazione (`struct binder_transaction_data`) con i suoi dati.
+/// A transaction (`struct binder_transaction_data`) with its data.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Transaction {
     /// `BC_TRANSACTION`, `BR_REPLY`, ...
     pub command: String,
     pub reply: bool,
-    /// Ricevuta (BR, nel flusso di lettura) o inviata (BC).
+    /// Received (BR, in the read stream) or sent (BC).
     pub incoming: bool,
-    /// Handle (inviata) o puntatore del nodo (ricevuta).
+    /// Handle (sent) or node pointer (received).
     pub target: u64,
     pub cookie: u64,
     pub code: u32,
@@ -181,13 +181,13 @@ pub struct Transaction {
     pub sender_euid: u32,
     pub data_size: u64,
     pub offsets_size: u64,
-    /// Indirizzi utente dei dati del Parcel e della tabella degli oggetti.
+    /// User addresses of the Parcel data and of the object table.
     pub buffer: u64,
     pub offsets: u64,
-    /// I byte del Parcel (letti dalla memoria del processo; possono essere
-    /// meno di `data_size` se troncati o non leggibili).
+    /// The Parcel bytes (read from the process memory; may be fewer
+    /// than `data_size` if truncated or unreadable).
     pub data: Vec<u8>,
-    /// Offset degli oggetti binder nei dati.
+    /// Offsets of the binder objects in the data.
     pub objects: Vec<u64>,
 }
 
@@ -196,10 +196,10 @@ impl Transaction {
         self.flags & TF_ONE_WAY != 0
     }
 
-    /// Il descrittore d'interfaccia all'inizio del Parcel
-    /// (`writeInterfaceToken`), se c'è: dopo strict mode, work source e
-    /// intestazione `SYST`/`VNDR` (Android 11+), o con meno campi nelle
-    /// versioni precedenti.
+    /// The interface descriptor at the start of the Parcel
+    /// (`writeInterfaceToken`), if present: after strict mode, work source and
+    /// the `SYST`/`VNDR` header (Android 11+), or with fewer fields in
+    /// earlier versions.
     pub fn interface(&self) -> Option<String> {
         if self.reply {
             return None;
@@ -208,10 +208,10 @@ impl Transaction {
     }
 }
 
-/// Descrittore d'interfaccia (String16) in testa a un Parcel.
+/// Interface descriptor (String16) at the head of a Parcel.
 pub fn interface_token(d: &[u8]) -> Option<String> {
     for skip in [12usize, 8, 4] {
-        let Some(len) = d.get(skip..skip + 4).map(|b| i32::from_le_bytes(b.try_into().expect("4 byte")))
+        let Some(len) = d.get(skip..skip + 4).map(|b| i32::from_le_bytes(b.try_into().expect("4 bytes")))
         else {
             continue;
         };
@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn comandi_e_transazioni() {
-        // BC_INCREFS (4 byte), BC_TRANSACTION, BC_ENTER_LOOPER (0 byte).
+        // BC_INCREFS (4 bytes), BC_TRANSACTION, BC_ENTER_LOOPER (0 bytes).
         let mut w = 0x4004_6304u32.to_le_bytes().to_vec();
         w.extend_from_slice(&7u32.to_le_bytes());
         w.extend_from_slice(&tr(0x4040_6300, 3, 0x5f4e_5446, TF_ONE_WAY, 96));
@@ -260,7 +260,7 @@ mod tests {
         assert_eq!((t.target, t.code, t.data_size, t.buffer), (3, 0x5f4e_5446, 96, 0x7000_1000));
         assert!(t.one_way() && !t.reply && !t.incoming);
         assert!(cmds[0].transaction().is_none());
-        // Flusso di lettura: BR_NOOP, BR_TRANSACTION_SEC_CTX, BR_REPLY.
+        // Read stream: BR_NOOP, BR_TRANSACTION_SEC_CTX, BR_REPLY.
         let mut r = 0x0000_720cu32.to_le_bytes().to_vec();
         let mut sec = tr(0x8048_7202, 0xdead, 1, 0, 8);
         sec.extend_from_slice(&[0; 8]);
@@ -273,7 +273,7 @@ mod tests {
         );
         assert!(cmds[1].transaction().unwrap().incoming);
         assert!(cmds[2].transaction().unwrap().reply);
-        // Troncato: niente panic, comandi completi soltanto.
+        // Truncated: no panic, complete commands only.
         for cut in 0..r.len() {
             let _ = commands(&r[..cut]);
         }

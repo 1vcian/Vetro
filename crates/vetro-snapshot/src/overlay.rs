@@ -1,88 +1,88 @@
-//! File dell'overlay copy-on-write persistente di un disco (M6, ADR 0016).
+//! File of a disk's persistent copy-on-write overlay (M6, ADR 0016).
 //!
-//! Le scritture del guest su un disco con un'immagine base in sola lettura
-//! (un file, un URL letto con HTTP Range) stanno in cluster da
-//! [`CLUSTER`] byte (`CowBackend` di `vetro-platform`). Questo modulo dà il
-//! formato del file che li conserva fra una sessione e l'altra, uguale per
-//! la CLI (`vetro boot --disk=... --overlay=FILE`) e per il browser (OPFS):
+//! The guest's writes to a disk with a read-only base image
+//! (a file, a URL read with HTTP Range) live in clusters of
+//! [`CLUSTER`] bytes (`CowBackend` in `vetro-platform`). This module gives the
+//! format of the file that keeps them from one session to the next, the same for
+//! the CLI (`vetro boot --disk=... --overlay=FILE`) and for the browser (OPFS):
 //!
 //! ```text
-//! intestazione, HEADER_LEN = 4096 byte:
-//!   "VETROCOW"  u32 versione  u32 CLUSTER  u64 dimensione del disco
-//!   u64 generazione  u64 slot  u32 lunghezza dell'identità  identità
-//!   ... zeri ...  u64 hash64 dei primi 4088 byte (all'offset 4088)
-//! slot k all'offset HEADER_LEN + k * SLOT_LEN:
-//!   u64 cluster (FREE = slot libero)  u64 controllo  CLUSTER byte di dati
+//! header, HEADER_LEN = 4096 bytes:
+//!   "VETROCOW"  u32 version  u32 CLUSTER  u64 disk size
+//!   u64 generation  u64 slots  u32 identity length  identity
+//!   ... zeros ...  u64 hash64 of the first 4088 bytes (at offset 4088)
+//! slot k at offset HEADER_LEN + k * SLOT_LEN:
+//!   u64 cluster (FREE = free slot)  u64 check  CLUSTER bytes of data
 //! ```
 //!
-//! - **Identità della base**: una stringa scelta dall'host (URL, dimensione
-//!   ed ETag nel browser; nome, dimensione e data di modifica nella CLI).
-//!   Un overlay di un'altra base, o di un disco di un'altra dimensione, si
-//!   scarta ([`LoadError::Mismatch`]): applicato a un'altra immagine sarebbe
-//!   un filesystem rovinato.
-//! - **Scritture sul posto**: ogni cluster ha il suo slot; riscriverlo
-//!   riscrive lo slot, un cluster nuovo prende uno slot libero o uno nuovo in
-//!   fondo. Niente registro da compattare: il file è grande quanto i cluster
-//!   vivi (più gli slot liberati).
-//! - **Ordine**: [`Overlay::update`] dà le scritture da fare ([`Patches`]),
-//!   con l'intestazione (generazione e numero di slot) per ultima. Un'
-//!   interruzione prima dell'intestazione lascia gli slot nuovi fuori dal
-//!   conto; uno slot scritto a metà ha il controllo sbagliato e si ignora
-//!   (quel cluster torna quello della base).
-//! - **Generazione**: cresce a ogni gruppo di scritture che cambia qualcosa.
-//!   Il browser la mette accanto allo snapshot della macchina: uno snapshot
-//!   vale solo con l'overlay alla stessa generazione (ADR 0016).
+//! - **Base identity**: a string chosen by the host (URL, size
+//!   and ETag in the browser; name, size and modification date in the CLI).
+//!   An overlay of another base, or of a disk of another size, is
+//!   discarded ([`LoadError::Mismatch`]): applied to another image it would be
+//!   a corrupted filesystem.
+//! - **In-place writes**: every cluster has its slot; rewriting it
+//!   rewrites the slot, a new cluster takes a free slot or a new one at the
+//!   end. No log to compact: the file is as large as the live
+//!   clusters (plus the freed slots).
+//! - **Ordering**: [`Overlay::update`] gives the writes to perform ([`Patches`]),
+//!   with the header (generation and slot count) last. An
+//!   interruption before the header leaves the new slots out of the
+//!   count; a half-written slot has the wrong check and is ignored
+//!   (that cluster goes back to the base's).
+//! - **Generation**: grows with every group of writes that changes something.
+//!   The browser stores it next to the machine snapshot: a snapshot
+//!   is valid only with the overlay at the same generation (ADR 0016).
 //!
-//! Il modulo non fa I/O: chi chiama legge il file intero per
-//! [`Overlay::load`] e applica le [`Patches`] (JS con
-//! `FileSystemSyncAccessHandle`, la CLI con `write_at`).
+//! The module does no I/O: the caller reads the whole file for
+//! [`Overlay::load`] and applies the [`Patches`] (JS with
+//! `FileSystemSyncAccessHandle`, the CLI with `write_at`).
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::hash64;
 
-/// Primi 8 byte del file.
+/// First 8 bytes of the file.
 pub const MAGIC: [u8; 8] = *b"VETROCOW";
-/// Versione del formato del file.
+/// File format version.
 pub const VERSION: u32 = 1;
-/// Byte di un cluster (quelli di `CowBackend::CLUSTER`).
+/// Bytes in a cluster (those of `CowBackend::CLUSTER`).
 pub const CLUSTER: u64 = 4096;
-/// Byte dell'intestazione.
+/// Header bytes.
 pub const HEADER_LEN: u64 = 4096;
-/// Byte di uno slot: cluster, controllo, dati.
+/// Bytes in a slot: cluster, check, data.
 pub const SLOT_LEN: u64 = 16 + CLUSTER;
-/// Cluster di uno slot libero.
+/// Cluster of a free slot.
 pub const FREE: u64 = u64::MAX;
-/// Lunghezza massima dell'identità della base.
+/// Maximum length of the base identity.
 pub const MAX_IDENTITY: usize = HEADER_LEN as usize - 64;
 
-/// Perché un file non si può usare: in tutti i casi l'overlay si scarta e
-/// si riparte da uno vuoto (le [`Patches`] successive troncano il file).
+/// Why a file cannot be used: in every case the overlay is discarded and
+/// we start again from an empty one (the following [`Patches`] truncate the file).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoadError {
-    /// File valido di un'altra immagine base (o di un disco di un'altra
-    /// dimensione).
+    /// Valid file of another base image (or of a disk of another
+    /// size).
     Mismatch(String),
-    /// Non è un overlay leggibile (magia, versione, intestazione rovinata).
+    /// Not a readable overlay (magic, version, corrupted header).
     Corrupt(String),
 }
 
 impl core::fmt::Display for LoadError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            LoadError::Mismatch(why) => write!(f, "overlay di un'altra immagine base ({why}): scartato"),
-            LoadError::Corrupt(why) => write!(f, "overlay illeggibile ({why}): scartato"),
+            LoadError::Mismatch(why) => write!(f, "overlay of another base image ({why}): discarded"),
+            LoadError::Corrupt(why) => write!(f, "unreadable overlay ({why}): discarded"),
         }
     }
 }
 
-/// Scritture da fare sul file, in ordine: prima l'eventuale troncamento,
-/// poi i byte ai loro offset (l'intestazione per ultima).
+/// Writes to perform on the file, in order: first the truncation, if any,
+/// then the bytes at their offsets (the header last).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Patches {
-    /// Tronca il file a questa lunghezza prima delle scritture.
+    /// Truncates the file to this length before the writes.
     pub truncate: Option<u64>,
-    /// (offset, byte).
+    /// (offset, bytes).
     pub writes: Vec<(u64, Vec<u8>)>,
 }
 
@@ -91,9 +91,9 @@ impl Patches {
         self.truncate.is_none() && self.writes.is_empty()
     }
 
-    /// Codifica per il JS (`vetro_overlay_take`): u64 lunghezza a cui
-    /// troncare (`u64::MAX` = niente), u32 numero di scritture, poi per
-    /// ognuna u64 offset, u32 lunghezza e i byte. Little endian.
+    /// Encoding for JS (`vetro_overlay_take`): u64 length to
+    /// truncate to (`u64::MAX` = none), u32 number of writes, then for
+    /// each one u64 offset, u32 length and the bytes. Little endian.
     pub fn encode(&self) -> Vec<u8> {
         let n: usize = self.writes.iter().map(|(_, b)| 12 + b.len()).sum();
         let mut out = Vec::with_capacity(12 + n);
@@ -107,8 +107,8 @@ impl Patches {
         out
     }
 
-    /// Applica le scritture a un file tenuto in memoria (test, e riferimento
-    /// per chi le applica a un file vero).
+    /// Applies the writes to a file held in memory (tests, and reference
+    /// for whoever applies them to a real file).
     pub fn apply_to(&self, file: &mut Vec<u8>) {
         if let Some(n) = self.truncate {
             file.truncate(n as usize);
@@ -123,41 +123,41 @@ impl Patches {
     }
 }
 
-/// Somma di controllo di uno slot: lega i dati al cluster.
+/// Checksum of a slot: binds the data to the cluster.
 fn slot_check(cluster: u64, data: &[u8]) -> u64 {
     hash64(data) ^ cluster.rotate_left(17) ^ 0x5a17_c0de_0f5e_7a11
 }
 
-/// Lo stato di un file di overlay: dove sta ogni cluster, gli slot liberi,
-/// la generazione.
+/// The state of an overlay file: where every cluster is, the free slots,
+/// the generation.
 #[derive(Clone, Debug)]
 pub struct Overlay {
     identity: Vec<u8>,
     disk_size: u64,
     generation: u64,
-    /// Slot usati nel file (liberi compresi).
+    /// Slots used in the file (free ones included).
     slots: u64,
-    /// cluster -> (slot, controllo dei dati).
+    /// cluster -> (slot, data check).
     map: BTreeMap<u64, (u64, u64)>,
     free: BTreeSet<u64>,
-    /// Slot con il controllo sbagliato trovati da [`load`](Self::load).
+    /// Slots with the wrong check found by [`load`](Self::load).
     damaged: u64,
-    /// Il file va riscritto da capo (nuovo, o scartato): la prossima
-    /// [`update`](Self::update) tronca e scrive l'intestazione.
+    /// The file must be rewritten from scratch (new, or discarded): the next
+    /// [`update`](Self::update) truncates and writes the header.
     fresh: bool,
 }
 
-/// Quello che [`Overlay::load`] ha trovato.
+/// What [`Overlay::load`] found.
 pub struct Loaded<'a> {
     pub overlay: Overlay,
-    /// I cluster del file (indice, dati lunghi come il cluster nel disco),
-    /// in ordine di indice.
+    /// The file's clusters (index, data as long as the cluster in the disk),
+    /// in index order.
     pub clusters: Vec<(u64, &'a [u8])>,
 }
 
 impl Overlay {
-    /// Overlay vuoto per il disco di `disk_size` byte con base `identity`
-    /// (tagliata a [`MAX_IDENTITY`] byte). Il file va scritto da capo.
+    /// Empty overlay for the disk of `disk_size` bytes with base `identity`
+    /// (cut to [`MAX_IDENTITY`] bytes). The file must be written from scratch.
     pub fn new(identity: &[u8], disk_size: u64) -> Self {
         Overlay {
             identity: identity[..identity.len().min(MAX_IDENTITY)].to_vec(),
@@ -171,8 +171,8 @@ impl Overlay {
         }
     }
 
-    /// Legge il file intero `bytes` per il disco di `disk_size` byte con
-    /// base `identity`. Un file vuoto dà un overlay nuovo senza cluster.
+    /// Reads the whole file `bytes` for the disk of `disk_size` bytes with
+    /// base `identity`. An empty file gives a new overlay with no clusters.
     pub fn load<'a>(bytes: &'a [u8], identity: &[u8], disk_size: u64) -> Result<Loaded<'a>, LoadError> {
         let mut ov = Overlay::new(identity, disk_size);
         if bytes.is_empty() {
@@ -180,26 +180,26 @@ impl Overlay {
         }
         let corrupt = |why: &str| LoadError::Corrupt(why.to_string());
         if bytes.len() < HEADER_LEN as usize {
-            return Err(corrupt("più corto dell'intestazione"));
+            return Err(corrupt("shorter than the header"));
         }
         let h = &bytes[..HEADER_LEN as usize];
         if h[..8] != MAGIC {
-            return Err(corrupt("non è un overlay di Vetro"));
+            return Err(corrupt("not a Vetro overlay"));
         }
-        let u32_at = |o: usize| u32::from_le_bytes(h[o..o + 4].try_into().expect("4 byte"));
-        let u64_at = |o: usize| u64::from_le_bytes(h[o..o + 8].try_into().expect("8 byte"));
+        let u32_at = |o: usize| u32::from_le_bytes(h[o..o + 4].try_into().expect("4 bytes"));
+        let u64_at = |o: usize| u64::from_le_bytes(h[o..o + 8].try_into().expect("8 bytes"));
         if u32_at(8) != VERSION {
-            return Err(corrupt(&format!("formato versione {}, atteso {VERSION}", u32_at(8))));
+            return Err(corrupt(&format!("format version {}, expected {VERSION}", u32_at(8))));
         }
         if u64_at(HEADER_LEN as usize - 8) != hash64(&h[..HEADER_LEN as usize - 8]) {
-            return Err(corrupt("intestazione rovinata"));
+            return Err(corrupt("corrupted header"));
         }
         if u64::from(u32_at(12)) != CLUSTER {
-            return Err(corrupt(&format!("cluster da {} byte", u32_at(12))));
+            return Err(corrupt(&format!("clusters of {} bytes", u32_at(12))));
         }
         let id_len = u32_at(40) as usize;
         if id_len > MAX_IDENTITY {
-            return Err(corrupt("identità troppo lunga"));
+            return Err(corrupt("identity too long"));
         }
         let found_id = &h[44..44 + id_len];
         if found_id != ov.identity.as_slice() {
@@ -211,7 +211,7 @@ impl Overlay {
         }
         let size = u64_at(16);
         if size != disk_size {
-            return Err(LoadError::Mismatch(format!("disco di {size} byte, atteso {disk_size}")));
+            return Err(LoadError::Mismatch(format!("disk of {size} bytes, expected {disk_size}")));
         }
         ov.generation = u64_at(24);
         ov.slots = u64_at(32);
@@ -221,12 +221,12 @@ impl Overlay {
         for k in 0..ov.slots {
             let at = HEADER_LEN + k * SLOT_LEN;
             let Some(slot) = bytes.get(at as usize..(at + SLOT_LEN) as usize) else {
-                // Oltre la fine del file: mai scritto, libero.
+                // Past the end of the file: never written, free.
                 ov.free.insert(k);
                 continue;
             };
-            let c = u64::from_le_bytes(slot[..8].try_into().expect("8 byte"));
-            let check = u64::from_le_bytes(slot[8..16].try_into().expect("8 byte"));
+            let c = u64::from_le_bytes(slot[..8].try_into().expect("8 bytes"));
+            let check = u64::from_le_bytes(slot[8..16].try_into().expect("8 bytes"));
             let data = &slot[16..];
             if check != slot_check(c, data) || (c != FREE && (c >= clusters || ov.map.contains_key(&c))) {
                 ov.damaged += 1;
@@ -249,22 +249,22 @@ impl Overlay {
         self.generation
     }
 
-    /// Cluster nel file.
+    /// Clusters in the file.
     pub fn clusters(&self) -> usize {
         self.map.len()
     }
 
-    /// Slot nel file (liberi compresi).
+    /// Slots in the file (free ones included).
     pub fn slots(&self) -> u64 {
         self.slots
     }
 
-    /// Slot rovinati trovati alla lettura.
+    /// Corrupted slots found on reading.
     pub fn damaged(&self) -> u64 {
         self.damaged
     }
 
-    /// Lunghezza del file dopo le scritture date finora.
+    /// Length of the file after the writes given so far.
     pub fn file_len(&self) -> u64 {
         if self.fresh && self.slots == 0 { 0 } else { HEADER_LEN + self.slots * SLOT_LEN }
     }
@@ -297,17 +297,17 @@ impl Overlay {
         (check, s)
     }
 
-    /// Porta il file allo stato dei cluster dati: `(indice, Some(dati))`
-    /// scrive il cluster (se è cambiato), `(indice, None)` lo toglie.
-    /// Restituisce le scritture da fare; se c'è qualcosa, la generazione
-    /// cresce di uno e l'intestazione è l'ultima scrittura.
+    /// Brings the file to the state of the given clusters: `(index, Some(data))`
+    /// writes the cluster (if it changed), `(index, None)` removes it.
+    /// Returns the writes to perform; if there is anything, the generation
+    /// grows by one and the header is the last write.
     pub fn update<'d>(&mut self, changes: impl IntoIterator<Item = (u64, Option<&'d [u8]>)>) -> Patches {
         let mut p = Patches { truncate: self.fresh.then_some(0), writes: Vec::new() };
         let clusters = self.disk_size.div_ceil(CLUSTER);
         for (c, data) in changes {
             match data {
                 Some(data) => {
-                    assert!(c < clusters && data.len() as u64 <= CLUSTER, "cluster {c} fuori dal disco");
+                    assert!(c < clusters && data.len() as u64 <= CLUSTER, "cluster {c} outside the disk");
                     let (check, bytes) = Self::slot_bytes(c, data);
                     let slot = match self.map.get(&c) {
                         Some(&(_, old)) if old == check => continue,
@@ -335,10 +335,10 @@ impl Overlay {
         p
     }
 
-    /// Come [`update`](Self::update) con lo stato completo: `all` sono tutti
-    /// i cluster scritti del disco; quelli del file che non ci sono si
-    /// tolgono. Serve dopo il ripristino di uno snapshot, quando i cluster
-    /// in memoria possono essere diversi da quelli del file.
+    /// Like [`update`](Self::update) with the complete state: `all` are all
+    /// the written clusters of the disk; those in the file that are missing are
+    /// removed. Needed after restoring a snapshot, when the clusters
+    /// in memory can differ from those in the file.
     pub fn sync<'d>(&mut self, all: impl IntoIterator<Item = (u64, &'d [u8])>) -> Patches {
         let mut gone: BTreeSet<u64> = self.map.keys().copied().collect();
         let mut changes: Vec<(u64, Option<&'d [u8]>)> = Vec::new();
@@ -355,7 +355,7 @@ impl Overlay {
 mod tests {
     use super::*;
 
-    const SIZE: u64 = 10 * CLUSTER + 1024; // l'ultimo cluster è corto
+    const SIZE: u64 = 10 * CLUSTER + 1024; // the last cluster is short
 
     fn fill(v: u8, n: usize) -> Vec<u8> {
         vec![v; n]
@@ -368,8 +368,8 @@ mod tests {
         assert_eq!(ov.file_len(), 0);
         let (a, b, last) = (fill(1, 4096), fill(2, 4096), fill(3, 1024));
         let p = ov.update([(3, Some(&a[..])), (7, Some(&b[..])), (10, Some(&last[..]))]);
-        assert_eq!(p.truncate, Some(0), "file nuovo: si tronca");
-        assert_eq!(p.writes.last().unwrap().0, 0, "l'intestazione per ultima");
+        assert_eq!(p.truncate, Some(0), "new file: truncated");
+        assert_eq!(p.writes.last().unwrap().0, 0, "the header last");
         p.apply_to(&mut file);
         assert_eq!(file.len() as u64, HEADER_LEN + 3 * SLOT_LEN);
         assert_eq!(ov.generation(), 1);
@@ -378,10 +378,10 @@ mod tests {
         assert_eq!(l.clusters, vec![(3, &a[..]), (7, &b[..]), (10, &last[..])]);
         let mut ov = l.overlay;
         assert_eq!((ov.generation(), ov.clusters(), ov.slots()), (1, 3, 3));
-        // Uguale: niente da scrivere, generazione ferma.
+        // Same: nothing to write, generation unchanged.
         assert!(ov.update([(3, Some(&a[..]))]).is_empty());
         assert_eq!(ov.generation(), 1);
-        // Cambiato: stesso slot, file della stessa lunghezza.
+        // Changed: same slot, file of the same length.
         let a2 = fill(9, 4096);
         let p = ov.update([(3, Some(&a2[..]))]);
         assert_eq!(p.truncate, None);
@@ -389,13 +389,13 @@ mod tests {
         assert_eq!(p.writes[0].0, HEADER_LEN);
         p.apply_to(&mut file);
         assert_eq!(file.len() as u64, HEADER_LEN + 3 * SLOT_LEN);
-        // Tolto: lo slot si libera e il cluster nuovo lo riprende.
+        // Removed: the slot is freed and the new cluster takes it back.
         ov.update([(7, None)]).apply_to(&mut file);
         let l = Overlay::load(&file, b"base-1", SIZE).unwrap();
         assert_eq!(l.clusters, vec![(3, &a2[..]), (10, &last[..])]);
         assert_eq!(l.overlay.generation(), 3);
         let p = ov.update([(0, Some(&b[..]))]);
-        assert_eq!(p.writes[0].0, HEADER_LEN + SLOT_LEN, "slot liberato riusato");
+        assert_eq!(p.writes[0].0, HEADER_LEN + SLOT_LEN, "freed slot reused");
         p.apply_to(&mut file);
         assert_eq!(file.len() as u64, HEADER_LEN + 3 * SLOT_LEN);
         let l = Overlay::load(&file, b"base-1", SIZE).unwrap();
@@ -413,13 +413,13 @@ mod tests {
         bad[100] ^= 1;
         let e = Overlay::load(&bad, b"base-1", SIZE).err().unwrap();
         assert!(matches!(e, LoadError::Corrupt(_)), "{e}");
-        assert!(e.to_string().contains("rovinata"), "{e}");
+        assert!(e.to_string().contains("corrupted"), "{e}");
         assert!(matches!(Overlay::load(&file[..100], b"base-1", SIZE), Err(LoadError::Corrupt(_))));
-        assert!(matches!(Overlay::load(b"altro file", b"base-1", SIZE), Err(LoadError::Corrupt(_))));
+        assert!(matches!(Overlay::load(b"other file", b"base-1", SIZE), Err(LoadError::Corrupt(_))));
         let mut v2 = file.clone();
         v2[8] = 2;
-        assert!(Overlay::load(&v2, b"base-1", SIZE).err().unwrap().to_string().contains("versione"));
-        // Dopo lo scarto si riparte da un overlay nuovo: file troncato.
+        assert!(Overlay::load(&v2, b"base-1", SIZE).err().unwrap().to_string().contains("version"));
+        // After discarding we start again from a new overlay: file truncated.
         let mut fresh = Overlay::new(b"base-2", SIZE);
         let p = fresh.update(core::iter::empty());
         assert_eq!(p.truncate, Some(0));
@@ -429,9 +429,9 @@ mod tests {
         assert!(l.clusters.is_empty());
     }
 
-    /// Uno slot scritto a metà (controllo sbagliato) si ignora: quel
-    /// cluster torna quello della base, gli altri restano; uno slot oltre
-    /// la fine del file (interruzione prima dei dati) è libero.
+    /// A half-written slot (wrong check) is ignored: that
+    /// cluster goes back to the base's, the others stay; a slot past
+    /// the end of the file (interruption before the data) is free.
     #[test]
     fn slot_rovinato_o_mancante() {
         let mut file = Vec::new();
@@ -445,15 +445,15 @@ mod tests {
         assert_eq!(l.overlay.damaged(), 1);
         let mut ov = l.overlay;
         let p = ov.update([(4, Some(&fill(4, 4096)[..]))]);
-        assert_eq!(p.writes[0].0, HEADER_LEN + SLOT_LEN, "lo slot rovinato si riusa");
+        assert_eq!(p.writes[0].0, HEADER_LEN + SLOT_LEN, "the corrupted slot is reused");
         file.truncate((HEADER_LEN + SLOT_LEN) as usize);
         let l = Overlay::load(&file, b"b", SIZE).unwrap();
         assert_eq!(l.clusters.len(), 1);
         assert_eq!(l.overlay.damaged(), 0);
     }
 
-    /// `sync` porta il file a uno stato completo: cluster cambiati riscritti,
-    /// mancanti tolti, uguali lasciati; nessuna scrittura se coincide.
+    /// `sync` brings the file to a complete state: changed clusters rewritten,
+    /// missing ones removed, equal ones left alone; no writes if it matches.
     #[test]
     fn sync_allo_stato_completo() {
         let mut file = Vec::new();

@@ -1,91 +1,91 @@
-//! `JitState`: lo stato della CPU nella memoria lineare condivisa con i
-//! blocchi tradotti (docs/specs/jit.md).
+//! `JitState`: the CPU state in the linear memory shared with the
+//! translated blocks (docs/specs/jit.md).
 
 use vetro_cpu::Cpu;
 use vetro_cpu::state::Monitor;
 use vetro_cpu::sys::{id, sctlr};
 
-/// Stato letto e scritto dai blocchi tradotti. Il layout è parte dell'ABI:
-/// gli offset sono quelli di [`off`] e della spec.
+/// State read and written by the translated blocks. The layout is part of the ABI:
+/// the offsets are those of [`off`] and of the spec.
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct JitState {
     pub x: [u64; 31],
     pub sp: u64,
     pub pc: u64,
-    /// Istruzioni eseguite (lo stesso orologio dell'interprete).
+    /// Instructions executed (the same clock as the interpreter).
     pub steps: u64,
-    /// Flag N, Z, C, V nei bit 31:28, come `Cpu::nzcv`.
+    /// Flags N, Z, C, V in bits 31:28, like `Cpu::nzcv`.
     pub nzcv: u32,
-    /// 0 all'ingresso del blocco (lo azzera l'host), [`crate::FAULT`] dopo
-    /// un `ld`/`st` fallito, [`crate::STOP`] dopo uno `st` su codice sorvegliato.
+    /// 0 on block entry (the host clears it), [`crate::FAULT`] after
+    /// a failed `ld`/`st`, [`crate::STOP`] after an `st` to watched code.
     pub exit_detail: u32,
-    /// Livello di eccezione (0 in modalità utente).
+    /// Exception level (0 in user mode).
     pub el: u32,
-    /// Contesto del concatenamento (modalità sistema): una voce della
-    /// cache dei salti vale solo se ha questo stesso valore.
+    /// Chaining context (system mode): a jump cache entry
+    /// is valid only if it has this same value.
     pub ctx: u32,
-    /// Passi massimi della corsa concatenata: il dispatcher non entra in un
-    /// blocco che potrebbe superarli.
+    /// Maximum steps of the chained run: the dispatcher does not enter a
+    /// block that could exceed them.
     pub limit: u64,
-    // Modalità sistema: registri che i blocchi leggono o scrivono con
-    // MRS/MSR, e il monitor esclusivo (LDXR/STXR).
+    // System mode: registers that the blocks read or write with
+    // MRS/MSR, and the exclusive monitor (LDXR/STXR).
     pub tpidr_el0: u64,
     pub tpidrro_el0: u64,
     pub tpidr_el1: u64,
-    /// SP_EL0 quando non è lo SP in uso (EL1 con SPSel = 1).
+    /// SP_EL0 when it is not the SP in use (EL1 with SPSel = 1).
     pub sp_el0: u64,
-    /// TCR_EL1 (solo lettura per i blocchi).
+    /// TCR_EL1 (read-only for the blocks).
     pub tcr: u64,
-    /// DCZID_EL0 per il livello corrente (solo lettura).
+    /// DCZID_EL0 for the current level (read-only).
     pub dczid: u64,
     pub mon_addr: u64,
-    /// Valore del monitor (128 bit: basso e alto).
+    /// Monitor value (128 bits: low and high).
     pub mon_lo: u64,
     pub mon_hi: u64,
-    /// 1 se il monitor è attivo.
+    /// 1 if the monitor is active.
     pub mon_valid: u32,
-    /// Byte dell'accesso esclusivo che l'ha attivato.
+    /// Bytes of the exclusive access that activated it.
     pub mon_bytes: u32,
-    /// Blocco base d'ingresso della regione chiamata (lo scrive chi la
-    /// chiama: il dispatcher dalla cache dei salti, o l'host).
+    /// Base entry block of the called region (written by the
+    /// caller: the dispatcher from the jump cache, or the host).
     pub entry: u32,
-    /// PSTATE.DAIF (bit 9:6, come `SysState::daif`).
+    /// PSTATE.DAIF (bits 9:6, like `SysState::daif`).
     pub daif: u32,
-    /// ELR_EL1 e SPSR_EL1 (MRS/MSR a EL1), ESR_EL1 e FAR_EL1 (solo MRS).
+    /// ELR_EL1 and SPSR_EL1 (MRS/MSR at EL1), ESR_EL1 and FAR_EL1 (MRS only).
     pub elr_el1: u64,
     pub spsr_el1: u64,
     pub esr_el1: u64,
     pub far_el1: u64,
-    /// 1 se `v` contiene i registri SIMD/FP della `Cpu` (li copia l'host
-    /// alla prima regione che li usa, `env.vsync`, e li ricopia alla fine).
+    /// 1 if `v` holds the SIMD/FP registers of the `Cpu` (the host copies them
+    /// at the first region that uses them, `env.vsync`, and copies them back at the end).
     pub v_valid: u32,
-    /// Flag pigri (ADR 0024): se `fk` non è 0, NZCV è quello di
-    /// un'istruzione di tipo `fk` con operandi `fa`, `fb` e risultato `fr`
-    /// ([`lazy_nzcv`]), altrimenti è `nzcv`.
+    /// Lazy flags (ADR 0024): if `fk` is not 0, NZCV is that of
+    /// an instruction of kind `fk` with operands `fa`, `fb` and result `fr`
+    /// ([`lazy_nzcv`]), otherwise it is `nzcv`.
     pub fk: u32,
-    /// FPCR (letto dalle regioni) e FPSR (flag cumulativi, scritti dalle
-    /// regioni e da `env.simd`), come `Cpu::fpcr`/`Cpu::fpsr` (ADR 0026).
+    /// FPCR (read by the regions) and FPSR (cumulative flags, written by the
+    /// regions and by `env.simd`), like `Cpu::fpcr`/`Cpu::fpsr` (ADR 0026).
     pub fpcr: u32,
     pub fpsr: u32,
-    /// V0..V31 (128 bit: metà bassa e alta), validi se `v_valid`.
+    /// V0..V31 (128 bits: low and high half), valid if `v_valid`.
     pub v: [[u64; 2]; 32],
     pub fa: u64,
     pub fb: u64,
     pub fr: u64,
-    /// Modalità sistema (ADR 0026): istruzioni della macchina all'inizio
-    /// della corsa del dispatcher (lo scrive l'host prima di ogni corsa):
-    /// CNTPCT di un'istruzione è `counter(time_base + steps + indice)`.
+    /// System mode (ADR 0026): machine instructions at the start
+    /// of the dispatcher run (written by the host before every run):
+    /// the CNTPCT of an instruction is `counter(time_base + steps + index)`.
     pub time_base: u64,
     /// CNTVOFF: CNTVCT = CNTPCT - `cntvoff`.
     pub cntvoff: u64,
-    /// 1 se `time_base` e `cntvoff` valgono per questa corsa; altrimenti
-    /// MRS CNTPCT/CNTVCT esce e lo fa l'interprete.
+    /// 1 if `time_base` and `cntvoff` are valid for this run; otherwise
+    /// MRS CNTPCT/CNTVCT exits and the interpreter does it.
     pub time_ok: u32,
     pub _pad2: u32,
 }
 
-/// Offset dei campi (byte dall'inizio della struttura).
+/// Field offsets (bytes from the start of the structure).
 pub mod off {
     pub const X: u32 = 0;
     pub const SP: u32 = 248;
@@ -117,7 +117,7 @@ pub mod off {
     pub const FK: u32 = 420;
     pub const FPCR: u32 = 424;
     pub const FPSR: u32 = 428;
-    /// V0..V31, 16 byte ciascuno (metà bassa poi alta).
+    /// V0..V31, 16 bytes each (low half then high).
     pub const V: u32 = 432;
     pub const FA: u32 = 944;
     pub const FB: u32 = 952;
@@ -125,40 +125,40 @@ pub mod off {
     pub const TIME_BASE: u32 = 968;
     pub const CNTVOFF: u32 = 976;
     pub const TIME_OK: u32 = 984;
-    /// Dimensione totale.
+    /// Total size.
     pub const SIZE: usize = 992;
 }
 
-/// Area del JIT in modalità sistema, a partire da `JitState` (offset dal
-/// suo inizio): cache dei salti del dispatcher e TLB software dei blocchi.
+/// JIT area in system mode, starting at `JitState` (offsets from
+/// its start): the dispatcher's jump cache and the blocks' software TLB.
 pub mod area {
-    /// Cache dei salti: voci da 16 byte `{pc: u64, ctx: u32, w: u32}` con
-    /// `w = slot << 8 | passi massimi del blocco`, indice `(pc >> 2) & (JC_ENTRIES - 1)`.
+    /// Jump cache: 16-byte entries `{pc: u64, ctx: u32, w: u32}` with
+    /// `w = slot << 8 | maximum steps of the block`, index `(pc >> 2) & (JC_ENTRIES - 1)`.
     pub const JC: u32 = 1024;
     pub const JC_ENTRIES: u32 = 8192;
-    /// TLB software: 4 tabelle (EL0 lettura, EL0 scrittura, EL1 lettura,
-    /// EL1 scrittura) di `TLB_ENTRIES` voci da 16 byte `{tag: u64, addend:
-    /// u64}`, indice `(va >> 12) & (TLB_ENTRIES - 1)`. `tag` è la pagina
-    /// virtuale (VA con i 12 bit bassi a zero); l'indirizzo nella memoria
-    /// del motore è `va + addend` (troncato a 32 bit).
+    /// Software TLB: 4 tables (EL0 read, EL0 write, EL1 read,
+    /// EL1 write) of `TLB_ENTRIES` 16-byte entries `{tag: u64, addend:
+    /// u64}`, index `(va >> 12) & (TLB_ENTRIES - 1)`. `tag` is the virtual
+    /// page (VA with the low 12 bits cleared); the address in the engine's
+    /// memory is `va + addend` (truncated to 32 bits).
     pub const TLB: u32 = JC + JC_ENTRIES * 16;
     pub const TLB_ENTRIES: u32 = 512;
     pub const TLB_SIZE: u32 = TLB_ENTRIES * 16;
-    /// Tag che non corrisponde a nessun accesso (bit 11 a uno).
+    /// Tag that matches no access (bit 11 set).
     pub const TLB_INVALID: u64 = 0x800;
-    /// Byte totali dell'area: 4 tabelle per gli accessi allineati e 4 per
-    /// quelli non allineati ([`tlb_u`]).
+    /// Total bytes of the area: 4 tables for aligned accesses and 4 for
+    /// unaligned ones ([`tlb_u`]).
     pub const SIZE: u32 = TLB + 8 * TLB_SIZE;
 
-    /// Offset della tabella per il livello `el` e il tipo di accesso.
+    /// Offset of the table for level `el` and the access kind.
     pub const fn tlb(el: u8, write: bool) -> u32 {
         TLB + (el as u32 * 2 + write as u32) * TLB_SIZE
     }
 
-    /// Come [`tlb`], per gli accessi non allineati dentro una pagina (ADR
-    /// 0024): una voce c'è solo per pagine in cui un accesso non allineato è
-    /// riuscito (memoria Normal, SCTLR_EL1.A a 0). Colpo se `tag == va &
-    /// !0xfff` e l'accesso non sconfina nella pagina successiva.
+    /// Like [`tlb`], for unaligned accesses within a page (ADR
+    /// 0024): an entry exists only for pages in which an unaligned access has
+    /// succeeded (Normal memory, SCTLR_EL1.A at 0). Hit if `tag == va &
+    /// !0xfff` and the access does not cross into the next page.
     pub const fn tlb_u(el: u8, write: bool) -> u32 {
         TLB + (4 + el as u32 * 2 + write as u32) * TLB_SIZE
     }
@@ -186,8 +186,8 @@ impl JitState {
         }
     }
 
-    /// Ricopia nella `Cpu` i campi che i blocchi possono cambiare (i
-    /// registri SIMD/FP solo se `v_valid`).
+    /// Copies back into the `Cpu` the fields that the blocks can change (the
+    /// SIMD/FP registers only if `v_valid`).
     pub fn to_cpu(&self, cpu: &mut Cpu) {
         cpu.x = self.x;
         cpu.sp = self.sp;
@@ -206,7 +206,7 @@ impl JitState {
         }
     }
 
-    /// Come [`from_cpu`](Self::from_cpu), con i campi della modalità sistema.
+    /// Like [`from_cpu`](Self::from_cpu), with the system-mode fields.
     pub fn from_cpu_sys(cpu: &Cpu) -> Self {
         let s = &cpu.sys;
         let dzp = s.el == 0 && s.sctlr_el1 & sctlr::DZE == 0;
@@ -227,9 +227,9 @@ impl JitState {
         }
     }
 
-    /// Come [`to_cpu`](Self::to_cpu), con i campi della modalità sistema
-    /// che i blocchi possono cambiare. SP_EL0 torna nella `Cpu` solo se non
-    /// è lo SP in uso (che è `sp`).
+    /// Like [`to_cpu`](Self::to_cpu), with the system-mode fields
+    /// that the blocks can change. SP_EL0 goes back into the `Cpu` only if it is
+    /// not the SP in use (which is `sp`).
     pub fn to_cpu_sys(&self, cpu: &mut Cpu) {
         self.to_cpu(cpu);
         cpu.tpidr_el0 = self.tpidr_el0;
@@ -243,14 +243,14 @@ impl JitState {
         }
     }
 
-    /// Scrive la struttura in `mem` a partire da `at` (little-endian, come
-    /// la memoria WASM).
+    /// Writes the structure into `mem` starting at `at` (little-endian, like
+    /// WASM memory).
     pub fn store(&self, mem: &mut [u8], at: usize) {
         let m = &mut mem[at..at + off::SIZE];
         if cfg!(target_endian = "little") {
-            // SAFETY: `JitState` è `repr(C)` senza riempimento implicito (i
-            // campi coprono tutti i SIZE byte, vedi `layout_matches_spec`):
-            // ogni byte è inizializzato.
+            // SAFETY: `JitState` is `repr(C)` with no implicit padding (the
+            // fields cover all SIZE bytes, see `layout_matches_spec`):
+            // every byte is initialised.
             let raw = unsafe { core::slice::from_raw_parts((self as *const Self).cast::<u8>(), off::SIZE) };
             m.copy_from_slice(raw);
             return;
@@ -305,7 +305,7 @@ impl JitState {
         }
     }
 
-    /// Legge la struttura da `mem` a partire da `at`.
+    /// Reads the structure from `mem` starting at `at`.
     pub fn load(mem: &[u8], at: usize) -> Self {
         let m = &mem[at..at + off::SIZE];
         let q = |o: usize| u64::from_le_bytes(m[o..o + 8].try_into().unwrap());
@@ -361,8 +361,8 @@ impl JitState {
     }
 }
 
-/// Tipi dei flag pigri (`JitState::fk`): somma, differenza, logica, a 64 o
-/// 32 bit (operandi e risultato troncati a 32 bit per quelli a 32).
+/// Lazy flag kinds (`JitState::fk`): addition, subtraction, logical, 64 or
+/// 32 bits (operands and result truncated to 32 bits for the 32-bit ones).
 pub mod fk {
     pub const ADD64: u32 = 1;
     pub const SUB64: u32 = 2;
@@ -372,9 +372,9 @@ pub mod fk {
     pub const LOGIC32: u32 = 6;
 }
 
-/// NZCV (bit 31:28) dei flag pigri: come `AddWithCarry` (somma con carry 0,
-/// differenza come somma del complemento con carry 1) e come AND/BIC per la
-/// logica (C = V = 0); `old` se `k` = 0. È la funzione `rt.nzcv` dei moduli.
+/// NZCV (bits 31:28) of the lazy flags: like `AddWithCarry` (addition with carry 0,
+/// subtraction as addition of the complement with carry 1) and like AND/BIC for
+/// logical (C = V = 0); `old` if `k` = 0. It is the modules' `rt.nzcv` function.
 pub fn lazy_nzcv(k: u32, a: u64, b: u64, r: u64, old: u32) -> u32 {
     if k == 0 {
         return old;
@@ -390,8 +390,8 @@ pub fn lazy_nzcv(k: u32, a: u64, b: u64, r: u64, old: u32) -> u32 {
     n << 31 | z << 30 | c << 29 | v << 28
 }
 
-/// Copia i registri SIMD/FP della `Cpu` in `JitState` (`v`, `v_valid` = 1):
-/// l'`env.vsync` degli host.
+/// Copies the SIMD/FP registers of the `Cpu` into `JitState` (`v`, `v_valid` = 1):
+/// the hosts' `env.vsync`.
 pub fn vsync_in(mem: &mut [u8], at: usize, v: &[u128; 32]) {
     let base = at + off::V as usize;
     for (i, r) in v.iter().enumerate() {
@@ -400,28 +400,28 @@ pub fn vsync_in(mem: &mut [u8], at: usize, v: &[u128; 32]) {
     write_u32(mem, at, off::V_VALID, 1);
 }
 
-/// Legge un campo u64 di `JitState` da `mem`.
+/// Reads a u64 field of `JitState` from `mem`.
 #[inline]
 pub fn read_u64(mem: &[u8], at: usize, field: u32) -> u64 {
     let o = at + field as usize;
     u64::from_le_bytes(mem[o..o + 8].try_into().unwrap())
 }
 
-/// Scrive un campo u64 di `JitState` in `mem`.
+/// Writes a u64 field of `JitState` into `mem`.
 #[inline]
 pub fn write_u64(mem: &mut [u8], at: usize, field: u32, v: u64) {
     let o = at + field as usize;
     mem[o..o + 8].copy_from_slice(&v.to_le_bytes());
 }
 
-/// Legge un campo u32 di `JitState` da `mem`.
+/// Reads a u32 field of `JitState` from `mem`.
 #[inline]
 pub fn read_u32(mem: &[u8], at: usize, field: u32) -> u32 {
     let o = at + field as usize;
     u32::from_le_bytes(mem[o..o + 4].try_into().unwrap())
 }
 
-/// Scrive un campo u32 di `JitState` in `mem`.
+/// Writes a u32 field of `JitState` into `mem`.
 #[inline]
 pub fn write_u32(mem: &mut [u8], at: usize, field: u32, v: u32) {
     let o = at + field as usize;
@@ -472,7 +472,7 @@ mod tests {
         assert_eq!(offset_of!(JitState, time_base), off::TIME_BASE as usize);
         assert_eq!(offset_of!(JitState, cntvoff), off::CNTVOFF as usize);
         assert_eq!(offset_of!(JitState, time_ok), off::TIME_OK as usize);
-        // Niente riempimento implicito (`store` copia i byte della struttura).
+        // No implicit padding (`store` copies the bytes of the structure).
         assert_eq!(offset_of!(JitState, fpsr) + 4, off::V as usize);
         assert_eq!(offset_of!(JitState, _pad2) + 4, off::SIZE);
         assert_eq!(size_of::<JitState>(), off::SIZE);
@@ -524,8 +524,8 @@ mod tests {
         let mut mem = vec![0xaau8; 16 + off::SIZE];
         s.store(&mut mem, 16);
         assert_eq!(JitState::load(&mem, 16), s);
-        // Il formato in memoria coincide con la struttura #[repr(C)] su un
-        // host little-endian.
+        // The in-memory format matches the #[repr(C)] structure on a
+        // little-endian host.
         let raw: [u8; off::SIZE] = unsafe { core::mem::transmute(s) };
         #[cfg(target_endian = "little")]
         assert_eq!(&mem[16..16 + off::SIZE], &raw[..]);

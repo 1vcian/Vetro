@@ -1,9 +1,9 @@
-//! Generatore di device tree binari (FDT/DTB versione 17, specifica
-//! Devicetree v0.4 capitolo 5) e device tree della piattaforma virt.
+//! Binary device tree generator (FDT/DTB version 17, Devicetree
+//! specification v0.4 chapter 5) and device tree of the virt platform.
 //!
-//! Layout prodotto: header (40 byte), blocco delle riserve di memoria,
-//! blocco della struttura, blocco delle stringhe. Tutti i numeri sono big
-//! endian; i nomi delle proprietà si deduplicano nel blocco delle stringhe.
+//! Layout produced: header (40 bytes), memory reservation block,
+//! structure block, strings block. All numbers are big
+//! endian; property names are deduplicated in the strings block.
 
 use core::fmt;
 
@@ -16,40 +16,40 @@ pub const FDT_BEGIN_NODE: u32 = 1;
 pub const FDT_END_NODE: u32 = 2;
 pub const FDT_PROP: u32 = 3;
 pub const FDT_END: u32 = 9;
-/// Dimensione dell'header v17.
+/// Size of the v17 header.
 pub const HEADER_SIZE: usize = 40;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FdtError {
-    /// Nome di nodo o proprietà vuoto dove non ammesso, o con un NUL.
+    /// Empty node or property name where not allowed, or containing a NUL.
     InvalidName(String),
-    /// Proprietà scritta fuori da ogni nodo.
+    /// Property written outside any node.
     PropertyOutsideNode(String),
-    /// `end_node` senza `begin_node` corrispondente.
+    /// `end_node` without a matching `begin_node`.
     UnmatchedEnd,
-    /// `finish` con nodi ancora aperti.
+    /// `finish` with nodes still open.
     UnclosedNodes(usize),
-    /// Nessun nodo radice.
+    /// No root node.
     Empty,
-    /// Più di un nodo radice.
+    /// More than one root node.
     MultipleRoots,
 }
 
 impl fmt::Display for FdtError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            FdtError::InvalidName(n) => write!(f, "nome non valido: {n:?}"),
-            FdtError::PropertyOutsideNode(n) => write!(f, "proprietà {n:?} fuori da un nodo"),
-            FdtError::UnmatchedEnd => write!(f, "end_node senza begin_node"),
-            FdtError::UnclosedNodes(n) => write!(f, "{n} nodi ancora aperti"),
-            FdtError::Empty => write!(f, "device tree senza radice"),
-            FdtError::MultipleRoots => write!(f, "più di un nodo radice"),
+            FdtError::InvalidName(n) => write!(f, "invalid name: {n:?}"),
+            FdtError::PropertyOutsideNode(n) => write!(f, "property {n:?} outside a node"),
+            FdtError::UnmatchedEnd => write!(f, "end_node without begin_node"),
+            FdtError::UnclosedNodes(n) => write!(f, "{n} nodes still open"),
+            FdtError::Empty => write!(f, "device tree without root"),
+            FdtError::MultipleRoots => write!(f, "more than one root node"),
         }
     }
 }
 
-/// Costruttore di un DTB. I metodi si concatenano; il primo errore viene
-/// conservato e restituito da [`FdtBuilder::finish`].
+/// Builder of a DTB. The methods chain; the first error is
+/// kept and returned by [`FdtBuilder::finish`].
 #[derive(Clone, Debug, Default)]
 pub struct FdtBuilder {
     structs: Vec<u8>,
@@ -80,19 +80,19 @@ impl FdtBuilder {
         }
     }
 
-    /// Aggiunge una regione riservata (`/memreserve/`).
+    /// Adds a reserved region (`/memreserve/`).
     pub fn reserve_memory(&mut self, addr: u64, size: u64) -> &mut Self {
         self.reserve.push((addr, size));
         self
     }
 
-    /// `boot_cpuid_phys` dell'header.
+    /// `boot_cpuid_phys` of the header.
     pub fn boot_cpuid(&mut self, id: u32) -> &mut Self {
         self.boot_cpuid = id;
         self
     }
 
-    /// Apre un nodo. La radice ha nome vuoto; gli altri no.
+    /// Opens a node. The root has an empty name; the others do not.
     pub fn begin_node(&mut self, name: &str) -> &mut Self {
         if name.contains('\0') || (name.is_empty() != (self.depth == 0)) {
             self.fail(FdtError::InvalidName(name.into()));
@@ -138,7 +138,7 @@ impl FdtBuilder {
         off
     }
 
-    /// Proprietà con valore grezzo.
+    /// Property with a raw value.
     pub fn prop_bytes(&mut self, name: &str, value: &[u8]) -> &mut Self {
         if name.is_empty() || name.contains('\0') {
             self.fail(FdtError::InvalidName(name.into()));
@@ -155,7 +155,7 @@ impl FdtBuilder {
         self
     }
 
-    /// Proprietà senza valore (booleana), es. `interrupt-controller`.
+    /// Property without a value (boolean), e.g. `interrupt-controller`.
     pub fn prop_empty(&mut self, name: &str) -> &mut Self {
         self.prop_bytes(name, &[])
     }
@@ -173,7 +173,7 @@ impl FdtBuilder {
         self.prop_bytes(name, &bytes)
     }
 
-    /// Lista di u64, ciascuno come due celle (es. `reg` con 2+2 celle).
+    /// List of u64, each as two cells (e.g. `reg` with 2+2 cells).
     pub fn prop_u64_list(&mut self, name: &str, vs: &[u64]) -> &mut Self {
         let bytes: Vec<u8> = vs.iter().flat_map(|v| v.to_be_bytes()).collect();
         self.prop_bytes(name, &bytes)
@@ -183,7 +183,7 @@ impl FdtBuilder {
         self.prop_strs(name, &[s])
     }
 
-    /// Lista di stringhe terminate da NUL (es. `compatible`).
+    /// List of NUL-terminated strings (e.g. `compatible`).
     pub fn prop_strs(&mut self, name: &str, ss: &[&str]) -> &mut Self {
         let mut bytes = Vec::new();
         for s in ss {
@@ -196,7 +196,7 @@ impl FdtBuilder {
         self.prop_bytes(name, &bytes)
     }
 
-    /// Chiude la struttura e produce il blob.
+    /// Closes the structure and produces the blob.
     pub fn finish(&self) -> Result<Vec<u8>, FdtError> {
         if let Some(e) = &self.error {
             return Err(e.clone());
@@ -241,33 +241,33 @@ impl FdtBuilder {
     }
 }
 
-/// Parametri del device tree della piattaforma virt (una CPU).
+/// Parameters of the virt platform device tree (one CPU).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VirtDtbConfig {
-    /// Dimensione della RAM a partire da `map::RAM_BASE`.
+    /// RAM size starting at `map::RAM_BASE`.
     pub ram_size: u64,
-    /// Riga di comando del kernel (`/chosen/bootargs`).
+    /// Kernel command line (`/chosen/bootargs`).
     pub bootargs: String,
-    /// Initramfs: indirizzi fisici di inizio e fine (esclusa).
+    /// Initramfs: physical start and end (exclusive) addresses.
     pub initrd: Option<(u64, u64)>,
-    /// Conduit PSCI: "hvc" (default, niente EL2/EL3 emulati) o "smc".
+    /// PSCI conduit: "hvc" (default, no emulated EL2/EL3) or "smc".
     pub psci_method: &'static str,
-    /// Clock fisso della PL011 in Hz.
+    /// Fixed PL011 clock in Hz.
     pub uart_clock_hz: u32,
-    /// Seme di `/chosen/rng-seed` (32 byte) e `/chosen/kaslr-seed`, che
-    /// QEMU virt mette sempre: deriva da questo numero, così l'avvio resta
-    /// deterministico. `None` = niente semi.
+    /// Seed of `/chosen/rng-seed` (32 bytes) and `/chosen/kaslr-seed`, which
+    /// QEMU virt always sets: derived from this number, so boot stays
+    /// deterministic. `None` = no seeds.
     pub seed: Option<u64>,
-    /// Dimensione totale del DTB (`totalsize`), con spazio libero in coda:
-    /// QEMU non compatta il suo device tree da 1 MiB e Linux riserva tutto
-    /// `totalsize`. 0 = nessuna aggiunta.
+    /// Total DTB size (`totalsize`), with free space at the end:
+    /// QEMU does not compact its 1 MiB device tree and Linux reserves all of
+    /// `totalsize`. 0 = nothing added.
     pub pad_to: usize,
 }
 
-/// Dimensione del device tree di QEMU virt (`create_device_tree`).
+/// Size of QEMU virt's device tree (`create_device_tree`).
 pub const QEMU_FDT_SIZE: usize = 1 << 20;
 
-/// splitmix64: byte deterministici per i semi del device tree.
+/// splitmix64: deterministic bytes for the device tree seeds.
 fn seed_bytes(seed: u64, n: usize) -> Vec<u8> {
     let mut x = seed;
     let mut out = Vec::with_capacity(n);
@@ -296,13 +296,13 @@ impl Default for VirtDtbConfig {
     }
 }
 
-/// Phandle del GIC nel device tree della piattaforma.
+/// Phandle of the GIC in the platform device tree.
 pub const PHANDLE_GIC: u32 = 1;
-/// Phandle del clock fisso della PL011/PL031/PL061.
+/// Phandle of the fixed clock of the PL011/PL031/PL061.
 pub const PHANDLE_CLK: u32 = 2;
-/// Phandle del GPIO PL061 (usato da `gpio-keys`).
+/// Phandle of the PL061 GPIO (used by `gpio-keys`).
 pub const PHANDLE_GPIO: u32 = 3;
-/// KEY_POWER di Linux (`linux,code` del tasto di spegnimento).
+/// Linux KEY_POWER (`linux,code` of the power key).
 const KEY_POWER: u32 = 116;
 
 const GIC_SPI: u32 = 0;
@@ -310,15 +310,15 @@ const GIC_PPI: u32 = 1;
 const IRQ_EDGE_RISING: u32 = 1;
 const IRQ_LEVEL_HIGH: u32 = 4;
 
-/// Nome del nodo della UART (anche in `stdout-path`).
+/// Name of the UART node (also in `stdout-path`).
 pub const UART_NODE: &str = "pl011@9000000";
 
 fn reg(b: &mut FdtBuilder, base: u64, size: u64) {
     b.prop_u64_list("reg", &[base, size]);
 }
 
-/// DTB della piattaforma virt: stessa forma di quello di QEMU virt, ridotto
-/// ai dispositivi di Vetro.
+/// DTB of the virt platform: same shape as QEMU virt's, reduced
+/// to Vetro's devices.
 pub fn virt_dtb(cfg: &VirtDtbConfig) -> Vec<u8> {
     let mut b = FdtBuilder::new();
     b.begin_node("")
@@ -356,7 +356,7 @@ pub fn virt_dtb(cfg: &VirtDtbConfig) -> Vec<u8> {
         .prop_str("method", cfg.psci_method)
         .end_node();
 
-    // PPI nel device tree: numero = INTID - 16.
+    // PPIs in the device tree: number = INTID - 16.
     let ppi = |intid: u32| [GIC_PPI, intid - 16, IRQ_LEVEL_HIGH];
     let timer_irqs: Vec<u32> = [map::PPI_SEC_PTIMER, map::PPI_PTIMER, map::PPI_VTIMER, map::PPI_HYP_TIMER]
         .into_iter()
@@ -403,7 +403,7 @@ pub fn virt_dtb(cfg: &VirtDtbConfig) -> Vec<u8> {
         .prop_str("clock-names", "apb_pclk")
         .end_node();
 
-    // GPIO e tasto di spegnimento come QEMU virt (create_gpio_devices).
+    // GPIO and power key like QEMU virt (create_gpio_devices).
     b.begin_node(&format!("pl061@{:x}", map::GPIO_BASE))
         .prop_strs("compatible", &["arm,pl061", "arm,primecell"]);
     reg(&mut b, map::GPIO_BASE, map::GPIO_SIZE);
@@ -432,8 +432,8 @@ pub fn virt_dtb(cfg: &VirtDtbConfig) -> Vec<u8> {
     }
 
     b.end_node();
-    // La struttura è fissa e ben formata: un errore qui è un bug nostro.
-    let mut dtb = b.finish().expect("device tree virt ben formato");
+    // The structure is fixed and well-formed: an error here is our bug.
+    let mut dtb = b.finish().expect("well-formed virt device tree");
     if dtb.len() < cfg.pad_to {
         dtb.resize(cfg.pad_to, 0);
         let total = (cfg.pad_to as u32).to_be_bytes();
@@ -451,7 +451,7 @@ mod tests {
         u32::from_be_bytes(b[off..off + 4].try_into().unwrap())
     }
 
-    /// Parser minimo: percorso del nodo -> (nome proprietà -> valore).
+    /// Minimal parser: node path -> (property name -> value).
     fn parse(dtb: &[u8]) -> BTreeMap<String, BTreeMap<String, Vec<u8>>> {
         assert_eq!(be32(dtb, 0), FDT_MAGIC);
         let off_struct = be32(dtb, 8) as usize;
@@ -461,7 +461,7 @@ mod tests {
         let mut path: Vec<String> = Vec::new();
         let mut p = off_struct;
         loop {
-            assert!(p < off_struct + size_struct, "struttura senza FDT_END");
+            assert!(p < off_struct + size_struct, "structure without FDT_END");
             let tok = be32(dtb, p);
             p += 4;
             match tok {
@@ -472,7 +472,7 @@ mod tests {
                     nodes.insert(full(&path), BTreeMap::new());
                 }
                 FDT_END_NODE => {
-                    path.pop().expect("END_NODE senza nodo");
+                    path.pop().expect("END_NODE without a node");
                 }
                 FDT_PROP => {
                     let len = be32(dtb, p) as usize;
@@ -486,10 +486,10 @@ mod tests {
                 }
                 4 => {} // FDT_NOP
                 FDT_END => break,
-                t => panic!("token sconosciuto {t}"),
+                t => panic!("unknown token {t}"),
             }
         }
-        assert!(path.is_empty(), "nodi non chiusi");
+        assert!(path.is_empty(), "unclosed nodes");
         assert_eq!(p, off_struct + size_struct);
         nodes
     }
@@ -511,8 +511,8 @@ mod tests {
         let cfg = VirtDtbConfig { seed: Some(7), pad_to: QEMU_FDT_SIZE, ..VirtDtbConfig::default() };
         let dtb = virt_dtb(&cfg);
         assert_eq!(dtb.len(), QEMU_FDT_SIZE);
-        assert_eq!(be32(&dtb, 4) as usize, QEMU_FDT_SIZE, "totalsize con lo spazio libero");
-        assert_eq!(virt_dtb(&cfg), dtb, "deterministico");
+        assert_eq!(be32(&dtb, 4) as usize, QEMU_FDT_SIZE, "totalsize with the free space");
+        assert_eq!(virt_dtb(&cfg), dtb, "deterministic");
         let other = virt_dtb(&VirtDtbConfig { seed: Some(8), ..cfg.clone() });
         assert_ne!(other, dtb);
         let find = |d: &[u8], name: &[u8]| d.windows(name.len()).any(|w| w == name);
@@ -533,7 +533,7 @@ mod tests {
         assert_eq!(off_rsv, 40);
         assert_eq!(off_rsv % 8, 0);
         assert_eq!(off_struct % 4, 0);
-        assert_eq!(off_struct, off_rsv + 16, "riserve vuote: solo il terminatore");
+        assert_eq!(off_struct, off_rsv + 16, "empty reservations: only the terminator");
         assert_eq!(off_strings, off_struct + size_struct);
         assert_eq!(off_strings + size_strings, dtb.len() as u32);
         assert_eq!(be32(&dtb, off_struct as usize), FDT_BEGIN_NODE);
@@ -557,7 +557,7 @@ mod tests {
         let chosen = &t["/chosen"];
         assert_eq!(strs(&chosen["bootargs"]), ["console=ttyAMA0 rdinit=/init"]);
         assert_eq!(strs(&chosen["stdout-path"]), ["/pl011@9000000"]);
-        assert!(t.contains_key("/pl011@9000000"), "stdout-path punta a un nodo esistente");
+        assert!(t.contains_key("/pl011@9000000"), "stdout-path points to an existing node");
         assert_eq!(cells(&chosen["linux,initrd-start"]), [0, 0x4800_0000]);
         assert_eq!(cells(&chosen["linux,initrd-end"]), [0, 0x4810_0000]);
 
@@ -597,8 +597,8 @@ mod tests {
         assert_eq!(strs(&rtc["compatible"]), ["arm,pl031", "arm,primecell"]);
         assert_eq!(cells(&rtc["interrupts"]), [0, 2, 4]);
 
-        // GPIO e tasto di spegnimento: gli stessi valori del DTB di QEMU 10.0
-        // (`-M virt,dumpdtb=`), a parte il numero del phandle.
+        // GPIO and power key: the same values as QEMU 10.0's DTB
+        // (`-M virt,dumpdtb=`), apart from the phandle number.
         let gpio = &t["/pl061@9030000"];
         assert_eq!(strs(&gpio["compatible"]), ["arm,pl061", "arm,primecell"]);
         assert_eq!(cells(&gpio["reg"]), [0, 0x0903_0000, 0, 0x1000]);
@@ -647,7 +647,7 @@ mod tests {
             .end_node();
         let dtb = b.finish().unwrap();
         assert_eq!(be32(&dtb, 28), 3);
-        assert_eq!(be32(&dtb, 8), 40 + 32, "una riserva più il terminatore");
+        assert_eq!(be32(&dtb, 8), 40 + 32, "one reservation plus the terminator");
         assert_eq!(&dtb[40..56], &[0, 0, 0, 0, 0, 0, 0x10, 0, 0, 0, 0, 0, 0, 0, 0x20, 0]);
         let t = parse(&dtb);
         assert_eq!(cells(&t["/"]["a"]), [7]);

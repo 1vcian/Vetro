@@ -1,21 +1,21 @@
-//! Trasporto virtio-mmio versione 2 (virtio v1.2, §4.2.2).
+//! virtio-mmio transport version 2 (virtio v1.2, §4.2.2).
 //!
-//! Scelte, allineate a QEMU (hw/virtio/virtio-mmio.c) dove la spec lascia
-//! margine:
-//! - i registri sotto 0x100 si accedono solo a 32 bit allineati; gli altri
-//!   accessi leggono 0 e non scrivono nulla;
-//! - i registri di sola scrittura (QueueNum, QueueDesc*, ...) si leggono 0;
-//! - VIRTIO_F_VERSION_1 è sempre offerto e obbligatorio: se il driver non
-//!   lo accetta, o accetta feature non offerte, o il dispositivo rifiuta la
-//!   combinazione, FEATURES_OK non resta impostato in Status;
-//! - DriverFeatures dopo FEATURES_OK e la configurazione di una coda già
-//!   pronta si ignorano;
-//! - la regione di memoria condivisa (SHMSel) non esiste: SHMLen e SHMBase
-//!   leggono tutti 1 (-1), come chiede la spec per una regione assente;
-//! - un errore nelle code porta il dispositivo in DEVICE_NEEDS_RESET con
-//!   interrupt di configurazione (§2.1.2) e ferma il servizio fino al reset;
-//! - la linea di interrupt vale `InterruptStatus != 0`; nel device tree è
-//!   dichiarata a fronte di salita, come in QEMU.
+//! Choices, aligned with QEMU (hw/virtio/virtio-mmio.c) where the spec leaves
+//! room:
+//! - registers below 0x100 are accessed only as aligned 32-bit; other
+//!   accesses read 0 and write nothing;
+//! - write-only registers (QueueNum, QueueDesc*, ...) read 0;
+//! - VIRTIO_F_VERSION_1 is always offered and mandatory: if the driver does not
+//!   accept it, or accepts features not offered, or the device rejects the
+//!   combination, FEATURES_OK does not stay set in Status;
+//! - DriverFeatures after FEATURES_OK and the configuration of a queue already
+//!   ready are ignored;
+//! - the shared memory region (SHMSel) does not exist: SHMLen and SHMBase
+//!   read all ones (-1), as the spec asks for an absent region;
+//! - an error in the queues puts the device in DEVICE_NEEDS_RESET with a
+//!   configuration interrupt (§2.1.2) and stops servicing until reset;
+//! - the interrupt line is `InterruptStatus != 0`; in the device tree it is
+//!   declared rising-edge, as in QEMU.
 
 use core::any::Any;
 
@@ -24,7 +24,7 @@ use super::*;
 pub struct VirtioMmio {
     device: Option<Box<dyn VirtioDevice>>,
     queues: Vec<Virtqueue>,
-    /// Feature del trasporto tolte dall'offerta (per test e compatibilità).
+    /// Transport features removed from the offer (for tests and compatibility).
     removed: u64,
     device_features_sel: u32,
     driver_features_sel: u32,
@@ -37,7 +37,7 @@ pub struct VirtioMmio {
 }
 
 impl VirtioMmio {
-    /// Slot senza dispositivo: si comporta come [`VirtioMmioEmpty`].
+    /// Slot without a device: behaves like [`VirtioMmioEmpty`].
     pub fn empty() -> Self {
         Self {
             device: None,
@@ -60,14 +60,14 @@ impl VirtioMmio {
         t
     }
 
-    /// Toglie dall'offerta alcune feature del trasporto (INDIRECT_DESC,
-    /// EVENT_IDX). VERSION_1 non si può togliere.
+    /// Removes some transport features from the offer (INDIRECT_DESC,
+    /// EVENT_IDX). VERSION_1 cannot be removed.
     pub fn without_features(mut self, mask: u64) -> Self {
         self.removed = mask & !F_VERSION_1;
         self
     }
 
-    /// Monta (o toglie) il dispositivo e riporta il trasporto al reset.
+    /// Attaches (or removes) the device and brings the transport back to reset.
     pub fn set_device(&mut self, device: Option<Box<dyn VirtioDevice>>) {
         self.queues = device
             .as_ref()
@@ -81,7 +81,7 @@ impl VirtioMmio {
         self.device.as_deref()
     }
 
-    /// Accesso tipizzato al dispositivo montato.
+    /// Typed access to the attached device.
     pub fn device_as<T: VirtioDevice>(&self) -> Option<&T> {
         let d: &dyn Any = self.device.as_deref()?;
         d.downcast_ref()
@@ -92,7 +92,7 @@ impl VirtioMmio {
         d.downcast_mut()
     }
 
-    /// Feature offerte al driver.
+    /// Features offered to the driver.
     pub fn offered_features(&self) -> u64 {
         match &self.device {
             Some(d) => (d.features() | F_VERSION_1 | F_INDIRECT_DESC | F_EVENT_IDX) & !self.removed,
@@ -100,7 +100,7 @@ impl VirtioMmio {
         }
     }
 
-    /// Feature accettate dal driver (valide dopo FEATURES_OK).
+    /// Features accepted by the driver (valid after FEATURES_OK).
     pub fn driver_features(&self) -> u64 {
         self.driver_features
     }
@@ -121,19 +121,19 @@ impl VirtioMmio {
         self.queues.get(i)
     }
 
-    /// Ultimo errore che ha portato il dispositivo in DEVICE_NEEDS_RESET.
+    /// Last error that put the device in DEVICE_NEEDS_RESET.
     pub fn last_error(&self) -> Option<QueueError> {
         self.last_error
     }
 
-    /// Livello della linea di interrupt verso il GIC.
+    /// Level of the interrupt line to the GIC.
     pub fn irq_level(&self) -> bool {
         self.interrupt_status != 0
     }
 
-    /// Cambio della configurazione deciso dall'host (es. capacità del
-    /// disco): ConfigGeneration avanza e parte l'interrupt, se il driver è
-    /// già attivo.
+    /// Configuration change decided by the host (e.g. disk
+    /// capacity): ConfigGeneration advances and the interrupt fires, if the driver is
+    /// already active.
     pub fn signal_config_change(&mut self) {
         self.config_generation = self.config_generation.wrapping_add(1);
         if self.status & STATUS_DRIVER_OK != 0 {
@@ -163,9 +163,9 @@ impl VirtioMmio {
         self.signal_config_change();
     }
 
-    /// Fa lavorare il dispositivo: consuma le code (richieste del driver e
-    /// dati pronti nei backend) e aggiorna InterruptStatus. Senza
-    /// DRIVER_OK, o in DEVICE_NEEDS_RESET, non fa nulla.
+    /// Makes the device work: consumes the queues (driver requests and
+    /// data ready in the backends) and updates InterruptStatus. Without
+    /// DRIVER_OK, or in DEVICE_NEEDS_RESET, it does nothing.
     pub fn service(&mut self, ram: &mut dyn GuestRam) {
         if self.status & STATUS_DRIVER_OK == 0 || self.status & STATUS_DEVICE_NEEDS_RESET != 0 {
             return;
@@ -181,7 +181,7 @@ impl VirtioMmio {
         if ctx.config_changed {
             self.signal_config_change();
         }
-        // Anche dopo un errore, i buffer già restituiti vanno notificati.
+        // Even after an error, the buffers already returned must be notified.
         for q in &mut self.queues {
             match q.should_notify(ram) {
                 Ok(true) => self.interrupt_status |= INT_VRING,
@@ -233,7 +233,7 @@ impl VirtioMmio {
             QUEUE_SEL => self.queue_sel = v,
             QUEUE_NUM => {
                 if let Some(q) = self.cur_queue().filter(|q| !q.ready()) {
-                    // Un valore oltre 16 bit è comunque invalido: 0 lo rende tale.
+                    // A value over 16 bits is invalid anyway: 0 makes it so.
                     q.set_size(u16::try_from(v).unwrap_or(0));
                 }
             }
@@ -264,7 +264,7 @@ impl VirtioMmio {
             }
             INTERRUPT_ACK => self.interrupt_status &= !v,
             STATUS => self.write_status(v),
-            // QueueNotify: il lavoro si fa in `service`. SHMSel: nessuna regione.
+            // QueueNotify: the work is done in `service`. SHMSel: no region.
             _ => {}
         }
     }
@@ -367,17 +367,17 @@ fn restore_queue_error(r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Re
         6 => QueueError::IndirectNotNegotiated,
         7 => QueueError::IndirectLen(r.u32()?),
         8 => QueueError::IndirectMisplaced,
-        // Il messaggio è un `&'static str`: si conserva (una volta per
-        // ripristino di un dispositivo guasto, raro e piccolo).
+        // The message is a `&'static str`: it is kept (once per
+        // restore of a broken device, rare and small).
         9 => QueueError::Malformed(Box::leak(r.string()?.into_boxed_str())),
-        v => return Err(vetro_snapshot::Error::invalid(format!("errore di coda {v}"))),
+        v => return Err(vetro_snapshot::Error::invalid(format!("queue error {v}"))),
     })
 }
 
-/// Stato del trasporto (selettori, feature negoziate, stato, interrupt,
-/// generazione della configurazione, ultimo errore), code e stato del
-/// dispositivo. Il tipo del dispositivo e le feature tolte dall'offerta
-/// sono configurazione: si controllano.
+/// Transport state (selectors, negotiated features, status, interrupt,
+/// configuration generation, last error), queues and device
+/// state. The device type and the features removed from the offer
+/// are configuration: they are checked.
 impl vetro_snapshot::Snapshot for VirtioMmio {
     fn save(&self, w: &mut vetro_snapshot::Writer) {
         w.u64(u64::from(self.device.as_ref().map_or(0, |d| d.device_id())));
@@ -398,8 +398,8 @@ impl vetro_snapshot::Snapshot for VirtioMmio {
 
     fn restore(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
         let id = self.device.as_ref().map_or(0, |d| d.device_id());
-        r.expect_u64("DeviceID virtio", u64::from(id))?;
-        r.expect_u64("feature tolte dall'offerta", self.removed)?;
+        r.expect_u64("virtio DeviceID", u64::from(id))?;
+        r.expect_u64("features removed from the offer", self.removed)?;
         self.device_features_sel = r.u32()?;
         self.driver_features_sel = r.u32()?;
         self.driver_features = r.u64()?;
@@ -408,7 +408,7 @@ impl vetro_snapshot::Snapshot for VirtioMmio {
         self.status = r.u32()?;
         self.config_generation = r.u32()?;
         self.last_error = r.opt(restore_queue_error)?;
-        r.expect_u64("numero di code", self.queues.len() as u64)?;
+        r.expect_u64("number of queues", self.queues.len() as u64)?;
         for q in &mut self.queues {
             r.get(q)?;
         }
@@ -425,7 +425,7 @@ impl vetro_snapshot::Snapshot for VirtioMmio {
 mod tests {
     use super::*;
 
-    /// Dispositivo minimo: una coda che restituisce ogni catena con len 7.
+    /// Minimal device: a queue that returns every chain with len 7.
     struct Eco {
         cfg: [u8; 8],
         rifiuta: bool,
@@ -489,7 +489,7 @@ mod tests {
         assert_eq!(rd(&mut t, VENDOR_ID), VENDOR);
         assert_eq!(rd(&mut t, DEVICE_FEATURES), 0b101 | (1 << 28) | (1 << 29));
         t.write(DEVICE_FEATURES_SEL, 4, 1);
-        assert_eq!(rd(&mut t, DEVICE_FEATURES), 1, "VERSION_1 è il bit 32");
+        assert_eq!(rd(&mut t, DEVICE_FEATURES), 1, "VERSION_1 is bit 32");
         t.write(DEVICE_FEATURES_SEL, 4, 2);
         assert_eq!(rd(&mut t, DEVICE_FEATURES), 0);
         let t = eco().without_features(F_EVENT_IDX | F_VERSION_1);
@@ -531,16 +531,16 @@ mod tests {
     #[test]
     fn features_ok_richiede_version_1_e_sottoinsieme() {
         let mut t = eco();
-        assert_eq!(negozia(&mut t, 0b1, 0) & STATUS_FEATURES_OK, 0, "senza VERSION_1");
-        assert_eq!(negozia(&mut t, 0b10, 1) & STATUS_FEATURES_OK, 0, "bit non offerto");
+        assert_eq!(negozia(&mut t, 0b1, 0) & STATUS_FEATURES_OK, 0, "without VERSION_1");
+        assert_eq!(negozia(&mut t, 0b10, 1) & STATUS_FEATURES_OK, 0, "bit not offered");
         assert_ne!(negozia(&mut t, 0b1, 1) & STATUS_FEATURES_OK, 0);
         assert_eq!(t.driver_features(), F_VERSION_1 | 1);
-        // Dopo FEATURES_OK DriverFeatures non cambia più.
+        // After FEATURES_OK DriverFeatures no longer changes.
         t.write(DRIVER_FEATURES_SEL, 4, 0);
         t.write(DRIVER_FEATURES, 4, 0b100);
         assert_eq!(t.driver_features(), F_VERSION_1 | 1);
         t.device_as_mut::<Eco>().unwrap().rifiuta = true;
-        assert_eq!(negozia(&mut t, 0b1, 1) & STATUS_FEATURES_OK, 0, "rifiutato dal dispositivo");
+        assert_eq!(negozia(&mut t, 0b1, 1) & STATUS_FEATURES_OK, 0, "rejected by the device");
     }
 
     #[test]
@@ -560,13 +560,13 @@ mod tests {
         let q = t.queue(1).unwrap();
         assert_eq!(q.size(), 4);
         assert_eq!(q.addrs(), (0x1_0000_1000, 0x2000, 0x2_0000_3000));
-        assert_eq!(rd(&mut t, QUEUE_DESC_LOW), 0, "registro di sola scrittura");
-        // Coda pronta: la configurazione non cambia più.
+        assert_eq!(rd(&mut t, QUEUE_DESC_LOW), 0, "write-only register");
+        // Queue ready: the configuration no longer changes.
         t.write(QUEUE_NUM, 4, 2);
         t.write(QUEUE_DESC_LOW, 4, 0x5000);
         assert_eq!(t.queue(1).unwrap().size(), 4);
         assert_eq!(t.queue(1).unwrap().addrs().0, 0x1_0000_1000);
-        // Coda inesistente.
+        // Nonexistent queue.
         t.write(QUEUE_SEL, 4, 2);
         assert_eq!(rd(&mut t, QUEUE_NUM_MAX), 0);
         assert_eq!(rd(&mut t, QUEUE_READY), 0);
@@ -576,7 +576,7 @@ mod tests {
         assert_eq!(t.driver_features(), 0);
         assert!(!t.queue(1).unwrap().ready());
         assert_eq!(t.queue(1).unwrap().size(), 8);
-        assert_eq!(t.device_as::<Eco>().unwrap().reset, 3, "set_device e due volte Status = 0");
+        assert_eq!(t.device_as::<Eco>().unwrap().reset, 3, "set_device and Status = 0 twice");
     }
 
     #[test]
@@ -597,7 +597,7 @@ mod tests {
         assert_eq!(t.read(CONFIG + 2, 2), 0x0403);
         assert_eq!(t.read(CONFIG + 4, 4), 0x0807_0605);
         assert_eq!(t.read(CONFIG, 8), 0x0807_0605_0403_0201);
-        assert_eq!(t.read(CONFIG + 6, 4), 0x0807, "oltre la fine si legge 0");
+        assert_eq!(t.read(CONFIG + 6, 4), 0x0807, "past the end it reads 0");
         t.write(CONFIG + 1, 1, 0xAA);
         assert_eq!(t.read(CONFIG, 2), 0xAA01);
     }
@@ -611,6 +611,6 @@ mod tests {
         assert_eq!(rd(&mut t, CONFIG_GENERATION), 0);
         t.signal_config_change();
         assert_eq!(rd(&mut t, CONFIG_GENERATION), 1);
-        assert_eq!(rd(&mut t, INTERRUPT_STATUS), 0, "senza DRIVER_OK niente interrupt");
+        assert_eq!(rd(&mut t, INTERRUPT_STATUS), 0, "no interrupt without DRIVER_OK");
     }
 }

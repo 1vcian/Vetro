@@ -1,18 +1,18 @@
-//! /proc virtuale. Il /proc dell'host descriverebbe l'emulatore (o la
-//! macchina che lo ospita), non il guest: qui i contenuti sono generati e
-//! deterministici, come si addice a una Cortex-A53 con 4 GiB e un core.
+//! Virtual /proc. The host's /proc would describe the emulator (or the
+//! machine hosting it), not the guest: here the contents are generated and
+//! deterministic, as befits a Cortex-A53 with 4 GiB and one core.
 
 use super::abi::*;
 use super::{Kernel, State};
 
-/// Memoria totale dichiarata al guest, in kB.
+/// Total memory declared to the guest, in kB.
 const MEM_KB: u64 = 4 * 1024 * 1024;
 
-/// File di ogni /proc/<pid>.
+/// Files of each /proc/<pid>.
 const PID_FILES: &[&str] = &["cmdline", "comm", "maps", "oom_score_adj", "stat", "status"];
 
 impl Kernel {
-    /// Voci della directory `path` sotto /proc, se è una di quelle emulate:
+    /// Entries of the directory `path` under /proc, if it is one of the emulated ones:
     /// /proc, /proc/<pid>, /proc/<pid>/fd, /proc/<pid>/task e task/<tid>.
     pub(super) fn proc_dir(&self, t: usize, path: &str) -> Option<Vec<super::fs::DirEnt>> {
         use super::fs::DirEnt;
@@ -34,7 +34,7 @@ impl Kernel {
             "thread-self" => self.tasks[t].tid,
             p => p.parse().ok()?,
         };
-        // task/<tid> è una directory di processo per quel thread.
+        // task/<tid> is a process directory for that thread.
         let (pid, sub) = match parts.get(1..) {
             Some(["task", tid, more @ ..]) => (tid.parse().ok()?, more.to_vec()),
             Some(more) => (pid, more.to_vec()),
@@ -61,8 +61,8 @@ impl Kernel {
         Some(v)
     }
 
-    /// Contenuto del file `path` sotto /proc, se è uno di quelli emulati.
-    /// `None` = non è un percorso di /proc; `Some(Err)` = /proc ma assente.
+    /// Content of the file `path` under /proc, if it is one of the emulated ones.
+    /// `None` = not a /proc path; `Some(Err)` = /proc but absent.
     pub(super) fn proc_content(&self, t: usize, path: &str) -> Option<Result<Vec<u8>, i64>> {
         let rest = path.strip_prefix("/proc/").or_else(|| (path == "/proc").then_some(""))?;
         let text = |s: String| Some(Ok(s.into_bytes()));
@@ -157,7 +157,7 @@ impl Kernel {
             "comm" => text(format!("{}\n", task.comm)),
             "cmdline" => Some(Ok(format!("{}\0", task.exe).into_bytes())),
             "stat" => {
-                // 52 campi come in proc(5); tempi e memoria a zero.
+                // 52 fields as in proc(5); times and memory at zero.
                 let threads =
                     self.tasks.iter().filter(|x| x.tgid == task.tgid && x.state != State::Dead).count();
                 text(format!(
@@ -167,7 +167,7 @@ impl Kernel {
                 ))
             }
             "status" => {
-                // SAFETY: getuid/getgid non hanno precondizioni.
+                // SAFETY: getuid/getgid have no preconditions.
                 let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
                 let threads =
                     self.tasks.iter().filter(|x| x.tgid == task.tgid && x.state != State::Dead).count();
@@ -200,7 +200,7 @@ impl Kernel {
 }
 
 impl Kernel {
-    /// Scrittura in /proc/<pid>/oom_score_adj: abbassarlo richiede privilegi.
+    /// Write to /proc/<pid>/oom_score_adj: lowering it requires privileges.
     pub(super) fn write_oom_score_adj(&mut self, t: usize, path: &str, data: &[u8]) -> Result<usize, i64> {
         let v: i32 = std::str::from_utf8(data).ok().and_then(|s| s.trim().parse().ok()).ok_or(EINVAL)?;
         if !(-1000..=1000).contains(&v) {
@@ -208,7 +208,7 @@ impl Kernel {
         }
         let who = path.trim_start_matches("/proc/").split('/').next().unwrap_or("self");
         let pid = if who == "self" { self.tasks[t].tgid } else { who.parse().map_err(|_| ENOENT)? };
-        // SAFETY: geteuid non ha precondizioni.
+        // SAFETY: geteuid has no preconditions.
         let root = unsafe { libc::geteuid() } == 0;
         let cur = self.tasks.iter().find(|x| x.tgid == pid).ok_or(ENOENT)?.oom_score_adj;
         if v < cur && !root {

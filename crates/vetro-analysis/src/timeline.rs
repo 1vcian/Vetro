@@ -1,24 +1,24 @@
-//! Timeline input→effetti (M7, ADR 0023): gli ingressi dell'utente
-//! (tasti, clic e tocchi, righe della console, comandi del gestore dei
-//! file) con il loro numero d'istruzione, e gli effetti che seguono
-//! (richieste di rete, scritture di file viste dall'osservazione, uscita
-//! della console), tutti nel tempo del guest in microsecondi (10 ns a
-//! istruzione: `at_us = istruzioni / 100`, lo stesso tempo dei frame di
+//! Input→effects timeline (M7, ADR 0023): the user's inputs
+//! (keys, clicks and touches, console lines, file manager
+//! commands) with their instruction number, and the effects that follow
+//! (network requests, file writes seen by the observation, console
+//! output), all in guest time in microseconds (10 ns per
+//! instruction: `at_us = instructions / 100`, the same time as the frames of
 //! [`crate::net::capture`]).
 //!
-//! **Attribuzione (euristica).** Un effetto è attribuito all'ultimo
-//! ingresso che lo precede (allo stesso istante vale: l'ingresso arriva al
-//! guest prima della prossima istruzione) se è entro `window_us`; altrimenti
-//! resta senza causa. Per gli effetti di rete e sui file contano solo gli
-//! ingressi *di comando* (Invio, clic, tocco, comando del gestore, tasto di
-//! accensione): un carattere battuto a metà riga non "causa" una richiesta.
-//! Per l'uscita della console conta qualunque ingresso (l'eco di un tasto è
-//! l'effetto di quel tasto). Non è una relazione causale vera (il guest
-//! può fare richieste per conto suo durante la finestra, per esempio un
-//! rinnovo DHCP): è la stessa approssimazione degli strumenti che mettono
-//! in fila azioni e traffico, e la finestra si sceglie.
+//! **Attribution (heuristic).** An effect is attributed to the last
+//! input preceding it (at the same instant it counts: the input reaches the
+//! guest before the next instruction) if it is within `window_us`; otherwise
+//! it stays without a cause. For network and file effects only *command*
+//! inputs count (Enter, click, touch, file manager command, power
+//! button): a character typed in the middle of a line does not "cause" a request.
+//! For console output any input counts (the echo of a key is
+//! the effect of that key). It is not a true causal relation (the guest
+//! can make requests on its own during the window, for example a
+//! DHCP renewal): it is the same approximation as the tools that line up
+//! actions and traffic, and the window is configurable.
 //!
-//! Senza dipendenze e deterministico, come il resto del crate (compila per
+//! No dependencies and deterministic, like the rest of the crate (compiles for
 //! wasm32).
 
 use std::fmt::Write as _;
@@ -27,38 +27,38 @@ use crate::net::dns;
 use crate::net::inspector::NetworkAnalysis;
 use crate::net::json::quote_into;
 
-/// Finestra di attribuzione predefinita: 3 s di tempo del guest.
+/// Default attribution window: 3 s of guest time.
 pub const DEFAULT_WINDOW_US: u64 = 3_000_000;
 
-/// Ingressi e effetti tenuti al più (i più vecchi si scartano).
+/// Maximum inputs and effects kept (the oldest are dropped).
 pub const MAX_INPUTS: usize = 20_000;
 pub const MAX_EFFECTS: usize = 50_000;
 
-/// Caratteri di testo tenuti per un effetto della console.
+/// Text characters kept for a console effect.
 pub const CONSOLE_TEXT: usize = 160;
 
-/// Microsecondi di tempo del guest a un numero d'istruzione.
+/// Microseconds of guest time at an instruction number.
 pub fn step_us(step: u64) -> u64 {
     step / 100
 }
 
-/// Tipo di ingresso dell'utente.
+/// Kind of user input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum InputKind {
-    /// Tasto della tastiera (virtio-input).
+    /// Keyboard key (virtio-input).
     Key,
-    /// Pulsante del puntatore (tablet).
+    /// Pointer button (tablet).
     Pointer,
-    /// Contatto del touchscreen.
+    /// Touchscreen contact.
     Touch,
-    /// Byte alla console seriale.
+    /// Byte to the serial console.
     Console,
-    /// Comando del gestore dei file (dall'utente, non gli aggiornamenti del
-    /// pannello).
+    /// File manager command (from the user, not the panel
+    /// updates).
     Files,
-    /// Tasto di accensione (GPIO).
+    /// Power button (GPIO).
     Power,
-    /// Risoluzione chiesta per lo schermo.
+    /// Resolution requested for the screen.
     Display,
     Other,
 }
@@ -77,18 +77,18 @@ impl InputKind {
 
     pub fn name(self) -> &'static str {
         match self {
-            InputKind::Key => "tasto",
-            InputKind::Pointer => "puntatore",
-            InputKind::Touch => "tocco",
+            InputKind::Key => "key",
+            InputKind::Pointer => "pointer",
+            InputKind::Touch => "touch",
             InputKind::Console => "console",
             InputKind::Files => "file",
-            InputKind::Power => "accensione",
-            InputKind::Display => "schermo",
-            InputKind::Other => "altro",
+            InputKind::Power => "power",
+            InputKind::Display => "display",
+            InputKind::Other => "other",
         }
     }
 
-    /// Codice numerico (per l'API C di vetro-wasm): la posizione in
+    /// Numeric code (for the vetro-wasm C API): the position in
     /// [`InputKind::ALL`].
     pub fn code(self) -> u32 {
         Self::ALL.iter().position(|&k| k == self).unwrap_or(7) as u32
@@ -99,18 +99,18 @@ impl InputKind {
     }
 }
 
-/// Un ingresso dell'utente.
+/// A user input.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UserInput {
-    /// Numero d'istruzione a cui è arrivato al guest.
+    /// Instruction number at which it reached the guest.
     pub step: u64,
     pub at_us: u64,
     pub kind: InputKind,
     pub label: String,
-    /// Non è un comando (un carattere a metà riga, un cambio di
-    /// risoluzione): non causa effetti di rete o sui file.
+    /// Not a command (a character in the middle of a line, a resolution
+    /// change): it does not cause network or file effects.
     pub weak: bool,
-    /// Ordine di arrivo nella timeline (lo mette [`Timeline`]).
+    /// Arrival order in the timeline (set by [`Timeline`]).
     pub seq: u64,
 }
 
@@ -120,19 +120,19 @@ impl UserInput {
     }
 }
 
-/// Tipo di effetto.
+/// Kind of effect.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum EffectKind {
-    /// Richiesta HTTP (dall'ispettore di rete).
+    /// HTTP request (from the network inspector).
     Http,
-    /// Domanda DNS.
+    /// DNS query.
     Dns,
-    /// Connessione TLS (nome dal ClientHello).
+    /// TLS connection (name from the ClientHello).
     Tls,
-    /// File creato, scritto, spostato o cancellato (osservazione del
-    /// gestore dei file).
+    /// File created, written, moved or deleted (observation by the
+    /// file manager).
     File,
-    /// Uscita della console.
+    /// Console output.
     Console,
 }
 
@@ -158,27 +158,27 @@ impl EffectKind {
         Self::ALL.get(c as usize).copied()
     }
 
-    /// Lo causano anche gli ingressi deboli?
+    /// Do weak inputs cause it too?
     fn any_input(self) -> bool {
         self == EffectKind::Console
     }
 }
 
-/// Un effetto osservato.
+/// An observed effect.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Effect {
     pub at_us: u64,
     pub kind: EffectKind,
     pub label: String,
-    /// Riferimento nella sua vista (indice della richiesta nell'ispettore).
+    /// Reference in its view (index of the request in the inspector).
     pub detail: Option<usize>,
-    /// Byte (uscita della console, corpo della risposta).
+    /// Bytes (console output, response body).
     pub bytes: u64,
-    /// Ordine di arrivo nella timeline (lo mette [`Timeline`]): allo stesso
-    /// istante, un ingresso arrivato dopo l'effetto non ne è la causa
-    /// (l'uscita della console letta alla fine di un quanto viene prima
-    /// degli ingressi dati a quel confine). `u64::MAX` per gli effetti
-    /// calcolati a parte (rete): vengono dopo gli ingressi del loro istante.
+    /// Arrival order in the timeline (set by [`Timeline`]): at the same
+    /// instant, an input that arrived after the effect is not its cause
+    /// (console output read at the end of a quantum comes before
+    /// the inputs given at that boundary). `u64::MAX` for effects
+    /// computed separately (network): they come after the inputs of their instant.
     pub seq: u64,
 }
 
@@ -188,10 +188,10 @@ impl Effect {
     }
 }
 
-/// La causa di un effetto all'istante `at_us` arrivato per `seq`-esimo:
-/// l'indice dell'ultimo ingresso che lo precede (istante minore, o uguale e
-/// arrivato prima) ed entro `window_us` (solo quelli di comando se
-/// `strong_only`). `inputs` in ordine di (istante, arrivo).
+/// The cause of an effect at instant `at_us` that arrived `seq`-th:
+/// the index of the last input preceding it (earlier instant, or equal and
+/// arrived before) and within `window_us` (only command inputs if
+/// `strong_only`). `inputs` in (instant, arrival) order.
 pub fn cause(inputs: &[UserInput], at_us: u64, seq: u64, window_us: u64, strong_only: bool) -> Option<usize> {
     let end = inputs.partition_point(|i| (i.at_us, i.seq) < (at_us, seq));
     inputs[..end]
@@ -203,8 +203,8 @@ pub fn cause(inputs: &[UserInput], at_us: u64, seq: u64, window_us: u64, strong_
         .map(|(k, _)| k)
 }
 
-/// Il testo stampabile di byte della console (controlli come `⏎`, `⌫`,
-/// `^X`; sequenze di escape tolte).
+/// The printable text of console bytes (controls as `⏎`, `⌫`,
+/// `^X`; escape sequences removed).
 pub fn printable(bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes);
     let mut out = String::new();
@@ -212,7 +212,7 @@ pub fn printable(bytes: &[u8]) -> String {
     while let Some(c) = chars.next() {
         match c {
             '\x1b' => {
-                // CSI: ESC [ parametri lettera finale; altrimenti un carattere.
+                // CSI: ESC [ parameters final letter; otherwise one character.
                 if chars.peek() == Some(&'[') {
                     chars.next();
                     for d in chars.by_ref() {
@@ -238,10 +238,10 @@ pub fn printable(bytes: &[u8]) -> String {
     out
 }
 
-/// Ricostruisce le righe battute alla console (come la vede una shell in
-/// modo canonico): caratteri aggiunti, `DEL`/`BS` tolgono l'ultimo, `^U` e
-/// `^C` svuotano la riga, CR o LF la chiudono; le sequenze di escape (frecce)
-/// si ignorano.
+/// Rebuilds the lines typed at the console (as a shell in canonical
+/// mode sees them): characters appended, `DEL`/`BS` remove the last one, `^U` and
+/// `^C` clear the line, CR or LF close it; escape sequences (arrows)
+/// are ignored.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LineEditor {
     line: String,
@@ -249,7 +249,7 @@ pub struct LineEditor {
 }
 
 impl LineEditor {
-    /// Aggiunge byte battuti; restituisce le righe chiuse.
+    /// Adds typed bytes; returns the closed lines.
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<String> {
         let mut done = Vec::new();
         for c in String::from_utf8_lossy(bytes).chars() {
@@ -271,13 +271,13 @@ impl LineEditor {
         done
     }
 
-    /// La riga in corso.
+    /// The line in progress.
     pub fn current(&self) -> &str {
         &self.line
     }
 }
 
-/// Nome di un tasto Linux (`KEY_*` e `BTN_*` più comuni).
+/// Name of a Linux key (most common `KEY_*` and `BTN_*`).
 pub fn key_name(code: u16) -> String {
     const ROW1: &str = "1234567890";
     const QWERTY: [(u16, &str); 3] = [(16, "QWERTYUIOP"), (30, "ASDFGHJKL"), (44, "ZXCVBNM")];
@@ -289,41 +289,41 @@ pub fn key_name(code: u16) -> String {
         15 => "Tab",
         26 => "[",
         27 => "]",
-        28 => "Invio",
+        28 => "Enter",
         29 => "Ctrl",
         39 => ";",
         40 => "'",
         41 => "`",
-        42 => "Maiusc",
+        42 => "Shift",
         43 => "\\",
         51 => ",",
         52 => ".",
         53 => "/",
-        54 => "Maiusc destro",
+        54 => "Right Shift",
         56 => "Alt",
-        57 => "Spazio",
-        58 => "BlocMaiusc",
-        96 => "Invio (tastierino)",
-        97 => "Ctrl destro",
+        57 => "Space",
+        58 => "CapsLock",
+        96 => "Enter (keypad)",
+        97 => "Right Ctrl",
         100 => "AltGr",
         102 => "Home",
-        103 => "Su",
-        104 => "PagSu",
-        105 => "Sinistra",
-        106 => "Destra",
-        107 => "Fine",
-        108 => "Giù",
-        109 => "PagGiù",
+        103 => "Up",
+        104 => "PgUp",
+        105 => "Left",
+        106 => "Right",
+        107 => "End",
+        108 => "Down",
+        109 => "PgDn",
         110 => "Ins",
-        111 => "Canc",
-        116 => "Accensione",
+        111 => "Del",
+        116 => "Power",
         125 => "Meta",
-        158 => "Indietro",
+        158 => "Back",
         172 => "Home page",
-        0x110 => "clic sinistro",
-        0x111 => "clic destro",
-        0x112 => "clic centrale",
-        0x14a => "tocco",
+        0x110 => "left click",
+        0x111 => "right click",
+        0x112 => "middle click",
+        0x14a => "touch",
         _ => "",
     };
     if !named.is_empty() {
@@ -341,21 +341,21 @@ pub fn key_name(code: u16) -> String {
     if (59..=68).contains(&code) {
         return format!("F{}", code - 58);
     }
-    format!("tasto {code}")
+    format!("key {code}")
 }
 
-/// Il tasto Invio (`KEY_ENTER`, `KEY_KPENTER`): chiude un comando.
+/// The Enter key (`KEY_ENTER`, `KEY_KPENTER`): closes a command.
 pub fn is_enter(code: u16) -> bool {
     code == 28 || code == 96
 }
 
-/// Gli effetti di un'analisi di rete: una richiesta HTTP all'inizio della
-/// richiesta (primo byte, o SYN/DNS della prima della connessione), una
-/// domanda DNS, una connessione TLS.
+/// The effects of a network analysis: an HTTP request at the start of the
+/// request (first byte, or SYN/DNS of the first one on the connection), a
+/// DNS query, a TLS connection.
 pub fn network_effects(a: &NetworkAnalysis) -> Vec<Effect> {
     let mut v = Vec::new();
     for x in &a.http {
-        let status = x.status().map_or_else(|| "senza risposta".to_string(), |s| s.to_string());
+        let status = x.status().map_or_else(|| "no response".to_string(), |s| s.to_string());
         v.push(Effect {
             detail: Some(x.index),
             bytes: x.response.as_ref().map_or(0, |r| r.body.decoded.len() as u64),
@@ -379,26 +379,26 @@ pub fn network_effects(a: &NetworkAnalysis) -> Vec<Effect> {
         v.push(Effect::new(
             t.started_us,
             EffectKind::Tls,
-            format!("TLS {} ({})", t.sni.as_deref().unwrap_or("senza SNI"), t.server),
+            format!("TLS {} ({})", t.sni.as_deref().unwrap_or("no SNI"), t.server),
         ));
     }
     v
 }
 
-/// Ingressi e effetti non di rete di una sessione (quelli di rete si
-/// ricavano dalla cattura quando servono: [`network_effects`]).
+/// Non-network inputs and effects of a session (the network ones are
+/// derived from the capture when needed: [`network_effects`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Timeline {
     inputs: Vec<UserInput>,
     effects: Vec<Effect>,
-    /// Ingressi ed effetti scartati perché oltre i limiti.
+    /// Inputs and effects dropped because beyond the limits.
     pub dropped: u64,
-    /// Cresce a ogni cambiamento (per chi ridisegna solo se serve).
+    /// Grows at every change (for whoever redraws only when needed).
     pub version: u64,
-    /// L'ultima cosa aggiunta è l'effetto della console in fondo: l'uscita
-    /// che segue ci si unisce.
+    /// The last thing added is the console effect at the end: the output
+    /// that follows joins it.
     console_open: bool,
-    /// Contatore degli arrivi (`seq` di ingressi ed effetti).
+    /// Arrival counter (`seq` of inputs and effects).
     seq: u64,
 }
 
@@ -408,7 +408,7 @@ impl Default for Timeline {
     }
 }
 
-/// Inserisce `x` tenendo l'ordine per `key` (in fondo fra gli uguali).
+/// Inserts `x` keeping the order by `key` (at the end among equals).
 fn insert_sorted<T>(v: &mut Vec<T>, x: T, key: impl Fn(&T) -> u64) {
     let k = key(&x);
     let at = v.partition_point(|y| key(y) <= k);
@@ -443,7 +443,7 @@ impl Timeline {
         self.console_open = false;
     }
 
-    /// Aggiunge un ingresso (in ordine di tempo).
+    /// Adds an input (in time order).
     pub fn push_input(&mut self, mut i: UserInput) {
         self.seq += 1;
         i.seq = self.seq;
@@ -456,7 +456,7 @@ impl Timeline {
         self.console_open = false;
     }
 
-    /// Aggiunge un effetto (in ordine di tempo).
+    /// Adds an effect (in time order).
     pub fn push_effect(&mut self, mut e: Effect) {
         self.seq += 1;
         e.seq = self.seq;
@@ -469,9 +469,9 @@ impl Timeline {
         self.console_open = false;
     }
 
-    /// Uscita della console all'istante `at_us`: si unisce all'ultimo
-    /// effetto della console se nel frattempo non ci sono stati ingressi né
-    /// altri effetti, altrimenti è un effetto nuovo.
+    /// Console output at instant `at_us`: it joins the last
+    /// console effect if in the meantime there were no inputs nor
+    /// other effects, otherwise it is a new effect.
     pub fn push_console(&mut self, at_us: u64, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
@@ -495,8 +495,8 @@ impl Timeline {
         self.console_open = true;
     }
 
-    /// Tutti gli effetti (questi più `extra`, per esempio quelli di rete) in
-    /// ordine di tempo, con la causa di ognuno.
+    /// All effects (these plus `extra`, for example the network ones) in
+    /// time order, with the cause of each.
     pub fn attributed(&self, extra: &[Effect], window_us: u64) -> Vec<(Effect, Option<usize>)> {
         let mut all: Vec<Effect> = self.effects.iter().chain(extra).cloned().collect();
         all.sort_by_key(|e| (e.at_us, e.seq, e.kind));
@@ -508,12 +508,12 @@ impl Timeline {
             .collect()
     }
 
-    /// La timeline in JSON per l'app web:
+    /// The timeline as JSON for the web app:
     ///
     /// ```json
     /// {"windowUs":3000000,"dropped":0,"version":7,
     ///  "inputs":[{"i":0,"step":123400,"atUs":1234,"kind":"console",
-    ///             "label":"Invio: wget ...","weak":false,"effects":3}],
+    ///             "label":"Enter: wget ...","weak":false,"effects":3}],
     ///  "effects":[{"atUs":1300,"kind":"http","label":"POST http://... → 200",
     ///              "ref":0,"bytes":0,"cause":0}]}
     /// ```
@@ -587,8 +587,8 @@ mod tests {
         Effect::new(at_us, kind, "")
     }
 
-    /// L'ultimo ingresso non oltre l'effetto, entro la finestra; allo
-    /// stesso istante l'ingresso viene prima; i deboli solo per la console.
+    /// The last input not after the effect, within the window; at the
+    /// same instant the input comes first; weak ones only for the console.
     #[test]
     fn causa_entro_la_finestra() {
         let mut v = [input(100_000, "a", false), input(200_000, "b", true), input(300_000, "c", false)];
@@ -597,20 +597,20 @@ mod tests {
         }
         assert_eq!((v[0].at_us, v[2].at_us), (1_000, 3_000));
         let m = u64::MAX;
-        assert_eq!(cause(&v, 999, m, 10_000, false), None, "prima di ogni ingresso");
-        assert_eq!(cause(&v, 1_000, m, 10_000, false), Some(0), "stesso istante, calcolato a parte");
-        assert_eq!(cause(&v, 1_000, 1, 10_000, false), None, "stesso istante, arrivato prima dell'ingresso");
-        assert_eq!(cause(&v, 1_000, 2, 10_000, false), Some(0), "stesso istante, arrivato dopo");
+        assert_eq!(cause(&v, 999, m, 10_000, false), None, "before any input");
+        assert_eq!(cause(&v, 1_000, m, 10_000, false), Some(0), "same instant, computed separately");
+        assert_eq!(cause(&v, 1_000, 1, 10_000, false), None, "same instant, arrived before the input");
+        assert_eq!(cause(&v, 1_000, 2, 10_000, false), Some(0), "same instant, arrived after");
         assert_eq!(cause(&v, 2_500, m, 10_000, false), Some(1));
-        assert_eq!(cause(&v, 2_500, m, 10_000, true), Some(0), "il debole non causa");
-        assert_eq!(cause(&v, 2_500, m, 1_000, true), None, "il comando è fuori finestra");
-        assert_eq!(cause(&v, 3_000 + 10_000, m, 10_000, true), Some(2), "sul bordo");
+        assert_eq!(cause(&v, 2_500, m, 10_000, true), Some(0), "the weak one does not cause");
+        assert_eq!(cause(&v, 2_500, m, 1_000, true), None, "the command is outside the window");
+        assert_eq!(cause(&v, 3_000 + 10_000, m, 10_000, true), Some(2), "on the edge");
         assert_eq!(cause(&v, 3_000 + 10_001, m, 10_000, true), None);
         assert_eq!(cause(&[], 5, m, 10, false), None);
     }
 
-    /// L'uscita della console si unisce finché non arriva un ingresso o
-    /// un altro effetto; gli effetti di rete sono attribuiti al comando.
+    /// Console output joins until an input or another effect
+    /// arrives; network effects are attributed to the command.
     #[test]
     fn console_unita_e_attribuzione() {
         let mut t = Timeline::new();
@@ -621,15 +621,15 @@ mod tests {
         assert_eq!(t.effects()[0].bytes, 9);
         t.push_input(input(3_000, "w", true));
         t.push_console(31, b"w");
-        t.push_input(input(4_000, "Invio: wget x", false));
+        t.push_input(input(4_000, "Enter: wget x", false));
         t.push_console(41, b"\r\n");
         t.push_effect(Effect { label: "file".into(), ..effect(45, EffectKind::File) });
-        t.push_console(50, b"fatto");
-        // Uscita letta a 60 prima di un ingresso dato a 60: non è sua (si
-        // unisce a quella di prima), e l'uscita dopo l'ingresso è nuova.
-        t.push_console(60, b"prima");
-        t.push_input(input(6_000, "dopo", false));
-        t.push_console(60, b"eco");
+        t.push_console(50, b"done");
+        // Output read at 60 before an input given at 60: it is not its own (it
+        // joins the earlier one), and the output after the input is new.
+        t.push_console(60, b"before");
+        t.push_input(input(6_000, "after", false));
+        t.push_console(60, b"echo");
         assert_eq!(t.effects().len(), 6, "{:?}", t.effects());
         let net = [Effect { detail: Some(0), ..effect(42, EffectKind::Http) }, effect(35, EffectKind::Dns)];
         let a = t.attributed(&net, 1_000);
@@ -648,10 +648,10 @@ mod tests {
                 (60, "console", Some(2)),
             ]
         );
-        let j = json::parse(t.to_json(&net, 1_000).as_bytes()).expect("JSON valido");
+        let j = json::parse(t.to_json(&net, 1_000).as_bytes()).expect("valid JSON");
         let Some(Value::Array(inputs)) = j.get("inputs") else { panic!() };
         assert_eq!(inputs[1].get("effects"), Some(&Value::Number("4".into())));
-        assert_eq!(inputs[1].get("label").and_then(Value::as_str), Some("Invio: wget x"));
+        assert_eq!(inputs[1].get("label").and_then(Value::as_str), Some("Enter: wget x"));
         assert_eq!(inputs[0].get("weak"), Some(&Value::Bool(true)));
         let Some(Value::Array(effects)) = j.get("effects") else { panic!() };
         assert_eq!(effects[4].get("ref"), Some(&Value::Number("0".into())));
@@ -662,8 +662,8 @@ mod tests {
         assert!(t.version > v && t.inputs().is_empty() && t.effects().is_empty());
     }
 
-    /// Ingressi fuori ordine si mettono al loro posto; oltre i limiti si
-    /// scartano i più vecchi.
+    /// Out-of-order inputs are put in their place; beyond the limits the
+    /// oldest are dropped.
     #[test]
     fn ordine_e_limiti() {
         let mut t = Timeline::new();
@@ -684,8 +684,8 @@ mod tests {
         assert!(l.feed(b"wgex\x7ft").is_empty());
         assert_eq!(l.current(), "wget");
         assert_eq!(l.feed(b" -q\x1b[D\x1b[C http://a\r"), ["wget -q http://a"]);
-        assert_eq!(l.feed(b"ls\x15pwd\nuno\rdue"), ["pwd", "uno"]);
-        assert_eq!(l.current(), "due");
+        assert_eq!(l.feed(b"ls\x15pwd\none\rtwo"), ["pwd", "one"]);
+        assert_eq!(l.current(), "two");
         assert!(l.feed(b"\x03").is_empty());
         assert_eq!(l.current(), "");
         assert_eq!(l.feed("città\r".as_bytes()), ["città"]);
@@ -697,11 +697,11 @@ mod tests {
         assert_eq!(key_name(30), "A");
         assert_eq!(key_name(2), "1");
         assert_eq!(key_name(11), "0");
-        assert_eq!(key_name(28), "Invio");
+        assert_eq!(key_name(28), "Enter");
         assert_eq!(key_name(50), "M");
         assert_eq!(key_name(60), "F2");
-        assert_eq!(key_name(0x110), "clic sinistro");
-        assert_eq!(key_name(999), "tasto 999");
+        assert_eq!(key_name(0x110), "left click");
+        assert_eq!(key_name(999), "key 999");
         assert!(is_enter(28) && is_enter(96) && !is_enter(30));
         for k in InputKind::ALL {
             assert_eq!(InputKind::from_code(k.code()), k);
@@ -712,8 +712,8 @@ mod tests {
         }
     }
 
-    /// Gli effetti di rete dell'analisi di una sessione: la domanda DNS e
-    /// le due richieste, con l'indice nell'ispettore.
+    /// The network effects of a session's analysis: the DNS query and
+    /// the two requests, with the index in the inspector.
     #[test]
     fn effetti_dall_analisi_di_rete() {
         let a = NetworkAnalysis::from_frames(&session());

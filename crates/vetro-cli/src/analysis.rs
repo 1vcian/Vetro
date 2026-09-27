@@ -1,9 +1,9 @@
-//! Analisi dall'esterno in `vetro boot` (M7/M8, ADR 0027): `--binder-log`
-//! (chiamate Binder decodificate e ispettore privacy) e `--tls` (testo in
-//! chiaro degli hook TLS, che finisce nell'HAR come le richieste in
-//! chiaro). Serve il profilo del kernel: `--kernel-profile=boot.img` (o
-//! `Image`, con `--system-map`/`--kernel-btf` per il kernel di prova);
-//! senza, si usa `--boot-img`/`--kernel` se ci sono.
+//! Analysis from the outside in `vetro boot` (M7/M8, ADR 0027): `--binder-log`
+//! (decoded Binder calls and privacy inspector) and `--tls` (plaintext
+//! from the TLS hooks, which ends up in the HAR like the plaintext
+//! requests). It needs the kernel profile: `--kernel-profile=boot.img` (or
+//! `Image`, with `--system-map`/`--kernel-btf` for the test kernel);
+//! without it, `--boot-img`/`--kernel` is used if present.
 
 use std::path::PathBuf;
 
@@ -17,10 +17,10 @@ pub struct AnalysisOptions {
     pub profile: Option<String>,
     pub system_map: Option<String>,
     pub btf: Option<String>,
-    /// File delle chiamate Binder: JSON se finisce in `.json`, righe di
-    /// testo altrimenti.
+    /// File of the Binder calls: JSON if it ends in `.json`, lines of
+    /// text otherwise.
     pub binder_log: Option<PathBuf>,
-    /// Hook TLS: le richieste HTTPS in chiaro nell'HAR e nell'ispettore.
+    /// TLS hooks: the decrypted HTTPS requests in the HAR and in the inspector.
     pub tls: bool,
 }
 
@@ -29,7 +29,7 @@ impl AnalysisOptions {
         self.binder_log.is_some() || self.tls
     }
 
-    /// Prende le opzioni che conosce; falso se `a` non è sua.
+    /// Takes the options it knows; false if `a` is not one of its own.
     pub fn parse(&mut self, a: &str) -> bool {
         if a == "--tls" {
             self.tls = true;
@@ -46,8 +46,8 @@ impl AnalysisOptions {
         true
     }
 
-    /// Mette i tracciatori nella macchina. `fallback` è l'immagine del
-    /// kernel o il `boot.img` dell'avvio, se c'è.
+    /// Puts the tracers into the machine. `fallback` is the kernel image
+    /// or the boot's `boot.img`, if any.
     pub fn install(&self, m: &mut Machine, fallback: Option<&str>) -> Result<(), String> {
         if !self.wanted() {
             return Ok(());
@@ -56,7 +56,7 @@ impl AnalysisOptions {
             .profile
             .as_deref()
             .or(fallback)
-            .ok_or("--binder-log richiede --kernel-profile=boot.img (o --boot-img/--kernel)")?;
+            .ok_or("--binder-log requires --kernel-profile=boot.img (or --boot-img/--kernel)")?;
         let file = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
         let map = match &self.system_map {
             Some(p) => Some(std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?),
@@ -80,15 +80,15 @@ impl AnalysisOptions {
         Ok(())
     }
 
-    /// Aggiorna gli agganci TLS (processi e ritorni nuovi); da chiamare fra
-    /// due quanti quando `--tls` è attivo.
+    /// Updates the TLS hooks (new processes and returns); to be called between
+    /// two quanta when `--tls` is enabled.
     pub fn tls_service(&self, m: &mut Machine) {
         if self.tls {
             vetro_machine::tls::tls_service(m);
         }
     }
 
-    /// Le conversazioni TLS catturate finora.
+    /// The TLS conversations captured so far.
     pub fn tls_conversations(&self, m: &mut Machine) -> Vec<TlsConversation> {
         m.tracer_mut::<Tracers>()
             .and_then(|t| t.get::<TlsTracer>())
@@ -96,7 +96,7 @@ impl AnalysisOptions {
             .unwrap_or_default()
     }
 
-    /// Scrive i file; restituisce le righe di riepilogo per stderr.
+    /// Writes the files; returns the summary lines for stderr.
     pub fn finish(&self, m: &mut Machine) -> std::io::Result<Vec<String>> {
         let mut out = Vec::new();
         let Some(t) = m.tracer_mut::<Tracers>() else { return Ok(out) };
@@ -108,7 +108,7 @@ impl AnalysisOptions {
             };
             std::fs::write(p, text)
                 .map_err(|e| std::io::Error::new(e.kind(), format!("{}: {e}", p.display())))?;
-            out.push(format!("binder: {} chiamate in {}", b.log.calls.len(), p.display()));
+            out.push(format!("binder: {} calls in {}", b.log.calls.len(), p.display()));
             for c in b.log.sensitive() {
                 out.push(format!("privacy: {}", c.line()));
             }

@@ -23,7 +23,7 @@ fn configurazione_e_feature() {
         assert_eq!(d.t.rd(QUEUE_NUM_MAX), 128);
     }
     d.t.wr(QUEUE_SEL, 2);
-    assert_eq!(d.t.rd(QUEUE_NUM_MAX), 0, "senza MULTIPORT solo due code");
+    assert_eq!(d.t.rd(QUEUE_NUM_MAX), 0, "without MULTIPORT only two queues");
 }
 
 #[test]
@@ -37,7 +37,7 @@ fn trasmissione_verso_il_backend() {
     assert_eq!(d.pop_used(TXQ), Some((head, 0)));
     assert_eq!(backend(&mut d).output, b"adb shell\n");
 
-    // Più di un pezzo da 64 KiB.
+    // More than one 64 KiB chunk.
     let big: Vec<u8> = (0..150_000u32).map(|i| (i % 253) as u8).collect();
     let p = d.buf(&big);
     d.add(TXQ, &[(p, big.len() as u32, false)]);
@@ -57,7 +57,7 @@ fn ricezione_dal_backend() {
         })
         .collect();
     d.service();
-    assert_eq!(d.pop_used(RXQ), None, "niente input: i buffer restano al driver");
+    assert_eq!(d.pop_used(RXQ), None, "no input: the buffers stay with the driver");
     assert_eq!(d.irq(), 0);
     backend(&mut d).input.extend(b"0123456789AB");
     d.service();
@@ -67,7 +67,7 @@ fn ricezione_dal_backend() {
     assert_eq!(d.mem(bufs[0], 8), b"01234567");
     assert_eq!(d.mem(bufs[1], 4), b"89AB");
     assert!(backend(&mut d).input.is_empty());
-    // Byte in più senza buffer: restano nel backend.
+    // Extra bytes without buffers: they stay in the backend.
     backend(&mut d).input.extend(b"z");
     d.service();
     assert_eq!(backend(&mut d).input.len(), 1);

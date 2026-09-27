@@ -543,7 +543,7 @@ R2; `tools/web-serve.mjs` also serves `target/aosp/out` at `/aosp/`).
   full-screen triangle, if chosen and available), the cursor in a second
   canvas on top, the console (`terminal.mjs`: CR/LF/BS/TAB, CSI K/J/C/D/G/H,
   reply to `ESC[6n`, UTF-8), the status bar. Buttons "Save state"
-  (snapshot now) and, before boot, "Clear saved data"
+  (snapshot now) and, before boot, "Delete saved data"
   (OPFS folders `vetro-snapshots`, `vetro-overlays`, `vetro-disks`). After
   a restore it shows the snapshot's console tail again without
   replying to the terminal's queries. `window.vetroState` (`boot`:
@@ -574,7 +574,7 @@ R2; `tools/web-serve.mjs` also serves `target/aosp/out` at `/aosp/`).
   the capture is on from boot; file manager commands (save, create,
   delete, rename) are timeline inputs and inotify events
   (created, written, moved, deleted) are effects. Recordings in OPFS
-  (`vetro-recordings/`, "Clear saved data" removes them too); during a
+  (`vetro-recordings/`, "Delete saved data" removes them too); during a
   replay the page's inputs are discarded, the file manager is
   closed, no real time and no cached snapshots.
 - Inputs: keyboard on the canvas with `KeyboardEvent.code` → Linux code

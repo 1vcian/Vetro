@@ -1,13 +1,13 @@
-//! Modalità sistema: EL0 ed EL1, eccezioni, registri di sistema, MMU e
+//! System mode: EL0 and EL1, exceptions, system registers, MMU and
 //! interrupt (ADR 0009, `docs/specs/cpu.md`).
 //!
-//! La modalità utente ([`Cpu::step`] con una [`Memory`](crate::Memory))
-//! resta com'era: le eccezioni tornano al chiamante e nessun registro EL1
-//! entra in gioco. La modalità sistema ([`Cpu::step_system`]) consegna le
-//! eccezioni al guest attraverso VBAR_EL1 e passa ogni accesso alla memoria
-//! da un [`SysBus`] (la MMU di `vetro-mmu`); ciò che appartiene alla
-//! piattaforma (linea IRQ, timer generico, interfaccia CPU del GIC) arriva da
-//! un [`CpuEnv`].
+//! User mode ([`Cpu::step`] with a [`Memory`](crate::Memory))
+//! stays as it was: exceptions return to the caller and no EL1 register
+//! comes into play. System mode ([`Cpu::step_system`]) delivers
+//! exceptions to the guest through VBAR_EL1 and routes every memory access
+//! through a [`SysBus`] (the MMU of `vetro-mmu`); what belongs to the
+//! platform (IRQ line, generic timer, GIC CPU interface) comes from
+//! a [`CpuEnv`].
 
 mod except;
 pub mod id;
@@ -24,8 +24,8 @@ pub use state::{Mode, PsciConduit, SysConfig, SysState, cntkctl, cpacr, sctlr, s
 use crate::mem::Access;
 use crate::sysreg::EnvReg;
 
-/// Registri che governano la traduzione stage 1, copiati dalla CPU a ogni
-/// accesso: la CPU ne è l'unico proprietario.
+/// Registers that govern stage 1 translation, copied from the CPU on every
+/// access: the CPU is their only owner.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TranslationRegs {
     pub sctlr: u64,
@@ -35,43 +35,43 @@ pub struct TranslationRegs {
     pub mair: u64,
 }
 
-/// Richiesta di traduzione.
+/// Translation request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AccessReq {
     pub access: Access,
-    /// Privilegio del controllo dei permessi: PSTATE.EL, oppure 0 per
-    /// LDTR/STTR eseguite a EL1.
+    /// Privilege for the permission check: PSTATE.EL, or 0 for
+    /// LDTR/STTR executed at EL1.
     pub el: u8,
-    /// Falso se l'accesso non è allineato alla sua dimensione (o è un DC
-    /// ZVA): su memoria Device diventa un fault di allineamento, controllato
-    /// dopo il walk e prima dei permessi come nello pseudocodice.
+    /// False if the access is not aligned to its size (or is a DC
+    /// ZVA): on Device memory it becomes an alignment fault, checked
+    /// after the walk and before the permissions as in the pseudocode.
     pub aligned: bool,
 }
 
-/// Esito negativo di una traduzione o di un accesso fisico.
+/// Negative outcome of a translation or of a physical access.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BusFault {
-    /// Abort architetturale: codice DFSC/IFSC e bit EA (1 per uno slave
-    /// error, 0 per un decode error, come QEMU).
+    /// Architectural abort: DFSC/IFSC code and EA bit (1 for a slave
+    /// error, 0 for a decode error, like QEMU).
     Abort { fsc: u8, ea: bool },
-    /// Configurazione valida che Vetro non implementa (es. granulo 64 KiB):
-    /// non si consegna al guest, si ferma l'esecuzione.
+    /// Valid configuration that Vetro does not implement (e.g. 64 KiB granule):
+    /// it is not delivered to the guest, execution stops.
     Unimplemented(&'static str),
 }
 
 impl BusFault {
-    /// Codice FSC di un abort esterno sincrono sull'accesso (non sul walk).
+    /// FSC code of a synchronous external abort on the access (not on the walk).
     pub const FSC_EXTERNAL: u8 = 0b01_0000;
-    /// Codice FSC di un fault di allineamento.
+    /// FSC code of an alignment fault.
     pub const FSC_ALIGNMENT: u8 = 0b10_0001;
 }
 
-/// Esito di un'istruzione AT.
+/// Outcome of an AT instruction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AtResult {
-    /// Valore da scrivere in PAR_EL1 (riuscita o fault riportato in PAR).
+    /// Value to write into PAR_EL1 (success or fault reported in PAR).
     Par(u64),
-    /// Abort esterno durante il walk: si prende come Data Abort (CM = 1).
+    /// External abort during the walk: taken as a Data Abort (CM = 1).
     Abort {
         fsc: u8,
         ea: bool,
@@ -79,63 +79,63 @@ pub enum AtResult {
     Unimplemented(&'static str),
 }
 
-/// La memoria del sistema vista dalla CPU: traduzione e accessi fisici.
-/// La implementa `vetro-mmu` (`MmuBus`) sopra la memoria fisica della
-/// piattaforma.
+/// System memory as seen by the CPU: translation and physical accesses.
+/// Implemented by `vetro-mmu` (`MmuBus`) on top of the platform's physical
+/// memory.
 pub trait SysBus {
-    /// Traduce `va` e controlla i permessi; restituisce l'indirizzo fisico.
+    /// Translates `va` and checks the permissions; returns the physical address.
     fn translate(&mut self, regs: &TranslationRegs, va: u64, req: AccessReq) -> Result<u64, BusFault>;
-    /// Lettura fisica (un pezzo che non attraversa pagine).
+    /// Physical read (a piece that does not cross pages).
     fn read_phys(&mut self, pa: u64, buf: &mut [u8]) -> Result<(), BusFault>;
-    /// Scrittura fisica (un pezzo che non attraversa pagine).
+    /// Physical write (a piece that does not cross pages).
     fn write_phys(&mut self, pa: u64, data: &[u8]) -> Result<(), BusFault>;
-    /// AT S1E{0,1}{R,W}: walk senza TLB.
+    /// AT S1E{0,1}{R,W}: walk without the TLB.
     fn at(&mut self, regs: &TranslationRegs, va: u64, access: Access, el: u8) -> AtResult;
-    /// TLBI dal decoder (le varianti IS vanno applicate a ogni core).
+    /// TLBI from the decoder (the IS variants must be applied to every core).
     fn tlbi(&mut self, op: TlbiOp, xt: u64);
-    /// Svuota il TLB (scritture di SCTLR_EL1 e TCR_EL1, come QEMU).
+    /// Flushes the TLB (writes to SCTLR_EL1 and TCR_EL1, like QEMU).
     fn tlb_flush_all(&mut self);
 }
 
-/// Ciò che la piattaforma fornisce al core: linee di interrupt e registri
-/// di sistema che non stanno nella CPU. Il tempo (CNTPCT) entra solo da qui,
-/// così resta deterministico e registrabile.
+/// What the platform provides to the core: interrupt lines and system
+/// registers that do not live in the CPU. Time (CNTPCT) enters only from here,
+/// so it stays deterministic and recordable.
 pub trait CpuEnv {
-    /// Livello della linea IRQ verso questo core (uscita del GIC).
+    /// Level of the IRQ line to this core (GIC output).
     fn irq_line(&mut self) -> bool;
-    /// Livello della linea FIQ (il GIC di Vetro non la pilota).
+    /// Level of the FIQ line (Vetro's GIC does not drive it).
     fn fiq_line(&mut self) -> bool {
         false
     }
-    /// MRS di un registro della piattaforma, già autorizzato dalla CPU.
+    /// MRS of a platform register, already authorised by the CPU.
     fn read_sysreg(&mut self, reg: EnvReg) -> u64;
-    /// MSR di un registro della piattaforma, già autorizzato dalla CPU.
+    /// MSR of a platform register, already authorised by the CPU.
     fn write_sysreg(&mut self, reg: EnvReg, value: u64);
 }
 
-/// Esito di [`Cpu::step_system`](crate::Cpu::step_system).
+/// Outcome of [`Cpu::step_system`](crate::Cpu::step_system).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SysEvent {
-    /// Un'istruzione eseguita.
+    /// One instruction executed.
     Executed,
-    /// Eccezione presa: il PC è già al vettore. `esr` vale 0 per IRQ e FIQ
-    /// (che non scrivono ESR_EL1). Nessuna istruzione eseguita.
+    /// Exception taken: the PC is already at the vector. `esr` is 0 for IRQ and FIQ
+    /// (which do not write ESR_EL1). No instruction executed.
     Exception { kind: ExceptionKind, esr: u64, from_el: u8 },
-    /// WFI eseguita (PC già all'istruzione successiva): la piattaforma può
-    /// far avanzare il tempo fino al prossimo interrupt.
+    /// WFI executed (PC already at the next instruction): the platform can
+    /// advance time up to the next interrupt.
     WaitForInterrupt,
-    /// HVC del conduit PSCI: PC già dopo l'istruzione, argomenti in x0-x7,
-    /// risultato da scrivere in x0 (tutte le HVC vanno al conduit, come in
-    /// QEMU: una funzione sconosciuta restituisce NOT_SUPPORTED).
+    /// HVC of the PSCI conduit: PC already after the instruction, arguments in x0-x7,
+    /// result to be written into x0 (all HVCs go to the conduit, as in
+    /// QEMU: an unknown function returns NOT_SUPPORTED).
     Hvc(u16),
-    /// SMC del conduit PSCI (se configurato così).
+    /// SMC of the PSCI conduit (if configured that way).
     Smc(u16),
-    /// Istruzione o configurazione valida che Vetro non implementa. Stato
-    /// invariato, PC all'istruzione (`raw` = 0 se il limite è nel fetch).
+    /// Valid instruction or configuration that Vetro does not implement. State
+    /// unchanged, PC at the instruction (`raw` = 0 if the limitation is in the fetch).
     Unimplemented { raw: u32, what: &'static str },
 }
 
-/// Istruzioni TLBI del regime EL1&0 (SYS #0, C8, CRm, #op2).
+/// TLBI instructions of the EL1&0 regime (SYS #0, C8, CRm, #op2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TlbiOp {
     Vmalle1,
@@ -153,7 +153,7 @@ pub enum TlbiOp {
 }
 
 impl TlbiOp {
-    /// Riconosce una TLBI dai campi di SYS (op0 = 1 implicito).
+    /// Recognises a TLBI from the SYS fields (op0 = 1 implied).
     pub fn from_sys(op1: u32, crn: u32, crm: u32, op2: u32) -> Option<TlbiOp> {
         if op1 != 0 || crn != 8 {
             return None;
@@ -176,7 +176,7 @@ impl TlbiOp {
         })
     }
 
-    /// Variante Inner Shareable: il sistema la applica al TLB di ogni core.
+    /// Inner Shareable variant: the system applies it to the TLB of every core.
     pub fn is_broadcast(self) -> bool {
         use TlbiOp::*;
         matches!(self, Vmalle1is | Vae1is | Aside1is | Vaae1is | Vale1is | Vaale1is)

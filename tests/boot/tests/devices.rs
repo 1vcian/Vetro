@@ -1,20 +1,20 @@
-//! I dispositivi virtio di M5 sotto Vetro, esercitati dal guest e dall'host
-//! insieme: ciò che il confronto con QEMU (`vetro.rs`) non può coprire,
-//! perché serve l'host dall'altra parte.
+//! M5's virtio devices under Vetro, exercised by the guest and by the host
+//! together: what the comparison with QEMU (`vetro.rs`) cannot cover,
+//! because the host is needed on the other side.
 //!
-//! - virtio-gpu: `vetro-dev drm-hold` disegna un motivo noto su un dumb
-//!   buffer, fa il modeset, ridisegna un rettangolo (DIRTYFB) e definisce il
-//!   cursore; l'host confronta ogni pixel dello scanout e il cursore;
-//! - virtio-input: l'host inietta tasti e movimenti del tablet mentre
-//!   `vetro-dev input-read` legge da evdev; il guest accende un LED e l'host
-//!   lo vede dalla coda di stato;
-//! - virtio-vsock: il guest si collega all'host (porta 1234) e riceve una
-//!   risposta più grande del suo buffer (credito); l'host si collega al
-//!   guest (porta 5000) e riceve l'eco in maiuscolo;
-//! - determinismo: due esecuzioni danno lo stesso log e lo stesso numero di
-//!   istruzioni.
+//! - virtio-gpu: `vetro-dev drm-hold` draws a known pattern on a dumb
+//!   buffer, does the modeset, redraws a rectangle (DIRTYFB) and defines the
+//!   cursor; the host compares every pixel of the scanout and the cursor;
+//! - virtio-input: the host injects keys and tablet movements while
+//!   `vetro-dev input-read` reads from evdev; the guest turns on an LED and the host
+//!   sees it from the status queue;
+//! - virtio-vsock: the guest connects to the host (port 1234) and receives a
+//!   reply larger than its buffer (credit); the host connects to the
+//!   guest (port 5000) and receives the echo in upper case;
+//! - determinism: two runs give the same log and the same number of
+//!   instructions.
 //!
-//! Solo in release, come `vetro.rs`.
+//! Release only, like `vetro.rs`.
 
 use vetro_boot_tests::*;
 use vetro_machine::{Devices, Machine, MachineConfig, Stop};
@@ -30,19 +30,19 @@ struct Run {
 }
 
 impl Run {
-    /// Esegue finché `needle` compare nel log dopo `from`, chiamando `host`
-    /// fra un quanto e l'altro.
+    /// Runs until `needle` appears in the log after `from`, calling `host`
+    /// between one quantum and the next.
     fn until_with(&mut self, needle: &str, from: usize, mut host: impl FnMut(&mut Machine)) -> usize {
         let limit = self.m.steps + PHASE_BUDGET;
         loop {
             if let Some(i) = find(&self.log[from.min(self.log.len())..], needle.as_bytes()) {
                 return from + i + needle.len();
             }
-            assert!(self.m.steps < limit, "{needle:?} non arrivato:\n{}", self.tail());
+            assert!(self.m.steps < limit, "{needle:?} did not arrive:\n{}", self.tail());
             let stop = self.m.run(1_000_000);
             self.log.extend(self.m.console_output());
             host(&mut self.m);
-            assert!(matches!(stop, Stop::Budget), "{stop:?} in attesa di {needle:?}:\n{}", self.tail());
+            assert!(matches!(stop, Stop::Budget), "{stop:?} while waiting for {needle:?}:\n{}", self.tail());
         }
     }
 
@@ -50,7 +50,7 @@ impl Run {
         self.until_with(needle, from, |_| {})
     }
 
-    /// Manda un comando alla shell e aspetta il prompt dopo di esso.
+    /// Sends a command to the shell and waits for the prompt after it.
     fn command(&mut self, cmd: &str, from: usize) -> usize {
         self.m.console_input(format!("{cmd}\n").as_bytes());
         self.until(SHELL_PROMPT, from)
@@ -71,7 +71,7 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
-/// Il motivo di `vetro-dev drm` (XRGB8888), in RGBA.
+/// The pattern of `vetro-dev drm` (XRGB8888), in RGBA.
 fn expected_pixel(x: u32, y: u32) -> [u8; 4] {
     if (32..96).contains(&x) && (16..48).contains(&y) {
         return [255, 255, 255, 255];
@@ -79,16 +79,16 @@ fn expected_pixel(x: u32, y: u32) -> [u8; 4] {
     [x as u8, y as u8, (x ^ y) as u8, 255]
 }
 
-/// La somma di `vetro-dev vsock-connect` sulla risposta.
+/// The checksum of `vetro-dev vsock-connect` over the reply.
 fn guest_sum(data: &[u8]) -> u32 {
     data.iter().fold(0u32, |s, &b| s.wrapping_mul(31).wrapping_add(u32::from(b)))
 }
 
-/// Un avvio completo con tutti gli esercizi; restituisce log e istruzioni.
+/// A complete boot with all the exercises; returns log and instructions.
 fn session(image: &[u8], initrd: &[u8]) -> (String, u64) {
     let devices = Devices { vsock_cid: Some(GUEST_CID), ..Devices::default() };
     let mut m = Machine::with_devices(&MachineConfig::default(), &devices);
-    m.load_linux(image, Some(initrd), "console=ttyAMA0 vetro.noautotest").expect("caricamento del kernel");
+    m.load_linux(image, Some(initrd), "console=ttyAMA0 vetro.noautotest").expect("loading the kernel");
     m.vsock(|v| v.listen(1234).unwrap()).expect("vsock montato");
     let mut r = Run { m, log: Vec::new() };
     let mut at = r.until(SHELL_PROMPT, 0);
@@ -107,22 +107,22 @@ fn session(image: &[u8], initrd: &[u8]) -> (String, u64) {
             (w, h, bad)
         })
         .expect("gpu montata");
-    assert_eq!((w, h, bad), (1280, 800, 0), "scanout diverso dal motivo del guest");
+    assert_eq!((w, h, bad), (1280, 800, 0), "scanout different from the guest's pattern");
     let cursor = r.m.gpu(|g| g.cursor(0).unwrap().clone()).unwrap();
     assert_ne!(cursor.resource_id, 0);
     assert_eq!((cursor.x, cursor.y, cursor.hot_x, cursor.hot_y), (100, 50, 0, 0));
     assert_eq!(cursor.image.len(), 64 * 64 * 4);
-    // ARGB8888 0xff000000 | i, in memoria B G R A.
+    // ARGB8888 0xff000000 | i, in memory B G R A.
     assert_eq!(&cursor.image[4 * 65..4 * 66], &[65, 0, 0, 255]);
     r.m.console_input(b"\n");
     at = r.until(SHELL_PROMPT, ready);
     assert!(r.text(ready).contains("vetro-dev: drm chiuso"));
-    // Chiuso il file, il kernel toglie il framebuffer: lo scanout si spegne.
+    // With the file closed, the kernel removes the framebuffer: the scanout turns off.
     let on = r.m.gpu(|g| g.frame(0).is_some()).unwrap();
-    assert!(!on, "scanout ancora acceso dopo la chiusura");
+    assert!(!on, "scanout still on after closing");
 
     // ---- virtio-input ----------------------------------------------------
-    // event0 = tablet (slot più basso fra i due), event1 = tastiera.
+    // event0 = tablet (lowest slot of the two), event1 = keyboard.
     r.m.console_input(b"vetro-dev input-read /dev/input/event1 4\n");
     let ready = r.until("VETRO-INPUT-PRONTO", at);
     r.m.keyboard(|k| {
@@ -159,7 +159,7 @@ fn session(image: &[u8], initrd: &[u8]) -> (String, u64) {
     at = r.command(&format!("vetro-dev led /dev/input/event1 {LED_CAPSL} 1"), at);
     assert_eq!(r.m.keyboard(|k| k.leds()), Some(1 << LED_CAPSL));
 
-    // ---- virtio-vsock: il guest si collega all'host ------------------------
+    // ---- virtio-vsock: the guest connects to the host ----------------------
     at = r.command("vetro-dev vsock-cid", at);
     assert!(r.text(0).contains(&format!("vetro-dev: vsock cid {GUEST_CID}")));
     let reply: Vec<u8> = (0..300_000u32).map(|i| (i * 7 % 251) as u8).collect();
@@ -184,11 +184,11 @@ fn session(image: &[u8], initrd: &[u8]) -> (String, u64) {
     at = r.until(SHELL_PROMPT, done);
     assert_eq!(got, b"ciao-vetro");
     let line = format!("vetro-dev: vsock risposta {} byte, somma {:08x}", reply.len(), guest_sum(&reply));
-    assert!(r.text(0).contains(&line), "manca {line:?}:\n{}", r.tail());
+    assert!(r.text(0).contains(&line), "missing {line:?}:\n{}", r.tail());
     let c = conn.unwrap();
     assert_eq!(c.host_port, 1234);
 
-    // ---- virtio-vsock: l'host si collega al guest --------------------------
+    // ---- virtio-vsock: the host connects to the guest ----------------------
     r.m.console_input(b"vetro-dev vsock-listen 5000\n");
     let ready = r.until("VETRO-VSOCK-ASCOLTO 5000", at);
     let data: Vec<u8> = (0..200_000u32).map(|i| b'a' + (i % 26) as u8).collect();
@@ -207,7 +207,7 @@ fn session(image: &[u8], initrd: &[u8]) -> (String, u64) {
     at = r.until_with(SHELL_PROMPT, done, |m| {
         m.vsock(|v| echo.extend(v.recv(c, usize::MAX)));
     });
-    // Il guest ha chiuso: gli ultimi byte e la chiusura arrivano entro poco.
+    // The guest has closed: the last bytes and the close arrive shortly.
     for _ in 0..50 {
         if r.m.vsock(|v| v.eof(c)).unwrap() {
             break;
@@ -221,7 +221,7 @@ fn session(image: &[u8], initrd: &[u8]) -> (String, u64) {
     assert!(r.text(ready).contains(&format!("vetro-dev: vsock rimandati {} byte", data.len())));
     assert_eq!(r.m.vsock(|v| v.state(c)), Some(Some(VsockState::Closed)));
 
-    assert!(!r.text(0).contains("vetro-dev: ERRORE"), "errori nel guest:\n{}", r.tail());
+    assert!(!r.text(0).contains("vetro-dev: ERRORE"), "errors in the guest:\n{}", r.tail());
     r.m.console_input(b"poweroff -f\n");
     let limit = r.m.steps + PHASE_BUDGET;
     let stop = loop {
@@ -239,19 +239,19 @@ fn session(image: &[u8], initrd: &[u8]) -> (String, u64) {
 #[test]
 fn dispositivi_virtio_con_l_host() {
     if cfg!(debug_assertions) {
-        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "dispositivi sotto Vetro solo in release");
+        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "devices under Vetro only in release");
     }
     let Some((image, initrd)) = guest_kernel() else {
         return skip_or_fail(
             "VETRO_REQUIRE_GUEST_KERNEL",
-            "target/guest-kernel mancante: esegui tools/guest-kernel/build.sh",
+            "target/guest-kernel missing: run tools/guest-kernel/build.sh",
         );
     };
     let (image, initrd) = (std::fs::read(image).unwrap(), std::fs::read(initrd).unwrap());
     let (log, steps) = session(&image, &initrd);
     std::fs::write(repo_root().join("target/guest-kernel/vetro-devices.log"), &log).unwrap();
-    eprintln!("Vetro: dispositivi esercitati in {steps} istruzioni");
+    eprintln!("Vetro: devices exercised in {steps} instructions");
     let (log2, steps2) = session(&image, &initrd);
-    assert_eq!(steps, steps2, "istruzioni diverse fra due esecuzioni uguali");
-    assert!(log == log2, "log diversi fra due esecuzioni uguali");
+    assert_eq!(steps, steps2, "different instructions between two identical runs");
+    assert!(log == log2, "different logs between two identical runs");
 }

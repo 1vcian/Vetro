@@ -1,8 +1,8 @@
-//! Caricatore di ELF64 AArch64 statici (ET_EXEC).
+//! Loader for static AArch64 ELF64 files (ET_EXEC).
 //!
-//! Mappa i PT_LOAD a granularità di pagina come fa Linux: la parte di pagina
-//! oltre `p_filesz` contiene i byte successivi del file, tranne quando il
-//! segmento ha una bss (`p_memsz > p_filesz`), che viene azzerata.
+//! Maps the PT_LOADs at page granularity like Linux does: the part of the page
+//! past `p_filesz` contains the following bytes of the file, except when the
+//! segment has a bss (`p_memsz > p_filesz`), which is zeroed.
 
 use vetro_cpu::{Perm, UserMemory};
 
@@ -21,10 +21,10 @@ pub enum LoadError {
 impl std::fmt::Display for LoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LoadError::NotElf => write!(f, "non è un file ELF"),
-            LoadError::Unsupported(what) => write!(f, "ELF non supportato: {what}"),
-            LoadError::Truncated => write!(f, "ELF troncato"),
-            LoadError::Overlap(a) => write!(f, "segmenti sovrapposti a {a:#x}"),
+            LoadError::NotElf => write!(f, "not an ELF file"),
+            LoadError::Unsupported(what) => write!(f, "unsupported ELF: {what}"),
+            LoadError::Truncated => write!(f, "truncated ELF"),
+            LoadError::Overlap(a) => write!(f, "overlapping segments at {a:#x}"),
         }
     }
 }
@@ -35,7 +35,7 @@ pub struct Loaded {
     pub entry: u64,
     pub phdr_addr: u64,
     pub phnum: u16,
-    /// Fine dell'ultimo segmento caricato (inizio del brk).
+    /// End of the last loaded segment (start of the brk).
     pub end: u64,
 }
 
@@ -54,14 +54,14 @@ pub fn load(image: &[u8], mem: &mut UserMemory) -> Result<Loaded, LoadError> {
         return Err(LoadError::NotElf);
     }
     if image[4] != 2 || image[5] != 1 {
-        return Err(LoadError::Unsupported("serve ELF64 little-endian"));
+        return Err(LoadError::Unsupported("ELF64 little-endian required"));
     }
     if u16_at(image, 18)? != EM_AARCH64 {
-        return Err(LoadError::Unsupported("e_machine non è AArch64"));
+        return Err(LoadError::Unsupported("e_machine is not AArch64"));
     }
     match u16_at(image, 16)? {
         2 => {}
-        3 => return Err(LoadError::Unsupported("ET_DYN (PIE/dinamico) arriva con M2")),
+        3 => return Err(LoadError::Unsupported("ET_DYN (PIE/dynamic) comes with M2")),
         _ => return Err(LoadError::Unsupported("e_type")),
     }
     let entry = u64_at(image, 24)?;
@@ -85,7 +85,7 @@ pub fn load(image: &[u8], mem: &mut UserMemory) -> Result<Loaded, LoadError> {
             continue;
         }
         if (vaddr ^ offset) % PAGE != 0 {
-            return Err(LoadError::Unsupported("p_offset e p_vaddr non congruenti"));
+            return Err(LoadError::Unsupported("p_offset and p_vaddr not congruent"));
         }
         if offset.checked_add(filesz).is_none_or(|e| e > image.len() as u64) {
             return Err(LoadError::Truncated);
@@ -93,7 +93,7 @@ pub fn load(image: &[u8], mem: &mut UserMemory) -> Result<Loaded, LoadError> {
         let start = vaddr & !(PAGE - 1);
         let end = (vaddr + memsz).next_multiple_of(PAGE);
         let file_start = offset - (vaddr - start);
-        let seg_file_end = (vaddr - start) + filesz; // relativo a `start`
+        let seg_file_end = (vaddr - start) + filesz; // relative to `start`
         let has_bss = memsz > filesz;
         let mut data = vec![0u8; (end - start) as usize];
         for (i, byte) in data.iter_mut().enumerate() {

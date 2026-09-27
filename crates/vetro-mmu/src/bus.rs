@@ -1,5 +1,5 @@
-//! Adattatore da MMU + memoria fisica al trait [`SysBus`] della modalità
-//! sistema della CPU (ADR 0009).
+//! Adapter from MMU + physical memory to the CPU's system mode
+//! [`SysBus`] trait (ADR 0009).
 
 use vetro_cpu::Access;
 use vetro_cpu::sys::{AccessReq, AtResult, BusFault, SysBus, TlbiOp, TranslationRegs};
@@ -9,9 +9,9 @@ use crate::mmu::Mmu;
 use crate::regs::MmuRegs;
 use crate::walk::PhysMemory;
 
-/// La memoria di un core in modalità sistema: la CPU passa a ogni accesso i
-/// propri registri di traduzione, la MMU traduce (con TLB) e la memoria
-/// fisica esegue. Si costruisce per il tempo di uno o più passi.
+/// The memory of a core in system mode: the CPU passes its own translation
+/// registers with every access, the MMU translates (with the TLB) and physical
+/// memory performs it. Built for the duration of one or more steps.
 pub struct MmuBus<'a, P: PhysMemory + ?Sized> {
     pub mmu: &'a mut Mmu,
     pub phys: &'a mut P,
@@ -36,7 +36,7 @@ fn bus_fault(kind: FaultKind) -> BusFault {
     match (kind, kind.fsc()) {
         (_, Some(fsc)) => BusFault::Abort { fsc, ea: kind.ea() },
         (FaultKind::Unimplemented(what), None) => BusFault::Unimplemented(what),
-        (_, None) => unreachable!("solo Unimplemented non ha un FSC"),
+        (_, None) => unreachable!("only Unimplemented has no FSC"),
     }
 }
 
@@ -65,14 +65,14 @@ impl<P: PhysMemory + ?Sized> SysBus for MmuBus<'_, P> {
         match self.mmu.walk(self.phys, va, access, el) {
             Ok(t) => AtResult::Par(t.par()),
             Err(f) => match f.kind {
-                // Come QEMU: un abort esterno sul walk si prende come Data
-                // Abort invece di finire in PAR_EL1.
+                // Like QEMU: an external abort on the walk is taken as a Data
+                // Abort instead of ending up in PAR_EL1.
                 FaultKind::ExternalWalk(..) => match bus_fault(f.kind) {
                     BusFault::Abort { fsc, ea } => AtResult::Abort { fsc, ea },
                     BusFault::Unimplemented(w) => AtResult::Unimplemented(w),
                 },
                 FaultKind::Unimplemented(what) => AtResult::Unimplemented(what),
-                _ => AtResult::Par(f.par().expect("fault con FSC")),
+                _ => AtResult::Par(f.par().expect("fault with FSC")),
             },
         }
     }

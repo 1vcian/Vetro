@@ -33,7 +33,7 @@ fn cmd(ty: u32, words: &[u32]) -> Vec<u8> {
     c
 }
 
-/// Manda un comando sulla coda di controllo e restituisce la risposta.
+/// Sends a command on the control queue and returns the response.
 fn ctrl(d: &mut Driver<VirtioMmio>, c: &[u8], resp_len: u32) -> Vec<u8> {
     let a = d.buf(c);
     let r = d.alloc(u64::from(resp_len), 8);
@@ -62,15 +62,15 @@ fn create(d: &mut Driver<VirtioMmio>, id: u32, fmt: PixelFormat, w: u32, h: u32)
     ok(d, &cmd(CMD_RESOURCE_CREATE_2D, &[id, fmt as u32, w, h]));
 }
 
-/// Backing in `pieces` pezzi (non contigui) per `len` byte; restituisce gli
-/// indirizzi dei pezzi.
+/// Backing in `pieces` (non-contiguous) pieces for `len` bytes; returns the
+/// addresses of the pieces.
 fn attach(d: &mut Driver<VirtioMmio>, id: u32, len: u64, pieces: u64) -> Vec<(u64, u64)> {
     let piece = len / pieces;
     let mut ents = Vec::new();
     let mut c = cmd(CMD_RESOURCE_ATTACH_BACKING, &[id, pieces as u32]);
     for k in 0..pieces {
         let l = if k + 1 == pieces { len - piece * k } else { piece };
-        let a = d.alloc(l + 64, 64); // buchi fra i pezzi
+        let a = d.alloc(l + 64, 64); // holes between the pieces
         c.extend_from_slice(&a.to_le_bytes());
         c.extend_from_slice(&(l as u32).to_le_bytes());
         c.extend_from_slice(&0u32.to_le_bytes());
@@ -80,7 +80,7 @@ fn attach(d: &mut Driver<VirtioMmio>, id: u32, len: u64, pieces: u64) -> Vec<(u6
     ents
 }
 
-/// Scrive `data` nel backing visto come spazio contiguo.
+/// Writes `data` into the backing seen as contiguous space.
 fn fill(d: &mut Driver<VirtioMmio>, ents: &[(u64, u64)], data: &[u8]) {
     let mut off = 0usize;
     for &(a, l) in ents {
@@ -119,7 +119,7 @@ fn configurazione_display_info_ed_edid() {
     let r = ctrl(&mut d, &hdr(CMD_GET_DISPLAY_INFO), 408);
     assert_eq!(r.len(), 408);
     assert_eq!(resp_type(&r), RESP_OK_DISPLAY_INFO);
-    // pmodes[0]: rect 0,0,1280,800, enabled 1, flags 0; gli altri a zero.
+    // pmodes[0]: rect 0,0,1280,800, enabled 1, flags 0; the others zero.
     assert_eq!(&r[24..48], &[0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0x20, 3, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
     assert!(r[48..].iter().all(|&b| b == 0));
 
@@ -129,7 +129,7 @@ fn configurazione_display_info_ed_edid() {
     assert_eq!(&r[32..], &edid::generate(&EdidInfo::default(), 1024)[..]);
     assert_eq!(err(&mut d, &cmd(CMD_GET_EDID, &[1, 0])), RESP_ERR_INVALID_PARAMETER);
 
-    // Senza EDID la feature non c'è e il comando non esiste.
+    // Without EDID the feature is absent and the command doesn't exist.
     let mut d = driver_with(GpuConfig { edid: false, ..GpuConfig::default() });
     assert_eq!(d.features & 0xFF_FFFF, 0);
     assert_eq!(err(&mut d, &cmd(CMD_GET_EDID, &[0, 0])), RESP_ERR_UNSPEC);
@@ -145,21 +145,21 @@ fn risorsa_backing_transfer_scanout_e_flush() {
     let px = pattern(w, h);
     fill(&mut d, &ents, &px);
     ok(&mut d, &cmd(CMD_TRANSFER_TO_HOST_2D, &[0, 0, w, h, 0, 0, 7, 0]));
-    assert!(display(&mut d).screens.is_empty(), "niente scanout: niente immagine");
-    // Scanout sulla parte (8, 4)+32x16 della risorsa.
+    assert!(display(&mut d).screens.is_empty(), "no scanout: no image");
+    // Scanout on the part (8, 4)+32x16 of the resource.
     ok(&mut d, &cmd(CMD_SET_SCANOUT, &[8, 4, 32, 16, 0, 7]));
     let disp = display(&mut d);
     assert_eq!(disp.updates, 1);
     assert_eq!(disp.screens[&0].0, 32);
-    // Pixel (0, 0) dello scanout = (8, 4) della risorsa: B=8 G=4 R=12, X->255.
+    // Pixel (0, 0) of the scanout = (8, 4) of the resource: B=8 G=4 R=12, X->255.
     assert_eq!(disp.pixel(0, 0, 0), Some([12, 4, 8, 255]));
     assert_eq!(disp.pixel(0, 31, 15), Some([(39 ^ 19) as u8, 19, 39, 255]));
     let f = gpu(&mut d).frame(0).unwrap();
     assert_eq!((f.width, f.height, f.stride), (32, 16, 256));
     assert_eq!(f.rgba(1, 1), [(9 ^ 5) as u8, 5, 9, 255]);
 
-    // Il guest ridisegna un rettangolo: TRANSFER parziale (riga per riga,
-    // dall'offset del primo pixel) e FLUSH.
+    // The guest redraws a rectangle: partial TRANSFER (row by row,
+    // from the offset of the first pixel) and FLUSH.
     let mut px2 = px.clone();
     for y in 6..10u32 {
         for x in 10..20u32 {
@@ -170,8 +170,8 @@ fn risorsa_backing_transfer_scanout_e_flush() {
     fill(&mut d, &ents, &px2);
     let off = (6 * w + 10) * 4;
     ok(&mut d, &cmd(CMD_TRANSFER_TO_HOST_2D, &[10, 6, 10, 4, off, 0, 7, 0]));
-    assert_eq!(display(&mut d).pixel(0, 2, 2), Some([(10 ^ 6) as u8, 6, 10, 255]), "prima del flush");
-    // Il flush fuori dallo scanout non aggiorna nulla.
+    assert_eq!(display(&mut d).pixel(0, 2, 2), Some([(10 ^ 6) as u8, 6, 10, 255]), "before the flush");
+    // A flush outside the scanout updates nothing.
     ok(&mut d, &cmd(CMD_RESOURCE_FLUSH, &[40, 20, 8, 8, 7, 0]));
     assert_eq!(display(&mut d).updates, 1);
     ok(&mut d, &cmd(CMD_RESOURCE_FLUSH, &[0, 0, w, h, 7, 0]));
@@ -180,11 +180,11 @@ fn risorsa_backing_transfer_scanout_e_flush() {
     assert_eq!(disp.pixel(0, 2, 2), Some([3, 2, 1, 255]));
     assert_eq!(disp.pixel(0, 1, 1), Some([(9 ^ 5) as u8, 5, 9, 255]));
 
-    // DETACH, poi TRANSFER senza backing: ERR_UNSPEC.
+    // DETACH, then TRANSFER without backing: ERR_UNSPEC.
     ok(&mut d, &cmd(CMD_RESOURCE_DETACH_BACKING, &[7, 0]));
     assert_eq!(err(&mut d, &cmd(CMD_TRANSFER_TO_HOST_2D, &[0, 0, w, h, 0, 0, 7, 0])), RESP_ERR_UNSPEC);
     assert_eq!(err(&mut d, &cmd(CMD_RESOURCE_DETACH_BACKING, &[7, 0])), RESP_ERR_UNSPEC);
-    // UNREF di una risorsa mostrata: lo scanout si spegne.
+    // UNREF of a shown resource: the scanout turns off.
     ok(&mut d, &cmd(CMD_RESOURCE_UNREF, &[7, 0]));
     assert!(display(&mut d).screens.is_empty());
     assert!(gpu(&mut d).frame(0).is_none());
@@ -206,7 +206,7 @@ fn formati_e_backing_corto() {
     for (i, (f, rgba)) in fmts.into_iter().enumerate() {
         let id = 10 + i as u32;
         create(&mut d, id, f, 16, 16);
-        // Backing di una sola riga: il resto resta a zero (come iov_to_buf).
+        // Backing of a single row: the rest stays zero (like iov_to_buf).
         let ents = attach(&mut d, id, 64, 1);
         fill(&mut d, &ents, &[1, 2, 3, 4].repeat(16));
         ok(&mut d, &cmd(CMD_TRANSFER_TO_HOST_2D, &[0, 0, 16, 16, 0, 0, id, 0]));
@@ -230,10 +230,10 @@ fn errori_come_qemu() {
     assert_eq!(e(&mut d, CMD_RESOURCE_FLUSH, &[0, 0, 4, 4, 9, 0]), RESP_ERR_INVALID_RESOURCE_ID);
     assert_eq!(e(&mut d, CMD_RESOURCE_FLUSH, &[30, 0, 4, 4, 1, 0]), RESP_ERR_INVALID_PARAMETER);
     assert_eq!(e(&mut d, CMD_RESOURCE_ATTACH_BACKING, &[9, 0]), RESP_ERR_INVALID_RESOURCE_ID);
-    // Senza backing: TRANSFER e SET_SCANOUT falliscono con ERR_UNSPEC.
+    // Without backing: TRANSFER and SET_SCANOUT fail with ERR_UNSPEC.
     assert_eq!(e(&mut d, CMD_TRANSFER_TO_HOST_2D, &[0, 0, 4, 4, 0, 0, 1, 0]), RESP_ERR_UNSPEC);
     assert_eq!(e(&mut d, CMD_SET_SCANOUT, &[0, 0, 32, 32, 0, 1]), RESP_ERR_UNSPEC);
-    // Backing fuori dalla RAM, troppe voci, voci mancanti.
+    // Backing outside RAM, too many entries, missing entries.
     let mut c = cmd(CMD_RESOURCE_ATTACH_BACKING, &[1, 1]);
     c.extend_from_slice(&0x1000u64.to_le_bytes());
     c.extend_from_slice(&[0, 16, 0, 0, 0, 0, 0, 0]);
@@ -241,7 +241,7 @@ fn errori_come_qemu() {
     assert_eq!(e(&mut d, CMD_RESOURCE_ATTACH_BACKING, &[1, 16385]), RESP_ERR_UNSPEC);
     assert_eq!(e(&mut d, CMD_RESOURCE_ATTACH_BACKING, &[1, 2]), RESP_ERR_UNSPEC);
     attach(&mut d, 1, 32 * 32 * 4, 1);
-    assert_eq!(e(&mut d, CMD_RESOURCE_ATTACH_BACKING, &[1, 0]), RESP_ERR_UNSPEC, "già attaccato");
+    assert_eq!(e(&mut d, CMD_RESOURCE_ATTACH_BACKING, &[1, 0]), RESP_ERR_UNSPEC, "already attached");
     // Rettangoli.
     for r in [rect(1, 0, 32, 4), rect(0, 29, 4, 4), rect(33, 0, 0, 0), rect(0, 0, 33, 1)] {
         let mut w = r.to_vec();
@@ -252,7 +252,7 @@ fn errori_come_qemu() {
     assert_eq!(e(&mut d, CMD_SET_SCANOUT, &[17, 0, 16, 16, 0, 1]), RESP_ERR_INVALID_PARAMETER);
     assert_eq!(e(&mut d, CMD_SET_SCANOUT, &[0, 0, 16, 16, 1, 1]), RESP_ERR_INVALID_SCANOUT_ID);
     assert_eq!(e(&mut d, CMD_SET_SCANOUT, &[0, 0, 16, 16, 0, 9]), RESP_ERR_INVALID_RESOURCE_ID);
-    // Comandi non 2D.
+    // Non-2D commands.
     assert_eq!(e(&mut d, CMD_GET_CAPSET_INFO, &[0, 0]), RESP_ERR_UNSPEC);
     assert_eq!(e(&mut d, CMD_GET_CAPSET, &[0, 0, 0, 0]), RESP_ERR_UNSPEC);
     assert_eq!(e(&mut d, 0x0200, &[0; 20]), RESP_ERR_UNSPEC, "CTX_CREATE");
@@ -262,7 +262,7 @@ fn errori_come_qemu() {
     // Comando corto.
     assert_eq!(e(&mut d, CMD_RESOURCE_CREATE_2D, &[2, 1]), RESP_ERR_INVALID_PARAMETER);
     assert_eq!(resp_type(&ctrl(&mut d, &[1, 1, 0, 0], 24)), RESP_ERR_INVALID_PARAMETER);
-    assert!(d.t.last_error().is_none(), "nessun errore della coda");
+    assert!(d.t.last_error().is_none(), "no queue error");
 }
 
 #[test]
@@ -277,7 +277,7 @@ fn fence_e_risposta_troncata() {
     assert_eq!(le32(&r, 4), FLAG_FENCE);
     assert_eq!(le64(&r, 8), 0x1122_3344_5566);
     assert_eq!(le32(&r, 16), 9);
-    // Una risposta più lunga del buffer si tronca (come QEMU).
+    // A response longer than the buffer is truncated (like QEMU).
     let r = ctrl(&mut d, &hdr(CMD_GET_DISPLAY_INFO), 100);
     assert_eq!(r.len(), 100);
     assert_eq!(resp_type(&r), RESP_OK_DISPLAY_INFO);
@@ -292,7 +292,7 @@ fn set_scanout_0_e_cambio_di_risorsa() {
     }
     ok(&mut d, &cmd(CMD_SET_SCANOUT, &[0, 0, 16, 16, 0, 1]));
     ok(&mut d, &cmd(CMD_SET_SCANOUT, &[0, 0, 16, 16, 0, 2]));
-    // La risorsa 1 non è più mostrata: il suo UNREF non tocca lo scanout.
+    // Resource 1 is no longer shown: its UNREF doesn't touch the scanout.
     ok(&mut d, &cmd(CMD_RESOURCE_UNREF, &[1, 0]));
     assert!(display(&mut d).screens.contains_key(&0));
     ok(&mut d, &cmd(CMD_SET_SCANOUT, &[0, 0, 0, 0, 0, 0]));
@@ -325,7 +325,7 @@ fn cursore() {
     d.add(CURSORQ, &[(bad, 20, false)]);
     d.service();
     let c = gpu(&mut d).cursor(0).unwrap().clone();
-    assert_eq!((c.resource_id, c.x, c.y, c.hot_x), (5, 7, 8, 3), "MOVE cambia solo la posizione");
+    assert_eq!((c.resource_id, c.x, c.y, c.hot_x), (5, 7, 8, 3), "MOVE changes only the position");
     assert_eq!(c.image, img);
     let mut n = 0;
     while d.pop_used(CURSORQ).is_some() {

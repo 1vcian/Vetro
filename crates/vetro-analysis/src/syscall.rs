@@ -1,23 +1,23 @@
-//! Syscall Linux arm64 (tabella asm-generic): nomi e formato degli argomenti.
+//! Linux arm64 syscalls (asm-generic table): names and argument formats.
 
-/// Tipo di un argomento, per la stampa.
+/// Type of an argument, for printing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arg {
-    /// Intero con segno (fd, flag piccoli, lunghezze).
+    /// Signed integer (fd, small flags, lengths).
     Int,
-    /// Valore esadecimale (flag, maschere).
+    /// Hexadecimal value (flags, masks).
     Hex,
-    /// Puntatore.
+    /// Pointer.
     Ptr,
-    /// Stringa C terminata da zero nella memoria del guest.
+    /// Zero-terminated C string in guest memory.
     Str,
-    /// Descrittore di directory per le *at (AT_FDCWD = -100).
+    /// Directory descriptor for the *at calls (AT_FDCWD = -100).
     DirFd,
 }
 
 use Arg::*;
 
-/// (numero, nome, argomenti)
+/// (number, name, arguments)
 pub const TABLE: &[(u64, &str, &[Arg])] = &[
     (17, "getcwd", &[Ptr, Int]),
     (23, "dup", &[Int]),
@@ -159,7 +159,7 @@ pub fn name(nr: u64) -> &'static str {
     lookup(nr).map_or("?", |(n, _)| n)
 }
 
-/// Nome simbolico di un errno Linux (valori asm-generic).
+/// Symbolic name of a Linux errno (asm-generic values).
 pub fn errno_name(e: i64) -> &'static str {
     match e {
         1 => "EPERM",
@@ -194,8 +194,8 @@ pub fn errno_name(e: i64) -> &'static str {
     }
 }
 
-/// Riga di trace nel formato di strace: `openat(AT_FDCWD, "/etc", 0x0) = 3`.
-/// `read_str` legge una stringa dalla memoria del guest.
+/// Trace line in strace format: `openat(AT_FDCWD, "/etc", 0x0) = 3`.
+/// `read_str` reads a string from guest memory.
 pub fn format(nr: u64, args: &[u64; 6], ret: i64, mut read_str: impl FnMut(u64) -> Option<String>) -> String {
     let (name, kinds) = lookup(nr).unwrap_or(("syscall", &[Hex, Hex, Hex, Hex, Hex, Hex]));
     let mut s = String::new();

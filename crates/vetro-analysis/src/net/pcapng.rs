@@ -1,15 +1,15 @@
-//! pcapng (draft IETF `draft-ietf-opsawg-pcapng`): una sezione, una
-//! interfaccia Ethernet (`LINKTYPE_ETHERNET`) con risoluzione dei tempi in
-//! microsecondi, un Enhanced Packet Block per frame con il verso in
-//! `epb_flags` (visto dal guest: `outbound` i frame del guest, `inbound`
-//! quelli verso il guest). Tutto little-endian.
+//! pcapng (IETF draft `draft-ietf-opsawg-pcapng`): one section, one
+//! Ethernet interface (`LINKTYPE_ETHERNET`) with microsecond timestamp
+//! resolution, one Enhanced Packet Block per frame with the direction in
+//! `epb_flags` (seen from the guest: `outbound` the guest's frames, `inbound`
+//! those towards the guest). Everything little-endian.
 //!
-//! I tempi sono quelli virtuali del guest: l'istante 0 è l'accensione della
-//! macchina (in Wireshark, 1970-01-01 00:00:00 UTC più il tempo del guest),
-//! salvo `epoch_us`.
+//! The timestamps are the guest's virtual ones: instant 0 is the machine's
+//! power-on (in Wireshark, 1970-01-01 00:00:00 UTC plus the guest time),
+//! unless `epoch_us`.
 //!
-//! [`read`] rilegge ciò che [`write`] produce (e pcapng generici nei due
-//! ordini di byte, con EPB e SPB): serve ai test e agli strumenti.
+//! [`read`] reads back what [`write`] produces (and generic pcapng in both
+//! byte orders, with EPB and SPB): used by the tests and the tools.
 
 use super::capture::{Direction, Frame};
 
@@ -20,13 +20,13 @@ const EPB: u32 = 6;
 const BYTE_ORDER_MAGIC: u32 = 0x1A2B_3C4D;
 pub const LINKTYPE_ETHERNET: u16 = 1;
 
-/// Opzioni della cattura.
+/// Capture options.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PcapngOptions {
-    /// Microsecondi Unix da sommare al tempo del guest (0: il tempo del
-    /// guest è il tempo dall'epoca Unix).
+    /// Unix microseconds to add to the guest time (0: the guest
+    /// time is the time since the Unix epoch).
     pub epoch_us: u64,
-    /// Nome dell'interfaccia (`if_name`).
+    /// Interface name (`if_name`).
     pub interface: String,
 }
 
@@ -52,7 +52,7 @@ fn block(out: &mut Vec<u8>, kind: u32, body: &[u8]) {
     out.extend(len.to_le_bytes());
 }
 
-/// Scrive la cattura in pcapng.
+/// Writes the capture as pcapng.
 pub fn write(frames: &[Frame], opts: &PcapngOptions) -> Vec<u8> {
     let mut out = Vec::new();
     // Section Header Block.
@@ -68,16 +68,16 @@ pub fn write(frames: &[Frame], opts: &PcapngOptions) -> Vec<u8> {
     let mut b = Vec::new();
     b.extend(LINKTYPE_ETHERNET.to_le_bytes());
     b.extend(0u16.to_le_bytes());
-    b.extend(0u32.to_le_bytes()); // snaplen: nessun limite
+    b.extend(0u32.to_le_bytes()); // snaplen: no limit
     option(&mut b, 2, opts.interface.as_bytes()); // if_name
-    option(&mut b, 3, b"virtio-net del guest (Vetro)"); // if_description
+    option(&mut b, 3, b"guest virtio-net (Vetro)"); // if_description
     option(&mut b, 9, &[6]); // if_tsresol: 10^-6
     option(&mut b, 0, &[]);
     block(&mut out, IDB, &b);
     for f in frames {
         let ts = opts.epoch_us.saturating_add(f.at_us);
         let mut b = Vec::with_capacity(32 + f.data.len());
-        b.extend(0u32.to_le_bytes()); // interfaccia 0
+        b.extend(0u32.to_le_bytes()); // interface 0
         b.extend(((ts >> 32) as u32).to_le_bytes());
         b.extend((ts as u32).to_le_bytes());
         b.extend((f.data.len() as u32).to_le_bytes());
@@ -95,7 +95,7 @@ pub fn write(frames: &[Frame], opts: &PcapngOptions) -> Vec<u8> {
     out
 }
 
-/// Errore di lettura.
+/// Read error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PcapngError(pub String);
 
@@ -111,25 +111,25 @@ fn err<T>(msg: impl Into<String>) -> Result<T, PcapngError> {
     Err(PcapngError(msg.into()))
 }
 
-/// Un'interfaccia letta: tipo di collegamento e unità dei tempi.
+/// An interface read back: link type and timestamp unit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Interface {
     pub linktype: u16,
-    /// Unità per secondo (10^6 se manca `if_tsresol`).
+    /// Units per second (10^6 if `if_tsresol` is missing).
     pub units_per_sec: u64,
     pub name: Option<String>,
 }
 
-/// Il contenuto di un file: interfacce e frame (con il tempo convertito in
-/// microsecondi, senza togliere l'epoca; verso da `epb_flags`, `ToGuest`
-/// se manca).
+/// The content of a file: interfaces and frames (with the time converted to
+/// microseconds, without removing the epoch; direction from `epb_flags`, `ToGuest`
+/// if missing).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PcapngFile {
     pub interfaces: Vec<Interface>,
     pub frames: Vec<Frame>,
 }
 
-/// Rilegge un file pcapng.
+/// Reads back a pcapng file.
 pub fn read(data: &[u8]) -> Result<PcapngFile, PcapngError> {
     let mut out = PcapngFile::default();
     let mut pos = 0usize;
@@ -144,25 +144,25 @@ pub fn read(data: &[u8]) -> Result<PcapngFile, PcapngError> {
     };
     let mut first = true;
     while pos < data.len() {
-        let Some(kind) = u32_at(true, data, pos) else { return err("blocco troncato") };
+        let Some(kind) = u32_at(true, data, pos) else { return err("truncated block") };
         if kind == SHB {
             match data.get(pos + 8..pos + 12) {
                 Some([0x4D, 0x3C, 0x2B, 0x1A]) => le = true,
                 Some([0x1A, 0x2B, 0x3C, 0x4D]) => le = false,
-                _ => return err("magic dell'ordine dei byte non valido"),
+                _ => return err("invalid byte-order magic"),
             }
             out.interfaces.clear();
         } else if first {
-            return err("il file non comincia con un Section Header Block");
+            return err("the file does not start with a Section Header Block");
         }
         first = false;
         let kind = u32_at(le, data, pos).unwrap_or(kind);
-        let Some(len) = u32_at(le, data, pos + 4).map(|l| l as usize) else { return err("blocco troncato") };
+        let Some(len) = u32_at(le, data, pos + 4).map(|l| l as usize) else { return err("truncated block") };
         if len < 12 || len % 4 != 0 || pos + len > data.len() {
-            return err(format!("lunghezza del blocco non valida ({len}) a {pos}"));
+            return err(format!("invalid block length ({len}) at {pos}"));
         }
         if u32_at(le, data, pos + len - 4) != Some(len as u32) {
-            return err(format!("lunghezza finale diversa a {pos}"));
+            return err(format!("trailing length differs at {pos}"));
         }
         let body = &data[pos + 8..pos + len - 4];
         match kind {
@@ -190,8 +190,8 @@ pub fn read(data: &[u8]) -> Result<PcapngFile, PcapngError> {
                 let iface = field(0)? as usize;
                 let ts = (u64::from(field(4)?) << 32) | u64::from(field(8)?);
                 let caplen = field(12)? as usize;
-                let Some(bytes) = body.get(20..20 + caplen) else { return err("EPB: dati troncati") };
-                let Some(i) = out.interfaces.get(iface) else { return err("EPB: interfaccia sconosciuta") };
+                let Some(bytes) = body.get(20..20 + caplen) else { return err("EPB: truncated data") };
+                let Some(i) = out.interfaces.get(iface) else { return err("EPB: unknown interface") };
                 let at_us = (u128::from(ts) * 1_000_000 / u128::from(i.units_per_sec.max(1))) as u64;
                 let mut dir = Direction::ToGuest;
                 for (code, v) in options(le, &body[(20 + caplen).next_multiple_of(4).min(body.len())..])? {
@@ -205,7 +205,7 @@ pub fn read(data: &[u8]) -> Result<PcapngFile, PcapngError> {
                 out.frames.push(Frame { at_us, dir, data: bytes.to_vec() });
             }
             SPB => {
-                let orig = u32_at(le, body, 0).ok_or_else(|| PcapngError("SPB corto".into()))? as usize;
+                let orig = u32_at(le, body, 0).ok_or_else(|| PcapngError("short SPB".into()))? as usize;
                 let bytes = &body[4..(4 + orig).min(body.len())];
                 out.frames.push(Frame { at_us: 0, dir: Direction::ToGuest, data: bytes.to_vec() });
             }
@@ -227,7 +227,7 @@ fn options(le: bool, mut b: &[u8]) -> Result<Vec<(u16, &[u8])>, PcapngError> {
         if code == 0 {
             break;
         }
-        let Some(val) = b.get(4..4 + len) else { return err("opzione troncata") };
+        let Some(val) = b.get(4..4 + len) else { return err("truncated option") };
         v.push((code, val));
         b = b.get(4 + len.next_multiple_of(4)..).unwrap_or_default();
     }
@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn struttura_dei_blocchi() {
         let bytes = write(&frames()[..1], &PcapngOptions { epoch_us: 1 << 33, ..Default::default() });
-        // SHB: tipo, lunghezza, magic, versione 1.0, lunghezza sezione -1.
+        // SHB: type, length, magic, version 1.0, section length -1.
         assert_eq!(&bytes[0..4], &[0x0A, 0x0D, 0x0D, 0x0A]);
         assert_eq!(&bytes[8..12], &[0x4D, 0x3C, 0x2B, 0x1A]);
         assert_eq!(&bytes[12..16], &[1, 0, 0, 0]);
@@ -273,8 +273,8 @@ mod tests {
         let idb_len = u32::from_le_bytes(idb[4..8].try_into().unwrap()) as usize;
         let epb = &idb[idb_len..];
         assert_eq!(&epb[0..4], &[6, 0, 0, 0]);
-        assert_eq!(&epb[12..16], &2u32.to_le_bytes(), "tempo alto");
-        assert_eq!(&epb[16..20], &0u32.to_le_bytes(), "tempo basso");
+        assert_eq!(&epb[12..16], &2u32.to_le_bytes(), "high timestamp");
+        assert_eq!(&epb[16..20], &0u32.to_le_bytes(), "low timestamp");
         let f = read(&bytes).unwrap();
         assert_eq!(f.frames[0].at_us, 1 << 33);
     }
@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn errori() {
         assert!(read(b"").unwrap().frames.is_empty());
-        assert!(read(&[1, 0, 0, 0, 12, 0, 0, 0, 12, 0, 0, 0]).is_err(), "senza SHB");
+        assert!(read(&[1, 0, 0, 0, 12, 0, 0, 0, 12, 0, 0, 0]).is_err(), "without SHB");
         let mut b = write(&frames(), &PcapngOptions::default());
         b.truncate(b.len() - 3);
         assert!(read(&b).is_err());

@@ -1,4 +1,4 @@
-// Il programma più piccolo che usa la libc: printf, avvio di musl, exit.
+// The smallest program that uses the libc: printf, musl startup, exit.
 #include <stdio.h>
 
 int main(int argc, char **argv) {

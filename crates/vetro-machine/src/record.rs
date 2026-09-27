@@ -1,18 +1,18 @@
-//! Record & replay (M10, ADR 0019, `docs/specs/replay.md`): gli ingressi
-//! dell'host e il log che li registra.
+//! Record & replay (M10, ADR 0019, `docs/specs/replay.md`): the host
+//! inputs and the log that records them.
 //!
-//! La macchina è deterministica (tempo = istruzioni, ADR 0011; tempo fermo
-//! sui dischi, ADR 0014): due esecuzioni dallo stesso stato con gli stessi
-//! ingressi agli stessi numeri d'istruzione sono identiche. Gli ingressi
-//! dell'host sono quindi l'unica cosa da registrare, e passano tutti da un
-//! punto solo, [`Machine::input`](crate::Machine::input) con un [`Input`].
+//! The machine is deterministic (time = instructions, ADR 0011; stopped time
+//! on disks, ADR 0014): two runs from the same state with the same
+//! inputs at the same instruction numbers are identical. Host inputs
+//! are therefore the only thing to record, and they all go through a
+//! single point, [`Machine::input`](crate::Machine::input) with an [`Input`].
 //!
-//! Il [`Log`] tiene: la configurazione, l'impronta ([`Digest`]) dello stato
-//! di partenza, gli eventi (ingresso con il numero d'istruzione, più un
-//! controllo dei registri e della console a quel punto), gli snapshot
-//! periodici ([`Keyframe`], ADR 0015) per il salto a un'istruzione, e
-//! l'impronta dello stato finale. Il file è un contenitore di
-//! `vetro_snapshot` con magia [`LOG_MAGIC`] e versione [`LOG_VERSION`].
+//! The [`Log`] holds: the configuration, the fingerprint ([`Digest`]) of the
+//! starting state, the events (input with the instruction number, plus a
+//! check of the registers and the console at that point), periodic
+//! snapshots ([`Keyframe`], ADR 0015) for jumping to an instruction, and
+//! the fingerprint of the final state. The file is a `vetro_snapshot`
+//! container with magic [`LOG_MAGIC`] and version [`LOG_VERSION`].
 
 use core::fmt;
 
@@ -22,59 +22,59 @@ use vetro_snapshot::{Error, Reader, Writer};
 
 use crate::MachineConfig;
 
-/// Primi 8 byte di un log di registrazione.
+/// First 8 bytes of a recording log.
 pub const LOG_MAGIC: [u8; 8] = *b"VETROREC";
 
-/// Versione del formato del log: cambia a ogni modifica di ciò che si
-/// scrive (un log di un'altra versione si rifiuta).
+/// Log format version: it changes with every change to what is
+/// written (a log of another version is rejected).
 pub const LOG_VERSION: u32 = 1;
 
-/// Un ingresso dell'host verso il guest: l'unico modo, durante una
-/// registrazione, di cambiare ciò che il guest vede.
+/// A host input to the guest: the only way, during a
+/// recording, to change what the guest sees.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Input {
-    /// Byte sulla console PL011, come dalla tastiera del terminale.
+    /// Bytes on the PL011 console, as if from the terminal keyboard.
     Console(Vec<u8>),
-    /// Eventi della tastiera virtio-input (con i loro SYN_REPORT).
+    /// virtio-input keyboard events (with their SYN_REPORT).
     Keyboard(Vec<InputEvent>),
-    /// Eventi del tablet o del touchscreen virtio-input.
+    /// virtio-input tablet or touchscreen events.
     Pointer(Vec<InputEvent>),
-    /// Livello di una linea d'ingresso del GPIO PL061 (la 3 è il tasto di
-    /// spegnimento).
+    /// Level of a PL061 GPIO input line (line 3 is the power
+    /// key).
     Gpio { line: u32, level: bool },
-    /// Risoluzione chiesta per uno scanout di virtio-gpu (0x0 = spento),
-    /// come il ridimensionamento della finestra.
+    /// Resolution requested for a virtio-gpu scanout (0x0 = off),
+    /// like resizing the window.
     Display { scanout: u32, width: u32, height: u32 },
-    /// Un frame Ethernet dell'host per il guest, consegnato da virtio-net
-    /// prima dei frame dello stack di rete.
+    /// A host Ethernet frame for the guest, delivered by virtio-net
+    /// before the network stack's frames.
     NetFrame(Vec<u8>),
-    /// Link di virtio-net su (vero) o giù.
+    /// virtio-net link up (true) or down.
     NetLink(bool),
-    /// Un'operazione dell'host su virtio-vsock.
+    /// A host operation on virtio-vsock.
     Vsock(VsockOp),
-    /// Un'operazione dell'host su una sua connessione TCP verso il guest
-    /// (inoltro di porte, `Stack::host_*` di `vetro-net`).
+    /// A host operation on one of its TCP connections to the guest
+    /// (port forwarding, `Stack::host_*` of `vetro-net`).
     HostNet(HostNetOp),
 }
 
-/// Operazioni dell'host sulle connessioni verso il guest (i metodi
-/// `Stack::host_*`). Anche le letture sono ingressi: liberano spazio e
-/// riaprono la finestra TCP del guest.
+/// Host operations on the connections to the guest (the
+/// `Stack::host_*` methods). Reads are inputs too: they free space and
+/// reopen the guest's TCP window.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HostNetOp {
-    /// `host_connect(porta del guest)`.
+    /// `host_connect(guest port)`.
     Connect(u16),
-    /// `host_send(connessione, byte)`.
+    /// `host_send(connection, bytes)`.
     Send(ConnId, Vec<u8>),
-    /// `host_recv(connessione, al più tanti byte)`.
+    /// `host_recv(connection, at most this many bytes)`.
     Recv(ConnId, u64),
     Shutdown(ConnId),
     Abort(ConnId),
     Release(ConnId),
 }
 
-/// Operazioni dell'host su virtio-vsock (i metodi di `VirtioVsock`). Anche
-/// le letture sono ingressi: liberano credito, e il guest lo vede.
+/// Host operations on virtio-vsock (the methods of `VirtioVsock`). Reads
+/// are inputs too: they free credit, and the guest sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VsockOp {
     Listen(u32),
@@ -90,42 +90,42 @@ pub enum VsockOp {
     TransportReset,
 }
 
-/// Risposta della macchina a un [`Input`].
+/// The machine's reply to an [`Input`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reply {
-    /// Applicato.
+    /// Applied.
     Done,
-    /// Il dispositivo non c'è: niente è cambiato.
+    /// The device is not there: nothing changed.
     NoDevice,
-    /// Registrazione in corso e macchina ferma su un disco
-    /// ([`Stop::Blocked`](crate::Stop::Blocked)): l'ingresso si applica
-    /// (e si registra) alla fine del primo quanto dopo lo sblocco.
+    /// Recording in progress and machine stopped on a disk
+    /// ([`Stop::Blocked`](crate::Stop::Blocked)): the input is applied
+    /// (and recorded) at the end of the first quantum after unblocking.
     Deferred,
-    /// Replay in corso: gli ingressi vengono dal log, quelli dell'host si
-    /// ignorano.
+    /// Replay in progress: inputs come from the log, the host's are
+    /// ignored.
     Ignored,
-    /// Esito di `listen`/`send`.
+    /// Outcome of `listen`/`send`.
     Vsock(Result<(), VsockError>),
-    /// Connessione accettata (`accept`) o chiesta (`connect`).
+    /// Connection accepted (`accept`) or requested (`connect`).
     Conn(Option<VsockConn>),
-    /// Byte letti (`recv` di vsock, `host_recv` della rete).
+    /// Bytes read (vsock `recv`, network `host_recv`).
     Data(Vec<u8>),
-    /// Connessione dell'host aperta (`host_connect`; `None` senza porte
-    /// effimere libere).
+    /// Host connection opened (`host_connect`; `None` with no free ephemeral
+    /// ports).
     HostConn(Option<ConnId>),
-    /// Byte accettati da `host_send`.
+    /// Bytes accepted by `host_send`.
     Accepted(u64),
 }
 
 impl Input {
-    /// Un tasto premuto o rilasciato, con SYN_REPORT (come
+    /// A key pressed or released, with SYN_REPORT (like
     /// `VirtioInput::key`).
     pub fn key_events(code: u16, down: bool) -> Vec<InputEvent> {
         use vetro_platform::virtio::input::EV_KEY;
         vec![InputEvent::new(EV_KEY, code, down.into()), InputEvent::syn()]
     }
 
-    /// Posizione assoluta del tablet, con SYN_REPORT (come
+    /// Absolute tablet position, with SYN_REPORT (like
     /// `VirtioInput::move_abs`).
     pub fn move_abs_events(x: u32, y: u32) -> Vec<InputEvent> {
         use vetro_platform::virtio::input::{ABS_X, ABS_Y, EV_ABS};
@@ -136,7 +136,7 @@ impl Input {
         ]
     }
 
-    /// Un contatto del touchscreen (come `VirtioInput::touch`).
+    /// A touchscreen contact (like `VirtioInput::touch`).
     pub fn touch_events(slot: u32, pos: Option<(u32, u32)>) -> Vec<InputEvent> {
         use vetro_platform::virtio::input::{
             ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_SLOT, ABS_MT_TRACKING_ID, BTN_TOUCH, EV_ABS, EV_KEY,
@@ -307,7 +307,7 @@ impl Input {
                 8 => VsockOp::Reset(conn(r)?),
                 9 => VsockOp::Release(conn(r)?),
                 10 => VsockOp::TransportReset,
-                k => return Err(Error::invalid(format!("operazione vsock {k}"))),
+                k => return Err(Error::invalid(format!("vsock operation {k}"))),
             }),
             8 => Input::HostNet(match r.u8()? {
                 0 => HostNetOp::Connect(r.u16()?),
@@ -316,49 +316,49 @@ impl Input {
                 3 => HostNetOp::Shutdown(r.u64()?),
                 4 => HostNetOp::Abort(r.u64()?),
                 5 => HostNetOp::Release(r.u64()?),
-                k => return Err(Error::invalid(format!("operazione di rete dell'host {k}"))),
+                k => return Err(Error::invalid(format!("host network operation {k}"))),
             }),
-            k => return Err(Error::invalid(format!("tipo di ingresso {k}"))),
+            k => return Err(Error::invalid(format!("input type {k}"))),
         })
     }
 }
 
-/// Che cosa è successo a un evento del log.
+/// What happened at a log event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EventKind {
-    /// Un ingresso dell'host.
+    /// A host input.
     Input(Input),
-    /// Un accesso dell'host a un dispositivo che il log non sa descrivere
-    /// (`Machine::device` e i suoi derivati, con una chiusura): se ha cambiato
-    /// qualcosa, il replay non può rifarlo. Il replay si ferma qui con
+    /// A host access to a device that the log cannot describe
+    /// (`Machine::device` and its derivatives, with a closure): if it changed
+    /// something, replay cannot redo it. Replay stops here with
     /// [`Divergence::Opaque`].
     Opaque { slot: Option<u32> },
 }
 
-/// Un evento del log.
+/// A log event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Event {
-    /// Istruzioni eseguite quando l'ingresso è arrivato: il replay lo
-    /// applica fra due quanti esattamente a questo numero.
+    /// Instructions executed when the input arrived: replay
+    /// applies it between two quanta at exactly this number.
     pub step: u64,
-    /// `hash64` dei registri della CPU (`Cpu` nello snapshot) subito prima
-    /// dell'ingresso: il replay lo confronta.
+    /// `hash64` of the CPU registers (`Cpu` in the snapshot) right before
+    /// the input: replay compares it.
     pub cpu: u64,
-    /// Byte usciti dalla console fino a quel momento.
+    /// Bytes output by the console up to that moment.
     pub console: u64,
     pub kind: EventKind,
 }
 
-/// Snapshot preso durante la registrazione (ADR 0015), per ripartire vicino
-/// a un'istruzione senza rifare tutto dall'inizio. Gli eventi con lo stesso
-/// `step` vengono dopo lo snapshot.
+/// Snapshot taken during recording (ADR 0015), to restart near
+/// an instruction without redoing everything from the start. Events with the same
+/// `step` come after the snapshot.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Keyframe {
     pub step: u64,
-    /// Console fino a questo punto: byte e hash (vedi [`Digest`]).
+    /// Console up to this point: bytes and hash (see [`Digest`]).
     pub console_len: u64,
     pub console_hash: u64,
-    /// `Machine::save` (con l'uscita della console già tolta dalla UART).
+    /// `Machine::save` (with the console output already taken from the UART).
     pub snapshot: Vec<u8>,
 }
 
@@ -367,41 +367,41 @@ impl fmt::Debug for Keyframe {
         f.debug_struct("Keyframe")
             .field("step", &self.step)
             .field("console_len", &self.console_len)
-            .field("snapshot", &format_args!("{} byte", self.snapshot.len()))
+            .field("snapshot", &format_args!("{} bytes", self.snapshot.len()))
             .finish()
     }
 }
 
-/// Impronta dello stato della macchina in un punto: ciò che il replay deve
-/// ritrovare identico.
+/// Fingerprint of the machine state at a point: what replay must
+/// find identical.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Digest {
-    /// Istruzioni eseguite.
+    /// Instructions executed.
     pub steps: u64,
-    /// `hash64` della CPU (registri generali, SIMD/FP, PSTATE, registri di
-    /// sistema, monitor esclusivo).
+    /// `hash64` of the CPU (general registers, SIMD/FP, PSTATE, system
+    /// registers, exclusive monitor).
     pub cpu: u64,
-    /// `hash64` della MMU con il TLB (col JIT il TLB vede meno accessi,
-    /// ADR 0013: non si confronta se una delle due esecuzioni ha il JIT).
+    /// `hash64` of the MMU with the TLB (with the JIT the TLB sees fewer accesses,
+    /// ADR 0013: it is not compared if either of the two runs has the JIT).
     pub mmu: u64,
-    /// `hash64` della piattaforma: timer, GIC, UART, RTC, GPIO e tutti i
-    /// dispositivi virtio con i loro backend interni (stack di rete, dischi
-    /// copy-on-write).
+    /// `hash64` of the platform: timer, GIC, UART, RTC, GPIO and all the
+    /// virtio devices with their internal backends (network stack, copy-on-write
+    /// disks).
     pub platform: u64,
-    /// `hash64` della RAM.
+    /// `hash64` of the RAM.
     pub ram: u64,
-    /// Byte usciti dalla console dall'inizio della registrazione.
+    /// Bytes output by the console since the start of the recording.
     pub console_len: u64,
-    /// Loro hash (FNV-1a a 64 bit, incrementale).
+    /// Their hash (64-bit FNV-1a, incremental).
     pub console_hash: u64,
 }
 
 impl Digest {
-    /// La prima differenza con `other`, se c'è (`tlb`: confronta anche la
+    /// The first difference from `other`, if any (`tlb`: also compares the
     /// MMU).
     pub fn diff(&self, other: &Digest, tlb: bool) -> Option<&'static str> {
         if self.steps != other.steps {
-            Some("istruzioni")
+            Some("instructions")
         } else if self.console_len != other.console_len || self.console_hash != other.console_hash {
             Some("console")
         } else if self.cpu != other.cpu {
@@ -409,9 +409,9 @@ impl Digest {
         } else if self.ram != other.ram {
             Some("RAM")
         } else if self.platform != other.platform {
-            Some("dispositivi")
+            Some("devices")
         } else if tlb && self.mmu != other.mmu {
-            Some("MMU e TLB")
+            Some("MMU and TLB")
         } else {
             None
         }
@@ -438,44 +438,44 @@ impl Digest {
     }
 }
 
-/// Una registrazione completa.
+/// A complete recording.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Log {
-    /// `Machine::config_hash` della macchina registrata.
+    /// `Machine::config_hash` of the recorded machine.
     pub config_hash: u64,
-    /// La sua configurazione (per ricostruirla).
+    /// Its configuration (to rebuild it).
     pub config: MachineConfig,
-    /// Versione del formato degli snapshot dei [`Keyframe`].
+    /// Snapshot format version of the [`Keyframe`]s.
     pub snapshot_version: u32,
-    /// La registrazione ha usato il JIT (in qualche momento).
+    /// The recording used the JIT (at some point).
     pub jit: bool,
-    /// Istruzioni fra due keyframe (0 = nessuno).
+    /// Instructions between two keyframes (0 = none).
     pub keyframe_every: u64,
-    /// Stato di partenza.
+    /// Starting state.
     pub start: Digest,
-    /// Eventi in ordine di `step` (non decrescente).
+    /// Events in `step` order (non-decreasing).
     pub events: Vec<Event>,
-    /// Keyframe in ordine di `step` crescente.
+    /// Keyframes in increasing `step` order.
     pub keyframes: Vec<Keyframe>,
-    /// Stato alla fine della registrazione.
+    /// State at the end of the recording.
     pub end: Digest,
 }
 
-/// Perché un log non si può leggere.
+/// Why a log cannot be read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LogError(pub Error);
 
 impl fmt::Display for LogError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.0 {
-            Error::BadMagic => write!(f, "non è una registrazione di Vetro (intestazione sconosciuta)"),
+            Error::BadMagic => write!(f, "not a Vetro recording (unknown header)"),
             Error::Version { found, expected } => write!(
                 f,
-                "registrazione nel formato versione {found}, questa versione di Vetro legge solo la {expected}"
+                "recording in format version {found}, this version of Vetro only reads version {expected}"
             ),
-            Error::Checksum => write!(f, "registrazione rovinata (somma di controllo sbagliata)"),
-            Error::Truncated => write!(f, "registrazione troncata"),
-            e => write!(f, "registrazione non valida: {e}"),
+            Error::Checksum => write!(f, "corrupted recording (wrong checksum)"),
+            Error::Truncated => write!(f, "truncated recording"),
+            e => write!(f, "invalid recording: {e}"),
         }
     }
 }
@@ -489,8 +489,8 @@ impl From<Error> for LogError {
 }
 
 impl Log {
-    /// Il file: contenitore `vetro_snapshot` ([`LOG_MAGIC`], [`LOG_VERSION`],
-    /// hash della configurazione) con le sezioni `HEAD`, `EVTS`, `KEYF`,
+    /// The file: a `vetro_snapshot` container ([`LOG_MAGIC`], [`LOG_VERSION`],
+    /// configuration hash) with the sections `HEAD`, `EVTS`, `KEYF`,
     /// `END `.
     pub fn encode(&self) -> Vec<u8> {
         let mut w = Writer::new();
@@ -532,8 +532,8 @@ impl Log {
         vetro_snapshot::encode_container(&LOG_MAGIC, LOG_VERSION, self.config_hash, w.as_bytes())
     }
 
-    /// Legge un file di [`Log::encode`]: magia, versione, somma di
-    /// controllo, poi il contenuto (eventi in ordine, keyframe crescenti).
+    /// Reads a file from [`Log::encode`]: magic, version, checksum,
+    /// then the content (events in order, increasing keyframes).
     pub fn decode(bytes: &[u8]) -> Result<Log, LogError> {
         let (header, payload) = vetro_snapshot::decode_container(&LOG_MAGIC, LOG_VERSION, bytes)?;
         let mut r = Reader::new(payload);
@@ -550,7 +550,7 @@ impl Log {
             let kind = match r.u8()? {
                 0 => EventKind::Input(Input::load(r)?),
                 1 => EventKind::Opaque { slot: r.opt(|r| r.u32())? },
-                k => return Err(Error::invalid(format!("tipo di evento {k}"))),
+                k => return Err(Error::invalid(format!("event type {k}"))),
             };
             Ok(Event { step, cpu, console, kind })
         })?;
@@ -568,10 +568,10 @@ impl Log {
             || events.first().is_some_and(|e| e.step < start.steps)
             || events.last().is_some_and(|e| e.step > end.steps)
         {
-            return Err(Error::invalid("eventi fuori ordine").into());
+            return Err(Error::invalid("events out of order").into());
         }
         if keyframes.windows(2).any(|w| w[1].step <= w[0].step) {
-            return Err(Error::invalid("keyframe fuori ordine").into());
+            return Err(Error::invalid("keyframes out of order").into());
         }
         Ok(Log {
             config_hash: header.config_hash,
@@ -586,13 +586,13 @@ impl Log {
         })
     }
 
-    /// L'ultimo keyframe non oltre l'istruzione `step`.
+    /// The last keyframe not beyond instruction `step`.
     pub fn keyframe_before(&self, step: u64) -> Option<&Keyframe> {
         self.keyframes.iter().rev().find(|k| k.step <= step)
     }
 
-    /// Byte degli eventi nel file (senza keyframe): la parte che cresce con
-    /// gli ingressi.
+    /// Bytes of the events in the file (without keyframes): the part that grows with
+    /// the inputs.
     pub fn events_len(&self) -> usize {
         let mut l = self.clone();
         l.keyframes.clear();
@@ -600,61 +600,61 @@ impl Log {
     }
 }
 
-/// Perché un replay si è fermato prima della fine.
+/// Why a replay stopped before the end.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Divergence {
-    /// Il log non si applica a questa macchina: configurazione diversa,
-    /// stato di partenza diverso, keyframe di un'altra versione.
+    /// The log does not apply to this machine: different configuration,
+    /// different starting state, keyframes of another version.
     Start(String),
-    /// A un evento i registri o la console non sono quelli registrati: un
-    /// ingresso è sfuggito al log, o la macchina non è deterministica.
+    /// At an event the registers or the console are not the recorded ones: an
+    /// input escaped the log, or the machine is not deterministic.
     Event { index: usize, step: u64, what: &'static str },
-    /// L'esecuzione ha superato l'istruzione di un evento senza fermarcisi
-    /// (o si è fermata, inattiva o spenta, prima di arrivarci).
+    /// Execution went past an event's instruction without stopping there
+    /// (or it stopped, idle or powered off, before getting there).
     Missed { index: usize, step: u64, at: u64 },
-    /// Un accesso non registrabile ([`EventKind::Opaque`]).
+    /// An access that cannot be recorded ([`EventKind::Opaque`]).
     Opaque { index: usize, step: u64, slot: Option<u32> },
-    /// Alla fine lo stato non è quello registrato.
+    /// At the end the state is not the recorded one.
     End { what: &'static str },
 }
 
 impl fmt::Display for Divergence {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Divergence::Start(why) => write!(f, "il log non si applica a questa macchina: {why}"),
+            Divergence::Start(why) => write!(f, "the log does not apply to this machine: {why}"),
             Divergence::Event { index, step, what } => write!(
                 f,
-                "evento {index} all'istruzione {step}: {what} diversi dalla registrazione (un ingresso è \
-                 sfuggito al log?)"
+                "event {index} at instruction {step}: {what} differ from the recording (did an input \
+                 escape the log?)"
             ),
             Divergence::Missed { index, step, at } => write!(
                 f,
-                "evento {index} atteso all'istruzione {step}, la macchina è a {at}: l'esecuzione non è \
-                 quella registrata"
+                "event {index} expected at instruction {step}, the machine is at {at}: execution is not \
+                 the recorded one"
             ),
             Divergence::Opaque { index, step, slot } => write!(
                 f,
-                "evento {index} all'istruzione {step}: accesso dell'host al dispositivo {slot:?} che il log \
-                 non descrive, il replay non può continuare"
+                "event {index} at instruction {step}: host access to device {slot:?} that the log \
+                 does not describe, replay cannot continue"
             ),
-            Divergence::End { what } => write!(f, "alla fine della registrazione: {what} diversi"),
+            Divergence::End { what } => write!(f, "at the end of the recording: {what} differ"),
         }
     }
 }
 
-/// Stato di un replay ([`Machine::replay_status`](crate::Machine::replay_status)).
+/// State of a replay ([`Machine::replay_status`](crate::Machine::replay_status)).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReplayStatus {
-    /// In corso: `next` è il prossimo evento da applicare.
+    /// In progress: `next` is the next event to apply.
     Running { next: usize },
-    /// Arrivato alla fine della registrazione con lo stesso stato: da qui
-    /// la macchina continua libera.
+    /// Reached the end of the recording with the same state: from here
+    /// the machine runs free.
     Finished,
-    /// Fermato su una differenza: la macchina continua libera da lì.
+    /// Stopped at a difference: the machine runs free from there.
     Diverged(Divergence),
 }
 
-/// Hash incrementale dei byte della console (FNV-1a a 64 bit).
+/// Incremental hash of the console bytes (64-bit FNV-1a).
 pub(crate) fn console_hash(mut h: u64, bytes: &[u8]) -> u64 {
     for &b in bytes {
         h = (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3);
@@ -662,7 +662,7 @@ pub(crate) fn console_hash(mut h: u64, bytes: &[u8]) -> u64 {
     h
 }
 
-/// Valore iniziale di [`console_hash`].
+/// Initial value of [`console_hash`].
 pub(crate) const CONSOLE_HASH_INIT: u64 = 0xcbf2_9ce4_8422_2325;
 
 #[cfg(test)]
@@ -670,7 +670,7 @@ mod tests {
     use super::*;
     use vetro_platform::virtio::input::BTN_LEFT;
 
-    /// `KEY_A` di Linux.
+    /// Linux `KEY_A`.
     const KEY_A: u16 = 30;
 
     fn sample() -> Log {
@@ -731,9 +731,9 @@ mod tests {
         }
     }
 
-    /// Ogni tipo di ingresso e di evento fa andata e ritorno dal file.
+    /// Every kind of input and event round-trips through the file.
     #[test]
-    fn log_andata_e_ritorno() {
+    fn log_round_trip() {
         let log = sample();
         let bytes = log.encode();
         assert_eq!(Log::decode(&bytes).unwrap(), log);
@@ -743,31 +743,31 @@ mod tests {
         assert!(log.events_len() < bytes.len());
     }
 
-    /// Un log di un'altra versione, rovinato, troncato o incoerente si
-    /// rifiuta con un messaggio che dice il motivo.
+    /// A log of another version, or corrupted, truncated or inconsistent, is
+    /// rejected with a message that states the reason.
     #[test]
-    fn log_rovinati_rifiutati() {
+    fn damaged_logs_rejected() {
         let bytes = sample().encode();
         let mut other = bytes.clone();
         other[8..12].copy_from_slice(&(LOG_VERSION + 1).to_le_bytes());
         let e = Log::decode(&other).unwrap_err();
-        assert!(e.to_string().contains("formato versione"), "{e}");
+        assert!(e.to_string().contains("format version"), "{e}");
         let mut bad = bytes.clone();
         let n = bad.len() - 3;
         bad[n] ^= 1;
         assert_eq!(Log::decode(&bad).unwrap_err().0, Error::Checksum);
         assert!(Log::decode(&bytes[..bytes.len() - 1]).is_err());
         let snap = vetro_snapshot::encode_file(1, b"");
-        assert!(Log::decode(&snap).unwrap_err().to_string().contains("non è una registrazione"));
+        assert!(Log::decode(&snap).unwrap_err().to_string().contains("not a Vetro recording"));
         let mut disordered = sample();
         disordered.events.swap(0, 1);
         assert!(Log::decode(&disordered.encode()).is_err());
     }
 
-    /// Gli aiuti per gli eventi di virtio-input danno esattamente quello che
-    /// danno i metodi del dispositivo (stesso stato salvato).
+    /// The virtio-input event helpers give exactly what the device's
+    /// methods give (same saved state).
     #[test]
-    fn eventi_come_virtio_input() {
+    fn events_like_virtio_input() {
         use vetro_platform::VirtioDevice;
         use vetro_platform::virtio::{InputConfig, VirtioInput};
         let state = |d: &VirtioInput| {
@@ -777,8 +777,8 @@ mod tests {
         };
         let (mut a, mut b) =
             (VirtioInput::new(InputConfig::multitouch()), VirtioInput::new(InputConfig::multitouch()));
-        // Senza driver attivo gli eventi si contano come scartati: basta per
-        // confrontare quanti ne escono.
+        // Without an active driver the events count as dropped: enough to
+        // compare how many come out.
         a.key(KEY_A, true);
         a.move_abs(1, 2);
         a.touch(2, Some((3, 4)));

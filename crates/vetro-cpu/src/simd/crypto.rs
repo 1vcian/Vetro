@@ -1,5 +1,5 @@
-//! Estensioni crittografiche della Cortex-A53: AES, SHA1, SHA256 (Arm ARM,
-//! shared/functions/crypto). PMULL sta con le operazioni intere.
+//! Cortex-A53 cryptographic extensions: AES, SHA1, SHA256 (Arm ARM,
+//! shared/functions/crypto). PMULL lives with the integer operations.
 
 use super::SimdInsn;
 use super::vreg::{elem, set_elem};
@@ -33,8 +33,8 @@ pub struct CryptoInsn {
     pub rd: u8,
 }
 
-/// Classi crittografiche: AES (0x4E28_0800), SHA a tre registri
-/// (0x5E00_0000), SHA a due registri (0x5E28_0800).
+/// Cryptographic classes: AES (0x4E28_0800), three-register SHA
+/// (0x5E00_0000), two-register SHA (0x5E28_0800).
 pub fn decode(w: u32) -> Insn {
     if field(w, 23, 22) != 0 {
         return Insn::Undefined;
@@ -93,7 +93,7 @@ const fn sbox_table() -> ([u8; 256], [u8; 256]) {
     let mut inv = [0u8; 256];
     let mut x = 0usize;
     while x < 256 {
-        // inverso moltiplicativo: x^254 in GF(2^8)
+        // multiplicative inverse: x^254 in GF(2^8)
         let mut r: u8 = 1;
         let mut base = x as u8;
         let mut e = 254u32;
@@ -139,7 +139,7 @@ fn from_bytes(b: [u8; 16]) -> u128 {
     u128::from_le_bytes(b)
 }
 
-/// ShiftRows (o la sua inversa): il byte i è la riga i%4 della colonna i/4.
+/// ShiftRows (or its inverse): byte i is row i%4 of column i/4.
 fn shift_rows(s: [u8; 16], inverse: bool) -> [u8; 16] {
     let mut o = [0u8; 16];
     for c in 0..4 {
@@ -285,7 +285,7 @@ mod tests {
 
     #[test]
     fn mix_columns_roundtrip() {
-        // Vettore FIPS-197: colonna db 13 53 45 → 8e 4d a1 bc
+        // FIPS-197 vector: column db 13 53 45 → 8e 4d a1 bc
         let mut s = [0u8; 16];
         s[..4].copy_from_slice(&[0xdb, 0x13, 0x53, 0x45]);
         let m = mix_columns(s, false);

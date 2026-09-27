@@ -13,7 +13,7 @@ fn vs(d: &mut Driver<VirtioMmio>) -> &mut VirtioVsock {
     d.t.device_as_mut::<VirtioVsock>().unwrap()
 }
 
-/// Intestazione di un pacchetto del guest verso l'host.
+/// Header of a packet from the guest to the host.
 fn g(src_port: u32, dst_port: u32, op: u16) -> Hdr {
     Hdr {
         src_cid: CID,
@@ -27,8 +27,8 @@ fn g(src_port: u32, dst_port: u32, op: u16) -> Hdr {
     }
 }
 
-/// Il guest manda un pacchetto: intestazione e dati in due descrittori,
-/// come Linux.
+/// The guest sends a packet: header and data in two descriptors,
+/// like Linux.
 fn send(d: &mut Driver<VirtioMmio>, mut h: Hdr, data: &[u8]) {
     h.len = data.len() as u32;
     let a = d.buf(&h.to_bytes());
@@ -42,8 +42,8 @@ fn send(d: &mut Driver<VirtioMmio>, mut h: Hdr, data: &[u8]) {
     while d.pop_used(TXQ).is_some() {}
 }
 
-/// Buffer di ricezione come quelli di Linux: un descrittore per
-/// intestazione più `payload` byte.
+/// Receive buffers like Linux's: one descriptor for
+/// header plus `payload` bytes.
 fn offer_rx(d: &mut Driver<VirtioMmio>, n: usize, payload: u32) -> Vec<(u16, u64)> {
     (0..n)
         .map(|_| {
@@ -53,7 +53,7 @@ fn offer_rx(d: &mut Driver<VirtioMmio>, n: usize, payload: u32) -> Vec<(u16, u64
         .collect()
 }
 
-/// Pacchetti arrivati al guest.
+/// Packets arrived at the guest.
 fn rx(d: &mut Driver<VirtioMmio>, bufs: &mut Vec<(u16, u64)>) -> Vec<(Hdr, Vec<u8>)> {
     d.service();
     let mut out = Vec::new();
@@ -77,7 +77,7 @@ fn configurazione() {
     let mut d = driver();
     assert_eq!(d.t.rd(DEVICE_ID), ID_VSOCK);
     assert_eq!(d.t.cfg(0, 8), CID);
-    assert_eq!(d.t.cfg(0, 4), CID, "letture a 32 bit come fa Linux");
+    assert_eq!(d.t.cfg(0, 4), CID, "32-bit reads as Linux does");
     assert_eq!(d.features & 0xFF_FFFF, F_STREAM);
     for q in 0..3 {
         d.t.wr(QUEUE_SEL, q);
@@ -104,7 +104,7 @@ fn il_guest_si_collega_all_host() {
     assert_eq!(vs(&mut d).accept(1234), None);
     assert_eq!(vs(&mut d).state(c), Some(VsockState::Connected));
 
-    // Dati dal guest, poi SHUTDOWN in scrittura: l'host legge fino all'EOF.
+    // Data from the guest, then SHUTDOWN for writing: the host reads up to EOF.
     send(&mut d, g(1025, 1234, OP_RW), b"ciao ");
     send(&mut d, g(1025, 1234, OP_RW), b"host");
     let mut sh = g(1025, 1234, OP_SHUTDOWN);
@@ -115,19 +115,19 @@ fn il_guest_si_collega_all_host() {
     assert_eq!(vs(&mut d).recv(c, 100), b"ciao host");
     assert!(vs(&mut d).eof(c));
 
-    // Risposta dell'host e chiusura: dati, poi SHUTDOWN, poi l'RST del guest.
+    // Host response and close: data, then SHUTDOWN, then the guest's RST.
     vs(&mut d).send(c, b"CIAO").unwrap();
     vs(&mut d).close(c);
     assert_eq!(vs(&mut d).send(c, b"x"), Err(VsockError::Closed));
     let p = rx(&mut d, &mut bufs);
     assert_eq!(ops(&p), [OP_RW, OP_SHUTDOWN]);
     assert_eq!(p[0].1, b"CIAO");
-    assert_eq!(p[0].0.fwd_cnt, 9, "l'host annuncia i byte consumati");
+    assert_eq!(p[0].0.fwd_cnt, 9, "the host announces the bytes consumed");
     assert_eq!(p[1].0.flags, SHUTDOWN_RCV | SHUTDOWN_SEND);
     assert_eq!(vs(&mut d).state(c), Some(VsockState::Closing));
     send(&mut d, g(1025, 1234, OP_RST), &[]);
     assert_eq!(vs(&mut d).state(c), Some(VsockState::Closed));
-    assert!(rx(&mut d, &mut bufs).is_empty(), "niente risposta a un RST");
+    assert!(rx(&mut d, &mut bufs).is_empty(), "no answer to an RST");
     vs(&mut d).release(c);
     assert_eq!(vs(&mut d).state(c), None);
 }
@@ -148,7 +148,7 @@ fn chiusura_completa_del_guest_riceve_rst() {
     assert_eq!(vs(&mut d).state(c), Some(VsockState::Closed));
     assert_eq!(vs(&mut d).recv(c, 100), b"ultimi", "i dati restano leggibili");
     assert!(vs(&mut d).eof(c));
-    // La stessa coppia di porte si può riaprire.
+    // The same pair of ports can be reopened.
     send(&mut d, g(40, 5, OP_REQUEST), &[]);
     assert_eq!(ops(&rx(&mut d, &mut bufs)), [OP_RESPONSE]);
     assert_eq!(vs(&mut d).state(c), Some(VsockState::Connected));
@@ -158,22 +158,22 @@ fn chiusura_completa_del_guest_riceve_rst() {
 fn rifiuti_e_pacchetti_scartati() {
     let mut d = driver();
     let mut bufs = offer_rx(&mut d, 8, 4096);
-    // Porta non in ascolto; dati senza connessione: RST con le porte scambiate.
+    // Port not listening; data without a connection: RST with the ports swapped.
     send(&mut d, g(1, 99, OP_REQUEST), &[]);
     send(&mut d, g(2, 98, OP_RW), b"x");
     let p = rx(&mut d, &mut bufs);
     assert_eq!(ops(&p), [OP_RST, OP_RST]);
     assert_eq!((p[0].0.src_port, p[0].0.dst_port), (99, 1));
-    // Un RST senza connessione non riceve risposta.
+    // An RST without a connection gets no answer.
     send(&mut d, g(3, 97, OP_RST), &[]);
-    // CID sbagliati: scartati senza risposta.
+    // Wrong CIDs: discarded without an answer.
     let mut h = g(1, 99, OP_REQUEST);
     h.src_cid = 3;
     send(&mut d, h, &[]);
     let mut h = g(1, 99, OP_REQUEST);
     h.dst_cid = 1;
     send(&mut d, h, &[]);
-    // Lunghezza oltre i dati presenti: scartato.
+    // Length beyond the data present: discarded.
     let mut h = g(1, 99, OP_RW);
     h.len = 10;
     let a = d.buf(&h.to_bytes());
@@ -181,7 +181,7 @@ fn rifiuti_e_pacchetti_scartati() {
     d.service();
     assert!(rx(&mut d, &mut bufs).is_empty());
     assert_eq!(vs(&mut d).dropped(), 3);
-    // Tipo SEQPACKET (non negoziato): RST.
+    // SEQPACKET type (not negotiated): RST.
     vs(&mut d).listen(99).unwrap();
     let mut h = g(1, 99, OP_REQUEST);
     h.ty = 2;
@@ -202,17 +202,17 @@ fn l_host_si_collega_e_rispetta_il_credito() {
     let p = rx(&mut d, &mut bufs);
     assert_eq!(ops(&p), [OP_REQUEST], "i dati aspettano la RESPONSE");
     assert_eq!((p[0].0.src_port, p[0].0.dst_port), (FIRST_HOST_PORT, 5555));
-    // Il guest accetta con un buffer di 100 byte.
+    // The guest accepts with a 100-byte buffer.
     let mut r = g(5555, FIRST_HOST_PORT, OP_RESPONSE);
     r.buf_alloc = 100;
     send(&mut d, r, &[]);
     assert_eq!(vs(&mut d).state(c), Some(VsockState::Connected));
     let p = rx(&mut d, &mut bufs);
-    // Buffer da 64 byte di carico: 64 + 36 = i 100 di credito.
+    // Buffers with 64 bytes of payload: 64 + 36 = the 100 of credit.
     assert_eq!(ops(&p), [OP_RW, OP_RW]);
     assert_eq!(p.iter().map(|x| x.1.len()).collect::<Vec<_>>(), [64, 36]);
     assert_eq!(vs(&mut d).unsent(c), 200);
-    // Il guest consuma 80 byte e lo dice: altri 80 partono.
+    // The guest consumes 80 bytes and says so: another 80 leave.
     let mut cu = g(5555, FIRST_HOST_PORT, OP_CREDIT_UPDATE);
     cu.buf_alloc = 100;
     cu.fwd_cnt = 80;
@@ -220,7 +220,7 @@ fn l_host_si_collega_e_rispetta_il_credito() {
     let p = rx(&mut d, &mut bufs);
     assert_eq!(p.iter().map(|x| x.1.len()).sum::<usize>(), 80);
     assert_eq!(vs(&mut d).unsent(c), 120);
-    // Una seconda connessione prende la porta dopo.
+    // A second connection takes the next port.
     assert_eq!(vs(&mut d).connect(1).host_port, FIRST_HOST_PORT + 1);
 }
 
@@ -228,7 +228,7 @@ fn l_host_si_collega_e_rispetta_il_credito() {
 fn chiusura_della_sola_trasmissione_dell_host() {
     let mut d = driver();
     let mut bufs = offer_rx(&mut d, 8, 4096);
-    // Dati e chiusura della trasmissione prima ancora della RESPONSE.
+    // Data and closing of transmission even before the RESPONSE.
     let c = vs(&mut d).connect(5000);
     vs(&mut d).send(c, b"dati").unwrap();
     vs(&mut d).shutdown_send(c);
@@ -238,7 +238,7 @@ fn chiusura_della_sola_trasmissione_dell_host() {
     let p = rx(&mut d, &mut bufs);
     assert_eq!(ops(&p), [OP_RW, OP_SHUTDOWN]);
     assert_eq!(p[1].0.flags, SHUTDOWN_SEND);
-    // Il guest risponde e chiude del tutto: l'host legge e risponde RST.
+    // The guest answers and closes completely: the host reads and answers RST.
     assert_eq!(vs(&mut d).state(c), Some(VsockState::Connected));
     send(&mut d, g(5000, FIRST_HOST_PORT, OP_RW), b"DATI");
     let mut sh = g(5000, FIRST_HOST_PORT, OP_SHUTDOWN);
@@ -286,25 +286,25 @@ fn aggiornamenti_di_credito_dell_host() {
     send(&mut d, g(2, 1, OP_REQUEST), &[]);
     rx(&mut d, &mut bufs);
     let c = vs(&mut d).accept(1).unwrap();
-    // Il guest riempie quasi tutto il buffer dell'host.
+    // The guest fills almost all of the host's buffer.
     let chunk = vec![1u8; 60 * 1024];
     for _ in 0..4 {
         send(&mut d, g(2, 1, OP_RW), &chunk);
     }
-    // Consumo piccolo con tanto spazio visto: nessun aggiornamento... ma qui
-    // il guest vede 256 - 240 = 16 KiB liberi: parte CREDIT_UPDATE.
+    // Small consumption with plenty of space seen: no update... but here
+    // the guest sees 256 - 240 = 16 KiB free: CREDIT_UPDATE leaves.
     assert_eq!(vs(&mut d).recv(c, 1000).len(), 1000);
     let p = rx(&mut d, &mut bufs);
     assert_eq!(ops(&p), [OP_CREDIT_UPDATE]);
     assert_eq!(p[0].0.fwd_cnt, 1000);
-    // Subito dopo il guest vede 16 KiB + 1000: ancora sotto soglia, ma
-    // senza nuovi consumi non si manda nulla.
+    // Right after, the guest sees 16 KiB + 1000: still below the threshold, but
+    // without new consumption nothing is sent.
     assert!(rx(&mut d, &mut bufs).is_empty());
-    // CREDIT_REQUEST: risposta con il credito attuale.
+    // CREDIT_REQUEST: answer with the current credit.
     send(&mut d, g(2, 1, OP_CREDIT_REQUEST), &[]);
     let p = rx(&mut d, &mut bufs);
     assert_eq!(ops(&p), [OP_CREDIT_UPDATE]);
-    // Con il buffer quasi vuoto un consumo non manda aggiornamenti.
+    // With the buffer almost empty a consumption sends no updates.
     let mut d = driver();
     let mut bufs = offer_rx(&mut d, 8, 4096);
     vs(&mut d).listen(1).unwrap();
@@ -332,8 +332,8 @@ fn reset_del_trasporto_e_del_dispositivo() {
     assert_eq!(d.pop_used(EVTQ), Some((head, 4)));
     assert_eq!(d.mem(ev, 4), EVENT_TRANSPORT_RESET.to_le_bytes());
     assert_eq!(vs(&mut d).state(c), Some(VsockState::Closed));
-    assert!(rx(&mut d, &mut bufs).is_empty(), "niente RST dopo il reset del trasporto");
-    // Reset del dispositivo: connessioni chiuse, l'ascolto resta.
+    assert!(rx(&mut d, &mut bufs).is_empty(), "no RST after the transport reset");
+    // Device reset: connections closed, listening remains.
     send(&mut d, g(3, 1, OP_REQUEST), &[]);
     let c2 = vs(&mut d).accept(1).unwrap();
     d.init(u64::MAX, 32);
@@ -345,7 +345,7 @@ fn reset_del_trasporto_e_del_dispositivo() {
 
 #[test]
 fn deterministico() {
-    // La stessa sequenza di operazioni dà gli stessi pacchetti.
+    // The same sequence of operations gives the same packets.
     let run = || {
         let mut d = driver();
         let mut bufs = offer_rx(&mut d, 32, 128);

@@ -1,36 +1,36 @@
-//! Binding verso il browser (M4): la macchina di `vetro-machine` dietro
-//! un'API C, per il modulo WebAssembly caricato da JavaScript (browser e
-//! Node). Nessuna dipendenza esterna, niente wasm-bindgen: i tipi che passano
-//! il confine sono interi e puntatori nella memoria lineare del modulo.
+//! Browser binding (M4): the `vetro-machine` machine behind
+//! a C API, for the WebAssembly module loaded by JavaScript (browser and
+//! Node). No external dependencies, no wasm-bindgen: the types that cross
+//! the boundary are integers and pointers into the module's linear memory.
 //!
-//! Il contratto è in `docs/specs/wasm.md`:
-//! - memoria: [`vetro_alloc`] e [`vetro_free`] danno a JS i buffer in cui
-//!   copiare kernel, initramfs e riga di comando, e in cui leggere la console;
-//! - macchina: [`vetro_machine_new`] (o [`vetro_machine_new_with`] con i
-//!   dispositivi scelti), [`vetro_load_linux`], [`vetro_run`] (un quanto di
-//!   istruzioni, con il motivo dell'arresto), console, contatore di
-//!   istruzioni;
-//! - dispositivi (M5): scanout di virtio-gpu in RGBA ([`display`]),
-//!   eventi di virtio-input, linee del GPIO (tasto di accensione), dischi
-//!   virtio-blk con i dati forniti dal JS a blocchi ([`disk`]);
-//! - rete (ABI 5): connessioni TCP dal JS verso i servizi del guest
-//!   (inoltro di porte, [`net`]);
-//! - gestore dei file (ABI 7, ADR 0020): il client del demone
-//!   `vetro-files` del guest su virtio-vsock ([`files`]);
-//! - ispettore di rete e timeline input→effetti (ABI 8, ADR 0023):
-//!   cattura, lista e dettaglio delle richieste in JSON, HAR, pcapng,
-//!   ingressi dell'utente ed effetti ([`analysis`]);
-//! - record & replay (ABI 8, ADR 0019 e 0023): registrazione, log con i
-//!   keyframe spostabili in OPFS, replay, lettura di registri e memoria
+//! The contract is in `docs/specs/wasm.md`:
+//! - memory: [`vetro_alloc`] and [`vetro_free`] give JS the buffers into which it
+//!   copies kernel, initramfs and command line, and from which it reads the console;
+//! - machine: [`vetro_machine_new`] (or [`vetro_machine_new_with`] with the
+//!   chosen devices), [`vetro_load_linux`], [`vetro_run`] (a quantum of
+//!   instructions, with the reason for stopping), console, instruction
+//!   counter;
+//! - devices (M5): virtio-gpu scanouts in RGBA ([`display`]),
+//!   virtio-input events, GPIO lines (power button), virtio-blk
+//!   disks with the data provided by JS in blocks ([`disk`]);
+//! - network (ABI 5): TCP connections from JS to the guest's services
+//!   (port forwarding, [`net`]);
+//! - file manager (ABI 7, ADR 0020): the client of the guest's
+//!   `vetro-files` daemon over virtio-vsock ([`files`]);
+//! - network inspector and input→effects timeline (ABI 8, ADR 0023):
+//!   capture, list and detail of the requests in JSON, HAR, pcapng,
+//!   user inputs and effects ([`analysis`]);
+//! - record & replay (ABI 8, ADR 0019 and 0023): recording, log with the
+//!   keyframes that can be moved to OPFS, replay, reading registers and memory
 //!   ([`replay`]);
-//! - snapshot della macchina (ABI 4, ADR 0015) e overlay copy-on-write
-//!   persistente dei dischi (ABI 6, ADR 0017): le scritture del guest diventano
-//!   scritture su un file che il JS tiene in OPFS;
-//! - import dal JS: `vetro_host.panic` (messaggio di un panic prima della
-//!   trappola) e il motore JIT di [`jit`] (`vetro_jit.*`).
+//! - machine snapshots (ABI 4, ADR 0015) and persistent copy-on-write overlay
+//!   of the disks (ABI 6, ADR 0017): the guest's writes become
+//!   writes to a file that JS keeps in OPFS;
+//! - imports from JS: `vetro_host.panic` (message of a panic before the
+//!   trap) and the JIT engine of [`jit`] (`vetro_jit.*`).
 //!
-//! Sul target nativo le stesse funzioni si provano come funzioni Rust (i test
-//! di questo crate); gli import dal JS lì non esistono e hanno un sostituto.
+//! On the native target the same functions are tested as Rust functions (the tests
+//! of this crate); the imports from JS don't exist there and have a substitute.
 
 #![allow(clippy::missing_safety_doc)]
 
@@ -54,70 +54,70 @@ use vetro_platform::virtio::{
 use disk::HostDisk;
 use display::WebDisplay;
 
-/// Versione dell'API C: cambia a ogni modifica incompatibile delle firme.
-/// 2: JIT della modalità sistema (`vetro_machine_set_jit`, import
-/// `vetro_jit.reset` e tabella `env.tbl` dei blocchi).
-/// 3: dispositivi (`vetro_machine_new_with`, display, input, GPIO, dischi)
-/// e codice d'arresto `BLOCKED`.
-/// 4: snapshot della macchina (`vetro_snapshot_*`, ADR 0015).
-/// 5: connessioni TCP dal JS verso i servizi del guest (`vetro_net_*`,
-/// inoltro di porte).
-/// 6: overlay copy-on-write persistente dei dischi (`vetro_overlay_*`,
+/// Version of the C API: it changes at every incompatible change of the signatures.
+/// 2: system-mode JIT (`vetro_machine_set_jit`, import
+/// `vetro_jit.reset` and block table `env.tbl`).
+/// 3: devices (`vetro_machine_new_with`, display, input, GPIO, disks)
+/// and stop code `BLOCKED`.
+/// 4: machine snapshots (`vetro_snapshot_*`, ADR 0015).
+/// 5: TCP connections from JS to the guest's services (`vetro_net_*`,
+/// port forwarding).
+/// 6: persistent copy-on-write overlay of the disks (`vetro_overlay_*`,
 /// ADR 0017).
-/// 7: virtio-vsock (bit `VSOCK`) e gestore dei file (`vetro_files_*`,
+/// 7: virtio-vsock (`VSOCK` bit) and file manager (`vetro_files_*`,
 /// ADR 0020).
-/// 8: ispettore di rete, timeline, record & replay (`vetro_capture_*`,
+/// 8: network inspector, timeline, record & replay (`vetro_capture_*`,
 /// `vetro_inspect_*`, `vetro_timeline_*`, `vetro_record_*`, `vetro_log_*`,
-/// `vetro_replay_*`, `vetro_rr_status`, lettura dello stato, buffer dei
-/// risultati; ADR 0023).
-/// 9: SQL del gestore dei file e percorsi come byte (ADR 0021).
-/// 10: JIT a regioni (ADR 0024): import `vetro_jit.runtime` (modulo di
-/// runtime `rt.*`), export `vetro_jit_vsync`, contatore `yields` in fondo a
+/// `vetro_replay_*`, `vetro_rr_status`, state reading, result
+/// buffer; ADR 0023).
+/// 9: file manager SQL and paths as bytes (ADR 0021).
+/// 10: region JIT (ADR 0024): import `vetro_jit.runtime` (runtime module
+/// `rt.*`), export `vetro_jit_vsync`, counter `yields` at the end of
 /// `vetro_jit_stats`.
-/// 11: FP/SIMD nelle regioni (ADR 0026): export `vetro_jit_simd` (import
-/// `env.simd` del runtime), `JitState` con FPCR/FPSR e l'orologio.
+/// 11: FP/SIMD in regions (ADR 0026): export `vetro_jit_simd` (import
+/// `env.simd` of the runtime), `JitState` with FPCR/FPSR and the clock.
 /// 12: booting from Android images (`vetro_load_android`, ADR 0018 and
 /// 0028), chunked snapshots (`vetro_snapshot_save_stream`,
 /// `vetro_snapshot_restore_stream`, imports `vetro_host.snapshot_write/read`).
 pub const ABI_VERSION: u32 = 13;
 
-/// Allineamento dei buffer di [`vetro_alloc`] (basta per `JitState`).
+/// Alignment of the [`vetro_alloc`] buffers (enough for `JitState`).
 const ALLOC_ALIGN: usize = 16;
 
-/// Codici di [`vetro_run`].
+/// Codes of [`vetro_run`].
 pub mod stop {
     pub const BUDGET: u32 = 0;
     pub const POWER_OFF: u32 = 1;
     pub const RESET: u32 = 2;
     pub const IDLE: u32 = 3;
     pub const UNIMPLEMENTED: u32 = 4;
-    /// Un disco aspetta blocchi dal JS (`vetro_disk_wanted`): il tempo del
-    /// guest è fermo finché non arrivano.
+    /// A disk is waiting for blocks from JS (`vetro_disk_wanted`): guest time
+    /// is stopped until they arrive.
     pub const BLOCKED: u32 = 5;
 }
 
-/// Bit dei dispositivi di [`vetro_machine_new_with`].
+/// Device bits of [`vetro_machine_new_with`].
 pub mod dev {
     pub const GPU: u32 = 1;
     pub const KEYBOARD: u32 = 2;
     pub const TABLET: u32 = 4;
     pub const MULTITOUCH: u32 = 8;
-    /// virtio-net con lo stack di `vetro-net` e il sinkhole (`NetSetup::default`).
+    /// virtio-net with the `vetro-net` stack and the sinkhole (`NetSetup::default`).
     pub const NET: u32 = 16;
-    /// virtio-vsock (CID 3), per il gestore dei file (`vetro_files_*`).
+    /// virtio-vsock (CID 3), for the file manager (`vetro_files_*`).
     pub const VSOCK: u32 = 32;
-    /// Quelli di `Devices::default` (la macchina del test di avvio).
+    /// Those of `Devices::default` (the machine of the boot test).
     pub const DEFAULT: u32 = GPU | KEYBOARD | TABLET | NET;
 }
 
-/// Bit di `flags` di [`vetro_disk_add`] e [`vetro_disk_add_mem`].
+/// Bits of `flags` of [`vetro_disk_add`] and [`vetro_disk_add_mem`].
 pub mod disk_flags {
-    /// Il guest vede il disco in sola lettura (senza, le sue scritture
-    /// finiscono in un livello copy-on-write in memoria).
+    /// The guest sees the disk as read-only (without it, its writes
+    /// end up in an in-memory copy-on-write layer).
     pub const READ_ONLY: u32 = 1;
 }
 
-/// Dispositivi di virtio-input per [`vetro_input_events`].
+/// virtio-input devices for [`vetro_input_events`].
 pub mod input_dev {
     pub const KEYBOARD: u32 = 0;
     pub const POINTER: u32 = 1;
@@ -132,71 +132,71 @@ pub mod android_flags {
 /// Codes of [`vetro_load_linux`] and [`vetro_load_android`].
 pub mod load {
     pub const OK: u32 = 0;
-    /// Il caricatore ha rifiutato i file: il motivo è in `vetro_message_*`.
+    /// The loader refused the files: the reason is in `vetro_message_*`.
     pub const BOOT_ERROR: u32 = 1;
     /// The command line (or the bootloader parameters) is not UTF-8.
     pub const BAD_CMDLINE: u32 = 2;
 }
 
-/// Una macchina con i buffer di contorno per JS.
+/// A machine with the surrounding buffers for JS.
 pub struct Vm {
     m: Machine,
     /// Compression level of the snapshots (ABI 13, ADR 0031).
     snapshot_level: vetro_machine::vetro_snapshot::Level,
-    /// Uscita della console già tolta alla UART e non ancora letta da JS.
+    /// Console output already taken from the UART and not read by JS yet.
     out: Vec<u8>,
     out_pos: usize,
-    /// Ultimo messaggio (errore di caricamento, istruzione non implementata).
+    /// Last message (load error, unimplemented instruction).
     message: String,
     unimpl: (u64, u32),
-    /// Slot virtio dei dischi, nell'ordine di aggiunta (l'indice è quello
-    /// dell'API).
+    /// Virtio slots of the disks, in order of addition (the index is the
+    /// API's).
     disks: Vec<u32>,
-    /// Ultimo snapshot di `vetro_snapshot_save`, finché JS non lo copia.
+    /// Last snapshot of `vetro_snapshot_save`, until JS copies it.
     snapshot: Vec<u8>,
-    /// Overlay persistente di ogni disco (indice dell'API), se aperto.
+    /// Persistent overlay of every disk (API index), if open.
     overlays: Vec<Option<DiskOverlay>>,
-    /// Ultime scritture di `vetro_overlay_take`, finché JS non le applica.
+    /// Last writes of `vetro_overlay_take`, until JS applies them.
     patches: Vec<u8>,
-    /// Client del gestore dei file (`vetro_files_open`).
+    /// File manager client (`vetro_files_open`).
     files: Option<vetro_machine::FilesClient>,
-    /// Messaggi del gestore dei file non ancora presi dal JS.
+    /// File manager messages not yet taken by JS.
     files_queue: std::collections::VecDeque<Vec<u8>>,
-    /// L'ultimo messaggio preso (`vetro_files_take`).
+    /// The last message taken (`vetro_files_take`).
     files_msg: Vec<u8>,
     /// Ultimo risultato (JSON, HAR, pcapng, log, keyframe, registri) per
     /// `vetro_result_ptr`.
     result: Vec<u8>,
-    /// Cattura di rete (ABI 8): accesa, frame, byte, scartati, generazione.
+    /// Network capture (ABI 8): on, frames, bytes, discarded, generation.
     capture_on: bool,
     capture: vetro_analysis::net::Capture,
     capture_bytes: usize,
     capture_dropped: u64,
     capture_gen: u64,
-    /// Analisi dell'ultima cattura, col numero di frame che copriva.
+    /// Analysis of the last capture, with the number of frames it covered.
     analysis: Option<(usize, vetro_analysis::net::NetworkAnalysis)>,
-    /// Timeline input→effetti e descrittore degli ingressi.
+    /// Input→effects timeline and input describer.
     timeline: vetro_analysis::timeline::Timeline,
     describer: analysis::Describer,
-    /// Log registrato o caricato, e dimensione dei suoi keyframe (anche di
-    /// quelli spostati fuori).
+    /// Log recorded or loaded, and size of its keyframes (including
+    /// those moved out).
     log: Option<vetro_machine::Log>,
     kf_sizes: Vec<u64>,
-    /// Un replay è partito da `vetro_replay_start` (e non è arrivata una
-    /// registrazione nuova).
+    /// A replay started from `vetro_replay_start` (and no new recording
+    /// has arrived).
     replay_active: bool,
 }
 
-/// L'overlay persistente di un disco dal lato di Rust: dove sta ogni
-/// cluster nel file del JS.
+/// The persistent overlay of a disk on the Rust side: where every
+/// cluster is in the JS file.
 struct DiskOverlay {
     file: Overlay,
-    /// Dopo un ripristino i cluster in memoria possono differire dal file:
-    /// la prossima `take` li confronta tutti invece dei soli scritti.
+    /// After a restore the clusters in memory may differ from the file:
+    /// the next `take` compares all of them instead of only the written ones.
     full_sync: bool,
 }
 
-/// Il livello copy-on-write di un disco, qualunque sia la base.
+/// The copy-on-write layer of a disk, whatever the base.
 trait CowLayer {
     fn size(&self) -> u64;
     fn take_dirty(&mut self) -> Vec<u64>;
@@ -223,18 +223,18 @@ impl<B: BlockBackend> CowLayer for CowBackend<B> {
     }
 }
 
-/// Codici di [`vetro_overlay_open`].
+/// Codes of [`vetro_overlay_open`].
 pub mod overlay_open {
-    /// Overlay letto: i suoi cluster sono nel disco.
+    /// Overlay read: its clusters are in the disk.
     pub const LOADED: u32 = 0;
     /// File vuoto: overlay nuovo.
     pub const NEW: u32 = 1;
-    /// Overlay di un'altra immagine base (o dimensione): scartato, il file
-    /// si riscrive da capo con la prossima `vetro_overlay_take`.
+    /// Overlay of another base image (or size): discarded, the file
+    /// is rewritten from scratch with the next `vetro_overlay_take`.
     pub const MISMATCH: u32 = 2;
-    /// File illeggibile: scartato come sopra.
+    /// Unreadable file: discarded as above.
     pub const CORRUPT: u32 = 3;
-    /// Disco sconosciuto o senza copy-on-write (sola lettura).
+    /// Unknown disk or without copy-on-write (read-only).
     pub const NO_DISK: u32 = 4;
 }
 
@@ -243,7 +243,7 @@ impl Vm {
         Self::with_devices(cfg, &Devices::default())
     }
 
-    /// Macchina con i dispositivi dati; la GPU mostra su un [`WebDisplay`].
+    /// Machine with the given devices; the GPU shows on a [`WebDisplay`].
     pub fn with_devices(cfg: &MachineConfig, devices: &Devices) -> Self {
         let vm = Vm {
             m: Machine::with_devices(cfg, devices),
@@ -272,7 +272,7 @@ impl Vm {
             kf_sizes: Vec::new(),
             replay_active: false,
         };
-        // Senza `Machine::gpu`: cambiare backend non deve far servire la GPU.
+        // Without `Machine::gpu`: changing backend must not make the GPU be serviced.
         vm.with_gpu(|g| g.set_backend(Box::new(WebDisplay::default())));
         vm
     }
@@ -283,16 +283,16 @@ impl Vm {
         b.virt.virtio_mut(slot)?.device_as_mut::<VirtioGpu>().map(f)
     }
 
-    /// Agisce sul display della GPU, se c'è. Non passa da
-    /// `Machine::device`: leggere l'immagine non deve far servire la GPU
-    /// (il guest non vede niente, e il momento della lettura lo sceglie la
-    /// pagina, non il guest).
+    /// Acts on the GPU display, if any. It doesn't go through
+    /// `Machine::device`: reading the image must not make the GPU be serviced
+    /// (the guest sees nothing, and the moment of the read is chosen by the
+    /// page, not by the guest).
     pub fn with_display<R>(&self, f: impl FnOnce(&mut WebDisplay) -> R) -> Option<R> {
         self.with_gpu(|g| g.backend_as_mut::<WebDisplay>().map(f)).flatten()
     }
 
-    /// Aggiunge un disco virtio-blk nel primo slot libero (dall'alto, dopo
-    /// GPU e input); restituisce il suo indice.
+    /// Adds a virtio-blk disk in the first free slot (from the top, after
+    /// GPU and input); returns its index.
     pub fn add_disk(&mut self, backend: Box<dyn BlockBackend>, read_only: bool) -> Result<u32, String> {
         let cfg = VirtioBlkConfig {
             read_only,
@@ -306,10 +306,10 @@ impl Vm {
         Ok(self.disks.len() as u32 - 1)
     }
 
-    /// Agisce sul [`HostDisk`] del disco `index`, se lo è. Se la macchina
-    /// aspetta dati (`Stop::Blocked`) il dispositivo si fa servire di nuovo
-    /// prima della prossima istruzione, altrimenti no (una consegna
-    /// anticipata non deve cambiare i tempi del guest).
+    /// Acts on the [`HostDisk`] of disk `index`, if it is one. If the machine
+    /// is waiting for data (`Stop::Blocked`) the device is serviced again
+    /// before the next instruction, otherwise not (an early
+    /// delivery must not change the guest's timing).
     pub fn with_host_disk<R>(&mut self, index: u32, f: impl FnOnce(&mut HostDisk) -> R) -> Option<R> {
         let slot = *self.disks.get(index as usize)?;
         let pick = |b: &mut VirtioBlk| -> Option<R> {
@@ -326,7 +326,7 @@ impl Vm {
         }
     }
 
-    /// Blocchi chiesti dai dischi dall'ultima chiamata: (disco, blocco).
+    /// Blocks requested by the disks since the last call: (disk, block).
     pub fn disk_wanted(&mut self) -> Vec<(u32, u64)> {
         let mut out = Vec::new();
         for i in 0..self.disks.len() as u32 {
@@ -337,7 +337,7 @@ impl Vm {
         out
     }
 
-    /// Cluster scritti dal guest nel livello copy-on-write del disco `index`.
+    /// Clusters written by the guest in the copy-on-write layer of disk `index`.
     fn disk_dirty_clusters(&mut self, index: u32) -> usize {
         let Some(&slot) = self.disks.get(index as usize) else { return 0 };
         let mut b = self.m.board.borrow_mut();
@@ -350,10 +350,10 @@ impl Vm {
             .unwrap_or(0)
     }
 
-    /// Agisce sul livello copy-on-write del disco `index`, se c'è. Senza
-    /// `Machine::device`: leggere o caricare cluster non è un ingresso che il
-    /// guest vede in un momento preciso (si carica prima dell'avvio, si legge
-    /// fra un quanto e l'altro).
+    /// Acts on the copy-on-write layer of disk `index`, if any. Without
+    /// `Machine::device`: reading or loading clusters is not an input that the
+    /// guest sees at a precise moment (it is loaded before boot, read
+    /// between one quantum and the next).
     fn with_cow<R>(&self, index: u32, f: impl FnOnce(&mut dyn CowLayer) -> R) -> Option<R> {
         let slot = *self.disks.get(index as usize)?;
         let mut b = self.m.board.borrow_mut();
@@ -364,14 +364,14 @@ impl Vm {
         blk.backend_as_mut::<CowBackend<MemBackend>>().map(|c| f(c))
     }
 
-    /// Apre l'overlay persistente del disco `index` dal contenuto del file
-    /// (`bytes`, vuoto se non esiste) per la base `identity`; i cluster letti
-    /// vanno nel copy-on-write. Da fare prima di eseguire il guest (e prima
-    /// di ripristinare uno snapshot). Restituisce un codice di
-    /// [`overlay_open`]; con `MISMATCH` e `CORRUPT` il motivo è nel messaggio.
+    /// Opens the persistent overlay of disk `index` from the file contents
+    /// (`bytes`, empty if it doesn't exist) for the base `identity`; the clusters read
+    /// go into the copy-on-write. To be done before running the guest (and before
+    /// restoring a snapshot). Returns a code of
+    /// [`overlay_open`]; with `MISMATCH` and `CORRUPT` the reason is in the message.
     pub fn overlay_open(&mut self, index: u32, identity: &[u8], bytes: &[u8]) -> u32 {
         let Some(size) = self.with_cow(index, |c| c.size()) else {
-            self.message = format!("disco {index} sconosciuto o senza copy-on-write");
+            self.message = format!("disk {index} unknown or without copy-on-write");
             return overlay_open::NO_DISK;
         };
         let (file, code) = match Overlay::load(bytes, identity, size) {
@@ -380,7 +380,7 @@ impl Vm {
                 let ok = self
                     .with_cow(index, |c| l.clusters.iter().all(|&(k, d)| c.load(k, d)))
                     .expect("disco appena trovato");
-                debug_assert!(ok, "cluster dell'overlay controllati da Overlay::load");
+                debug_assert!(ok, "overlay clusters checked by Overlay::load");
                 (l.overlay, code)
             }
             Err(e) => {
@@ -400,8 +400,8 @@ impl Vm {
         code
     }
 
-    /// Le scritture da fare sul file dell'overlay del disco `index` perché
-    /// contenga i cluster scritti finora (vuote se non c'è niente di nuovo).
+    /// The writes to make to the overlay file of disk `index` so that it
+    /// contains the clusters written so far (empty if there is nothing new).
     pub fn overlay_take(&mut self, index: u32) -> Option<Patches> {
         let mut ov = self.overlays.get_mut(index as usize)?.take()?;
         let p = self.with_cow(index, |c| {
@@ -417,8 +417,8 @@ impl Vm {
         p
     }
 
-    /// (generazione, cluster, slot, slot rovinati, lunghezza del file)
-    /// dell'overlay del disco `index`.
+    /// (generation, clusters, slots, damaged slots, file length)
+    /// of the overlay of disk `index`.
     pub fn overlay_info(&self, index: u32) -> Option<[u64; 5]> {
         let o = &self.overlays.get(index as usize)?.as_ref()?.file;
         Some([o.generation(), o.clusters() as u64, o.slots(), o.damaged(), o.file_len()])
@@ -428,8 +428,8 @@ impl Vm {
         &mut self.m
     }
 
-    /// Attiva il JIT della modalità sistema sul motore JS, con soglia
-    /// `hot_threshold` e `batch` blocchi per modulo.
+    /// Turns on the system-mode JIT on the JS engine, with threshold
+    /// `hot_threshold` and `batch` blocks per module.
     pub fn set_jit(&mut self, hot_threshold: u32, batch: u32) {
         let cfg = vetro_jit::SysJitConfig {
             hot_threshold,
@@ -441,7 +441,7 @@ impl Vm {
 
     pub fn load_linux(&mut self, image: &[u8], initrd: Option<&[u8]>, cmdline: &[u8]) -> u32 {
         let Ok(cmdline) = core::str::from_utf8(cmdline) else {
-            self.message = "riga di comando non UTF-8".into();
+            self.message = "non-UTF-8 command line".into();
             return load::BAD_CMDLINE;
         };
         match self.m.load_linux(image, initrd, cmdline) {
@@ -523,9 +523,9 @@ impl Vm {
         }
     }
 
-    /// Snapshot della macchina (M6, ADR 0015). L'uscita della console già
-    /// tolta alla UART e non ancora letta da JS non ne fa parte: si salva
-    /// dopo aver letto la console.
+    /// Machine snapshot (M6, ADR 0015). The console output already
+    /// taken from the UART and not read by JS yet is not part of it: save
+    /// after reading the console.
     pub fn save_state(&self) -> Vec<u8> {
         self.m.save_with(self.snapshot_level)
     }
@@ -541,14 +541,14 @@ impl Vm {
         self.m.save_stream_with(self.snapshot_level, cow * (4096 + 13) + (16 << 20), sink)
     }
 
-    /// Ripristina uno snapshot su questa macchina, che dev'essere
-    /// configurata come quella salvata (stessi dispositivi e dischi, già
-    /// aggiunti con gli stessi parametri). Il display riceve subito
-    /// l'immagine ripristinata; l'uscita della console non letta si scarta.
+    /// Restores a snapshot onto this machine, which must be
+    /// configured like the saved one (same devices and disks, already
+    /// added with the same parameters). The display immediately receives
+    /// the restored image; unread console output is discarded.
     pub fn restore_state(&mut self, bytes: &[u8]) -> Result<(), vetro_machine::vetro_snapshot::Error> {
         self.m.load_state(bytes)?;
-        // I cluster ripristinati sono quelli dello snapshot: il file
-        // dell'overlay si confronta per intero alla prossima `take`.
+        // The restored clusters are those of the snapshot: the overlay
+        // file is compared in full at the next `take`.
         self.after_state_change();
         Ok(())
     }
@@ -565,8 +565,8 @@ impl Vm {
         Ok(())
     }
 
-    /// Copia in `dst` al più `dst.len()` byte dell'uscita della console, che
-    /// consuma; il resto aspetta la chiamata successiva.
+    /// Copies into `dst` at most `dst.len()` bytes of console output, which
+    /// it consumes; the rest waits for the next call.
     pub fn console_read(&mut self, dst: &mut [u8]) -> usize {
         if self.out_pos == self.out.len() {
             self.out.clear();
@@ -585,23 +585,23 @@ impl Vm {
     }
 }
 
-/// Scrive al più `cap` valori di `v` in `out`; restituisce quanti.
+/// Writes at most `cap` values of `v` into `out`; returns how many.
 unsafe fn write_u64s(out: *mut u64, cap: usize, v: &[u64]) -> usize {
     let n = v.len().min(cap);
     if n > 0 && !out.is_null() {
-        // SAFETY: `out` vale per `cap` valori (contratto dell'API).
+        // SAFETY: `out` is valid for `cap` values (API contract).
         unsafe { core::slice::from_raw_parts_mut(out, n) }.copy_from_slice(&v[..n]);
     }
     n
 }
 
-/// `&[u8]` da puntatore e lunghezza passati da JS (nullo o vuoto = vuoto).
+/// `&[u8]` from pointer and length passed by JS (null or empty = empty).
 unsafe fn bytes<'a>(ptr: *const u8, len: usize) -> &'a [u8] {
     if ptr.is_null() || len == 0 { &[] } else { unsafe { core::slice::from_raw_parts(ptr, len) } }
 }
 
-/// Installa (una volta) il gancio che manda a JS il messaggio di un panic:
-/// su wasm32-unknown-unknown il panic è una trappola `unreachable` muta.
+/// Installs (once) the hook that sends JS the message of a panic:
+/// on wasm32-unknown-unknown a panic is a silent `unreachable` trap.
 fn install_panic_hook() {
     #[cfg(target_arch = "wasm32")]
     {
@@ -609,7 +609,7 @@ fn install_panic_hook() {
         ONCE.call_once(|| {
             std::panic::set_hook(Box::new(|info| {
                 let msg = info.to_string();
-                // SAFETY: import di `vetro_host`, legge `msg` durante la chiamata.
+                // SAFETY: `vetro_host` import, reads `msg` during the call.
                 unsafe { host::panic(msg.as_ptr(), msg.len()) };
             }))
         });
@@ -620,7 +620,7 @@ fn install_panic_hook() {
 mod host {
     #[link(wasm_import_module = "vetro_host")]
     unsafe extern "C" {
-        /// Messaggio UTF-8 di un panic, subito prima della trappola.
+        /// UTF-8 message of a panic, right before the trap.
         pub fn panic(ptr: *const u8, len: usize);
         /// A chunk of a `vetro_snapshot_save_stream` snapshot.
         pub fn snapshot_write(ptr: *const u8, len: usize);
@@ -629,36 +629,36 @@ mod host {
     }
 }
 
-/// Versione dell'API ([`ABI_VERSION`]).
+/// API version ([`ABI_VERSION`]).
 #[unsafe(no_mangle)]
 pub extern "C" fn vetro_abi_version() -> u32 {
     ABI_VERSION
 }
 
-/// Alloca `len` byte allineati a 16 nella memoria del modulo; nullo se
-/// `len == 0` o se la memoria non basta. Attenzione: l'allocazione può far
-/// crescere la memoria, e le viste JS su `memory.buffer` vanno rifatte.
+/// Allocates `len` bytes aligned to 16 in the module's memory; null if
+/// `len == 0` or if memory is not enough. Beware: the allocation may make
+/// memory grow, and the JS views on `memory.buffer` must be recreated.
 #[unsafe(no_mangle)]
 pub extern "C" fn vetro_alloc(len: usize) -> *mut u8 {
     match Layout::from_size_align(len, ALLOC_ALIGN) {
-        // SAFETY: dimensione non nulla.
+        // SAFETY: non-zero size.
         Ok(l) if len > 0 => unsafe { std::alloc::alloc(l) },
         _ => core::ptr::null_mut(),
     }
 }
 
-/// Libera un buffer di [`vetro_alloc`] con la stessa lunghezza.
+/// Frees a [`vetro_alloc`] buffer with the same length.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_free(ptr: *mut u8, len: usize) {
     if !ptr.is_null() && len > 0 {
-        // SAFETY: `ptr` viene da `vetro_alloc(len)` (contratto dell'API).
+        // SAFETY: `ptr` comes from `vetro_alloc(len)` (API contract).
         unsafe { std::alloc::dealloc(ptr, Layout::from_size_align_unchecked(len, ALLOC_ALIGN)) }
     }
 }
 
-/// Crea una macchina: `ram_size` in byte (0 = 1 GiB), ora dell'RTC in
-/// secondi dall'epoca e seme del device tree (entrambi 0 = i valori di
-/// `MachineConfig::default`, quelli dei test nativi).
+/// Creates a machine: `ram_size` in bytes (0 = 1 GiB), RTC time in
+/// seconds since the epoch and device tree seed (both 0 = the values of
+/// `MachineConfig::default`, those of the native tests).
 #[unsafe(no_mangle)]
 pub extern "C" fn vetro_machine_new(ram_size: u64, now_secs: u64, seed: u64) -> *mut Vm {
     install_panic_hook();
@@ -668,14 +668,14 @@ pub extern "C" fn vetro_machine_new(ram_size: u64, now_secs: u64, seed: u64) -> 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_machine_free(vm: *mut Vm) {
     if !vm.is_null() {
-        // SAFETY: `vm` viene da `vetro_machine_new` e non si usa più.
+        // SAFETY: `vm` comes from `vetro_machine_new` and is no longer used.
         drop(unsafe { Box::from_raw(vm) });
     }
 }
 
-/// Carica kernel (`Image`), initramfs (nullo o lunghezza 0 = nessuno) e riga
-/// di comando (UTF-8). I buffer si possono liberare subito dopo. Restituisce
-/// un codice di [`load`].
+/// Loads kernel (`Image`), initramfs (null or length 0 = none) and command
+/// line (UTF-8). The buffers can be freed right after. Returns
+/// a code of [`load`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_load_linux(
     vm: *mut Vm,
@@ -686,7 +686,7 @@ pub unsafe extern "C" fn vetro_load_linux(
     cmdline: *const u8,
     cmdline_len: usize,
 ) -> u32 {
-    // SAFETY: puntatori validi per le lunghezze date (contratto dell'API).
+    // SAFETY: pointers valid for the given lengths (API contract).
     let vm = unsafe { &mut *vm };
     let (image, initrd, cmdline) =
         unsafe { (bytes(image, image_len), bytes(initrd, initrd_len), bytes(cmdline, cmdline_len)) };
@@ -726,27 +726,27 @@ pub unsafe extern "C" fn vetro_load_android(
     vm.load_android(boot, vendor, init, params, flags & android_flags::RECOVERY != 0)
 }
 
-/// Esegue al più `budget` istruzioni; restituisce un codice di [`stop`].
+/// Runs at most `budget` instructions; returns a code of [`stop`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_run(vm: *mut Vm, budget: u64) -> u32 {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     unsafe { &mut *vm }.run(budget)
 }
 
-/// Attiva il JIT (ADR 0013) con soglia `hot_threshold` (ingressi prima di
-/// tradurre un blocco) e `batch` blocchi per modulo (0 = 1). Il risultato
-/// dell'esecuzione non cambia; cambia solo la velocità.
+/// Turns on the JIT (ADR 0013) with threshold `hot_threshold` (entries before
+/// translating a block) and `batch` blocks per module (0 = 1). The result
+/// of execution doesn't change; only the speed changes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_machine_set_jit(vm: *mut Vm, hot_threshold: u32, batch: u32) {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     unsafe { &mut *vm }.set_jit(hot_threshold, batch);
 }
 
-/// Contatori del JIT (`SysJitStats`, nell'ordine dei campi) in `out`, al
-/// più `cap` valori; restituisce quanti ne ha scritti (0 senza JIT).
+/// JIT counters (`SysJitStats`, in field order) in `out`, at
+/// most `cap` values; returns how many it wrote (0 without JIT).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_jit_stats(vm: *const Vm, out: *mut u64, cap: usize) -> usize {
-    // SAFETY: `vm` viene da `vetro_machine_new`, `out` vale per `cap` valori.
+    // SAFETY: `vm` comes from `vetro_machine_new`, `out` is valid for `cap` values.
     let vm = unsafe { &*vm };
     let Some(s) = vm.m.jit_stats() else { return 0 };
     let v = [
@@ -774,25 +774,25 @@ pub unsafe extern "C" fn vetro_jit_stats(vm: *const Vm, out: *mut u64, cap: usiz
     n
 }
 
-/// Istruzioni eseguite (l'orologio del guest).
+/// Instructions executed (the guest clock).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_steps(vm: *const Vm) -> u64 {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     unsafe { &*vm }.m.steps
 }
 
-/// Tempo del guest in nanosecondi.
+/// Guest time in nanoseconds.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_guest_ns(vm: *const Vm) -> u64 {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     unsafe { &*vm }.m.guest_ns()
 }
 
-/// Legge e consuma al più `cap` byte dell'uscita della console in `dst`;
-/// restituisce quanti. 0 = niente di nuovo.
+/// Reads and consumes at most `cap` bytes of console output into `dst`;
+/// returns how many. 0 = nothing new.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_console_read(vm: *mut Vm, dst: *mut u8, cap: usize) -> usize {
-    // SAFETY: `vm` viene da `vetro_machine_new`, `dst` vale per `cap` byte.
+    // SAFETY: `vm` comes from `vetro_machine_new`, `dst` is valid for `cap` bytes.
     let vm = unsafe { &mut *vm };
     if dst.is_null() || cap == 0 {
         return 0;
@@ -800,46 +800,46 @@ pub unsafe extern "C" fn vetro_console_read(vm: *mut Vm, dst: *mut u8, cap: usiz
     vm.console_read(unsafe { core::slice::from_raw_parts_mut(dst, cap) })
 }
 
-/// Accoda `len` byte sulla console, come dalla tastiera.
+/// Queues `len` bytes on the console, as from the keyboard.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_console_write(vm: *mut Vm, src: *const u8, len: usize) {
-    // SAFETY: `vm` viene da `vetro_machine_new`, `src` vale per `len` byte.
+    // SAFETY: `vm` comes from `vetro_machine_new`, `src` is valid for `len` bytes.
     let vm = unsafe { &mut *vm };
     vm.user_input(Input::Console(unsafe { bytes(src, len) }.to_vec()));
 }
 
-/// Ultimo messaggio (UTF-8): errore di caricamento o istruzione non
-/// implementata. Valido fino alla chiamata successiva sulla macchina.
+/// Last message (UTF-8): load error or unimplemented
+/// instruction. Valid until the next call on the machine.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_message_ptr(vm: *const Vm) -> *const u8 {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     unsafe { &*vm }.message.as_ptr()
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_message_len(vm: *const Vm) -> usize {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     unsafe { &*vm }.message.len()
 }
 
-/// PC dell'ultima istruzione non implementata (`stop::UNIMPLEMENTED`).
+/// PC of the last unimplemented instruction (`stop::UNIMPLEMENTED`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_unimplemented_pc(vm: *const Vm) -> u64 {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     unsafe { &*vm }.unimpl.0
 }
 
-/// Codifica dell'ultima istruzione non implementata.
+/// Encoding of the last unimplemented instruction.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_unimplemented_raw(vm: *const Vm) -> u32 {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     unsafe { &*vm }.unimpl.1
 }
 
 // ---- Dispositivi (ABI 3) ----------------------------------------------------
 
-/// `Devices` dai bit di [`dev`] e dalla risoluzione iniziale della GPU (0 =
-/// quella di default, 1280x800).
+/// `Devices` from the bits of [`dev`] and from the initial GPU resolution (0 =
+/// the default one, 1280x800).
 pub fn devices_from(bits: u32, width: u32, height: u32) -> Devices {
     let d = GpuConfig::default();
     let gpu = GpuConfig {
@@ -872,9 +872,9 @@ fn config(ram_size: u64, now_secs: u64, seed: u64) -> MachineConfig {
     }
 }
 
-/// Come [`vetro_machine_new`], con i dispositivi scelti: `devices` sono bit
-/// di [`dev`] (`MULTITOUCH` vince su `TABLET`), `width`x`height` la
-/// risoluzione iniziale dello scanout 0 (0 = 1280x800).
+/// Like [`vetro_machine_new`], with the chosen devices: `devices` are bits
+/// of [`dev`] (`MULTITOUCH` wins over `TABLET`), `width`x`height` the
+/// initial resolution of scanout 0 (0 = 1280x800).
 #[unsafe(no_mangle)]
 pub extern "C" fn vetro_machine_new_with(
     ram_size: u64,
@@ -889,11 +889,11 @@ pub extern "C" fn vetro_machine_new_with(
     Box::into_raw(Box::new(Vm::with_devices(&cfg, &devices_from(devices, width, height))))
 }
 
-/// Dimensioni dello scanout `scanout`: `(larghezza << 32) | altezza`, 0 se
-/// spento o se non c'è la GPU.
+/// Size of scanout `scanout`: `(width << 32) | height`, 0 if
+/// off or if there is no GPU.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_display_size(vm: *const Vm, scanout: u32) -> u64 {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     let vm = unsafe { &*vm };
     vm.with_display(|d| match d.screen(scanout) {
         Some(s) if s.on => u64::from(s.width) << 32 | u64::from(s.height),
@@ -902,11 +902,11 @@ pub unsafe extern "C" fn vetro_display_size(vm: *const Vm, scanout: u32) -> u64 
     .unwrap_or(0)
 }
 
-/// Pixel RGBA dello scanout (righe da `larghezza * 4` byte), nullo se
-/// spento. Valido fino alla prossima chiamata che esegue il guest.
+/// RGBA pixels of the scanout (rows of `width * 4` bytes), null if
+/// off. Valid until the next call that runs the guest.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_display_ptr(vm: *const Vm, scanout: u32) -> *const u8 {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     let vm = unsafe { &*vm };
     vm.with_display(|d| match d.screen(scanout) {
         Some(s) if s.on => s.rgba.as_ptr(),
@@ -915,20 +915,20 @@ pub unsafe extern "C" fn vetro_display_ptr(vm: *const Vm, scanout: u32) -> *cons
     .unwrap_or(core::ptr::null())
 }
 
-/// Aggiornamenti dello scanout (immagine o spegnimento): se non cambia non
-/// c'è niente da ridisegnare.
+/// Updates of the scanout (image or turning off): if it doesn't change there
+/// is nothing to redraw.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_display_updates(vm: *const Vm, scanout: u32) -> u64 {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     let vm = unsafe { &*vm };
     vm.with_display(|d| d.screen(scanout).map_or(0, |s| s.updates)).unwrap_or(0)
 }
 
-/// Rettangolo cambiato dall'ultima chiamata (unione): scrive `x, y,
-/// larghezza, altezza` in `out` e restituisce 1, o 0 se niente è cambiato.
+/// Rectangle changed since the last call (union): writes `x, y,
+/// width, height` into `out` and returns 1, or 0 if nothing changed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_display_take_dirty(vm: *const Vm, scanout: u32, out: *mut u32) -> u32 {
-    // SAFETY: `vm` viene da `vetro_machine_new`, `out` vale per 4 valori.
+    // SAFETY: `vm` comes from `vetro_machine_new`, `out` is valid for 4 values.
     let vm = unsafe { &*vm };
     match vm.with_display(|d| d.take_dirty(scanout)).flatten() {
         Some(r) => {
@@ -940,21 +940,21 @@ pub unsafe extern "C" fn vetro_display_take_dirty(vm: *const Vm, scanout: u32, o
     }
 }
 
-/// Risoluzione chiesta per lo scanout (come ridimensionare la finestra):
-/// il driver la vede con un interrupt di configurazione. È un ingresso
-/// dell'host.
+/// Resolution requested for the scanout (like resizing the window):
+/// the driver sees it with a configuration interrupt. It is a host
+/// input.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_display_resize(vm: *mut Vm, scanout: u32, width: u32, height: u32) -> u32 {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
     (vm.user_input(Input::Display { scanout, width, height }) != Reply::NoDevice) as u32
 }
 
-/// Stato del cursore dello scanout in `out` (6 valori): risorsa (0 =
-/// nascosto), x, y, hot_x, hot_y, numero di cambi. Restituisce 0 senza GPU.
+/// Cursor state of the scanout in `out` (6 values): resource (0 =
+/// hidden), x, y, hot_x, hot_y, number of changes. Returns 0 without a GPU.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_cursor_state(vm: *const Vm, scanout: u32, out: *mut u32) -> u32 {
-    // SAFETY: `vm` viene da `vetro_machine_new`, `out` vale per 6 valori.
+    // SAFETY: `vm` comes from `vetro_machine_new`, `out` is valid for 6 values.
     let vm = unsafe { &*vm };
     let Some(v) = vm
         .with_display(|d| {
@@ -971,11 +971,11 @@ pub unsafe extern "C" fn vetro_cursor_state(vm: *const Vm, scanout: u32, out: *m
     1
 }
 
-/// Immagine del cursore, 64x64 RGBA; nulla se non c'è. Valida fino alla
-/// prossima chiamata che esegue il guest.
+/// Cursor image, 64x64 RGBA; null if there is none. Valid until the
+/// next call that runs the guest.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_cursor_image(vm: *const Vm, scanout: u32) -> *const u8 {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     let vm = unsafe { &*vm };
     let n = (display::CURSOR_SIZE * display::CURSOR_SIZE * 4) as usize;
     vm.with_display(|d| match d.screen(scanout) {
@@ -985,9 +985,9 @@ pub unsafe extern "C" fn vetro_cursor_image(vm: *const Vm, scanout: u32) -> *con
     .unwrap_or(core::ptr::null())
 }
 
-/// Accoda `count` eventi evdev (`tipo, codice, valore` come tre `u32`
-/// consecutivi) sul dispositivo `device` di [`input_dev`]. Chi chiama mette
-/// i SYN_REPORT. Restituisce 0 se il dispositivo non c'è.
+/// Queues `count` evdev events (`type, code, value` as three consecutive
+/// `u32`s) on device `device` of [`input_dev`]. The caller puts
+/// the SYN_REPORTs. Returns 0 if the device doesn't exist.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_input_events(
     vm: *mut Vm,
@@ -995,7 +995,7 @@ pub unsafe extern "C" fn vetro_input_events(
     events: *const u32,
     count: usize,
 ) -> u32 {
-    // SAFETY: `vm` viene da `vetro_machine_new`, `events` vale per 3 * count valori.
+    // SAFETY: `vm` comes from `vetro_machine_new`, `events` is valid for 3 * count values.
     let vm = unsafe { &mut *vm };
     let raw = if count == 0 { &[][..] } else { unsafe { core::slice::from_raw_parts(events, 3 * count) } };
     let ev: Vec<InputEvent> = raw
@@ -1012,45 +1012,45 @@ pub unsafe extern "C" fn vetro_input_events(
     (vm.user_input(input) != Reply::NoDevice) as u32
 }
 
-/// Un tasto della tastiera (codice Linux `KEY_*`) premuto o rilasciato, con
-/// SYN_REPORT. 0 se non c'è la tastiera.
+/// A keyboard key (Linux code `KEY_*`) pressed or released, with
+/// SYN_REPORT. 0 if there is no keyboard.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_input_key(vm: *mut Vm, code: u32, down: u32) -> u32 {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
     (vm.user_input(Input::Keyboard(Input::key_events(code as u16, down != 0))) != Reply::NoDevice) as u32
 }
 
-/// Posizione assoluta del tablet (0..=32767 per asse), con SYN_REPORT.
+/// Absolute position of the tablet (0..=32767 per axis), with SYN_REPORT.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_input_abs(vm: *mut Vm, x: u32, y: u32) -> u32 {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
     (vm.user_input(Input::Pointer(Input::move_abs_events(x, y))) != Reply::NoDevice) as u32
 }
 
-/// Pulsante del puntatore (`BTN_LEFT` = 0x110, ...), con SYN_REPORT.
+/// Pointer button (`BTN_LEFT` = 0x110, ...), with SYN_REPORT.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_input_button(vm: *mut Vm, code: u32, down: u32) -> u32 {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
     (vm.user_input(Input::Pointer(Input::key_events(code as u16, down != 0))) != Reply::NoDevice) as u32
 }
 
-/// Contatto `slot` del touchscreen: `down` != 0 lo mette o lo sposta in
-/// (x, y) (0..=32767), 0 lo toglie.
+/// Touchscreen contact `slot`: `down` != 0 puts it down or moves it to
+/// (x, y) (0..=32767), 0 lifts it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_input_touch(vm: *mut Vm, slot: u32, x: u32, y: u32, down: u32) -> u32 {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
     let ev = Input::touch_events(slot, (down != 0).then_some((x, y)));
     (vm.user_input(Input::Pointer(ev)) != Reply::NoDevice) as u32
 }
 
-/// LED della tastiera accesi dal guest (bit `LED_*`).
+/// Keyboard LEDs lit by the guest (`LED_*` bits).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_input_leds(vm: *mut Vm) -> u32 {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
     let slot = vm.m.slots().keyboard;
     let b = vm.m.board.borrow();
@@ -1058,16 +1058,16 @@ pub unsafe extern "C" fn vetro_input_leds(vm: *mut Vm) -> u32 {
         .unwrap_or(0)
 }
 
-/// Pilota la linea `line` del GPIO PL061 (3 = tasto di accensione,
-/// `gpio-keys` KEY_POWER). È un ingresso dell'host.
+/// Drives line `line` of the PL061 GPIO (3 = power button,
+/// `gpio-keys` KEY_POWER). It is a host input.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_gpio_input(vm: *mut Vm, line: u32, level: u32) {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
     vm.user_input(Input::Gpio { line, level: level != 0 });
 }
 
-/// Linea del GPIO del tasto di accensione.
+/// GPIO line of the power button.
 #[unsafe(no_mangle)]
 pub extern "C" fn vetro_power_key_line() -> u32 {
     vetro_platform::pl061::POWER_KEY_LINE
@@ -1075,11 +1075,11 @@ pub extern "C" fn vetro_power_key_line() -> u32 {
 
 // ---- Dischi (ABI 3) ---------------------------------------------------------
 
-/// Aggiunge un disco virtio-blk di `size` byte con i dati dal JS a blocchi
-/// da `block_size` byte (potenza di due, almeno 512), al più `max_blocks`
-/// blocchi in memoria (0 = nessun limite). `flags`: bit di [`disk_flags`].
-/// Restituisce l'indice del disco, o -1 (motivo nel messaggio). Da
-/// chiamare prima di eseguire il guest.
+/// Adds a virtio-blk disk of `size` bytes with the data from JS in blocks
+/// of `block_size` bytes (a power of two, at least 512), at most `max_blocks`
+/// blocks in memory (0 = no limit). `flags`: bits of [`disk_flags`].
+/// Returns the disk index, or -1 (reason in the message). To be
+/// called before running the guest.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_disk_add(
     vm: *mut Vm,
@@ -1088,7 +1088,7 @@ pub unsafe extern "C" fn vetro_disk_add(
     max_blocks: u32,
     flags: u32,
 ) -> i32 {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
     let d = match HostDisk::new(size, block_size, max_blocks as usize) {
         Ok(d) => d,
@@ -1108,13 +1108,13 @@ pub unsafe extern "C" fn vetro_disk_add(
     }
 }
 
-/// Aggiunge un disco con tutto il contenuto già in memoria (copiato da
-/// `data`; lunghezza arrotondata per difetto a 512 come per [`vetro_disk_add`]): sempre pronto, per i file
-/// piccoli e come riferimento nei test. Stessi `flags` e risultato di
+/// Adds a disk with all its contents already in memory (copied from
+/// `data`; length rounded down to 512 as for [`vetro_disk_add`]): always ready, for small
+/// files and as a reference in the tests. Same `flags` and result as
 /// [`vetro_disk_add`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_disk_add_mem(vm: *mut Vm, data: *const u8, len: usize, flags: u32) -> i32 {
-    // SAFETY: `vm` viene da `vetro_machine_new`, `data` vale per `len` byte.
+    // SAFETY: `vm` comes from `vetro_machine_new`, `data` is valid for `len` bytes.
     let vm = unsafe { &mut *vm };
     let len = len / 512 * 512;
     let mem = MemBackend::from_vec(unsafe { bytes(data, len) }.to_vec()).read_only();
@@ -1129,14 +1129,14 @@ pub unsafe extern "C" fn vetro_disk_add_mem(vm: *mut Vm, data: *const u8, len: u
     }
 }
 
-/// Blocchi chiesti dai dischi dall'ultima chiamata, come coppie `(disco,
-/// blocco)` di `u64` in `out` (al più `cap` coppie; il resto resta per la
-/// chiamata successiva). Restituisce quante coppie. Ogni blocco compare una
-/// volta sola finché non arriva ([`vetro_disk_fill`]) o fallisce
+/// Blocks requested by the disks since the last call, as `(disk,
+/// block)` pairs of `u64` in `out` (at most `cap` pairs; the rest stays for the
+/// next call). Returns how many pairs. Every block appears only
+/// once until it arrives ([`vetro_disk_fill`]) or fails
 /// ([`vetro_disk_fail`]).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_disk_wanted(vm: *mut Vm, out: *mut u64, cap: usize) -> usize {
-    // SAFETY: `vm` viene da `vetro_machine_new`, `out` vale per 2 * cap valori.
+    // SAFETY: `vm` comes from `vetro_machine_new`, `out` is valid for 2 * cap values.
     let vm = unsafe { &mut *vm };
     let all = vm.disk_wanted();
     let n = all.len().min(cap);
@@ -1147,16 +1147,16 @@ pub unsafe extern "C" fn vetro_disk_wanted(vm: *mut Vm, out: *mut u64, cap: usiz
             o[2 * k + 1] = b;
         }
     }
-    // Quelli che non stanno in `out` tornano in lista.
+    // Those that don't fit in `out` go back to the list.
     for &(d, b) in &all[n..] {
         vm.with_host_disk(d, |h| h.requeue(b));
     }
     n
 }
 
-/// Consegna il blocco `block` del disco `disk` (`len` = la dimensione del
-/// blocco, o meno per l'ultimo). 0 = accettato; 1 = disco sconosciuto; 2 =
-/// blocco fuori dal disco; 3 = lunghezza sbagliata.
+/// Delivers block `block` of disk `disk` (`len` = the block size,
+/// or less for the last one). 0 = accepted; 1 = unknown disk; 2 =
+/// block outside the disk; 3 = wrong length.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_disk_fill(
     vm: *mut Vm,
@@ -1165,7 +1165,7 @@ pub unsafe extern "C" fn vetro_disk_fill(
     data: *const u8,
     len: usize,
 ) -> u32 {
-    // SAFETY: `vm` viene da `vetro_machine_new`, `data` vale per `len` byte.
+    // SAFETY: `vm` comes from `vetro_machine_new`, `data` is valid for `len` bytes.
     let vm = unsafe { &mut *vm };
     let data = unsafe { bytes(data, len) };
     match vm.with_host_disk(disk, |d| d.fill(block, data)) {
@@ -1176,23 +1176,23 @@ pub unsafe extern "C" fn vetro_disk_fill(
     }
 }
 
-/// Il JS non ha potuto procurare il blocco: la richiesta del guest che lo
-/// aspetta finisce con un errore di I/O.
+/// JS could not obtain the block: the guest request waiting for it
+/// ends with an I/O error.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_disk_fail(vm: *mut Vm, disk: u32, block: u64) -> u32 {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
     vm.with_host_disk(disk, |d| d.fail(block)).is_some() as u32
 }
 
-/// Contatori del disco in `out` (al più `cap`): dimensione in byte,
-/// dimensione del blocco, blocchi in memoria, letture mancate, blocchi
-/// consegnati, blocchi tolti, blocchi falliti, cluster copy-on-write
-/// scritti dal guest. Restituisce quanti valori (0 = disco sconosciuto; per
-/// un disco in memoria solo dimensione e cluster sono significativi).
+/// Disk counters in `out` (at most `cap`): size in bytes,
+/// block size, blocks in memory, missed reads, blocks
+/// delivered, blocks evicted, failed blocks, copy-on-write clusters
+/// written by the guest. Returns how many values (0 = unknown disk; for
+/// an in-memory disk only size and clusters are meaningful).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_disk_stats(vm: *mut Vm, disk: u32, out: *mut u64, cap: usize) -> usize {
-    // SAFETY: `vm` viene da `vetro_machine_new`, `out` vale per `cap` valori.
+    // SAFETY: `vm` comes from `vetro_machine_new`, `out` is valid for `cap` values.
     let vm = unsafe { &mut *vm };
     let Some(&slot) = vm.disks.get(disk as usize) else { return 0 };
     let size = {
@@ -1221,9 +1221,9 @@ pub unsafe extern "C" fn vetro_disk_stats(vm: *mut Vm, disk: u32, out: *mut u64,
 
 // ---- Snapshot (ABI 4, ADR 0015) ---------------------------------------------
 
-/// Versione del formato degli snapshot (`vetro_snapshot::FORMAT_VERSION`):
-/// il JS la usa nelle chiavi della cache, così uno snapshot di un'altra
-/// versione non si prova nemmeno a ripristinare.
+/// Snapshot format version (`vetro_snapshot::FORMAT_VERSION`):
+/// JS uses it in the cache keys, so a snapshot of another
+/// version is not even tried for restore.
 #[unsafe(no_mangle)]
 pub extern "C" fn vetro_snapshot_version() -> u32 {
     vetro_machine::vetro_snapshot::FORMAT_VERSION
@@ -1258,14 +1258,14 @@ pub unsafe extern "C" fn vetro_snapshot_set_level(vm: *mut Vm, level: u32) -> u3
     0
 }
 
-/// Salva la macchina in un buffer interno e ne restituisce la lunghezza;
-/// i byte si leggono da [`vetro_snapshot_ptr`] (validi fino al prossimo
-/// salvataggio, a [`vetro_snapshot_clear`] o alla distruzione della
-/// macchina). Leggere prima la console: l'uscita già letta dalla UART e
-/// non ancora consegnata al JS non entra nello snapshot.
+/// Saves the machine into an internal buffer and returns its length;
+/// the bytes are read from [`vetro_snapshot_ptr`] (valid until the next
+/// save, [`vetro_snapshot_clear`] or the destruction of the
+/// machine). Read the console first: the output already read from the UART and
+/// not yet delivered to JS doesn't go into the snapshot.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_snapshot_save(vm: *mut Vm) -> usize {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
     vm.snapshot = vm.save_state();
     vm.snapshot.len()
@@ -1280,7 +1280,7 @@ pub unsafe extern "C" fn vetro_snapshot_save(vm: *mut Vm) -> usize {
 /// after the header.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_snapshot_save_stream(vm: *mut Vm) -> u64 {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
     let mut total = vetro_machine::vetro_snapshot::HEADER_LEN as u64;
     #[cfg(target_arch = "wasm32")]
@@ -1304,44 +1304,44 @@ pub unsafe extern "C" fn vetro_snapshot_save_stream(vm: *mut Vm) -> u64 {
     total
 }
 
-/// I byte dell'ultimo [`vetro_snapshot_save`] (nullo se non ce n'è).
+/// The bytes of the last [`vetro_snapshot_save`] (null if there is none).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_snapshot_ptr(vm: *const Vm) -> *const u8 {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     let vm = unsafe { &*vm };
     if vm.snapshot.is_empty() { core::ptr::null() } else { vm.snapshot.as_ptr() }
 }
 
-/// Libera il buffer dell'ultimo salvataggio.
+/// Frees the buffer of the last save.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_snapshot_clear(vm: *mut Vm) {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     unsafe { &mut *vm }.snapshot = Vec::new();
 }
 
-/// Codici di [`vetro_snapshot_restore`].
+/// Codes of [`vetro_snapshot_restore`].
 pub mod restore {
     pub const OK: u32 = 0;
-    /// Non è uno snapshot di Vetro.
+    /// Not a Vetro snapshot.
     pub const BAD_MAGIC: u32 = 1;
-    /// Formato di un'altra versione (`vetro_snapshot_version`).
+    /// Format of another version (`vetro_snapshot_version`).
     pub const VERSION: u32 = 2;
     /// Macchina configurata diversamente (RAM, dispositivi, dischi, seme).
     pub const CONFIG: u32 = 3;
-    /// Snapshot rovinato o incoerente: la macchina va scartata.
+    /// Damaged or inconsistent snapshot: the machine must be discarded.
     pub const CORRUPT: u32 = 4;
 }
 
-/// Ripristina lo snapshot di `len` byte in `data` su questa macchina,
-/// configurata come quella salvata (stessi dispositivi di
-/// `vetro_machine_new_with`, stessi dischi aggiunti nello stesso ordine con
-/// gli stessi parametri, prima di chiamarla). Il buffer si può liberare
-/// subito dopo. Con un codice diverso da 0 il motivo è nel messaggio; con
-/// `BAD_MAGIC`, `VERSION` e `CONFIG` la macchina non è cambiata.
+/// Restores the snapshot of `len` bytes in `data` onto this machine,
+/// configured like the saved one (same devices of
+/// `vetro_machine_new_with`, same disks added in the same order with
+/// the same parameters, before calling it). The buffer can be freed
+/// right after. With a code other than 0 the reason is in the message; with
+/// `BAD_MAGIC`, `VERSION` and `CONFIG` the machine hasn't changed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_snapshot_restore(vm: *mut Vm, data: *const u8, len: usize) -> u32 {
     use vetro_machine::vetro_snapshot::Error;
-    // SAFETY: `vm` viene da `vetro_machine_new`, `data` vale per `len` byte.
+    // SAFETY: `vm` comes from `vetro_machine_new`, `data` is valid for `len` bytes.
     let vm = unsafe { &mut *vm };
     match vm.restore_state(unsafe { bytes(data, len) }) {
         Ok(()) => restore::OK,
@@ -1390,15 +1390,15 @@ pub unsafe extern "C" fn vetro_snapshot_restore_stream(vm: *mut Vm, head: *const
     }
 }
 
-// ---- Overlay persistente dei dischi (ABI 6, ADR 0017) ----------------------
+// ---- Persistent disk overlay (ABI 6, ADR 0017) -----------------------------
 
-/// Apre l'overlay persistente del disco `disk` (aggiunto con
-/// [`vetro_disk_add`] o [`vetro_disk_add_mem`] senza sola lettura): `data`
-/// è il contenuto del file salvato (lunghezza 0 se non c'è ancora),
-/// `identity` la stringa che identifica l'immagine base (URL, dimensione,
-/// ETag). I cluster letti entrano nel copy-on-write del disco. Da chiamare
-/// prima di [`vetro_run`] e prima di [`vetro_snapshot_restore`]. Codici di
-/// [`overlay_open`]; motivo di `MISMATCH`/`CORRUPT`/`NO_DISK` nel messaggio.
+/// Opens the persistent overlay of disk `disk` (added with
+/// [`vetro_disk_add`] or [`vetro_disk_add_mem`] without read-only): `data`
+/// is the contents of the saved file (length 0 if there is none yet),
+/// `identity` the string that identifies the base image (URL, size,
+/// ETag). The clusters read go into the disk's copy-on-write. To be called
+/// before [`vetro_run`] and before [`vetro_snapshot_restore`]. Codes of
+/// [`overlay_open`]; reason for `MISMATCH`/`CORRUPT`/`NO_DISK` in the message.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_overlay_open(
     vm: *mut Vm,
@@ -1408,52 +1408,52 @@ pub unsafe extern "C" fn vetro_overlay_open(
     data: *const u8,
     data_len: usize,
 ) -> u32 {
-    // SAFETY: `vm` viene da `vetro_machine_new`, i buffer valgono per le
-    // lunghezze date.
+    // SAFETY: `vm` comes from `vetro_machine_new`, the buffers are valid for the
+    // given lengths.
     let vm = unsafe { &mut *vm };
     let (identity, data) = unsafe { (bytes(identity, identity_len), bytes(data, data_len)) };
     vm.overlay_open(disk, identity, data)
 }
 
-/// Prepara le scritture da fare sul file dell'overlay del disco `disk`
-/// perché contenga le scritture del guest fatte finora, e ne restituisce la
-/// lunghezza (0 = niente da scrivere, o disco senza overlay). I byte, in
-/// [`vetro_overlay_ptr`]: u64 lunghezza a cui troncare il file prima
-/// (`u64::MAX` = non troncare), u32 numero di scritture, poi per ognuna u64
-/// offset, u32 lunghezza e i byte (little endian). Vanno applicate in
-/// ordine: l'intestazione del file è l'ultima.
+/// Prepares the writes to make to the overlay file of disk `disk`
+/// so that it contains the guest writes made so far, and returns their
+/// length (0 = nothing to write, or disk without an overlay). The bytes, in
+/// [`vetro_overlay_ptr`]: u64 length to truncate the file to first
+/// (`u64::MAX` = don't truncate), u32 number of writes, then for each one u64
+/// offset, u32 length and the bytes (little endian). They must be applied in
+/// order: the file header is the last one.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_overlay_take(vm: *mut Vm, disk: u32) -> usize {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
     vm.patches = vm.overlay_take(disk).filter(|p| !p.is_empty()).map(|p| p.encode()).unwrap_or_default();
     vm.patches.len()
 }
 
-/// I byte dell'ultima [`vetro_overlay_take`] (nullo se vuota), validi fino
-/// alla prossima `vetro_overlay_take`, a [`vetro_overlay_clear`] o alla
-/// distruzione della macchina.
+/// The bytes of the last [`vetro_overlay_take`] (null if empty), valid until
+/// the next `vetro_overlay_take`, [`vetro_overlay_clear`] or the
+/// destruction of the machine.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_overlay_ptr(vm: *const Vm) -> *const u8 {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     let vm = unsafe { &*vm };
     if vm.patches.is_empty() { core::ptr::null() } else { vm.patches.as_ptr() }
 }
 
-/// Libera il buffer dell'ultima [`vetro_overlay_take`].
+/// Frees the buffer of the last [`vetro_overlay_take`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_overlay_clear(vm: *mut Vm) {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     unsafe { &mut *vm }.patches = Vec::new();
 }
 
-/// Contatori dell'overlay del disco `disk` in `out` (al più `cap`):
-/// generazione, cluster nel file, slot nel file, slot rovinati trovati
-/// all'apertura, lunghezza del file dopo le scritture date. Restituisce
-/// quanti valori (0 = disco senza overlay).
+/// Overlay counters of disk `disk` in `out` (at most `cap`):
+/// generation, clusters in the file, slots in the file, damaged slots found
+/// at opening, length of the file after the given writes. Returns
+/// how many values (0 = disk without an overlay).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_overlay_info(vm: *const Vm, disk: u32, out: *mut u64, cap: usize) -> usize {
-    // SAFETY: `vm` viene da `vetro_machine_new`, `out` vale per `cap` valori.
+    // SAFETY: `vm` comes from `vetro_machine_new`, `out` is valid for `cap` values.
     let vm = unsafe { &*vm };
     let Some(v) = vm.overlay_info(disk) else { return 0 };
     let n = v.len().min(cap);
@@ -1491,7 +1491,7 @@ mod tests {
         let msg = unsafe {
             core::str::from_utf8(bytes(vetro_message_ptr(vm), vetro_message_len(vm))).unwrap().to_string()
         };
-        assert!(msg.contains("troncata"), "{msg}");
+        assert!(msg.contains("truncated"), "{msg}");
         let bad = [0xffu8];
         let code =
             unsafe { vetro_load_linux(vm, junk.as_ptr(), junk.len(), core::ptr::null(), 0, bad.as_ptr(), 1) };
@@ -1557,8 +1557,8 @@ mod tests {
         assert_eq!(vm.out_pos, 0);
     }
 
-    /// Dispositivi scelti dai bit, display e input senza driver, dischi con
-    /// le loro regole.
+    /// Devices chosen by the bits, display and input without a driver, disks with
+    /// their rules.
     #[test]
     fn dispositivi_e_dischi_dall_api() {
         let vm = vetro_machine_new_with(64 << 20, 0, 0, dev::KEYBOARD | dev::MULTITOUCH, 0, 0);
@@ -1570,7 +1570,7 @@ mod tests {
         unsafe {
             assert_eq!(vetro_display_size(vm, 0), 0);
             assert!(vetro_display_ptr(vm, 0).is_null());
-            assert_eq!(vetro_display_resize(vm, 0, 800, 600), 0, "senza GPU");
+            assert_eq!(vetro_display_resize(vm, 0, 800, 600), 0, "without a GPU");
             assert_eq!(vetro_input_key(vm, 30, 1), 1);
             assert_eq!(vetro_input_touch(vm, 0, 10, 10, 1), 1);
             assert_eq!(vetro_input_abs(vm, 1, 1), 1);
@@ -1602,7 +1602,7 @@ mod tests {
         }
     }
 
-    /// `vetro_disk_wanted` con poco spazio: il resto resta in lista.
+    /// `vetro_disk_wanted` with little room: the rest stays in the list.
     #[test]
     fn blocchi_chiesti_a_pezzi() {
         let vm = vetro_machine_new_with(64 << 20, 0, 0, 0, 0, 0);
@@ -1621,9 +1621,9 @@ mod tests {
         }
     }
 
-    /// Una macchina senza kernel: il PC di reset non è in RAM, e ogni fetch
-    /// è un'eccezione verso un vettore che non è in RAM. Il quanto si esaurisce
-    /// e il contatore avanza esattamente del quanto (10 ns a istruzione).
+    /// A machine without a kernel: the reset PC is not in RAM, and every fetch
+    /// is an exception to a vector that is not in RAM. The quantum runs out
+    /// and the counter advances by exactly the quantum (10 ns per instruction).
     #[test]
     fn quanto_e_contatore() {
         let vm = small();
@@ -1637,12 +1637,12 @@ mod tests {
         unsafe { String::from_utf8_lossy(bytes(vetro_message_ptr(vm), vetro_message_len(vm))).into_owned() }
     }
 
-    /// Snapshot dall'API C (ABI 4): salvato in un buffer, copiato dal JS,
-    /// ripristinato su una macchina nuova con gli stessi dispositivi e lo
-    /// stesso disco (le scritture del guest nel copy-on-write comprese);
-    /// le due proseguono uguali. Formato di un'altra versione, altra
-    /// configurazione e byte a caso si rifiutano con il loro codice e un
-    /// messaggio, senza toccare la macchina.
+    /// Snapshot from the C API (ABI 4): saved into a buffer, copied by JS,
+    /// restored onto a new machine with the same devices and the
+    /// same disk (the guest's writes in the copy-on-write included);
+    /// the two continue identically. A format of another version, another
+    /// configuration and random bytes are refused with their code and a
+    /// message, without touching the machine.
     #[test]
     fn snapshot_dall_api() {
         let disk: Vec<u8> = (0..8192u32).map(|i| (i * 13) as u8).collect();
@@ -1654,7 +1654,7 @@ mod tests {
         let a = new();
         unsafe {
             assert_eq!(vetro_run(a, 1000), stop::BUDGET);
-            // Una scrittura nel livello copy-on-write, come la farebbe il guest.
+            // A write in the copy-on-write layer, as the guest would do it.
             let slot = (&*a).disks[0];
             (&mut *a)
                 .m
@@ -1678,7 +1678,7 @@ mod tests {
             assert_eq!(vetro_disk_stats(b, 0, [0u64; 8].as_mut_ptr(), 8), 8);
             let mut st = [0u64; 8];
             vetro_disk_stats(b, 0, st.as_mut_ptr(), 8);
-            assert_eq!(st[7], 1, "il cluster scritto torna col ripristino");
+            assert_eq!(st[7], 1, "the written cluster comes back with the restore");
             for vm in [a, b] {
                 assert_eq!(vetro_run(vm, 5000), stop::BUDGET);
             }
@@ -1709,14 +1709,14 @@ mod tests {
             let c = new();
             let before = (&*c).save_state();
             assert_eq!(vetro_snapshot_restore(c, other.as_ptr(), other.len()), restore::VERSION);
-            assert!(message(c).contains("versione"), "{}", message(c));
-            assert_eq!(vetro_snapshot_restore(c, b"altro".as_ptr(), 5), restore::BAD_MAGIC);
-            assert!((&*c).save_state() == before, "rifiutati senza toccare la macchina");
+            assert!(message(c).contains("version"), "{}", message(c));
+            assert_eq!(vetro_snapshot_restore(c, b"other".as_ptr(), 5), restore::BAD_MAGIC);
+            assert!((&*c).save_state() == before, "refused without touching the machine");
             let d = vetro_machine_new_with(64 << 20, 0, 0, dev::DEFAULT, 320, 200);
             assert_eq!(
                 vetro_snapshot_restore(d, snap.as_ptr(), snap.len()),
                 restore::CONFIG,
-                "senza il disco"
+                "without the disk"
             );
             let mut bad = snap.clone();
             let last = bad.len() - 1;
@@ -1729,8 +1729,8 @@ mod tests {
         }
     }
 
-    /// Le scritture di `vetro_overlay_take` applicate a un file in memoria,
-    /// come fa il JS.
+    /// The writes of `vetro_overlay_take` applied to an in-memory file,
+    /// as JS does.
     fn take_into(vm: *mut Vm, disk: u32, file: &mut Vec<u8>) -> bool {
         let n = unsafe { vetro_overlay_take(vm, disk) };
         if n == 0 {
@@ -1783,10 +1783,10 @@ mod tests {
         v
     }
 
-    /// Overlay persistente dall'API C (ABI 6): le scritture del guest vanno
-    /// nel file di una sessione e tornano nella successiva; un overlay di
-    /// un'altra base si scarta (file riscritto da capo); dopo il ripristino
-    /// di uno snapshot il file si riallinea ai cluster dello snapshot.
+    /// Persistent overlay from the C API (ABI 6): the guest's writes go
+    /// into the file of one session and come back in the next; an overlay of
+    /// another base is discarded (file rewritten from scratch); after restoring
+    /// a snapshot the file is realigned to the snapshot's clusters.
     #[test]
     fn overlay_persistente_dall_api() {
         let base: Vec<u8> = (0..64 * 1024u32).map(|i| (i * 7) as u8).collect();
@@ -1802,9 +1802,9 @@ mod tests {
         let mut file = Vec::new();
         let (a, code) = new(&file, id);
         assert_eq!(code, overlay_open::NEW);
-        assert!(take_into(a, 0, &mut file), "file nuovo: si scrive l'intestazione");
+        assert!(take_into(a, 0, &mut file), "new file: the header is written");
         assert_eq!(info(a)[..3], [1, 0, 0]);
-        assert!(!take_into(a, 0, &mut file), "niente di nuovo");
+        assert!(!take_into(a, 0, &mut file), "nothing new");
         write_disk(a, 9, &[0xab; 512]);
         write_disk(a, 40, &[0xcd; 1024]);
         assert!(take_into(a, 0, &mut file));
@@ -1812,19 +1812,19 @@ mod tests {
         let snap = unsafe { (&*a).save_state() };
         write_disk(a, 9, &[0x11; 512]);
         assert!(take_into(a, 0, &mut file));
-        assert_eq!(info(a)[..3], [3, 2, 2], "riscritto sul posto");
+        assert_eq!(info(a)[..3], [3, 2, 2], "rewritten in place");
 
-        // Sessione dopo: i cluster tornano dal file.
+        // Next session: the clusters come back from the file.
         let (b, code) = new(&file, id);
         assert_eq!(code, overlay_open::LOADED);
         assert_eq!(read_disk(b, 9, 512), [0x11; 512]);
         assert_eq!(read_disk(b, 40, 1024), [0xcd; 1024]);
         assert_eq!(read_disk(b, 0, 512), base[..512]);
-        assert!(!take_into(b, 0, &mut file), "caricati, non scritti dal guest");
+        assert!(!take_into(b, 0, &mut file), "loaded, not written by the guest");
         assert_eq!(info(b)[0], 3);
 
-        // Snapshot preso prima dell'ultima scrittura: il disco torna quello
-        // dello snapshot e il file si riallinea (un cluster riscritto).
+        // Snapshot taken before the last write: the disk goes back to the
+        // snapshot's and the file is realigned (one cluster rewritten).
         assert_eq!(unsafe { vetro_snapshot_restore(b, snap.as_ptr(), snap.len()) }, restore::OK);
         assert_eq!(read_disk(b, 9, 512), [0xab; 512]);
         assert!(take_into(b, 0, &mut file));
@@ -1833,11 +1833,11 @@ mod tests {
         let (c, _) = new(&file, id);
         assert_eq!(read_disk(c, 9, 512), [0xab; 512]);
 
-        // Altra base: scartato, il disco è quello della base, il file si
-        // riscrive da capo.
+        // Another base: discarded, the disk is the base's, the file is
+        // rewritten from scratch.
         let (d, code) = new(&file, b"http://x/disco.img|65536|\"e2\"");
         assert_eq!(code, overlay_open::MISMATCH);
-        assert!(message(d).contains("altra immagine base"), "{}", message(d));
+        assert!(message(d).contains("another base image"), "{}", message(d));
         assert_eq!(read_disk(d, 9, 512), base[9 * 512..10 * 512]);
         assert!(take_into(d, 0, &mut file));
         assert_eq!(file.len() as u64, overlay::HEADER_LEN);

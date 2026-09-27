@@ -1,26 +1,26 @@
-//! Criterio del nucleo di M10: record & replay della macchina (ADR 0019) sul
-//! kernel guest di M3.
+//! Criterion of the core of M10: record & replay of the machine (ADR 0019) on the
+//! M3 guest kernel.
 //!
-//! Una sessione interattiva gira **registrata**: comandi battuti alla shell
-//! un byte alla volta, DHCP, HTTP e ping verso il sinkhole, un frame ICMP
-//! consegnato dall'host al guest (`Input::NetFrame`: il guest risponde, e
-//! `/proc/net/snmp` lo conta), eventi della tastiera virtio-input, una
-//! connessione dall'host a un servizio del guest (`Input::HostNet`, eco con
-//! `nc -e cat`), `sleep` (WFI che saltano il tempo), spegnimento. Poi:
+//! An interactive session runs **recorded**: commands typed at the shell
+//! one byte at a time, DHCP, HTTP and ping to the sinkhole, an ICMP frame
+//! delivered by the host to the guest (`Input::NetFrame`: the guest answers, and
+//! `/proc/net/snmp` counts it), virtio-input keyboard events, a
+//! connection from the host to a guest service (`Input::HostNet`, echo with
+//! `nc -e cat`), `sleep` (WFIs that skip time), power-off. Then:
 //!
-//! - la stessa sessione **senza** registrazione dà la stessa esecuzione
-//!   (registrare non cambia niente) e misura il costo della registrazione;
-//! - il **replay** dall'avvio, con l'interprete e quanti diversi, e dal
-//!   keyframe iniziale del log col **JIT**: stesso log della console, stesse
-//!   istruzioni, stessa CPU, RAM e stato dei dispositivi (col JIT tutto
-//!   tranne il TLB, ADR 0013);
-//! - il **salto** (`Machine::goto`) a punti della sessione, da una macchina
-//!   nuova, con l'interprete e col JIT: registri e RAM uguali a quelli
-//!   dell'esecuzione registrata in quel punto;
-//! - un **ingresso tolto dal log** (un tasto della shell, il frame ICMP)
-//!   rende il replay diverso, e il replay lo dice.
+//! - the same session **without** recording gives the same execution
+//!   (recording changes nothing) and measures the cost of recording;
+//! - the **replay** from boot, with the interpreter and different quanta, and from the
+//!   initial keyframe of the log with the **JIT**: same console log, same
+//!   instructions, same CPU, RAM and device state (with the JIT everything
+//!   except the TLB, ADR 0013);
+//! - the **jump** (`Machine::goto`) to points of the session, from a new
+//!   machine, with the interpreter and with the JIT: registers and RAM equal to those
+//!   of the recorded run at that point;
+//! - an **input removed from the log** (a shell key, the ICMP frame)
+//!   makes the replay different, and the replay says so.
 //!
-//! Misure in `target/guest-kernel/replay-misure.txt`. Solo in release, come
+//! Measurements in `target/guest-kernel/replay-misure.txt`. Release only, like
 //! `vetro.rs`.
 
 use std::time::Instant;
@@ -57,7 +57,7 @@ fn machine() -> Machine {
 
 fn booted(image: &[u8], initrd: &[u8]) -> Machine {
     let mut m = machine();
-    m.load_linux(image, Some(initrd), "console=ttyAMA0 vetro.noautotest").expect("caricamento del kernel");
+    m.load_linux(image, Some(initrd), "console=ttyAMA0 vetro.noautotest").expect("kernel load");
     m
 }
 
@@ -65,7 +65,7 @@ fn jit() -> Option<Box<dyn vetro_machine::SysJitDyn>> {
     Some(vetro_jit_native::system_jit(JIT_THRESHOLD))
 }
 
-/// Somma di controllo IP (complemento a uno).
+/// IP checksum (one's complement).
 fn checksum(b: &[u8]) -> [u8; 2] {
     let mut s = 0u32;
     for c in b.chunks(2) {
@@ -77,7 +77,7 @@ fn checksum(b: &[u8]) -> [u8; 2] {
     (!(s as u16)).to_be_bytes()
 }
 
-/// Echo request ICMP dal gateway (10.0.2.2) al guest, in un frame Ethernet.
+/// ICMP echo request from the gateway (10.0.2.2) to the guest, in an Ethernet frame.
 fn icmp_echo_request() -> Vec<u8> {
     let mut icmp = vec![8, 0, 0, 0, 0x56, 0x45, 0, 1];
     icmp.extend_from_slice(b"VETRO-ICMP-DALL-HOST");
@@ -95,7 +95,7 @@ fn icmp_echo_request() -> Vec<u8> {
     f
 }
 
-/// `InEchos` nell'uscita di `grep Icmp: /proc/net/snmp`.
+/// `InEchos` in the output of `grep Icmp: /proc/net/snmp`.
 fn in_echos(out: &str) -> u64 {
     let lines: Vec<&str> = out.lines().filter(|l| l.starts_with("Icmp: ")).collect();
     let header = lines.iter().find(|l| l.contains("InEchos")).expect("intestazione Icmp");
@@ -109,12 +109,12 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
-/// Il copione, dal punto di vista dell'host: guarda la console fra un
-/// quanto e l'altro e dà gli ingressi con `Machine::input`.
+/// The script, from the host's point of view: watches the console between one
+/// quantum and the next and gives the inputs with `Machine::input`.
 struct Script {
     m: Machine,
     log: Vec<u8>,
-    /// Punti della sessione: istruzioni, registri, hash della RAM.
+    /// Points of the session: instructions, registers, RAM hash.
     marks: Vec<(u64, String, u64)>,
 }
 
@@ -131,9 +131,9 @@ impl Script {
             if let Some(i) = find(&self.log[from.min(self.log.len())..], needle.as_bytes()) {
                 return from + i + needle.len();
             }
-            assert!(self.m.steps < limit, "{needle:?} non arrivato:\n{}", self.tail());
+            assert!(self.m.steps < limit, "{needle:?} did not arrive:\n{}", self.tail());
             let stop = self.quantum(QUANTUM);
-            assert_eq!(stop, Stop::Budget, "{stop:?} in attesa di {needle:?}:\n{}", self.tail());
+            assert_eq!(stop, Stop::Budget, "{stop:?} while waiting for {needle:?}:\n{}", self.tail());
         }
     }
 
@@ -149,8 +149,8 @@ impl Script {
         (at, normalize(&String::from_utf8_lossy(&self.log[from..at])))
     }
 
-    /// Batte `text` un byte alla volta, con una frazione di quanto fra un
-    /// tasto e l'altro.
+    /// Types `text` one byte at a time, with a fraction of a quantum between one
+    /// key and the next.
     fn type_slowly(&mut self, text: &str) {
         for b in text.bytes() {
             self.input(Input::Console(vec![b]));
@@ -174,7 +174,7 @@ impl Script {
     }
 }
 
-/// Esito della sessione.
+/// Outcome of the session.
 struct Session {
     log: Vec<u8>,
     steps: u64,
@@ -192,12 +192,12 @@ fn session(image: &[u8], initrd: &[u8], record: Option<RecordOptions>) -> Sessio
     }
     let at = s.until(SHELL_PROMPT, 0);
 
-    // Tasti battuti alla shell uno per uno.
+    // Keys typed at the shell one by one.
     s.type_slowly("echo \"V\"ETRO-$((6*7))\n");
     let at = s.until(SHELL_PROMPT, at);
     assert!(normalize(&String::from_utf8_lossy(&s.log[..at])).contains("VETRO-42"), "{}", s.tail());
 
-    // Rete verso il sinkhole.
+    // Network to the sinkhole.
     let (at, out) = s.command("udhcpc -i eth0 -n -q", at);
     assert!(out.contains("bound eth0 10.0.2.15"), "{out}");
     let (at, out) = s.command("echo \"G\"ET=$(wget -q -O - http://vetro.example/prova)", at);
@@ -205,7 +205,7 @@ fn session(image: &[u8], initrd: &[u8], record: Option<RecordOptions>) -> Sessio
     let (at, out) = s.command("ping -c 1 -W 5 10.0.2.2 | grep -c ttl=", at);
     assert!(out.lines().any(|l| l.trim() == "1"), "{out}");
 
-    // Un frame dall'host: il guest risponde all'echo request.
+    // A frame from the host: the guest answers the echo request.
     let (at, out) = s.command("grep Icmp: /proc/net/snmp", at);
     assert_eq!(in_echos(&out), 0, "{out}");
     s.mark();
@@ -214,7 +214,7 @@ fn session(image: &[u8], initrd: &[u8], record: Option<RecordOptions>) -> Sessio
         assert_eq!(s.quantum(QUANTUM), Stop::Budget);
     }
     let (at, out) = s.command("grep Icmp: /proc/net/snmp", at);
-    assert_eq!(in_echos(&out), 1, "il frame dell'host non è arrivato:\n{out}");
+    assert_eq!(in_echos(&out), 1, "the host's frame did not arrive:\n{out}");
 
     // Tastiera virtio-input (event1).
     s.input(Input::Console(b"vetro-dev input-read /dev/input/event1 4\n".to_vec()));
@@ -226,11 +226,11 @@ fn session(image: &[u8], initrd: &[u8], record: Option<RecordOptions>) -> Sessio
     assert!(out.contains("vetro-dev: evento 1 30 1") && out.contains("vetro-dev: evento 1 30 0"), "{out}");
     s.mark();
 
-    // Una connessione dall'host verso un servizio del guest (eco).
+    // A connection from the host to a guest service (echo).
     s.input(Input::Console(b"nc -n -v -l -p 5555 -e cat\n".to_vec()));
     s.until("listening on", at);
     let Reply::HostConn(Some(id)) = s.input(Input::HostNet(HostNetOp::Connect(5555))) else {
-        panic!("connessione dell'host")
+        panic!("host connection")
     };
     let data: Vec<u8> = (0..20_000u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 11) as u8).collect();
     let (mut sent, mut got, mut shut) = (0usize, Vec::new(), false);
@@ -252,15 +252,15 @@ fn session(image: &[u8], initrd: &[u8], record: Option<RecordOptions>) -> Sessio
         if matches!(s.net_state(id), Some((0, HostConnState::Closed(_)))) {
             break;
         }
-        assert!(s.m.steps < limit, "eco dall'host non finita:\n{}", s.tail());
+        assert!(s.m.steps < limit, "echo from the host not finished:\n{}", s.tail());
         assert_eq!(s.quantum(QUANTUM / 2), Stop::Budget);
     }
-    assert!(got == data, "eco dall'host diversa ({} byte su {})", got.len(), data.len());
+    assert!(got == data, "echo from the host differs ({} bytes of {})", got.len(), data.len());
     s.input(Input::HostNet(HostNetOp::Release(id)));
     let at = s.until(SHELL_PROMPT, at);
     s.mark();
 
-    // Il tempo che salta nelle WFI, poi lo spegnimento.
+    // The time that skips in the WFIs, then the power-off.
     let (_, out) = s.command("sleep 2; echo \"D\"OPO", at);
     assert!(out.contains("DOPO"), "{out}");
     s.input(Input::Console(b"poweroff -f\n".to_vec()));
@@ -279,18 +279,18 @@ fn session(image: &[u8], initrd: &[u8], record: Option<RecordOptions>) -> Sessio
     Session { log: s.log, steps: s.m.steps, marks: s.marks, recording, end, secs }
 }
 
-/// Replay fino alla fine a quanti di `q`: log della console.
+/// Replay to the end in quanta of `q`: console log.
 fn replay(m: &mut Machine, q: u64) -> Vec<u8> {
     let mut log = m.console_output();
     let limit = m.steps + 20 * PHASE_BUDGET;
     while matches!(m.replay_status(), Some(ReplayStatus::Running { .. })) {
-        assert!(m.steps < limit, "replay senza fine");
+        assert!(m.steps < limit, "replay without an end");
         let s = m.run(q);
         log.extend(m.console_output());
         if !matches!(m.replay_status(), Some(ReplayStatus::Running { .. })) {
             break;
         }
-        assert_eq!(s, Stop::Budget, "{s:?} a {} istruzioni durante il replay", m.steps);
+        assert_eq!(s, Stop::Budget, "{s:?} at {} instructions during the replay", m.steps);
     }
     log
 }
@@ -301,7 +301,7 @@ fn same_log(what: &str, a: &[u8], b: &[u8]) {
         let (a, b): (Vec<&str>, Vec<&str>) = (a.lines().collect(), b.lines().collect());
         let i = a.iter().zip(&b).position(|(x, y)| x != y).unwrap_or(a.len().min(b.len()));
         panic!(
-            "{what}: log diverso dalla riga {}:\nregistrato: {:?}\nreplay:     {:?}",
+            "{what}: log differs from line {}:\nrecorded: {:?}\nreplay:   {:?}",
             i + 1,
             a.get(i),
             b.get(i)
@@ -311,7 +311,7 @@ fn same_log(what: &str, a: &[u8], b: &[u8]) {
 
 fn kernel() -> Option<(Vec<u8>, Vec<u8>)> {
     if cfg!(debug_assertions) {
-        skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "replay sul kernel guest solo in release");
+        skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "replay on the guest kernel only in release");
         return None;
     }
     let Some((image, initrd)) = guest_kernel() else {
@@ -330,46 +330,46 @@ fn sessione_registrata_e_riprodotta() {
     let rec = session(&image, &initrd, Some(RecordOptions { keyframe_every: KEYFRAME_EVERY }));
     let log = rec.recording.clone().expect("registrazione");
     let bytes = log.encode();
-    let log = Log::decode(&bytes).expect("il log si rilegge");
+    let log = Log::decode(&bytes).expect("the log reads back");
     let inputs = log.events.len();
     assert!(inputs > 40, "{inputs} eventi");
     assert!(log.events.iter().all(|e| matches!(e.kind, vetro_machine::record::EventKind::Input(_))));
     assert_eq!(log.end, rec.end);
     assert_eq!(log.end.steps, rec.steps);
 
-    // Registrare (con o senza keyframe) non cambia l'esecuzione; misura il
-    // costo.
-    // Tempi: il migliore di due esecuzioni alternate (la macchina che fa
-    // girare i test può essere carica).
+    // Recording (with or without keyframes) doesn't change execution; measures the
+    // cost.
+    // Timings: the best of two alternating runs (the machine running
+    // the tests may be loaded).
     let (mut plain_secs, mut bare_secs) = (f64::MAX, f64::MAX);
     for _ in 0..2 {
         let plain = session(&image, &initrd, None);
-        same_log("senza registrazione", &rec.log, &plain.log);
-        assert_eq!(plain.end, rec.end, "stato finale senza registrazione");
+        same_log("without recording", &rec.log, &plain.log);
+        assert_eq!(plain.end, rec.end, "final state without recording");
         assert_eq!(plain.marks, rec.marks);
         plain_secs = plain_secs.min(plain.secs);
         let bare = session(&image, &initrd, Some(RecordOptions::default()));
         let bare_log = bare.recording.as_ref().unwrap();
         assert!(bare_log.keyframes.is_empty());
-        assert_eq!(bare_log.events, log.events, "stessi eventi con e senza keyframe");
+        assert_eq!(bare_log.events, log.events, "same events with and without keyframes");
         assert_eq!(bare.end, rec.end);
         bare_secs = bare_secs.min(bare.secs);
     }
 
-    // Replay dall'avvio con l'interprete, a quanti diversi da quelli del
-    // copione.
+    // Replay from boot with the interpreter, in quanta different from those of the
+    // script.
     let t0 = Instant::now();
     let mut m = booted(&image, &initrd);
-    m.start_replay(&log).expect("stato di partenza");
+    m.start_replay(&log).expect("starting state");
     let out = replay(&mut m, 3_333_333);
     let replay_secs = t0.elapsed().as_secs_f64();
-    assert_eq!(m.replay_status(), Some(&ReplayStatus::Finished), "replay con l'interprete");
-    same_log("replay con l'interprete", &rec.log, &out);
+    assert_eq!(m.replay_status(), Some(&ReplayStatus::Finished), "replay with the interpreter");
+    same_log("replay with the interpreter", &rec.log, &out);
     assert_eq!(m.steps, rec.steps);
-    assert_eq!(m.digest(), rec.end, "stato finale del replay (TLB compreso)");
+    assert_eq!(m.digest(), rec.end, "final state of the replay (TLB included)");
 
-    // Replay col JIT dal keyframe iniziale, su una macchina nuova senza
-    // kernel caricato.
+    // Replay with the JIT from the initial keyframe, on a new machine without a
+    // kernel loaded.
     let mut m = machine();
     m.set_jit(jit());
     m.replay_from(&log, 0).expect("keyframe iniziale");
@@ -377,10 +377,10 @@ fn sessione_registrata_e_riprodotta() {
     assert_eq!(m.replay_status(), Some(&ReplayStatus::Finished), "replay col JIT");
     same_log("replay col JIT", &rec.log, &out);
     let end = m.digest();
-    assert_eq!(end.diff(&rec.end, false), None, "stato finale col JIT (senza TLB)");
-    assert!(m.jit_stats().unwrap().jit_steps > 0, "il JIT ha lavorato");
+    assert_eq!(end.diff(&rec.end, false), None, "final state with the JIT (without TLB)");
+    assert!(m.jit_stats().unwrap().jit_steps > 0, "the JIT did some work");
 
-    // Salto ai punti della sessione, da macchine nuove.
+    // Jump to the points of the session, from new machines.
     for with_jit in [false, true] {
         let mut m = machine();
         if with_jit {
@@ -417,18 +417,18 @@ fn sessione_registrata_e_riprodotta() {
     let path = repo_root().join("target/guest-kernel/replay-misure.txt");
     let _ = std::fs::write(path, text);
 
-    // Un ingresso tolto dal log: il replay se ne accorge.
+    // An input removed from the log: the replay notices.
     let key = log
         .events
         .iter()
         .position(|e| e.kind == vetro_machine::record::EventKind::Input(Input::Console(b"7".to_vec())))
-        .expect("il tasto 7 battuto alla shell");
+        .expect("the key 7 typed at the shell");
     let frame = log
         .events
         .iter()
         .position(|e| matches!(e.kind, vetro_machine::record::EventKind::Input(Input::NetFrame(_))))
-        .expect("il frame dell'host");
-    for (what, i) in [("tasto", key), ("frame di rete", frame)] {
+        .expect("the host's frame");
+    for (what, i) in [("key", key), ("network frame", frame)] {
         let mut cut = log.clone();
         cut.events.remove(i);
         let mut m = machine();
@@ -436,12 +436,12 @@ fn sessione_registrata_e_riprodotta() {
         replay(&mut m, QUANTUM);
         match m.replay_status() {
             Some(ReplayStatus::Diverged(d)) => {
-                eprintln!("senza il {what}: {d}");
+                eprintln!("without the {what}: {d}");
                 if let Divergence::Event { index, .. } = d {
-                    assert!(*index >= i, "divergenza prima dell'ingresso tolto");
+                    assert!(*index >= i, "divergence before the removed input");
                 }
             }
-            other => panic!("senza il {what} il replay dovrebbe divergere: {other:?}"),
+            other => panic!("without the {what} the replay should diverge: {other:?}"),
         }
     }
 }

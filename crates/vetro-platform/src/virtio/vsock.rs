@@ -1,38 +1,38 @@
-//! virtio-vsock (virtio v1.2, §5.10): socket stream tra guest e host, per
-//! adb nel guest Android (adbd in ascolto su vsock, l'host si collega).
+//! virtio-vsock (virtio v1.2, §5.10): stream sockets between guest and host, for
+//! adb in the Android guest (adbd listening on vsock, the host connects).
 //!
-//! Code: 0 = rx (dispositivo → driver), 1 = tx (driver → dispositivo),
-//! 2 = eventi. Configurazione: `guest_cid` (u64). Feature offerta:
-//! VIRTIO_VSOCK_F_STREAM (solo stream, niente SEQPACKET).
+//! Queues: 0 = rx (device → driver), 1 = tx (driver → device),
+//! 2 = events. Configuration: `guest_cid` (u64). Feature offered:
+//! VIRTIO_VSOCK_F_STREAM (stream only, no SEQPACKET).
 //!
-//! L'host sta dentro il dispositivo: CID 2, con un'API per ascoltare
-//! ([`VirtioVsock::listen`], [`VirtioVsock::accept`]), collegarsi a una
-//! porta del guest ([`VirtioVsock::connect`]), mandare e ricevere byte e
-//! chiudere. Nessun I/O esterno e nessun tempo: ogni operazione dell'host
-//! diventa pacchetti al prossimo `service`, in un ordine fisso (prima i
-//! pacchetti di controllo nell'ordine in cui sono nati, poi i dati delle
-//! connessioni in ordine di (porta host, porta guest)); le porte locali
-//! dell'host si assegnano in sequenza da [`FIRST_HOST_PORT`]. Lo stesso
-//! ingresso dà sempre la stessa sequenza di pacchetti.
+//! The host lives inside the device: CID 2, with an API to listen
+//! ([`VirtioVsock::listen`], [`VirtioVsock::accept`]), connect to a
+//! guest port ([`VirtioVsock::connect`]), send and receive bytes and
+//! close. No external I/O and no time: every host operation
+//! becomes packets at the next `service`, in a fixed order (first the
+//! control packets in the order they were created, then the data of the
+//! connections in order of (host port, guest port)); the host's local
+//! ports are assigned in sequence from [`FIRST_HOST_PORT`]. The same
+//! input always gives the same sequence of packets.
 //!
-//! Protocollo (§5.10.6), come il trasporto dell'host di Linux
+//! Protocol (§5.10.6), like Linux's host transport
 //! (net/vmw_vsock/virtio_transport_common.c):
-//! - REQUEST verso una porta in ascolto → RESPONSE e la connessione va in
-//!   coda di `accept`; verso una porta chiusa → RST;
-//! - un pacchetto (non RST) senza connessione, o di tipo non stream → RST;
-//! - pacchetti con CID sbagliati (sorgente diverso dal guest, destinazione
-//!   diversa dall'host) si scartano, come vhost-vsock;
-//! - credito: l'host non manda più di `buf_alloc - (tx_cnt - fwd_cnt)`
-//!   byte del guest; annuncia il proprio buffer ([`HOST_BUF_ALLOC`]) e i
-//!   byte consumati in ogni pacchetto, e manda CREDIT_UPDATE quando l'app
-//!   dell'host consuma dati e il guest vede meno di [`CREDIT_THRESHOLD`]
-//!   byte liberi, o su CREDIT_REQUEST;
-//! - SHUTDOWN del guest con entrambi i bit → RST e connessione chiusa (i
-//!   dati ricevuti restano da leggere); la chiusura dell'host manda
-//!   SHUTDOWN dopo gli ultimi dati e aspetta l'RST del guest.
+//! - REQUEST to a listening port → RESPONSE and the connection goes into
+//!   the `accept` queue; to a closed port → RST;
+//! - a packet (not RST) without a connection, or of a non-stream type → RST;
+//! - packets with wrong CIDs (source other than the guest, destination
+//!   other than the host) are discarded, like vhost-vsock;
+//! - credit: the host doesn't send more than `buf_alloc - (tx_cnt - fwd_cnt)`
+//!   bytes to the guest; it announces its own buffer ([`HOST_BUF_ALLOC`]) and the
+//!   bytes consumed in every packet, and sends CREDIT_UPDATE when the host
+//!   app consumes data and the guest sees less than [`CREDIT_THRESHOLD`]
+//!   free bytes, or on CREDIT_REQUEST;
+//! - guest SHUTDOWN with both bits → RST and connection closed (the
+//!   received data remains to be read); the host's close sends
+//!   SHUTDOWN after the last data and waits for the guest's RST.
 //!
-//! Un evento TRANSPORT_RESET ([`VirtioVsock::transport_reset`]) chiude
-//! tutte le connessioni: serve dopo il ripristino di uno snapshot (M6).
+//! A TRANSPORT_RESET event ([`VirtioVsock::transport_reset`]) closes
+//! all connections: needed after restoring a snapshot (M6).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -41,18 +41,18 @@ use super::*;
 pub const F_STREAM: u64 = 1 << 0;
 pub const F_SEQPACKET: u64 = 1 << 1;
 
-/// CID dell'host (VMADDR_CID_HOST).
+/// Host CID (VMADDR_CID_HOST).
 pub const HOST_CID: u64 = 2;
-/// CID di default del guest (il primo libero, come `guest-cid=3`).
+/// Default guest CID (the first free one, like `guest-cid=3`).
 pub const DEFAULT_GUEST_CID: u64 = 3;
-/// Prima porta locale assegnata dall'host a [`VirtioVsock::connect`].
+/// First local port assigned by the host to [`VirtioVsock::connect`].
 pub const FIRST_HOST_PORT: u32 = 49152;
-/// Buffer di ricezione dell'host annunciato al guest (come il default di
-/// Linux, 256 KiB).
+/// Host receive buffer announced to the guest (like Linux's
+/// default, 256 KiB).
 pub const HOST_BUF_ALLOC: u32 = 256 * 1024;
-/// Sotto questo spazio libero visto dal guest l'host manda CREDIT_UPDATE.
+/// Below this free space seen by the guest the host sends CREDIT_UPDATE.
 pub const CREDIT_THRESHOLD: u32 = 64 * 1024;
-/// Carico massimo di un pacchetto (VIRTIO_VSOCK_MAX_PKT_BUF_SIZE).
+/// Maximum payload of a packet (VIRTIO_VSOCK_MAX_PKT_BUF_SIZE).
 pub const MAX_PKT: usize = 64 * 1024;
 
 pub const TYPE_STREAM: u16 = 1;
@@ -63,7 +63,7 @@ pub const OP_SHUTDOWN: u16 = 4;
 pub const OP_RW: u16 = 5;
 pub const OP_CREDIT_UPDATE: u16 = 6;
 pub const OP_CREDIT_REQUEST: u16 = 7;
-/// Bit di SHUTDOWN: niente più ricezione / trasmissione.
+/// SHUTDOWN bits: no more receiving / transmitting.
 pub const SHUTDOWN_RCV: u32 = 1;
 pub const SHUTDOWN_SEND: u32 = 2;
 pub const EVENT_TRANSPORT_RESET: u32 = 0;
@@ -121,25 +121,25 @@ impl Hdr {
     }
 }
 
-/// Una connessione, vista dall'host: porta locale dell'host e porta del
-/// guest.
+/// A connection, as seen by the host: host local port and guest
+/// port.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VsockConn {
     pub host_port: u32,
     pub guest_port: u32,
 }
 
-/// Stato di una connessione.
+/// State of a connection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VsockState {
-    /// L'host ha chiesto la connessione, il guest non ha ancora risposto.
+    /// The host asked for the connection, the guest hasn't answered yet.
     Connecting,
     Connected,
-    /// L'host ha chiuso: SHUTDOWN mandato (o in attesa dei dati), si
-    /// aspetta l'RST del guest.
+    /// The host has closed: SHUTDOWN sent (or waiting for the data), waiting
+    /// for the guest's RST.
     Closing,
-    /// Chiusa: rifiutata dal guest, RST, chiusura completata o reset del
-    /// trasporto. I dati già ricevuti restano leggibili.
+    /// Closed: refused by the guest, RST, close completed or transport
+    /// reset. Data already received remains readable.
     Closed,
 }
 
@@ -147,33 +147,33 @@ pub enum VsockState {
 pub enum VsockError {
     /// Connessione inesistente.
     NotFound,
-    /// L'host ha già chiuso il lato di trasmissione, o la connessione è
-    /// chiusa.
+    /// The host has already closed the transmit side, or the connection is
+    /// closed.
     Closed,
-    /// La porta dell'host è già in ascolto o in uso.
+    /// The host port is already listening or in use.
     PortInUse,
 }
 
 #[derive(Debug)]
 struct Conn {
     state: VsockState,
-    /// Credito del guest (dall'ultimo pacchetto ricevuto).
+    /// Guest credit (from the last packet received).
     peer_buf_alloc: u32,
     peer_fwd_cnt: u32,
-    /// Byte mandati al guest.
+    /// Bytes sent to the guest.
     tx_cnt: u32,
-    /// Byte ricevuti dal guest e consumati dall'app dell'host.
+    /// Bytes received from the guest and consumed by the host app.
     fwd_cnt: u32,
-    /// `fwd_cnt` annunciato nell'ultimo pacchetto mandato.
+    /// `fwd_cnt` announced in the last packet sent.
     last_fwd_sent: u32,
     rx_cnt: u32,
     tx_buf: VecDeque<u8>,
     rx_buf: VecDeque<u8>,
-    /// Il guest non manderà più dati (SHUTDOWN con SEND).
+    /// The guest will send no more data (SHUTDOWN with SEND).
     peer_eof: bool,
-    /// Bit di SHUTDOWN da mandare quando `tx_buf` è vuoto (0 = nessuno).
+    /// SHUTDOWN bits to send when `tx_buf` is empty (0 = none).
     shutdown_pending: u32,
-    /// L'host ha chiuso il suo lato di trasmissione.
+    /// The host has closed its transmit side.
     send_closed: bool,
     credit_update: bool,
 }
@@ -197,7 +197,7 @@ impl Conn {
         }
     }
 
-    /// Byte che il guest può ancora ricevere.
+    /// Bytes the guest can still receive.
     fn peer_credit(&self) -> u32 {
         self.peer_buf_alloc.saturating_sub(self.tx_cnt.wrapping_sub(self.peer_fwd_cnt))
     }
@@ -207,20 +207,20 @@ pub struct VirtioVsock {
     guest_cid: u64,
     listening: BTreeSet<u32>,
     conns: BTreeMap<VsockConn, Conn>,
-    /// Connessioni aperte dal guest, per porta in ascolto, non ancora
-    /// accettate dall'host.
+    /// Connections opened by the guest, per listening port, not yet
+    /// accepted by the host.
     backlog: BTreeMap<u32, VecDeque<VsockConn>>,
-    /// Pacchetti di controllo (senza dati) per il guest, in ordine.
+    /// Control packets (without data) for the guest, in order.
     control: VecDeque<Hdr>,
     next_port: u32,
     reset_event: bool,
-    /// Pacchetti del guest scartati (CID sbagliati, lunghezze invalide).
+    /// Guest packets discarded (wrong CIDs, invalid lengths).
     dropped: u64,
     queue_sizes: [u16; 3],
 }
 
 impl VirtioVsock {
-    /// Code da 128 come vhost-vsock.
+    /// 128-entry queues like vhost-vsock.
     pub fn new(guest_cid: u64) -> Self {
         Self {
             guest_cid,
@@ -239,13 +239,13 @@ impl VirtioVsock {
         self.guest_cid
     }
 
-    /// Pacchetti del guest scartati.
+    /// Guest packets discarded.
     pub fn dropped(&self) -> u64 {
         self.dropped
     }
 
-    /// L'host ascolta sulla porta `port`: le REQUEST del guest verso di
-    /// essa vengono accettate.
+    /// The host listens on port `port`: the guest's REQUESTs to
+    /// it are accepted.
     pub fn listen(&mut self, port: u32) -> Result<(), VsockError> {
         if !self.listening.insert(port) {
             return Err(VsockError::PortInUse);
@@ -253,8 +253,8 @@ impl VirtioVsock {
         Ok(())
     }
 
-    /// Smette di ascoltare; le connessioni in attesa di `accept` si
-    /// chiudono con RST.
+    /// Stops listening; the connections waiting for `accept` are
+    /// closed with RST.
     pub fn unlisten(&mut self, port: u32) {
         self.listening.remove(&port);
         for c in self.backlog.remove(&port).unwrap_or_default() {
@@ -262,7 +262,7 @@ impl VirtioVsock {
         }
     }
 
-    /// Prossima connessione del guest verso la porta `port`, se c'è.
+    /// Next guest connection to port `port`, if any.
     pub fn accept(&mut self, port: u32) -> Option<VsockConn> {
         self.backlog.get_mut(&port)?.pop_front()
     }
@@ -271,9 +271,9 @@ impl VirtioVsock {
         !self.listening.contains(&p) && !self.conns.keys().any(|c| c.host_port == p)
     }
 
-    /// Chiede una connessione alla porta `guest_port` del guest, da una
-    /// porta locale nuova. Parte al prossimo `service`; lo stato dice se il
-    /// guest l'ha accettata. I dati mandati prima partono dopo la RESPONSE.
+    /// Asks for a connection to the guest's port `guest_port`, from a
+    /// new local port. It leaves at the next `service`; the state says whether the
+    /// guest accepted it. Data sent before leaves after the RESPONSE.
     pub fn connect(&mut self, guest_port: u32) -> VsockConn {
         let mut p = self.next_port;
         while !self.host_port_free(p) {
@@ -291,12 +291,12 @@ impl VirtioVsock {
         self.conns.get(&c).map(|k| k.state)
     }
 
-    /// Connessioni note (anche chiuse, finché non si chiama `release`).
+    /// Known connections (closed ones too, until `release` is called).
     pub fn connections(&self) -> Vec<VsockConn> {
         self.conns.keys().copied().collect()
     }
 
-    /// Accoda `data` per il guest; parte quando il guest ha credito.
+    /// Queues `data` for the guest; it leaves when the guest has credit.
     pub fn send(&mut self, c: VsockConn, data: &[u8]) -> Result<(), VsockError> {
         let k = self.conns.get_mut(&c).ok_or(VsockError::NotFound)?;
         if k.send_closed || matches!(k.state, VsockState::Closing | VsockState::Closed) {
@@ -306,18 +306,18 @@ impl VirtioVsock {
         Ok(())
     }
 
-    /// Byte dell'host non ancora mandati al guest.
+    /// Host bytes not yet sent to the guest.
     pub fn unsent(&self, c: VsockConn) -> usize {
         self.conns.get(&c).map_or(0, |k| k.tx_buf.len())
     }
 
-    /// Byte ricevuti dal guest e non ancora letti.
+    /// Bytes received from the guest and not read yet.
     pub fn available(&self, c: VsockConn) -> usize {
         self.conns.get(&c).map_or(0, |k| k.rx_buf.len())
     }
 
-    /// Legge fino a `max` byte ricevuti dal guest. Libera credito: se il
-    /// guest ne vede poco, parte un CREDIT_UPDATE.
+    /// Reads up to `max` bytes received from the guest. Frees credit: if the
+    /// guest sees little of it, a CREDIT_UPDATE leaves.
     pub fn recv(&mut self, c: VsockConn, max: usize) -> Vec<u8> {
         let Some(k) = self.conns.get_mut(&c) else { return Vec::new() };
         let n = max.min(k.rx_buf.len());
@@ -330,18 +330,18 @@ impl VirtioVsock {
         out
     }
 
-    /// Il guest ha chiuso il suo lato di trasmissione (o la connessione) e
-    /// non ci sono più dati da leggere.
+    /// The guest has closed its transmit side (or the connection) and
+    /// there is no more data to read.
     pub fn eof(&self, c: VsockConn) -> bool {
         self.conns
             .get(&c)
             .is_none_or(|k| k.rx_buf.is_empty() && (k.peer_eof || k.state == VsockState::Closed))
     }
 
-    /// Chiude il lato di trasmissione dell'host (`shutdown(SHUT_WR)`): dopo
-    /// gli ultimi dati parte SHUTDOWN con SEND, il guest legge la fine del
-    /// flusso e può ancora mandare dati.
-    /// Si può chiamare anche prima che il guest accetti la connessione.
+    /// Closes the host's transmit side (`shutdown(SHUT_WR)`): after
+    /// the last data SHUTDOWN with SEND leaves, the guest reads the end of the
+    /// stream and can still send data.
+    /// It can be called even before the guest accepts the connection.
     pub fn shutdown_send(&mut self, c: VsockConn) {
         if let Some(k) = self.conns.get_mut(&c)
             && matches!(k.state, VsockState::Connecting | VsockState::Connected)
@@ -352,9 +352,9 @@ impl VirtioVsock {
         }
     }
 
-    /// Chiusura ordinata dall'host: SHUTDOWN (ricezione e trasmissione)
-    /// dopo gli ultimi dati, poi si aspetta l'RST del guest. Su una
-    /// connessione non ancora accettata, la chiusura parte dopo la RESPONSE.
+    /// Orderly close from the host: SHUTDOWN (receive and transmit)
+    /// after the last data, then waits for the guest's RST. On a
+    /// connection not yet accepted, the close leaves after the RESPONSE.
     pub fn close(&mut self, c: VsockConn) {
         if let Some(k) = self.conns.get_mut(&c)
             && matches!(k.state, VsockState::Connecting | VsockState::Connected)
@@ -367,7 +367,7 @@ impl VirtioVsock {
         }
     }
 
-    /// Chiusura immediata con RST.
+    /// Immediate close with RST.
     pub fn reset(&mut self, c: VsockConn) {
         if let Some(k) = self.conns.get_mut(&c)
             && k.state != VsockState::Closed
@@ -379,7 +379,7 @@ impl VirtioVsock {
         }
     }
 
-    /// Dimentica una connessione chiusa (o la chiude con RST).
+    /// Forgets a closed connection (or closes it with RST).
     pub fn release(&mut self, c: VsockConn) {
         self.reset(c);
         self.conns.remove(&c);
@@ -388,8 +388,8 @@ impl VirtioVsock {
         }
     }
 
-    /// Manda al guest VIRTIO_VSOCK_EVENT_TRANSPORT_RESET e chiude ogni
-    /// connessione (il guest le considera perse, senza RST).
+    /// Sends VIRTIO_VSOCK_EVENT_TRANSPORT_RESET to the guest and closes every
+    /// connection (the guest considers them lost, without RST).
     pub fn transport_reset(&mut self) {
         self.reset_event = true;
         self.drop_all();
@@ -404,7 +404,7 @@ impl VirtioVsock {
         self.control.clear();
     }
 
-    /// Intestazione di un pacchetto dell'host per `c`, con il credito.
+    /// Header of a host packet for `c`, with the credit.
     fn hdr(&mut self, c: VsockConn, op: u16, len: u32) -> Hdr {
         let fwd_cnt = self.conns.get(&c).map_or(0, |k| k.fwd_cnt);
         Hdr {
@@ -421,7 +421,7 @@ impl VirtioVsock {
         }
     }
 
-    /// RST in risposta a un pacchetto senza connessione (porte scambiate).
+    /// RST in answer to a packet without a connection (ports swapped).
     fn rst_reply(&mut self, h: &Hdr) {
         self.control.push_back(Hdr {
             src_cid: HOST_CID,
@@ -437,7 +437,7 @@ impl VirtioVsock {
         });
     }
 
-    /// Un pacchetto dal guest.
+    /// A packet from the guest.
     fn receive(&mut self, h: Hdr, payload: Vec<u8>) {
         if h.src_cid != self.guest_cid || h.dst_cid != HOST_CID {
             self.dropped += 1;
@@ -451,8 +451,8 @@ impl VirtioVsock {
         }
         let c = VsockConn { host_port: h.dst_port, guest_port: h.src_port };
         let Some(k) = self.conns.get_mut(&c).filter(|k| k.state != VsockState::Closed) else {
-            // Senza connessione aperta: solo una REQUEST verso una porta in
-            // ascolto la crea.
+            // Without an open connection: only a REQUEST to a listening
+            // port creates it.
             if h.op == OP_REQUEST && self.listening.contains(&h.dst_port) {
                 let mut k = Conn::new(VsockState::Connected);
                 k.peer_buf_alloc = h.buf_alloc;
@@ -484,21 +484,21 @@ impl VirtioVsock {
                 if h.flags & SHUTDOWN_SEND != 0 {
                     k.peer_eof = true;
                 }
-                // Chiusura completa del guest, o risposta alla nostra: RST.
+                // Complete close from the guest, or answer to ours: RST.
                 if h.flags & (SHUTDOWN_RCV | SHUTDOWN_SEND) == SHUTDOWN_RCV | SHUTDOWN_SEND
                     || k.state == VsockState::Closing
                 {
                     self.reset(c);
                 }
             }
-            // Qualunque altra cosa (REQUEST su una connessione aperta,
-            // RESPONSE fuori posto, op sconosciuto): RST.
+            // Anything else (REQUEST on an open connection,
+            // misplaced RESPONSE, unknown op): RST.
             _ => self.reset(c),
         }
     }
 
-    /// Prossimo pacchetto con dati o chiusura per il guest, che entra in
-    /// `room` byte di carico: (intestazione, dati).
+    /// Next packet with data or close for the guest, that fits in
+    /// `room` bytes of payload: (header, data).
     fn next_data(&mut self, room: usize) -> Option<(Hdr, Vec<u8>)> {
         let keys: Vec<VsockConn> = self.conns.keys().copied().collect();
         for c in keys {
@@ -546,10 +546,10 @@ impl VirtioVsock {
 
     fn receive_queue(&mut self, q: &mut Virtqueue, ram: &mut dyn GuestRam) -> Result<(), QueueError> {
         while q.available(ram)? > 0 {
-            let c = q.pop(ram)?.expect("contata da available");
+            let c = q.pop(ram)?.expect("counted from available");
             let room = c.writable_len();
             if room < HDR_LEN as u64 {
-                return Err(QueueError::Malformed("buffer vsock più corto dell'intestazione"));
+                return Err(QueueError::Malformed("vsock buffer shorter than the header"));
             }
             let room = (room - HDR_LEN as u64).min(MAX_PKT as u64) as usize;
             let pkt = match self.control.pop_front() {
@@ -614,10 +614,10 @@ impl VirtioDevice for VirtioVsock {
         self.receive_queue(&mut queues[RXQ], ram)
     }
 
-    /// Porte in ascolto, connessioni (stato, crediti, contatori, dati in
-    /// transito nei due versi), backlog, pacchetti di controllo in attesa,
-    /// prossima porta dell'host, evento di reset, contatore. Il CID è
-    /// configurazione.
+    /// Listening ports, connections (state, credits, counters, data in
+    /// transit in both directions), backlog, pending control packets,
+    /// next host port, reset event, counter. The CID is
+    /// configuration.
     fn save_state(&self, w: &mut vetro_snapshot::Writer) {
         w.u64(self.guest_cid);
         w.seq(&self.listening, |w, &p| w.u32(p));
@@ -654,7 +654,7 @@ impl VirtioDevice for VirtioVsock {
     }
 
     fn restore_state(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
-        r.expect_u64("CID del guest", self.guest_cid)?;
+        r.expect_u64("guest CID", self.guest_cid)?;
         let conn =
             |r: &mut vetro_snapshot::Reader<'_>| Ok(VsockConn { host_port: r.u32()?, guest_port: r.u32()? });
         self.listening = r.seq(4, |r| r.u32())?.into_iter().collect();
@@ -667,7 +667,7 @@ impl VirtioDevice for VirtioVsock {
                 1 => VsockState::Connected,
                 2 => VsockState::Closing,
                 3 => VsockState::Closed,
-                v => return Err(vetro_snapshot::Error::invalid(format!("stato vsock {v}"))),
+                v => return Err(vetro_snapshot::Error::invalid(format!("vsock state {v}"))),
             };
             let mut c = Conn::new(state);
             for v in [

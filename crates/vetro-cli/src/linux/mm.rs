@@ -1,4 +1,4 @@
-//! Memoria di un processo: brk, mmap, munmap, mprotect, mremap, madvise.
+//! Memory of a process: brk, mmap, munmap, mprotect, mremap, madvise.
 
 use super::abi::*;
 use std::cell::RefCell;
@@ -8,12 +8,12 @@ use vetro_cpu::{Perm, UserMemory};
 pub const PAGE: u64 = 0x1000;
 pub const STACK_TOP: u64 = 0x0000_7fff_ffff_0000;
 pub const STACK_SIZE: u64 = 8 << 20;
-/// Le mmap senza indirizzo vanno dall'alto verso il basso sotto questa soglia.
+/// mmaps without an address go top-down below this threshold.
 pub const MMAP_TOP: u64 = 0x0000_7fff_0000_0000;
 pub const MMAP_BOTTOM: u64 = 0x0000_0010_0000_0000;
 
-/// Tetti di memoria: oltre, ENOMEM come su una macchina con memoria finita
-/// (e l'emulatore non tenta allocazioni che lo farebbero abortire).
+/// Memory caps: beyond them, ENOMEM as on a machine with finite memory
+/// (and the emulator does not attempt allocations that would make it abort).
 pub const MAX_MAPPING: u64 = 8 << 30;
 pub const MAX_TOTAL: u64 = 16 << 30;
 
@@ -24,7 +24,7 @@ pub const MAP_ANONYMOUS: u64 = 0x20;
 pub const MAP_GROWSDOWN: u64 = 0x100;
 pub const MAP_POPULATE: u64 = 0x8000;
 
-/// Memoria di una MAP_SHARED: buffer, offset e se può diventare scrivibile.
+/// Memory of a MAP_SHARED: buffer, offset and whether it can become writable.
 pub type SharedMap = (Rc<RefCell<Vec<u8>>>, usize, bool);
 pub const MAP_FIXED_NOREPLACE: u64 = 0x100000;
 
@@ -35,7 +35,7 @@ pub struct Mm {
     pub brk: u64,
 }
 
-/// Come [`page_up`], ma `None` se l'arrotondamento trabocca.
+/// Like [`page_up`], but `None` if the rounding overflows.
 fn checked_page_up(v: u64) -> Option<u64> {
     v.checked_add(PAGE - 1).map(|x| x & !(PAGE - 1))
 }
@@ -49,7 +49,7 @@ impl Mm {
         Mm { mem, brk_start: brk, brk }
     }
 
-    /// Vero se si possono mappare altri `extra` byte.
+    /// True if another `extra` bytes can be mapped.
     fn fits(&self, extra: u64) -> bool {
         let total: u64 = self.mem.ranges().map(|(a, b, _)| b - a).sum();
         extra <= MAX_MAPPING && total.saturating_add(extra) <= MAX_TOTAL
@@ -74,8 +74,8 @@ impl Mm {
         addr as i64
     }
 
-    /// mmap anonima o con contenuto già letto (`data`, per le mappature di
-    /// file private), oppure condivisa su `shared` (buffer e offset).
+    /// Anonymous mmap or with content already read (`data`, for private file
+    /// mappings), or shared on `shared` (buffer and offset).
     pub fn mmap(
         &mut self,
         addr: u64,
@@ -95,7 +95,7 @@ impl Mm {
         if size == 0 || !self.fits(size) {
             return Err(ENOMEM);
         }
-        // TASK_SIZE con VA a 48 bit: oltre non si mappa.
+        // TASK_SIZE with 48-bit VA: nothing is mapped beyond it.
         const TASK_SIZE: u64 = 1 << 48;
         if flags & (MAP_FIXED | MAP_FIXED_NOREPLACE) != 0
             && addr.checked_add(size).is_none_or(|e| e > TASK_SIZE)
@@ -178,7 +178,7 @@ impl Mm {
             return Err(ENOMEM);
         }
         if advice == MADV_DONTNEED {
-            // Le pagine anonime private tornano a zero.
+            // Private anonymous pages go back to zero.
             let zeros = vec![0u8; (end - addr) as usize];
             self.mem.poke(addr, &zeros).map_err(|_| ENOMEM)?;
         }
@@ -189,10 +189,10 @@ impl Mm {
         const MREMAP_MAYMOVE: u64 = 1;
         const MREMAP_FIXED: u64 = 2;
         const MREMAP_DONTUNMAP: u64 = 4;
-        /// TASK_SIZE con VA a 48 bit.
+        /// TASK_SIZE with 48-bit VA.
         const TASK_SIZE: u64 = 1 << 48;
         let dontunmap = flags & MREMAP_DONTUNMAP != 0;
-        // Controlli di sys_mremap, nello stesso ordine.
+        // The checks of sys_mremap, in the same order.
         if flags & !(MREMAP_MAYMOVE | MREMAP_FIXED | MREMAP_DONTUNMAP) != 0
             || old & (PAGE - 1) != 0
             || flags & (MREMAP_FIXED | MREMAP_DONTUNMAP) != 0 && flags & MREMAP_MAYMOVE == 0
@@ -240,11 +240,11 @@ impl Mm {
         } else {
             self.mem.find_free(new_size, MMAP_BOTTOM, MMAP_TOP).ok_or(ENOMEM)?
         };
-        // Le pagine si spostano con la loro memoria (anche condivisa).
+        // The pages move with their memory (shared too).
         let keep = old_size.min(new_size);
         if dontunmap {
-            // Il vecchio intervallo resta mappato: vuoto se privato, sulla
-            // stessa memoria se condiviso (Linux >= 5.13).
+            // The old range stays mapped: empty if private, on the
+            // same memory if shared (Linux >= 5.13).
             self.mem.remap_dontunmap(old, keep, dst);
             return Ok(dst as i64);
         }

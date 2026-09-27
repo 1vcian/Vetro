@@ -1,21 +1,21 @@
-//! Snapshot della macchina intera (M6, ADR 0015, `docs/specs/snapshot.md`).
+//! Snapshot of the whole machine (M6, ADR 0015, `docs/specs/snapshot.md`).
 //!
-//! Il file è l'intestazione di `vetro_snapshot` (magia, versione del
-//! formato, hash della configurazione, somma di controllo) seguita da
-//! queste sezioni, sempre in quest'ordine:
+//! The file is the `vetro_snapshot` header (magic, format version,
+//! configuration hash, checksum) followed by these sections, always in
+//! this order:
 //!
-//! | Sezione | Contenuto |
+//! | Section | Content |
 //! |---|---|
-//! | `MACH` | orologio (istruzioni), scadenze in cache, WFI in sospeso, CNTPCT e stato delle linee della scheda |
-//! | `CPU ` | registri generali, SIMD/FP, PSTATE, registri di sistema, monitor esclusivo |
-//! | `MMU ` | registri di traduzione e voci del TLB |
-//! | `PLAT` | timer, GIC, PL011, PL031, PL061 e i 32 slot virtio (trasporto, code, dispositivo, backend) |
-//! | `RAM ` | la RAM a pagine, pagine a zero omesse, le altre compresse |
+//! | `MACH` | clock (instructions), cached deadlines, pending WFI, CNTPCT and board line state |
+//! | `CPU ` | general registers, SIMD/FP, PSTATE, system registers, exclusive monitor |
+//! | `MMU ` | translation registers and TLB entries |
+//! | `PLAT` | timer, GIC, PL011, PL031, PL061 and the 32 virtio slots (transport, queues, device, backend) |
+//! | `RAM ` | the RAM in pages, zero pages omitted, the others compressed |
 //!
-//! Non entrano: il JIT (i blocchi tradotti si rifanno, il risultato non
-//! cambia), le cache che non cambiano nulla di osservabile (traduzioni
-//! recenti della MMU, livello della linea IRQ), i backend esterni (display,
-//! dischi da file o via HTTP), che l'host ricollega prima del ripristino.
+//! Left out: the JIT (translated blocks are rebuilt, the result does not
+//! change), caches that change nothing observable (recent MMU
+//! translations, IRQ line level), external backends (display, disks from
+//! a file or over HTTP), which the host reconnects before the restore.
 
 use vetro_jit::Next;
 use vetro_platform::map;
@@ -23,7 +23,7 @@ use vetro_snapshot::{Error, Reader, Snapshot, Writer};
 
 use super::{Devices, Machine, MachineConfig, Pointer};
 
-/// Il contenuto della configurazione che l'hash identifica.
+/// The configuration content that the hash identifies.
 fn config_bytes(m: &Machine) -> Vec<u8> {
     let mut w = Writer::new();
     w.str("vetro-machine");
@@ -32,8 +32,8 @@ fn config_bytes(m: &Machine) -> Vec<u8> {
     w.u64(now_secs);
     w.u64(seed);
     let Devices { gpu, keyboard, pointer, net, vsock_cid } = &m.devices;
-    // Le configurazioni annidate (monitor dell'EDID, rete, sinkhole) nella
-    // loro forma `Debug`: stabile (tabelle ordinate) e completa.
+    // The nested configurations (EDID monitor, network, sinkhole) in their
+    // `Debug` form: stable (sorted tables) and complete.
     w.opt(gpu.as_ref(), |w, g| w.str(&format!("{g:?}")));
     w.bool(*keyboard);
     w.opt(*pointer, |w, p| {
@@ -44,12 +44,12 @@ fn config_bytes(m: &Machine) -> Vec<u8> {
     });
     w.opt(net.as_ref(), |w, n| w.str(&format!("{n:?}")));
     w.opt(*vsock_cid, Writer::u64);
-    // Ogni slot virtio: tipo, feature offerte, code. Copre anche i
-    // dispositivi montati dall'host dopo la costruzione (dischi); il
-    // contenuto dei dischi lo controlla il dispositivo stesso.
+    // Every virtio slot: type, offered features, queues. Also covers the
+    // devices attached by the host after construction (disks); the disk
+    // content is checked by the device itself.
     let b = m.board.borrow();
     for k in 0..map::VIRTIO_SLOTS as u32 {
-        let t = b.virt.virtio(k).expect("32 slot");
+        let t = b.virt.virtio(k).expect("32 slots");
         match t.device() {
             None => w.u32(0),
             Some(d) => {
@@ -149,16 +149,16 @@ impl Hash64 {
 }
 
 impl Machine {
-    /// Hash della configurazione: RAM, ora iniziale, seme, dispositivi e
-    /// occupazione degli slot virtio. Uno snapshot si applica solo a una
-    /// macchina con lo stesso hash.
+    /// Configuration hash: RAM, initial time, seed, devices and virtio slot
+    /// occupancy. A snapshot applies only to a machine with the same
+    /// hash.
     pub fn config_hash(&self) -> u64 {
         vetro_snapshot::hash64(&config_bytes(self))
     }
 
-    /// Salva lo stato completo della macchina (vedi il modulo). Non cambia
-    /// nulla: si può chiamare fra due [`Machine::run`] qualsiasi, e due
-    /// salvataggi nello stesso punto danno gli stessi byte.
+    /// Saves the complete machine state (see the module). Changes
+    /// nothing: it can be called between any two [`Machine::run`], and two
+    /// saves at the same point give the same bytes.
     pub fn save(&self) -> Vec<u8> {
         self.save_with(vetro_snapshot::Level::Fast)
     }
@@ -264,16 +264,16 @@ impl Machine {
         w.section(b"PLAT", |w| w.put(&b.virt));
     }
 
-    /// Porta la macchina nello stato di `bytes` (da [`Machine::save`]).
+    /// Brings the machine to the state in `bytes` (from [`Machine::save`]).
     ///
-    /// La macchina dev'essere configurata come quella salvata (stessa
-    /// [`MachineConfig`], stessi [`Devices`], stessi dispositivi montati
-    /// dopo, con i loro backend esterni già collegati): altrimenti
-    /// [`Error::Config`]. Uno snapshot di un'altra versione del formato dà
-    /// [`Error::Version`]. Il JIT, se attivo, resta: i blocchi tradotti
-    /// dalla RAM di prima si scartano da soli. Dopo un errore che non sia
-    /// d'intestazione (magia, versione, configurazione, somma di controllo)
-    /// lo stato della macchina è indefinito: va scartata.
+    /// The machine must be configured like the saved one (same
+    /// [`MachineConfig`], same [`Devices`], same devices attached
+    /// afterwards, with their external backends already connected): otherwise
+    /// [`Error::Config`]. A snapshot of another format version gives
+    /// [`Error::Version`]. The JIT, if active, stays: the blocks translated
+    /// from the previous RAM are discarded on their own. After an error that
+    /// is not a header error (magic, version, configuration, checksum)
+    /// the machine state is undefined: it must be discarded.
     pub fn load_state(&mut self, bytes: &[u8]) -> Result<(), Error> {
         let (header, payload) = vetro_snapshot::decode_file(bytes)?;
         let expected = self.config_hash();
@@ -381,10 +381,10 @@ impl Machine {
         Ok(())
     }
 
-    /// Una macchina nuova nello stato di `bytes`: come
-    /// [`Machine::with_devices`] seguito da [`Machine::load_state`]. Per una
-    /// macchina con dispositivi montati dall'host (dischi) si costruisce la
-    /// macchina, si montano, poi si chiama `load_state`.
+    /// A new machine in the state of `bytes`: like
+    /// [`Machine::with_devices`] followed by [`Machine::load_state`]. For a
+    /// machine with devices attached by the host (disks), build the
+    /// machine, attach them, then call `load_state`.
     pub fn restore(cfg: &MachineConfig, devices: &Devices, bytes: &[u8]) -> Result<Machine, Error> {
         let mut m = Machine::with_devices(cfg, devices);
         m.load_state(bytes)?;
@@ -401,12 +401,12 @@ pub(super) mod tests {
 
     pub(in crate::machine) const R: u64 = map::RAM_BASE;
 
-    /// Sonda bare-metal (codifiche da `tools/a64asm.sh`): vettori, GICv3,
-    /// timer virtuale ogni 2000 tick con un interrupt che scrive `.` sulla
-    /// UART e accumula in memoria una somma dei punti interrotti (ELR, x2:
-    /// ogni istruzione in più o in meno la cambia per sempre), un ciclo che
-    /// incrementa una parola con LDXR/STXR (il monitor esclusivo è spesso armato) e ogni 4096 giri una
-    /// SVC (che scrive `s`) e una WFI (che salta alla scadenza del timer).
+    /// Bare-metal probe (encodings from `tools/a64asm.sh`): vectors, GICv3,
+    /// virtual timer every 2000 ticks with an interrupt that writes `.` to the
+    /// UART and accumulates in memory a sum of the interrupted points (ELR, x2:
+    /// one instruction more or less changes it forever), a loop that
+    /// increments a word with LDXR/STXR (the exclusive monitor is often armed) and every 4096
+    /// iterations an SVC (which writes `s`) and a WFI (which jumps to the timer deadline).
     pub(in crate::machine) const MAIN: [u32; 35] = [
         0xd2a80000, // mov x0, #0x40000000
         0x91200001, // add x1, x0, #0x800
@@ -444,14 +444,14 @@ pub(super) mod tests {
         0xd503207f, // wfi
         0x17fffff7, // b loop
     ];
-    /// Eccezione sincrona a EL1 con SP_EL1 (VBAR + 0x200): la SVC.
+    /// Synchronous exception at EL1 with SP_EL1 (VBAR + 0x200): the SVC.
     pub(in crate::machine) const SVC: [u32; 4] = [
         0x52800e6d, // mov w13, #0x73
         0xb900012d, // str w13, [x9]
         0x91000694, // add x20, x20, #0x1
         0xd69f03e0, // eret
     ];
-    /// IRQ a EL1 con SP_EL1 (VBAR + 0x280): il timer.
+    /// IRQ at EL1 with SP_EL1 (VBAR + 0x280): the timer.
     pub(in crate::machine) const IRQ: [u32; 12] = [
         0xd538cc0e, // mrs x14, ICC_IAR1_EL1
         0xd280fa0f, // mov x15, #0x7d0
@@ -486,8 +486,8 @@ pub(super) mod tests {
         m
     }
 
-    /// Esegue fino ad almeno `end` istruzioni a quanti di `q`, accumulando
-    /// la console.
+    /// Runs up to at least `end` instructions in quanta of `q`, accumulating
+    /// the console.
     fn run_to(m: &mut Machine, end: u64, q: u64, out: &mut Vec<u8>) {
         while m.steps < end {
             let s = m.run(q.min(end - m.steps));
@@ -496,7 +496,7 @@ pub(super) mod tests {
         }
     }
 
-    /// Avanza un'istruzione alla volta finché `pred` vale (al più `limit`).
+    /// Advances one instruction at a time until `pred` holds (at most `limit`).
     fn step_until(m: &mut Machine, out: &mut Vec<u8>, limit: u64, pred: impl Fn(&Machine) -> bool) {
         for _ in 0..limit {
             if pred(m) {
@@ -505,12 +505,12 @@ pub(super) mod tests {
             m.run(1);
             out.extend(m.console_output());
         }
-        panic!("condizione non raggiunta");
+        panic!("condition not reached");
     }
 
     const END: u64 = 300_000;
 
-    /// L'esecuzione senza interruzioni: console e stato finale.
+    /// The uninterrupted execution: console and final state.
     fn reference() -> (Vec<u8>, Vec<u8>, Machine) {
         let mut m = probe();
         let mut out = Vec::new();
@@ -519,34 +519,34 @@ pub(super) mod tests {
         (out, state, m)
     }
 
-    /// Salva in `m` (già avanzata, con la console `out`), ripristina in una
-    /// macchina nuova e continua fino a `END`: stessa console, stesse
-    /// istruzioni, stessa RAM e stesso stato di tutto (snapshot finale
-    /// identico) dell'esecuzione senza interruzioni.
+    /// Saves in `m` (already advanced, with console `out`), restores into a
+    /// new machine and continues up to `END`: same console, same
+    /// instructions, same RAM and same state of everything (identical final
+    /// snapshot) as the uninterrupted execution.
     fn check_cut(m: &Machine, mut out: Vec<u8>, reference: &(Vec<u8>, Vec<u8>, Machine), what: &str) {
         let snap = m.save();
-        assert_eq!(snap, m.save(), "{what}: due salvataggi nello stesso punto danno byte diversi");
+        assert_eq!(snap, m.save(), "{what}: two saves at the same point give different bytes");
         let mut n = Machine::restore(&cfg(), &Devices::none(), &snap).unwrap();
-        assert_eq!(n.save(), snap, "{what}: il ripristino non riproduce lo snapshot");
+        assert_eq!(n.save(), snap, "{what}: the restore does not reproduce the snapshot");
         out.extend(n.console_output());
         run_to(&mut n, END, 3_001, &mut out);
         let (ref_out, ref_state, ref_m) = reference;
-        assert_eq!(n.steps, ref_m.steps, "{what}: istruzioni");
+        assert_eq!(n.steps, ref_m.steps, "{what}: instructions");
         assert_eq!(n.cpu, ref_m.cpu, "{what}: CPU");
         assert!(n.board.borrow().ram.same_bytes(&ref_m.board.borrow().ram), "{what}: RAM");
         assert!(out == *ref_out, "{what}: console");
-        assert!(n.save() == *ref_state, "{what}: stato finale");
+        assert!(n.save() == *ref_state, "{what}: final state");
     }
 
-    /// Il criterio di M6 sulla sonda bare-metal: interruzioni in molti punti
-    /// (anche a metà di un gestore d'interrupt, con il monitor esclusivo
-    /// armato, con un interrupt attivo e IRQ mascherati, subito dopo una
-    /// SVC o una WFI) danno la stessa esecuzione.
+    /// The M6 criterion on the bare-metal probe: interruptions at many points
+    /// (even in the middle of an interrupt handler, with the exclusive monitor
+    /// armed, with an active interrupt and IRQs masked, right after an
+    /// SVC or a WFI) give the same execution.
     #[test]
     fn salva_e_ripristina_in_molti_punti() {
         let r = reference();
         let out = String::from_utf8_lossy(&r.0).into_owned();
-        assert!(out.matches('.').count() > 50 && out.contains('s'), "la sonda gira: {out:?}");
+        assert!(out.matches('.').count() > 50 && out.contains('s'), "the probe runs: {out:?}");
 
         let mut k = 0x9e37_79b9_7f4a_7c15u64;
         let mut cuts = vec![0, 1, 2, 25, 26, 27, 100];
@@ -559,19 +559,19 @@ pub(super) mod tests {
             let mut m = probe();
             let mut out = Vec::new();
             run_to(&mut m, c, 5_000, &mut out);
-            check_cut(&m, out, &r, &format!("taglio a {c}"));
+            check_cut(&m, out, &r, &format!("cut at {c}"));
         }
 
-        // Casi limite trovati un'istruzione alla volta.
+        // Edge cases found one instruction at a time.
         type Pred = fn(&Machine) -> bool;
         let cases: [(&str, u64, Pred); 5] = [
-            ("monitor esclusivo armato", 10_000, |m| m.cpu.monitor.is_some()),
-            ("dentro il gestore d'interrupt", 20_000, |m| (IRQ_AT..IRQ_AT + 40).contains(&m.cpu.pc)),
-            ("interrupt attivo con IRQ mascherati", 30_000, |m| {
+            ("exclusive monitor armed", 10_000, |m| m.cpu.monitor.is_some()),
+            ("inside the interrupt handler", 20_000, |m| (IRQ_AT..IRQ_AT + 40).contains(&m.cpu.pc)),
+            ("active interrupt with IRQs masked", 30_000, |m| {
                 m.cpu.pc == IRQ_AT + 8 && m.board.borrow().virt.gic().irq_state(27).is_some_and(|s| s.2)
             }),
-            ("subito dopo la SVC", 40_000, |m| m.cpu.pc == R + 0xa00),
-            ("dopo una WFI", 50_000, |m| m.cpu.pc == R + 4 * 34),
+            ("right after the SVC", 40_000, |m| m.cpu.pc == R + 0xa00),
+            ("after a WFI", 50_000, |m| m.cpu.pc == R + 4 * 34),
         ];
         for (what, from, pred) in cases {
             let mut m = probe();
@@ -617,7 +617,7 @@ pub(super) mod tests {
                 pieces += 1;
                 body.extend_from_slice(c)
             });
-            assert!(pieces > 3, "{pieces} pezzi");
+            assert!(pieces > 3, "{pieces} pieces");
             assert_eq!(head.as_slice(), &file[..vetro_snapshot::HEADER_LEN]);
             assert!(body == file[vetro_snapshot::HEADER_LEN..], "chunked content differs");
         }
@@ -771,9 +771,9 @@ pub(super) mod tests {
         MachineConfig { ram_size: 8 << 20, ..cfg() }
     }
 
-    /// Il ripristino in una macchina che ha già girato (stato diverso
-    /// dappertutto, anche nella RAM e nella console) dà la stessa
-    /// esecuzione.
+    /// Restoring into a machine that has already run (different state
+    /// everywhere, including RAM and console) gives the same
+    /// execution.
     #[test]
     fn ripristino_sopra_una_macchina_usata() {
         let r = reference();
@@ -791,9 +791,9 @@ pub(super) mod tests {
         assert!(used.save() == r.1);
     }
 
-    /// Uno snapshot di un'altra versione del formato, di un'altra
-    /// configurazione o rovinato si rifiuta con un errore chiaro, e la
-    /// macchina non cambia.
+    /// A snapshot of another format version, of another configuration, or
+    /// damaged is rejected with a clear error, and the machine does not
+    /// change.
     #[test]
     fn snapshot_incompatibili_rifiutati() {
         let mut m = probe();
@@ -812,15 +812,15 @@ pub(super) mod tests {
                 expected: vetro_snapshot::FORMAT_VERSION
             }
         );
-        assert!(e.to_string().contains("formato versione"), "{e}");
-        assert_eq!(fresh.save(), before, "rifiutato senza toccare la macchina");
+        assert!(e.to_string().contains("format version"), "{e}");
+        assert_eq!(fresh.save(), before, "rejected without touching the machine");
 
         let other = MachineConfig { ram_size: 2 << 20, ..cfg() };
         let e = Machine::restore(&other, &Devices::none(), &snap).err().unwrap();
         assert!(matches!(e, Error::Config { .. }), "{e:?}");
-        assert!(e.to_string().contains("configurata diversamente"), "{e}");
+        assert!(e.to_string().contains("configured differently"), "{e}");
         let e = Machine::restore(&cfg(), &Devices::default(), &snap).err().unwrap();
-        assert!(matches!(e, Error::Config { .. }), "dispositivi diversi: {e:?}");
+        assert!(matches!(e, Error::Config { .. }), "different devices: {e:?}");
 
         let mut bad = snap.clone();
         let last = bad.len() - 1;
@@ -832,10 +832,10 @@ pub(super) mod tests {
         );
     }
 
-    /// Snapshot con una richiesta di virtio-blk in sospeso (disco non
-    /// pronto, `Stop::Blocked`): la richiesta in volo, il tempo fermo e il
-    /// servizio da rifare entrano nello snapshot. Ripristinata su un disco
-    /// ricollegato, la richiesta si completa come senza interruzione.
+    /// Snapshot with a pending virtio-blk request (disk not ready,
+    /// `Stop::Blocked`): the in-flight request, the stopped time and the
+    /// service still to redo go into the snapshot. Restored on a
+    /// reconnected disk, the request completes as if uninterrupted.
     #[test]
     fn richiesta_virtio_blk_in_volo() {
         let (mut ready, _) = blk_machine(true);
@@ -847,9 +847,9 @@ pub(super) mod tests {
         let (mut n, slot2) = blk_machine(false);
         assert_eq!(slot, slot2);
         n.load_state(&snap).unwrap();
-        assert!(n.blocked(), "ripristinata ferma sulla richiesta");
+        assert!(n.blocked(), "restored stopped on the request");
         assert_eq!(n.steps, 1);
-        assert_eq!(n.run(1000), Stop::Blocked, "senza dati resta ferma");
+        assert_eq!(n.run(1000), Stop::Blocked, "without data it stays stopped");
         let b = n.board.borrow();
         assert!(b.virt.virtio(slot).unwrap().device_as::<VirtioBlk>().unwrap().has_pending());
         drop(b);

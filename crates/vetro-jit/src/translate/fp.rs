@@ -1,37 +1,37 @@
-//! Virgola mobile nelle regioni (ADR 0026).
+//! Floating point in the regions (ADR 0026).
 //!
-//! Le operazioni senza arrotondamento (FMOV, FABS, FNEG, FCSEL) sono in
-//! linea. Le altre hanno un **percorso veloce** nel runtime (`rt.fp<k>`):
-//! la regione chiama la funzione con la parola dell'istruzione, che legge i
-//! registri da `JitState`, calcola col WASM e scrive il risultato solo se
-//! è sicuramente quello dell'interprete (`vetro_cpu::simd::fp`):
+//! Operations without rounding (FMOV, FABS, FNEG, FCSEL) are
+//! inline. The others have a **fast path** in the runtime (`rt.fp<k>`):
+//! the region calls the function with the instruction word, which reads the
+//! registers from `JitState`, computes with WASM and writes the result only if
+//! it is certainly the interpreter's (`vetro_cpu::simd::fp`):
 //!
-//! - FPCR = 0 (arrotondamento al pari più vicino, niente FZ né DN): è
-//!   l'arrotondamento dell'IEEE 754 del WASM, e i denormali in ingresso
-//!   valgono per quello che sono (con FZ l'Arm li azzera e segnala IDC);
-//! - niente NaN in ingresso o in uscita (i bit dei NaN del WASM non sono
-//!   fissati, e l'Arm li propaga con regole sue), niente infiniti prodotti
-//!   da un trabocco, niente risultati minuscoli dove l'Arm segnala UFC
-//!   (moltiplicazioni, divisioni, FMA, conversioni che restringono:
-//!   risultato normale e maggiore del più piccolo normale, perché l'Arm
-//!   guarda la minuscolità prima dell'arrotondamento);
-//! - IXC: se è già a 1 in FPSR (flag cumulativo) l'inesattezza non cambia
-//!   nulla; altrimenti il percorso veloce vale solo se il risultato è
-//!   esatto, verificato in modo esatto (TwoSum per le somme; in singola
-//!   precisione prodotti, quozienti e radici si ricontrollano in doppia,
-//!   dove sono esatti); dove non si sa verificarlo serve IXC a 1.
+//! - FPCR = 0 (round to nearest even, no FZ or DN): it is
+//!   WASM's IEEE 754 rounding, and input denormals
+//!   count for what they are (with FZ Arm flushes them and signals IDC);
+//! - no NaN in input or output (the bits of WASM NaNs are not
+//!   fixed, and Arm propagates them with its own rules), no infinities produced
+//!   by an overflow, no tiny results where Arm signals UFC
+//!   (multiplications, divisions, FMA, narrowing conversions:
+//!   result normal and greater than the smallest normal, because Arm
+//!   checks tininess before rounding);
+//! - IXC: if it is already 1 in FPSR (cumulative flag) inexactness changes
+//!   nothing; otherwise the fast path applies only if the result is
+//!   exact, verified exactly (TwoSum for sums; in single
+//!   precision products, quotients and roots are rechecked in double,
+//!   where they are exact); where it cannot be verified IXC must be 1.
 //!
-//! Altrimenti la funzione chiama `env.simd` (l'interprete, [`crate::helper`]):
-//! stesso risultato, più lento. La FMA in singola precisione si calcola in
-//! doppia con l'arrotondamento "a dispari" (Boldo e Melquiond): il
-//! prodotto è esatto, e la somma arrotondata a dispari in doppia, poi al
-//! pari in singola, dà l'arrotondamento corretto della FMA.
+//! Otherwise the function calls `env.simd` (the interpreter, [`crate::helper`]):
+//! same result, slower. Single-precision FMA is computed in
+//! double with "round to odd" (Boldo and Melquiond): the
+//! product is exact, and the sum rounded to odd in double, then to
+//! even in single, gives the correctly rounded FMA.
 
 use super::*;
 use crate::wasm::{sat, v};
 use vetro_cpu::simd::FpInsn;
 
-/// Operazioni binarie in virgola mobile.
+/// Binary floating-point operations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Bin {
     Add,
@@ -44,26 +44,26 @@ pub(super) enum Bin {
     MinNm,
     /// FNMUL: -(a * b).
     Nmul,
-    /// FADDP vettoriale: somme a coppie di concat(a, b).
+    /// Vector FADDP: pairwise sums of concat(a, b).
     Addp,
-    /// FABD vettoriale: |a - b|.
+    /// Vector FABD: |a - b|.
     Abd,
 }
 
-/// Arrotondamento verso un intero.
+/// Rounding to an integer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Rnd {
     Nearest,
     Ceil,
     Floor,
     Trunc,
-    /// Al più vicino, i pari merito lontano da zero (FRINTA, FCVTAS).
+    /// To nearest, ties away from zero (FRINTA, FCVTAS).
     Away,
-    /// FRINTX: al pari più vicino, IXC se cambia.
+    /// FRINTX: to nearest even, IXC if it changes.
     NearestX,
 }
 
-/// Confronti vettoriali.
+/// Vector comparisons.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Cmp {
     Eq,
@@ -71,15 +71,15 @@ pub(super) enum Cmp {
     Gt,
 }
 
-/// Una funzione `rt.fp<k>` del runtime (`d`: doppia precisione).
+/// A runtime function `rt.fp<k>` (`d`: double precision).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum FpRt {
-    /// FADD, FSUB, FMUL, FDIV, FMAX, FMIN, FMAXNM, FMINNM, FNMUL scalari.
+    /// Scalar FADD, FSUB, FMUL, FDIV, FMAX, FMIN, FMAXNM, FMINNM, FNMUL.
     Bin {
         d: bool,
         op: Bin,
     },
-    /// FMADD, FMSUB, FNMADD, FNMSUB in singola precisione.
+    /// FMADD, FMSUB, FNMADD, FNMSUB in single precision.
     Fma {
         neg_a: bool,
         neg_n: bool,
@@ -87,48 +87,48 @@ pub(super) enum FpRt {
     Sqrt {
         d: bool,
     },
-    /// FCMP/FCMPE (anche con zero): restituisce NZCV.
+    /// FCMP/FCMPE (also with zero): returns NZCV.
     Cmp {
         d: bool,
     },
-    /// FCVT da doppia a singola e viceversa.
+    /// FCVT from double to single and vice versa.
     CvtDS,
     CvtSD,
     Frint {
         d: bool,
         r: Rnd,
     },
-    /// SCVTF/UCVTF da registro generale (`sf`: 64 bit).
+    /// SCVTF/UCVTF from a general register (`sf`: 64 bits).
     FromInt {
         d: bool,
         sf: bool,
         u: bool,
     },
-    /// FCVT[NPMZ][SU] verso un registro generale.
+    /// FCVT[NPMZ][SU] to a general register.
     ToInt {
         d: bool,
         sf: bool,
         u: bool,
         r: Rnd,
     },
-    /// FADD, FSUB, FMUL, FDIV, FMAX, FMIN, FMAXNM, FMINNM vettoriali (Q
-    /// dalla parola).
+    /// Vector FADD, FSUB, FMUL, FDIV, FMAX, FMIN, FMAXNM, FMINNM (Q
+    /// from the word).
     VBin {
         d: bool,
         op: Bin,
     },
-    /// FMLA/FMLS vettoriali in singola precisione.
+    /// Vector FMLA/FMLS in single precision.
     VFma {
         neg: bool,
     },
-    /// FMUL per elemento; FMLA/FMLS per elemento (solo singola).
+    /// By-element FMUL; by-element FMLA/FMLS (single only).
     VIdxMul {
         d: bool,
     },
     VIdxFma {
         neg: bool,
     },
-    /// FCMEQ, FCMGE, FCMGT con registro o con zero; `swap` confronta
+    /// FCMEQ, FCMGE, FCMGT with a register or with zero; `swap` compares
     /// (0, x) (FCMLE, FCMLT #0).
     VCmp {
         d: bool,
@@ -139,34 +139,34 @@ pub(super) enum FpRt {
     VSqrt {
         d: bool,
     },
-    /// FMADD e varianti in doppia precisione (FMA emulata, Boldo e
+    /// FMADD and variants in double precision (emulated FMA, Boldo and
     /// Melquiond).
     FmaD {
         neg_a: bool,
         neg_n: bool,
     },
-    /// FMLA/FMLS vettoriali e per elemento in doppia precisione.
+    /// Vector and by-element FMLA/FMLS in double precision.
     VFmaD {
         neg: bool,
         idx: bool,
     },
-    /// FCVT[NPMZA][SU] vettoriali.
+    /// Vector FCVT[NPMZA][SU].
     VToInt {
         d: bool,
         u: bool,
         r: Rnd,
     },
-    /// SCVTF/UCVTF vettoriali.
+    /// Vector SCVTF/UCVTF.
     VFromInt {
         d: bool,
         u: bool,
     },
-    /// FCVTL(2) e FCVTN(2) fra singola e doppia.
+    /// FCVTL(2) and FCVTN(2) between single and double.
     VCvtl,
     VCvtn,
 }
 
-/// Tutte le funzioni `rt.fp<k>`, nell'ordine degli indici (da `F_FP0`).
+/// All the `rt.fp<k>` functions, in index order (from `F_FP0`).
 pub(super) fn rt_ops() -> &'static [FpRt] {
     static OPS: std::sync::OnceLock<Vec<FpRt>> = std::sync::OnceLock::new();
     OPS.get_or_init(|| {
@@ -234,12 +234,12 @@ pub(super) fn rt_ops() -> &'static [FpRt] {
     })
 }
 
-/// Indice nel runtime della funzione `op`.
+/// Index in the runtime of function `op`.
 pub(super) fn rt_id(op: FpRt) -> u32 {
-    F_FP0 + rt_ops().iter().position(|o| *o == op).expect("funzione rt.fp conosciuta") as u32
+    F_FP0 + rt_ops().iter().position(|o| *o == op).expect("known rt.fp function") as u32
 }
 
-/// Nome e firma della funzione `k` di [`rt_ops`].
+/// Name and signature of function `k` of [`rt_ops`].
 pub(super) fn rt_sig(k: usize) -> (String, Vec<ValType>, Vec<ValType>) {
     use ValType::*;
     let name = format!("fp{k}");
@@ -251,11 +251,11 @@ pub(super) fn rt_sig(k: usize) -> (String, Vec<ValType>, Vec<ValType>) {
     }
 }
 
-// --- nelle regioni ----------------------------------------------------
+// --- in the regions ---------------------------------------------------
 
 impl Tx {
-    /// Indice nel modulo della funzione `rt.fp<k>` di `op` (importata dopo
-    /// quelle fisse, nell'ordine del primo uso).
+    /// Index in the module of the `rt.fp<k>` function of `op` (imported after
+    /// the fixed ones, in order of first use).
     fn rt_fp(&mut self, op_: FpRt) -> u32 {
         let id = rt_id(op_);
         let k = match self.fp_used.iter().position(|&u| u == id) {
@@ -268,8 +268,8 @@ impl Tx {
         F_FP0 + k as u32
     }
 
-    /// Istruzioni FP in linea o con un percorso veloce del runtime; falso se
-    /// le esegue `env.simd`.
+    /// FP instructions inline or with a runtime fast path; false if
+    /// `env.simd` executes them.
     pub(super) fn fp_inline(&mut self, i: FpInsn) -> bool {
         let w = self.word as i32;
         let call = |t: &mut Tx, op_: FpRt| {
@@ -279,7 +279,7 @@ impl Tx {
         };
         match i {
             FpInsn::Dp1 { ty: ty @ 0..=1, opcode: opcode @ 0..=2, rn, rd } => {
-                // FMOV, FABS, FNEG: bit, senza arrotondamento (anche sui NaN).
+                // FMOV, FABS, FNEG: bits, without rounding (even on NaNs).
                 let (mask, sign): (u64, u64) =
                     if ty == 0 { (0xffff_ffff, 0x8000_0000) } else { (u64::MAX, 1 << 63) };
                 self.f.local_get(L_STATE);
@@ -466,7 +466,7 @@ impl Tx {
                 let d = sz;
                 let op_ = match (u, opcode) {
                     (_, 0b01111) => {
-                        // FABS / FNEG vettoriali: bit.
+                        // Vector FABS / FNEG: bits.
                         self.vst_begin();
                         self.vld(rn);
                         self.f.v(match (u, d) {
@@ -506,7 +506,7 @@ impl Tx {
     }
 }
 
-// --- costruzione delle funzioni del runtime -----------------------------
+// --- building the runtime functions -----------------------------------
 
 const S_INF: u32 = 0x7f80_0000;
 const S_MIN_NORMAL: u32 = 0x0080_0000;
@@ -514,17 +514,17 @@ const D_INF: u64 = 0x7ff0_0000_0000_0000;
 const D_MIN_NORMAL: u64 = 0x0010_0000_0000_0000;
 const IXC: i32 = 0x10;
 
-/// Parametri delle funzioni: stato, parola, [x].
+/// Function parameters: state, word, [x].
 const P_STATE: u32 = 0;
 const P_WORD: u32 = 1;
 const P_X: u32 = 2;
 
-/// Generatore di una funzione `rt.fp<k>`: `simd` è l'indice di
-/// `env.simd` nel runtime.
+/// Generator of an `rt.fp<k>` function: `simd` is the index of
+/// `env.simd` in the runtime.
 struct G {
     f: Func,
     simd: u32,
-    /// Prossima variabile locale (dopo i parametri).
+    /// Next local variable (after the parameters).
     next: u32,
     locals: Vec<(u32, ValType)>,
 }
@@ -545,9 +545,9 @@ impl G {
         self.f
     }
 
-    /// Indirizzo (i32) di `JitState` più 16 × il registro nel campo di 5
-    /// bit della parola che inizia al bit `shift`: con offset `off::V` è il
-    /// registro.
+    /// Address (i32) of `JitState` plus 16 × the register in the 5-bit
+    /// field of the word starting at bit `shift`: with offset `off::V` it is the
+    /// register.
     fn vaddr(&mut self, shift: i32) {
         let f = &mut self.f;
         f.local_get(P_WORD);
@@ -557,7 +557,7 @@ impl G {
         f.i32_const(31).op(op::I32_AND).i32_const(4).op(op::I32_SHL).local_get(P_STATE).op(op::I32_ADD);
     }
 
-    /// Elemento 0 del registro (campo a `shift`) come f32/f64.
+    /// Element 0 of the register (field at `shift`) as f32/f64.
     fn load(&mut self, shift: i32, d: bool) {
         self.vaddr(shift);
         if d {
@@ -567,14 +567,14 @@ impl G {
         }
     }
 
-    /// Il registro (campo a `shift`) come v128.
+    /// The register (field at `shift`) as v128.
     fn vload(&mut self, shift: i32) {
         self.vaddr(shift);
         self.f.v128_load(off::V);
     }
 
-    /// Vd = i bit (i64, estesi a zero) nella variabile `bits`, metà alta a
-    /// zero (risultato scalare).
+    /// Vd = the bits (i64, zero-extended) in variable `bits`, high half
+    /// zeroed (scalar result).
     fn store_scalar_bits(&mut self, bits: u32) {
         self.vaddr(0);
         self.f.local_get(bits).i64_store(off::V);
@@ -582,7 +582,7 @@ impl G {
         self.f.i64_const(0).i64_store(off::V + 8);
     }
 
-    /// Vd = il v128 nella variabile `r`, metà alta a zero con Q = 0.
+    /// Vd = the v128 in variable `r`, high half zeroed with Q = 0.
     fn store_vec(&mut self, r: u32) {
         self.vaddr(0);
         self.f.local_get(r);
@@ -591,32 +591,32 @@ impl G {
         self.f.v128_store(off::V);
     }
 
-    /// Q (bit 30 della parola, i32).
+    /// Q (bit 30 of the word, i32).
     fn q(&mut self) {
         self.f.local_get(P_WORD).i32_const(30).op(op::I32_SHR_U).i32_const(1).op(op::I32_AND);
     }
 
-    /// v128 con la metà alta a uno se Q = 0, altrimenti zero: le corsie da
-    /// ignorare nei controlli.
+    /// v128 with the high half all ones if Q = 0, otherwise zero: the lanes to
+    /// ignore in the checks.
     fn himask(&mut self) {
         self.q();
         self.f.op(op::I64_EXTEND_I32_U).i64_const(1).op(op::I64_SUB).lane_splat64();
         self.f.v128_const(0, u64::MAX).v(v::AND);
     }
 
-    /// FPCR == 0 (i32 booleano).
+    /// FPCR == 0 (i32 boolean).
     fn fpcr_zero(&mut self) {
         self.f.local_get(P_STATE).i32_load(off::FPCR).op(op::I32_EQZ);
     }
 
-    /// IXC già a 1 in FPSR (i32 booleano, 0 o 1: si combina con AND).
+    /// IXC already 1 in FPSR (i32 boolean, 0 or 1: combines with AND).
     fn ixc(&mut self) {
         self.f.local_get(P_STATE).i32_load(off::FPSR).i32_const(IXC.trailing_zeros() as i32);
         self.f.op(op::I32_SHR_U).i32_const(1).op(op::I32_AND);
     }
 
-    /// `env.simd` (l'interprete) con `x` e NZCV = 0; il risultato (i64)
-    /// resta sullo stack.
+    /// `env.simd` (the interpreter) with `x` and NZCV = 0; the result (i64)
+    /// stays on the stack.
     fn fallback(&mut self, x: bool) {
         self.f.local_get(P_STATE).local_get(P_WORD);
         if x {
@@ -627,7 +627,7 @@ impl G {
         self.f.i32_const(0).call(self.simd);
     }
 
-    /// Bit (i64) del float in `l` (f32 esteso a zero, o f64).
+    /// Bits (i64) of the float in `l` (f32 zero-extended, or f64).
     fn bits64(&mut self, l: u32, d: bool) {
         self.f.local_get(l);
         if d {
@@ -637,14 +637,14 @@ impl G {
         }
     }
 
-    /// Bit (i64) in cima allo stack: finito (né NaN né infinito).
+    /// Bits (i64) on top of the stack: finite (neither NaN nor infinity).
     fn finite_bits(&mut self, d: bool) {
         let (m, inf) = if d { (i64::MAX, D_INF as i64) } else { (0x7fff_ffff, S_INF as i64) };
         self.f.i64_const(m).op(op::I64_AND).i64_const(inf).op(op::I64_LT_U);
     }
 
-    /// Bit (i64) in cima allo stack: normale e maggiore del più piccolo
-    /// normale (niente UFC né OFC).
+    /// Bits (i64) on top of the stack: normal and greater than the smallest
+    /// normal (no UFC or OFC).
     fn safe_bits(&mut self, d: bool) {
         let (m, lo, inf) = if d {
             (i64::MAX, D_MIN_NORMAL as i64 + 1, D_INF as i64)
@@ -655,12 +655,12 @@ impl G {
         self.f.i64_const(inf - lo).op(op::I64_LT_U);
     }
 
-    /// Non NaN (i32) del float in `l`.
+    /// Not NaN (i32) of the float in `l`.
     fn not_nan(&mut self, l: u32, d: bool) {
         self.f.local_get(l).local_get(l).op(fop(d, op::F32_EQ, op::F64_EQ));
     }
 
-    /// Costante float 0 del tipo.
+    /// Float constant 0 of the type.
     fn fzero(&mut self, d: bool) {
         if d {
             self.f.i64_const(0).op(op::F64_REINTERPRET_I64);
@@ -669,8 +669,8 @@ impl G {
         }
     }
 
-    /// Chiude una funzione senza risultato: se `ok` scrive (con `store`) e
-    /// torna, altrimenti `env.simd`.
+    /// Closes a function without a result: if `ok` writes (with `store`) and
+    /// returns, otherwise `env.simd`.
     fn commit(&mut self, ok: u32, store: impl FnOnce(&mut G)) {
         self.f.local_get(ok).if_(BLOCK_EMPTY);
         store(self);
@@ -697,7 +697,7 @@ fn vop(d: bool, s: u32, dd: u32) -> u32 {
     if d { dd } else { s }
 }
 
-/// Costruisce la funzione `k` di [`rt_ops`].
+/// Builds function `k` of [`rt_ops`].
 pub(super) fn build(k: usize, simd: u32) -> Func {
     match rt_ops()[k] {
         FpRt::Bin { d, op } => bin(simd, d, op),
@@ -724,8 +724,8 @@ pub(super) fn build(k: usize, simd: u32) -> Func {
     }
 }
 
-/// TwoSum: in `err` l'errore esatto (a + b) - s, con s = a + b già
-/// arrotondato (Knuth). Tutti f32 o f64 (`d`).
+/// TwoSum: in `err` the exact error (a + b) - s, with s = a + b already
+/// rounded (Knuth). All f32 or f64 (`d`).
 fn two_sum(g: &mut G, d: bool, a: u32, b: u32, s: u32, err: u32) {
     let (add, sub) = (fop(d, op::F32_ADD, op::F64_ADD), fop(d, op::F32_SUB, op::F64_SUB));
     let t = g.local(if d { ValType::F64 } else { ValType::F32 });
@@ -736,7 +736,7 @@ fn two_sum(g: &mut G, d: bool, a: u32, b: u32, s: u32, err: u32) {
     f.local_get(b).local_get(t).op(sub).op(add).local_set(err);
 }
 
-/// FADD, FSUB, FMUL, FDIV, FMAX, FMIN, FMAXNM, FMINNM, FNMUL scalari.
+/// Scalar FADD, FSUB, FMUL, FDIV, FMAX, FMIN, FMAXNM, FMINNM, FNMUL.
 fn bin(simd: u32, d: bool, op_: Bin) -> Func {
     let ft = if d { ValType::F64 } else { ValType::F32 };
     let mut g = G::new(simd, 2);
@@ -748,7 +748,7 @@ fn bin(simd: u32, d: bool, op_: Bin) -> Func {
     g.f.local_set(a);
     g.load(16, d);
     if op_ == Bin::Sub {
-        // a - b = a + (-b), anche per gli zeri.
+        // a - b = a + (-b), also for zeros.
         g.f.op(fop(d, op::F32_NEG, op::F64_NEG));
     }
     g.f.local_set(b);
@@ -764,11 +764,11 @@ fn bin(simd: u32, d: bool, op_: Bin) -> Func {
     g.bits64(r, d);
     g.f.local_set(bits);
     match op_ {
-        // FADDP e FABD esistono solo vettoriali.
-        Bin::Addp | Bin::Abd => unreachable!("{op_:?} scalare"),
+        // FADDP and FABD exist only as vector instructions.
+        Bin::Addp | Bin::Abd => unreachable!("{op_:?} scalar"),
         Bin::Add | Bin::Sub => {
-            // Finito, ed esatto (TwoSum) o con IXC già a 1. Una somma non
-            // dà mai un risultato minuscolo inesatto.
+            // Finite, and exact (TwoSum) or with IXC already 1. A sum never
+            // gives an inexact tiny result.
             let err = g.local(ft);
             two_sum(&mut g, d, a, b, r, err);
             g.f.local_get(bits);
@@ -779,14 +779,14 @@ fn bin(simd: u32, d: bool, op_: Bin) -> Func {
             g.f.op(fop(d, op::F32_EQ, op::F64_EQ)).op(op::I32_OR).op(op::I32_AND).local_set(ok);
         }
         Bin::Max | Bin::Min | Bin::MaxNm | Bin::MinNm => {
-            // Niente NaN: nessun flag, e gli zeri di segno opposto come
-            // l'Arm (max +0, min -0).
+            // No NaN: no flags, and zeros of opposite sign like
+            // Arm (max +0, min -0).
             g.not_nan(a, d);
             g.not_nan(b, d);
             g.f.op(op::I32_AND).local_set(ok);
         }
         Bin::Mul | Bin::Nmul | Bin::Div => {
-            // Normale sicuro, o (prodotti) zero esatto con un fattore zero.
+            // Safely normal, or (products) exact zero with a zero factor.
             g.f.local_get(bits);
             g.safe_bits(d);
             if op_ != Bin::Div {
@@ -799,12 +799,12 @@ fn bin(simd: u32, d: bool, op_: Bin) -> Func {
                 g.fzero(d);
                 g.f.op(fop(d, op::F32_EQ, op::F64_EQ)).op(op::I32_OR).op(op::I32_AND).op(op::I32_OR);
             }
-            // Esatto, o IXC già a 1.
+            // Exact, or IXC already 1.
             g.ixc();
             if !d {
                 let f = &mut g.f;
                 if op_ == Bin::Div {
-                    // f64(r) * f64(b) == f64(a): 24 + 24 bit, esatto.
+                    // f64(r) * f64(b) == f64(a): 24 + 24 bits, exact.
                     f.local_get(r)
                         .op(op::F64_PROMOTE_F32)
                         .local_get(b)
@@ -828,7 +828,7 @@ fn bin(simd: u32, d: bool, op_: Bin) -> Func {
     }
     g.commit(ok, |g| {
         if op_ == Bin::Nmul {
-            // Il segno si cambia dopo l'arrotondamento.
+            // The sign is changed after rounding.
             g.f.local_get(bits)
                 .i64_const(if d { i64::MIN } else { 0x8000_0000 })
                 .op(op::I64_XOR)
@@ -842,9 +842,9 @@ fn bin(simd: u32, d: bool, op_: Bin) -> Func {
     g.finish()
 }
 
-/// Arrotondamento "a dispari" di `s` (f64, variabile) dato l'errore esatto
-/// `err`: se inesatto e pari, il vicino dispari dalla parte dell'errore.
-/// Lascia i bit (i64) sullo stack.
+/// "Round to odd" of `s` (f64, variable) given the exact error
+/// `err`: if inexact and even, the odd neighbour on the side of the error.
+/// Leaves the bits (i64) on the stack.
 fn round_odd(g: &mut G, s: u32, err: u32) {
     let sb = g.local(ValType::I64);
     let f = &mut g.f;
@@ -854,13 +854,13 @@ fn round_odd(g: &mut G, s: u32, err: u32) {
     f.local_get(sb).local_get(err).op(op::I64_REINTERPRET_F64).op(op::I64_XOR).i64_const(0).op(op::I64_GE_S);
     f.op(op::SELECT);
     f.i64_const(0);
-    // inesatto e pari
+    // inexact and even
     f.local_get(err).i64_const(0).op(op::F64_REINTERPRET_I64).op(op::F64_NE);
     f.local_get(sb).i64_const(1).op(op::I64_AND).op(op::I64_EQZ).op(op::I32_AND);
     f.op(op::SELECT).op(op::I64_ADD);
 }
 
-/// FMADD/FMSUB/FNMADD/FNMSUB in singola precisione: (±a) + (±n) × m fusa.
+/// FMADD/FMSUB/FNMADD/FNMSUB in single precision: fused (±a) + (±n) × m.
 fn fma_s(simd: u32, neg_a: bool, neg_n: bool) -> Func {
     let mut g = G::new(simd, 2);
     let (p, c, s, err) =
@@ -868,7 +868,7 @@ fn fma_s(simd: u32, neg_a: bool, neg_n: bool) -> Func {
     let (r, bits, ok) = (g.local(ValType::F32), g.local(ValType::I64), g.local(ValType::I32));
     g.fpcr_zero();
     g.f.if_(BLOCK_EMPTY);
-    // p = f64(±n) * f64(m), esatto
+    // p = f64(±n) * f64(m), exact
     g.load(5, false);
     if neg_n {
         g.f.op(op::F32_NEG);
@@ -888,7 +888,7 @@ fn fma_s(simd: u32, neg_a: bool, neg_n: bool) -> Func {
     g.bits64(r, false);
     g.f.local_tee(bits);
     g.safe_bits(false);
-    // esatto: err == 0 e f64(r) == s
+    // exact: err == 0 and f64(r) == s
     g.ixc();
     g.f.local_get(err).i64_const(0).op(op::F64_REINTERPRET_I64).op(op::F64_EQ);
     g.f.local_get(r).op(op::F64_PROMOTE_F32).local_get(s).op(op::F64_EQ).op(op::I32_AND);
@@ -900,9 +900,9 @@ fn fma_s(simd: u32, neg_a: bool, neg_n: bool) -> Func {
     g.finish()
 }
 
-/// Esponente (campo di 11 bit) dei bit f64 `x` nell'intervallo [1023 + lo,
-/// 1023 + hi) (i32 booleano): nessun trabocco né minuscolo nei passi esatti
-/// della FMA emulata.
+/// Exponent (11-bit field) of the f64 bits `x` in the interval [1023 + lo,
+/// 1023 + hi) (i32 boolean): no overflow or tininess in the exact steps
+/// of the emulated FMA.
 fn exp_in(g: &mut G, x: u32, lo: i64, hi: i64) {
     let f = &mut g.f;
     f.local_get(x)
@@ -914,13 +914,13 @@ fn exp_in(g: &mut G, x: u32, lo: i64, hi: i64) {
     f.i64_const(1023 + lo).op(op::I64_SUB).i64_const(hi - lo).op(op::I64_LT_U);
 }
 
-/// FMA emulata in doppia (Boldo e Melquiond, "Emulation of FMA and
+/// FMA emulated in double (Boldo and Melquiond, "Emulation of FMA and
 /// correctly rounded sums: proved algorithms using rounding to odd", 2008):
-/// (uh, ul) = a × b esatto (Dekker, spezzamento di Veltkamp); (th, tl) =
-/// c + uh esatto (TwoSum); v = tl + ul arrotondato a dispari; z = th + v al
-/// pari. Vale senza trabocchi né minuscoli, garantiti da `exp_in` su a, b
-/// (|x| in [2^-400, 2^400)) e c (zero o in [2^-800, 2^800)). Lascia z
-/// (f64) nella variabile `z`.
+/// (uh, ul) = a × b exact (Dekker, Veltkamp splitting); (th, tl) =
+/// c + uh exact (TwoSum); v = tl + ul rounded to odd; z = th + v to
+/// even. Valid without overflows or tininess, guaranteed by `exp_in` on a, b
+/// (|x| in [2^-400, 2^400)) and c (zero or in [2^-800, 2^800)). Leaves z
+/// (f64) in variable `z`.
 fn emulated_fma(g: &mut G, a: u32, b: u32, c: u32, z: u32) {
     use ValType::F64;
     let (g_, ah, al, bh, bl) = (g.local(F64), g.local(F64), g.local(F64), g.local(F64), g.local(F64));
@@ -952,7 +952,7 @@ fn emulated_fma(g: &mut G, a: u32, b: u32, c: u32, z: u32) {
     g.f.op(op::F64_REINTERPRET_I64).local_get(th).op(op::F64_ADD).local_set(z);
 }
 
-/// FMADD/FMSUB/FNMADD/FNMSUB in doppia precisione.
+/// FMADD/FMSUB/FNMADD/FNMSUB in double precision.
 fn fma_d(simd: u32, neg_a: bool, neg_n: bool) -> Func {
     use ValType::*;
     let mut g = G::new(simd, 2);
@@ -992,7 +992,7 @@ fn fma_d(simd: u32, neg_a: bool, neg_n: bool) -> Func {
     g.finish()
 }
 
-/// FMLA/FMLS .2d (e per elemento): la FMA emulata corsia per corsia.
+/// FMLA/FMLS .2d (and by element): the emulated FMA lane by lane.
 fn vfma_d(simd: u32, neg: bool, idx: bool) -> Func {
     use ValType::*;
     let mut g = G::new(simd, 2);
@@ -1039,7 +1039,7 @@ fn vfma_d(simd: u32, neg: bool, idx: bool) -> Func {
     g.finish()
 }
 
-/// FSQRT scalare.
+/// Scalar FSQRT.
 fn sqrt(simd: u32, d: bool) -> Func {
     let ft = if d { ValType::F64 } else { ValType::F32 };
     let mut g = G::new(simd, 2);
@@ -1050,13 +1050,13 @@ fn sqrt(simd: u32, d: bool) -> Func {
     g.f.local_tee(a).op(fop(d, op::F32_SQRT, op::F64_SQRT)).local_set(r);
     g.bits64(r, d);
     g.f.local_set(bits);
-    // a >= 0 (esclude NaN e negativi; ±0 e +inf danno se stessi, esatti)
+    // a >= 0 (excludes NaN and negatives; ±0 and +inf give themselves, exact)
     g.f.local_get(a);
     g.fzero(d);
     g.f.op(fop(d, op::F32_GE, op::F64_GE));
     g.ixc();
     if !d {
-        // f64(r)² == f64(a), esatto in doppia
+        // f64(r)² == f64(a), exact in double
         let f = &mut g.f;
         f.local_get(r).op(op::F64_PROMOTE_F32).local_get(r).op(op::F64_PROMOTE_F32).op(op::F64_MUL);
         f.local_get(a).op(op::F64_PROMOTE_F32).op(op::F64_EQ).op(op::I32_OR);
@@ -1069,7 +1069,7 @@ fn sqrt(simd: u32, d: bool) -> Func {
     g.finish()
 }
 
-/// FCMP/FCMPE (bit 3: con zero): NZCV senza NaN.
+/// FCMP/FCMPE (bit 3: with zero): NZCV without NaN.
 fn cmp(simd: u32, d: bool) -> Func {
     let ft = if d { ValType::F64 } else { ValType::F32 };
     let mut g = G::new(simd, 2);
@@ -1079,7 +1079,7 @@ fn cmp(simd: u32, d: bool) -> Func {
     g.f.if_(BLOCK_EMPTY);
     g.load(5, d);
     g.f.local_set(a);
-    // Con il bit 3 (FCMP con zero) b = 0, altrimenti Vm.
+    // With bit 3 (FCMP with zero) b = 0, otherwise Vm.
     g.fzero(d);
     g.load(16, d);
     g.f.local_get(P_WORD).i32_const(8).op(op::I32_AND).op(op::SELECT).local_set(b);
@@ -1111,7 +1111,7 @@ fn cvt_ds(simd: u32) -> Func {
     g.bits64(r, false);
     g.f.local_tee(bits);
     g.safe_bits(false);
-    // o zero da zero
+    // or zero from zero
     g.f.local_get(a).i64_const(0).op(op::F64_REINTERPRET_I64).op(op::F64_EQ).op(op::I32_OR);
     g.ixc();
     g.f.local_get(r).op(op::F64_PROMOTE_F32).local_get(a).op(op::F64_EQ).op(op::I32_OR);
@@ -1123,7 +1123,7 @@ fn cvt_ds(simd: u32) -> Func {
     g.finish()
 }
 
-/// FCVT Dd, Sn: esatta per ogni valore che non è NaN.
+/// FCVT Dd, Sn: exact for every value that is not NaN.
 fn cvt_sd(simd: u32) -> Func {
     let mut g = G::new(simd, 2);
     let (a, r, bits) = (g.local(ValType::F32), g.local(ValType::F64), g.local(ValType::I64));
@@ -1143,11 +1143,11 @@ fn cvt_sd(simd: u32) -> Func {
     g.finish()
 }
 
-/// Arrotondamento `r` di f32/f64 (sullo stack).
+/// Rounding `r` of f32/f64 (on the stack).
 fn round_op(g: &mut G, d: bool, r: Rnd) {
     if r == Rnd::Away {
-        // t = trunc(x); |x - t| (esatto) >= 0.5 ? t + copysign(1, x) : t
-        // (la somma è esatta: t intero; t conserva il segno di zero).
+        // t = trunc(x); |x - t| (exact) >= 0.5 ? t + copysign(1, x) : t
+        // (the sum is exact: t integer; t keeps the sign of zero).
         let ft = if d { ValType::F64 } else { ValType::F32 };
         let (x, t) = (g.local(ft), g.local(ft));
         let konst = |f: &mut Func, v: f64| {
@@ -1175,7 +1175,7 @@ fn round_op(g: &mut G, d: bool, r: Rnd) {
     });
 }
 
-/// FRINT[NPMZIX] scalari (senza NaN: nessun flag, tranne IXC di FRINTX).
+/// Scalar FRINT[NPMZIX] (without NaN: no flags, except IXC of FRINTX).
 fn frint(simd: u32, d: bool, rnd: Rnd) -> Func {
     let ft = if d { ValType::F64 } else { ValType::F32 };
     let mut g = G::new(simd, 2);
@@ -1201,14 +1201,14 @@ fn frint(simd: u32, d: bool, rnd: Rnd) -> Func {
     g.finish()
 }
 
-/// SCVTF/UCVTF da registro generale.
+/// SCVTF/UCVTF from a general register.
 fn from_int(simd: u32, d: bool, sf: bool, u: bool) -> Func {
     let ft = if d { ValType::F64 } else { ValType::F32 };
     let mut g = G::new(simd, 3);
     let (x, r, bits, ok) = (g.local(ValType::I64), g.local(ft), g.local(ValType::I64), g.local(ValType::I32));
     g.fpcr_zero();
     g.f.if_(BLOCK_EMPTY);
-    // x esteso a 64 bit come lo legge l'istruzione.
+    // x extended to 64 bits as the instruction reads it.
     g.f.local_get(P_X);
     if !sf {
         if u {
@@ -1227,7 +1227,7 @@ fn from_int(simd: u32, d: bool, sf: bool, u: bool) -> Func {
     g.f.local_set(r);
     g.bits64(r, d);
     g.f.local_set(bits);
-    // Esatto se |x| sta nella mantissa, o IXC già a 1.
+    // Exact if |x| fits in the mantissa, or IXC already 1.
     let mant: i64 = if d { 1 << 53 } else { 1 << 24 };
     g.ixc();
     if u {
@@ -1243,10 +1243,10 @@ fn from_int(simd: u32, d: bool, sf: bool, u: bool) -> Func {
     g.finish()
 }
 
-/// FCVT[NPMZ][SU] verso un registro generale: arrotondamento in doppia
-/// (esatto anche per un valore in singola), controllo dell'intervallo sul
-/// valore arrotondato (come `FPToFixed`), poi la conversione saturante
-/// (qui esatta).
+/// FCVT[NPMZ][SU] to a general register: rounding in double
+/// (exact even for a single-precision value), range check on the
+/// rounded value (like `FPToFixed`), then the saturating conversion
+/// (exact here).
 fn to_int(simd: u32, d: bool, sf: bool, u: bool, rnd: Rnd) -> Func {
     let mut g = G::new(simd, 2);
     let (a, t) = (g.local(ValType::F64), g.local(ValType::F64));
@@ -1260,7 +1260,7 @@ fn to_int(simd: u32, d: bool, sf: bool, u: bool, rnd: Rnd) -> Func {
     g.f.local_tee(a);
     round_op(&mut g, true, rnd);
     g.f.local_set(t);
-    // intervallo: [lo, hi)
+    // range: [lo, hi)
     let (lo, hi): (f64, f64) = match (sf, u) {
         (true, false) => (-9_223_372_036_854_775_808.0, 9_223_372_036_854_775_808.0),
         (false, false) => (-2_147_483_648.0, 2_147_483_648.0),
@@ -1294,22 +1294,22 @@ fn to_int(simd: u32, d: bool, sf: bool, u: bool, rnd: Rnd) -> Func {
     g.finish()
 }
 
-// --- vettoriali --------------------------------------------------------
+// --- vector ------------------------------------------------------------
 
-/// Costante v128 con `bits` in ogni corsia (32 o 64 bit).
+/// v128 constant with `bits` in every lane (32 or 64 bits).
 fn splat_const(g: &mut G, d: bool, bits: u64) {
     let w = if d { bits } else { (bits & 0xffff_ffff) * 0x1_0000_0001 };
     g.f.v128_const(w, w);
 }
 
-/// Maschera (v128) delle corsie finite di `r`.
+/// Mask (v128) of the finite lanes of `r`.
 fn vfinite(g: &mut G, d: bool, r: u32) {
     g.f.local_get(r).v(vop(d, v::F32X4_ABS, v::F64X2_ABS));
     splat_const(g, d, if d { D_INF } else { S_INF as u64 });
     g.f.v(vop(d, v::F32X4_LT, v::F64X2_LT));
 }
 
-/// Maschera delle corsie normali e maggiori del più piccolo normale.
+/// Mask of the lanes that are normal and greater than the smallest normal.
 fn vsafe(g: &mut G, d: bool, r: u32) {
     g.f.local_get(r).v(vop(d, v::F32X4_ABS, v::F64X2_ABS));
     splat_const(g, d, if d { D_MIN_NORMAL } else { S_MIN_NORMAL as u64 });
@@ -1318,13 +1318,13 @@ fn vsafe(g: &mut G, d: bool, r: u32) {
     g.f.v(v::AND);
 }
 
-/// Maschera delle corsie non NaN di `x`.
+/// Mask of the non-NaN lanes of `x`.
 fn vnot_nan(g: &mut G, d: bool, x: u32) {
     g.f.local_get(x).local_get(x).v(vop(d, v::F32X4_EQ, v::F64X2_EQ));
 }
 
-/// Tutte le corsie della maschera in cima allo stack a uno, contando come
-/// vere quelle da ignorare con Q = 0 (i32).
+/// All lanes of the mask on top of the stack set, counting as
+/// true those to ignore with Q = 0 (i32).
 fn all_true(g: &mut G, d: bool) {
     g.himask();
     g.f.v(v::OR).v(vop(d, v::I32X4_ALL_TRUE, v::I64X2_ALL_TRUE));
@@ -1344,8 +1344,8 @@ fn vbin(simd: u32, d: bool, op_: Bin) -> Func {
     }
     g.f.local_set(b);
     if op_ == Bin::Addp {
-        // a' = elementi pari, b' = dispari di concat(a, b) (con Q = 0 in
-        // singola: [a0, b0] e [a1, b1]); poi una somma.
+        // a' = even elements, b' = odd ones of concat(a, b) (with Q = 0 in
+        // single: [a0, b0] and [a1, b1]); then a sum.
         let (ev, od) = (g.local(ValType::V128), g.local(ValType::V128));
         let sh = |f: &mut Func, l: [u8; 16], dst: u32| {
             f.local_get(a).local_get(b).shuffle(l).local_set(dst);
@@ -1380,7 +1380,7 @@ fn vbin(simd: u32, d: bool, op_: Bin) -> Func {
     g.f.local_set(r);
     match op_ {
         Bin::Add | Bin::Sub | Bin::Addp | Bin::Abd => {
-            // Finite, ed esatte (TwoSum per corsia) o con IXC a 1.
+            // Finite, and exact (TwoSum per lane) or with IXC at 1.
             let (t, err) = (g.local(ValType::V128), g.local(ValType::V128));
             let (add, sub) = (vop(d, v::F32X4_ADD, v::F64X2_ADD), vop(d, v::F32X4_SUB, v::F64X2_SUB));
             let f = &mut g.f;
@@ -1402,7 +1402,7 @@ fn vbin(simd: u32, d: bool, op_: Bin) -> Func {
             g.f.local_set(ok);
         }
         Bin::Mul | Bin::Nmul | Bin::Div => {
-            // Normali sicure e IXC a 1.
+            // Safely normal and IXC at 1.
             vsafe(&mut g, d, r);
             all_true(&mut g, d);
             g.ixc();
@@ -1410,7 +1410,7 @@ fn vbin(simd: u32, d: bool, op_: Bin) -> Func {
         }
     }
     if op_ == Bin::Abd {
-        // Il valore assoluto dopo l'arrotondamento (senza flag).
+        // The absolute value after rounding (without flags).
         g.f.local_get(r).v(vop(d, v::F32X4_ABS, v::F64X2_ABS)).local_set(r);
     }
     g.commit(ok, |g| g.store_vec(r));
@@ -1420,8 +1420,8 @@ fn vbin(simd: u32, d: bool, op_: Bin) -> Func {
     g.finish()
 }
 
-/// FCVT[NPMZA][SU] vettoriali (senza virgola fissa): arrotondamento,
-/// intervallo sul valore arrotondato, conversione saturante (qui esatta).
+/// Vector FCVT[NPMZA][SU] (without fixed point): rounding,
+/// range on the rounded value, saturating conversion (exact here).
 fn vto_int(simd: u32, d: bool, u: bool, rnd: Rnd) -> Func {
     use ValType::*;
     let mut g = G::new(simd, 2);
@@ -1431,7 +1431,7 @@ fn vto_int(simd: u32, d: bool, u: bool, rnd: Rnd) -> Func {
     g.vload(5);
     g.f.local_set(a);
     if d {
-        // Corsia per corsia, in scalare.
+        // Lane by lane, in scalar.
         let (x, tt) = (g.local(F64), g.local(F64));
         g.f.i32_const(1).local_set(ok).v128_const(0, 0).local_set(r);
         let (lo, hi): (f64, f64) = if u {
@@ -1481,17 +1481,17 @@ fn vto_int(simd: u32, d: bool, u: bool, rnd: Rnd) -> Func {
     g.finish()
 }
 
-/// Arrotondamento vettoriale a intero (v128 sullo stack).
+/// Vector rounding to integer (v128 on the stack).
 fn vround(g: &mut G, d: bool, r: Rnd) {
     if r == Rnd::Away {
-        // Come `round_op`: t + (|x - t| >= 0.5 ? copysign(1, x) : 0), con
-        // la scelta per corsia (t conserva il segno di zero).
+        // Like `round_op`: t + (|x - t| >= 0.5 ? copysign(1, x) : 0), with
+        // the choice per lane (t keeps the sign of zero).
         let (x, t) = (g.local(ValType::V128), g.local(ValType::V128));
         g.f.local_tee(x).v(vop(d, v::F32X4_TRUNC, v::F64X2_TRUNC)).local_set(t);
         let one = if d { 1.0f64.to_bits() } else { 1.0f32.to_bits() as u64 };
         let half = if d { 0.5f64.to_bits() } else { 0.5f32.to_bits() as u64 };
         let sign = if d { 1u64 << 63 } else { 0x8000_0000 };
-        // t + copysign(1, x): il segno di x, il resto di 1.
+        // t + copysign(1, x): the sign of x, the rest from 1.
         g.f.local_get(t);
         g.f.local_get(x);
         splat_const(g, d, one);
@@ -1515,8 +1515,8 @@ fn vround(g: &mut G, d: bool, r: Rnd) {
     });
 }
 
-/// SCVTF/UCVTF vettoriali (senza virgola fissa): esatte se ogni corsia sta
-/// nella mantissa, o con IXC a 1.
+/// Vector SCVTF/UCVTF (without fixed point): exact if every lane fits
+/// in the mantissa, or with IXC at 1.
 fn vfrom_int(simd: u32, d: bool, u: bool) -> Func {
     use ValType::*;
     let mut g = G::new(simd, 2);
@@ -1536,7 +1536,7 @@ fn vfrom_int(simd: u32, d: bool, u: bool) -> Func {
             g.f.op(if u { op::F64_CONVERT_I64_U } else { op::F64_CONVERT_I64_S });
             g.f.lane(v::F64X2_REPLACE_LANE, lane).local_set(r);
         }
-        // tutte le corsie esatte: |x| <= 2^53
+        // all lanes exact: |x| <= 2^53
         let mut first = true;
         for lane in 0..2u8 {
             g.f.local_get(a).lane(v::I64X2_EXTRACT_LANE, lane);
@@ -1572,14 +1572,14 @@ fn vfrom_int(simd: u32, d: bool, u: bool) -> Func {
     g.finish()
 }
 
-/// FCVTL/FCVTL2 (da singola a doppia): esatta senza NaN.
+/// FCVTL/FCVTL2 (from single to double): exact without NaN.
 fn vcvtl(simd: u32) -> Func {
     use ValType::*;
     let mut g = G::new(simd, 2);
     let (r, ok) = (g.local(V128), g.local(I32));
     g.fpcr_zero();
     g.f.if_(BLOCK_EMPTY);
-    // Metà alta con Q = 1 (FCVTL2).
+    // High half with Q = 1 (FCVTL2).
     g.vload(5);
     g.vload(5);
     g.f.shuffle(core::array::from_fn(|j| (8 + j % 8) as u8));
@@ -1597,7 +1597,7 @@ fn vcvtl(simd: u32) -> Func {
     g.finish()
 }
 
-/// FCVTN/FCVTN2 (da doppia a singola, nella metà bassa o alta di Vd).
+/// FCVTN/FCVTN2 (from double to single, into the low or high half of Vd).
 fn vcvtn(simd: u32) -> Func {
     use ValType::*;
     let mut g = G::new(simd, 2);
@@ -1606,8 +1606,8 @@ fn vcvtn(simd: u32) -> Func {
     g.f.if_(BLOCK_EMPTY);
     g.vload(5);
     g.f.local_tee(a).v(v::F32X4_DEMOTE_F64X2_ZERO).local_set(r);
-    // Niente NaN, e: tutte esatte (promozione uguale), o IXC a 1 e normali
-    // sicure (corsie 0 e 1).
+    // No NaN, and: all exact (equal promotion), or IXC at 1 and safely
+    // normal (lanes 0 and 1).
     g.f.local_get(a).local_get(a).v(v::F64X2_EQ).v(v::I64X2_ALL_TRUE);
     g.f.local_get(r).v(v::F64X2_PROMOTE_LOW_F32X4).local_get(a).v(v::F64X2_EQ).v(v::I64X2_ALL_TRUE);
     g.ixc();
@@ -1615,7 +1615,7 @@ fn vcvtn(simd: u32) -> Func {
     g.f.v128_const(0, u64::MAX).v(v::OR).v(v::I32X4_ALL_TRUE).op(op::I32_AND);
     g.f.op(op::I32_OR).op(op::I32_AND).local_set(ok);
     g.commit(ok, |g| {
-        // Q = 1: [Vd basso, r basso]; Q = 0: [r basso, 0].
+        // Q = 1: [Vd low, r low]; Q = 0: [r low, 0].
         g.vaddr(0);
         g.vload(0);
         g.f.local_get(r).shuffle(core::array::from_fn(|j| if j < 8 { j as u8 } else { (16 + j - 8) as u8 }));
@@ -1629,9 +1629,9 @@ fn vcvtn(simd: u32) -> Func {
     g.finish()
 }
 
-/// Metà bassa (corsie 0 e 1) di una FMA in singola: (d + n × m) in doppia
-/// arrotondata a dispari, poi in singola (corsie 0 e 1 del risultato, le
-/// altre zero).
+/// Low half (lanes 0 and 1) of a single-precision FMA: (d + n × m) in double
+/// rounded to odd, then to single (lanes 0 and 1 of the result, the
+/// others zero).
 fn fma_half(g: &mut G, n: u32, m: u32, acc: u32) {
     let (p, c, s, t, err) = (
         g.local(ValType::V128),
@@ -1649,7 +1649,7 @@ fn fma_half(g: &mut G, n: u32, m: u32, acc: u32) {
     f.local_get(s).local_get(p).v(v::F64X2_SUB).local_set(t);
     f.local_get(p).local_get(s).local_get(t).v(v::F64X2_SUB).v(v::F64X2_SUB);
     f.local_get(c).local_get(t).v(v::F64X2_SUB).v(v::F64X2_ADD).local_set(err);
-    // a dispari: s + (inesatto & pari ? (stesso segno ? 1 : -1) : 0)
+    // to odd: s + (inexact & even ? (same sign ? 1 : -1) : 0)
     f.local_get(s);
     f.v128_const(1, 1).v128_const(u64::MAX, u64::MAX);
     f.local_get(s).local_get(err).v(v::XOR).v128_const(0, 0).v(v::I64X2_GE_S);
@@ -1660,7 +1660,7 @@ fn fma_half(g: &mut G, n: u32, m: u32, acc: u32) {
     f.v(v::F32X4_DEMOTE_F64X2_ZERO);
 }
 
-/// FMLA/FMLS vettoriali (o per elemento, `idx`) in singola precisione.
+/// Vector FMLA/FMLS (or by element, `idx`) in single precision.
 fn vfma(simd: u32, neg: bool, idx: bool) -> Func {
     let mut g = G::new(simd, 2);
     let (n, m, acc, r, ok) = (
@@ -1687,7 +1687,7 @@ fn vfma(simd: u32, neg: bool, idx: bool) -> Func {
     g.f.local_set(m);
     g.vload(0);
     g.f.local_set(acc);
-    // metà alta nelle corsie 0 e 1
+    // high half in lanes 0 and 1
     let hi: [u8; 16] = core::array::from_fn(|j| (8 + j % 8) as u8);
     for (src, dst) in [(n, n2), (m, m2), (acc, acc2)] {
         g.f.local_get(src).local_get(src).shuffle(hi).local_set(dst);
@@ -1706,11 +1706,11 @@ fn vfma(simd: u32, neg: bool, idx: bool) -> Func {
     g.finish()
 }
 
-/// Vm[indice] ripetuto in tutte le corsie (FMUL/FMLA per elemento): Rm nei
-/// bit 20:16, indice H:L (singola) o H (doppia).
+/// Vm[index] repeated in all lanes (by-element FMUL/FMLA): Rm in
+/// bits 20:16, index H:L (single) or H (double).
 fn elem_splat(g: &mut G, d: bool) {
     g.vload(16);
-    // byte della corsia: indice × dimensione + [0..dimensione)
+    // lane bytes: index × size + [0..size)
     let f = &mut g.f;
     if d {
         f.v128_const(0x0706_0504_0302_0100, 0x0706_0504_0302_0100);
@@ -1725,7 +1725,7 @@ fn elem_splat(g: &mut G, d: bool) {
     f.v(v::I8X16_SPLAT).v(v::I8X16_ADD).v(v::SWIZZLE);
 }
 
-/// FMUL per elemento.
+/// By-element FMUL.
 fn vidx_mul(simd: u32, d: bool) -> Func {
     let mut g = G::new(simd, 2);
     let (r, ok) = (g.local(ValType::V128), g.local(ValType::I32));
@@ -1745,7 +1745,7 @@ fn vidx_mul(simd: u32, d: bool) -> Func {
     g.finish()
 }
 
-/// FCMEQ/FCMGE/FCMGT (e con zero) senza NaN: maschere del WASM.
+/// FCMEQ/FCMGE/FCMGT (and with zero) without NaN: WASM masks.
 fn vcmp(simd: u32, d: bool, op_: Cmp, zero: bool, swap: bool) -> Func {
     let mut g = G::new(simd, 2);
     let (a, b, r, ok) =
@@ -1783,7 +1783,7 @@ fn vcmp(simd: u32, d: bool, op_: Cmp, zero: bool, swap: bool) -> Func {
     g.finish()
 }
 
-/// FSQRT vettoriale: corsie >= 0, IXC a 1.
+/// Vector FSQRT: lanes >= 0, IXC at 1.
 fn vsqrt(simd: u32, d: bool) -> Func {
     let mut g = G::new(simd, 2);
     let (a, r, ok) = (g.local(ValType::V128), g.local(ValType::V128), g.local(ValType::I32));

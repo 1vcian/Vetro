@@ -1,6 +1,6 @@
 [package]
 name = "vetro-diff"
-description = "Harness differenziale: oracolo QEMU e generazione di ELF minimi."
+description = "Differential harness: QEMU oracle and generation of minimal ELFs."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -110,7 +110,7 @@ client towards the guest; no real socket in the core, everything synchronous.
   `readable`, `writable`, `guest_eof` (guest FIN and everything read),
   `unsent`, `flow`.
 - Log: `TcpConnect { id, flow }` in place of `TcpOpen` (line
-  `tcp 1 dall'host 10.0.2.2:49152 -> 10.0.2.15:5555`), then the same
+  `tcp 1 from host 10.0.2.2:49152 -> 10.0.2.15:5555`), then the same
   `TcpEstablished`, `TcpData` (`ToRemote` = guest bytes towards the host) and
   `TcpClosed`.
 - The guest's MAC is needed, learned from its first frame (in practice

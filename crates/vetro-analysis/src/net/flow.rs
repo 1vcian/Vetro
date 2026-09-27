@@ -1,15 +1,15 @@
-//! Flussi TCP e UDP ricostruiti dai frame.
+//! TCP and UDP flows reconstructed from the frames.
 //!
-//! TCP: il cliente è chi manda il SYN (senza SYN visto, chi manda il primo
-//! segmento). Ogni verso è un [`Stream`] ricostruito per numero di
-//! sequenza: le ritrasmissioni e le sovrapposizioni si scartano, i segmenti
-//! fuori ordine aspettano quelli mancanti. Ogni pezzo aggiunto porta
-//! l'istante del frame che l'ha completato, così [`Stream::time_at`] dà
-//! l'istante in cui un byte è diventato leggibile. Un SYN su una quadrupla
-//! già chiusa (o con un ISN diverso) apre un flusso nuovo.
+//! TCP: the client is whoever sends the SYN (with no SYN seen, whoever sends the first
+//! segment). Each direction is a [`Stream`] reconstructed by sequence
+//! number: retransmissions and overlaps are discarded, out-of-order
+//! segments wait for the missing ones. Every piece added carries
+//! the instant of the frame that completed it, so [`Stream::time_at`] gives
+//! the instant at which a byte became readable. A SYN on an already closed
+//! four-tuple (or with a different ISN) opens a new flow.
 //!
-//! UDP: ogni quadrupla è un flusso di datagrammi; il cliente è il primo
-//! mittente.
+//! UDP: every four-tuple is a flow of datagrams; the client is the first
+//! sender.
 
 use std::collections::BTreeMap;
 use std::net::SocketAddrV4;
@@ -17,21 +17,21 @@ use std::net::SocketAddrV4;
 use super::capture::Frame;
 use super::packet::{self, Packet, tcp_flags};
 
-/// Byte in attesa oltre un buco, per verso (oltre si scartano e il flusso
-/// è segnato con un buco).
+/// Bytes waiting beyond a hole, per direction (beyond that they are discarded and the flow
+/// is marked with a hole).
 const MAX_PENDING: usize = 16 << 20;
 
-/// Un verso di un flusso TCP.
+/// One direction of a TCP flow.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Stream {
     /// Byte ricostruiti, in ordine.
     pub bytes: Vec<u8>,
-    /// (offset, istante): da `offset` in poi i byte sono arrivati a
-    /// `istante` (fino al segno successivo).
+    /// (offset, instant): from `offset` on the bytes arrived at
+    /// `instant` (up to the next mark).
     pub marks: Vec<(usize, u64)>,
-    /// Il FIN è arrivato (dopo tutti i byte).
+    /// The FIN has arrived (after all the bytes).
     pub fin: bool,
-    /// Byte persi (buchi mai colmati o dati oltre `MAX_PENDING`).
+    /// Lost bytes (holes never filled or data beyond `MAX_PENDING`).
     pub missing: u64,
     isn: Option<u32>,
     pending: BTreeMap<u64, Vec<u8>>,
@@ -40,8 +40,8 @@ pub struct Stream {
 }
 
 impl Stream {
-    /// Istante in cui il byte `offset` è diventato leggibile (quello
-    /// dell'ultimo byte se `offset` è oltre la fine; 0 se vuoto).
+    /// Instant at which byte `offset` became readable (that of the
+    /// last byte if `offset` is past the end; 0 if empty).
     pub fn time_at(&self, offset: usize) -> u64 {
         match self.marks.partition_point(|&(o, _)| o <= offset) {
             0 => self.marks.first().map_or(0, |m| m.1),
@@ -55,8 +55,8 @@ impl Stream {
         }
     }
 
-    /// Offset relativo del numero di sequenza `seq` (primo byte di dati =
-    /// 0), svolto attorno alla posizione corrente.
+    /// Relative offset of sequence number `seq` (first data byte =
+    /// 0), unwrapped around the current position.
     fn offset(&self, seq: u32) -> Option<u64> {
         let base = self.isn?.wrapping_add(1);
         let next = self.bytes.len() as u64;
@@ -114,8 +114,8 @@ impl Stream {
         }
     }
 
-    /// Chiude il verso a fine cattura: i dati oltre un buco si contano come
-    /// persi.
+    /// Closes the direction at the end of the capture: data beyond a hole counts as
+    /// lost.
     fn finish(&mut self) {
         let next = self.bytes.len() as u64;
         for (off, d) in std::mem::take(&mut self.pending) {
@@ -128,25 +128,25 @@ impl Stream {
 /// Un flusso TCP.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TcpFlow {
-    /// Indice nella lista dei flussi (ordine di apertura).
+    /// Index in the list of flows (order of opening).
     pub index: usize,
     pub client: SocketAddrV4,
     pub server: SocketAddrV4,
-    /// SYN del cliente.
+    /// SYN of the client.
     pub syn_at: Option<u64>,
-    /// SYN-ACK del server.
+    /// SYN-ACK of the server.
     pub syn_ack_at: Option<u64>,
-    /// Primo ACK del cliente dopo il SYN-ACK: handshake completato.
+    /// First ACK of the client after the SYN-ACK: handshake completed.
     pub established_at: Option<u64>,
     pub first_at: u64,
     pub last_at: u64,
-    /// Istante del primo FIN o RST (fine della connessione, se c'è).
+    /// Instant of the first FIN or RST (end of the connection, if any).
     pub closed_at: Option<u64>,
     pub reset: bool,
     pub packets: u64,
-    /// Dal cliente al server.
+    /// From the client to the server.
     pub client_data: Stream,
-    /// Dal server al cliente.
+    /// From the server to the client.
     pub server_data: Stream,
 }
 
@@ -191,12 +191,12 @@ pub struct UdpFlow {
     pub datagrams: Vec<Datagram>,
 }
 
-/// Tutti i flussi di una cattura.
+/// All the flows of a capture.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Flows {
     pub tcp: Vec<TcpFlow>,
     pub udp: Vec<UdpFlow>,
-    /// Frame non TCP/UDP (ARP, ICMP, IPv6, frammenti, malformati).
+    /// Non-TCP/UDP frames (ARP, ICMP, IPv6, fragments, malformed).
     pub other_frames: u64,
 }
 
@@ -207,7 +207,7 @@ fn key(a: SocketAddrV4, b: SocketAddrV4) -> Key {
 }
 
 impl Flows {
-    /// Ricostruisce i flussi dai frame in ordine di tempo.
+    /// Reconstructs the flows from the frames in time order.
     pub fn from_frames(frames: &[Frame]) -> Self {
         let mut f = Flows::default();
         let mut tcp_index: BTreeMap<Key, usize> = BTreeMap::new();
@@ -246,7 +246,7 @@ impl Flows {
                             fl.server_data.start(tcp.seq);
                         }
                     } else {
-                        // Senza SYN visto: il primo byte è l'inizio.
+                        // With no SYN seen: the first byte is the start.
                         let s = if from_client { &mut fl.client_data } else { &mut fl.server_data };
                         s.start(tcp.seq.wrapping_sub(1));
                         if from_client && fl.syn_ack_at.is_some() && tcp.has(tcp_flags::ACK) {
@@ -356,13 +356,13 @@ mod tests {
         let mut v = Conv::new();
         v.c(1, 0xffff_fff0, 0, SYN, b"");
         v.s(2, 7, 0, SYN | ACK, b"");
-        // Sequenze che attraversano 2^32.
+        // Sequences crossing 2^32.
         let data: Vec<u8> = (0..64u8).collect();
         let seq = |o: usize| 0xffff_fff1u32.wrapping_add(o as u32);
-        v.c(3, seq(32), 0, ACK, &data[32..48]); // fuori ordine
+        v.c(3, seq(32), 0, ACK, &data[32..48]); // out of order
         v.c(4, seq(0), 0, ACK, &data[0..16]);
         v.c(5, seq(0), 0, ACK, &data[0..16]); // ritrasmissione
-        v.c(6, seq(8), 0, ACK, &data[8..40]); // sovrapposto: colma il buco
+        v.c(6, seq(8), 0, ACK, &data[8..40]); // overlapping: fills the hole
         v.c(7, seq(48), 0, ACK | FIN, &data[48..64]);
         let f = Flows::from_frames(&v.frames);
         let s = &f.tcp[0].client_data;
@@ -377,9 +377,9 @@ mod tests {
         let mut v = Conv::new();
         v.c(1, 100, 0, SYN, b"");
         v.c(2, 101, 0, ACK, b"abc");
-        v.c(3, 110, 0, ACK, b"zzz"); // buco di 6 byte
+        v.c(3, 110, 0, ACK, b"zzz"); // 6-byte hole
         v.c(4, 113, 0, RST, b"");
-        v.c(5, 900, 0, SYN, b""); // stessa quadrupla, nuova connessione
+        v.c(5, 900, 0, SYN, b""); // same four-tuple, new connection
         v.c(6, 901, 0, ACK, b"nuova");
         let f = Flows::from_frames(&v.frames);
         assert_eq!(f.tcp.len(), 2);

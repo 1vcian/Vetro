@@ -1,19 +1,19 @@
-//! Punti di aggancio dell'introspezione (ADR 0027): syscall dello spazio
-//! utente (SVC da EL0 e ritorno in EL0) e punti d'arresto "invisibili" su
-//! indirizzi utente, osservati dal ciclo della macchina senza cambiare
-//! l'esecuzione.
+//! Introspection hook points (ADR 0027): user-space syscalls
+//! (SVC from EL0 and return to EL0) and "invisible" breakpoints on
+//! user addresses, observed by the machine loop without changing
+//! execution.
 //!
-//! - Il tracciatore ([`Tracer`]) riceve gli eventi con una vista in sola
-//!   lettura della macchina ([`GuestView`]: registri e RAM). Non può
-//!   cambiare niente: l'esecuzione (istruzioni, interrupt, RAM, console) è
-//!   identica con e senza aggancio, anche nel replay (M10).
-//! - SVC ed ERET le esegue sempre l'interprete (il JIT di sistema chiude i
-//!   blocchi prima di una SVC e non traduce ERET): gli eventi delle
-//!   syscall non chiedono niente al JIT.
-//! - I punti d'arresto non scrivono nella memoria del guest (niente BRK):
-//!   la macchina guarda il PC prima di ogni passo dell'interprete, e il JIT
-//!   non mette quegli indirizzi nelle regioni (`SysJit::set_stops`).
-//! - Niente di tutto questo entra negli snapshot o nei log.
+//! - The tracer ([`Tracer`]) receives events with a read-only view
+//!   of the machine ([`GuestView`]: registers and RAM). It cannot
+//!   change anything: execution (instructions, interrupts, RAM, console) is
+//!   identical with and without hooks, in replay too (M10).
+//! - SVC and ERET are always executed by the interpreter (the system JIT ends
+//!   blocks before an SVC and does not translate ERET): syscall
+//!   events ask nothing of the JIT.
+//! - Breakpoints do not write into guest memory (no BRK):
+//!   the machine looks at the PC before every interpreter step, and the JIT
+//!   does not put those addresses in its regions (`SysJit::set_stops`).
+//! - None of this goes into snapshots or logs.
 
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -23,33 +23,33 @@ use vetro_cpu::Cpu;
 
 use crate::board::Ram;
 
-/// La macchina in sola lettura, durante un evento.
+/// The machine, read-only, during an event.
 pub struct GuestView<'a> {
     pub cpu: &'a Cpu,
     pub(crate) ram: &'a Ram,
-    /// Istruzioni eseguite (l'orologio della macchina).
+    /// Instructions executed (the machine's clock).
     pub steps: u64,
 }
 
 impl GuestView<'_> {
-    /// Legge la RAM fisica.
+    /// Reads physical RAM.
     pub fn read_phys(&self, pa: u64, buf: &mut [u8]) -> bool {
         self.ram.read(pa, buf)
     }
 
-    /// I registri che servono a leggere il kernel.
+    /// The registers needed to read the kernel.
     pub fn cpu_regs(&self) -> CpuRegs {
         cpu_regs(self.cpu)
     }
 
-    /// SP_EL1: con la CPU a EL0 è la cima della pila del kernel del thread
-    /// (uno per thread): la chiave che lega ingresso e ritorno di una
+    /// SP_EL1: with the CPU at EL0 it is the top of the thread's kernel stack
+    /// (one per thread): the key that ties together entry and return of a
     /// syscall.
     pub fn sp_el1(&self) -> u64 {
         sp_el1(self.cpu)
     }
 
-    /// SP_EL0: la pila utente.
+    /// SP_EL0: the user stack.
     pub fn sp_el0(&self) -> u64 {
         if self.cpu.sys.el == 0 || !self.cpu.sys.spsel { self.cpu.sp } else { self.cpu.sys.sp_el[0] }
     }
@@ -76,57 +76,57 @@ pub(crate) fn sp_el1(cpu: &Cpu) -> u64 {
     if cpu.sys.el == 1 && cpu.sys.spsel { cpu.sp } else { cpu.sys.sp_el[1] }
 }
 
-/// Una syscall entrata: SVC eseguita a EL0.
+/// A syscall entered: SVC executed at EL0.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SyscallEntry {
-    /// Istruzioni eseguite, SVC compresa.
+    /// Instructions executed, SVC included.
     pub step: u64,
     /// x8.
     pub nr: u64,
     /// x0-x5.
     pub args: [u64; 6],
-    /// Indirizzo della SVC.
+    /// Address of the SVC.
     pub pc: u64,
-    /// SP_EL1 (cima della pila del kernel del thread).
+    /// SP_EL1 (top of the thread's kernel stack).
     pub key: u64,
-    /// TTBR0_EL1 (spazio d'indirizzi del processo).
+    /// TTBR0_EL1 (the process's address space).
     pub ttbr0: u64,
 }
 
-/// Un evento per il tracciatore.
+/// An event for the tracer.
 #[derive(Debug)]
 pub enum Event<'a> {
-    /// Subito dopo la SVC (la CPU è al vettore, a EL1; registri generali
-    /// e memoria sono quelli del programma).
+    /// Right after the SVC (the CPU is at the vector, at EL1; general registers
+    /// and memory are the program's).
     SyscallEnter(&'a SyscallEntry),
-    /// Al primo ritorno in EL0 (ERET) del thread dopo la syscall: `pc` è
-    /// dove riprende (l'istruzione dopo la SVC, o altrove per execve, un
-    /// segnale, una syscall da ripetere) e `ret` il suo x0.
+    /// At the thread's first return to EL0 (ERET) after the syscall: `pc` is
+    /// where it resumes (the instruction after the SVC, or elsewhere for execve, a
+    /// signal, a syscall to restart) and `ret` its x0.
     SyscallExit { entry: &'a SyscallEntry, ret: u64, pc: u64 },
-    /// Il PC di EL0 ha raggiunto un punto d'arresto e l'istruzione è stata
-    /// eseguita (una volta per esecuzione: se un'eccezione la interrompe,
-    /// l'evento arriva quando la si riesegue). `regs` sono i registri di
-    /// **prima** dell'istruzione (gli argomenti all'ingresso di una
-    /// funzione); la RAM di [`GuestView`] è quella di dopo.
+    /// The EL0 PC reached a breakpoint and the instruction has been
+    /// executed (once per execution: if an exception interrupts it,
+    /// the event arrives when it is re-executed). `regs` are the registers from
+    /// **before** the instruction (the arguments on entry to a
+    /// function); the RAM of [`GuestView`] is the one from after.
     Breakpoint { id: u32, va: u64, regs: &'a Cpu },
 }
 
-/// Chi riceve gli eventi. Deve essere `'static` per poterlo riprendere
-/// col suo tipo ([`crate::Machine::tracer_mut`]).
+/// Whoever receives the events. It must be `'static` so it can be taken back
+/// with its type ([`crate::Machine::tracer_mut`]).
 pub trait Tracer: Any {
     fn event(&mut self, ev: &Event<'_>, guest: &GuestView<'_>);
 }
 
-/// Un punto d'arresto su un indirizzo virtuale di EL0.
+/// A breakpoint on an EL0 virtual address.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Breakpoint {
     pub va: u64,
-    /// Solo nello spazio con questa tabella (BADDR di TTBR0_EL1, cioè
-    /// l'indirizzo fisico di `mm->pgd` del processo); `None` = tutti.
+    /// Only in the space with this table (BADDR of TTBR0_EL1, i.e.
+    /// the physical address of the process's `mm->pgd`); `None` = all.
     pub ttbr0: Option<u64>,
 }
 
-/// Stato degli agganci nella macchina.
+/// State of the hooks in the machine.
 #[derive(Default)]
 pub(crate) struct Hooks {
     pub(crate) tracer: Option<Box<dyn Tracer>>,
@@ -134,12 +134,12 @@ pub(crate) struct Hooks {
     pending: BTreeMap<u64, SyscallEntry>,
     bps: BTreeMap<u32, Breakpoint>,
     by_va: BTreeMap<u64, Vec<u32>>,
-    /// Filtro rapido: bit `(va >> 2) & 63` degli indirizzi con punti.
+    /// Fast filter: bit `(va >> 2) & 63` of the addresses with breakpoints.
     mask: u64,
     next_id: u32,
 }
 
-/// Registri di prima di un passo con un punto d'arresto al PC.
+/// Registers from before a step with a breakpoint at the PC.
 pub(crate) struct Pre {
     ids: Vec<u32>,
     va: u64,
@@ -151,7 +151,7 @@ fn bit(va: u64) -> u64 {
 }
 
 impl Hooks {
-    /// Qualcosa da osservare nel ciclo dell'interprete.
+    /// Something to observe in the interpreter loop.
     #[inline]
     pub(crate) fn armed(&self) -> bool {
         self.tracer.is_some() && (self.syscalls || self.mask != 0)
@@ -182,13 +182,13 @@ impl Hooks {
         self.bps.iter().map(|(&i, &b)| (i, b)).collect()
     }
 
-    /// Gli indirizzi con punti d'arresto (per il JIT).
+    /// The addresses with breakpoints (for the JIT).
     pub(crate) fn stops(&self) -> Vec<u64> {
         self.by_va.keys().copied().collect()
     }
 
-    /// Prima di un passo dell'interprete: i punti d'arresto al PC per lo
-    /// spazio corrente.
+    /// Before an interpreter step: the breakpoints at the PC for the
+    /// current space.
     #[inline]
     pub(crate) fn pre(&self, cpu: &Cpu) -> Option<Pre> {
         if self.mask & bit(cpu.pc) == 0 || cpu.sys.el != 0 {
@@ -204,7 +204,7 @@ impl Hooks {
         (!ids.is_empty()).then(|| Pre { ids, va: cpu.pc, cpu: Box::new(cpu.clone()) })
     }
 
-    /// Dopo un passo dell'interprete.
+    /// After an interpreter step.
     pub(crate) fn after(
         &mut self,
         old_el: u8,
@@ -249,7 +249,7 @@ impl Hooks {
         }
     }
 
-    /// Dimentica le syscall in corso (dopo un salto nel tempo).
+    /// Forgets the syscalls in progress (after a jump in time).
     pub(crate) fn forget_pending(&mut self) {
         self.pending.clear();
     }

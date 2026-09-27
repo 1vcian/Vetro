@@ -1,5 +1,5 @@
-//! Istruzioni in virgola mobile: classi FP scalari e operazioni FP dentro
-//! le classi AdvSIMD. L'aritmetica è in `fp` (software, bit-exact).
+//! Floating-point instructions: scalar FP classes and FP operations within
+//! the AdvSIMD classes. The arithmetic is in `fp` (software, bit-exact).
 
 use super::SimdInsn;
 use super::fp::{self, Ctx, D, Fmt, H, Rounding, S};
@@ -8,7 +8,7 @@ use crate::bits::{bit, field};
 use crate::decode::Insn;
 use crate::state::Cpu;
 
-/// Tipo FP: 0 = singola, 1 = doppia, 3 = mezza (solo per FCVT su v8.0).
+/// FP type: 0 = single, 1 = double, 3 = half (only for FCVT on v8.0).
 fn fmt_of(ty: u8) -> Fmt {
     match ty {
         0 => S,
@@ -87,7 +87,7 @@ pub enum FpInsn {
         imm: u64,
         rd: u8,
     },
-    /// FCVT[NPMZA][SU] e FCVTZ[SU] (virgola fissa).
+    /// FCVT[NPMZA][SU] and FCVTZ[SU] (fixed point).
     ToInt {
         ty: u8,
         sf: bool,
@@ -97,7 +97,7 @@ pub enum FpInsn {
         rn: u8,
         rd: u8,
     },
-    /// SCVTF/UCVTF (intero o virgola fissa).
+    /// SCVTF/UCVTF (integer or fixed point).
     FromInt {
         ty: u8,
         sf: bool,
@@ -183,7 +183,7 @@ fn m(w: u32, mask: u32, value: u32) -> bool {
     w & mask == value
 }
 
-/// Classi FP scalari (bit 30 = 0, 28:24 = 1111x).
+/// Scalar FP classes (bit 30 = 0, 28:24 = 1111x).
 pub fn decode(w: u32) -> Insn {
     let rd = field(w, 4, 0) as u8;
     let rn = field(w, 9, 5) as u8;
@@ -193,7 +193,7 @@ pub fn decode(w: u32) -> Insn {
     if bit(w, 29) {
         return Insn::Undefined; // S = 1
     }
-    // FP <-> virgola fissa
+    // FP <-> fixed point
     if m(w, 0x5F20_0000, 0x1E00_0000) {
         let scale = field(w, 15, 10) as u8;
         if ty > 1 || !sf && scale < 32 {
@@ -209,9 +209,9 @@ pub fn decode(w: u32) -> Insn {
         };
     }
     if bit(w, 31) && !m(w, 0x5F20_FC00, 0x1E20_0000) {
-        return Insn::Undefined; // M = 1 fuori dalle conversioni con interi
+        return Insn::Undefined; // M = 1 outside the integer conversions
     }
-    // FP <-> intero
+    // FP <-> integer
     if m(w, 0x5F20_FC00, 0x1E20_0000) {
         let rmode = field(w, 20, 19) as u8;
         let opcode = field(w, 18, 16);
@@ -242,7 +242,7 @@ pub fn decode(w: u32) -> Insn {
                     (false, 0, 0) => MovKind::W,
                     (true, 1, 0) => MovKind::X,
                     (true, 2, 1) => MovKind::Top,
-                    _ => return Insn::Undefined, // FMOV mezza precisione, FJCVTZS: non su v8.0
+                    _ => return Insn::Undefined, // half-precision FMOV, FJCVTZS: not on v8.0
                 };
                 if opcode == 6 {
                     ok(FpInsn::MovToGp { kind, rn, rd })
@@ -325,8 +325,8 @@ pub fn decode(w: u32) -> Insn {
     }
 }
 
-/// Operazioni FP dentro le classi AdvSIMD (chiamato da `int::decode` con
-/// la parola intera, già riconosciuta come appartenente a una classe).
+/// FP operations within the AdvSIMD classes (called by `int::decode` with
+/// the whole word, already recognised as belonging to a class).
 pub fn decode_vec(w: u32) -> Insn {
     let rd = field(w, 4, 0) as u8;
     let rn = field(w, 9, 5) as u8;
@@ -338,7 +338,7 @@ pub fn decode_vec(w: u32) -> Insn {
     let sz = bit(w, 22);
     let vec_ok = scalar || !(sz && !q);
 
-    // Shift per immediato: SCVTF/UCVTF e FCVTZS/FCVTZU in virgola fissa.
+    // Shift by immediate: SCVTF/UCVTF and FCVTZS/FCVTZU in fixed point.
     if m(w, 0x9F80_0400, 0x0F00_0400) || m(w, 0xDF80_0400, 0x5F00_0400) {
         let immh = field(w, 22, 19);
         let immhb = field(w, 22, 16);
@@ -347,7 +347,7 @@ pub fn decode_vec(w: u32) -> Insn {
         } else if immh & 0b0100 != 0 {
             (false, 32)
         } else {
-            return Insn::Undefined; // mezza precisione (FP16)
+            return Insn::Undefined; // half precision (FP16)
         };
         if !scalar && sz && !q {
             return Insn::Undefined;
@@ -356,7 +356,7 @@ pub fn decode_vec(w: u32) -> Insn {
         let to_int = field(w, 15, 11) == 0b11111;
         return ok(FpInsn::VFixed { scalar, q, u, sz, fbits, to_int, rn, rd });
     }
-    // Elemento indicizzato: FMLA, FMLS, FMUL, FMULX.
+    // Indexed element: FMLA, FMLS, FMUL, FMULX.
     if m(w, 0x9F00_0400, 0x0F00_0000) || m(w, 0xDF00_0400, 0x5F00_0000) {
         let opcode = field(w, 15, 12) as u8;
         if !a || u && opcode != 0b1001 {
@@ -374,7 +374,7 @@ pub fn decode_vec(w: u32) -> Insn {
         };
         return ok(FpInsn::VIndexed { scalar, q, u, sz, index: index as u8, opcode, rm, rn, rd });
     }
-    // Riduzione tra corsie o a coppie scalare (classe 11000 ... 10).
+    // Reduction across lanes or scalar pairwise (class 11000 ... 10).
     if field(w, 21, 17) == 0b11000 && field(w, 11, 10) == 0b10 {
         let opcode = field(w, 16, 12) as u8;
         if !u {
@@ -442,7 +442,7 @@ pub fn decode_vec(w: u32) -> Insn {
 }
 
 // ------------------------------------------------------------------
-// Esecuzione
+// Execution
 // ------------------------------------------------------------------
 
 fn get(cpu: &Cpu, r: u8, f: Fmt) -> u64 {
@@ -453,7 +453,7 @@ fn put(cpu: &mut Cpu, r: u8, x: u64) {
     cpu.v[r as usize] = x as u128;
 }
 
-/// Operazione binaria a due operandi dell'AdvSIMD (per elemento).
+/// Two-operand AdvSIMD binary operation (per element).
 #[allow(clippy::too_many_arguments)]
 fn binop(f: Fmt, u: bool, a: bool, opcode: u8, x: u64, y: u64, acc: u64, ctx: &mut Ctx) -> u64 {
     let ones = crate::bits::ones(f.n);
@@ -487,7 +487,7 @@ fn binop(f: Fmt, u: bool, a: bool, opcode: u8, x: u64, y: u64, acc: u64, ctx: &m
     }
 }
 
-/// FMAXNMP, FMINNMP, FADDP, FMAXP, FMINP (FABD ha lo stesso opcode di FADDP).
+/// FMAXNMP, FMINNMP, FADDP, FMAXP, FMINP (FABD has the same opcode as FADDP).
 fn is_pairwise(u: bool, a: bool, opcode: u8) -> bool {
     u && (matches!(opcode, 0b11000 | 0b11110) || opcode == 0b11010 && !a)
 }
@@ -636,7 +636,7 @@ fn exec_inner(cpu: &mut Cpu, i: FpInsn, ctx: &mut Ctx) {
             put(cpu, rd, r);
         }
         FpInsn::VAcross { a, max_num, rn, rd } => {
-            // Riduzione ad albero: (e0 op e1) op (e2 op e3), come Reduce().
+            // Tree reduction: (e0 op e1) op (e2 op e3), like Reduce().
             let v = cpu.v[rn as usize];
             let op = |x, y, ctx: &mut Ctx| fp::max_min(S, x, y, !a, max_num, ctx);
             let lo = op(elem(v, 0, 32), elem(v, 1, 32), ctx);
@@ -713,10 +713,10 @@ fn two_misc(
     let v = cpu.v[rn as usize];
     let d = cpu.v[rd as usize];
     let rm_default = ctx.rounding();
-    // Conversioni che cambiano dimensione.
+    // Conversions that change size.
     match (u, opcode) {
         (false, 0b10110) | (true, 0b10110) => {
-            // FCVTN / FCVTXN: da 2*esize a esize, metà bassa o alta.
+            // FCVTN / FCVTXN: from 2*esize to esize, low or high half.
             let (from, to) = if sz { (D, S) } else { (S, H) };
             let n = if scalar { 1 } else { (64 / to.n) as usize };
             let rounding = if u { Rounding::Odd } else { rm_default };
@@ -728,7 +728,7 @@ fn two_misc(
             return;
         }
         (false, 0b10111) => {
-            // FCVTL: da esize a 2*esize, dalla metà bassa o alta.
+            // FCVTL: from esize to 2*esize, from the low or high half.
             let (from, to) = if sz { (S, D) } else { (H, S) };
             let n = (64 / from.n) as usize;
             let part = q as usize;

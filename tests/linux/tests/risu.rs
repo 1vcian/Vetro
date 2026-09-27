@@ -1,6 +1,6 @@
-//! RISU (ADR 0006): `risu` gira su Vetro come apprendista e confronta, dopo
-//! ogni istruzione, registri e memoria con la traccia registrata da
-//! `qemu-aarch64 -cpu cortex-a53` come maestro. Immagini e tracce vengono da
+//! RISU (ADR 0006): `risu` runs on Vetro as the apprentice and compares, after
+//! each instruction, registers and memory with the trace recorded by
+//! `qemu-aarch64 -cpu cortex-a53` as the master. Images and traces come from
 //! `tools/risu/build.sh` (in `target/risu`).
 
 use std::path::Path;
@@ -12,7 +12,7 @@ fn risu_traces_match_qemu() {
     let risu = dir.join("risu");
     if !risu.is_file() {
         if std::env::var("VETRO_REQUIRE_GUEST_BINS").is_ok_and(|v| v == "1") {
-            panic!("target/risu mancante: esegui tools/risu/build.sh");
+            panic!("target/risu missing: run tools/risu/build.sh");
         }
         eprintln!("SKIP risu_traces_match_qemu: esegui tools/risu/build.sh");
         return;
@@ -25,7 +25,7 @@ fn risu_traces_match_qemu() {
         .filter(|p| p.extension().is_some_and(|e| e == "bin") && p.with_extension("trace").is_file())
         .collect();
     images.sort();
-    assert!(!images.is_empty(), "nessuna immagine RISU in {}", dir.display());
+    assert!(!images.is_empty(), "no RISU image in {}", dir.display());
     let mut failures = Vec::new();
     for bin in &images {
         let trace = bin.with_extension("trace");
@@ -46,5 +46,5 @@ fn risu_traces_match_qemu() {
             eprintln!("RISU {name}: traccia identica");
         }
     }
-    assert!(failures.is_empty(), "RISU diverge da QEMU:\n{}", failures.join("\n\n"));
+    assert!(failures.is_empty(), "RISU diverges from QEMU:\n{}", failures.join("\n\n"));
 }

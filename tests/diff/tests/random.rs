@@ -1,14 +1,14 @@
-//! Criterio di uscita M1 (ADR 0006): programmi casuali di istruzioni intere,
-//! stato finale di Vetro identico a `qemu-aarch64 -cpu cortex-a53`.
+//! M1 exit criterion (ADR 0006): random programs of integer instructions,
+//! Vetro's final state identical to `qemu-aarch64 -cpu cortex-a53`.
 //!
-//! Da M4 (ADR 0012) ogni programma gira su Vetro due volte, con
-//! l'interprete e col JIT: i due esiti devono essere identici tra loro e a
-//! quello di QEMU.
+//! From M4 (ADR 0012) every program runs on Vetro twice, with
+//! the interpreter and with the JIT: the two outcomes must be identical to each other and to
+//! QEMU's.
 //!
-//! - `VETRO_DIFF_CASES`: numero di programmi (default 250).
-//! - `VETRO_DIFF_SEED`: primo seme (default 0); i casi usano semi
-//!   consecutivi, quindi un caso fallito si riproduce con
-//!   `VETRO_DIFF_SEED=<seme> VETRO_DIFF_CASES=1`.
+//! - `VETRO_DIFF_CASES`: number of programs (default 250).
+//! - `VETRO_DIFF_SEED`: first seed (default 0); the cases use consecutive
+//!   seeds, so a failed case is reproduced with
+//!   `VETRO_DIFF_SEED=<seed> VETRO_DIFF_CASES=1`.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -39,21 +39,21 @@ fn random_programs_match_qemu() {
     run("random_programs_match_qemu", false, env_u64("VETRO_DIFF_CASES", 250));
 }
 
-/// Stesso confronto con le classi SIMD e virgola mobile.
+/// Same comparison with the SIMD and floating-point classes.
 #[test]
 fn random_simd_programs_match_qemu() {
     run("random_simd_programs_match_qemu", true, env_u64("VETRO_DIFF_CASES", 250));
 }
 
-/// Programmi brevi di sola virgola mobile su casi speciali.
+/// Short programs of floating point only on special cases.
 #[test]
 fn random_fp_focused_match_qemu() {
     run_with("random_fp_focused_match_qemu", "fp-", env_u64("VETRO_DIFF_FP_CASES", 600), generate_fp_focused);
 }
 
-/// Programmi brevi di virgola mobile nelle condizioni dei percorsi veloci
-/// del JIT (valori normali, FPCR a zero, IXC a 1 metà delle volte; ADR
-/// 0026): JIT, interprete e QEMU identici.
+/// Short floating-point programs under the conditions of the JIT's fast
+/// paths (normal values, FPCR at zero, IXC at 1 half of the time; ADR
+/// 0026): JIT, interpreter and QEMU identical.
 #[test]
 fn random_fp_fast_paths_match_qemu() {
     run_with(
@@ -64,7 +64,7 @@ fn random_fp_fast_paths_match_qemu() {
     );
 }
 
-/// Programmi brevi di istruzioni crittografiche (AES, SHA1, SHA256).
+/// Short programs of cryptographic instructions (AES, SHA1, SHA256).
 #[test]
 fn random_crypto_focused_match_qemu() {
     run_with(
@@ -105,7 +105,7 @@ fn run_with(name: &str, prefix: &str, cases: u64, make: impl Fn(u64) -> Case + S
                     let mut diff = compare(&ours, &theirs);
                     if jit != ours {
                         diff += &format!(
-                            "  JIT diverso dall'interprete (vetro = JIT, qemu = interprete):\n{}",
+                            "  JIT differs from the interpreter (vetro = JIT, qemu = interpreter):\n{}",
                             compare(&jit, &ours)
                         );
                     }
@@ -125,7 +125,7 @@ fn run_with(name: &str, prefix: &str, cases: u64, make: impl Fn(u64) -> Case + S
     let mut failures = failures.into_inner().unwrap();
     failures.sort_by_key(|f| f.0);
     eprintln!(
-        "{name}: {cases} programmi: {} con dump, {} con SIGILL atteso in coda, {} differenze",
+        "{name}: {cases} programs: {} with dump, {} with SIGILL expected at the end, {} differences",
         dumps.into_inner(),
         sigill.into_inner(),
         failures.len()
@@ -137,7 +137,7 @@ fn run_with(name: &str, prefix: &str, cases: u64, make: impl Fn(u64) -> Case + S
             report += &format!("seme {seed}:\n{diff}\n");
         }
         panic!(
-            "{} programmi diversi da QEMU (semi {seeds:?}...)\n\n{report}corpo del primo:\n{body}",
+            "{} programs different from QEMU (seeds {seeds:?}...)\n\n{report}body of the first:\n{body}",
             failures.len()
         );
     }

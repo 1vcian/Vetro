@@ -1,14 +1,14 @@
-//! Kernel Linux arm64 emulato in user mode.
+//! arm64 Linux kernel emulated in user mode.
 //!
-//! Più processi e thread girano nello stesso emulatore, a turno (quanti di
-//! istruzioni). Le syscall bloccanti non bloccano l'host: il task si ferma
-//! con `pc` sull'SVC e lo riesegue quando la condizione può essere
-//! soddisfatta (figlio terminato, dati in una pipe, scadenza raggiunta...).
+//! Several processes and threads run in the same emulator, taking turns (quanta of
+//! instructions). Blocking syscalls do not block the host: the task stops
+//! with `pc` on the SVC and re-executes it when the condition can be
+//! satisfied (child exited, data in a pipe, deadline reached...).
 //!
-//! Il tempo è virtuale per default (un'istruzione = un nanosecondo, salti in
-//! avanti quando tutti dormono): esecuzioni ripetibili, come chiede la regola
-//! del determinismo (CLAUDE.md). Anche `getrandom`, AT_RANDOM e
-//! /dev/urandom sono deterministici.
+//! Time is virtual by default (one instruction = one nanosecond, jumps
+//! forward when everyone sleeps): repeatable runs, as the determinism rule
+//! requires (CLAUDE.md). `getrandom`, AT_RANDOM and
+//! /dev/urandom are deterministic too.
 
 pub mod abi;
 mod fs;
@@ -38,7 +38,7 @@ pub type Pid = i32;
 
 pub const RLIM_NLIMITS: usize = 16;
 const INF: u64 = u64::MAX;
-/// Limiti iniziali, quelli tipici di Linux; RLIMIT_CORE a 0: niente core.
+/// Initial limits, the typical Linux ones; RLIMIT_CORE at 0: no core.
 pub const DEFAULT_RLIMITS: [(u64, u64); RLIM_NLIMITS] = [
     (INF, INF),         // CPU
     (INF, INF),         // FSIZE
@@ -58,23 +58,23 @@ pub const DEFAULT_RLIMITS: [(u64, u64); RLIM_NLIMITS] = [
     (INF, INF),         // RTTIME
 ];
 
-/// Tempo virtuale per istruzione: una CPU nominale da 100 MHz, vicina alla
-/// velocità reale dell'interprete (così sleep e alarm costano poco).
+/// Virtual time per instruction: a nominal 100 MHz CPU, close to the
+/// interpreter's real speed (so sleep and alarm cost little).
 pub const NS_PER_STEP: u64 = 10;
 
-/// Tempo virtuale di una syscall: su un kernel vero costa circa un
-/// microsecondo, e un ciclo di sole syscall deve comunque far passare il tempo.
+/// Virtual time of a syscall: on a real kernel it costs about one
+/// microsecond, and a loop of nothing but syscalls must still make time pass.
 pub const NS_PER_SYSCALL: u64 = 1000;
 
-/// Identità di un futex: (spazio, offset). Per la memoria condivisa lo spazio
-/// è il buffer condiviso (come la pagina fisica per Linux), altrimenti lo
-/// spazio d'indirizzamento del processo e l'offset è l'indirizzo virtuale.
+/// Identity of a futex: (space, offset). For shared memory the space
+/// is the shared buffer (like the physical page for Linux), otherwise the
+/// process address space, and the offset is the virtual address.
 pub type FutexKey = (usize, u64);
 
-/// File mappato con MAP_SHARED: percorso sull'host e buffer comune.
+/// File mapped with MAP_SHARED: path on the host and common buffer.
 pub type SharedFile = (std::path::PathBuf, Rc<RefCell<Vec<u8>>>);
 
-/// Numeri di segnale Linux.
+/// Linux signal numbers.
 pub mod sig {
     pub const SIGHUP: i32 = 1;
     pub const SIGINT: i32 = 2;
@@ -101,45 +101,45 @@ pub mod sig {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClockMode {
-    /// Tempo virtuale deterministico (default).
+    /// Deterministic virtual time (default).
     Virtual,
-    /// Orologio dell'host.
+    /// Host clock.
     Host,
 }
 
 #[derive(Clone, Debug)]
 pub struct Config {
-    /// Copia stdout/stderr del guest su quelli dell'host.
+    /// Copies the guest's stdout/stderr to the host's.
     pub echo: bool,
-    /// Stampa le syscall su stderr, come strace.
+    /// Prints the syscalls to stderr, like strace.
     pub strace: bool,
     pub clock: ClockMode,
-    /// Limite totale di istruzioni (tutti i task).
+    /// Total instruction limit (all tasks).
     pub max_steps: u64,
-    /// Contenuto di stdin.
+    /// Content of stdin.
     pub stdin: Vec<u8>,
-    /// Directory di lavoro iniziale del guest.
+    /// Initial working directory of the guest.
     pub cwd: String,
-    /// Come `qemu -L`: i percorsi assoluti si cercano prima qui.
+    /// Like `qemu -L`: absolute paths are looked up here first.
     pub sysroot: Option<String>,
-    /// CPU visibili al guest (sched_getaffinity). QEMU user mode mostra
-    /// quelle dell'host; il default fisso tiene l'esecuzione riproducibile.
+    /// CPUs visible to the guest (sched_getaffinity). QEMU user mode shows
+    /// the host's; the fixed default keeps the run reproducible.
     pub cpus: usize,
-    /// Versione del kernel in uname (QEMU user mode riporta quella dell'host).
+    /// Kernel version in uname (QEMU user mode reports the host's).
     pub release: String,
-    /// Esegue con il JIT (M4, ADR 0012): stessi risultati e stesso orologio
-    /// dell'interprete.
+    /// Runs with the JIT (M4, ADR 0012): same results and same clock
+    /// as the interpreter.
     pub jit: bool,
-    /// Esecuzioni di un blocco con l'interprete prima di compilarlo (0 =
-    /// subito; i test di parità lo usano per tradurre anche il codice
-    /// eseguito una volta sola).
+    /// Executions of a block with the interpreter before compiling it (0 =
+    /// immediately; the parity tests use it to translate even code
+    /// executed only once).
     pub jit_threshold: u32,
 }
 
 impl Config {
-    /// Per gli harness dei test: `VETRO_JIT=1` accende il JIT e
-    /// `VETRO_JIT_THRESHOLD=N` ne fissa la soglia (0 = traduce tutto dalla
-    /// prima esecuzione).
+    /// For the test harnesses: `VETRO_JIT=1` turns on the JIT and
+    /// `VETRO_JIT_THRESHOLD=N` sets its threshold (0 = translates everything from the
+    /// first execution).
     pub fn jit_from_env(mut self) -> Self {
         if std::env::var("VETRO_JIT").is_ok_and(|v| v == "1") {
             self.jit = true;
@@ -173,55 +173,55 @@ impl Default for Config {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Exit {
-    /// Il processo iniziale è uscito con questo codice.
+    /// The initial process exited with this code.
     Code(i32),
-    /// Il processo iniziale è stato terminato da un segnale. `cause` è
-    /// l'eccezione della CPU, se il segnale è nato da lì.
+    /// The initial process was killed by a signal. `cause` is
+    /// the CPU exception, if the signal originated there.
     Signal {
         signo: i32,
         cause: Option<Exception>,
         pc: u64,
     },
-    /// Syscall non ancora implementata: limite nostro, non del guest.
+    /// Syscall not implemented yet: our limitation, not the guest's.
     UnsupportedSyscall {
         nr: u64,
         pc: u64,
     },
-    /// Istruzione valida ma non ancora implementata.
+    /// Valid instruction but not implemented yet.
     Unimplemented {
         raw: u32,
         what: &'static str,
         pc: u64,
     },
     StepLimit,
-    /// Tutti i task sono bloccati e nulla può svegliarli.
+    /// All tasks are blocked and nothing can wake them.
     Deadlock,
 }
 
-/// Perché un task è fermo.
+/// Why a task is stopped.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Wait {
-    /// wait4/waitid: un figlio che corrisponde a `pid` (come wait4).
+    /// wait4/waitid: a child matching `pid` (like wait4).
     Child { pid: i32 },
-    /// Lettura da una pipe vuota o scrittura su una piena.
+    /// Read from an empty pipe or write to a full one.
     Pipe,
-    /// Dormire fino a `until` (ns di tempo monotono).
+    /// Sleep until `until` (ns of monotonic time).
     Sleep { until: u64 },
-    /// FUTEX_WAIT su `addr`, con scadenza facoltativa.
+    /// FUTEX_WAIT on `addr`, with optional deadline.
     Futex { key: FutexKey, until: Option<u64> },
-    /// Il genitore di un vfork aspetta che il figlio esegua exec o esca.
+    /// The parent of a vfork waits for the child to exec or exit.
     Vfork { child: Pid },
-    /// pause/rt_sigsuspend: solo un segnale sveglia.
+    /// pause/rt_sigsuspend: only a signal wakes it.
     Signal,
-    /// ppoll/pselect: una pipe pronta o la scadenza.
+    /// ppoll/pselect: a ready pipe or the deadline.
     Poll { until: Option<u64> },
-    /// futex_waitv: la prima sveglia su una delle chiavi, o la scadenza.
+    /// futex_waitv: the first wake on one of the keys, or the deadline.
     FutexV { keys: Vec<FutexKey>, until: Option<u64> },
-    /// rt_sigtimedwait: un segnale di `set` in attesa (anche se bloccato) o
-    /// la scadenza.
+    /// rt_sigtimedwait: a signal of `set` pending (even if blocked) or
+    /// the deadline.
     SigWait { set: u64, until: Option<u64> },
-    /// Condizione da ricontrollare a ogni giro (F_SETLKW): la syscall si
-    /// riesegue finché non riesce.
+    /// Condition to recheck on every round (F_SETLKW): the syscall is
+    /// re-executed until it succeeds.
     Retry,
 }
 
@@ -229,8 +229,8 @@ pub enum Wait {
 pub enum State {
     Runnable,
     Blocked(Wait),
-    /// Thread terminato; per il leader del gruppo resta lo stato d'uscita
-    /// finché il genitore non lo raccoglie.
+    /// Thread exited; for the group leader the exit status remains
+    /// until the parent reaps it.
     Zombie {
         status: i32,
     },
@@ -239,7 +239,7 @@ pub enum State {
 
 pub struct Task {
     pub tid: Pid,
-    /// Id del processo (thread group).
+    /// Process id (thread group).
     pub tgid: Pid,
     pub ppid: Pid,
     pub pgid: Pid,
@@ -251,28 +251,28 @@ pub struct Task {
     pub sig: SigState,
     pub state: State,
     pub clear_child_tid: u64,
-    /// Segnale da mandare al genitore all'uscita (SIGCHLD per fork).
+    /// Signal to send to the parent on exit (SIGCHLD for fork).
     pub exit_signal: i32,
-    /// Svegliato da FUTEX_WAKE: il prossimo FUTEX_WAIT rieseguito restituisce 0.
+    /// Woken by FUTEX_WAKE: the next re-executed FUTEX_WAIT returns 0.
     pub futex_woken: bool,
-    /// Per futex_waitv: l'indice della chiave che ha svegliato il task.
+    /// For futex_waitv: the index of the key that woke the task.
     pub futex_index: usize,
-    /// Per vfork: il genitore da sbloccare a exec/exit.
+    /// For vfork: the parent to unblock on exec/exit.
     pub vfork_parent: Option<Pid>,
-    /// Segnale sincrono (fault) generato dall'ultima istruzione.
+    /// Synchronous signal (fault) generated by the last instruction.
     pub fault: Option<(i32, Exception)>,
     pub comm: String,
     pub exe: String,
     pub umask: u32,
-    /// Scadenza assoluta della syscall bloccante in corso (nanosleep, futex
-    /// con timeout): fissata al primo blocco, così la riesecuzione dell'SVC
-    /// non la sposta.
+    /// Absolute deadline of the blocking syscall in progress (nanosleep, futex
+    /// with timeout): set on the first block, so re-executing the SVC
+    /// does not move it.
     pub deadline: Option<u64>,
     /// /proc/<pid>/oom_score_adj.
     pub oom_score_adj: i32,
-    /// Limiti di risorse (getrlimit/setrlimit): (corrente, massimo).
+    /// Resource limits (getrlimit/setrlimit): (current, maximum).
     pub rlimits: [(u64, u64); RLIM_NLIMITS],
-    /// personality(2): dominio di esecuzione e flag (UNAME26, ...).
+    /// personality(2): execution domain and flags (UNAME26, ...).
     pub personality: u32,
 }
 
@@ -282,38 +282,38 @@ pub struct Kernel {
     pub console: Rc<RefCell<Console>>,
     next_pid: Pid,
     init: Pid,
-    /// Tempo monotono virtuale in ns.
+    /// Virtual monotonic time in ns.
     clock_ns: u64,
-    /// Limite inferiore della prossima scadenza di un alarm/itimer (MAX =
-    /// nessuna): evita di scorrere i task a ogni istruzione.
+    /// Lower bound of the next alarm/itimer deadline (MAX =
+    /// none): avoids scanning the tasks on every instruction.
     pub(super) next_alarm: u64,
     steps: u64,
     run_queue: VecDeque<usize>,
     rng: u64,
-    /// Esito del processo iniziale, quando termina.
+    /// Outcome of the initial process, when it terminates.
     init_exit: Option<Exit>,
-    /// Ultima eccezione della CPU che ha ucciso un processo (per il report).
+    /// Last CPU exception that killed a process (for the report).
     last_fault: Option<(Pid, Exception, u64)>,
-    /// Mappature MAP_SHARED di file: (dispositivo, inode) → (percorso, buffer).
+    /// MAP_SHARED file mappings: (device, inode) → (path, buffer).
     pub shared_files: std::collections::HashMap<(u64, u64), SharedFile>,
-    /// Lock POSIX sui file.
+    /// POSIX file locks.
     locks: locks::LockTable,
     /// IPC System V.
     ipc: ipc::Ipc,
-    /// FIFO del file system, per (dispositivo, inode): aprirle sull'host
-    /// bloccherebbe l'emulatore.
+    /// File system FIFOs, by (device, inode): opening them on the host
+    /// would block the emulator.
     fifos: std::collections::HashMap<(u64, u64), fs::Fifo>,
-    /// Il JIT, se `cfg.jit`: uno per tutto il kernel (la cache dei blocchi
-    /// è per spazio d'indirizzamento).
+    /// The JIT, if `cfg.jit`: one for the whole kernel (the block cache
+    /// is per address space).
     jit: Option<Box<JitCpu<NativeEngine>>>,
 }
 
-/// Soglia di default del JIT (vedi [`Config::jit_threshold`]).
+/// Default JIT threshold (see [`Config::jit_threshold`]).
 pub const DEFAULT_JIT_THRESHOLD: u32 = 16;
 
-/// Istruzioni per quanto di scheduling.
+/// Instructions per scheduling quantum.
 const QUANTUM: u64 = 20_000;
-/// Istante "realtime" iniziale del tempo virtuale: 2026-01-01T00:00:00Z.
+/// Initial "realtime" instant of virtual time: 2026-01-01T00:00:00Z.
 const EPOCH: u64 = 1_767_225_600;
 
 impl Kernel {
@@ -345,17 +345,17 @@ impl Kernel {
         }
     }
 
-    /// Istruzioni eseguite finora (tutti i task).
+    /// Instructions executed so far (all tasks).
     pub fn steps(&self) -> u64 {
         self.steps
     }
 
-    /// Contatori del JIT, se attivo.
+    /// JIT counters, if enabled.
     pub fn jit_stats(&self) -> Option<JitStats> {
         self.jit.as_ref().map(|j| j.stats)
     }
 
-    /// Istruzioni dell'interprete per classe (`VETRO_JIT_PROFILE=1`).
+    /// Interpreter instructions by class (`VETRO_JIT_PROFILE=1`).
     pub fn jit_profile(&self) -> Option<&vetro_jit::Profile> {
         self.jit.as_ref().and_then(|j| j.profile.as_ref())
     }
@@ -374,7 +374,7 @@ impl Kernel {
         p
     }
 
-    /// Crea il processo iniziale da un'immagine ELF.
+    /// Creates the initial process from an ELF image.
     pub fn spawn(
         &mut self,
         image: &[u8],
@@ -422,7 +422,7 @@ impl Kernel {
         Ok(pid)
     }
 
-    /// Chiave del futex all'indirizzo `addr` nello spazio `mm`.
+    /// Key of the futex at address `addr` in the space `mm`.
     pub fn futex_key(&self, mm: &Rc<RefCell<Mm>>, addr: u64, private: bool) -> FutexKey {
         if !private && let Some(k) = mm.borrow().mem.shared_key(addr) {
             return k;
@@ -430,9 +430,9 @@ impl Kernel {
         (Rc::as_ptr(mm) as usize, addr)
     }
 
-    /// Riscrive sui file il contenuto delle mappature condivise.
-    /// Scrive nel file il contenuto della sua MAP_SHARED (se c'è), prima che
-    /// un descrittore lo legga o lo scriva.
+    /// Writes the content of the shared mappings back to the files.
+    /// Writes to the file the content of its MAP_SHARED (if any), before
+    /// a descriptor reads or writes it.
     pub fn flush_shared_one(&self, key: (u64, u64)) {
         use std::os::unix::fs::FileExt;
         if let Some((path, buf)) = self.shared_files.get(&key)
@@ -444,8 +444,8 @@ impl Kernel {
         }
     }
 
-    /// Ricarica la MAP_SHARED dal file dopo una scrittura o un ftruncate da
-    /// descrittore: le mappature vedono il nuovo contenuto e la nuova fine.
+    /// Reloads the MAP_SHARED from the file after a write or an ftruncate through a
+    /// descriptor: the mappings see the new content and the new end.
     pub fn reload_shared_one(&self, key: (u64, u64)) {
         if let Some((path, buf)) = self.shared_files.get(&key)
             && let Ok(content) = std::fs::read(path)
@@ -470,7 +470,7 @@ impl Kernel {
         self.tasks.iter().position(|t| t.tid == tid && t.state != State::Dead)
     }
 
-    /// Tempo monotono in ns.
+    /// Monotonic time in ns.
     pub fn now(&self) -> u64 {
         match self.cfg.clock {
             ClockMode::Virtual => self.clock_ns,
@@ -481,7 +481,7 @@ impl Kernel {
         }
     }
 
-    /// Tempo "realtime" in ns dall'epoca Unix.
+    /// "Realtime" time in ns since the Unix epoch.
     pub fn realtime(&self) -> u64 {
         match self.cfg.clock {
             ClockMode::Virtual => EPOCH * 1_000_000_000 + self.clock_ns,
@@ -489,7 +489,7 @@ impl Kernel {
         }
     }
 
-    /// Byte pseudocasuali deterministici (getrandom, AT_RANDOM, /dev/urandom).
+    /// Deterministic pseudorandom bytes (getrandom, AT_RANDOM, /dev/urandom).
     pub fn random_bytes(&mut self, n: usize) -> Vec<u8> {
         let mut out = Vec::with_capacity(n);
         while out.len() < n {
@@ -504,7 +504,7 @@ impl Kernel {
         out
     }
 
-    /// Esegue finché il processo iniziale non termina.
+    /// Runs until the initial process terminates.
     pub fn run(&mut self) -> Exit {
         loop {
             if let Some(e) = self.init_exit {
@@ -514,12 +514,12 @@ impl Kernel {
                 return Exit::StepLimit;
             }
             let Some(t) = self.pick() else {
-                // Nessuno eseguibile: fai avanzare il tempo fino alla prossima
-                // scadenza, se c'è.
+                // Nothing runnable: advance time to the next
+                // deadline, if any.
                 match self.next_deadline() {
                     Some(d) if self.cfg.clock == ClockMode::Virtual => {
                         self.clock_ns = self.clock_ns.max(d);
-                        // Un alarm scaduto sveglia chi aspetta un segnale.
+                        // An expired alarm wakes whoever is waiting for a signal.
                         self.check_alarms();
                         continue;
                     }
@@ -537,7 +537,7 @@ impl Kernel {
         }
     }
 
-    /// Prossimo task eseguibile (round robin), svegliando chi può ripartire.
+    /// Next runnable task (round robin), waking those that can resume.
     fn pick(&mut self) -> Option<usize> {
         let n = self.tasks.len();
         if n == 0 {
@@ -554,16 +554,16 @@ impl Kernel {
         None
     }
 
-    /// Vero se il task `i` può girare (eventualmente svegliandolo).
+    /// True if task `i` can run (waking it if needed).
     fn ready(&mut self, i: usize) -> bool {
         let wake = match &self.tasks[i].state {
             State::Runnable => return true,
             State::Zombie { .. } | State::Dead => return false,
             State::Blocked(w) => {
                 let w = w.clone();
-                // Retry si "soddisfa" sempre (la syscall ricontrolla da sé): un
-                // segnale deliverable la interrompe prima, come la F_SETLKW di
-                // Linux (EINTR, o riavvio con SA_RESTART).
+                // Retry is always "satisfied" (the syscall rechecks by itself): a
+                // deliverable signal interrupts it first, like Linux's F_SETLKW
+                // (EINTR, or restart with SA_RESTART).
                 if matches!(w, Wait::Retry) && self.signal_wakes(i) {
                     self.tasks[i].sig.interrupted = Some(w);
                     true
@@ -627,8 +627,8 @@ impl Kernel {
         best
     }
 
-    /// Esegue il task `t` per un quanto. Restituisce l'esito finale se la
-    /// corsa è finita.
+    /// Runs task `t` for one quantum. Returns the final outcome if the
+    /// run is over.
     fn run_task(&mut self, t: usize) -> Option<Exit> {
         let mut n = 0;
         while n < QUANTUM {
@@ -637,7 +637,7 @@ impl Kernel {
                 break;
             }
             if self.deliver_signals(t) {
-                // il task potrebbe essere morto
+                // the task may have died
                 if self.tasks[t].state != State::Runnable {
                     break;
                 }
@@ -676,8 +676,8 @@ impl Kernel {
                     let pc = self.tasks[t].cpu.pc;
                     return Some(Exit::Unimplemented { raw, what, pc });
                 }
-                // Accesso appena sotto una regione MAP_GROWSDOWN: si estende e
-                // l'istruzione si riesegue (stack_guard_gap = 256 pagine).
+                // Access just below a MAP_GROWSDOWN region: it is extended and
+                // the instruction is re-executed (stack_guard_gap = 256 pages).
                 Err(Exception::DataAbort { addr, .. })
                     if self.tasks[t].mm.borrow_mut().mem.grow_down(addr, 256 * 4096) => {}
                 Err(e) => {
@@ -706,19 +706,19 @@ impl Kernel {
 }
 
 impl Kernel {
-    /// Passi che il JIT può eseguire di fila senza che il ciclo di
-    /// [`run_task`](Self::run_task) passo per passo si comporti in modo
-    /// diverso: dentro il quanto e il limite di istruzioni, prima della
-    /// prossima scadenza di un alarm (col tempo virtuale), e uno solo se c'è
-    /// un segnale da consegnare (se ne consegna uno per passo).
+    /// Steps the JIT can execute in a row without the step-by-step loop of
+    /// [`run_task`](Self::run_task) behaving
+    /// differently: within the quantum and the instruction limit, before the
+    /// next alarm deadline (with virtual time), and only one if there is
+    /// a signal to deliver (one is delivered per step).
     fn jit_budget(&self, t: usize, quantum_left: u64) -> u64 {
         let mut b = quantum_left.min(self.cfg.max_steps.saturating_sub(self.steps)).max(1);
         if self.signal_wakes(t) {
             return 1;
         }
         if self.cfg.clock == ClockMode::Virtual && self.next_alarm != u64::MAX {
-            // check_alarms prima del passo j (j ≥ 1) vede clock + j·NS_PER_STEP:
-            // deve restare sotto la scadenza.
+            // check_alarms before step j (j ≥ 1) sees clock + j·NS_PER_STEP:
+            // it must stay below the deadline.
             let left = self.next_alarm.saturating_sub(self.clock_ns);
             b = b.min(left.div_ceil(NS_PER_STEP).max(1));
         }

@@ -1,11 +1,11 @@
-//! BusyBox statica (musl, Alpine): i comandi principali danno lo stesso
-//! risultato su Vetro e su QEMU. Criterio di uscita di M2 (parte BusyBox).
+//! Static BusyBox (musl, Alpine): the main commands give the same
+//! result on Vetro and on QEMU. M2 exit criterion (BusyBox part).
 
 use std::path::PathBuf;
 use vetro_linux_tests::{Case, case, guest_bin};
 
-/// Applet raggiungibili dal PATH dei test (solo BusyBox: nessun binario
-/// dell'host o del container dell'oracolo).
+/// Applets reachable from the tests' PATH (BusyBox only: no binary
+/// from the host or from the oracle's container).
 const APPLETS: &[&str] = &[
     "sh",
     "cat",
@@ -57,7 +57,7 @@ fn bb(test: &str) -> Option<PathBuf> {
     guest_bin("busybox", test)
 }
 
-/// Caso con un file di dati e una directory `bin/` di link ai comandi.
+/// Case with a data file and a `bin/` directory of links to the commands.
 fn with_env(name: &str, b: &std::path::Path, args: &[&str]) -> Case {
     let mut c = case(name, b, args).file("frutta.txt", FRUTTA).env("LC_ALL", "C").env("PATH", "{wd}/bin");
     for applet in APPLETS {

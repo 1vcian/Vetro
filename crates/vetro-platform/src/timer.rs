@@ -1,29 +1,29 @@
-//! Timer generico ARM (ARM ARM D11): canali fisico (CNTP) e virtuale (CNTV)
-//! di una CPU.
+//! ARM generic timer (ARM ARM D11): physical (CNTP) and virtual (CNTV) channels
+//! of one CPU.
 //!
-//! Il contatore non vive qui: ogni funzione riceve il valore del contatore
-//! fisico (CNTPCT_EL0) dall'esterno, così il tempo resta deterministico e
-//! registrabile. Il contatore virtuale è `CNTPCT - CNTVOFF`.
+//! The counter does not live here: every function receives the value of the physical
+//! counter (CNTPCT_EL0) from outside, so time stays deterministic and
+//! recordable. The virtual counter is `CNTPCT - CNTVOFF`.
 //!
-//! Semantica come QEMU (target/arm/helper.c, `gt_recalc_timer`):
-//! - ISTATUS = ENABLE && contatore >= CVAL (confronto senza segno);
-//! - con ENABLE spento ISTATUS legge 0 e la linea è bassa;
-//! - la linea IRQ è ISTATUS && !IMASK;
-//! - TVAL letto vale `(CVAL - contatore)[31:0]`, scritto imposta
-//!   `CVAL = contatore + SignExtend(TVAL[31:0])`.
+//! Semantics as in QEMU (target/arm/helper.c, `gt_recalc_timer`):
+//! - ISTATUS = ENABLE && counter >= CVAL (unsigned comparison);
+//! - with ENABLE off ISTATUS reads 0 and the line is low;
+//! - the IRQ line is ISTATUS && !IMASK;
+//! - TVAL reads as `(CVAL - counter)[31:0]`, a write sets
+//!   `CVAL = counter + SignExtend(TVAL[31:0])`.
 
 use crate::map;
 
-/// Bit di CNTx_CTL_EL0.
+/// CNTx_CTL_EL0 bits.
 pub const CTL_ENABLE: u64 = 1 << 0;
 pub const CTL_IMASK: u64 = 1 << 1;
 pub const CTL_ISTATUS: u64 = 1 << 2;
 
-/// Un canale del timer (CTL e CVAL). I metodi ricevono il valore del
-/// contatore visto da questo canale (fisico o virtuale).
+/// One timer channel (CTL and CVAL). The methods receive the value of the
+/// counter as seen by this channel (physical or virtual).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TimerChannel {
-    /// Solo ENABLE e IMASK; ISTATUS si calcola.
+    /// Only ENABLE and IMASK; ISTATUS is computed.
     ctl: u64,
     cval: u64,
 }
@@ -33,7 +33,7 @@ impl TimerChannel {
         self.ctl & CTL_ENABLE != 0 && count >= self.cval
     }
 
-    /// Livello dell'uscita verso il GIC.
+    /// Level of the output to the GIC.
     pub fn irq_level(&self, count: u64) -> bool {
         self.istatus(count) && self.ctl & CTL_IMASK == 0
     }
@@ -42,7 +42,7 @@ impl TimerChannel {
         self.ctl | if self.istatus(count) { CTL_ISTATUS } else { 0 }
     }
 
-    /// ISTATUS è di sola lettura.
+    /// ISTATUS is read-only.
     pub fn write_ctl(&mut self, value: u64) {
         self.ctl = value & (CTL_ENABLE | CTL_IMASK);
     }
@@ -63,20 +63,20 @@ impl TimerChannel {
         self.cval = count.wrapping_add(value as u32 as i32 as i64 as u64);
     }
 
-    /// Valore del contatore a cui la linea salirà, se abilitata, non
-    /// mascherata e non ancora scattata: serve al motore per sapere fino a
-    /// quando può eseguire senza ricontrollare il timer.
+    /// Counter value at which the line will rise, if enabled, not
+    /// masked and not yet fired: the engine uses it to know how long
+    /// it can run without checking the timer again.
     pub fn deadline(&self, count: u64) -> Option<u64> {
         (self.ctl & (CTL_ENABLE | CTL_IMASK) == CTL_ENABLE && count < self.cval).then_some(self.cval)
     }
 }
 
-/// Timer generico di una CPU: CNTFRQ, CNTVOFF e i due canali EL1.
+/// Generic timer of one CPU: CNTFRQ, CNTVOFF and the two EL1 channels.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GenericTimer {
     /// CNTFRQ_EL0 in Hz.
     pub cntfrq: u32,
-    /// CNTVOFF_EL2 (zero senza EL2).
+    /// CNTVOFF_EL2 (zero without EL2).
     pub cntvoff: u64,
     /// CNTP_* (PPI 30).
     pub phys: TimerChannel,
@@ -95,12 +95,12 @@ impl GenericTimer {
         Self { cntfrq, cntvoff: 0, phys: TimerChannel::default(), virt: TimerChannel::default() }
     }
 
-    /// CNTVCT_EL0 dato CNTPCT_EL0.
+    /// CNTVCT_EL0 given CNTPCT_EL0.
     pub fn cntvct(&self, cntpct: u64) -> u64 {
         cntpct.wrapping_sub(self.cntvoff)
     }
 
-    // Registri di sistema: la CPU li chiamerà da MRS/MSR in M3.
+    // System registers: the CPU will call them from MRS/MSR in M3.
 
     pub fn cntp_ctl(&self, cntpct: u64) -> u64 {
         self.phys.read_ctl(cntpct)
@@ -141,7 +141,7 @@ impl GenericTimer {
         self.virt.write_tval(count, value);
     }
 
-    /// Linee verso il GIC come coppie (INTID del PPI, livello).
+    /// Lines to the GIC as pairs (PPI INTID, level).
     pub fn irq_lines(&self, cntpct: u64) -> [(u32, bool); 2] {
         [
             (map::PPI_VTIMER, self.virt.irq_level(self.cntvct(cntpct))),
@@ -149,7 +149,7 @@ impl GenericTimer {
         ]
     }
 
-    /// Prossimo valore di CNTPCT a cui una delle due linee salirà.
+    /// Next CNTPCT value at which one of the two lines will rise.
     pub fn next_deadline(&self, cntpct: u64) -> Option<u64> {
         let v = self.virt.deadline(self.cntvct(cntpct)).map(|c| c.wrapping_add(self.cntvoff));
         let p = self.phys.deadline(cntpct);
@@ -191,15 +191,15 @@ mod tests {
     fn istatus_e_linea_irq() {
         let mut t = TimerChannel::default();
         t.write_cval(100);
-        assert!(!t.istatus(200), "disabilitato: ISTATUS a zero");
+        assert!(!t.istatus(200), "disabled: ISTATUS zero");
         assert_eq!(t.read_ctl(200), 0);
         t.write_ctl(CTL_ENABLE | CTL_ISTATUS);
-        assert_eq!(t.read_ctl(99), CTL_ENABLE, "ISTATUS non si scrive");
+        assert_eq!(t.read_ctl(99), CTL_ENABLE, "ISTATUS is not writable");
         assert_eq!(t.read_ctl(100), CTL_ENABLE | CTL_ISTATUS);
         assert!(t.irq_level(100));
         t.write_ctl(CTL_ENABLE | CTL_IMASK);
         assert!(t.istatus(150));
-        assert!(!t.irq_level(150), "mascherato");
+        assert!(!t.irq_level(150), "masked");
     }
 
     #[test]
@@ -208,10 +208,10 @@ mod tests {
         t.write_tval(1000, 50);
         assert_eq!(t.read_cval(), 1050);
         assert_eq!(t.read_tval(1000), 50);
-        assert_eq!(t.read_tval(1060), 0xFFFF_FFF6, "-10 su 32 bit");
+        assert_eq!(t.read_tval(1060), 0xFFFF_FFF6, "-10 on 32 bits");
         t.write_tval(1000, 0xFFFF_FFFF);
         assert_eq!(t.read_cval(), 999);
-        // Solo i 32 bit bassi contano.
+        // Only the low 32 bits count.
         t.write_tval(0, 0x1_0000_0005);
         assert_eq!(t.read_cval(), 5);
     }

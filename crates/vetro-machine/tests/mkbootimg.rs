@@ -1,11 +1,11 @@
-//! Il lettore di immagini Android contro le immagini costruite da
-//! `mkbootimg.py` di AOSP (copia fissata in `tools/mkbootimg/`): header v0–v4
-//! di `boot.img`, `vendor_boot.img` v3 e v4 (ramdisk multipli, board id,
-//! bootconfig), `init_boot.img`. Ogni sezione letta deve essere il file dato
-//! a mkbootimg, byte per byte.
+//! The Android image reader against images built by AOSP's
+//! `mkbootimg.py` (pinned copy in `tools/mkbootimg/`): `boot.img` headers
+//! v0–v4, `vendor_boot.img` v3 and v4 (multiple ramdisks, board id,
+//! bootconfig), `init_boot.img`. Every section read must be the file given
+//! to mkbootimg, byte for byte.
 //!
-//! Serve `python3`: senza, il test si salta, salvo `VETRO_REQUIRE_ORACLE=1`
-//! (come in CI), dove fallisce.
+//! Needs `python3`: without it the test is skipped, unless `VETRO_REQUIRE_ORACLE=1`
+//! (as in CI), where it fails.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -30,9 +30,9 @@ impl Work {
     fn new(name: &str) -> Option<Self> {
         let Some(py) = python() else {
             if std::env::var("VETRO_REQUIRE_ORACLE").is_ok_and(|v| v == "1") {
-                panic!("python3 assente: serve a tools/mkbootimg/mkbootimg.py (VETRO_REQUIRE_ORACLE=1)");
+                panic!("python3 missing: needed for tools/mkbootimg/mkbootimg.py (VETRO_REQUIRE_ORACLE=1)");
             }
-            eprintln!("SKIP: python3 assente, niente mkbootimg.py");
+            eprintln!("SKIP: python3 missing, no mkbootimg.py");
             return None;
         };
         let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("mkbootimg-{name}"));
@@ -67,7 +67,7 @@ impl Work {
     }
 }
 
-/// Byte di prova riconoscibili.
+/// Recognisable test bytes.
 fn blob(tag: u8, n: usize) -> Vec<u8> {
     (0..n).map(|i| tag ^ (i as u8).wrapping_mul(31)).collect()
 }
@@ -92,7 +92,7 @@ fn boot_img_v0_v1_v2() {
     let s = w.file("second", &second);
     let d = w.file("dtbo", &dtbo);
     let t = w.file("dtb", &dtb);
-    // Oltre 511 byte: mkbootimg ne mette una parte in extra_cmdline.
+    // Over 511 bytes: mkbootimg puts part of it in extra_cmdline.
     let long: String = (0..70).map(|i| format!("vetro.p{i}=v{i} ")).collect();
     let long = long.trim_end();
     assert!(long.len() > 600);
@@ -193,7 +193,7 @@ fn boot_v3_e_vendor_boot_v3() {
     assert_eq!(vb.dtb, blob(7, 100));
     let opts = BootOptions { params: "androidboot.serialno=X".into(), recovery: false };
     let a = AndroidBoot::from_images(&boot, Some(&vendor), None, &opts).unwrap();
-    // v3: niente bootconfig; vendor ramdisk e generico attaccati.
+    // v3: no bootconfig; vendor ramdisk and generic one back to back.
     assert_eq!(a.cmdline, "console=ttyAMA0 androidboot.hardware=vetro androidboot.serialno=X");
     assert_eq!(a.initrd, [vendor_rd, generic].concat());
     assert_eq!(a.bootconfig, "");
@@ -212,7 +212,7 @@ fn boot_v4_vendor_boot_v4_e_init_boot() {
     let bc =
         w.file("bootconfig", b"androidboot.hardware=vetro\nandroidboot.boot_devices=a003e00.virtio_mmio\n");
     let (boot, vendor, init) = (w.out("boot.img"), w.out("vendor_boot.img"), w.out("init_boot.img"));
-    // boot.img GKI: solo il kernel; il ramdisk generico sta in init_boot.
+    // GKI boot.img: only the kernel; the generic ramdisk lives in init_boot.
     w.mkbootimg(&[
         "--header_version",
         "4",
@@ -266,7 +266,7 @@ fn boot_v4_vendor_boot_v4_e_init_boot() {
     assert!(b.signature.is_empty());
     let i = BootImage::parse_init_boot(&init).unwrap();
     assert_eq!(i.ramdisk, generic);
-    // boot.img con un kernel non è un init_boot.
+    // A boot.img with a kernel is not an init_boot.
     assert!(BootImage::parse_init_boot(&boot).is_err());
 
     let vb = VendorBoot::parse(&vendor).unwrap();

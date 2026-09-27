@@ -1,31 +1,31 @@
-//! virtio-input (virtio v1.2, §5.8): tastiera, tablet e touchscreen.
+//! virtio-input (virtio v1.2, §5.8): keyboard, tablet and touchscreen.
 //!
-//! Code: 0 = eventi (dispositivo → driver, buffer da 8 byte), 1 = stato
-//! (driver → dispositivo, es. i LED della tastiera). Nessuna feature.
+//! Queues: 0 = events (device → driver, 8-byte buffers), 1 = status
+//! (driver → device, e.g. the keyboard LEDs). No features.
 //!
-//! Lo spazio di configurazione è una finestra: il driver scrive `select` e
-//! `subsel` e legge `size` e il contenuto (nome, seriale, identificativi,
-//! bitmap delle proprietà e dei tipi di evento, intervalli degli assi). Le
-//! voci sono dati ([`InputConfig`]); i profili [`InputConfig::keyboard`],
-//! [`InputConfig::tablet`] e [`InputConfig::multitouch`] riproducono
-//! `virtio-keyboard-device`, `virtio-tablet-device` (con `wheel-axis`, il
-//! default) e `virtio-multitouch-device` di QEMU 10.0 (hw/input/
-//! virtio-input-hid.c), così il guest vede gli stessi valori.
+//! The configuration space is a window: the driver writes `select` and
+//! `subsel` and reads `size` and the contents (name, serial, identifiers,
+//! bitmaps of properties and event types, axis ranges). The
+//! entries are data ([`InputConfig`]); the profiles [`InputConfig::keyboard`],
+//! [`InputConfig::tablet`] and [`InputConfig::multitouch`] reproduce
+//! QEMU 10.0's `virtio-keyboard-device`, `virtio-tablet-device` (with `wheel-axis`, the
+//! default) and `virtio-multitouch-device` (hw/input/
+//! virtio-input-hid.c), so the guest sees the same values.
 //!
-//! Scelte, allineate a QEMU (hw/input/virtio-input.c) dove la spec lascia
-//! margine:
-//! - con `select`/`subsel` senza voce si legge tutto 0, anche `select`;
-//! - gli eventi iniettati prima che il driver sia attivo (DRIVER_OK) si
-//!   scartano, come fa QEMU;
-//! - gli eventi si consegnano a rapporti interi (fino a un `EV_SYN/
-//!   SYN_REPORT`) e solo se ci sono buffer per tutto il rapporto. QEMU in
-//!   quel caso scarta il rapporto; Vetro lo tiene in coda (al più
-//!   [`MAX_PENDING`] eventi, oltre si scarta e si conta in
-//!   [`VirtioInput::dropped`]) e lo consegna quando il driver restituisce
-//!   buffer: l'ingresso dell'host non si perde per una questione di tempi;
-//! - la coda di stato registra gli eventi ricevuti (tipo `EV_LED` aggiorna
-//!   [`VirtioInput::leds`]); la lunghezza nello used ring è 0 (nessun byte
-//!   scritto, come chiede §2.7.8; QEMU mette i byte letti).
+//! Choices, aligned with QEMU (hw/input/virtio-input.c) where the spec leaves
+//! room:
+//! - with `select`/`subsel` without an entry everything reads 0, `select` too;
+//! - events injected before the driver is active (DRIVER_OK) are
+//!   discarded, as QEMU does;
+//! - events are delivered in whole reports (up to an `EV_SYN/
+//!   SYN_REPORT`) and only if there are buffers for the whole report. QEMU in
+//!   that case discards the report; Vetro keeps it queued (at most
+//!   [`MAX_PENDING`] events, beyond that they are discarded and counted in
+//!   [`VirtioInput::dropped`]) and delivers it when the driver returns
+//!   buffers: host input is not lost because of timing;
+//! - the status queue records the events received (type `EV_LED` updates
+//!   [`VirtioInput::leds`]); the length in the used ring is 0 (no bytes
+//!   written, as §2.7.8 asks; QEMU puts the bytes read).
 
 use std::collections::VecDeque;
 
@@ -39,7 +39,7 @@ pub const CFG_PROP_BITS: u8 = 0x10;
 pub const CFG_EV_BITS: u8 = 0x11;
 pub const CFG_ABS_INFO: u8 = 0x12;
 
-// Tipi e codici di evento di Linux (include/uapi/linux/input-event-codes.h).
+// Linux event types and codes (include/uapi/linux/input-event-codes.h).
 pub const EV_SYN: u16 = 0x00;
 pub const EV_KEY: u16 = 0x01;
 pub const EV_REL: u16 = 0x02;
@@ -67,23 +67,23 @@ pub const LED_NUML: u16 = 0;
 pub const LED_CAPSL: u16 = 1;
 pub const LED_SCROLLL: u16 = 2;
 pub const INPUT_PROP_DIRECT: u16 = 0x01;
-/// `BUS_VIRTUAL` di linux/input.h.
+/// `BUS_VIRTUAL` from linux/input.h.
 pub const BUS_VIRTUAL: u16 = 0x06;
 
-/// Coordinate assolute di tablet e touchscreen: 0..=0x7FFF, come QEMU
-/// (INPUT_EVENT_ABS_MAX), indipendenti dalla risoluzione dello schermo.
+/// Absolute coordinates of tablet and touchscreen: 0..=0x7FFF, like QEMU
+/// (INPUT_EVENT_ABS_MAX), independent of the screen resolution.
 pub const ABS_MAX_VALUE: u32 = 0x7FFF;
-/// Slot del touchscreen: 0..=10 (INPUT_EVENT_SLOTS_MAX di QEMU).
+/// Touchscreen slots: 0..=10 (QEMU's INPUT_EVENT_SLOTS_MAX).
 pub const MT_SLOTS_MAX: u32 = 10;
 
-/// Eventi al più in attesa di buffer del driver.
+/// Maximum events waiting for driver buffers.
 pub const MAX_PENDING: usize = 4096;
 
 const EVENTQ: usize = 0;
 const STATUSQ: usize = 1;
 const EVENT_LEN: usize = 8;
 
-/// `struct virtio_input_event`: tipo, codice e valore di un evento evdev.
+/// `struct virtio_input_event`: type, code and value of an evdev event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InputEvent {
     pub ty: u16,
@@ -131,7 +131,7 @@ pub struct AbsInfo {
     pub res: u32,
 }
 
-/// Una voce dello spazio di configurazione: (select, subsel) -> contenuto.
+/// An entry of the configuration space: (select, subsel) -> contents.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CfgEntry {
     select: u8,
@@ -139,14 +139,14 @@ struct CfgEntry {
     data: Vec<u8>,
 }
 
-/// Descrizione del dispositivo come la vede il driver.
+/// Description of the device as the driver sees it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InputConfig {
     entries: Vec<CfgEntry>,
 }
 
-/// Bitmap con i bit `codes` accesi, lunga fino al byte dell'ultimo bit
-/// (come `virtio_input_extend_config` di QEMU).
+/// Bitmap with the `codes` bits set, as long as the byte of the last bit
+/// (like QEMU's `virtio_input_extend_config`).
 fn bitmap(codes: &[u16]) -> Vec<u8> {
     let len = codes.iter().map(|&c| usize::from(c) / 8 + 1).max().unwrap_or(0);
     let mut b = vec![0u8; len];
@@ -156,9 +156,9 @@ fn bitmap(codes: &[u16]) -> Vec<u8> {
     b
 }
 
-/// Tasti di `virtio-keyboard-device`, a intervalli chiusi: i codici Linux
-/// della tabella qcode → linux di QEMU (`qemu_input_map_qcode_to_linux`),
-/// letti dal guest sotto QEMU 10.0 e 8.2 con EVIOCGBIT(EV_KEY): 159 tasti.
+/// Keys of `virtio-keyboard-device`, as closed ranges: the Linux codes
+/// of QEMU's qcode → linux table (`qemu_input_map_qcode_to_linux`),
+/// read by the guest under QEMU 10.0 and 8.2 with EVIOCGBIT(EV_KEY): 159 keys.
 pub const KEYBOARD_KEY_RANGES: &[(u16, u16)] = &[
     (0x01, 0x53),
     (0x56, 0x59),
@@ -175,12 +175,12 @@ pub const KEYBOARD_KEY_RANGES: &[(u16, u16)] = &[
     (0xe2, 0xe2),
 ];
 
-/// Pulsanti di tablet e touchscreen (`keymap_button` di QEMU).
+/// Tablet and touchscreen buttons (QEMU's `keymap_button`).
 pub const POINTER_BUTTONS: &[u16] =
     &[BTN_LEFT, BTN_RIGHT, BTN_MIDDLE, BTN_GEAR_UP, BTN_GEAR_DOWN, BTN_SIDE, BTN_EXTRA, BTN_TOUCH];
 
 impl InputConfig {
-    /// Dispositivo con il solo nome.
+    /// Device with just the name.
     pub fn new(name: &str) -> Self {
         let mut c = Self { entries: Vec::new() };
         c.set(CFG_ID_NAME, 0, name.as_bytes().iter().copied().chain([0]).take(128).collect());
@@ -196,7 +196,7 @@ impl InputConfig {
         self.entries.iter().find(|e| (e.select, e.subsel) == (select, subsel))
     }
 
-    /// Numero di serie (ID_SERIAL), senza terminatore come QEMU.
+    /// Serial number (ID_SERIAL), without a terminator like QEMU.
     pub fn serial(mut self, serial: &str) -> Self {
         self.set(CFG_ID_SERIAL, 0, serial.as_bytes().iter().copied().take(127).collect());
         self
@@ -212,14 +212,14 @@ impl InputConfig {
         self
     }
 
-    /// Proprietà (PROP_BITS), es. [`INPUT_PROP_DIRECT`].
+    /// Properties (PROP_BITS), e.g. [`INPUT_PROP_DIRECT`].
     pub fn props(mut self, props: &[u16]) -> Self {
         self.set(CFG_PROP_BITS, 0, bitmap(props));
         self
     }
 
-    /// Codici del tipo `ty` (EV_BITS). Una lista vuota con `min_len` > 0
-    /// dichiara il tipo senza codici (come EV_REP della tastiera di QEMU).
+    /// Codes of type `ty` (EV_BITS). An empty list with `min_len` > 0
+    /// declares the type without codes (like EV_REP of QEMU's keyboard).
     pub fn events(mut self, ty: u16, codes: &[u16], min_len: usize) -> Self {
         let mut b = bitmap(codes);
         if b.len() < min_len {
@@ -229,7 +229,7 @@ impl InputConfig {
         self
     }
 
-    /// Intervallo dell'asse assoluto `axis` (ABS_INFO).
+    /// Range of the absolute axis `axis` (ABS_INFO).
     pub fn abs(mut self, axis: u16, info: AbsInfo) -> Self {
         let mut d = Vec::with_capacity(20);
         for v in [info.min, info.max, info.fuzz, info.flat, info.res] {
@@ -239,7 +239,7 @@ impl InputConfig {
         self
     }
 
-    /// `virtio-keyboard-device` di QEMU.
+    /// QEMU's `virtio-keyboard-device`.
     pub fn keyboard() -> Self {
         Self::new("QEMU Virtio Keyboard")
             .devids(BUS_VIRTUAL, 0x0627, 0x0001, 0x0001)
@@ -248,8 +248,8 @@ impl InputConfig {
             .events(EV_KEY, &KEYBOARD_KEY_RANGES.iter().flat_map(|&(a, b)| a..=b).collect::<Vec<_>>(), 0)
     }
 
-    /// `virtio-tablet-device` di QEMU (con la rotella, `wheel-axis=on`):
-    /// puntatore assoluto con pulsanti.
+    /// QEMU's `virtio-tablet-device` (with the wheel, `wheel-axis=on`):
+    /// absolute pointer with buttons.
     pub fn tablet() -> Self {
         let axis = AbsInfo { max: ABS_MAX_VALUE, ..AbsInfo::default() };
         Self::new("QEMU Virtio Tablet")
@@ -261,8 +261,8 @@ impl InputConfig {
             .events(EV_KEY, POINTER_BUTTONS, 0)
     }
 
-    /// `virtio-multitouch-device` di QEMU: touchscreen diretto a più
-    /// contatti (protocollo B di Linux, con slot e tracking id).
+    /// QEMU's `virtio-multitouch-device`: direct multi-contact
+    /// touchscreen (Linux protocol B, with slots and tracking ids).
     pub fn multitouch() -> Self {
         let axis = AbsInfo { max: ABS_MAX_VALUE, ..AbsInfo::default() };
         let slots = AbsInfo { max: MT_SLOTS_MAX, ..AbsInfo::default() };
@@ -282,11 +282,11 @@ pub struct VirtioInput {
     config: InputConfig,
     select: u8,
     subsel: u8,
-    /// Il driver ha completato l'inizializzazione (primo `service` dopo
-    /// DRIVER_OK) e non c'è stato un reset.
+    /// The driver has completed initialisation (first `service` after
+    /// DRIVER_OK) and there has been no reset.
     active: bool,
     pending: VecDeque<InputEvent>,
-    /// Scarta fino al prossimo SYN_REPORT (rapporto troncato dal limite).
+    /// Discards up to the next SYN_REPORT (report truncated by the limit).
     discarding: bool,
     dropped: u64,
     leds: u32,
@@ -295,7 +295,7 @@ pub struct VirtioInput {
 }
 
 impl VirtioInput {
-    /// Code da 64 come QEMU.
+    /// 64-entry queues like QEMU.
     pub fn new(config: InputConfig) -> Self {
         Self {
             config,
@@ -315,8 +315,8 @@ impl VirtioInput {
         &self.config
     }
 
-    /// Accoda eventi per il guest; partono al prossimo `service`, a
-    /// rapporti interi. Senza driver attivo si scartano (come QEMU).
+    /// Queues events for the guest; they leave at the next `service`, in
+    /// whole reports. Without an active driver they are discarded (like QEMU).
     pub fn inject(&mut self, events: &[InputEvent]) {
         for &e in events {
             if !self.active {
@@ -324,8 +324,8 @@ impl VirtioInput {
                 continue;
             }
             if self.discarding || self.pending.len() >= MAX_PENDING {
-                // Il rapporto non entra: si scarta fino alla sua fine,
-                // compresi gli eventi già accodati dopo l'ultimo SYN_REPORT.
+                // The report doesn't fit: discard up to its end,
+                // including the events already queued after the last SYN_REPORT.
                 if !self.discarding {
                     while self.pending.back().is_some_and(|p| !p.is_report()) {
                         self.pending.pop_back();
@@ -340,13 +340,13 @@ impl VirtioInput {
         }
     }
 
-    /// Un tasto (codice Linux `KEY_*`/`BTN_*`) premuto o rilasciato, con
+    /// A key (Linux code `KEY_*`/`BTN_*`) pressed or released, with
     /// SYN_REPORT.
     pub fn key(&mut self, code: u16, down: bool) {
         self.inject(&[InputEvent::new(EV_KEY, code, down.into()), InputEvent::syn()]);
     }
 
-    /// Posizione assoluta (0..=[`ABS_MAX_VALUE`]) del tablet, con SYN_REPORT.
+    /// Absolute position (0..=[`ABS_MAX_VALUE`]) of the tablet, with SYN_REPORT.
     pub fn move_abs(&mut self, x: u32, y: u32) {
         self.inject(&[
             InputEvent { ty: EV_ABS, code: ABS_X, value: x },
@@ -355,9 +355,9 @@ impl VirtioInput {
         ]);
     }
 
-    /// Un contatto del touchscreen nello slot `slot`: `Some((x, y))` lo
-    /// mette o lo sposta (tracking id = slot), `None` lo toglie. Con
-    /// BTN_TOUCH e SYN_REPORT, come QEMU.
+    /// A touchscreen contact in slot `slot`: `Some((x, y))` puts it down
+    /// or moves it (tracking id = slot), `None` lifts it. With
+    /// BTN_TOUCH and SYN_REPORT, like QEMU.
     pub fn touch(&mut self, slot: u32, pos: Option<(u32, u32)>) {
         let mut ev = vec![
             InputEvent { ty: EV_ABS, code: ABS_MT_SLOT, value: slot },
@@ -372,22 +372,22 @@ impl VirtioInput {
         self.inject(&ev);
     }
 
-    /// Eventi in attesa di buffer del driver.
+    /// Events waiting for driver buffers.
     pub fn pending(&self) -> usize {
         self.pending.len()
     }
 
-    /// Eventi scartati (driver non attivo o coda piena).
+    /// Discarded events (driver not active or queue full).
     pub fn dropped(&self) -> u64 {
         self.dropped
     }
 
-    /// LED accesi dal guest: bit `LED_*` (NUML = bit 0, CAPSL = 1, ...).
+    /// LEDs lit by the guest: `LED_*` bits (NUML = bit 0, CAPSL = 1, ...).
     pub fn leds(&self) -> u32 {
         self.leds
     }
 
-    /// Eventi arrivati sulla coda di stato, dal più vecchio.
+    /// Events arrived on the status queue, oldest first.
     pub fn take_status(&mut self) -> Vec<InputEvent> {
         core::mem::take(&mut self.status)
     }
@@ -411,7 +411,7 @@ impl VirtioInput {
                 return Ok(());
             }
             for e in self.pending.drain(..n) {
-                let c = q.pop(ram)?.expect("catene contate da available");
+                let c = q.pop(ram)?.expect("chains counted from available");
                 let w = c.write(ram, 0, &e.to_bytes())?;
                 q.push_used(ram, c.head, w as u32)?;
             }
@@ -480,9 +480,9 @@ impl VirtioDevice for VirtioInput {
         self.deliver(&mut queues[EVENTQ], ram)
     }
 
-    /// Finestra di configurazione scelta, eventi in attesa, LED, eventi di
-    /// stato del guest, contatori. La configurazione (i bit evdev e gli assi
-    /// dichiarati) si controlla con un hash.
+    /// Selected configuration window, pending events, LEDs, guest status
+    /// events, counters. The configuration (the evdev bits and the declared
+    /// axes) is checked with a hash.
     fn save_state(&self, w: &mut vetro_snapshot::Writer) {
         w.u64(self.config_hash());
         w.u8(self.select);
@@ -497,7 +497,7 @@ impl VirtioDevice for VirtioInput {
     }
 
     fn restore_state(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
-        r.expect_u64("configurazione di virtio-input", self.config_hash())?;
+        r.expect_u64("virtio-input configuration", self.config_hash())?;
         self.select = r.u8()?;
         self.subsel = r.u8()?;
         self.active = r.bool()?;

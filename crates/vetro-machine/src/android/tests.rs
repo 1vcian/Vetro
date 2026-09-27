@@ -1,14 +1,14 @@
-//! Test del modulo `android`. Le immagini qui sono costruite da un piccolo
-//! scrittore che segue `mkbootimg.py` (casi limite ed errori); il confronto
-//! con le immagini prodotte da `mkbootimg.py` vero sta in
-//! `crates/vetro-machine/tests/mkbootimg.rs`, l'avvio del kernel guest in
+//! Tests of the `android` module. The images here are built by a small
+//! writer that follows `mkbootimg.py` (edge cases and errors); the comparison
+//! with images produced by the real `mkbootimg.py` lives in
+//! `crates/vetro-machine/tests/mkbootimg.rs`, the guest kernel boot in
 //! `tests/boot/tests/android.rs`.
 
 use super::decompress::{self, DecompressError, Format};
 use super::*;
 
 const TEXT: &[u8] = b"Vetro Vetro Vetro: emulatore ARM64, Vetro Vetro Vetro!\n";
-// Prodotti con `gzip -n -9` (1.14 di macOS) e `lz4 -9` 1.10.0 da TEXT.
+// Produced with `gzip -n -9` (1.14 on macOS) and `lz4 -9` 1.10.0 from TEXT.
 const TEXT_GZ: &[u8] = &[
     0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x03, 0x0b, 0x4b, 0x2d, 0x29, 0xca, 0x57, 0x08,
     0x43, 0x90, 0x56, 0x0a, 0xa9, 0xb9, 0xa5, 0x39, 0x89, 0x25, 0xf9, 0x45, 0xa9, 0x0a, 0x8e, 0x41, 0xbe,
@@ -21,15 +21,15 @@ const TEXT_LZ4_LEGACY: &[u8] = &[
     0xf8, 0x03, 0x3a, 0x20, 0x65, 0x6d, 0x75, 0x6c, 0x61, 0x74, 0x6f, 0x72, 0x65, 0x20, 0x41, 0x52, 0x4d,
     0x36, 0x34, 0x2c, 0x1e, 0x00, 0x80, 0x20, 0x56, 0x65, 0x74, 0x72, 0x6f, 0x21, 0x0a,
 ];
-/// `lz4 --content-size -BD`: blocchi collegati, dimensione e checksum del
-/// contenuto.
+/// `lz4 --content-size -BD`: linked blocks, size and checksum of the
+/// content.
 const TEXT_LZ4_FRAME: &[u8] = &[
     0x04, 0x22, 0x4d, 0x18, 0x6c, 0x40, 0x37, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xde, 0x28, 0x00,
     0x00, 0x00, 0x67, 0x56, 0x65, 0x74, 0x72, 0x6f, 0x20, 0x06, 0x00, 0xf8, 0x03, 0x3a, 0x20, 0x65, 0x6d,
     0x75, 0x6c, 0x61, 0x74, 0x6f, 0x72, 0x65, 0x20, 0x41, 0x52, 0x4d, 0x36, 0x34, 0x2c, 0x1e, 0x00, 0x80,
     0x20, 0x56, 0x65, 0x74, 0x72, 0x6f, 0x21, 0x0a, 0x00, 0x00, 0x00, 0x00, 0xd7, 0xf1, 0x41, 0x8b,
 ];
-/// `lz4 -BX`: checksum di blocco.
+/// `lz4 -BX`: block checksum.
 const TEXT_LZ4_FRAME_BX: &[u8] = &[
     0x04, 0x22, 0x4d, 0x18, 0x74, 0x40, 0xbd, 0x28, 0x00, 0x00, 0x00, 0x67, 0x56, 0x65, 0x74, 0x72, 0x6f,
     0x20, 0x06, 0x00, 0xf8, 0x03, 0x3a, 0x20, 0x65, 0x6d, 0x75, 0x6c, 0x61, 0x74, 0x6f, 0x72, 0x65, 0x20,
@@ -46,13 +46,13 @@ fn decomprime_vettori_degli_strumenti_veri() {
     assert_eq!(decompress::detect(TEXT_LZ4_FRAME), Format::Lz4Frame);
     assert_eq!(decompress::lz4_frame(TEXT_LZ4_FRAME).unwrap(), TEXT);
     assert_eq!(decompress::lz4_frame(TEXT_LZ4_FRAME_BX).unwrap(), TEXT);
-    // Due membri gzip concatenati e zeri in coda (come un'immagine su
-    // partizione).
+    // Two concatenated gzip members and zeros at the end (like an image on a
+    // partition).
     let mut two = TEXT_GZ.to_vec();
     two.extend_from_slice(TEXT_GZ);
     two.extend_from_slice(&[0; 7]);
     assert_eq!(decompress::gunzip(&two).unwrap(), [TEXT, TEXT].concat());
-    // Due stream lz4 legacy concatenati (come i ramdisk del GKI).
+    // Two concatenated legacy lz4 streams (like the GKI ramdisks).
     let mut two = TEXT_LZ4_LEGACY.to_vec();
     two.extend_from_slice(TEXT_LZ4_LEGACY);
     assert_eq!(decompress::lz4_legacy(&two).unwrap(), [TEXT, TEXT].concat());
@@ -70,16 +70,16 @@ fn decompressione_rileva_gli_errori() {
     assert!(matches!(decompress::gunzip(&bad), Err(DecompressError::Length { .. })));
     assert_eq!(decompress::gunzip(&TEXT_GZ[..20]), Err(DecompressError::Truncated));
     assert_eq!(decompress::lz4_legacy(&TEXT_LZ4_LEGACY[..20]), Err(DecompressError::Truncated));
-    // Distanza oltre l'inizio: blocco "1 letterale, match a distanza 5".
+    // Distance before the start: block "1 literal, match at distance 5".
     let block = [0x10, b'x', 5, 0, 0x00];
     assert!(matches!(decompress::lz4_block(&block, &mut Vec::new()), Err(DecompressError::BadData(_))));
-    // Tipo di blocco deflate riservato (BFINAL=1, BTYPE=3).
+    // Reserved deflate block type (BFINAL=1, BTYPE=3).
     assert!(matches!(decompress::inflate(&[0x07]), Err(DecompressError::BadData(_))));
-    assert!(decompress::decompress(b"niente di noto").is_err());
+    assert!(decompress::decompress(b"nothing known").is_err());
 }
 
-/// Dati di prova con parti ripetitive e parti casuali (blocchi deflate
-/// dinamici e non compressi).
+/// Test data with repetitive parts and random parts (dynamic and stored
+/// deflate blocks).
 fn sample(n: usize) -> Vec<u8> {
     let mut x = 0x9e37_79b9_7f4a_7c15u64;
     let mut v = Vec::with_capacity(n);
@@ -97,7 +97,7 @@ fn sample(n: usize) -> Vec<u8> {
     v
 }
 
-/// Comprime con lo strumento di sistema, se c'è.
+/// Compresses with the system tool, if present.
 fn compress_with(tool: &str, args: &[&str], data: &[u8]) -> Option<Vec<u8>> {
     use std::io::Write;
     use std::process::{Command, Stdio};
@@ -133,8 +133,8 @@ fn andata_e_ritorno_con_gzip_e_lz4_di_sistema() {
     }
 }
 
-/// L'initramfs del kernel guest (gzip -9 in `build.sh`): CRC32 e lunghezza
-/// controllati dal decompressore.
+/// The guest kernel's initramfs (gzip -9 in `build.sh`): CRC32 and length
+/// checked by the decompressor.
 #[test]
 fn initramfs_vero_del_kernel_guest() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/guest-kernel/initramfs.cpio.gz");
@@ -143,7 +143,7 @@ fn initramfs_vero_del_kernel_guest() {
         return;
     };
     let cpio = decompress::gunzip(&gz).unwrap();
-    assert!(cpio.starts_with(b"070701"), "non è un cpio newc");
+    assert!(cpio.starts_with(b"070701"), "not a newc cpio");
 }
 
 #[test]
@@ -155,7 +155,7 @@ fn versione_e_livello_delle_patch() {
 }
 
 // ---------------------------------------------------------------------------
-// Scrittore minimo di immagini, stesso layout di mkbootimg.py.
+// Minimal image writer, same layout as mkbootimg.py.
 
 fn pad(v: &mut Vec<u8>, page: usize) {
     v.resize(v.len().next_multiple_of(page), 0);
@@ -297,16 +297,16 @@ fn v4_con_ramdisk_multipli_bootconfig_e_init_boot() {
     let a = AndroidBoot::from_images(&boot, Some(&vendor), Some(&init), &opts).unwrap();
     assert_eq!(a.kernel, kernel);
     assert_eq!(a.kernel_format, Format::Image);
-    // Il vendor già dice `bootconfig`: non si ripete.
+    // The vendor already says `bootconfig`: it is not repeated.
     assert_eq!(a.cmdline, "console=ttyAMA0 vendor.x=1 bootconfig quiet");
     let text = "androidboot.hardware=vetro\nandroidboot.serialno = \"V1\"\nandroidboot.a = \"x y\"\n";
     assert_eq!(a.bootconfig, text);
     let (len, bc) = bootconfig::split(&a.initrd).unwrap();
-    assert_eq!(&a.initrd[..len], b"AAAADDGENERIC", "recovery escluso, generico da init_boot in coda");
+    assert_eq!(&a.initrd[..len], b"AAAADDGENERIC", "recovery excluded, generic from init_boot at the end");
     assert_eq!(bc, text.as_bytes());
     assert_eq!(a.ramdisks.len(), 3);
 
-    // In recovery anche il ramdisk di tipo recovery, nell'ordine della tabella.
+    // In recovery also the recovery-type ramdisk, in table order.
     let opts = BootOptions { recovery: true, ..BootOptions::default() };
     let a = AndroidBoot::from_images(&boot, Some(&vendor), Some(&init), &opts).unwrap();
     let (len, _) = bootconfig::split(&a.initrd).unwrap();
@@ -317,17 +317,17 @@ fn v4_con_ramdisk_multipli_bootconfig_e_init_boot() {
 fn bootconfig_aggiunto_alla_riga_di_comando_se_manca() {
     let boot = boot_v4(&fake_image(), b"GEN", "console=ttyAMA0");
     let vendor = vendor_v4(&[(b"V", 0, "v")], "", b"", 4096);
-    // Nessun bootconfig né parametri androidboot: niente trailer.
+    // No bootconfig and no androidboot parameters: no trailer.
     let a = AndroidBoot::from_images(&boot, Some(&vendor), None, &BootOptions::default()).unwrap();
     assert_eq!(a.initrd, b"VGEN");
     assert_eq!(a.cmdline, "console=ttyAMA0");
     assert_eq!(a.bootconfig, "");
-    // Con un androidboot del bootloader: trailer e `bootconfig`.
+    // With a bootloader androidboot: trailer and `bootconfig`.
     let opts = BootOptions { params: "androidboot.x=1".into(), ..BootOptions::default() };
     let a = AndroidBoot::from_images(&boot, Some(&vendor), None, &opts).unwrap();
     assert_eq!(a.cmdline, "console=ttyAMA0 bootconfig");
     assert_eq!(bootconfig::split(&a.initrd), Some((4, &b"androidboot.x = \"1\"\n"[..])));
-    // Una sezione del vendor senza a capo finale riceve il separatore.
+    // A vendor section without a final newline gets the separator.
     let vendor = vendor_v4(&[(b"V", 0, "v")], "", b"androidboot.y=2", 4096);
     let a = AndroidBoot::from_images(&boot, Some(&vendor), None, &opts).unwrap();
     assert_eq!(a.bootconfig, "androidboot.y=2\nandroidboot.x = \"1\"\n");
@@ -337,7 +337,7 @@ fn bootconfig_aggiunto_alla_riga_di_comando_se_manca() {
     let opts = BootOptions { params: "androidboot.y=nuovo androidboot.x=1".into(), ..BootOptions::default() };
     let a = AndroidBoot::from_images(&boot, Some(&vendor), None, &opts).unwrap();
     assert_eq!(a.bootconfig, "androidboot.y = \"nuovo\"\nandroidboot.z=3\nandroidboot.x = \"1\"\n");
-    // Chiave ripetuta nei parametri: il kernel rifiuterebbe tutto il blocco.
+    // Key repeated in the parameters: the kernel would reject the whole block.
     let opts = BootOptions { params: "androidboot.x=1 androidboot.x=2".into(), ..BootOptions::default() };
     assert!(matches!(
         AndroidBoot::from_images(&boot, Some(&vendor), None, &opts),
@@ -355,15 +355,15 @@ fn v3_senza_bootconfig_e_kernel_compresso() {
     let vendor = vendor_v3(b"VND", "v=1", 4096);
     let opts = BootOptions { params: "androidboot.x=1".into(), ..BootOptions::default() };
     let a = AndroidBoot::from_images(&boot, Some(&vendor), None, &opts).unwrap();
-    // v3: niente bootconfig, androidboot resta sulla riga di comando.
+    // v3: no bootconfig, androidboot stays on the command line.
     assert_eq!(a.cmdline, "console=ttyAMA0 v=1 androidboot.x=1");
     assert_eq!(a.initrd, b"VNDGEN");
     assert_eq!(a.kernel, kernel);
     if gz.is_some() {
         assert_eq!(a.kernel_format, Format::Gzip);
     }
-    // Kernel LZ4 legacy (formato di boot-lz4.img del GKI): un blocco di soli
-    // letterali.
+    // Legacy LZ4 kernel (format of the GKI boot-lz4.img): a block of only
+    // literals.
     let mut lz = decompress::LZ4_LEGACY_MAGIC.to_le_bytes().to_vec();
     let mut block = vec![0xf0];
     let mut n = kernel.len() - 15;
@@ -412,7 +412,7 @@ fn errori_delle_immagini() {
     let mut odd = boot_v2(&kernel, b"", "", 2048);
     put32(&mut odd, 36, 3000);
     assert_eq!(BootImage::parse(&odd), Err(AndroidError::BadPageSize(Which::Boot, 3000)));
-    // init_boot con un kernel.
+    // init_boot with a kernel.
     assert_eq!(BootImage::parse_init_boot(&boot), Err(AndroidError::BadInitBoot("contiene un kernel")));
     // vendor_boot con un boot.img v2.
     let v2 = boot_v2(&kernel, b"", "", 2048);
@@ -421,7 +421,7 @@ fn errori_delle_immagini() {
         AndroidBoot::from_images(&v2, Some(&vendor), None, &BootOptions::default()),
         Err(AndroidError::Mismatch(_))
     ));
-    // Tabella dei ramdisk con una voce fuori dalla sezione.
+    // Ramdisk table with an entry outside the section.
     let mut vendor = vendor_v4(&[(b"AAAA", 1, "a")], "", b"", 4096);
     let table = 4096 * 3;
     put32(&mut vendor, table, 5);
@@ -432,7 +432,7 @@ fn errori_delle_immagini() {
         AndroidBoot::from_images(&empty, None, None, &BootOptions::default()),
         Err(AndroidError::NoKernel)
     );
-    let junk = boot_v4(b"questo non e' un kernel", b"", "");
+    let junk = boot_v4(b"this is not a kernel", b"", "");
     assert!(matches!(
         AndroidBoot::from_images(&junk, None, None, &BootOptions::default()),
         Err(AndroidError::Kernel(Format::Unknown, _))

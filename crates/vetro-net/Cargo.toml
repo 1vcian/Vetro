@@ -1,6 +1,6 @@
 [package]
 name = "vetro-net"
-description = "Stack TCP/IP virtuale, sinkhole e client del relay."
+description = "Virtual TCP/IP stack, sinkhole and relay client."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,8 +9,8 @@ publish.workspace = true
 [lints]
 workspace = true
 
-# Solo per i test: parser indipendente per validare i pacchetti prodotti
-# (checksum, campi, DHCP, DNS). Non entra nel crate né nel build WASM. ADR 0007.
+# Tests only: independent parser to validate the packets we produce
+# (checksums, fields, DHCP, DNS). Not part of the crate nor of the WASM build. ADR 0007.
 [dev-dependencies]
 smoltcp = { version = "0.14", default-features = false, features = ["std", "medium-ethernet", "proto-ipv4", "proto-dhcpv4", "proto-dns", "socket-raw"] }
 

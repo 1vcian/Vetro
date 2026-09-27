@@ -11,8 +11,8 @@ fn dev(d: &mut Driver<VirtioMmio>) -> &mut VirtioInput {
     d.t.device_as_mut::<VirtioInput>().unwrap()
 }
 
-/// Legge una voce come `virtinput_cfg_select` di Linux: scrive select e
-/// subsel, legge size e poi i byte.
+/// Reads an entry like Linux's `virtinput_cfg_select`: writes select and
+/// subsel, reads size and then the bytes.
 fn cfg(d: &mut Driver<VirtioMmio>, select: u8, subsel: u8) -> Vec<u8> {
     d.t.cfg_wr(0, 1, u64::from(select));
     d.t.cfg_wr(1, 1, u64::from(subsel));
@@ -20,7 +20,7 @@ fn cfg(d: &mut Driver<VirtioMmio>, select: u8, subsel: u8) -> Vec<u8> {
     (0..size).map(|i| d.t.cfg(8 + i as u64, 1) as u8).collect()
 }
 
-/// Offre `n` buffer da 8 byte sulla coda eventi: (testa, indirizzo).
+/// Offers `n` 8-byte buffers on the event queue: (head, address).
 fn offer(d: &mut Driver<VirtioMmio>, n: usize) -> Vec<(u16, u64)> {
     (0..n)
         .map(|_| {
@@ -51,12 +51,12 @@ fn tastiera_come_qemu() {
         assert_eq!(d.t.rd(QUEUE_NUM_MAX), 64);
     }
     assert_eq!(cfg(&mut d, CFG_ID_NAME, 0), b"QEMU Virtio Keyboard\0");
-    assert_eq!(cfg(&mut d, CFG_ID_SERIAL, 0), b"", "senza seriale, come QEMU");
+    assert_eq!(cfg(&mut d, CFG_ID_SERIAL, 0), b"", "without a serial, like QEMU");
     assert_eq!(cfg(&mut d, CFG_ID_DEVIDS, 0), [6, 0, 0x27, 0x06, 1, 0, 1, 0]);
-    assert_eq!(cfg(&mut d, CFG_EV_BITS, EV_REP as u8), [0], "EV_REP senza codici");
+    assert_eq!(cfg(&mut d, CFG_EV_BITS, EV_REP as u8), [0], "EV_REP without codes");
     assert_eq!(cfg(&mut d, CFG_EV_BITS, EV_LED as u8), [7]);
     let keys = cfg(&mut d, CFG_EV_BITS, EV_KEY as u8);
-    // Lo stesso che Linux mostra in /proc/bus/input/devices sotto QEMU:
+    // The same that Linux shows in /proc/bus/input/devices under QEMU:
     // KEY=400000007 ff803078f800dfff febeffff7bcfffff fffffffffffffffe
     let words: Vec<u64> =
         keys.chunks(8).map(|c| c.iter().rev().fold(0u64, |a, &b| (a << 8) | u64::from(b))).collect();
@@ -65,7 +65,7 @@ fn tastiera_come_qemu() {
     assert_eq!(n, 159);
     assert_eq!(cfg(&mut d, CFG_EV_BITS, EV_ABS as u8), b"");
     assert_eq!(cfg(&mut d, CFG_PROP_BITS, 0), b"");
-    // Voce assente: anche select e subsel si leggono 0 (come QEMU).
+    // Missing entry: select and subsel also read 0 (like QEMU).
     d.t.cfg_wr(0, 1, u64::from(CFG_ABS_INFO));
     assert_eq!(d.t.cfg(0, 4), 0);
 }
@@ -75,7 +75,7 @@ fn tablet_e_touchscreen_come_qemu() {
     let mut d = driver(InputConfig::tablet());
     assert_eq!(cfg(&mut d, CFG_ID_NAME, 0), b"QEMU Virtio Tablet\0");
     assert_eq!(cfg(&mut d, CFG_ID_DEVIDS, 0), [6, 0, 0x27, 0x06, 3, 0, 2, 0]);
-    // /proc/bus/input/devices sotto QEMU: EV=f KEY=30400 1f0000 0 0 0 0 REL=100 ABS=3.
+    // /proc/bus/input/devices under QEMU: EV=f KEY=30400 1f0000 0 0 0 0 REL=100 ABS=3.
     assert_eq!(cfg(&mut d, CFG_EV_BITS, EV_ABS as u8), [3]);
     assert_eq!(cfg(&mut d, CFG_EV_BITS, EV_REL as u8), [0, 1]);
     let keys = cfg(&mut d, CFG_EV_BITS, EV_KEY as u8);
@@ -99,15 +99,15 @@ fn eventi_a_rapporti_interi() {
     let mut d = driver(InputConfig::keyboard());
     let bufs = offer(&mut d, 3);
     d.service();
-    assert_eq!(d.irq(), 0, "nessun evento");
-    dev(&mut d).key(30, true); // KEY_A: 2 eventi
-    dev(&mut d).key(30, false); // altri 2: il secondo rapporto non entra
+    assert_eq!(d.irq(), 0, "no event");
+    dev(&mut d).key(30, true); // KEY_A: 2 events
+    dev(&mut d).key(30, false); // another 2: the second report doesn't fit
     d.service();
     assert_eq!(d.irq(), INT_VRING);
     let got = received(&mut d, &bufs);
     assert_eq!(got, [InputEvent::new(EV_KEY, 30, 1), InputEvent::syn()]);
-    assert_eq!(dev(&mut d).pending(), 2, "il rilascio aspetta i buffer");
-    // Rapporto incompleto (senza SYN): non parte.
+    assert_eq!(dev(&mut d).pending(), 2, "the release waits for the buffers");
+    // Incomplete report (without SYN): it doesn't leave.
     dev(&mut d).inject(&[InputEvent::new(EV_KEY, 31, 1)]);
     let mut bufs = bufs;
     bufs.extend(offer(&mut d, 4));
@@ -116,7 +116,7 @@ fn eventi_a_rapporti_interi() {
     assert_eq!(got, [InputEvent::new(EV_KEY, 30, 0), InputEvent::syn()]);
     dev(&mut d).inject(&[InputEvent::syn()]);
     d.service();
-    // Con il SYN il rapporto è completo e parte.
+    // With the SYN the report is complete and leaves.
     assert_eq!(dev(&mut d).pending(), 0);
     assert_eq!(dev(&mut d).dropped(), 0);
 }
@@ -136,7 +136,7 @@ fn senza_driver_attivo_si_scarta() {
         got,
         [InputEvent::new(EV_ABS, ABS_X, 100), InputEvent::new(EV_ABS, ABS_Y, 200), InputEvent::syn()]
     );
-    // Reset: il driver non è più attivo.
+    // Reset: the driver is no longer active.
     d.t.wr(STATUS, 0);
     dev(&mut d).move_abs(1, 2);
     assert_eq!(dev(&mut d).pending(), 0);
@@ -154,7 +154,7 @@ fn coda_piena_scarta_rapporti_interi() {
     dev(&mut d).inject(&[InputEvent::new(EV_KEY, 32, 1)]);
     assert_eq!(dev(&mut d).pending(), MAX_PENDING);
     assert_eq!(dev(&mut d).dropped(), 3);
-    // Senza la fine del rapporto troncato si scarta anche il SYN.
+    // Without the end of the truncated report the SYN is discarded too.
     dev(&mut d).inject(&[InputEvent::syn()]);
     assert_eq!(dev(&mut d).dropped(), 4);
 }

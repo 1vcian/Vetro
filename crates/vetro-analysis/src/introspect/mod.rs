@@ -1,22 +1,24 @@
-//! Introspezione del sistema operativo guest dall'esterno (ADR 0027): la
-//! base comune degli hook TLS (M7), del decoder Binder (M8) e di ART e
-//! dello scripting (M9).
+//! Introspection of the guest operating system from the outside (ADR 0027):
+//! the common base of the TLS hooks (M7), the Binder decoder (M8) and of ART
+//! and scripting (M9).
 //!
-//! Tutto si legge dalla memoria fisica del guest, senza agenti né moduli
-//! nel guest e senza scriverci: il guest non può accorgersene.
+//! Everything is read from the guest's physical memory, with no agents or
+//! modules in the guest and without writing to it: the guest cannot notice.
 //!
-//! - [`btf`]: tipi del kernel dal BTF (offset delle strutture);
-//! - [`kallsyms`]: simboli del kernel da `System.map` o dalla tabella
-//!   kallsyms dentro l'`Image`;
-//! - [`layout`]: gli offset che servono, dal BTF;
-//! - [`mem`]: memoria fisica e traduzione con le tabelle delle pagine;
-//! - [`linux`]: processi, thread, mappe, file aperti, page cache;
-//! - [`elf`]: simboli dello spazio utente (file o memoria);
-//! - [`strace`]: syscall tracciate e decodificate;
-//! - [`binder`]: comandi e transazioni di `BINDER_WRITE_READ`;
-//! - [`parcel`], [`aidl`], [`ipc`], [`privacy`]: decoder Binder di M8
-//!   (intestazione del Parcel, nomi dei metodi AIDL dell'immagine, chiamate
-//!   con mittente e destinatario, accessi sensibili).
+//! - [`btf`]: kernel types from BTF (structure offsets);
+//! - [`kallsyms`]: kernel symbols from `System.map` or from the kallsyms
+//!   table inside the `Image`;
+//! - [`layout`]: the offsets we need, from BTF;
+//! - [`mem`]: physical memory and translation through the page tables;
+//! - [`linux`]: processes, threads, mappings, open files, page cache;
+//! - [`elf`]: user-space symbols (file or memory);
+//! - [`strace`]: traced and decoded syscalls;
+//! - [`binder`]: commands and transactions of `BINDER_WRITE_READ`;
+//! - [`parcel`], [`aidl`], [`ipc`], [`privacy`]: M8's Binder decoder
+//!   (Parcel header, AIDL method names from the image, calls with sender
+//!   and receiver, sensitive accesses).
+//!
+//! Interface: `docs/specs/introspection.md`.
 //!
 //! Interfaccia: `docs/specs/introspection.md`.
 

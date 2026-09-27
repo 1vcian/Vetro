@@ -1,5 +1,5 @@
-//! TCP terminato lato host: handshake, dati, finestre, ritrasmissione,
-//! FIN e RST, con un finto guest e il sinkhole.
+//! TCP terminated on the host side: handshake, data, windows, retransmission,
+//! FIN and RST, with a fake guest and the sinkhole.
 
 mod common;
 
@@ -24,7 +24,7 @@ fn one(out: Vec<Out>) -> TcpSeg {
     out.into_iter().next().unwrap().tcp()
 }
 
-/// Handshake completo; restituisce il client pronto.
+/// Full handshake; returns the ready client.
 fn connect(s: &mut Stack<Sinkhole>, now: u64, sport: u16, dst: SocketAddrV4) -> Client {
     let mut c = Client::new(sport, dst);
     s.receive(t(now), &c.syn());
@@ -45,7 +45,7 @@ fn kinds(s: &Stack<Sinkhole>) -> Vec<EventKind> {
 #[test]
 fn http_session_with_dns_attribution_and_server_close() {
     let mut s = stack_with(SinkholeConfig::default());
-    // DNS prima: la connessione verso l'indirizzo finto porta il nome.
+    // DNS first: the connection to the fake address carries the name.
     s.receive(
         t(0),
         &Guest::udp(50000, SocketAddrV4::new(DNS_IP, 53), &dns::build_query(9, "api.example.org", TYPE_A)),
@@ -56,12 +56,12 @@ fn http_session_with_dns_attribution_and_server_close() {
     s.take_events();
 
     let mut c = connect(&mut s, 10, 41000, dst);
-    assert!(drain(&mut s).is_empty(), "nessun dato prima della richiesta");
+    assert!(drain(&mut s).is_empty(), "no data before the request");
 
     let req = b"GET /v1/ping HTTP/1.1\r\nHost: api.example.org\r\n\r\n";
     s.receive(t(20), &c.send(req));
     let out = drain(&mut s);
-    // ACK dei dati insieme alla risposta, poi FIN (close_after_reply).
+    // ACK of the data together with the response, then FIN (close_after_reply).
     assert_eq!(out.len(), 2, "{out:?}");
     let data = out[0].clone().tcp();
     let fin = out[1].clone().tcp();
@@ -71,14 +71,14 @@ fn http_session_with_dns_attribution_and_server_close() {
     assert!(fin.fin && fin.payload.is_empty());
     c.take(&fin);
 
-    // Il guest riscontra tutto e chiude a sua volta.
+    // The guest acknowledges everything and closes in turn.
     s.receive(t(30), &c.ack_now());
     assert!(drain(&mut s).is_empty());
     s.receive(t(31), &c.fin());
     let last = one(drain(&mut s));
-    assert_eq!(last.ack, Some(c.seq), "ACK del FIN del guest");
+    assert_eq!(last.ack, Some(c.seq), "ACK of the guest's FIN");
     assert!(!last.fin && !last.rst);
-    // TIME-WAIT: la connessione resta per 4 s virtuali.
+    // TIME-WAIT: the connection stays for 4 virtual seconds.
     assert_eq!(s.tcp_connections(), 1);
     assert_eq!(s.next_deadline(), Some(t(4031)));
     s.poll(t(4030));
@@ -124,8 +124,8 @@ fn guest_closes_first_and_server_follows() {
     assert_eq!(ack.ack, Some(c.seq));
     assert!(ack.payload.is_empty());
 
-    // FIN del guest: lo stack riscontra e, siccome il sinkhole chiude quando
-    // il client ha finito, manda subito anche il suo FIN (LAST-ACK).
+    // Guest FIN: the stack acknowledges and, since the sinkhole closes when
+    // the client has finished, immediately sends its FIN too (LAST-ACK).
     s.receive(t(2), &c.fin());
     let fin = one(drain(&mut s));
     assert!(fin.fin);
@@ -133,7 +133,7 @@ fn guest_closes_first_and_server_follows() {
     c.take(&fin);
     s.receive(t(3), &c.ack_now());
     assert!(drain(&mut s).is_empty());
-    assert_eq!(s.tcp_connections(), 0, "chiusa senza TIME-WAIT lato host");
+    assert_eq!(s.tcp_connections(), 0, "closed without TIME-WAIT on the host side");
     assert_eq!(
         kinds(&s).last().unwrap(),
         &EventKind::TcpClosed { id: 1, reason: CloseReason::Normal, bytes_to_remote: 5, bytes_to_guest: 0 }
@@ -161,23 +161,23 @@ fn banner_retransmitted_until_acknowledged() {
     let banner = one(drain(&mut s));
     assert_eq!(banner.payload, b"220 vetro ESMTP\r\n");
 
-    // Il guest "perde" il banner: dopo l'RTO iniziale (1 s) torna uguale.
+    // The guest "loses" the banner: after the initial RTO (1 s) it comes back unchanged.
     assert_eq!(s.next_deadline(), Some(t(1000)));
     s.poll(t(999));
     assert!(drain(&mut s).is_empty());
     s.poll(t(1000));
     let again = one(drain(&mut s));
     assert_eq!((again.seq, &again.payload), (banner.seq, &banner.payload));
-    // Raddoppio: il prossimo tentativo è a +2 s.
+    // Doubling: the next attempt is at +2 s.
     assert_eq!(s.next_deadline(), Some(t(3000)));
     c.take(&again);
     s.receive(t(1100), &c.ack_now());
-    assert_eq!(s.next_deadline(), None, "tutto riscontrato: nessun timer");
+    assert_eq!(s.next_deadline(), None, "everything acknowledged: no timer");
     s.poll(t(1150));
     assert!(drain(&mut s).is_empty());
 
-    // L'ACK di dati nuovi ha annullato il raddoppio: la risposta successiva
-    // riparte con l'RTO base (1 s: nessun campione valido, per Karn).
+    // The ACK of new data cancelled the doubling: the next response
+    // starts again with the base RTO (1 s: no valid sample, per Karn).
     s.receive(t(1200), &c.send(b"EHLO guest\r\n"));
     let reply = one(drain(&mut s));
     assert_eq!(reply.payload, b"250 ok\r\n");
@@ -191,11 +191,11 @@ fn syn_ack_retransmitted_and_duplicate_syn_answered() {
     let mut c = Client::new(41003, REMOTE);
     s.receive(t(0), &c.syn());
     let first = one(drain(&mut s));
-    // SYN ritrasmesso dal guest: stesso SYN-ACK.
+    // SYN retransmitted by the guest: same SYN-ACK.
     s.receive(t(500), &c.syn());
     let dup = one(drain(&mut s));
     assert_eq!((dup.seq, dup.ack, dup.syn), (first.seq, first.ack, true));
-    // Nessun ACK: il timer ritrasmette il SYN-ACK.
+    // No ACK: the timer retransmits the SYN-ACK.
     s.poll(t(1500));
     let rtx = one(drain(&mut s));
     assert!(rtx.syn && rtx.seq == first.seq);
@@ -228,13 +228,13 @@ fn large_response_respects_mss_window_and_ack_clocking() {
         let mut in_flight = 0usize;
         for o in out {
             let seg = o.tcp();
-            assert!(seg.payload.len() <= 536, "segmento oltre l'MSS del guest");
+            assert!(seg.payload.len() <= 536, "segment over the guest's MSS");
             in_flight += seg.payload.len();
             c.take(&seg);
             got.extend_from_slice(&seg.payload);
             fin_seen |= seg.fin;
         }
-        assert!(in_flight <= 3000, "oltre la finestra del guest: {in_flight}");
+        assert!(in_flight <= 3000, "beyond the guest's window: {in_flight}");
         if fin_seen {
             break;
         }
@@ -258,18 +258,18 @@ fn zero_window_probe_then_window_opens() {
     c.window = 0;
     let ack = c.on_syn_ack(&synack);
     s.receive(t(0), &ack);
-    assert!(drain(&mut s).is_empty(), "finestra zero: niente dati");
+    assert!(drain(&mut s).is_empty(), "zero window: no data");
 
-    // Sonda allo scadere del timer; il guest risponde con finestra ancora
-    // zero, quindi la connessione non viene abbandonata anche oltre il
-    // numero massimo di ritrasmissioni.
+    // Probe when the timer expires; the guest answers with a window still
+    // zero, so the connection is not abandoned even beyond the
+    // maximum number of retransmissions.
     let mut now = 0;
     for _ in 0..(vetro_net_max_retries() + 3) {
         now = s.next_deadline().unwrap().as_micros().div_ceil(1000);
         s.poll(t(now));
         let probe = one(drain(&mut s));
         assert!(probe.payload.is_empty());
-        assert_eq!(probe.seq, c.ack.wrapping_sub(1), "sequenza già riscontrata");
+        assert_eq!(probe.seq, c.ack.wrapping_sub(1), "sequence already acknowledged");
         s.receive(t(now), &c.ack_now());
         assert!(drain(&mut s).is_empty());
     }
@@ -281,7 +281,7 @@ fn zero_window_probe_then_window_opens() {
     assert_eq!(seg.payload, vec![7u8; 100]);
 }
 
-/// Stesso valore di `tcp::MAX_RETRIES` (privato nel crate).
+/// Same value as `tcp::MAX_RETRIES` (private in the crate).
 fn vetro_net_max_retries() -> usize {
     15
 }
@@ -322,12 +322,12 @@ fn guest_reset_closes_connection() {
     let mut c = connect(&mut s, 0, 41007, REMOTE);
     s.receive(t(1), &c.send(b"abc"));
     drain(&mut s);
-    // RST fuori finestra: ignorato.
+    // RST outside the window: ignored.
     s.receive(t(2), &c.segment(c.seq.wrapping_add(100_000), F_RST, b""));
     assert_eq!(s.tcp_connections(), 1);
     s.receive(t(3), &c.segment(c.seq, F_RST, b""));
     assert_eq!(s.tcp_connections(), 0);
-    assert!(drain(&mut s).is_empty(), "nessuna risposta a un RST");
+    assert!(drain(&mut s).is_empty(), "no answer to an RST");
     assert_eq!(
         kinds(&s).last().unwrap(),
         &EventKind::TcpClosed {
@@ -361,16 +361,16 @@ fn refused_port_gets_rst_and_unknown_segments_get_rst() {
     ));
     assert!(!s.upstream().tcp_connection(1).unwrap().reset);
 
-    // Segmento con ACK per una connessione che non esiste: RST con seq = ACK.
+    // Segment with ACK for a connection that doesn't exist: RST with seq = ACK.
     c.ack = 777;
     s.receive(t(1), &c.segment(5, F_ACK, b"zz"));
     let r = one(drain(&mut s));
     assert!(r.rst && r.seq == 777 && r.ack.is_none());
-    // Senza ACK: RST|ACK che riscontra il segmento.
+    // Without ACK: RST|ACK acknowledging the segment.
     s.receive(t(1), &c.segment(5, F_FIN, b"zz"));
     let r = one(drain(&mut s));
     assert!(r.rst && r.seq == 0 && r.ack == Some(8));
-    // A un RST non si risponde mai.
+    // An RST is never answered.
     s.receive(t(1), &c.segment(5, F_RST, b""));
     assert!(drain(&mut s).is_empty());
 }
@@ -380,16 +380,16 @@ fn out_of_order_segment_is_dropped_with_duplicate_ack() {
     let mut s = stack_with(SinkholeConfig::default());
     let c = connect(&mut s, 0, 41009, REMOTE);
     let base = c.seq;
-    // Arriva prima il secondo pezzo.
+    // The second piece arrives first.
     s.receive(t(1), &c.segment(base.wrapping_add(3), F_ACK, b"def"));
     let dup = one(drain(&mut s));
     assert_eq!(dup.ack, Some(base));
     s.receive(t(2), &c.segment(base, F_ACK, b"abc"));
     assert_eq!(one(drain(&mut s)).ack, Some(base.wrapping_add(3)));
-    // Ritrasmissione che si sovrappone: si prende solo la parte nuova.
+    // Overlapping retransmission: only the new part is taken.
     s.receive(t(3), &c.segment(base.wrapping_add(1), F_ACK, b"bcdef"));
     assert_eq!(one(drain(&mut s)).ack, Some(base.wrapping_add(6)));
-    // Duplicato completo: solo un ACK.
+    // Complete duplicate: only an ACK.
     s.receive(t(4), &c.segment(base, F_ACK, b"abc"));
     assert_eq!(one(drain(&mut s)).ack, Some(base.wrapping_add(6)));
     assert_eq!(s.upstream().tcp_connection(1).unwrap().from_guest, b"abcdef");
@@ -401,7 +401,7 @@ fn out_of_order_segment_is_dropped_with_duplicate_ack() {
             _ => None,
         })
         .sum();
-    assert_eq!(to_remote, 6, "i byte ripetuti non si contano due volte");
+    assert_eq!(to_remote, 6, "repeated bytes are not counted twice");
 }
 
 #[test]
@@ -414,8 +414,8 @@ fn syn_in_established_gets_challenge_ack() {
     assert_eq!(s.tcp_connections(), 1);
 }
 
-/// Upstream lento: accetta pochi byte alla volta, così la finestra annunciata
-/// al guest si chiude e poi si riapre.
+/// Slow upstream: accepts few bytes at a time, so the window announced
+/// to the guest closes and then reopens.
 #[derive(Default)]
 struct Slow {
     budget: usize,
@@ -456,7 +456,7 @@ fn receive_window_tracks_upstream_backpressure() {
     let chunk = vec![1u8; 1460];
     let mut sent = 0usize;
     let mut window = 65_535usize;
-    // Riempie la finestra: l'upstream non prende niente.
+    // Fills the window: the upstream takes nothing.
     while window > 0 {
         let n = chunk.len().min(window);
         s.receive(t(1), &c.send(&chunk[..n]));
@@ -466,11 +466,11 @@ fn receive_window_tracks_upstream_backpressure() {
         window = usize::from(a.window);
         assert_eq!(window, 65_535 - sent);
     }
-    // Un byte oltre la finestra zero non viene accettato.
+    // A byte beyond the zero window is not accepted.
     s.receive(t(2), &c.segment(c.seq, F_ACK, b"x"));
     assert_eq!(one(drain(&mut s)).ack, Some(c.seq));
 
-    // L'upstream si libera: aggiornamento di finestra spontaneo.
+    // The upstream frees up: spontaneous window update.
     s.upstream_mut().budget = 10_000;
     s.poll(t(3));
     let upd = one(drain(&mut s));
@@ -539,9 +539,9 @@ fn seq_lt(a: u32, b: u32) -> bool {
     (a.wrapping_sub(b) as i32) < 0
 }
 
-/// Trasferimento in entrambi i versi, contemporaneo, su un cavo che perde
-/// il 20% dei frame in ciascun verso. Il finto guest è un TCP minimo con
-/// go-back-N; lo stack deve consegnare tutto, in ordine, e chiudere pulito.
+/// Simultaneous transfer in both directions over a cable that loses
+/// 20% of the frames in each direction. The fake guest is a minimal TCP with
+/// go-back-N; the stack must deliver everything, in order, and close cleanly.
 fn lossy_transfer(seed: u64) {
     let download: Vec<u8> = (0..120_000u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8).collect();
     let upload: Vec<u8> = (0..40_000u32).map(|i| (i % 253) as u8).collect();
@@ -565,7 +565,7 @@ fn lossy_transfer(seed: u64) {
     let mut done_at = None;
 
     for _ in 0..50_000 {
-        // Frame dallo stack al guest.
+        // Frames from the stack to the guest.
         let mut need_ack = false;
         while let Some(f) = s.pop_frame() {
             let seg = validate(&f).tcp();
@@ -599,12 +599,12 @@ fn lossy_transfer(seed: u64) {
             done_at = Some(now);
             break;
         }
-        // Timeout del guest: go-back-N.
+        // Guest timeout: go-back-N.
         if acked != next && now - last_progress >= 300 {
             next = acked;
             last_progress = now;
         }
-        // Dati (e FIN) del guest nella finestra dello stack.
+        // Guest data (and FIN) within the stack's window.
         let limit = peer_window.min(8_000);
         while next.wrapping_sub(acked) < limit && seq_lt(next, fin_end) {
             let frame = if next == end {
@@ -628,7 +628,7 @@ fn lossy_transfer(seed: u64) {
     }
     let done_at = done_at.unwrap_or_else(|| {
         panic!(
-            "trasferimento non concluso (seme {seed}, scadenza {:?}, ora {now}): acked={} next={} end={end} ricevuti={} fin={got_fin} conn={} ultimi eventi {:?}",
+            "transfer not finished (seed {seed}, deadline {:?}, now {now}): acked={} next={} end={end} received={} fin={got_fin} conn={} last events {:?}",
             s.next_deadline(),
             acked.wrapping_sub(base),
             next.wrapping_sub(base),
@@ -642,9 +642,9 @@ fn lossy_transfer(seed: u64) {
     let rec = s.upstream().tcp_connection(1).unwrap();
     assert!(rec.from_guest == upload, "upload corrotto");
     assert!(rec.guest_shutdown);
-    // Gli ultimi ACK del guest possono essersi persi: il guest resta in
-    // ascolto (senza perdite) e riscontra le ritrasmissioni dello stack.
-    // Lo stack ha chiuso per primo: TIME-WAIT, poi si chiude da solo.
+    // The guest's last ACKs may have been lost: the guest keeps
+    // listening (without losses) and acknowledges the stack's retransmissions.
+    // The stack closed first: TIME-WAIT, then it closes by itself.
     let mut now = done_at;
     while s.tcp_connections() > 0 && now < done_at + 200_000 {
         now = s.next_deadline().map_or(now + 1_000, |d| d.as_micros().div_ceil(1_000));

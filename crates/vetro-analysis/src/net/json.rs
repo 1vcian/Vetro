@@ -1,25 +1,25 @@
-//! JSON (RFC 8259): un parser che valida e conserva l'ordine delle chiavi
-//! (per decodificare i corpi) e un piccolo scrittore (per l'HAR).
+//! JSON (RFC 8259): a parser that validates and preserves key order
+//! (to decode bodies) and a small writer (for the HAR).
 
 use std::fmt::Write as _;
 
-/// Profondità massima accettata.
+/// Maximum accepted depth.
 const MAX_DEPTH: usize = 256;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Value {
     Null,
     Bool(bool),
-    /// Numero com'era scritto (nessuna perdita di precisione).
+    /// Number as it was written (no loss of precision).
     Number(String),
     String(String),
     Array(Vec<Value>),
-    /// Coppie in ordine; chiavi ripetute conservate.
+    /// Pairs in order; repeated keys preserved.
     Object(Vec<(String, Value)>),
 }
 
 impl Value {
-    /// Campo `key` di un oggetto (il primo).
+    /// Field `key` of an object (the first one).
     pub fn get(&self, key: &str) -> Option<&Value> {
         match self {
             Value::Object(v) => v.iter().find(|(k, _)| k == key).map(|(_, v)| v),
@@ -34,14 +34,14 @@ impl Value {
         }
     }
 
-    /// Serializzazione compatta.
+    /// Compact serialization.
     pub fn to_compact(&self) -> String {
         let mut s = String::new();
         self.write(&mut s, None, 0);
         s
     }
 
-    /// Serializzazione indentata di due spazi.
+    /// Serialization indented by two spaces.
     pub fn to_pretty(&self) -> String {
         let mut s = String::new();
         self.write(&mut s, Some(2), 0);
@@ -95,7 +95,7 @@ impl Value {
     }
 }
 
-/// Errore di sintassi con la posizione in byte.
+/// Syntax error with the byte position.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JsonError {
     pub at: usize,
@@ -104,7 +104,7 @@ pub struct JsonError {
 
 impl std::fmt::Display for JsonError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "JSON non valido a {}: {}", self.at, self.msg)
+        write!(f, "invalid JSON at {}: {}", self.at, self.msg)
     }
 }
 
@@ -129,17 +129,17 @@ impl Parser<'_> {
             self.pos += word.len();
             Ok(v)
         } else {
-            self.err("letterale non valido")
+            self.err("invalid literal")
         }
     }
 
     fn value(&mut self, depth: usize) -> Result<Value, JsonError> {
         if depth > MAX_DEPTH {
-            return self.err("annidamento troppo profondo");
+            return self.err("nesting too deep");
         }
         self.ws();
         match self.s.get(self.pos) {
-            None => self.err("fine inattesa"),
+            None => self.err("unexpected end"),
             Some(b'n') => self.lit(b"null", Value::Null),
             Some(b't') => self.lit(b"true", Value::Bool(true)),
             Some(b'f') => self.lit(b"false", Value::Bool(false)),
@@ -176,7 +176,7 @@ impl Parser<'_> {
                 loop {
                     self.ws();
                     if self.s.get(self.pos) != Some(&b'"') {
-                        return self.err("attesa una chiave");
+                        return self.err("expected a key");
                     }
                     let k = self.string()?;
                     self.ws();
@@ -197,7 +197,7 @@ impl Parser<'_> {
                 }
             }
             Some(b'-' | b'0'..=b'9') => self.number(),
-            Some(_) => self.err("carattere inatteso"),
+            Some(_) => self.err("unexpected character"),
         }
     }
 
@@ -219,12 +219,12 @@ impl Parser<'_> {
             Some(b'1'..=b'9') => {
                 self.digits();
             }
-            _ => return self.err("numero non valido"),
+            _ => return self.err("invalid number"),
         }
         if self.s.get(self.pos) == Some(&b'.') {
             self.pos += 1;
             if self.digits() == 0 {
-                return self.err("mancano le cifre decimali");
+                return self.err("missing decimal digits");
             }
         }
         if let Some(b'e' | b'E') = self.s.get(self.pos) {
@@ -233,18 +233,18 @@ impl Parser<'_> {
                 self.pos += 1;
             }
             if self.digits() == 0 {
-                return self.err("esponente senza cifre");
+                return self.err("exponent without digits");
             }
         }
         Ok(Value::Number(String::from_utf8_lossy(&self.s[start..self.pos]).into_owned()))
     }
 
     fn hex4(&mut self) -> Result<u32, JsonError> {
-        let h = self.s.get(self.pos..self.pos + 4).ok_or(JsonError { at: self.pos, msg: "\\u troncato" })?;
+        let h = self.s.get(self.pos..self.pos + 4).ok_or(JsonError { at: self.pos, msg: "\\u truncated" })?;
         let v = std::str::from_utf8(h)
             .ok()
             .and_then(|h| u32::from_str_radix(h, 16).ok())
-            .ok_or(JsonError { at: self.pos, msg: "\\u non esadecimale" })?;
+            .ok_or(JsonError { at: self.pos, msg: "\\u not hexadecimal" })?;
         self.pos += 4;
         Ok(v)
     }
@@ -262,10 +262,10 @@ impl Parser<'_> {
             }
             match std::str::from_utf8(&self.s[start..self.pos]) {
                 Ok(t) => out.push_str(t),
-                Err(_) => return Err(JsonError { at: start, msg: "UTF-8 non valido" }),
+                Err(_) => return Err(JsonError { at: start, msg: "invalid UTF-8" }),
             }
             match self.s.get(self.pos) {
-                None => return self.err("stringa non chiusa"),
+                None => return self.err("unterminated string"),
                 Some(b'"') => {
                     self.pos += 1;
                     return Ok(out);
@@ -273,7 +273,7 @@ impl Parser<'_> {
                 Some(b'\\') => {
                     self.pos += 1;
                     let e =
-                        *self.s.get(self.pos).ok_or(JsonError { at: self.pos, msg: "escape troncato" })?;
+                        *self.s.get(self.pos).ok_or(JsonError { at: self.pos, msg: "truncated escape" })?;
                     self.pos += 1;
                     match e {
                         b'"' => out.push('"'),
@@ -298,29 +298,29 @@ impl Parser<'_> {
                             }
                             out.push(char::from_u32(c).unwrap_or('\u{fffd}'));
                         }
-                        _ => return self.err("escape non valido"),
+                        _ => return self.err("invalid escape"),
                     }
                 }
-                Some(_) => return self.err("carattere di controllo nella stringa"),
+                Some(_) => return self.err("control character in string"),
             }
         }
     }
 }
 
-/// Decodifica un documento JSON completo (spazi attorno ammessi, BOM
-/// UTF-8 tollerato).
+/// Decodes a complete JSON document (surrounding whitespace allowed, UTF-8
+/// BOM tolerated).
 pub fn parse(s: &[u8]) -> Result<Value, JsonError> {
     let s = s.strip_prefix(b"\xef\xbb\xbf").unwrap_or(s);
     let mut p = Parser { s, pos: 0 };
     let v = p.value(0)?;
     p.ws();
     if p.pos != s.len() {
-        return p.err("dati dopo il documento");
+        return p.err("data after the document");
     }
     Ok(v)
 }
 
-/// Aggiunge `s` fra virgolette con gli escape di JSON.
+/// Appends `s` in quotes with JSON escapes.
 pub fn quote_into(out: &mut String, s: &str) {
     out.push('"');
     for c in s.chars() {

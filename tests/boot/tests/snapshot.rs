@@ -1,27 +1,27 @@
-//! Criterio della prima parte di M6: save/restore della macchina intera
-//! (ADR 0015) sul kernel guest di M3.
+//! Criterion of the first part of M6: save/restore of the whole machine
+//! (ADR 0015) on the M3 guest kernel.
 //!
-//! Ogni copione (avvio fino allo spegnimento, rete, disco, dispositivi) gira
-//! una volta senza interruzioni e poi con dei **tagli**: fra un quanto e
-//! l'altro la macchina si salva e il copione continua su una macchina
-//! **nuova** ripristinata dallo snapshot (con o senza JIT), oppure la
-//! macchina va avanti e poi torna indietro allo snapshot nello stesso posto
-//! (ripristino sopra una macchina usata, col JIT che ha tradotto codice nel
-//! frattempo). Il copione, cioè l'host, non se ne accorge. Alla fine devono
-//! coincidere con l'esecuzione senza tagli: il log della console byte per
-//! byte, il numero di istruzioni, la RAM e lo stato di tutti i dispositivi
-//! (lo snapshot finale); col JIT tutto tranne il TLB, che col JIT vede meno
-//! accessi (ADR 0013, "Differenza ammessa"). A ogni taglio due salvataggi
-//! danno gli stessi byte, e la macchina ripristinata risalva gli stessi byte.
+//! Every script (boot up to power-off, network, disk, devices) runs
+//! once without interruptions and then with **cuts**: between one quantum and
+//! the next the machine is saved and the script continues on a
+//! **new** machine restored from the snapshot (with or without JIT), or the
+//! machine goes on and then goes back to the snapshot in the same place
+//! (restore over a used machine, with the JIT having translated code in the
+//! meantime). The script, i.e. the host, doesn't notice. At the end they must
+//! match the run without cuts: the console log byte for
+//! byte, the number of instructions, the RAM and the state of all devices
+//! (the final snapshot); with the JIT everything except the TLB, which with the JIT sees fewer
+//! accesses (ADR 0013, "Allowed difference"). At every cut two saves
+//! give the same bytes, and the restored machine saves the same bytes again.
 //!
-//! In più: dimensione dello snapshot e tempi di salvataggio e ripristino alla
-//! shell (1 GiB di RAM), stampati e scritti in
+//! In addition: snapshot size and save and restore times at the
+//! shell (1 GiB of RAM), printed and written to
 //! `target/guest-kernel/snapshot-misure.txt`.
 //!
-//! Anche con una connessione aperta dall'host (inoltro di porte) a metà
-//! trasferimento, e a metà di una sessione del gestore dei file (M8).
+//! Also with a connection opened by the host (port forwarding) halfway through a
+//! transfer, and halfway through a file manager session (M8).
 //!
-//! Solo in release, come `vetro.rs`.
+//! Release only, like `vetro.rs`.
 
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -40,33 +40,33 @@ const QUANTUM: u64 = 1_000_000;
 const PHASE_BUDGET: u64 = 6_000_000_000;
 const JIT_THRESHOLD: u32 = 16;
 
-/// Che cosa succede a un taglio.
+/// What happens at a cut.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Cut {
-    /// Salva, ripristina in una macchina nuova e continua lì. `jit`: la
-    /// macchina nuova ha il JIT.
+    /// Saves, restores into a new machine and continues there. `jit`: the
+    /// new machine has the JIT.
     Swap { jit: bool },
-    /// Salva, va avanti `quanta` quanti (uscita scartata), poi ripristina
-    /// lo snapshot nella stessa macchina (JIT compreso, con i suoi blocchi)
-    /// e continua.
+    /// Saves, goes on for `quanta` quanta (output discarded), then restores
+    /// the snapshot in the same machine (JIT included, with its blocks)
+    /// and continues.
     Rewind { quanta: u64 },
 }
 
-/// Quando tagliare: a un numero di istruzioni, o qualche quanto dopo un
-/// punto del copione (`Run::mark`).
+/// When to cut: at a number of instructions, or a few quanta after a
+/// point of the script (`Run::mark`).
 #[derive(Clone, Debug, Default)]
 struct Plan {
     at: Vec<(u64, Cut)>,
     marks: BTreeMap<&'static str, (u64, Cut)>,
-    /// La prima macchina ha il JIT.
+    /// The first machine has the JIT.
     jit_from_start: bool,
 }
 
 struct Run {
     m: Machine,
     log: Vec<u8>,
-    /// Una macchina nuova, configurata come quella del copione (dischi
-    /// compresi), senza JIT e senza kernel.
+    /// A new machine, configured like the script's (disks
+    /// included), without JIT and without a kernel.
     fresh: Box<dyn Fn() -> Machine>,
     pending: Vec<(u64, Cut)>,
     marks: BTreeMap<&'static str, (u64, Cut)>,
@@ -95,8 +95,8 @@ impl Run {
         }
     }
 
-    /// Punto del copione: se il piano lo chiede, un taglio fra `quanta`
-    /// quanti.
+    /// Point of the script: if the plan asks for it, a cut in `quanta`
+    /// quanta.
     fn mark(&mut self, name: &'static str) {
         if let Some((quanta, cut)) = self.marks.remove(name) {
             self.pending.push((self.m.steps + quanta * QUANTUM, cut));
@@ -106,12 +106,12 @@ impl Run {
 
     fn cut(&mut self, cut: Cut) {
         let snap = self.m.save();
-        assert!(snap == self.m.save(), "due salvataggi nello stesso punto danno byte diversi");
+        assert!(snap == self.m.save(), "two saves at the same point give different bytes");
         match cut {
             Cut::Swap { jit } => {
                 let mut n = (self.fresh)();
                 n.load_state(&snap).expect("ripristino");
-                assert!(n.save() == snap, "la macchina ripristinata non risalva gli stessi byte");
+                assert!(n.save() == snap, "the restored machine does not save the same bytes again");
                 if jit {
                     n.set_jit(Some(vetro_jit_native::system_jit(JIT_THRESHOLD)));
                 }
@@ -125,17 +125,17 @@ impl Run {
                     }
                 }
                 let _ = self.m.console_output();
-                self.m.load_state(&snap).expect("ripristino sopra la macchina usata");
+                self.m.load_state(&snap).expect("restore over the used machine");
                 assert!(
                     self.m.save() == snap,
-                    "il ripristino sopra la macchina usata non risalva gli stessi byte"
+                    "the restore over the used machine does not save the same bytes again"
                 );
             }
         }
         self.done.push((self.m.steps, cut));
     }
 
-    /// Un quanto (dopo gli eventuali tagli dovuti), con l'uscita nel log.
+    /// One quantum (after any due cuts), with the output in the log.
     fn quantum(&mut self) -> Stop {
         while self.pending.last().is_some_and(|c| c.0 <= self.m.steps) {
             let (_, cut) = self.pending.pop().unwrap();
@@ -152,10 +152,10 @@ impl Run {
             if let Some(i) = find(&self.log[from.min(self.log.len())..], needle.as_bytes()) {
                 return from + i + needle.len();
             }
-            assert!(self.m.steps < limit, "{needle:?} non arrivato:\n{}", self.tail());
+            assert!(self.m.steps < limit, "{needle:?} did not arrive:\n{}", self.tail());
             let stop = self.quantum();
             host(&mut self.m);
-            assert_eq!(stop, Stop::Budget, "{stop:?} in attesa di {needle:?}:\n{}", self.tail());
+            assert_eq!(stop, Stop::Budget, "{stop:?} while waiting for {needle:?}:\n{}", self.tail());
         }
     }
 
@@ -191,7 +191,7 @@ impl Run {
     }
 
     fn finish(self) -> Outcome {
-        assert!(self.pending.is_empty() && self.marks.is_empty(), "tagli non eseguiti: {:?}", self.pending);
+        assert!(self.pending.is_empty() && self.marks.is_empty(), "cuts not performed: {:?}", self.pending);
         let b = self.m.board.borrow();
         let mut mmu = Writer::new();
         self.m.mmu.save(&mut mmu);
@@ -214,7 +214,7 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
-/// Fine di un copione: ciò che si confronta.
+/// End of a script: what gets compared.
 struct Outcome {
     log: Vec<u8>,
     steps: u64,
@@ -226,16 +226,16 @@ struct Outcome {
     cuts: Vec<(u64, Cut)>,
 }
 
-/// `run` coincide con `reference` (senza tagli e senza JIT).
+/// `run` matches `reference` (without cuts and without JIT).
 fn same(what: &str, reference: &Outcome, run: &Outcome) {
-    assert!(!run.cuts.is_empty(), "{what}: nessun taglio eseguito");
+    assert!(!run.cuts.is_empty(), "{what}: no cut performed");
     eprintln!("{what}: tagli {:?}", run.cuts);
     if run.log != reference.log {
         let (a, b) = (String::from_utf8_lossy(&reference.log), String::from_utf8_lossy(&run.log));
         let (a, b): (Vec<&str>, Vec<&str>) = (a.lines().collect(), b.lines().collect());
         let i = a.iter().zip(&b).position(|(x, y)| x != y).unwrap_or(a.len().min(b.len()));
         panic!(
-            "{what}: log diverso dalla riga {}:\nsenza tagli: {:?}\ncon tagli:   {:?}",
+            "{what}: log differs from line {}:\nwithout cuts: {:?}\nwith cuts:    {:?}",
             i + 1,
             a.get(i),
             b.get(i)
@@ -244,7 +244,7 @@ fn same(what: &str, reference: &Outcome, run: &Outcome) {
     assert_eq!(run.steps, reference.steps, "{what}: istruzioni");
     assert_eq!(run.cpu, reference.cpu, "{what}: CPU");
     assert_eq!(run.ram, reference.ram, "{what}: RAM");
-    assert_eq!(run.platform, reference.platform, "{what}: stato dei dispositivi");
+    assert_eq!(run.platform, reference.platform, "{what}: device state");
     if !run.jit {
         assert_eq!(run.mmu, reference.mmu, "{what}: MMU e TLB");
     }
@@ -252,7 +252,7 @@ fn same(what: &str, reference: &Outcome, run: &Outcome) {
 
 fn kernel() -> Option<(Vec<u8>, Vec<u8>)> {
     if cfg!(debug_assertions) {
-        skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "snapshot sul kernel guest solo in release");
+        skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "snapshots on the guest kernel only in release");
         return None;
     }
     let Some((image, initrd)) = guest_kernel() else {
@@ -265,14 +265,14 @@ fn kernel() -> Option<(Vec<u8>, Vec<u8>)> {
     Some((std::fs::read(image).unwrap(), std::fs::read(initrd).unwrap()))
 }
 
-// ---- Avvio fino allo spegnimento (il copione di vetro.rs) --------------------
+// ---- Boot up to power-off (the script of vetro.rs) ---------------------------
 
 fn boot_script(image: &[u8], initrd: &[u8], plan: &Plan) -> Outcome {
     let fresh = Box::new(|| Machine::new(&MachineConfig::default()));
     let mut r = Run::new(
         fresh,
         |m| {
-            m.load_linux(image, Some(initrd), "console=ttyAMA0").expect("caricamento del kernel");
+            m.load_linux(image, Some(initrd), "console=ttyAMA0").expect("kernel load");
         },
         plan,
     );
@@ -280,7 +280,7 @@ fn boot_script(image: &[u8], initrd: &[u8], plan: &Plan) -> Outcome {
     let at_end = r.until(AUTOTEST_END, at);
     let end = r.until("\n", at_end);
     let line = String::from_utf8_lossy(&r.log[at_end - AUTOTEST_END.len()..end]).into_owned();
-    assert_eq!(line.trim_end(), AUTOTEST_OK, "autotest con errori:\n{}", r.tail());
+    assert_eq!(line.trim_end(), AUTOTEST_OK, "autotest with errors:\n{}", r.tail());
     let prompt = r.until(SHELL_PROMPT, end);
     r.mark("shell");
     r.m.console_input(b"echo VETRO-SHELL-$((6*7))\n");
@@ -295,10 +295,10 @@ fn snapshot_durante_l_avvio_e_alla_shell() {
     let Some((image, initrd)) = kernel() else { return };
     let t0 = Instant::now();
     let reference = boot_script(&image, &initrd, &Plan::default());
-    eprintln!("avvio senza tagli: {} istruzioni in {:.2} s", reference.steps, t0.elapsed().as_secs_f64());
+    eprintln!("boot without cuts: {} instructions in {:.2} s", reference.steps, t0.elapsed().as_secs_f64());
 
-    // Solo interprete: tagli presto (prima dell'MMU accesa), durante l'avvio
-    // del kernel, a metà dell'autotest e alla shell; un ritorno indietro.
+    // Interpreter only: cuts early (before the MMU is on), during the kernel
+    // boot, halfway through the autotest and at the shell; one going back.
     let plan = Plan {
         at: vec![
             (QUANTUM, Cut::Swap { jit: false }),
@@ -309,11 +309,11 @@ fn snapshot_durante_l_avvio_e_alla_shell() {
         marks: [("shell", (0, Cut::Swap { jit: false }))].into(),
         jit_from_start: false,
     };
-    same("avvio con tagli (interprete)", &reference, &boot_script(&image, &initrd, &plan));
+    same("boot with cuts (interpreter)", &reference, &boot_script(&image, &initrd, &plan));
 
-    // JIT prima e dopo: interprete, poi JIT da un taglio durante l'avvio,
-    // JIT tenuto a un altro taglio, ritorno indietro col JIT (blocchi da
-    // scartare), poi di nuovo interprete alla shell.
+    // JIT before and after: interpreter, then JIT from a cut during boot,
+    // JIT kept at another cut, going back with the JIT (blocks to
+    // discard), then interpreter again at the shell.
     let plan = Plan {
         at: vec![
             (30 * QUANTUM, Cut::Swap { jit: true }),
@@ -323,11 +323,11 @@ fn snapshot_durante_l_avvio_e_alla_shell() {
         marks: [("shell", (0, Cut::Swap { jit: false }))].into(),
         jit_from_start: false,
     };
-    same("avvio con tagli (interprete, JIT, interprete)", &reference, &boot_script(&image, &initrd, &plan));
+    same("boot with cuts (interpreter, JIT, interpreter)", &reference, &boot_script(&image, &initrd, &plan));
 }
 
-/// Dimensione dello snapshot e tempi di salvataggio e ripristino alla shell
-/// (1 GiB di RAM, dispositivi di default), su un avvio vero.
+/// Snapshot size and save and restore times at the shell
+/// (1 GiB of RAM, default devices), on a real boot.
 #[test]
 fn misure_alla_shell() {
     let Some((image, initrd)) = kernel() else { return };
@@ -363,7 +363,7 @@ fn misure_alla_shell() {
     );
     eprint!("{text}");
     std::fs::write(repo_root().join("target/guest-kernel/snapshot-misure.txt"), &text).unwrap();
-    // La macchina ripristinata prosegue come l'originale.
+    // The restored machine continues like the original.
     for mm in [&mut m, &mut n] {
         mm.console_input(b"echo VETRO-DOPO-$((6*7))\n");
     }
@@ -380,7 +380,7 @@ fn misure_alla_shell() {
     assert!(m.save() == n.save());
 }
 
-// ---- Rete (il copione di net.rs, ridotto) ------------------------------------
+// ---- Network (the script of net.rs, reduced) ---------------------------------
 
 fn big_body() -> Vec<u8> {
     (0..300_000u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8).collect()
@@ -431,8 +431,8 @@ fn net_script(image: &[u8], initrd: &[u8], plan: &Plan) -> (Outcome, String) {
 fn snapshot_durante_l_uso_della_rete() {
     let Some((image, initrd)) = kernel() else { return };
     let (reference, ref_events) = net_script(&image, &initrd, &Plan::default());
-    // Tagli con connessioni TCP a metà trasferimento (300 KB verso il guest,
-    // POST da 108 KB verso l'host), durante un ping e con TIME-WAIT in corso.
+    // Cuts with TCP connections halfway through a transfer (300 KB to the guest,
+    // 108 KB POST to the host), during a ping and with TIME-WAIT in progress.
     let plan = Plan {
         at: vec![],
         marks: [
@@ -444,11 +444,11 @@ fn snapshot_durante_l_uso_della_rete() {
         jit_from_start: false,
     };
     let (run, events) = net_script(&image, &initrd, &plan);
-    same("rete con tagli", &reference, &run);
-    assert!(events == ref_events, "registro di rete e sinkhole diversi");
+    same("network with cuts", &reference, &run);
+    assert!(events == ref_events, "network event log and sinkhole differ");
 }
 
-// ---- Disco (il copione di web.rs) --------------------------------------------
+// ---- Disk (the script of web.rs) ---------------------------------------------
 
 const DISK_SIZE: usize = 3 * 1024 * 1024 + 5 * 512;
 
@@ -468,8 +468,8 @@ fn disk_script(image: &[u8], initrd: &[u8], plan: &Plan) -> Outcome {
     let img = std::rc::Rc::new(disk_image());
     let fresh = Box::new(move || {
         let m = Machine::new(&MachineConfig::default());
-        // La base in sola lettura è il collegamento (come il file o l'HTTP
-        // Range); il livello copy-on-write è stato ed entra nello snapshot.
+        // The read-only base is the link (like the file or the HTTP
+        // Range); the copy-on-write layer is state and goes into the snapshot.
         let base = MemBackend::from_vec(img.to_vec()).read_only();
         let blk = VirtioBlk::new(Box::new(CowBackend::new(base)), VirtioBlkConfig::default());
         m.board.borrow_mut().virt.attach_virtio_next(Box::new(blk)).unwrap();
@@ -492,7 +492,7 @@ fn disk_script(image: &[u8], initrd: &[u8], plan: &Plan) -> Outcome {
          echo; md5sum /dev/vda",
         at,
     );
-    // Il messaggio del kernel su drop_caches può arrivare subito dopo il testo.
+    // The kernel's message about drop_caches may arrive right after the text.
     assert!(r.text(0).contains("\nVETRO-SCRITTO"), "{}", r.tail());
     r.mark("after");
     let _ = r.command("dd if=/dev/vda bs=1 skip=1000000 count=13 2>/dev/null; echo", at);
@@ -514,10 +514,10 @@ fn snapshot_durante_l_uso_del_disco() {
         .into(),
         jit_from_start: false,
     };
-    same("disco con tagli", &reference, &disk_script(&image, &initrd, &plan));
+    same("disk with cuts", &reference, &disk_script(&image, &initrd, &plan));
 }
 
-// ---- GPU, input e vsock (il copione di devices.rs, ridotto) ------------------
+// ---- GPU, input and vsock (the script of devices.rs, reduced) ----------------
 
 const GUEST_CID: u64 = 3;
 
@@ -534,9 +534,9 @@ fn devices_script(image: &[u8], initrd: &[u8], plan: &Plan) -> (Outcome, String)
     );
     let at = r.until(SHELL_PROMPT, 0);
 
-    // GPU: il taglio cade mentre lo scanout mostra il motivo del guest; il
-    // display (MemDisplay, un collegamento) della macchina nuova lo riceve
-    // dallo stato ripristinato.
+    // GPU: the cut falls while the scanout shows the guest's pattern; the
+    // display (MemDisplay, a link) of the new machine receives it
+    // from the restored state.
     r.m.console_input(b"vetro-dev drm-hold\n");
     r.mark("drm");
     let ready = r.until("VETRO-DRM-PRONTO", at);
@@ -551,7 +551,7 @@ fn devices_script(image: &[u8], initrd: &[u8], plan: &Plan) -> (Outcome, String)
     r.m.console_input(b"\n");
     let at = r.until(SHELL_PROMPT, ready);
 
-    // Input: tasti con il lettore evdev in attesa.
+    // Input: keys with the evdev reader waiting.
     r.m.console_input(b"vetro-dev input-read /dev/input/event1 4\n");
     let ready = r.until("VETRO-INPUT-PRONTO", at);
     r.m.keyboard(|k| {
@@ -561,8 +561,8 @@ fn devices_script(image: &[u8], initrd: &[u8], plan: &Plan) -> (Outcome, String)
     r.mark("input");
     let at = r.until(SHELL_PROMPT, ready);
 
-    // vsock: il guest si collega all'host e riceve 300 KB (più del suo
-    // credito); il taglio cade a trasferimento in corso.
+    // vsock: the guest connects to the host and receives 300 KB (more than its
+    // credit); the cut falls with the transfer in progress.
     let reply: Vec<u8> = (0..300_000u32).map(|i| (i * 7 % 251) as u8).collect();
     let mut conn: Option<VsockConn> = None;
     let mut got = Vec::new();
@@ -609,17 +609,17 @@ fn snapshot_durante_l_uso_di_gpu_input_e_vsock() {
         jit_from_start: false,
     };
     let (run, host) = devices_script(&image, &initrd, &plan);
-    same("dispositivi con tagli", &reference, &run);
-    assert_eq!(host, ref_host, "ciò che l'host vede (scanout, cursore, vsock)");
+    same("devices with cuts", &reference, &run);
+    assert_eq!(host, ref_host, "what the host sees (scanout, cursor, vsock)");
 }
 
-// ---- Inoltro di porte (il copione di hostfwd.rs, ridotto) --------------------
+// ---- Port forwarding (the script of hostfwd.rs, reduced) ---------------------
 
-/// `nc -l -e cat` nel guest e 200 KB di eco da una connessione aperta
-/// dall'host (`Stack::host_connect`); i tagli cadono a trasferimento in
-/// corso: le code dell'inoltro, la connessione in `SynSent` o stabilita e
-/// le porte effimere sono stato, gli indici delle connessioni dell'host
-/// (qui `id`) restano validi nella macchina ripristinata.
+/// `nc -l -e cat` in the guest and 200 KB of echo from a connection opened
+/// by the host (`Stack::host_connect`); the cuts fall with the transfer in
+/// progress: the forwarding queues, the connection in `SynSent` or established and
+/// the ephemeral ports are state, the indices of the host connections
+/// (here `id`) stay valid in the restored machine.
 fn hostfwd_script(image: &[u8], initrd: &[u8], plan: &Plan) -> (Outcome, String) {
     let devices = Devices { net: Some(NetSetup::default()), ..Devices::default() };
     let fresh = Box::new(move || Machine::with_devices(&MachineConfig::default(), &devices));
@@ -635,7 +635,7 @@ fn hostfwd_script(image: &[u8], initrd: &[u8], plan: &Plan) -> (Outcome, String)
     r.m.console_input(b"nc -n -v -l -p 5555 -e cat\n");
     let at = r.until("listening on", at);
     let data: Vec<u8> = (0..200_000u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 9) as u8).collect();
-    let id = r.m.net(|s| s.host_connect(5555)).flatten().expect("connessione dall'host");
+    let id = r.m.net(|s| s.host_connect(5555)).flatten().expect("connection from the host");
     r.mark("syn");
     r.mark("eco");
     r.mark("eco-indietro");
@@ -657,9 +657,9 @@ fn hostfwd_script(image: &[u8], initrd: &[u8], plan: &Plan) -> (Outcome, String)
             }
         });
     });
-    // TIME-WAIT della connessione dell'host (4 s di tempo virtuale).
+    // TIME-WAIT of the host connection (4 s of virtual time).
     let _ = r.command("sleep 5", at);
-    assert!(got == data, "eco di 200 KB diversa ({} byte)", got.len());
+    assert!(got == data, "200 KB echo differs ({} bytes)", got.len());
     let state = r.m.net_view(|s| s.host_conn(id).map(|i| i.state)).flatten();
     assert_eq!(
         state,
@@ -674,8 +674,8 @@ fn hostfwd_script(image: &[u8], initrd: &[u8], plan: &Plan) -> (Outcome, String)
 fn snapshot_durante_una_connessione_dall_host() {
     let Some((image, initrd)) = kernel() else { return };
     let (reference, ref_net) = hostfwd_script(&image, &initrd, &Plan::default());
-    // Col SYN appena chiesto (non ancora partito), poi a eco in corso nei
-    // due versi (una macchina nuova, poi un ritorno indietro).
+    // With the SYN just requested (not yet sent), then with echo in progress in
+    // both directions (a new machine, then going back).
     let plan = Plan {
         at: vec![],
         marks: [
@@ -687,14 +687,14 @@ fn snapshot_durante_una_connessione_dall_host() {
         jit_from_start: false,
     };
     let (run, net) = hostfwd_script(&image, &initrd, &plan);
-    same("inoltro di porte con tagli", &reference, &run);
-    assert!(net == ref_net, "stato e registro della rete diversi");
+    same("port forwarding with cuts", &reference, &run);
+    assert!(net == ref_net, "network state and event log differ");
 }
 
-// ---- Gestore dei file (M8, ADR 0020) ------------------------------------------
+// ---- File manager (M8, ADR 0020) ---------------------------------------------
 
-/// Esegue finché l'operazione `op` del gestore dei file finisce; ciò che il
-/// client vede (risposte ed eventi) finisce in `seen`.
+/// Runs until file manager operation `op` finishes; what the
+/// client sees (responses and events) ends up in `seen`.
 fn files_wait(
     r: &mut Run,
     fc: &mut FilesClient,
@@ -717,16 +717,16 @@ fn files_wait(
                 return c.result;
             }
         }
-        assert!(r.m.steps < limit, "operazione {op} del gestore non finita:\n{}", r.tail());
+        assert!(r.m.steps < limit, "file manager operation {op} not finished:\n{}", r.tail());
         assert_eq!(r.quantum(), Stop::Budget, "{}", r.tail());
     }
 }
 
-/// Una sessione del gestore dei file (il demone `vetro-files` del guest e
-/// il client di `vetro_machine::files`). Il client è l'host: resta lo
-/// stesso, la macchina sotto di lui si taglia a lettura a pezzi in corso,
-/// con un'osservazione aperta e l'evento in arrivo, a scrittura grande in
-/// volo. Connessione, crediti e byte in transito sono stato di virtio-vsock.
+/// A file manager session (the guest's `vetro-files` daemon and
+/// the `vetro_machine::files` client). The client is the host: it stays the
+/// same, the machine under it is cut with a chunked read in progress,
+/// with a watch open and the event arriving, with a large write in
+/// flight. Connection, credits and bytes in transit are virtio-vsock state.
 fn files_script(image: &[u8], initrd: &[u8], plan: &Plan) -> (Outcome, String) {
     let devices = Devices { vsock_cid: Some(GUEST_CID), ..Devices::default() };
     let fresh = Box::new(move || Machine::with_devices(&MachineConfig::default(), &devices));
@@ -754,7 +754,7 @@ fn files_script(image: &[u8], initrd: &[u8], plan: &Plan) -> (Outcome, String) {
     r.mark("files-evento");
     let limit = r.m.steps + PHASE_BUDGET;
     while !seen.iter().any(|s| s.starts_with("evento g.txt ") && s.contains("mask: 8,")) {
-        assert!(r.m.steps < limit, "evento non arrivato: {seen:?}");
+        assert!(r.m.steps < limit, "event did not arrive: {seen:?}");
         assert_eq!(r.quantum(), Stop::Budget);
         fc.pump(&mut r.m);
         while let Some(e) = fc.take_event() {
@@ -786,6 +786,6 @@ fn snapshot_durante_una_sessione_del_gestore_dei_file() {
         jit_from_start: false,
     };
     let (run, run_seen) = files_script(&image, &initrd, &plan);
-    same("gestore dei file con tagli", &reference, &run);
-    assert!(run_seen == ref_seen, "risposte ed eventi del gestore diversi:\n{ref_seen}\n---\n{run_seen}");
+    same("file manager with cuts", &reference, &run);
+    assert!(run_seen == ref_seen, "file manager responses and events differ:\n{ref_seen}\n---\n{run_seen}");
 }

@@ -1,30 +1,30 @@
-// Sonda bare-metal della modalità sistema (EL0/EL1, MMU, eccezioni).
+// Bare-metal probe of system mode (EL0/EL1, MMU, exceptions).
 //
-// Gira su `qemu-system-aarch64 -M virt,gic-version=3 -cpu cortex-a53`
-// (build.sh registra l'uscita in probe.expected) e su Vetro
-// (tests/system_probe.rs), che deve stampare esattamente le stesse righe.
-// Stampa sulla PL011 a 0x09000000; finisce con PSCI SYSTEM_OFF via HVC.
+// Runs on `qemu-system-aarch64 -M virt,gic-version=3 -cpu cortex-a53`
+// (build.sh records the output in probe.expected) and on Vetro
+// (tests/system_probe.rs), which must print exactly the same lines.
+// Prints on the PL011 at 0x09000000; ends with PSCI SYSTEM_OFF via HVC.
 //
-// Esclusi di proposito (differenze documentate in docs/specs/cpu.md):
-// ID_AA64PFR0_EL1 (Vetro dichiara solo AArch64), trap di MSR DAIFSet da EL0
-// (QEMU scambia Op1 e Op2 nella sindrome), STXR disallineata senza monitor
-// (QEMU non la controlla), SP disallineato con SCTLR_EL1.SA/SA0 (QEMU non
-// lo controlla), accessi disallineati a memoria Device con MMU accesa e DC
-// ZVA su Device (QEMU 10 non dà il fault di allineamento; a MMU spenta sì),
-// registri della piattaforma (CNT*, ICC_*) e PMU.
+// Deliberately excluded (differences documented in docs/specs/cpu.md):
+// ID_AA64PFR0_EL1 (Vetro declares only AArch64), trap of MSR DAIFSet from EL0
+// (QEMU swaps Op1 and Op2 in the syndrome), misaligned STXR without a monitor
+// (QEMU doesn't check it), misaligned SP with SCTLR_EL1.SA/SA0 (QEMU doesn't
+// check it), misaligned accesses to Device memory with the MMU on and DC
+// ZVA on Device (QEMU 10 doesn't give the alignment fault; with the MMU off it does),
+// platform registers (CNT*, ICC_*) and PMU.
 
     .equ UART, 0x09000000
     .equ PSCI_SYSTEM_OFF, 0x84000008
-    // Descrittori (VMSAv8-64, granulo 4 KiB). MAIR: 0 Device-nGnRnE,
+    // Descriptors (VMSAv8-64, 4 KiB granule). MAIR: 0 Device-nGnRnE,
     // 1 Normal Write-Back, 2 Normal Non-cacheable.
-    .equ KPAGE,    0x0040000000000707   // AF, SH inner, Normal, RW solo EL1, UXN
-    .equ UCODE,    0x00200000000007c7   // RO per tutti, PXN
-    .equ UDATA,    0x0060000000000747   // RW per tutti, UXN, PXN
-    .equ KRO,      0x0040000000000787   // RO solo EL1, UXN
-    .equ KNOAF,    0x0040000000000307   // come KPAGE ma senza AF
-    .equ KDEV,     0x0060000000000403   // Device-nGnRnE, RW solo EL1
-    .equ DEVBLOCK, 0x0060000000000401   // blocco da 1 GiB Device-nGnRnE
-    .equ TCRVAL,   0x0000000200800019   // T0SZ 25, TG0 4 KiB, EPD1, IPS 40 bit
+    .equ KPAGE,    0x0040000000000707   // AF, SH inner, Normal, RW EL1 only, UXN
+    .equ UCODE,    0x00200000000007c7   // RO for all, PXN
+    .equ UDATA,    0x0060000000000747   // RW for all, UXN, PXN
+    .equ KRO,      0x0040000000000787   // RO EL1 only, UXN
+    .equ KNOAF,    0x0040000000000307   // like KPAGE but without AF
+    .equ KDEV,     0x0060000000000403   // Device-nGnRnE, RW EL1 only
+    .equ DEVBLOCK, 0x0060000000000401   // 1 GiB Device-nGnRnE block
+    .equ TCRVAL,   0x0000000200800019   // T0SZ 25, TG0 4 KiB, EPD1, IPS 40 bits
 
     .text
     .global _start
@@ -35,7 +35,7 @@ _start:
     msr vbar_el1, x1
     isb
 
-// Stampa "nome=valore" di un registro di sistema.
+// Prints "name=value" of a system register.
 .macro PR name, reg
     adr x0, 91f
     bl puts
@@ -47,7 +47,7 @@ _start:
 92:
 .endm
 
-// Scrive tutti uno, rilegge e rimette il valore di prima.
+// Writes all ones, reads back and restores the previous value.
 .macro WR name, reg
     mrs x20, \reg
     mov x1, #-1
@@ -65,7 +65,7 @@ _start:
 92:
 .endm
 
-// Lettura di un registro dalla codifica, con titolo.
+// Read of a register from its encoding, with a title.
 .macro SR name, enc
     T \name
     mrs x0, \enc
@@ -82,7 +82,7 @@ _start:
     bl puthex
 .endm
 
-// Titolo di una prova.
+// Title of a test.
 .macro T name
     adr x0, 91f
     bl puts
@@ -98,7 +98,7 @@ _start:
     bl puthex
 .endm
 
-// AT su un'etichetta e stampa di PAR_EL1.
+// AT on a label and print of PAR_EL1.
 .macro ATL name, op, label
     T \name
     adr x1, \label
@@ -117,7 +117,7 @@ _start:
     bl puthex
 .endm
 
-// Voce della tabella di livello 3 per la pagina di `label` (identità).
+// Level-3 table entry for the page of `label` (identity).
 .macro PTE label, attrs
     adr x0, \label
     ldr x4, =\attrs
@@ -207,7 +207,7 @@ _start:
     PR CCSIDR3, ccsidr_el1
     msr csselr_el1, xzr
 
-    // --- Maschere di scrittura ---
+    // --- Write masks ---
     WR ACTLR, actlr_el1
     WR CPACR, cpacr_el1
     WR TCR, tcr_el1
@@ -240,7 +240,7 @@ _start:
     WR PMUSERENR, pmuserenr_el0
     WR NZCV, nzcv
     WR SP_EL0, sp_el0
-    // FPCR e FPSR con CPACR_EL1 = 0: trap FP anche a EL1.
+    // FPCR and FPSR with CPACR_EL1 = 0: FP trap at EL1 too.
     WR FPCR, fpcr
 
     mrs x20, vbar_el1
@@ -255,7 +255,7 @@ _start:
     msr oslar_el1, xzr
     PR OSLSR_AFTER, oslsr_el1
 
-    // --- Eccezioni sincrone a EL1 (il gestore stampa e salta) ---
+    // --- Synchronous exceptions at EL1 (the handler prints and jumps) ---
     T udf
     udf #0
     T hvc_psci_not_supported
@@ -294,9 +294,9 @@ _start:
     msr spsel, #0
     mrs x2, sp_el0
     msr spsel, #1
-    // Registri fuori dalla Cortex-A53: estensioni successive e codifiche
-    // non allocate (UNDEFINED); poi i registri IMPLEMENTATION DEFINED della
-    // A53 come li modella QEMU. La PMU manca: Vetro non la modella ancora.
+    // Registers beyond the Cortex-A53: later extensions and unallocated
+    // encodings (UNDEFINED); then the A53's IMPLEMENTATION DEFINED registers
+    // as QEMU models them. The PMU is missing: Vetro doesn't model it yet.
     T sysreg_fpmr
     mrs x0, S3_3_C4_C4_2
     bl puthex
@@ -326,10 +326,10 @@ _start:
     T sysreg_cbar
     mrs x0, S3_1_C15_C3_0
     bl puthex
-    // Debug ARMv8.0 (op0 = 2) come QEMU per la Cortex-A53: il canale DCC,
-    // OSECCR, CLAIM, DBGPRCR e DBGAUTHSTATUS; poi codifiche op0 = 2 senza
-    // registro (breakpoint e watchpoint oltre il numero della A53, EL2,
-    // codifiche libere).
+    // ARMv8.0 debug (op0 = 2) like QEMU for the Cortex-A53: the DCC channel,
+    // OSECCR, CLAIM, DBGPRCR and DBGAUTHSTATUS; then op0 = 2 encodings without
+    // a register (breakpoints and watchpoints beyond the A53's number, EL2,
+    // free encodings).
     SR dbg_osdtrrx, S2_0_C0_C0_2
     SR dbg_osdtrtx, S2_0_C0_C3_2
     SR dbg_oseccr, S2_0_C0_C6_2
@@ -363,7 +363,7 @@ _start:
     SR dbgw_claimset_after_clr, S2_0_C7_C8_6
     SW dbgw_claimset2, S2_0_C7_C8_6, 0x0000000000000100
     SW dbgw_claimclr2, S2_0_C7_C9_6, 0x00000000000000ff
-    // MDSCR_EL1.TDCC non tocca gli accessi da EL1.
+    // MDSCR_EL1.TDCC doesn't affect accesses from EL1.
     T dbg_tdcc_el1
     mov x1, #(1 << 12)
     msr mdscr_el1, x1
@@ -410,8 +410,8 @@ _start:
     nop
 3:
 
-    // --- Tabelle delle pagine e MMU ---
-    // L3: 0x4000_0000..0x401f_ffff a identità, kernel RW solo EL1, UXN.
+    // --- Page tables and MMU ---
+    // L3: 0x4000_0000..0x401f_ffff identity-mapped, kernel RW EL1 only, UXN.
     adr x0, l3
     mov x1, #0x40000000
     ldr x2, =KPAGE
@@ -431,7 +431,7 @@ _start:
     and x1, x1, #0x1ff
     adr x2, l3
     str xzr, [x2, x1, lsl #3]
-    // L2[0] -> L3; L1[0] = blocco Device da 1 GiB (UART, GIC); L1[1] -> L2.
+    // L2[0] -> L3; L1[0] = 1 GiB Device block (UART, GIC); L1[1] -> L2.
     adr x0, l2
     adr x1, l3
     orr x1, x1, #3
@@ -506,7 +506,7 @@ _start:
     T ld_l1_invalid
     mov x1, #0x80000000
     ldr x2, [x1]
-    // TLBI: el0_data ora punta a tlbi_page, poi torna com'era.
+    // TLBI: el0_data now points to tlbi_page, then goes back as it was.
     T tlbi_remap
     adr x0, el0_data
     lsr x1, x0, #12
@@ -629,7 +629,7 @@ common:
     and x2, x0, #0xffff
     cmp x2, #2
     b.eq finish
-    // SVC #3 da EL0: accende MDSCR_EL1.TDCC.
+    // SVC #3 from EL0: turns on MDSCR_EL1.TDCC.
     cmp x2, #3
     b.ne 7f
     mrs x2, mdscr_el1
@@ -640,8 +640,8 @@ common:
     b.eq 7f
     cmp x1, #0x17
     b.eq 7f
-    // Instruction Abort e PC disallineato: si torna all'indirizzo di
-    // ritorno del BLR che li ha causati.
+    // Instruction Abort and misaligned PC: return to the return address
+    // of the BLR that caused them.
     cmp x1, #0x20
     b.eq 6f
     cmp x1, #0x21
@@ -684,7 +684,7 @@ vectors:
     b common
     .endr
 
-    // Codice di EL0: una pagina a sé (RO per tutti, eseguibile solo a EL0).
+    // EL0 code: a page of its own (RO for all, executable only at EL0).
     .balign 4096
 el0_code:
     str x0, [x20]
@@ -708,8 +708,8 @@ el0_code:
     hvc #0
     eret
     ldtr x2, [x20]
-    // DCC da EL0 con MDSCR_EL1.TDCC = 0: il valore letto si vede nel FAR
-    // del load che segue (l'indirizzo 0 è solo di EL1).
+    // DCC from EL0 with MDSCR_EL1.TDCC = 0: the value read shows up in the FAR
+    // of the following load (address 0 belongs to EL1 only).
     mrs x2, S2_3_C0_C1_0
     ldr x3, [x2]
     mrs x2, S2_3_C0_C4_0
@@ -720,7 +720,7 @@ el0_code:
     msr S2_3_C0_C4_0, x0
     mrs x2, S2_0_C0_C0_2
     mrs x2, S2_0_C7_C8_6
-    // Con MDSCR_EL1.TDCC = 1 gli stessi accessi vanno in trap a EL1.
+    // With MDSCR_EL1.TDCC = 1 the same accesses trap to EL1.
     svc #3
     mrs x2, S2_3_C0_C1_0
     mrs x2, S2_3_C0_C4_0

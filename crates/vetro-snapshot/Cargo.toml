@@ -1,6 +1,6 @@
 [package]
 name = "vetro-snapshot"
-description = "Salvataggio e ripristino dello stato della macchina."
+description = "Saving and restoring the machine state."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

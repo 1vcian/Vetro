@@ -1,40 +1,40 @@
-//! Blocco bootconfig in coda all'initrd e riga di comando del kernel.
+//! Bootconfig block at the end of the initrd, and kernel command line.
 //!
-//! Formato (`Documentation/admin-guide/bootconfig.rst` del kernel e
+//! Format (the kernel's `Documentation/admin-guide/bootconfig.rst` and
 //! `tools/bootconfig/main.c`):
 //!
 //! ```text
-//! [initrd][bootconfig][\0 e riempimento][size (le32)][checksum (le32)][#BOOTCONFIG\n]
+//! [initrd][bootconfig][\0 and padding][size (le32)][checksum (le32)][#BOOTCONFIG\n]
 //! ```
 //!
-//! Il testo finisce con un NUL (come `tools/bootconfig`, che conta
-//! `strlen + 1`); il riempimento a NUL porta la lunghezza totale dell'initrd
-//! a un multiplo di 4; `size` conta testo, NUL e riempimento; `checksum` è la
-//! somma a 32 bit dei byte di quella zona. Il kernel (`init/main.c`,
-//! `get_boot_config_from_initrd`) cerca il magic alla fine di
-//! `linux,initrd-end`, controlla il checksum e accorcia l'initrd prima di
-//! aprirlo; il blocco si usa solo se la riga di comando contiene `bootconfig`
-//! (o con `CONFIG_BOOT_CONFIG_FORCE`).
+//! The text ends with a NUL (like `tools/bootconfig`, which counts
+//! `strlen + 1`); the NUL padding brings the total length of the initrd
+//! to a multiple of 4; `size` counts text, NUL and padding; `checksum` is the
+//! 32-bit sum of the bytes of that area. The kernel (`init/main.c`,
+//! `get_boot_config_from_initrd`) looks for the magic at the end of
+//! `linux,initrd-end`, checks the checksum and shortens the initrd before
+//! opening it; the block is used only if the command line contains `bootconfig`
+//! (or with `CONFIG_BOOT_CONFIG_FORCE`).
 
 /// Magic finale.
 pub const MAGIC: &[u8; 12] = b"#BOOTCONFIG\n";
-/// `XBC_DATA_MAX` del kernel: dimensione massima di testo e riempimento.
+/// The kernel's `XBC_DATA_MAX`: maximum size of text and padding.
 pub const MAX_SIZE: usize = 32767;
 
-/// Somma dei byte a 32 bit (`xbc_calc_checksum`).
+/// 32-bit sum of the bytes (`xbc_calc_checksum`).
 pub fn checksum(data: &[u8]) -> u32 {
     data.iter().fold(0u32, |s, &b| s.wrapping_add(b as u32))
 }
 
-/// Accoda a `initrd` il blocco con il testo `params` (una riga per
-/// parametro). Errore se il blocco supera [`MAX_SIZE`].
+/// Appends to `initrd` the block with the text `params` (one line per
+/// parameter). Error if the block exceeds [`MAX_SIZE`].
 pub fn append(initrd: &mut Vec<u8>, params: &[u8]) -> Result<(), String> {
     let mut data = params.to_vec();
     data.push(0);
     let total = initrd.len() + data.len() + 8 + MAGIC.len();
     data.resize(data.len() + total.next_multiple_of(4) - total, 0);
     if data.len() > MAX_SIZE {
-        return Err(format!("bootconfig di {} byte, oltre il massimo di {MAX_SIZE}", data.len()));
+        return Err(format!("bootconfig of {} bytes, over the maximum of {MAX_SIZE}", data.len()));
     }
     let csum = checksum(&data);
     initrd.extend_from_slice(&data);
@@ -44,10 +44,10 @@ pub fn append(initrd: &mut Vec<u8>, params: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// Il contrario di [`append`], come lo fa il kernel: se `initrd` finisce
-/// con un blocco valido (magic fino a 3 byte prima della fine, checksum
-/// giusto) restituisce la lunghezza dell'initrd vero e il testo senza i NUL
-/// finali.
+/// The inverse of [`append`], done the way the kernel does it: if `initrd` ends
+/// with a valid block (magic up to 3 bytes before the end, correct
+/// checksum) returns the length of the real initrd and the text without the trailing
+/// NULs.
 pub fn split(initrd: &[u8]) -> Option<(usize, &[u8])> {
     let end = (0..4).find_map(|i| {
         let e = initrd.len().checked_sub(i)?;
@@ -65,9 +65,9 @@ pub fn split(initrd: &[u8]) -> Option<(usize, &[u8])> {
     Some((start, text))
 }
 
-/// Divide una riga di comando del kernel in parametri come `next_arg` del
-/// kernel: separati da spazi, con le virgolette doppie che raggruppano
-/// (restano nel parametro).
+/// Splits a kernel command line into parameters like the kernel's
+/// `next_arg`: separated by spaces, with double quotes grouping
+/// (they stay in the parameter).
 pub fn split_cmdline(s: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let (mut start, mut quoted) = (None, false);
@@ -89,9 +89,9 @@ pub fn split_cmdline(s: &str) -> Vec<&str> {
     out
 }
 
-/// Chiave e valore di un parametro `chiave=valore` (valore senza le
-/// virgolette esterne, come le toglie il kernel); `None` come valore se
-/// manca `=`.
+/// Key and value of a `key=value` parameter (value without the
+/// outer quotes, as the kernel strips them); `None` as the value if
+/// `=` is missing.
 pub fn key_value(param: &str) -> (&str, Option<&str>) {
     match param.split_once('=') {
         Some((k, v)) => {
@@ -102,9 +102,9 @@ pub fn key_value(param: &str) -> (&str, Option<&str>) {
     }
 }
 
-/// Una riga di bootconfig per il parametro: `chiave = "valore"` (tra
-/// virgolette, così virgole, `#`, `;` e spazi restano nel valore; apici se il
-/// valore contiene virgolette doppie).
+/// A bootconfig line for the parameter: `key = "value"` (in
+/// double quotes, so commas, `#`, `;` and spaces stay in the value; single quotes if the
+/// value contains double quotes).
 pub fn param_line(param: &str) -> Result<String, String> {
     let (key, value) = key_value(param);
     let valid_key = !key.is_empty()
@@ -112,16 +112,18 @@ pub fn param_line(param: &str) -> Result<String, String> {
             .split('.')
             .all(|w| !w.is_empty() && w.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'));
     if !valid_key {
-        return Err(format!("chiave di bootconfig non valida: {key:?}"));
+        return Err(format!("invalid bootconfig key: {key:?}"));
     }
     let value = value.unwrap_or("");
     let quote = match (value.contains('"'), value.contains('\'')) {
         (false, _) => '"',
         (true, false) => '\'',
-        (true, true) => return Err(format!("valore di bootconfig con apici e virgolette: {param:?}")),
+        (true, true) => {
+            return Err(format!("bootconfig value with both single and double quotes: {param:?}"));
+        }
     };
     if value.contains('\n') {
-        return Err(format!("valore di bootconfig su più righe: {param:?}"));
+        return Err(format!("multi-line bootconfig value: {param:?}"));
     }
     Ok(format!("{key} = {quote}{value}{quote}\n"))
 }
@@ -130,12 +132,12 @@ pub fn param_line(param: &str) -> Result<String, String> {
 mod tests {
     use super::*;
 
-    /// Byte prodotti da `tools/bootconfig -a` del kernel 6.18.53 (compilato
-    /// dai sorgenti del kernel guest) sugli stessi ingressi.
+    /// Bytes produced by the kernel's `tools/bootconfig -a` from kernel 6.18.53 (built
+    /// from the guest kernel sources) on the same inputs.
     #[test]
     fn blocco_come_tools_bootconfig() {
-        // initrd "12345", bootconfig "a = 1\n": 5 + 7 + 8 + 12 = 32, niente
-        // riempimento.
+        // initrd "12345", bootconfig "a = 1\n": 5 + 7 + 8 + 12 = 32, no
+        // padding.
         let mut initrd = b"12345".to_vec();
         append(&mut initrd, b"a = 1\n").unwrap();
         let want: &[u8] = &[
@@ -144,8 +146,8 @@ mod tests {
         ];
         assert_eq!(initrd, want);
         assert_eq!(split(&initrd), Some((5, &b"a = 1\n"[..])));
-        // initrd "1234567", due righe: 7 + 55 + 20 = 82, due NUL di
-        // riempimento, size 0x39.
+        // initrd "1234567", two lines: 7 + 55 + 20 = 82, two NULs of
+        // padding, size 0x39.
         let text = b"androidboot.hardware = \"vetro\"\nandroidboot.x = \"a, b\"\n";
         let mut initrd = b"1234567".to_vec();
         append(&mut initrd, text).unwrap();
@@ -162,11 +164,11 @@ mod tests {
         for n in 0..8 {
             let mut initrd = vec![0x55; n];
             append(&mut initrd, b"androidboot.x = \"y\"\n").unwrap();
-            assert_eq!(initrd.len() % 4, 0, "initrd di {n} byte");
+            assert_eq!(initrd.len() % 4, 0, "initrd of {n} bytes");
             let (start, text) = split(&initrd).unwrap();
             assert_eq!(start, n);
             assert_eq!(text, b"androidboot.x = \"y\"\n");
-            // Il kernel trova il magic anche dopo 1-3 byte di allineamento.
+            // The kernel finds the magic even after 1-3 bytes of alignment.
             initrd.extend_from_slice(&[0; 3]);
             assert_eq!(split(&initrd).unwrap().0, n);
         }

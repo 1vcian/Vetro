@@ -1,13 +1,13 @@
-//! Piattaforma virt di Vetro: bus MMIO, GICv3, timer generico, UART PL011,
-//! RTC PL031, GPIO PL061 (tasto di spegnimento), virtio-mmio (blk, net, console, gpu, input, vsock) e generatore
-//! del device tree.
+//! Vetro's virt platform: MMIO bus, GICv3, generic timer, PL011 UART,
+//! PL031 RTC, PL061 GPIO (power key), virtio-mmio (blk, net, console, gpu, input, vsock) and device
+//! tree generator.
 //!
-//! Preparazione di M3: la mappa della memoria ricalca la macchina `virt` di
-//! QEMU, così lo stesso kernel e lo stesso device tree girano su entrambi.
-//! Interfacce e invarianti in `docs/specs/platform.md`.
+//! M3 groundwork: the memory map follows QEMU's `virt` machine, so the
+//! same kernel and the same device tree run on both.
+//! Interfaces and invariants in `docs/specs/platform.md`.
 //!
-//! Determinismo: nessun dispositivo legge l'orologio dell'host. Il tempo
-//! (contatore del timer, secondi dell'RTC) entra sempre come argomento.
+//! Determinism: no device reads the host clock. Time
+//! (timer counter, RTC seconds) always comes in as an argument.
 
 pub mod bus;
 pub mod fdt;

@@ -1,4 +1,4 @@
-//! Tabella delle syscall.
+//! Syscall table.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -9,14 +9,14 @@ use super::signal::{UNBLOCKABLE, bit};
 use super::{Exit, Kernel, State, Wait, sig};
 use vetro_cpu::UserMemory;
 
-/// Esito di una syscall.
+/// Outcome of a syscall.
 pub enum Sys {
     Ret(i64),
-    /// Il task si blocca e l'SVC verrà rieseguita.
+    /// The task blocks and the SVC will be re-executed.
     Block(Wait),
-    /// I registri sono già a posto (execve, rt_sigreturn, exit, vfork).
+    /// The registers are already set (execve, rt_sigreturn, exit, vfork).
     NoReturn,
-    /// Syscall che non conosciamo ancora.
+    /// Syscall we don't know yet.
     Unsupported,
 }
 
@@ -26,7 +26,7 @@ fn ret(v: i64) -> R {
     Ok(Sys::Ret(v))
 }
 
-/// Vero se open() con O_CREAT trova già una FIFO (senza O_EXCL).
+/// True if open() with O_CREAT finds an existing FIFO (without O_EXCL).
 fn m_is_fifo_creat(path: &str, flags: u64) -> bool {
     use std::os::unix::fs::FileTypeExt;
     flags & O_CREAT != 0
@@ -34,7 +34,7 @@ fn m_is_fifo_creat(path: &str, flags: u64) -> bool {
         && std::fs::metadata(path).is_ok_and(|m| m.file_type().is_fifo())
 }
 
-/// Syscall che i programmi sondano e per cui ENOSYS è una risposta legittima.
+/// Syscalls that programs probe and for which ENOSYS is a legitimate answer.
 const ENOSYS_OK: &[u64] = &[
     283, // membarrier
     293, // rseq
@@ -46,7 +46,7 @@ impl Kernel {
         let nr = self.tasks[t].cpu.x[8];
         let a: [u64; 6] = self.tasks[t].cpu.x[..6].try_into().unwrap();
         let pc = self.tasks[t].cpu.pc - 4;
-        // Coerenza tra descrittori e MAP_SHARED dello stesso file.
+        // Consistency between descriptors and MAP_SHARED of the same file.
         let keys = self.shared_keys_of(t, nr, &a);
         for &k in &keys {
             self.flush_shared_one(k);
@@ -89,8 +89,8 @@ impl Kernel {
         None
     }
 
-    /// Chiavi (dispositivo, inode) dei file con una MAP_SHARED su cui la
-    /// syscall fa I/O da descrittore.
+    /// Keys (device, inode) of the files with a MAP_SHARED on which the
+    /// syscall does descriptor I/O.
     fn shared_keys_of(&self, t: usize, nr: u64, a: &[u64; 6]) -> Vec<(u64, u64)> {
         use std::os::unix::fs::MetadataExt;
         if self.shared_files.is_empty() {
@@ -114,8 +114,8 @@ impl Kernel {
             .collect()
     }
 
-    /// Vero se la syscall fa I/O su un descrittore O_PATH: Linux la rifiuta
-    /// con EBADF (fdget invece di fdget_raw).
+    /// True if the syscall does I/O on an O_PATH descriptor: Linux refuses it
+    /// with EBADF (fdget instead of fdget_raw).
     fn uses_opath_fd(&self, t: usize, nr: u64, a: &[u64; 6]) -> bool {
         let fds: &[u64] = match nr {
             // fsetxattr, fgetxattr, flistxattr, fremovexattr, ioctl, ftruncate,
@@ -142,15 +142,15 @@ impl Kernel {
         self.tasks[t].mm.clone()
     }
 
-    /// Percorso assoluto del guest per una *at: `path` rispetto a `dirfd`. I
-    /// link magici `/proc/<pid>/fd/N` portano al file aperto.
+    /// Absolute guest path for an *at: `path` relative to `dirfd`. The
+    /// magic links `/proc/<pid>/fd/N` lead to the open file.
     fn at_path(&self, t: usize, dirfd: u64, path: &[u8]) -> Result<String, i64> {
         let p = self.at_path_raw(t, dirfd, path)?;
         Ok(self.proc_fd_target(t, &p).unwrap_or(p))
     }
 
-    /// Il file dietro `/proc/{self,thread-self,<pid>}/fd/N`, se è un file o
-    /// una directory dell'host.
+    /// The file behind `/proc/{self,thread-self,<pid>}/fd/N`, if it is a host
+    /// file or directory.
     fn proc_fd_target(&self, t: usize, path: &str) -> Option<String> {
         let rest = path.strip_prefix("/proc/")?;
         let (who, rest) = rest.split_once('/')?;
@@ -168,7 +168,7 @@ impl Kernel {
     fn at_path_raw(&self, t: usize, dirfd: u64, path: &[u8]) -> Result<String, i64> {
         let dirfd = dirfd as i64 as i32;
         if path.first() == Some(&b'/') {
-            // Come `qemu -L`: un percorso assoluto si cerca prima nel sysroot.
+            // Like `qemu -L`: an absolute path is looked up first in the sysroot.
             if let Some(root) = &self.cfg.sysroot {
                 let inside = fs::join(root, &path[1..]);
                 if std::fs::symlink_metadata(&inside).is_ok() {
@@ -188,9 +188,9 @@ impl Kernel {
         Ok(fs::join(&f.guest_path, path))
     }
 
-    /// Percorso senza seguire l'ultimo componente (unlink, rename, mkdir,
-    /// lstat...): il secondo valore dice se è un link magico
-    /// `/proc/<pid>/fd/N`, che Linux tratta come un link di procfs.
+    /// Path without following the last component (unlink, rename, mkdir,
+    /// lstat...): the second value says whether it is a magic link
+    /// `/proc/<pid>/fd/N`, which Linux treats as a procfs link.
     fn path_arg_nofollow(&self, t: usize, dirfd: u64, p: u64) -> Result<(String, bool), i64> {
         let raw = read_cstr(&mut self.mem(t).borrow_mut().mem, p)?;
         if raw.is_empty() {
@@ -243,7 +243,7 @@ impl Kernel {
             78 => self.sys_readlinkat(t, a[0], a[1], a[2], a[3] as usize),
             48 | 439 => {
                 let p = self.path_arg(t, a[0], a[1])?;
-                // /proc è sempre quello virtuale: quello dell'host descrive l'emulatore.
+                // /proc is always the virtual one: the host's describes the emulator.
                 if let Some(r) = self.proc_content(t, &p) {
                     r?;
                     return ret(0);
@@ -267,8 +267,8 @@ impl Kernel {
                 if !m.is_dir() {
                     return Err(ENOTDIR);
                 }
-                // Come il kernel, che tiene la dentry: la cwd è il percorso
-                // canonico, senza link simbolici.
+                // Like the kernel, which keeps the dentry: the cwd is the canonical
+                // path, without symbolic links.
                 let p = std::fs::canonicalize(&p).map(|c| c.to_string_lossy().into_owned()).unwrap_or(p);
                 *self.tasks[t].cwd.borrow_mut() = p;
                 ret(0)
@@ -295,7 +295,7 @@ impl Kernel {
             }
             35 => {
                 let (p, link) = self.path_arg_nofollow(t, a[0], a[1])?;
-                // Le voci di /proc/<pid>/fd non si tolgono.
+                // The entries of /proc/<pid>/fd are not removed.
                 if link {
                     return Err(EPERM);
                 }
@@ -321,8 +321,8 @@ impl Kernel {
                 ret(0)
             }
             37 => {
-                // linkat: con AT_SYMLINK_FOLLOW (0x400) si segue il link, anche
-                // quelli di /proc/<pid>/fd (file O_TMPFILE).
+                // linkat: with AT_SYMLINK_FOLLOW (0x400) the link is followed, including
+                // those of /proc/<pid>/fd (O_TMPFILE files).
                 if a[4] & !(0x400 | 0x1000) != 0 {
                     return Err(EINVAL);
                 }
@@ -349,7 +349,7 @@ impl Kernel {
             38 | 276 => {
                 let (old, l1) = self.path_arg_nofollow(t, a[0], a[1])?;
                 let (new, l2) = self.path_arg_nofollow(t, a[2], a[3])?;
-                // procfs è un altro file system.
+                // procfs is another file system.
                 if l1 || l2 {
                     return Err(EXDEV);
                 }
@@ -375,7 +375,7 @@ impl Kernel {
             54 | 55 => ret(0), // fchownat/fchown: proprietari invariati (siamo "root" per finta)
             88 => self.sys_utimensat(t, a[0], a[1], a[2], a[3]),
             33 => {
-                // mknodat: FIFO e file regolari; i dispositivi solo con privilegi.
+                // mknodat: FIFOs and regular files; devices only with privileges.
                 let (p, link) = self.path_arg_nofollow(t, a[0], a[1])?;
                 if link {
                     return Err(EEXIST);
@@ -398,14 +398,14 @@ impl Kernel {
                     return Err(host_errno(&std::io::Error::last_os_error()));
                 }
                 if a[2] as u32 & S_IFMT == 0 || a[2] as u32 & S_IFMT == S_IFREG {
-                    // SAFETY: r è il descrittore appena aperto.
+                    // SAFETY: r is the descriptor just opened.
                     unsafe { libc::close(r) };
                 }
                 fs::fix_mode(std::path::Path::new(&p), mode as u32 & 0o7777);
                 ret(0)
             }
             47 => {
-                // fallocate: modo 0 estende il file; KEEP_SIZE non cambia nulla.
+                // fallocate: mode 0 extends the file; KEEP_SIZE changes nothing.
                 let f = self.tasks[t].files.borrow().get(a[0] as i64)?;
                 let f = f.borrow();
                 let Kind::Host { file, .. } = &f.kind else { return Err(19) };
@@ -431,12 +431,12 @@ impl Kernel {
             196 => ret(self.sys_shmat(t, a[0], a[1], a[2])?),
             197 => ret(self.sys_shmdt(t, a[0])?),
             198 => {
-                // socket: esiste, ma non si connette a nulla (niente rete fino a M7).
+                // socket: it exists, but doesn't connect to anything (no network until M7).
                 let f = OpenFile::new(Kind::Socket, O_RDWR, "socket:".into());
                 ret(self.tasks[t].files.borrow_mut().install(f, a[1] & O_CLOEXEC != 0, 0)?)
             }
             203 => {
-                // connect: nessun servizio in ascolto (es. nscd di musl).
+                // connect: no service listening (e.g. musl's nscd).
                 let f = self.tasks[t].files.borrow().get(a[0] as i64)?;
                 if !matches!(f.borrow().kind, Kind::Socket) {
                     return Err(88); // ENOTSOCK
@@ -452,7 +452,7 @@ impl Kernel {
                 ret(0)
             }
             43 | 44 => {
-                // statfs: valori plausibili di un ext4.
+                // statfs: plausible values of an ext4.
                 let mut b = [0u8; 120];
                 b[..8].copy_from_slice(&0xEF53u64.to_le_bytes());
                 b[8..16].copy_from_slice(&4096u64.to_le_bytes());
@@ -489,7 +489,7 @@ impl Kernel {
                         let pos = (&*file).stream_position().map_err(|e| host_errno(&e))? as i64;
                         (size - pos).max(0)
                     }
-                    // Nessun terminale: stdout è una pipe o un file.
+                    // No terminal: stdout is a pipe or a file.
                     _ => return Err(ENOTTY),
                 };
                 write_u32(&mut self.mem(t).borrow_mut().mem, a[2], n as u32)?;
@@ -507,7 +507,7 @@ impl Kernel {
             }
             71 => self.sys_sendfile(t, a[0] as i64, a[1] as i64, a[2], a[3] as usize),
             73 => self.sys_ppoll(t, a[0], a[1] as usize, a[2], a[3]),
-            72 => ret(a[0] as i64), // pselect6: tutto pronto (approssimazione)
+            72 => ret(a[0] as i64), // pselect6: everything ready (approximation)
             166 => {
                 let old = self.tasks[t].umask;
                 self.tasks[t].umask = a[0] as u32 & 0o777;
@@ -579,14 +579,14 @@ impl Kernel {
             172 => ret(self.tasks[t].tgid as i64),
             173 => ret(self.tasks[t].ppid as i64),
             178 => ret(self.tasks[t].tid as i64),
-            // Come QEMU user mode: gli id del processo sono quelli dell'host, così
-            // i permessi dei file si comportano in modo coerente.
-            // SAFETY: getuid & co. non hanno precondizioni.
+            // Like QEMU user mode: the process ids are the host's, so
+            // file permissions behave consistently.
+            // SAFETY: getuid & co. have no preconditions.
             174 => ret(unsafe { libc::getuid() } as i64),
             175 => ret(unsafe { libc::geteuid() } as i64),
             176 => ret(unsafe { libc::getgid() } as i64),
             177 => ret(unsafe { libc::getegid() } as i64),
-            158 => ret(0), // getgroups: nessun gruppo supplementare
+            158 => ret(0), // getgroups: no supplementary groups
             146 | 144 | 143 | 147 | 149 | 151 | 152 => ret(0), // set*id
             154 => {
                 let pid = if a[0] == 0 { self.tasks[t].tgid } else { a[0] as i32 };
@@ -613,8 +613,8 @@ impl Kernel {
             }
             167 => self.sys_prctl(t, a),
             92 => {
-                // personality(0xffffffff) legge soltanto. È del thread
-                // (current->personality), non del processo.
+                // personality(0xffffffff) only reads. It belongs to the thread
+                // (current->personality), not to the process.
                 let old = self.tasks[t].personality;
                 if a[0] as u32 != u32::MAX {
                     self.tasks[t].personality = a[0] as u32;
@@ -624,7 +624,7 @@ impl Kernel {
             90 | 91 => self.sys_capability(t, nr == 91, a[0], a[1]),
             124 => ret(0),
             123 => {
-                // sched_getaffinity: le CPU 0..cpus (al più 64).
+                // sched_getaffinity: CPUs 0..cpus (at most 64).
                 let len = a[1] as usize;
                 if len < 8 || !len.is_multiple_of(8) {
                     return Err(EINVAL);
@@ -637,8 +637,8 @@ impl Kernel {
                 ret(n as i64)
             }
 
-            // --- segnali ---
-            // Il kernel accetta solo sigset_t da 8 byte.
+            // --- signals ---
+            // The kernel only accepts an 8-byte sigset_t.
             133..=135 if a[if nr == 133 { 1 } else { 3 }] != 8 => Err(EINVAL),
             136 if a[1] > 8 => Err(EINVAL),
             134 => ret(self.sys_sigaction(t, a[0] as i64, a[1], a[2])?),
@@ -656,7 +656,7 @@ impl Kernel {
                 Ok(Sys::NoReturn)
             }
             133 => {
-                // rt_sigsuspend: la prima volta sostituisce la maschera.
+                // rt_sigsuspend: the first time it replaces the mask.
                 if self.tasks[t].sig.saved_mask.is_none() {
                     let m = read_u64(&mut self.mem(t).borrow_mut().mem, a[0])?;
                     let old = self.tasks[t].sig.mask;
@@ -690,7 +690,7 @@ impl Kernel {
                     (114, _) => 1,
                     (_, 0 | 5 | 8 | 11) => self.realtime(),
                     (_, 1 | 4 | 6 | 7 | 9) => self.now(),
-                    (_, 2 | 3) => self.now(), // CPU time: tempo del processo ≈ monotono
+                    (_, 2 | 3) => self.now(), // CPU time: process time ≈ monotonic
                     _ => return Err(EINVAL),
                 };
                 if a[1] != 0 {
@@ -708,13 +708,13 @@ impl Kernel {
                     write_u64(&mut mm.borrow_mut().mem, a[0] + 8, ns % 1_000_000_000 / 1000)?;
                 }
                 if a[1] != 0 {
-                    // struct timezone: minuti a ovest di Greenwich e DST, entrambi 0.
+                    // struct timezone: minutes west of Greenwich and DST, both 0.
                     write_u64(&mut self.mem(t).borrow_mut().mem, a[1], 0)?;
                 }
                 ret(0)
             }
-            // clock_nanosleep: gli orologi senza nsleep danno EOPNOTSUPP
-            // (THREAD_CPUTIME, MONOTONIC_RAW, *_COARSE), quelli ignoti EINVAL.
+            // clock_nanosleep: clocks without nsleep give EOPNOTSUPP
+            // (THREAD_CPUTIME, MONOTONIC_RAW, *_COARSE), unknown ones EINVAL.
             115 if matches!(a[0] as i32, 3..=6) => Err(95),
             115 if !matches!(a[0] as i32, 0..=2 | 7..=9 | 11) => Err(EINVAL),
             101 | 115 => {
@@ -751,7 +751,7 @@ impl Kernel {
             // --- sistema ---
             160 => {
                 let mut b = vec![0u8; 65 * 6];
-                // UNAME26: la versione come la riscrive override_release.
+                // UNAME26: the version as override_release rewrites it.
                 let uname26 =
                     (self.tasks[t].personality & 0x002_0000 != 0).then(|| uname26(&self.cfg.release));
                 let release = uname26.as_deref().unwrap_or(&self.cfg.release);
@@ -794,8 +794,8 @@ impl Kernel {
     }
 
     fn sys_openat(&mut self, t: usize, dirfd: u64, p: u64, flags: u64, mode: u32) -> R {
-        // O_NOFOLLOW su un link di /proc/<pid>/fd: ELOOP (con O_PATH si apre il
-        // link stesso, che qui si tratta come il file).
+        // O_NOFOLLOW on a /proc/<pid>/fd link: ELOOP (with O_PATH the
+        // link itself is opened, which here is treated as the file).
         if flags & O_NOFOLLOW != 0 && flags & O_PATH == 0 && self.path_arg_nofollow(t, dirfd, p)?.1 {
             return Err(40);
         }
@@ -823,8 +823,8 @@ impl Kernel {
             Some(r) => r?,
             None => {
                 use std::os::unix::fs::{FileTypeExt, MetadataExt};
-                // O_DIRECTORY e O_NOFOLLOW (su un link) falliscono subito in
-                // fs::open, senza aspettare l'altro capo della FIFO.
+                // O_DIRECTORY and O_NOFOLLOW (on a link) fail immediately in
+                // fs::open, without waiting for the other end of the FIFO.
                 let fifo_ok = flags & (O_DIRECTORY | O_PATH) == 0
                     && (flags & O_NOFOLLOW == 0
                         || std::fs::symlink_metadata(&path).is_ok_and(|m| !m.file_type().is_symlink()));
@@ -847,7 +847,7 @@ impl Kernel {
         ret(self.tasks[t].files.borrow_mut().install(file, flags & O_CLOEXEC != 0, 0)?)
     }
 
-    /// open() di una FIFO: `None` se deve aspettare l'altro capo.
+    /// open() of a FIFO: `None` if it must wait for the other end.
     fn open_fifo(
         &mut self,
         t: usize,
@@ -892,8 +892,8 @@ impl Kernel {
         Ok(Some(OpenFile::new(kind, status, path.to_string())))
     }
 
-    /// File di /proc/self (e /proc/<pid>) generati: il /proc dell'host
-    /// descriverebbe l'emulatore, non il guest.
+    /// Generated files of /proc/self (and /proc/<pid>): the host's /proc
+    /// would describe the emulator, not the guest.
     fn proc_file(&self, t: usize, path: &str) -> Option<Result<Rc<RefCell<OpenFile>>, i64>> {
         let data = match self.proc_content(t, path)? {
             Ok(d) => d,
@@ -968,7 +968,7 @@ impl Kernel {
         for i in 0..cnt as u64 {
             let base = read_u64(&mut mm.borrow_mut().mem, iov + 16 * i)?;
             let len = read_u64(&mut mm.borrow_mut().mem, iov + 16 * i + 8)?;
-            // Una lunghezza negativa come ssize_t, o una somma che trabocca: EINVAL.
+            // A negative length as ssize_t, or a sum that overflows: EINVAL.
             total = total.checked_add(len).filter(|&s| s <= i64::MAX as u64).ok_or(EINVAL)?;
             v.push((base, len as usize));
         }
@@ -1021,8 +1021,8 @@ impl Kernel {
         }
     }
 
-    /// Il file di un pread/pwrite: solo file dell'host (una directory dà
-    /// EISDIR, una pipe ESPIPE), con il modo d'apertura giusto.
+    /// The file of a pread/pwrite: only host files (a directory gives
+    /// EISDIR, a pipe ESPIPE), with the right open mode.
     fn positional_file(&self, t: usize, fd: i64, write: bool) -> Result<Rc<RefCell<OpenFile>>, i64> {
         let f = self.tasks[t].files.borrow().get(fd)?;
         {
@@ -1047,7 +1047,7 @@ impl Kernel {
         let f = self.positional_file(t, fd, true)?;
         let fb = f.borrow();
         let Kind::Host { file, .. } = &fb.kind else { unreachable!() };
-        // Con O_APPEND Linux scrive in fondo, qualunque sia l'offset.
+        // With O_APPEND Linux writes at the end, whatever the offset.
         let off = if fb.flags & O_APPEND != 0 {
             file.metadata().map_err(|e| host_errno(&e))?.len()
         } else {
@@ -1061,8 +1061,8 @@ impl Kernel {
         if off < 0 {
             return Err(EINVAL);
         }
-        // I file generati di /proc (e pagemap) si leggono anche a un offset,
-        // senza spostare la posizione del descrittore.
+        // The generated files of /proc (and pagemap) can also be read at an offset,
+        // without moving the descriptor's position.
         {
             let f = self.tasks[t].files.borrow().get(fd)?;
             let mut fb = f.borrow_mut();
@@ -1087,9 +1087,9 @@ impl Kernel {
         Ok(data)
     }
 
-    /// preadv/pwritev (69/70) e preadv2/pwritev2 (286/287): come readv/writev
-    /// a un offset. Con le varianti 2 un offset di -1 vuol dire la posizione
-    /// corrente; i flag RWF_* non sono supportati (EOPNOTSUPP).
+    /// preadv/pwritev (69/70) and preadv2/pwritev2 (286/287): like readv/writev
+    /// at an offset. With the 2 variants an offset of -1 means the current
+    /// position; the RWF_* flags are not supported (EOPNOTSUPP).
     fn sys_piov(&mut self, t: usize, nr: u64, a: [u64; 6]) -> R {
         let (fd, iov, cnt, off) = (a[0] as i64, a[1], a[2] as usize, a[3] as i64);
         let write = matches!(nr, 70 | 287);
@@ -1151,7 +1151,7 @@ impl Kernel {
 
     fn sys_ppoll(&mut self, t: usize, fds: u64, n: usize, timeout: u64, sigmask: u64) -> R {
         let mm = self.mem(t);
-        // Maschera temporanea durante l'attesa, come rt_sigsuspend.
+        // Temporary mask during the wait, like rt_sigsuspend.
         if sigmask != 0 && self.tasks[t].sig.saved_mask.is_none() {
             let m = read_u64(&mut mm.borrow_mut().mem, sigmask)?;
             let old = self.tasks[t].sig.mask;
@@ -1177,7 +1177,7 @@ impl Kernel {
                                     0
                                 }
                             }
-                            _ => events & 0x5, // file e console: sempre pronti
+                            _ => events & 0x5, // files and console: always ready
                         }
                     }
                 }
@@ -1190,7 +1190,7 @@ impl Kernel {
             }
         }
         if ready == 0 {
-            // Scadenza (relativa) fissata al primo blocco; NULL = per sempre.
+            // (Relative) deadline fixed at the first block; NULL = forever.
             if timeout != 0 && self.tasks[t].deadline.is_none() {
                 let s = read_u64(&mut mm.borrow_mut().mem, timeout)?;
                 let ns = read_u64(&mut mm.borrow_mut().mem, timeout + 8)?;
@@ -1198,7 +1198,7 @@ impl Kernel {
             }
             let until = self.tasks[t].deadline;
             if until.is_none_or(|u| self.now() < u) {
-                // Senza descrittori (pause() di musl) sveglia solo un segnale.
+                // Without descriptors (musl's pause()) only a signal wakes it.
                 return Ok(Sys::Block(if n == 0 && until.is_none() {
                     Wait::Signal
                 } else {
@@ -1210,7 +1210,7 @@ impl Kernel {
         ret(ready)
     }
 
-    /// Fine di un'attesa con maschera temporanea terminata senza segnali.
+    /// End of a wait with a temporary mask that finished without signals.
     fn restore_saved_mask(&mut self, t: usize) {
         if let Some(m) = self.tasks[t].sig.saved_mask.take() {
             self.tasks[t].sig.mask = m;
@@ -1245,11 +1245,11 @@ impl Kernel {
             8 => {
                 let who = arg as i32;
                 drop(files);
-                // -INT_MIN non è un gruppo (f_setown: EINVAL).
+                // -INT_MIN is not a group (f_setown: EINVAL).
                 if who == i32::MIN {
                     return Err(EINVAL);
                 }
-                // find_vpid trova qualunque id (anche il tid di un thread).
+                // find_vpid finds any id (even the tid of a thread).
                 if who != 0 && !self.id_exists(if who < 0 { 2 } else { 0 }, who.unsigned_abs() as i32) {
                     return Err(ESRCH);
                 }
@@ -1306,7 +1306,7 @@ impl Kernel {
                 if cmd == 1032 {
                     return ret(p.borrow().capacity() as i64);
                 }
-                // SAFETY: geteuid non ha precondizioni.
+                // SAFETY: geteuid has no preconditions.
                 let root = unsafe { libc::geteuid() } == 0;
                 ret(p.borrow_mut().set_capacity(arg, root)? as i64)
             }
@@ -1321,7 +1321,7 @@ impl Kernel {
         }
     }
 
-    /// prlimit64 (e getrlimit/setrlimit con pid 0).
+    /// prlimit64 (and getrlimit/setrlimit with pid 0).
     fn sys_prlimit(&mut self, t: usize, pid: i32, res: u64, new: u64, old: u64) -> R {
         let res = res as usize;
         if res >= super::RLIM_NLIMITS {
@@ -1342,7 +1342,7 @@ impl Kernel {
             if cur > max {
                 return Err(EINVAL);
             }
-            // SAFETY: geteuid non ha precondizioni.
+            // SAFETY: geteuid has no preconditions.
             let root = unsafe { libc::geteuid() } == 0;
             if max > self.tasks[target].rlimits[res].1 && !root || res == 7 && max > 1 << 20 {
                 return Err(EPERM);
@@ -1369,7 +1369,7 @@ impl Kernel {
         ret(0)
     }
 
-    /// Esiste un thread (0), processo (1) o gruppo (2) con questo id?
+    /// Does a thread (0), process (1) or group (2) with this id exist?
     fn id_exists(&self, ty: i32, id: i32) -> bool {
         self.tasks.iter().any(|x| {
             x.state != State::Dead
@@ -1382,7 +1382,7 @@ impl Kernel {
         })
     }
 
-    /// Segnale di I/O ai proprietari dei capi di lettura con O_ASYNC.
+    /// I/O signal to the owners of the read ends with O_ASYNC.
     fn notify_async(&mut self, p: &Rc<RefCell<fs::Pipe>>) {
         const POLL_IN: i32 = 1;
         let readers: Vec<_> = p.borrow().async_readers.iter().filter_map(|w| w.upgrade()).collect();
@@ -1420,7 +1420,7 @@ impl Kernel {
         }
     }
 
-    /// F_SETLEASE, con le regole di generic_setlease.
+    /// F_SETLEASE, with the rules of generic_setlease.
     fn set_lease(&mut self, f: &Rc<RefCell<OpenFile>>, kind: i16) -> R {
         use std::os::unix::fs::MetadataExt;
         const F_RDLCK: i16 = 0;
@@ -1438,12 +1438,12 @@ impl Kernel {
         if !matches!(kind, F_RDLCK | F_WRLCK | F_UNLCK) {
             return Err(EINVAL);
         }
-        // SAFETY: geteuid non ha precondizioni.
+        // SAFETY: geteuid has no preconditions.
         let euid = unsafe { libc::geteuid() };
         if kind != F_UNLCK && euid != uid && euid != 0 {
             return Err(EACCES);
         }
-        // Gli altri aperti dello stesso file (descrizioni distinte).
+        // The other opens of the same file (distinct descriptions).
         let mut seen: Vec<*const RefCell<OpenFile>> = Vec::new();
         let (mut others, mut other_writers) = (0, 0);
         for task in &self.tasks {
@@ -1489,7 +1489,7 @@ impl Kernel {
         }
         let unresolved = self.at_path_raw(t, dirfd, &raw)?;
         if flags & AT_SYMLINK_NOFOLLOW != 0 && self.proc_fd_target(t, &unresolved).is_some() {
-            // I link di /proc/<pid>/fd: lrwx------, 64 byte.
+            // The /proc/<pid>/fd links: lrwx------, 64 bytes.
             return Ok(Stat {
                 mode: S_IFLNK | 0o700,
                 nlink: 1,
@@ -1584,7 +1584,7 @@ impl Kernel {
         }
         let cpath = std::ffi::CString::new(path).map_err(|_| EINVAL)?;
         let hflags = if flags & AT_SYMLINK_NOFOLLOW != 0 { libc::AT_SYMLINK_NOFOLLOW } else { 0 };
-        // SAFETY: percorso C valido e array di due timespec, come vuole utimensat(2).
+        // SAFETY: valid C path and array of two timespecs, as utimensat(2) wants.
         let r = unsafe { libc::utimensat(libc::AT_FDCWD, cpath.as_ptr(), ts.as_ptr(), hflags) };
         if r != 0 {
             return Err(host_errno(&std::io::Error::last_os_error()));
@@ -1617,8 +1617,8 @@ impl Kernel {
             return Err(EINVAL);
         }
         let anon = flags & super::mm::MAP_ANONYMOUS != 0;
-        // Ordine dei controlli di Linux: il descrittore (ksys_mmap_pgoff),
-        // poi in do_mmap lunghezza, tipo e modo d'apertura del file.
+        // Linux's order of checks: the descriptor (ksys_mmap_pgoff),
+        // then in do_mmap length, type and open mode of the file.
         if !anon {
             self.tasks[t].files.borrow().get(fd)?;
         }
@@ -1631,8 +1631,8 @@ impl Kernel {
             return Err(EINVAL);
         }
         let shared_flag = ty != 2;
-        // LEGACY_MAP_MASK di Linux: con MAP_SHARED_VALIDATE su un file ogni
-        // altro flag è EOPNOTSUPP.
+        // Linux's LEGACY_MAP_MASK: with MAP_SHARED_VALIDATE on a file every
+        // other flag is EOPNOTSUPP.
         const LEGACY_MAP_MASK: u64 = 0xf
             | 0x10
             | 0x20
@@ -1664,8 +1664,8 @@ impl Kernel {
             use std::os::unix::fs::{FileExt, MetadataExt};
             let f = self.tasks[t].files.borrow().get(fd)?;
             let f = f.borrow();
-            // Come Linux: il file deve essere leggibile; una MAP_SHARED di un
-            // file aperto senza scrittura non può mai diventare scrivibile.
+            // Like Linux: the file must be readable; a MAP_SHARED of a
+            // file opened without write can never become writable.
             let fd_write = f.flags & O_ACCMODE != 0;
             if f.flags & O_ACCMODE == O_WRONLY || shared_flag && prot & 2 != 0 && !fd_write {
                 return Err(EACCES);
@@ -1691,7 +1691,7 @@ impl Kernel {
                         data = Some(d);
                     }
                 }
-                // MAP_SHARED di /dev/zero: memoria anonima condivisa.
+                // MAP_SHARED of /dev/zero: shared anonymous memory.
                 Kind::Zero if shared_flag => {
                     let size = len.min(super::mm::MAX_MAPPING).next_multiple_of(4096) as usize;
                     shared = Some((Rc::new(RefCell::new(vec![0u8; size])), 0, fd_write));
@@ -1703,8 +1703,8 @@ impl Kernel {
         ret(self.mem(t).borrow_mut().mmap(addr, len, prot, flags, data, shared)?)
     }
 
-    /// futex_waitv(waiters, nr, flags, timeout, clockid): come
-    /// kernel/futex/syscalls.c; restituisce l'indice del futex svegliato.
+    /// futex_waitv(waiters, nr, flags, timeout, clockid): like
+    /// kernel/futex/syscalls.c; returns the index of the woken futex.
     fn sys_futex_waitv(&mut self, t: usize, a: [u64; 6]) -> R {
         const FUTEX2_SIZE_U32: u32 = 2;
         const FUTEX2_PRIVATE: u32 = 128;
@@ -1729,7 +1729,7 @@ impl Kernel {
             let s = read_u64(&mut mm.borrow_mut().mem, timeout)?;
             let n = read_u64(&mut mm.borrow_mut().mem, timeout + 8)?;
             let d = timespec_ns(s, n)?;
-            // Scadenza assoluta sull'orologio indicato.
+            // Absolute deadline on the indicated clock.
             let until = if clockid == 0 { d.saturating_sub(self.realtime() - self.now()) } else { d };
             self.tasks[t].deadline = Some(until);
         }
@@ -1815,7 +1815,7 @@ impl Kernel {
                 }
                 let woken = self.futex_wake(key, val as usize);
                 let key2 = self.futex_key(&mm, a[4], private);
-                // Sposta gli altri in attesa sul secondo indirizzo.
+                // Moves the other waiters to the second address.
                 let mut moved = 0;
                 for task in self.tasks.iter_mut() {
                     if moved >= a[3] as usize {
@@ -1864,8 +1864,8 @@ impl Kernel {
         }
     }
 
-    /// capget/capset. Come QEMU user mode le capability sono quelle del
-    /// processo host; capset non cambia nulla (può solo toglierne).
+    /// capget/capset. Like QEMU user mode the capabilities are those of the
+    /// host process; capset changes nothing (it can only drop some).
     fn sys_capability(&mut self, t: usize, set: bool, hdr: u64, data: u64) -> R {
         const V1: u32 = 0x1998_0330;
         const V2: u32 = 0x2007_1026;
@@ -1882,7 +1882,7 @@ impl Kernel {
             }
         };
         if set {
-            // Solo il thread chiamante (task_pid_vnr(current), cioè il tid).
+            // Only the calling thread (task_pid_vnr(current), i.e. the tid).
             if pid != 0 && pid != self.tasks[t].tid {
                 return Err(EPERM);
             }
@@ -1892,7 +1892,7 @@ impl Kernel {
                 let v =
                     |i: usize| u32::from_le_bytes(d[w * 12 + i * 4..w * 12 + i * 4 + 4].try_into().unwrap());
                 let (e, p, i) = (v(0), v(1), v(2));
-                // Non si possono aggiungere capability, né avere effettive non permesse.
+                // Capabilities can't be added, nor can there be effective ones that aren't permitted.
                 if p & !perm[w] != 0 || i & !(inh[w] | perm[w]) != 0 || e & !p != 0 {
                     return Err(EPERM);
                 }
@@ -2016,7 +2016,7 @@ impl Kernel {
 
     fn sys_itimer(&mut self, t: usize, nr: u64, which: u64, new: u64, old: u64) -> R {
         if which != 0 {
-            return Err(EINVAL); // solo ITIMER_REAL
+            return Err(EINVAL); // only ITIMER_REAL
         }
         let mm = self.mem(t);
         let tgid = self.tasks[t].tgid;
@@ -2053,20 +2053,20 @@ impl Kernel {
     }
 }
 
-/// Capability (effettive, permesse, ereditabili) del processo host, in due
-/// parole da 32 bit come `capget` versione 3.
+/// Capabilities (effective, permitted, inheritable) of the host process, in two
+/// 32-bit words like `capget` version 3.
 fn host_caps() -> ([u32; 2], [u32; 2], [u32; 2]) {
     #[cfg(target_os = "linux")]
     {
         let mut hdr = [0x2008_0522u32, 0];
         let mut d = [0u32; 6];
-        // SAFETY: header e dati sono buffer validi delle dimensioni attese.
+        // SAFETY: header and data are valid buffers of the expected sizes.
         let r = unsafe { libc::syscall(libc::SYS_capget, hdr.as_mut_ptr(), d.as_mut_ptr()) };
         if r == 0 {
             return ([d[0], d[3]], [d[1], d[4]], [d[2], d[5]]);
         }
     }
-    // SAFETY: geteuid non ha precondizioni.
+    // SAFETY: geteuid has no preconditions.
     if unsafe { libc::geteuid() } == 0 {
         let all = [u32::MAX, 0x1ff];
         (all, all, [0, 0])
@@ -2075,8 +2075,8 @@ fn host_caps() -> ([u32; 2], [u32; 2], [u32; 2]) {
     }
 }
 
-/// La versione del kernel con UNAME26 (override_release di Linux): "2.6.",
-/// il numero minore più 60, e ciò che segue i primi tre numeri. "6.18.53" →
+/// The kernel version with UNAME26 (Linux's override_release): "2.6.",
+/// the minor number plus 60, and what follows the first three numbers. "6.18.53" →
 /// "2.6.78", "6.12.5-linuxkit" → "2.6.72-linuxkit".
 fn uname26(release: &str) -> String {
     let minor: u32 = release

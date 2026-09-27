@@ -1,7 +1,7 @@
-//! Virgola mobile: NaN, arrotondamenti, eccezioni, conversioni, stime.
+//! Floating point: NaNs, rounding, exceptions, conversions, estimates.
 //!
-//! Codifiche generate con `tools/a64asm.sh`; valori attesi verificati
-//! anche contro QEMU quando l'oracolo è disponibile.
+//! Encodings generated with `tools/a64asm.sh`; expected values also verified
+//! against QEMU when the oracle is available.
 
 use vetro_isa_tests::case;
 

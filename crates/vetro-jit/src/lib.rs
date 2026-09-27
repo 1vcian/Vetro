@@ -1,20 +1,20 @@
-//! Traduzione a blocchi da AArch64 verso moduli WASM (M4, ADR 0012).
+//! Block translation from AArch64 to WASM modules (M4, ADR 0012).
 //!
-//! - [`wasm`]: encoder minimo di moduli WebAssembly;
-//! - [`state`]: [`JitState`], lo stato condiviso con i blocchi;
-//! - [`translate`]: da regioni di istruzioni decodificate a funzioni WASM,
-//!   il modulo di runtime e il dispatcher (ADR 0024);
-//! - [`engine`]: i trait [`Engine`] e [`Host`] (ABI in docs/specs/jit.md);
-//! - [`helper`]: `env.simd`, le istruzioni SIMD/FP eseguite
-//!   dall'interprete dentro le regioni (ADR 0026);
-//! - [`profile`]: istruzioni dell'interprete per classe, per le misure;
-//! - [`driver`]: [`JitCpu`], che in modalità utente alterna blocchi tradotti
-//!   e passi dell'interprete, con cache e invalidazione;
-//! - [`sys`]: [`SysJit`], i blocchi della modalità sistema (MMU, pagine
-//!   fisiche, concatenamento, TLB software), che la macchina alterna
-//!   all'interprete.
+//! - [`wasm`]: minimal encoder of WebAssembly modules;
+//! - [`state`]: [`JitState`], the state shared with the blocks;
+//! - [`translate`]: from regions of decoded instructions to WASM functions,
+//!   the runtime module and the dispatcher (ADR 0024);
+//! - [`engine`]: the [`Engine`] and [`Host`] traits (ABI in docs/specs/jit.md);
+//! - [`helper`]: `env.simd`, the SIMD/FP instructions executed
+//!   by the interpreter inside the regions (ADR 0026);
+//! - [`profile`]: interpreter instructions by class, for measurements;
+//! - [`driver`]: [`JitCpu`], which in user mode alternates translated blocks
+//!   and interpreter steps, with cache and invalidation;
+//! - [`sys`]: [`SysJit`], the system-mode blocks (MMU, physical
+//!   pages, chaining, software TLB), which the machine alternates
+//!   with the interpreter.
 //!
-//! Nessuna dipendenza esterna: compila anche per `wasm32-unknown-unknown`.
+//! No external dependencies: it also compiles for `wasm32-unknown-unknown`.
 
 pub mod driver;
 pub mod engine;
@@ -31,12 +31,12 @@ pub use profile::Profile;
 pub use state::JitState;
 pub use sys::{Clock, Next, SysJit, SysJitConfig, SysJitDyn, SysJitStats, SysPhys, SysRun};
 
-/// Codici d'uscita di un blocco (docs/specs/jit.md).
+/// Exit codes of a block (docs/specs/jit.md).
 pub const NEXT: u32 = 0;
 pub const FAULT: u32 = 1;
 pub const STOP: u32 = 2;
 pub const SVC: u32 = 3;
-/// Il blocco ha smascherato interrupt (MSR DAIF/DAIFClr): `pc` è
-/// l'istruzione successiva e l'host deve ricontrollare gli interrupt prima
-/// di continuare (modalità sistema, ADR 0024).
+/// The block unmasked interrupts (MSR DAIF/DAIFClr): `pc` is the
+/// next instruction and the host must check interrupts again before
+/// continuing (system mode, ADR 0024).
 pub const YIELD: u32 = 4;

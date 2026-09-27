@@ -1,22 +1,22 @@
-//! virtio-blk (virtio v1.2, §5.2) e backend a blocchi.
+//! virtio-blk (virtio v1.2, §5.2) and block backends.
 //!
-//! Una coda di richieste. Ogni richiesta: intestazione leggibile di 16 byte
-//! (tipo, riservato, settore), dati, un byte di stato scrivibile in coda.
-//! Tipi gestiti: IN, OUT, FLUSH, GET_ID; gli altri rispondono UNSUPP.
-//! Settori sempre da 512 byte, qualunque sia `blk_size`.
+//! One request queue. Each request: a readable 16-byte header
+//! (type, reserved, sector), data, a writable status byte at the end.
+//! Types handled: IN, OUT, FLUSH, GET_ID; the others answer UNSUPP.
+//! Sectors are always 512 bytes, whatever `blk_size` is.
 //!
-//! Scelte:
-//! - richiesta senza intestazione completa o senza byte di stato: errore
-//!   della coda (DEVICE_NEEDS_RESET), come `virtio_error` di QEMU;
-//! - dati non multipli di 512, accesso oltre la capacità, scrittura su
-//!   disco in sola lettura, errore del backend: stato IOERR;
-//! - la lunghezza nello used ring è quella davvero scritta (dati + stato);
-//! - l'I/O procede a pezzi da 64 KiB, senza allocare l'intera
-//!   richiesta;
-//! - [`BlockError::NotReady`] (dati non ancora arrivati, es. immagine
-//!   scaricata a pezzi in M5) lascia la richiesta in sospeso: si riprova da
-//!   capo al prossimo `service`, prima di estrarne altre. Le richieste sono
-//!   idempotenti, quindi ripeterle è sicuro.
+//! Choices:
+//! - a request without a complete header or without the status byte: queue
+//!   error (DEVICE_NEEDS_RESET), like QEMU's `virtio_error`;
+//! - data not a multiple of 512, access past the capacity, write to a
+//!   read-only disk, backend error: status IOERR;
+//! - the length in the used ring is the one actually written (data + status);
+//! - I/O proceeds in 64 KiB chunks, without allocating the whole
+//!   request;
+//! - [`BlockError::NotReady`] (data not arrived yet, e.g. an image
+//!   downloaded in pieces in M5) leaves the request pending: it is retried from
+//!   scratch at the next `service`, before popping others. Requests are
+//!   idempotent, so repeating them is safe.
 
 use core::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
@@ -40,27 +40,27 @@ pub const F_RO: u64 = 1 << 5;
 pub const F_BLK_SIZE: u64 = 1 << 6;
 pub const F_FLUSH: u64 = 1 << 9;
 
-/// Lunghezza dell'identificativo di GET_ID.
+/// Length of the GET_ID identifier.
 pub const ID_BYTES: usize = 20;
-/// Pezzo massimo per ogni chiamata al backend.
+/// Maximum chunk for each call to the backend.
 const CHUNK: u64 = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockError {
-    /// Errore di I/O del backend.
+    /// Backend I/O error.
     Io,
-    /// Settori oltre la fine del disco.
+    /// Sectors past the end of the disk.
     OutOfRange,
     /// Scrittura su un backend in sola lettura.
     ReadOnly,
-    /// Dati non ancora disponibili: riprovare più tardi.
+    /// Data not available yet: retry later.
     NotReady,
 }
 
-/// Disco visto dal dispositivo. `sector` in unità da 512 byte; i buffer
-/// sono multipli di 512.
+/// Disk as seen by the device. `sector` in 512-byte units; the buffers
+/// are multiples of 512.
 pub trait BlockBackend: Any {
-    /// Dimensione in byte (multiplo di 512).
+    /// Size in bytes (a multiple of 512).
     fn size(&self) -> u64;
     fn read_only(&self) -> bool {
         false
@@ -68,18 +68,18 @@ pub trait BlockBackend: Any {
     fn read_sectors(&mut self, sector: u64, buf: &mut [u8]) -> Result<(), BlockError>;
     fn write_sectors(&mut self, sector: u64, data: &[u8]) -> Result<(), BlockError>;
     fn flush(&mut self) -> Result<(), BlockError>;
-    /// Stato del backend negli snapshot (M6, ADR 0015). Di norma nessuno: i
-    /// dati stanno fuori (un file, un'immagine via HTTP) e il backend è un
-    /// collegamento che l'host ricrea prima del ripristino. Chi tiene dati
-    /// propri scritti dal guest (disco in memoria, livello copy-on-write) li
-    /// salva qui.
+    /// Backend state in snapshots (M6, ADR 0015). Usually none: the
+    /// data lives outside (a file, an image over HTTP) and the backend is a
+    /// link that the host recreates before the restore. Backends holding their
+    /// own data written by the guest (in-memory disk, copy-on-write layer)
+    /// save it here.
     fn save_state(&self, _w: &mut vetro_snapshot::Writer) {}
     fn restore_state(&mut self, _r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
         Ok(())
     }
 }
 
-/// Intervallo di byte di `len` byte dal settore `sector`, se sta in `size`.
+/// Byte range of `len` bytes from sector `sector`, if it fits in `size`.
 fn byte_range(size: u64, sector: u64, len: usize) -> Result<core::ops::Range<usize>, BlockError> {
     let start = sector.checked_mul(BLK_SECTOR_SIZE).ok_or(BlockError::OutOfRange)?;
     let end = start.checked_add(len as u64).ok_or(BlockError::OutOfRange)?;
@@ -97,12 +97,12 @@ pub struct MemBackend {
 }
 
 impl MemBackend {
-    /// Disco di `size` byte a zero (arrotondato a 512 in su).
+    /// Zeroed disk of `size` bytes (rounded up to 512).
     pub fn new(size: u64) -> Self {
         Self::from_vec(vec![0; size as usize])
     }
 
-    /// Disco con il contenuto dato, completato con zeri fino a 512.
+    /// Disk with the given contents, padded with zeros up to 512.
     pub fn from_vec(mut data: Vec<u8>) -> Self {
         let pad = data.len().next_multiple_of(BLK_SECTOR_SIZE as usize);
         data.resize(pad, 0);
@@ -142,10 +142,10 @@ impl BlockBackend for MemBackend {
     fn flush(&mut self) -> Result<(), BlockError> {
         Ok(())
     }
-    /// Scrivibile: il contenuto intero (il guest può averlo scritto), a
-    /// blocchi compressi. In sola lettura (la base di un copy-on-write) è
-    /// un'immagine che non cambia: solo il suo hash, per controllare che al
-    /// ripristino sia collegata la stessa.
+    /// Writable: the whole contents (the guest may have written them), in
+    /// compressed blocks. Read-only (the base of a copy-on-write) it is
+    /// an image that doesn't change: only its hash, to check that at
+    /// restore the same one is attached.
     fn save_state(&self, w: &mut vetro_snapshot::Writer) {
         w.u64(u64::from(self.read_only));
         if self.read_only {
@@ -155,26 +155,26 @@ impl BlockBackend for MemBackend {
         }
     }
     fn restore_state(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
-        r.expect_u64("sola lettura del disco in memoria", u64::from(self.read_only))?;
+        r.expect_u64("read-only flag of the in-memory disk", u64::from(self.read_only))?;
         if self.read_only {
-            return r.expect_u64("hash del disco in memoria", vetro_snapshot::hash64(&self.data));
+            return r.expect_u64("hash of the in-memory disk", vetro_snapshot::hash64(&self.data));
         }
         self.data.fill(0);
         vetro_snapshot::decompress_into(r, &mut self.data, |_| {})
     }
 }
 
-/// Strato copy-on-write sopra un backend usato solo in lettura (es.
-/// un'immagine scaricata a pezzi): le scritture finiscono in cluster da
-/// [`CowBackend::CLUSTER`] byte in memoria, le letture preferiscono i
-/// cluster scritti. Una scrittura parziale di un cluster lo copia prima
-/// dalla base.
+/// Copy-on-write layer over a backend used read-only (e.g.
+/// an image downloaded in pieces): writes end up in in-memory clusters of
+/// [`CowBackend::CLUSTER`] bytes, reads prefer the
+/// written clusters. A partial write of a cluster copies it first
+/// from the base.
 ///
-/// Per l'overlay persistente (M6, ADR 0017) tiene anche l'insieme dei
-/// cluster scritti dall'ultima [`take_dirty`](Self::take_dirty): chi
-/// conserva i cluster su file (CLI, OPFS nel browser) scrive solo quelli.
-/// È contabilità dell'host, non stato del guest: non entra negli snapshot,
-/// e dopo un ripristino si svuota (chi persiste confronta tutti i cluster).
+/// For the persistent overlay (M6, ADR 0017) it also keeps the set of
+/// clusters written since the last [`take_dirty`](Self::take_dirty): whoever
+/// keeps the clusters in a file (CLI, OPFS in the browser) writes only those.
+/// It is host bookkeeping, not guest state: it doesn't go into snapshots,
+/// and after a restore it is emptied (whoever persists compares all clusters).
 pub struct CowBackend<B: BlockBackend> {
     base: B,
     clusters: BTreeMap<u64, Box<[u8]>>,
@@ -196,28 +196,28 @@ impl<B: BlockBackend> CowBackend<B> {
         &mut self.base
     }
 
-    /// Numero di cluster scritti.
+    /// Number of written clusters.
     pub fn dirty_clusters(&self) -> usize {
         self.clusters.len()
     }
 
-    /// I cluster scritti dal guest dall'ultima chiamata, in ordine.
+    /// The clusters written by the guest since the last call, in order.
     pub fn take_dirty(&mut self) -> Vec<u64> {
         core::mem::take(&mut self.dirty).into_iter().collect()
     }
 
-    /// I dati del cluster `c`, se è stato scritto.
+    /// The data of cluster `c`, if it has been written.
     pub fn cluster(&self, c: u64) -> Option<&[u8]> {
         self.clusters.get(&c).map(|d| &d[..])
     }
 
-    /// Tutti i cluster scritti, in ordine di indice.
+    /// All the written clusters, in index order.
     pub fn clusters(&self) -> impl Iterator<Item = (u64, &[u8])> {
         self.clusters.iter().map(|(&c, d)| (c, &d[..]))
     }
 
-    /// Mette il cluster `c` con i dati di un overlay salvato (lunghi come il
-    /// cluster nel disco). Non conta come scrittura del guest.
+    /// Sets cluster `c` with the data of a saved overlay (as long as the
+    /// cluster in the disk). It doesn't count as a guest write.
     pub fn load_cluster(&mut self, c: u64, data: &[u8]) -> Result<(), BlockError> {
         if c >= self.size().div_ceil(Self::CLUSTER) {
             return Err(BlockError::OutOfRange);
@@ -229,13 +229,13 @@ impl<B: BlockBackend> CowBackend<B> {
         Ok(())
     }
 
-    /// Dimensione del cluster `c` (l'ultimo può essere più corto).
+    /// Size of cluster `c` (the last one may be shorter).
     fn cluster_len(&self, c: u64) -> usize {
         (self.base.size() - c * Self::CLUSTER).min(Self::CLUSTER) as usize
     }
 
-    /// Applica `f(cluster, offset nel cluster, inizio, fine)` a ogni pezzo
-    /// dell'intervallo `[pos, pos + len)` diviso per cluster.
+    /// Applies `f(cluster, offset in the cluster, start, end)` to every piece
+    /// of the range `[pos, pos + len)` split by cluster.
     fn pieces(
         pos: u64,
         len: usize,
@@ -293,9 +293,9 @@ impl<B: BlockBackend> BlockBackend for CowBackend<B> {
         Ok(())
     }
 
-    /// I cluster scritti dal guest (in ordine), poi lo stato della base (di
-    /// norma nessuno: la base è un collegamento, controllato solo per
-    /// dimensione).
+    /// The clusters written by the guest (in order), then the state of the base
+    /// (usually none: the base is a link, checked only by
+    /// size).
     fn save_state(&self, w: &mut vetro_snapshot::Writer) {
         w.u64(self.base.size());
         w.seq(&self.clusters, |w, (&c, data)| {
@@ -306,7 +306,7 @@ impl<B: BlockBackend> BlockBackend for CowBackend<B> {
     }
 
     fn restore_state(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
-        r.expect_u64("dimensione del disco", self.base.size())?;
+        r.expect_u64("disk size", self.base.size())?;
         let clusters = self.size().div_ceil(Self::CLUSTER);
         self.clusters.clear();
         self.dirty.clear();
@@ -314,7 +314,7 @@ impl<B: BlockBackend> BlockBackend for CowBackend<B> {
         for _ in 0..n {
             let c = r.u64()?;
             if c >= clusters || self.clusters.contains_key(&c) {
-                return Err(vetro_snapshot::Error::invalid(format!("cluster {c} del disco")));
+                return Err(vetro_snapshot::Error::invalid(format!("disk cluster {c}")));
             }
             let mut data = vec![0u8; self.cluster_len(c)].into_boxed_slice();
             vetro_snapshot::decompress_into(r, &mut data, |_| {})?;
@@ -324,20 +324,20 @@ impl<B: BlockBackend> BlockBackend for CowBackend<B> {
     }
 }
 
-/// Parametri di virtio-blk.
+/// virtio-blk parameters.
 #[derive(Clone, Debug)]
 pub struct VirtioBlkConfig {
-    /// Dimensione della coda (QEMU: 256).
+    /// Queue size (QEMU: 256).
     pub queue_size: u16,
     /// Segmenti dati massimi per richiesta (QEMU: queue_size - 2).
     pub seg_max: u32,
     /// Byte massimi per segmento.
     pub size_max: u32,
-    /// Dimensione del blocco logico annunciata al driver.
+    /// Logical block size announced to the driver.
     pub blk_size: u32,
-    /// Forza la sola lettura anche se il backend accetta scritture.
+    /// Forces read-only even if the backend accepts writes.
     pub read_only: bool,
-    /// Identificativo per GET_ID (al massimo 20 byte, completato con zeri).
+    /// Identifier for GET_ID (at most 20 bytes, padded with zeros).
     pub serial: Vec<u8>,
 }
 
@@ -354,11 +354,11 @@ impl Default for VirtioBlkConfig {
     }
 }
 
-/// Esito del trattamento di una richiesta.
+/// Outcome of handling a request.
 enum Outcome {
-    /// Byte scritti nei buffer del driver (dati + stato).
+    /// Bytes written into the driver's buffers (data + status).
     Done(u32),
-    /// Il backend non è pronto: riprovare.
+    /// The backend is not ready: retry.
     Retry,
 }
 
@@ -383,7 +383,7 @@ impl VirtioBlk {
         self.backend.as_mut()
     }
 
-    /// Accesso tipizzato al backend.
+    /// Typed access to the backend.
     pub fn backend_as_mut<T: BlockBackend>(&mut self) -> Option<&mut T> {
         let b: &mut dyn Any = self.backend.as_mut();
         b.downcast_mut()
@@ -393,12 +393,12 @@ impl VirtioBlk {
         self.cfg.read_only || self.backend.read_only()
     }
 
-    /// Capacità in settori da 512 byte.
+    /// Capacity in 512-byte sectors.
     pub fn capacity(&self) -> u64 {
         self.backend.size() / BLK_SECTOR_SIZE
     }
 
-    /// Una richiesta aspetta il backend.
+    /// A request is waiting for the backend.
     pub fn has_pending(&self) -> bool {
         self.pending.is_some()
     }
@@ -420,7 +420,7 @@ impl VirtioBlk {
             return Err(QueueError::Malformed("intestazione virtio-blk incompleta"));
         }
         let Some(status_at) = c.writable_len().checked_sub(1) else {
-            return Err(QueueError::Malformed("byte di stato virtio-blk mancante"));
+            return Err(QueueError::Malformed("virtio-blk status byte missing"));
         };
         let kind = u32::from_le_bytes(hdr[0..4].try_into().unwrap());
         let sector = u64::from_le_bytes(hdr[8..16].try_into().unwrap());
@@ -457,9 +457,9 @@ impl VirtioBlk {
         Ok(Outcome::Done(written as u32 + 1))
     }
 
-    /// Trasferisce `len` byte tra disco (dal settore `sector`) e catena:
-    /// dati scrivibili dall'offset 0 per IN, leggibili dall'offset 16 per
-    /// OUT. `None` = backend non pronto; `Some(Err)` = errore da IOERR.
+    /// Transfers `len` bytes between disk (from sector `sector`) and chain:
+    /// writable data from offset 0 for IN, readable from offset 16 for
+    /// OUT. `None` = backend not ready; `Some(Err)` = IOERR error.
     fn transfer(
         &mut self,
         c: &DescChain,
@@ -547,9 +547,9 @@ impl VirtioDevice for VirtioBlk {
         }
     }
 
-    /// La richiesta in sospeso (se il backend non era pronto) e lo stato del
-    /// backend. La configurazione (capacità, coda, sola lettura) si
-    /// controlla: il disco collegato al ripristino dev'essere lo stesso.
+    /// The pending request (if the backend was not ready) and the backend
+    /// state. The configuration (capacity, queue, read-only) is
+    /// checked: the disk attached at restore must be the same.
     fn save_state(&self, w: &mut vetro_snapshot::Writer) {
         w.u64(self.capacity());
         w.u64(u64::from(self.is_read_only()));
@@ -559,10 +559,10 @@ impl VirtioDevice for VirtioBlk {
     }
 
     fn restore_state(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
-        r.expect_u64("settori del disco", self.capacity())?;
-        r.expect_u64("sola lettura del disco", u64::from(self.is_read_only()))?;
+        r.expect_u64("disk sectors", self.capacity())?;
+        r.expect_u64("disk read-only flag", u64::from(self.is_read_only()))?;
         if r.bytes()? != self.cfg.serial.as_slice() {
-            return Err(vetro_snapshot::Error::invalid("identificativo del disco diverso"));
+            return Err(vetro_snapshot::Error::invalid("different disk identifier"));
         }
         self.pending = r.opt(DescChain::restore)?;
         self.backend.restore_state(r)

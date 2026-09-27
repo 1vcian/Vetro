@@ -1,10 +1,10 @@
-//! Memoria fisica del guest e traduzione degli indirizzi virtuali con le
-//! tabelle delle pagine del guest (AArch64, stage 1, granulo di 4 KiB),
-//! senza TLB e senza effetti: si leggono solo i descrittori in RAM.
+//! Guest physical memory and translation of virtual addresses through the
+//! guest page tables (AArch64, stage 1, 4 KiB granule),
+//! without TLB and without side effects: only the descriptors in RAM are read.
 
-/// La memoria fisica del guest in sola lettura.
+/// The guest physical memory, read-only.
 pub trait PhysMem {
-    /// Legge `buf.len()` byte da `pa`: falso se non sono tutti RAM.
+    /// Reads `buf.len()` bytes from `pa`: false if they are not all RAM.
     fn read_phys(&self, pa: u64, buf: &mut [u8]) -> bool;
 }
 
@@ -15,7 +15,7 @@ impl<F: Fn(u64, &mut [u8]) -> bool> PhysMem for F {
 }
 
 impl PhysMem for [u8] {
-    /// Memoria che inizia all'indirizzo fisico 0 (per i test).
+    /// Memory starting at physical address 0 (for the tests).
     fn read_phys(&self, pa: u64, buf: &mut [u8]) -> bool {
         let Ok(s) = usize::try_from(pa) else { return false };
         match self.get(s..s.saturating_add(buf.len())) {
@@ -28,7 +28,7 @@ impl PhysMem for [u8] {
     }
 }
 
-/// Registri di traduzione del regime EL1&0.
+/// Translation registers of the EL1&0 regime.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Space {
     pub tcr: u64,
@@ -36,20 +36,20 @@ pub struct Space {
     pub ttbr1: u64,
 }
 
-/// Indirizzo della tabella in un TTBR (BADDR, senza ASID né CnP).
+/// Table address in a TTBR (BADDR, without ASID or CnP).
 pub fn ttbr_base(ttbr: u64) -> u64 {
     ttbr & 0x0000_ffff_ffff_fffe
 }
 
 impl Space {
-    /// Lo stesso spazio del kernel con la tabella utente `pgd_pa` (il
-    /// `mm->pgd` di un processo, tradotto in fisico).
+    /// The same kernel space with the user table `pgd_pa` (the
+    /// `mm->pgd` of a process, translated to physical).
     pub fn with_user(self, pgd_pa: u64) -> Space {
         Space { ttbr0: pgd_pa, ..self }
     }
 
-    /// Traduce `va`: indirizzo fisico, o `None` se la pagina non è mappata
-    /// (o il granulo non è quello da 4 KiB).
+    /// Translates `va`: physical address, or `None` if the page is not mapped
+    /// (or the granule is not the 4 KiB one).
     pub fn translate(&self, mem: &(impl PhysMem + ?Sized), va: u64) -> Option<u64> {
         let hi = va >> 55 & 1 != 0;
         let (txsz, tg, ttbr) = if hi {
@@ -57,13 +57,13 @@ impl Space {
         } else {
             (self.tcr & 0x3f, self.tcr >> 14 & 3, self.ttbr0)
         };
-        // Solo 4 KiB: TG1 = 0b10, TG0 = 0b00.
+        // 4 KiB only: TG1 = 0b10, TG0 = 0b00.
         if (hi && tg != 0b10) || (!hi && tg != 0b00) {
             return None;
         }
         let bits = 64 - txsz.clamp(16, 39) as u32;
-        // I bit sopra la dimensione dell'ingresso devono valere tutti come
-        // il bit 55 (senza contare il byte alto se TBI).
+        // The bits above the input size must all equal
+        // bit 55 (not counting the top byte if TBI).
         let tbi = if hi { self.tcr >> 38 & 1 } else { self.tcr >> 37 & 1 } != 0;
         let top = if tbi { 56 } else { 64 };
         let upper = if top > bits { (va >> bits) & ((1u64 << (top - bits)) - 1) } else { 0 };
@@ -71,7 +71,7 @@ impl Space {
         if upper != want {
             return None;
         }
-        // Livello d'inizio: 4 - ceil((bits - 12) / 9).
+        // Starting level: 4 - ceil((bits - 12) / 9).
         let levels = (bits - 12).div_ceil(9);
         let mut level = 4 - levels;
         let mut table = ttbr_base(ttbr);
@@ -98,8 +98,8 @@ impl Space {
         }
     }
 
-    /// Legge `buf.len()` byte all'indirizzo virtuale `va`, pagina per
-    /// pagina: falso se una pagina non è mappata o non è RAM.
+    /// Reads `buf.len()` bytes at virtual address `va`, page by
+    /// page: false if a page is not mapped or is not RAM.
     pub fn read(&self, mem: &(impl PhysMem + ?Sized), va: u64, buf: &mut [u8]) -> bool {
         let mut done = 0usize;
         while done < buf.len() {
@@ -124,7 +124,7 @@ impl Space {
         self.read(mem, va, &mut b).then(|| u32::from_le_bytes(b))
     }
 
-    /// Stringa C all'indirizzo `va` (al più `max` byte, senza lo zero).
+    /// C string at address `va` (at most `max` bytes, without the zero).
     pub fn cstr(&self, mem: &(impl PhysMem + ?Sized), va: u64, max: usize) -> Option<Vec<u8>> {
         let mut out = Vec::new();
         let mut at = va;
@@ -149,7 +149,7 @@ impl Space {
 pub(crate) mod tests {
     use super::*;
 
-    /// Tabelle a 4 livelli (48 bit) costruite in una RAM finta da 0.
+    /// 4-level (48-bit) tables built in a fake RAM starting at 0.
     pub(crate) struct Tables {
         pub ram: Vec<u8>,
         next: u64,
@@ -177,7 +177,7 @@ pub(crate) mod tests {
             self.ram[pa as usize..pa as usize + 8].copy_from_slice(&v.to_le_bytes());
         }
 
-        /// Mappa la pagina `va` → `pa` (4 KiB) partendo da `root`.
+        /// Maps the page `va` → `pa` (4 KiB) starting from `root`.
         pub(crate) fn map_in(&mut self, root: u64, va: u64, pa: u64) {
             let mut table = root;
             for level in 0..3 {
@@ -219,15 +219,15 @@ pub(crate) mod tests {
         assert_eq!(s.cstr(ram, va + 0x10, 64), Some(b"ciao".to_vec()));
         assert_eq!(s.translate(ram, 0x40_0123), Some(0x9_0123));
         assert_eq!(s.translate(ram, 0x40_1000), None);
-        assert_eq!(s.translate(ram, 0x0001_0000_0000_0000), None, "bit alti non canonici");
-        // Blocco da 2 MiB al livello 2 al posto della tabella di livello 3.
+        assert_eq!(s.translate(ram, 0x0001_0000_0000_0000), None, "non-canonical high bits");
+        // 2 MiB block at level 2 in place of the level-3 table.
         let l0 = t.root;
         let l1 = t.rd(l0 + ((va >> 39) & 511) * 8) & !0xfff;
         let l2 = t.rd(l1 + ((va >> 30) & 511) * 8) & !0xfff;
         let e = l2 + ((va >> 21) & 511) * 8;
         t.wr(e, 0x20_0000 | 1);
         assert_eq!(t.space().translate(t.ram.as_slice(), va + 0x345), Some(0x20_1345));
-        // Letture a cavallo di pagine non mappate.
+        // Reads straddling unmapped pages.
         let mut b = [0u8; 8];
         assert!(!t.space().read(t.ram.as_slice(), 0x40_0ffc, &mut b));
     }

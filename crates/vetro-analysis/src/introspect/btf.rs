@@ -1,21 +1,21 @@
-//! Parser BTF (BPF Type Format) del kernel Linux, senza dipendenze.
+//! Linux kernel BTF (BPF Type Format) parser, with no dependencies.
 //!
-//! Il BTF descrive i tipi del kernel (strutture, unioni, typedef, enum):
-//! da lì si ricavano gli offset dei campi che servono all'introspezione
-//! ([`super::layout`]). Formato: `Documentation/bpf/btf.rst` del kernel.
-//! Si legge sia un file `.btf` staccato (`pahole --btf_encode_detached`)
-//! sia il blob dentro un `Image` del kernel ([`Btf::find_in`]), che il
-//! kernel porta fra `__start_BTF` e `__stop_BTF` con
+//! BTF describes the kernel types (structures, unions, typedefs, enums):
+//! from it we derive the field offsets that introspection needs
+//! ([`super::layout`]). Format: the kernel's `Documentation/bpf/btf.rst`.
+//! It reads both a detached `.btf` file (`pahole --btf_encode_detached`)
+//! and the blob inside a kernel `Image` ([`Btf::find_in`]), which the
+//! kernel carries between `__start_BTF` and `__stop_BTF` with
 //! `CONFIG_DEBUG_INFO_BTF`.
 //!
-//! Nessun panic su byte arbitrari: gli errori sono [`BtfError`].
+//! No panics on arbitrary bytes: errors are [`BtfError`].
 
 use std::collections::BTreeMap;
 
-/// Magia dell'intestazione (little endian).
+/// Header magic (little endian).
 pub const MAGIC: u16 = 0xeb9f;
 
-/// Tipo del BTF (`BTF_KIND_*`).
+/// BTF type kind (`BTF_KIND_*`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Void,
@@ -68,68 +68,68 @@ impl Kind {
     }
 }
 
-/// Errore di lettura del BTF.
+/// BTF read error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BtfError {
-    /// Intestazione mancante o con la magia sbagliata.
+    /// Header missing or with the wrong magic.
     Header,
-    /// Sezioni fuori dal blob.
+    /// Sections outside the blob.
     Bounds,
-    /// Tipo sconosciuto o troncato (id del tipo).
+    /// Unknown or truncated type (type id).
     Type(u32),
 }
 
 impl core::fmt::Display for BtfError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            BtfError::Header => write!(f, "intestazione BTF non valida"),
-            BtfError::Bounds => write!(f, "sezioni BTF fuori dal blob"),
-            BtfError::Type(id) => write!(f, "tipo BTF {id} non valido"),
+            BtfError::Header => write!(f, "invalid BTF header"),
+            BtfError::Bounds => write!(f, "BTF sections outside the blob"),
+            BtfError::Type(id) => write!(f, "invalid BTF type {id}"),
         }
     }
 }
 
-/// Un tipo, con i dati che seguono l'intestazione ancora da leggere.
+/// A type, with the data following the header still to be read.
 #[derive(Clone, Copy, Debug)]
 struct Ty {
     kind: Kind,
     name_off: u32,
     vlen: u16,
     kflag: bool,
-    /// `size` (INT, STRUCT, UNION, ENUM, DATASEC, FLOAT) o `type`.
+    /// `size` (INT, STRUCT, UNION, ENUM, DATASEC, FLOAT) or `type`.
     size_type: u32,
-    /// Posizione dei dati dopo i 12 byte dell'intestazione, nella sezione
-    /// dei tipi.
+    /// Position of the data after the 12 header bytes, in the types
+    /// section.
     extra: usize,
 }
 
-/// Un campo di una struttura o unione.
+/// A field of a structure or union.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Member {
-    /// Offset in bit dall'inizio della struttura esterna (anche attraverso
-    /// le unioni e strutture anonime).
+    /// Offset in bits from the start of the outer structure (also through
+    /// anonymous unions and structures).
     pub bit_offset: u64,
-    /// Larghezza del campo di bit (0 = campo normale).
+    /// Bit-field width (0 = normal field).
     pub bit_size: u32,
-    /// Tipo del campo.
+    /// Field type.
     pub ty: u32,
 }
 
 impl Member {
-    /// Offset in byte (per i campi di bit, del byte che contiene il primo bit).
+    /// Offset in bytes (for bit fields, of the byte containing the first bit).
     pub fn offset(&self) -> u64 {
         self.bit_offset / 8
     }
 }
 
-/// I tipi di un BTF.
+/// The types of a BTF.
 #[derive(Clone, Debug)]
 pub struct Btf {
     types: Vec<u8>,
     strings: Vec<u8>,
-    /// Indice: id → tipo (l'id 0 è `void`).
+    /// Index: id → type (id 0 is `void`).
     tys: Vec<Ty>,
-    /// Nome → id dei tipi con quel nome.
+    /// Name → ids of the types with that name.
     names: BTreeMap<String, Vec<u32>>,
 }
 
@@ -142,8 +142,8 @@ fn u32_at(b: &[u8], o: usize) -> Option<u32> {
 }
 
 impl Btf {
-    /// Legge un blob BTF che inizia a `bytes[0]` (le sezioni seguono
-    /// l'intestazione; il resto dei byte si ignora).
+    /// Reads a BTF blob starting at `bytes[0]` (the sections follow the
+    /// header; the rest of the bytes is ignored).
     pub fn parse(bytes: &[u8]) -> Result<Btf, BtfError> {
         let (hdr_len, type_off, type_len, str_off, str_len) = Self::header(bytes).ok_or(BtfError::Header)?;
         let base = hdr_len as usize;
@@ -199,9 +199,9 @@ impl Btf {
         Some((hdr_len, u32_at(b, 8)?, u32_at(b, 12)?, u32_at(b, 16)?, u32_at(b, 20)?))
     }
 
-    /// Cerca il BTF del kernel dentro un `Image` (o qualunque blob): la
-    /// prima intestazione valida che si legge per intero con almeno la
-    /// struttura `task_struct`. Restituisce anche l'offset nel blob.
+    /// Looks for the kernel BTF inside an `Image` (or any blob): the
+    /// first valid header that reads in full with at least the
+    /// `task_struct` structure. Also returns the offset in the blob.
     pub fn find_in(image: &[u8]) -> Option<(usize, Btf)> {
         let pat = [0x9f, 0xeb, 0x01, 0x00];
         let mut i = 0;
@@ -218,7 +218,7 @@ impl Btf {
         None
     }
 
-    /// Numero di tipi (id da 1 a `len`).
+    /// Number of types (ids from 1 to `len`).
     pub fn len(&self) -> u32 {
         self.tys.len() as u32 - 1
     }
@@ -237,22 +237,22 @@ impl Btf {
         core::str::from_utf8(&s[..end]).unwrap_or("")
     }
 
-    /// Nome del tipo (vuoto se anonimo).
+    /// Type name (empty if anonymous).
     pub fn name(&self, id: u32) -> &str {
         self.ty(id).map(|t| self.str_at(t.name_off)).unwrap_or("")
     }
 
-    /// Tipo del BTF.
+    /// BTF type kind.
     pub fn kind(&self, id: u32) -> Option<Kind> {
         self.ty(id).map(|t| t.kind)
     }
 
-    /// Id dei tipi con questo nome.
+    /// Ids of the types with this name.
     pub fn by_name(&self, name: &str) -> &[u32] {
         self.names.get(name).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
-    /// La struttura (o unione) completa con questo nome.
+    /// The complete structure (or union) with this name.
     pub fn struct_id(&self, name: &str) -> Option<u32> {
         self.by_name(name)
             .iter()
@@ -260,7 +260,7 @@ impl Btf {
             .find(|&id| matches!(self.kind(id), Some(Kind::Struct | Kind::Union)))
     }
 
-    /// Salta typedef, const, volatile, restrict e type tag.
+    /// Skips typedef, const, volatile, restrict and type tag.
     pub fn resolve(&self, mut id: u32) -> u32 {
         for _ in 0..64 {
             match self.ty(id) {
@@ -278,13 +278,13 @@ impl Btf {
         id
     }
 
-    /// Per un puntatore, il tipo puntato (risolto).
+    /// For a pointer, the pointed-to type (resolved).
     pub fn pointee(&self, id: u32) -> Option<u32> {
         let t = self.ty(self.resolve(id))?;
         (t.kind == Kind::Ptr).then(|| self.resolve(t.size_type))
     }
 
-    /// Dimensione in byte del tipo.
+    /// Size of the type in bytes.
     pub fn size_of(&self, id: u32) -> Option<u64> {
         self.size_depth(id, 0)
     }
@@ -312,7 +312,7 @@ impl Btf {
         }
     }
 
-    /// Elemento, tipo dell'indice e numero di elementi di un array.
+    /// Element, index type and number of elements of an array.
     pub fn array(&self, id: u32) -> Option<(u32, u32, u32)> {
         let t = self.ty(self.resolve(id))?;
         if t.kind != Kind::Array {
@@ -325,7 +325,7 @@ impl Btf {
         ))
     }
 
-    /// Campi diretti di una struttura o unione: (nome, campo).
+    /// Direct fields of a structure or union: (name, field).
     pub fn members(&self, id: u32) -> Vec<(&str, Member)> {
         let id = self.resolve(id);
         let Some(t) = self.ty(id) else { return Vec::new() };
@@ -344,8 +344,8 @@ impl Btf {
             .collect()
     }
 
-    /// Un campo per nome, anche dentro unioni e strutture anonime
-    /// (come fa il C): offset dall'inizio di `id`.
+    /// A field by name, also inside anonymous unions and structures
+    /// (as C does): offset from the start of `id`.
     pub fn member(&self, id: u32, name: &str) -> Option<Member> {
         self.member_depth(id, name, 0)
     }
@@ -368,8 +368,8 @@ impl Btf {
         None
     }
 
-    /// Offset in byte di un cammino di campi (`"f_path.dentry"`) nella
-    /// struttura `name`, con il tipo dell'ultimo campo.
+    /// Offset in bytes of a field path (`"f_path.dentry"`) in the
+    /// structure `name`, with the type of the last field.
     pub fn field(&self, name: &str, path: &str) -> Option<(u64, u32)> {
         let mut id = self.struct_id(name)?;
         let mut off = 0u64;
@@ -381,17 +381,17 @@ impl Btf {
         Some((off, id))
     }
 
-    /// Offset in byte di un cammino di campi (vedi [`Btf::field`]).
+    /// Offset in bytes of a field path (see [`Btf::field`]).
     pub fn offset_of(&self, name: &str, path: &str) -> Option<u64> {
         self.field(name, path).map(|(o, _)| o)
     }
 
-    /// Dimensione della struttura `name`.
+    /// Size of the structure `name`.
     pub fn struct_size(&self, name: &str) -> Option<u64> {
         self.size_of(self.struct_id(name)?)
     }
 
-    /// Valore di un enumeratore (cerca in tutti gli enum).
+    /// Value of an enumerator (searches all enums).
     pub fn enum_value(&self, name: &str) -> Option<i64> {
         for t in &self.tys {
             let n = usize::from(t.vlen);
@@ -426,7 +426,7 @@ impl Btf {
 pub(crate) mod tests {
     use super::*;
 
-    /// Costruttore di BTF per i test.
+    /// BTF builder for the tests.
     #[derive(Default)]
     pub(crate) struct Builder {
         types: Vec<u8>,
@@ -482,7 +482,7 @@ pub(crate) mod tests {
             id
         }
 
-        /// Struttura (o unione con `union`) con campi (nome, tipo, offset in byte).
+        /// Structure (or union with `union`) with fields (name, type, offset in bytes).
         pub(crate) fn record(
             &mut self,
             name: &str,
@@ -542,7 +542,7 @@ pub(crate) mod tests {
         let (at, btf) = Btf::find_in(&blob).unwrap();
         assert_eq!(at, 37);
         assert_eq!(btf.offset_of("task_struct", "pid"), Some(4));
-        assert_eq!(btf.offset_of("task_struct", "vm_end"), Some(16), "dentro unione e struttura anonime");
+        assert_eq!(btf.offset_of("task_struct", "vm_end"), Some(16), "inside anonymous union and structure");
         assert_eq!(btf.offset_of("task_struct", "rcu"), Some(8));
         assert_eq!(btf.struct_size("task_struct"), Some(64));
         assert_eq!(btf.size_of(arr), Some(64));

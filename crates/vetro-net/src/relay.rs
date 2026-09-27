@@ -1,12 +1,12 @@
-//! Interfaccia verso il relay: le connessioni del guest escono davvero, ma
-//! da un processo esterno (il relay WebSocket di M7), perché il browser non
-//! può aprire socket TCP/UDP.
+//! Interface to the relay: the guest's connections really go out, but
+//! from an external process (M7's WebSocket relay), because the browser can't
+//! open TCP/UDP sockets.
 //!
-//! Qui ci sono solo il protocollo astratto ([`RelayMessage`]), il trasporto
-//! ([`Relay`]), l'adattatore [`RelayUpstream`] che trasforma le chiamate di
-//! [`Upstream`] in messaggi, e un relay di prova in memoria
-//! ([`MemoryRelay`]). La codifica sul filo e il controllo di flusso tra host
-//! e relay arrivano con M7.
+//! Here there are only the abstract protocol ([`RelayMessage`]), the transport
+//! ([`Relay`]), the adapter [`RelayUpstream`] that turns the calls of
+//! [`Upstream`] into messages, and an in-memory test relay
+//! ([`MemoryRelay`]). The wire encoding and flow control between host
+//! and relay come with M7.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::net::{Ipv4Addr, SocketAddrV4};
@@ -14,32 +14,32 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use crate::upstream::{TcpRead, TcpStatus, Upstream};
 use crate::{ConnId, Flow, VirtualTime, dns};
 
-/// Messaggi tra lo stack (host) e il relay. Gli `id` sono i [`ConnId`]
-/// dello stack.
+/// Messages between the stack (host) and the relay. The `id`s are the stack's
+/// [`ConnId`]s.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RelayMessage {
-    /// Host → relay: apri una connessione TCP verso `dst`.
+    /// Host → relay: open a TCP connection to `dst`.
     TcpConnect { id: ConnId, dst: SocketAddrV4 },
     /// Relay → host: connessione aperta.
     TcpConnected { id: ConnId },
     /// Relay → host: connessione rifiutata o irraggiungibile.
     TcpRefused { id: ConnId },
-    /// In entrambi i versi: byte della connessione.
+    /// In both directions: bytes of the connection.
     TcpData { id: ConnId, data: Vec<u8> },
-    /// In entrambi i versi: chi manda ha chiuso il suo verso (FIN).
+    /// In both directions: the sender has closed its direction (FIN).
     TcpShutdown { id: ConnId },
-    /// In entrambi i versi: connessione finita; `reset` se interrotta.
+    /// In both directions: connection finished; `reset` if aborted.
     TcpClose { id: ConnId, reset: bool },
-    /// Host → relay: datagramma UDP verso `dst`.
+    /// Host → relay: UDP datagram to `dst`.
     UdpSend { id: ConnId, dst: SocketAddrV4, data: Vec<u8> },
-    /// Relay → host: datagramma di risposta sul flusso `id`.
+    /// Relay → host: response datagram on flow `id`.
     UdpRecv { id: ConnId, data: Vec<u8> },
     /// Host → relay: flusso UDP scaduto.
     UdpClose { id: ConnId },
 }
 
-/// Trasporto dei messaggi verso il relay. Non bloccante: `recv` restituisce
-/// `None` se non c'è niente da leggere adesso.
+/// Transport of the messages to the relay. Non-blocking: `recv` returns
+/// `None` if there is nothing to read right now.
 pub trait Relay {
     fn send(&mut self, msg: RelayMessage);
     fn recv(&mut self) -> Option<RelayMessage>;
@@ -53,13 +53,13 @@ struct RelayConn {
     reset: bool,
 }
 
-/// [`Upstream`] che inoltra tutto a un [`Relay`].
+/// [`Upstream`] that forwards everything to a [`Relay`].
 #[derive(Debug)]
 pub struct RelayUpstream<R: Relay> {
     relay: R,
     conns: BTreeMap<ConnId, RelayConn>,
     udp_inbox: VecDeque<(ConnId, Vec<u8>)>,
-    /// Per `ping`: il relay non inoltra ICMP (M7 può cambiarlo).
+    /// For `ping`: the relay doesn't forward ICMP (M7 may change that).
     answer_ping: bool,
 }
 
@@ -76,7 +76,7 @@ impl<R: Relay> RelayUpstream<R> {
         &mut self.relay
     }
 
-    /// Legge tutti i messaggi disponibili dal relay.
+    /// Reads all the available messages from the relay.
     fn pump(&mut self) {
         while let Some(msg) = self.relay.recv() {
             match msg {
@@ -107,7 +107,7 @@ impl<R: Relay> RelayUpstream<R> {
                     }
                 }
                 RelayMessage::UdpRecv { id, data } => self.udp_inbox.push_back((id, data)),
-                // Messaggi che vanno solo verso il relay: ignorati.
+                // Messages that only go towards the relay: ignored.
                 RelayMessage::TcpConnect { .. }
                 | RelayMessage::UdpSend { .. }
                 | RelayMessage::UdpClose { .. } => {}
@@ -178,22 +178,22 @@ impl<R: Relay> Upstream for RelayUpstream<R> {
     }
 }
 
-/// Relay di prova in memoria: fa la parte del processo relay e della rete.
+/// In-memory test relay: plays the part of the relay process and of the network.
 ///
-/// - TCP: servizio "echo" (rimanda indietro i byte) verso qualsiasi
-///   destinazione, salvo le porte in `refused_ports`; quando l'host chiude il
-///   suo verso, chiude anche il proprio.
-/// - UDP verso la porta 53: risolve con la tabella `hosts` (NXDOMAIN per i
-///   nomi assenti). Altri UDP: echo.
+/// - TCP: "echo" service (sends the bytes back) to any
+///   destination, except the ports in `refused_ports`; when the host closes its
+///   direction, it closes its own too.
+/// - UDP to port 53: resolves with the `hosts` table (NXDOMAIN for
+///   missing names). Other UDP: echo.
 ///
-/// Registra ogni messaggio ricevuto dall'host in `sent`.
+/// Records every message received from the host in `sent`.
 #[derive(Debug, Default)]
 pub struct MemoryRelay {
     pub refused_ports: Vec<u16>,
     pub hosts: BTreeMap<String, Ipv4Addr>,
-    /// Messaggi ricevuti dall'host, in ordine.
+    /// Messages received from the host, in order.
     pub sent: Vec<RelayMessage>,
-    /// Messaggi in attesa di essere letti dall'host.
+    /// Messages waiting to be read by the host.
     pub inbox: VecDeque<RelayMessage>,
 }
 

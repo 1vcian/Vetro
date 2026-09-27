@@ -1,5 +1,5 @@
-//! PSCI tramite HVC, con le stesse risposte di QEMU (`target/arm/psci.c`)
-//! per la macchina virt con una sola CPU: versione 1.1.
+//! PSCI via HVC, with the same answers as QEMU (`target/arm/psci.c`)
+//! for the virt machine with a single CPU: version 1.1.
 
 pub const VERSION: u32 = 0x8400_0000;
 pub const CPU_SUSPEND: u32 = 0x8400_0001;
@@ -11,26 +11,26 @@ pub const MIGRATE_INFO_TYPE: u32 = 0x8400_0006;
 pub const SYSTEM_OFF: u32 = 0x8400_0008;
 pub const SYSTEM_RESET: u32 = 0x8400_0009;
 pub const FEATURES: u32 = 0x8400_000a;
-/// Le varianti SMC64 hanno il bit 30 acceso.
+/// The SMC64 variants have bit 30 set.
 const SMC64: u32 = 0x4000_0000;
 
 pub const RET_SUCCESS: i64 = 0;
 pub const RET_NOT_SUPPORTED: i64 = -1;
 pub const RET_INVALID_PARAMS: i64 = -2;
 pub const RET_ALREADY_ON: i64 = -4;
-/// PSCI 1.1 (QEMU >= 8 sulla virt).
+/// PSCI 1.1 (QEMU >= 8 on virt).
 pub const VERSION_1_1: i64 = 0x1_0001;
-/// MIGRATE_INFO_TYPE: nessun Trusted OS da migrare.
+/// MIGRATE_INFO_TYPE: no Trusted OS to migrate.
 pub const TOS_NOT_PRESENT: i64 = 2;
 
-/// Esito di una chiamata.
+/// Outcome of a call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Call {
-    /// Valore da scrivere in x0.
+    /// Value to write into x0.
     Ret(i64),
-    /// CPU_SUSPEND: come una WFI (così fa QEMU), poi x0 = 0.
+    /// CPU_SUSPEND: like a WFI (as QEMU does), then x0 = 0.
     Suspend,
-    /// SYSTEM_OFF, o CPU_OFF dell'unica CPU.
+    /// SYSTEM_OFF, or CPU_OFF of the only CPU.
     Off,
     SystemReset,
 }
@@ -39,11 +39,11 @@ fn base(fid: u32) -> u32 {
     fid & !SMC64
 }
 
-/// `x` = x0..x3 all'HVC; `mpidr` = MPIDR_EL1 dell'unica CPU.
+/// `x` = x0..x3 at the HVC; `mpidr` = MPIDR_EL1 of the only CPU.
 pub fn call(x: [u64; 4], mpidr: u64) -> Call {
     let fid = x[0] as u32;
     let is_cpu0 = |target: u64| target & 0xff_00ff_ffff == mpidr & 0xff_00ff_ffff;
-    // Le funzioni con varianti a 32 e 64 bit; le altre solo a 32 bit.
+    // The functions with 32- and 64-bit variants; the others are 32-bit only.
     let known64 = matches!(base(fid), CPU_SUSPEND | CPU_ON | AFFINITY_INFO | MIGRATE);
     if fid & SMC64 != 0 && !known64 {
         return Call::Ret(RET_NOT_SUPPORTED);
@@ -56,7 +56,7 @@ pub fn call(x: [u64; 4], mpidr: u64) -> Call {
         SYSTEM_RESET => Call::SystemReset,
         CPU_ON => Call::Ret(if is_cpu0(x[1]) { RET_ALREADY_ON } else { RET_INVALID_PARAMS }),
         AFFINITY_INFO => {
-            // Livello 0 soltanto; 0 = ON.
+            // Level 0 only; 0 = ON.
             Call::Ret(if x[2] != 0 || !is_cpu0(x[1]) { RET_INVALID_PARAMS } else { 0 })
         }
         MIGRATE => Call::Ret(RET_NOT_SUPPORTED),
@@ -89,7 +89,7 @@ mod tests {
     const MPIDR: u64 = 0x8000_0000;
 
     #[test]
-    fn risposte_come_qemu() {
+    fn answers_like_qemu() {
         assert_eq!(call([u64::from(VERSION), 0, 0, 0], MPIDR), Call::Ret(VERSION_1_1));
         assert_eq!(call([u64::from(SYSTEM_OFF), 0, 0, 0], MPIDR), Call::Off);
         assert_eq!(call([u64::from(SYSTEM_RESET), 0, 0, 0], MPIDR), Call::SystemReset);
@@ -101,7 +101,7 @@ mod tests {
         assert_eq!(
             call([0xc400_0008, 0, 0, 0], MPIDR),
             Call::Ret(RET_NOT_SUPPORTED),
-            "SYSTEM_OFF non ha SMC64"
+            "SYSTEM_OFF has no SMC64"
         );
         assert_eq!(call([0x8600_0000, 0, 0, 0], MPIDR), Call::Ret(RET_NOT_SUPPORTED));
     }

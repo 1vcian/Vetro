@@ -1,23 +1,23 @@
-//! Virtio (spec OASIS virtio v1.2): trasporto virtio-mmio versione 2,
-//! virtqueue split e i dispositivi blk, net, console, gpu, input e vsock.
+//! Virtio (OASIS virtio v1.2 spec): virtio-mmio transport version 2,
+//! split virtqueues and the blk, net, console, gpu, input and vsock devices.
 //!
-//! Struttura:
-//! - [`VirtioMmio`] (`mmio.rs`) è il trasporto: registri, negoziazione delle
-//!   feature, configurazione delle code, stato, interrupt. Uno slot senza
-//!   dispositivo si comporta come gli slot liberi di QEMU (DeviceID 0).
-//! - [`Virtqueue`] (`queue.rs`) è la coda split: descrittori, catene,
-//!   tabelle indirette, ring available e used, EVENT_IDX.
-//! - I dispositivi implementano [`VirtioDevice`]: [`VirtioBlk`],
+//! Structure:
+//! - [`VirtioMmio`] (`mmio.rs`) is the transport: registers, feature
+//!   negotiation, queue configuration, status, interrupts. A slot without a
+//!   device behaves like QEMU's free slots (DeviceID 0).
+//! - [`Virtqueue`] (`queue.rs`) is the split queue: descriptors, chains,
+//!   indirect tables, available and used rings, EVENT_IDX.
+//! - Devices implement [`VirtioDevice`]: [`VirtioBlk`],
 //!   [`VirtioNet`], [`VirtioConsole`], [`VirtioGpu`], [`VirtioInput`],
-//!   [`VirtioVsock`]. L'I/O verso l'esterno passa da trait
+//!   [`VirtioVsock`]. I/O to the outside goes through traits
 //!   ([`BlockBackend`], [`NetBackend`], [`ConsoleBackend`],
-//!   [`DisplayBackend`]) o dall'API host del dispositivo (eventi di input,
-//!   connessioni vsock).
+//!   [`DisplayBackend`]) or through the device's host API (input events,
+//!   vsock connections).
 //!
-//! La RAM del guest non passa dal bus MMIO: una scrittura in QueueNotify
-//! segna solo la coda. Il lavoro vero si fa in [`VirtioMmio::service`], che
-//! riceve la RAM come [`GuestRam`] e che il motore chiama dopo gli accessi
-//! MMIO agli slot virtio e periodicamente (per i dati in arrivo dai backend).
+//! Guest RAM does not go through the MMIO bus: a write to QueueNotify
+//! only marks the queue. The real work is done in [`VirtioMmio::service`], which
+//! receives RAM as [`GuestRam`] and which the engine calls after MMIO
+//! accesses to the virtio slots and periodically (for incoming data from the backends).
 
 pub mod blk;
 pub mod console;
@@ -48,7 +48,7 @@ use core::fmt;
 
 use crate::bus::{MmioDevice, sub_word};
 
-// ---- Registri del trasporto (§4.2.2) ---------------------------------------
+// ---- Transport registers (§4.2.2) -----------------------------------------
 
 pub const MAGIC_VALUE: u64 = 0x000;
 pub const VERSION: u64 = 0x004;
@@ -78,16 +78,16 @@ pub const SHM_LEN_HIGH: u64 = 0x0B4;
 pub const SHM_BASE_LOW: u64 = 0x0B8;
 pub const SHM_BASE_HIGH: u64 = 0x0BC;
 pub const CONFIG_GENERATION: u64 = 0x0FC;
-/// Inizio dello spazio di configurazione del dispositivo.
+/// Start of the device configuration space.
 pub const CONFIG: u64 = 0x100;
 
 /// "virt" in little endian.
 pub const MAGIC: u32 = 0x7472_6976;
-/// VendorID: lo stesso di QEMU ("QEMU" in little endian), così il guest
-/// vede gli stessi valori sulle due piattaforme.
+/// VendorID: the same as QEMU ("QEMU" in little endian), so the guest
+/// sees the same values on both platforms.
 pub const VENDOR: u32 = 0x554D_4551;
 
-// ---- Bit di Status (§2.1) --------------------------------------------------
+// ---- Status bits (§2.1) ----------------------------------------------------
 
 pub const STATUS_ACKNOWLEDGE: u32 = 1;
 pub const STATUS_DRIVER: u32 = 2;
@@ -98,12 +98,12 @@ pub const STATUS_FAILED: u32 = 128;
 
 // ---- InterruptStatus (§4.2.2) ----------------------------------------------
 
-/// Buffer usati in una coda.
+/// Used buffers in a queue.
 pub const INT_VRING: u32 = 1;
-/// Configurazione cambiata (o DEVICE_NEEDS_RESET).
+/// Configuration changed (or DEVICE_NEEDS_RESET).
 pub const INT_CONFIG: u32 = 2;
 
-// ---- Feature riservate (§6) ------------------------------------------------
+// ---- Reserved features (§6) ------------------------------------------------
 
 pub const F_INDIRECT_DESC: u64 = 1 << 28;
 pub const F_EVENT_IDX: u64 = 1 << 29;
@@ -118,9 +118,9 @@ pub const ID_GPU: u32 = 16;
 pub const ID_INPUT: u32 = 18;
 pub const ID_VSOCK: u32 = 19;
 
-// ---- Memoria del guest -----------------------------------------------------
+// ---- Guest memory ----------------------------------------------------------
 
-/// Accesso fuori dalla RAM del guest.
+/// Access outside guest RAM.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RamError {
     pub addr: u64,
@@ -129,20 +129,20 @@ pub struct RamError {
 
 impl fmt::Display for RamError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "accesso fuori dalla RAM del guest: {:#x}+{:#x}", self.addr, self.len)
+        write!(f, "access outside guest RAM: {:#x}+{:#x}", self.addr, self.len)
     }
 }
 
-/// RAM del guest vista dai dispositivi (DMA su indirizzi fisici).
+/// Guest RAM as seen by the devices (DMA on physical addresses).
 ///
-/// Un accesso deve stare tutto in RAM, altrimenti fallisce senza effetti
-/// parziali garantiti. Il motore la implementa sopra la memoria della CPU.
+/// An access must lie entirely in RAM, otherwise it fails with no guarantee
+/// about partial effects. The engine implements it on top of the CPU memory.
 pub trait GuestRam {
     fn read(&self, addr: u64, buf: &mut [u8]) -> Result<(), RamError>;
     fn write(&mut self, addr: u64, data: &[u8]) -> Result<(), RamError>;
 }
 
-/// Letture e scritture little endian sopra [`GuestRam`].
+/// Little endian reads and writes on top of [`GuestRam`].
 pub trait GuestRamExt: GuestRam {
     fn read_u16(&self, addr: u64) -> Result<u16, RamError> {
         let mut b = [0; 2];
@@ -169,8 +169,8 @@ pub trait GuestRamExt: GuestRam {
 
 impl<T: GuestRam + ?Sized> GuestRamExt for T {}
 
-/// RAM contigua in un `Vec`, a partire da `base`. Serve ai test e a chi
-/// non ha una memoria propria.
+/// Contiguous RAM in a `Vec`, starting at `base`. Used by tests and by whoever
+/// has no memory of its own.
 #[derive(Clone, Debug)]
 pub struct VecRam {
     pub base: u64,
@@ -206,11 +206,11 @@ impl GuestRam for VecRam {
     }
 }
 
-// ---- Dispositivo -----------------------------------------------------------
+// ---- Device ----------------------------------------------------------------
 
-/// Contesto di [`VirtioDevice::service`]: le code del dispositivo, la RAM e
-/// le feature negoziate. I campi sono pubblici per poter prendere in
-/// prestito coda e RAM insieme.
+/// Context of [`VirtioDevice::service`]: the device's queues, RAM and
+/// the negotiated features. The fields are public so that queue and RAM
+/// can be borrowed together.
 pub struct ServiceCtx<'a> {
     pub queues: &'a mut [Virtqueue],
     pub ram: &'a mut dyn GuestRam,
@@ -219,59 +219,59 @@ pub struct ServiceCtx<'a> {
 }
 
 impl ServiceCtx<'_> {
-    /// Segnala al driver un cambio della configurazione (ConfigGeneration
-    /// avanza e parte l'interrupt di configurazione).
+    /// Signals a configuration change to the driver (ConfigGeneration
+    /// advances and the configuration interrupt fires).
     pub fn config_changed(&mut self) {
         self.config_changed = true;
     }
 }
 
-/// Dispositivo virtio dietro al trasporto. Le code appartengono al
-/// trasporto; il dispositivo le usa solo dentro `service`.
+/// virtio device behind the transport. The queues belong to the
+/// transport; the device uses them only inside `service`.
 pub trait VirtioDevice: Any {
     fn device_id(&self) -> u32;
-    /// Feature specifiche del dispositivo (bit 0..23). Quelle del
-    /// trasporto (VERSION_1, INDIRECT_DESC, EVENT_IDX) le aggiunge
+    /// Device-specific features (bits 0..23). The transport ones
+    /// (VERSION_1, INDIRECT_DESC, EVENT_IDX) are added by
     /// [`VirtioMmio`].
     fn features(&self) -> u64;
-    /// Dimensione massima di ogni coda; la lunghezza è il numero di code.
+    /// Maximum size of each queue; the length is the number of queues.
     fn queue_max_sizes(&self) -> &[u16];
-    /// Lettura dallo spazio di configurazione; oltre la fine si legge 0.
+    /// Read from the configuration space; past the end it reads 0.
     fn read_config(&self, offset: u64, data: &mut [u8]);
-    /// Scrittura nello spazio di configurazione (di norma ignorata).
+    /// Write to the configuration space (normally ignored).
     fn write_config(&mut self, _offset: u64, _data: &[u8]) {}
-    /// Il driver ha accettato queste feature (FEATURES_OK). `false` rifiuta
-    /// la combinazione e FEATURES_OK non resta impostato.
+    /// The driver accepted these features (FEATURES_OK). `false` rejects
+    /// the combination and FEATURES_OK does not stay set.
     fn negotiate(&mut self, _features: u64) -> bool {
         true
     }
-    /// Reset del dispositivo (Status = 0): dimentica le richieste in corso.
+    /// Device reset (Status = 0): forgets the requests in progress.
     fn reset(&mut self) {}
-    /// Consuma le code e i dati dei backend. Chiamato solo con DRIVER_OK.
+    /// Consumes the queues and the backends' data. Called only with DRIVER_OK.
     fn service(&mut self, ctx: &mut ServiceCtx<'_>) -> Result<(), QueueError>;
-    /// Stato del dispositivo per gli snapshot (M6, ADR 0015): tutto ciò che
-    /// non è configurazione fissata alla costruzione, richieste in volo e
-    /// stato dei backend compresi. Le code le salva il trasporto.
+    /// Device state for snapshots (M6, ADR 0015): everything that
+    /// is not configuration fixed at construction, in-flight requests and
+    /// backend state included. The queues are saved by the transport.
     fn save_state(&self, w: &mut vetro_snapshot::Writer);
-    /// Riporta nello stato salvato un dispositivo costruito con la stessa
-    /// configurazione (e con i suoi backend esterni già collegati).
+    /// Brings back to the saved state a device built with the same
+    /// configuration (and with its external backends already connected).
     fn restore_state(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()>;
 }
 
-/// Legge `data.len()` byte dalla struttura di configurazione `cfg` a
-/// partire da `offset`; i byte oltre la fine valgono 0.
+/// Reads `data.len()` bytes from the configuration structure `cfg`
+/// starting at `offset`; bytes past the end read 0.
 pub(crate) fn read_config_bytes(cfg: &[u8], offset: u64, data: &mut [u8]) {
     for (i, b) in data.iter_mut().enumerate() {
         *b = usize::try_from(offset).ok().and_then(|o| cfg.get(o + i)).copied().unwrap_or(0);
     }
 }
 
-// ---- Slot vuoto ------------------------------------------------------------
+// ---- Empty slot ------------------------------------------------------------
 
-/// Slot virtio-mmio senza dispositivo, come quelli liberi di QEMU virt:
-/// MagicValue e Version sono validi e DeviceID vale 0, così il driver Linux
-/// riconosce il trasporto e lo salta. [`VirtioMmio::empty`] si comporta
-/// allo stesso modo e in più accetta un dispositivo in seguito.
+/// virtio-mmio slot without a device, like QEMU virt's free ones:
+/// MagicValue and Version are valid and DeviceID is 0, so the Linux driver
+/// recognises the transport and skips it. [`VirtioMmio::empty`] behaves
+/// the same way and can also accept a device later.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct VirtioMmioEmpty;
 

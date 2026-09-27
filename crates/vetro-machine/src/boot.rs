@@ -1,45 +1,45 @@
-//! Caricatore del kernel Linux arm64 per la modalità sistema (M3).
+//! arm64 Linux kernel loader for system mode (M3).
 //!
-//! Modulo puro: riceve i byte dell'`Image` e le dimensioni di initramfs e
-//! device tree, restituisce dove va ogni cosa in RAM fisica e lo stato dei
-//! registri all'ingresso del kernel. Non tocca memoria del guest né file
-//! dell'host: chi esegue la CPU in modalità sistema copia i segmenti e imposta
-//! i registri.
+//! Pure module: it takes the bytes of the `Image` and the sizes of initramfs and
+//! device tree, and returns where each thing goes in physical RAM and the register
+//! state at kernel entry. It touches neither guest memory nor host
+//! files: whoever runs the CPU in system mode copies the segments and sets
+//! the registers.
 //!
-//! Il layout copia quello di QEMU (`hw/arm/boot.c`) per la macchina virt,
-//! così un avvio sotto Vetro e uno sotto l'oracolo partono dagli stessi
-//! indirizzi:
-//! - RAM da `0x4000_0000`;
-//! - kernel a `base + text_offset`, spostato di 2 MiB se cadrebbe nei primi
-//!   4 KiB (QEMU li riserva al suo stub di avvio): con i kernel moderni,
-//!   `text_offset = 0`, l'ingresso è `0x4020_0000`;
-//! - initramfs a `base + min(ram/2, 128 MiB)`, e comunque dopo la fine del
+//! The layout copies QEMU's (`hw/arm/boot.c`) for the virt machine,
+//! so a boot under Vetro and one under the oracle start from the same
+//! addresses:
+//! - RAM from `0x4000_0000`;
+//! - kernel at `base + text_offset`, moved by 2 MiB if it would fall in the first
+//!   4 KiB (QEMU reserves them for its boot stub): with modern kernels,
+//!   `text_offset = 0`, the entry is `0x4020_0000`;
+//! - initramfs at `base + min(ram/2, 128 MiB)`, and in any case after the end of the
 //!   kernel;
-//! - DTB subito dopo l'initramfs, allineato a 2 MiB (il kernel mappa il DTB a
-//!   blocchi di 2 MiB).
+//! - DTB right after the initramfs, aligned to 2 MiB (the kernel maps the DTB in
+//!   2 MiB blocks).
 //!
-//! Riferimento del protocollo: `Documentation/arch/arm64/booting.rst`.
+//! Protocol reference: `Documentation/arch/arm64/booting.rst`.
 
 use std::fmt;
 
-/// Dimensione dell'header dell'`Image` arm64.
+/// Size of the arm64 `Image` header.
 pub const HEADER_LEN: usize = 64;
-/// `"ARM\x64"` letto come u32 little-endian all'offset 56.
+/// `"ARM\x64"` read as a little-endian u32 at offset 56.
 pub const MAGIC: u32 = 0x644d_5241;
-/// Inizio della RAM sulla macchina virt.
+/// Start of RAM on the virt machine.
 pub const VIRT_RAM_BASE: u64 = 0x4000_0000;
-/// Dimensione massima del DTB ammessa dal protocollo di avvio.
+/// Maximum DTB size allowed by the boot protocol.
 pub const MAX_DTB: u64 = 2 * MIB;
 
 const KIB: u64 = 1024;
 const MIB: u64 = 1024 * KIB;
-/// `text_offset` implicito dei kernel senza `image_size` (prima di 3.17).
+/// Implicit `text_offset` of kernels without `image_size` (before 3.17).
 const LEGACY_TEXT_OFFSET: u64 = 0x8_0000;
-/// Spazio che QEMU riserva in fondo alla RAM al suo stub di avvio.
+/// Space QEMU reserves at the bottom of RAM for its boot stub.
 const BOOTLOADER_MAX: u64 = 4 * KIB;
 const PAGE: u64 = 4 * KIB;
 
-/// Granulo di pagina dichiarato dal kernel (flags, bit 1-2).
+/// Page granule declared by the kernel (flags, bits 1-2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PageSize {
     Unspecified,
@@ -48,49 +48,49 @@ pub enum PageSize {
     K64,
 }
 
-/// Header dell'`Image` arm64, già validato.
+/// arm64 `Image` header, already validated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImageHeader {
-    /// Offset dell'immagine da una base allineata a 2 MiB.
+    /// Offset of the image from a 2 MiB-aligned base.
     pub text_offset: u64,
-    /// Memoria occupata dal kernel, bss compresa (0 nei kernel < 3.17).
+    /// Memory used by the kernel, bss included (0 in kernels < 3.17).
     pub image_size: u64,
-    /// Campo flags grezzo.
+    /// Raw flags field.
     pub flags: u64,
     pub page_size: PageSize,
-    /// Flags bit 3: il kernel può stare ovunque in RAM (altrimenti il più
-    /// vicino possibile all'inizio della RAM).
+    /// Flags bit 3: the kernel can be anywhere in RAM (otherwise as
+    /// close as possible to the start of RAM).
     pub phys_anywhere: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BootError {
-    /// Meno di 64 byte.
+    /// Fewer than 64 bytes.
     Truncated,
-    /// Manca il magic `ARM\x64`.
+    /// The `ARM\x64` magic is missing.
     BadMagic(u32),
-    /// Kernel big-endian (flags bit 0).
+    /// Big-endian kernel (flags bit 0).
     BigEndian,
-    /// Granulo di 16 KiB: la Cortex-A53 non lo implementa.
+    /// 16 KiB granule: the Cortex-A53 does not implement it.
     UnsupportedPageSize(PageSize),
-    /// Base della RAM non allineata a 2 MiB.
+    /// RAM base not aligned to 2 MiB.
     MisalignedRam(u64),
-    /// DTB più grande di 2 MiB.
+    /// DTB larger than 2 MiB.
     DtbTooLarge(u64),
-    /// Il pezzo indicato non sta nella RAM.
+    /// The given piece does not fit in RAM.
     DoesNotFit(&'static str),
 }
 
 impl fmt::Display for BootError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            BootError::Truncated => write!(f, "Image troncata: meno di {HEADER_LEN} byte"),
-            BootError::BadMagic(m) => write!(f, "non è un Image arm64 (magic {m:#010x})"),
-            BootError::BigEndian => write!(f, "kernel big-endian non supportato"),
-            BootError::UnsupportedPageSize(p) => write!(f, "granulo di pagina non supportato: {p:?}"),
-            BootError::MisalignedRam(b) => write!(f, "base della RAM {b:#x} non allineata a 2 MiB"),
-            BootError::DtbTooLarge(n) => write!(f, "DTB di {n} byte, oltre i 2 MiB"),
-            BootError::DoesNotFit(what) => write!(f, "{what} non sta nella RAM"),
+            BootError::Truncated => write!(f, "truncated Image: fewer than {HEADER_LEN} bytes"),
+            BootError::BadMagic(m) => write!(f, "not an arm64 Image (magic {m:#010x})"),
+            BootError::BigEndian => write!(f, "big-endian kernel not supported"),
+            BootError::UnsupportedPageSize(p) => write!(f, "unsupported page granule: {p:?}"),
+            BootError::MisalignedRam(b) => write!(f, "RAM base {b:#x} not aligned to 2 MiB"),
+            BootError::DtbTooLarge(n) => write!(f, "DTB of {n} bytes, over 2 MiB"),
+            BootError::DoesNotFit(what) => write!(f, "{what} does not fit in RAM"),
         }
     }
 }
@@ -114,7 +114,7 @@ impl ImageHeader {
         let image_size = le64(image, 16);
         let flags = le64(image, 24);
         if image_size == 0 {
-            // Kernel < 3.17: text_offset non è affidabile, vale 0x80000.
+            // Kernel < 3.17: text_offset is not reliable, it is 0x80000.
             text_offset = LEGACY_TEXT_OFFSET;
         }
         if flags & 1 != 0 {
@@ -133,7 +133,7 @@ impl ImageHeader {
     }
 }
 
-/// RAM fisica del guest.
+/// Guest physical RAM.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RamConfig {
     pub base: u64,
@@ -141,7 +141,7 @@ pub struct RamConfig {
 }
 
 impl RamConfig {
-    /// La virt di QEMU con `size` byte di RAM (`-m`).
+    /// QEMU's virt with `size` bytes of RAM (`-m`).
     pub fn virt(size: u64) -> Self {
         RamConfig { base: VIRT_RAM_BASE, size }
     }
@@ -151,7 +151,7 @@ impl RamConfig {
     }
 }
 
-/// Intervallo di memoria fisica `[addr, addr + len)`.
+/// Physical memory range `[addr, addr + len)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Region {
     pub addr: u64,
@@ -164,34 +164,34 @@ impl Region {
     }
 }
 
-/// Stato della CPU all'ingresso del kernel (booting.rst, "CPU mode").
+/// CPU state at kernel entry (booting.rst, "CPU mode").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EntryState {
-    /// PC iniziale: primo byte dell'`Image` caricata.
+    /// Initial PC: first byte of the loaded `Image`.
     pub pc: u64,
-    /// x0 = indirizzo fisico del DTB; x1, x2, x3 = 0.
+    /// x0 = physical address of the DTB; x1, x2, x3 = 0.
     pub x: [u64; 4],
-    /// Livello di eccezione: 1 (la virt senza EL2/EL3, come QEMU di default).
+    /// Exception level: 1 (virt without EL2/EL3, like QEMU by default).
     pub el: u8,
-    /// PSTATE: EL1h con D, A, I, F mascherati (`0x3c5`).
+    /// PSTATE: EL1h with D, A, I, F masked (`0x3c5`).
     pub pstate: u32,
-    /// MMU (e cache dati) spenta: SCTLR_EL1.M = 0.
+    /// MMU (and data cache) off: SCTLR_EL1.M = 0.
     pub mmu_on: bool,
 }
 
-/// PSTATE all'ingresso: M = EL1h (0b0101), DAIF = 0b1111.
+/// PSTATE at entry: M = EL1h (0b0101), DAIF = 0b1111.
 pub const ENTRY_PSTATE: u32 = 0x3c5;
 
-/// Dove va ogni pezzo in RAM e come parte la CPU.
+/// Where each piece goes in RAM and how the CPU starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BootPlan {
     pub header: ImageHeader,
-    /// Byte dell'`Image` da copiare (`len` = lunghezza del file).
+    /// Bytes of the `Image` to copy (`len` = file length).
     pub kernel: Region,
-    /// Memoria che il kernel userà all'avvio, bss compresa: deve restare
-    /// libera (`len` = max(image_size, file)).
+    /// Memory the kernel will use at boot, bss included: it must stay
+    /// free (`len` = max(image_size, file)).
     pub kernel_footprint: Region,
-    /// Initramfs, se presente: va anche in `/chosen` come
+    /// Initramfs, if present: it also goes into `/chosen` as
     /// `linux,initrd-start` / `linux,initrd-end`.
     pub initrd: Option<Region>,
     pub dtb: Region,
@@ -202,10 +202,10 @@ fn align_up(v: u64, a: u64) -> u64 {
     v.div_ceil(a) * a
 }
 
-/// Calcola il layout di avvio. `initrd_len` è `None` senza initramfs;
-/// `dtb_len` è la dimensione del DTB (lo genera la piattaforma dopo aver
-/// letto `initrd` da questo piano: la posizione dell'initramfs non dipende
-/// dal DTB).
+/// Computes the boot layout. `initrd_len` is `None` without an initramfs;
+/// `dtb_len` is the DTB size (the platform generates it after reading
+/// `initrd` from this plan: the initramfs position does not depend
+/// on the DTB).
 pub fn plan(
     ram: RamConfig,
     image: &[u8],
@@ -219,7 +219,7 @@ pub fn plan(
     if dtb_len > MAX_DTB {
         return Err(BootError::DtbTooLarge(dtb_len));
     }
-    // Kernel: come arm_load_aarch64_image di QEMU.
+    // Kernel: like QEMU's arm_load_aarch64_image.
     let mut offset = header.text_offset;
     if offset < BOOTLOADER_MAX {
         offset += 2 * MIB;
@@ -230,15 +230,15 @@ pub fn plan(
     if kernel_footprint.end() > ram.end() {
         return Err(BootError::DoesNotFit("kernel"));
     }
-    // Initramfs: come arm_setup_direct_kernel_boot di QEMU, ma rispettando
-    // anche la bss del kernel.
+    // Initramfs: like QEMU's arm_setup_direct_kernel_boot, but also respecting
+    // the kernel's bss.
     let initrd_start = align_up((ram.base + (ram.size / 2).min(128 * MIB)).max(kernel_footprint.end()), PAGE);
     let initrd = initrd_len.map(|len| Region { addr: initrd_start, len });
     if initrd.is_some_and(|r| r.end() > ram.end()) {
         return Err(BootError::DoesNotFit("initramfs"));
     }
-    // DTB: dopo l'initramfs, allineato a 2 MiB. Senza initramfs QEMU usa
-    // lo stesso punto di partenza con dimensione zero.
+    // DTB: after the initramfs, aligned to 2 MiB. Without an initramfs QEMU uses
+    // the same starting point with size zero.
     let dtb = Region { addr: align_up(initrd_start + initrd_len.unwrap_or(0), 2 * MIB), len: dtb_len };
     if dtb.end() > ram.end() {
         return Err(BootError::DoesNotFit("DTB"));
@@ -249,17 +249,17 @@ pub fn plan(
 }
 
 impl BootPlan {
-    /// Coppie (indirizzo fisico, byte) da copiare in RAM, in ordine di
-    /// indirizzo. `initrd` e `dtb` devono avere le lunghezze date a [`plan`].
+    /// Pairs (physical address, bytes) to copy into RAM, in address
+    /// order. `initrd` and `dtb` must have the lengths given to [`plan`].
     pub fn segments<'a>(
         &self,
         image: &'a [u8],
         initrd: Option<&'a [u8]>,
         dtb: &'a [u8],
     ) -> Vec<(u64, &'a [u8])> {
-        assert_eq!(image.len() as u64, self.kernel.len, "Image diversa da quella del piano");
-        assert_eq!(initrd.map(|b| b.len() as u64), self.initrd.map(|r| r.len), "initramfs diverso dal piano");
-        assert_eq!(dtb.len() as u64, self.dtb.len, "DTB diverso dal piano");
+        assert_eq!(image.len() as u64, self.kernel.len, "Image not as planned");
+        assert_eq!(initrd.map(|b| b.len() as u64), self.initrd.map(|r| r.len), "initramfs not as planned");
+        assert_eq!(dtb.len() as u64, self.dtb.len, "DTB not as planned");
         let mut v = vec![(self.kernel.addr, image)];
         if let (Some(r), Some(b)) = (self.initrd, initrd) {
             v.push((r.addr, b));
@@ -273,11 +273,11 @@ impl BootPlan {
 mod tests {
     use super::*;
 
-    /// Image finta: header arm64 con i campi dati, poi `len - 64` byte di
-    /// "codice".
+    /// Fake Image: arm64 header with the given fields, then `len - 64` bytes of
+    /// "code".
     fn fake_image(text_offset: u64, image_size: u64, flags: u64, len: usize) -> Vec<u8> {
         let mut v = vec![0u8; len];
-        // code0: b +64 (salta l'header), come i kernel senza EFI stub.
+        // code0: b +64 (skips the header), like kernels without the EFI stub.
         v[0..4].copy_from_slice(&0x1400_0010u32.to_le_bytes());
         v[8..16].copy_from_slice(&text_offset.to_le_bytes());
         v[16..24].copy_from_slice(&image_size.to_le_bytes());
@@ -320,7 +320,7 @@ mod tests {
 
     #[test]
     fn boot_legacy_kernel_without_image_size() {
-        // image_size = 0: text_offset ignorato, vale 0x80000.
+        // image_size = 0: text_offset ignored, it is 0x80000.
         let img = fake_image(0x1234_5000, 0, 0, 4096);
         let h = ImageHeader::parse(&img).unwrap();
         assert_eq!(h.text_offset, 0x8_0000);
@@ -329,7 +329,7 @@ mod tests {
         assert_eq!(p.kernel_footprint.len, 4096);
     }
 
-    /// Layout di QEMU per `-M virt -m 1G -kernel Image -initrd ...`.
+    /// QEMU's layout for `-M virt -m 1G -kernel Image -initrd ...`.
     #[test]
     fn boot_layout_like_qemu_virt() {
         let img = fake_image(0, 0x2a0_0000, 0b1010, 0x1f0_0000);
@@ -337,7 +337,7 @@ mod tests {
         let p = plan(RamConfig::virt(GIB), &img, Some(initrd_len), 0x10_0000).unwrap();
         assert_eq!(p.kernel, Region { addr: 0x4020_0000, len: 0x1f0_0000 });
         assert_eq!(p.kernel_footprint, Region { addr: 0x4020_0000, len: 0x2a0_0000 });
-        // min(1 GiB / 2, 128 MiB) = 128 MiB sopra la base.
+        // min(1 GiB / 2, 128 MiB) = 128 MiB above the base.
         assert_eq!(p.initrd, Some(Region { addr: 0x4800_0000, len: initrd_len }));
         assert_eq!(p.dtb, Region { addr: 0x4820_0000, len: 0x10_0000 });
         assert_eq!(
@@ -351,7 +351,7 @@ mod tests {
         let img = fake_image(0x8_0000, 0x100_0000, 0, 4096);
         let p = plan(RamConfig::virt(GIB), &img, None, 64).unwrap();
         assert_eq!(p.entry.pc, 0x4008_0000);
-        // Senza initramfs il DTB parte dallo stesso punto.
+        // Without an initramfs the DTB starts at the same point.
         assert_eq!(p.initrd, None);
         assert_eq!(p.dtb.addr, 0x4800_0000);
         assert_eq!(p.entry.x[0], p.dtb.addr);
@@ -359,8 +359,8 @@ mod tests {
 
     #[test]
     fn boot_small_ram_puts_initrd_after_kernel() {
-        // 64 MiB: ram/2 = 32 MiB cadrebbe dentro la bss del kernel (fino a
-        // base + 2 MiB + 40 MiB), quindi l'initramfs va dopo il kernel.
+        // 64 MiB: ram/2 = 32 MiB would fall inside the kernel's bss (up to
+        // base + 2 MiB + 40 MiB), so the initramfs goes after the kernel.
         let img = fake_image(0, 40 * MIB, 0, 4096);
         let p = plan(RamConfig::virt(64 * MIB), &img, Some(5000), 100).unwrap();
         let initrd = p.initrd.unwrap();
@@ -394,12 +394,12 @@ mod tests {
         assert_eq!(segs[1].1, &initrd[..]);
     }
 
-    /// L'Image vera, se `tools/guest-kernel/build.sh` è stato eseguito.
+    /// The real Image, if `tools/guest-kernel/build.sh` has been run.
     #[test]
     fn boot_real_guest_kernel_header() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/guest-kernel/Image");
         let Ok(img) = std::fs::read(path) else {
-            eprintln!("SKIP boot_real_guest_kernel_header: esegui tools/guest-kernel/build.sh");
+            eprintln!("SKIP boot_real_guest_kernel_header: run tools/guest-kernel/build.sh");
             return;
         };
         let h = ImageHeader::parse(&img).unwrap();

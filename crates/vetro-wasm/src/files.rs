@@ -1,24 +1,24 @@
-//! Il gestore dei file (ABI 7, M8, ADR 0020; SQL e nomi come byte con
-//! l'ABI 9, ADR 0021): il client di
-//! `vetro_machine::files` verso il demone `vetro-files` del guest, su
-//! virtio-vsock (bit `VSOCK` di `vetro_machine_new_with`).
+//! The file manager (ABI 7, M8, ADR 0020; SQL and names as bytes with
+//! ABI 9, ADR 0021): the client of
+//! `vetro_machine::files` towards the guest's `vetro-files` daemon, over
+//! virtio-vsock (`VSOCK` bit of `vetro_machine_new_with`).
 //!
-//! Il JS chiede operazioni ([`vetro_files_request`], id > 0), fa avanzare il
-//! client fra un quanto e l'altro ([`vetro_files_pump`], come la console) e
-//! legge i messaggi pronti uno alla volta ([`vetro_files_take`] e
-//! [`vetro_files_ptr`]): `u32` lunghezza del JSON, il JSON (UTF-8), poi i
-//! byte letti di una lettura. Il JSON è una risposta
-//! (`{"kind":"reply","op":N,"ok":true,"type":...}`) o un evento di inotify
-//! (`{"kind":"event","wd":N,"mask":N,"cookie":N,"name":"..."}`); il formato
-//! è in `docs/specs/wasm.md`.
+//! JS requests operations ([`vetro_files_request`], id > 0), advances the
+//! client between one quantum and the next ([`vetro_files_pump`], like the console) and
+//! reads the ready messages one at a time ([`vetro_files_take`] and
+//! [`vetro_files_ptr`]): `u32` length of the JSON, the JSON (UTF-8), then the
+//! bytes read by a read. The JSON is a response
+//! (`{"kind":"reply","op":N,"ok":true,"type":...}`) or an inotify event
+//! (`{"kind":"event","wd":N,"mask":N,"cookie":N,"name":"..."}`); the format
+//! is in `docs/specs/wasm.md`.
 //!
-//! Percorsi e nomi sono byte del guest: il JS li passa come byte, e nel
-//! JSON un byte che non fa parte di UTF-8 valido diventa il surrogato
-//! solitario `\udcXX` (*surrogateescape*, ADR 0021).
+//! Paths and names are guest bytes: JS passes them as bytes, and in the
+//! JSON a byte that is not part of valid UTF-8 becomes the lone
+//! surrogate `\udcXX` (*surrogateescape*, ADR 0021).
 //!
-//! Connessione, byte mandati e byte letti passano da `Machine::input`:
-//! sono ingressi, registrati per il replay (ADR 0019). Stato e messaggi
-//! già pronti non toccano la macchina.
+//! Connection, bytes sent and bytes read go through `Machine::input`:
+//! they are inputs, recorded for replay (ADR 0019). State and messages
+//! already ready don't touch the machine.
 
 use vetro_machine::FilesClient;
 use vetro_machine::files::proto::{self, SqlResult, SqlValue, Stat};
@@ -26,45 +26,45 @@ use vetro_machine::files::{Completion, FilesError, LinkState, Outcome};
 
 use crate::Vm;
 
-/// Operazioni di [`vetro_files_request`].
+/// Operations of [`vetro_files_request`].
 pub mod op {
     pub const STAT: u32 = 1;
     pub const LIST: u32 = 2;
-    /// `x` = offset, `y` = byte (`u64::MAX` = fino alla fine).
+    /// `x` = offset, `y` = bytes (`u64::MAX` = to the end).
     pub const READ: u32 = 3;
-    /// `b` = contenuto, `x` = permessi se il file è nuovo.
+    /// `b` = contents, `x` = permissions if the file is new.
     pub const WRITE: u32 = 4;
     /// `x` = permessi.
     pub const MKDIR: u32 = 5;
     /// `x` = permessi.
     pub const CREATE: u32 = 6;
-    /// `x` = 1 per cancellare una cartella con tutto il contenuto.
+    /// `x` = 1 to delete a folder with all its contents.
     pub const DELETE: u32 = 7;
     /// `b` = nuovo percorso (UTF-8).
     pub const RENAME: u32 = 8;
     pub const WATCH: u32 = 9;
-    /// `x` = id dell'osservazione.
+    /// `x` = id of the watch.
     pub const UNWATCH: u32 = 10;
-    /// SQL sul database `a` (ABI 9, ADR 0021): `b` = SQL e parametri nel
-    /// formato di `proto::encode_sql_args`, `x` = righe cambiate attese
-    /// (`u64::MAX` = qualsiasi), `y` bit 0 = sola lettura.
+    /// SQL on database `a` (ABI 9, ADR 0021): `b` = SQL and parameters in the
+    /// format of `proto::encode_sql_args`, `x` = expected changed rows
+    /// (`u64::MAX` = any), `y` bit 0 = read-only.
     pub const SQL: u32 = 11;
 }
 
-/// Stati di [`vetro_files_status`].
+/// States of [`vetro_files_status`].
 pub mod status {
-    /// Nessun client (`vetro_files_open` non chiamata).
+    /// No client (`vetro_files_open` not called).
     pub const NONE: u32 = 0;
-    /// In collegamento (o in attesa di riprovare: il demone non ascolta
-    /// ancora).
+    /// Connecting (or waiting to retry: the daemon isn't listening
+    /// yet).
     pub const CONNECTING: u32 = 1;
     pub const READY: u32 = 2;
 }
 
-/// Una lettura non restituisce più di tanti byte in un messaggio.
+/// A read doesn't return more than this many bytes in one message.
 pub const MAX_READ: u64 = 256 << 20;
 
-/// Una stringa JSON (con le virgolette).
+/// A JSON string (with the quotes).
 fn json_str(out: &mut String, s: &str) {
     out.push('"');
     for c in s.chars() {
@@ -81,8 +81,8 @@ fn json_str(out: &mut String, s: &str) {
     out.push('"');
 }
 
-/// Byte del guest come stringa JSON: UTF-8 valido com'è, ogni altro byte
-/// come surrogato solitario `\udcXX` (U+DC80 + byte - 0x80).
+/// Guest bytes as a JSON string: valid UTF-8 as it is, every other byte
+/// as a lone surrogate `\udcXX` (U+DC80 + byte - 0x80).
 fn json_bytes(out: &mut String, b: &[u8]) {
     out.push('"');
     for chunk in b.utf8_chunks() {
@@ -163,7 +163,7 @@ fn json_stat(out: &mut String, s: &Stat) {
     out.push('}');
 }
 
-/// Un messaggio per il JS: lunghezza del JSON, JSON, byte.
+/// A message for JS: length of the JSON, JSON, bytes.
 fn message(json: &str, data: &[u8]) -> Vec<u8> {
     let mut m = Vec::with_capacity(4 + json.len() + data.len());
     m.extend_from_slice(&(json.len() as u32).to_le_bytes());
@@ -172,7 +172,7 @@ fn message(json: &str, data: &[u8]) -> Vec<u8> {
     m
 }
 
-/// Il messaggio di una risposta.
+/// The message of a response.
 pub fn reply_message(c: &Completion) -> Vec<u8> {
     let mut j = format!("{{\"kind\":\"reply\",\"op\":{},", c.op);
     let mut data: &[u8] = &[];
@@ -230,7 +230,7 @@ pub fn reply_message(c: &Completion) -> Vec<u8> {
     message(&j, data)
 }
 
-/// Il messaggio di un evento.
+/// The message of an event.
 pub fn event_message(e: &proto::Event) -> Vec<u8> {
     let mut j =
         format!("{{\"kind\":\"event\",\"wd\":{},\"mask\":{},\"cookie\":{},\"name\":", e.wd, e.mask, e.cookie);
@@ -239,14 +239,14 @@ pub fn event_message(e: &proto::Event) -> Vec<u8> {
     message(&j, &[])
 }
 
-/// Crea il client del gestore dei file verso la porta vsock `port` del
-/// guest (0 = 5200, quella di `vetro-files`), al posto di quello che c'era.
-/// 1 = fatto, 0 = la macchina non ha virtio-vsock. Da chiamare dopo
-/// `vetro_load_linux` o `vetro_snapshot_restore`: le connessioni al demone
-/// rimaste nello snapshot si chiudono al primo `vetro_files_pump`.
+/// Creates the file manager client towards the guest's vsock port `port`
+/// (0 = 5200, the one of `vetro-files`), replacing the one that was there.
+/// 1 = done, 0 = the machine has no virtio-vsock. To be called after
+/// `vetro_load_linux` or `vetro_snapshot_restore`: the connections to the daemon
+/// left in the snapshot are closed at the first `vetro_files_pump`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_files_open(vm: *mut Vm, port: u32) -> u32 {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
     if vm.m.slots().vsock.is_none() {
         return 0;
@@ -259,23 +259,23 @@ pub unsafe extern "C" fn vetro_files_open(vm: *mut Vm, port: u32) -> u32 {
     1
 }
 
-/// Chiude la connessione e toglie il client.
+/// Closes the connection and removes the client.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_files_close(vm: *mut Vm) {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
     if let Some(mut c) = vm.files.take() {
         c.close(&mut vm.m);
     }
 }
 
-/// Stato del client (codici di [`status`]); in `out` (al più `cap`
-/// valori): operazioni non finite, collegamenti riusciti (cresce a ogni
-/// saluto del demone: le osservazioni vanno rifatte), `max_chunk` e flag
-/// del saluto (bit 0: SELinux nel guest). Non tocca la macchina.
+/// Client state (codes of [`status`]); in `out` (at most `cap`
+/// values): unfinished operations, successful connections (grows at every
+/// daemon greeting: watches must be redone), `max_chunk` and flags
+/// of the greeting (bit 0: SELinux in the guest). It doesn't touch the machine.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_files_status(vm: *const Vm, out: *mut u32, cap: usize) -> u32 {
-    // SAFETY: `vm` viene da `vetro_machine_new`, `out` vale per `cap` valori.
+    // SAFETY: `vm` comes from `vetro_machine_new`, `out` is valid for `cap` values.
     let vm = unsafe { &*vm };
     let Some(c) = &vm.files else { return status::NONE };
     let (code, chunk, flags) = match c.state() {
@@ -290,12 +290,12 @@ pub unsafe extern "C" fn vetro_files_status(vm: *const Vm, out: *mut u32, cap: u
     code
 }
 
-/// Chiede un'operazione (codici di [`op`]) sul percorso `a` (byte del
-/// guest, anche non UTF-8); `b`, `x` e `y` come scritto nei codici.
-/// Restituisce l'id (> 0) della risposta, o 0 (nessun client, operazione
-/// sconosciuta, percorso vuoto, argomenti SQL rovinati).
-/// Parte al prossimo [`vetro_files_pump`] (subito se il demone è già
-/// collegato, altrimenti al saluto).
+/// Requests an operation (codes of [`op`]) on path `a` (guest
+/// bytes, possibly non-UTF-8); `b`, `x` and `y` as written in the codes.
+/// Returns the id (> 0) of the response, or 0 (no client, unknown
+/// operation, empty path, broken SQL arguments).
+/// It leaves at the next [`vetro_files_pump`] (immediately if the daemon is already
+/// connected, otherwise at the greeting).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_files_request(
     vm: *mut Vm,
@@ -307,8 +307,8 @@ pub unsafe extern "C" fn vetro_files_request(
     x: u64,
     y: u64,
 ) -> u32 {
-    // SAFETY: `vm` viene da `vetro_machine_new`, i buffer valgono per le
-    // loro lunghezze.
+    // SAFETY: `vm` comes from `vetro_machine_new`, the buffers are valid for
+    // their lengths.
     let vm = unsafe { &mut *vm };
     let Some(c) = vm.files.as_mut() else { return 0 };
     let path = unsafe { crate::bytes(a, a_len) }.to_vec();
@@ -339,11 +339,11 @@ pub unsafe extern "C" fn vetro_files_request(
     }
 }
 
-/// Fa avanzare il client (connessione, byte arrivati, richieste in coda):
-/// da chiamare fra un quanto e l'altro. Restituisce i messaggi pronti.
+/// Advances the client (connection, arrived bytes, queued requests):
+/// to be called between one quantum and the next. Returns the ready messages.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_files_pump(vm: *mut Vm) -> u32 {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
     let Some(c) = vm.files.as_mut() else { return 0 };
     c.pump(&mut vm.m);
@@ -356,20 +356,20 @@ pub unsafe extern "C" fn vetro_files_pump(vm: *mut Vm) -> u32 {
     vm.files_queue.len() as u32
 }
 
-/// Prepara il prossimo messaggio e ne restituisce la lunghezza (0 = nessuno).
-/// I byte stanno in [`vetro_files_ptr`] fino alla prossima chiamata.
+/// Prepares the next message and returns its length (0 = none).
+/// The bytes stay in [`vetro_files_ptr`] until the next call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_files_take(vm: *mut Vm) -> usize {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
     vm.files_msg = vm.files_queue.pop_front().unwrap_or_default();
     vm.files_msg.len()
 }
 
-/// I byte dell'ultimo [`vetro_files_take`] (nullo se vuoto).
+/// The bytes of the last [`vetro_files_take`] (null if empty).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_files_ptr(vm: *const Vm) -> *const u8 {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     let vm = unsafe { &*vm };
     if vm.files_msg.is_empty() { core::ptr::null() } else { vm.files_msg.as_ptr() }
 }
@@ -455,8 +455,8 @@ mod tests {
         assert_eq!(json(&m).0, r#"{"kind":"event","wd":1,"mask":8,"cookie":0,"name":"\udc80\"\udcff"}"#);
     }
 
-    /// Senza kernel nessuno ascolta: il client resta in collegamento, le
-    /// richieste aspettano. Senza vsock niente client.
+    /// Without a kernel nobody listens: the client stays connecting, the
+    /// requests wait. Without vsock no client.
     #[test]
     fn client_dall_api() {
         let vm = vetro_machine_new_with(64 << 20, 0, 0, dev::VSOCK, 0, 0);
@@ -470,7 +470,7 @@ mod tests {
             let id = vetro_files_request(vm, op::LIST, b"/".as_ptr(), 1, core::ptr::null(), 0, 0, 0);
             assert!(id > 0);
             assert_eq!(vetro_files_request(vm, 99, b"/".as_ptr(), 1, core::ptr::null(), 0, 0, 0), 0);
-            // Percorsi non UTF-8: sono byte, si accettano.
+            // Non-UTF-8 paths: they are bytes, they are accepted.
             assert!(vetro_files_request(vm, op::STAT, [0xffu8].as_ptr(), 1, core::ptr::null(), 0, 0, 0) > 0);
             assert_eq!(vetro_files_request(vm, op::STAT, b"".as_ptr(), 0, core::ptr::null(), 0, 0, 0), 0);
             let args = proto::encode_sql_args("SELECT ?1", &[SqlValue::Int(1)]);

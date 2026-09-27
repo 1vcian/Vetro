@@ -27,9 +27,9 @@ fn hdr(kind: u32, sector: u64) -> [u8; 16] {
     h
 }
 
-/// Pubblica una richiesta: intestazione, dati in uscita, `in_len` byte di
-/// dati in entrata e il byte di stato, ognuno nel suo descrittore.
-/// Restituisce gli indirizzi dei dati in entrata e dello stato.
+/// Publishes a request: header, outgoing data, `in_len` bytes of
+/// incoming data and the status byte, each in its own descriptor.
+/// Returns the addresses of the incoming data and of the status.
 fn submit(
     d: &mut Driver<VirtioMmio>,
     kind: u32,
@@ -57,7 +57,7 @@ fn submit(
     (data_in, status)
 }
 
-/// Richiesta completa: (stato, lunghezza nello used ring, dati letti).
+/// Completed request: (status, length in the used ring, data read).
 fn request(
     d: &mut Driver<VirtioMmio>,
     kind: u32,
@@ -68,7 +68,7 @@ fn request(
     let (data_in, status) = submit(d, kind, sector, out, in_len, false);
     d.service();
     assert_eq!(d.irq() & INT_VRING, INT_VRING);
-    let (_, len) = d.pop_used(0).expect("richiesta non completata");
+    let (_, len) = d.pop_used(0).expect("request not completed");
     (d.mem(status, 1)[0], len, d.mem(data_in, in_len as usize))
 }
 
@@ -103,7 +103,7 @@ fn scrittura_e_lettura_dirette_e_indirette() {
     blk(&mut d).backend_mut().read_sectors(3, &mut disk).unwrap();
     assert_eq!(disk, data);
 
-    // Lettura con tabella indiretta e dati divisi in due descrittori.
+    // Read with an indirect table and data split over two descriptors.
     let h = d.buf(&hdr(T_IN, 3));
     let (a, b) = (d.alloc(600, 8), d.alloc(424, 8));
     let st = d.buf(&[0xFF]);
@@ -114,7 +114,7 @@ fn scrittura_e_lettura_dirette_e_indirette() {
     assert_eq!(d.mem(st, 1), [S_OK]);
     assert_eq!([d.mem(a, 600), d.mem(b, 424)].concat(), data);
 
-    // Intestazione divisa in due descrittori, stato in coda ai dati.
+    // Header split over two descriptors, status after the data.
     let h = d.buf(&hdr(T_IN, 4));
     let buf = d.alloc(513, 8);
     let head = d.add(0, &[(h, 10, false), (h + 10, 6, false), (buf, 513, true)]);
@@ -179,7 +179,7 @@ fn get_id_flush_e_tipo_sconosciuto() {
     let (st, len, id) = request(&mut d, T_GET_ID, 0, &[], 20);
     assert_eq!((st, len), (S_OK, 21));
     assert_eq!(&id, b"disco-di-prova\0\0\0\0\0\0");
-    // Buffer più corto di 20 byte: si tronca.
+    // Buffer shorter than 20 bytes: truncated.
     let (st, len, id) = request(&mut d, T_GET_ID, 0, &[], 5);
     assert_eq!((st, len, id.as_slice()), (S_OK, 6, &b"disco"[..]));
     assert_eq!(request(&mut d, T_FLUSH, 0, &[], 0).0, S_OK);
@@ -191,9 +191,9 @@ fn get_id_flush_e_tipo_sconosciuto() {
 #[test]
 fn errori_di_io() {
     let mut d = driver(MemBackend::new(4096), VirtioBlkConfig::default());
-    assert_eq!(request(&mut d, T_IN, 7, &[], 1024).0, S_IOERR, "oltre la capacità");
-    assert_eq!(request(&mut d, T_IN, u64::MAX, &[], 512).0, S_IOERR, "overflow del settore");
-    assert_eq!(request(&mut d, T_IN, 0, &[], 100).0, S_IOERR, "non multiplo di 512");
+    assert_eq!(request(&mut d, T_IN, 7, &[], 1024).0, S_IOERR, "past the capacity");
+    assert_eq!(request(&mut d, T_IN, u64::MAX, &[], 512).0, S_IOERR, "sector overflow");
+    assert_eq!(request(&mut d, T_IN, 0, &[], 100).0, S_IOERR, "not a multiple of 512");
     assert_eq!(request(&mut d, T_OUT, 0, &[1; 300], 0).0, S_IOERR);
     let (st, len, _) = request(&mut d, T_IN, 7, &[], 512);
     assert_eq!((st, len), (S_OK, 513), "ultimo settore");
@@ -211,17 +211,17 @@ fn richiesta_malformata_porta_a_needs_reset() {
     assert_ne!(d.t.rd(STATUS) & STATUS_DEVICE_NEEDS_RESET, 0);
     assert_eq!(d.irq(), INT_CONFIG);
     assert!(matches!(d.t.last_error(), Some(QueueError::Malformed(_))));
-    // Fermo fino al reset.
+    // Stopped until the reset.
     submit(&mut d, T_IN, 0, &[], 512, false);
     d.service();
     assert_eq!(d.irq(), 0);
-    // Il driver resetta e riparte.
+    // The driver resets and starts again.
     d.init(ALL, 16);
     assert_eq!(d.t.rd(STATUS) & STATUS_DEVICE_NEEDS_RESET, 0);
     assert_eq!(d.t.last_error(), None);
     assert_eq!(request(&mut d, T_IN, 0, &[], 512).0, S_OK);
 
-    // Senza byte di stato.
+    // Without a status byte.
     let h = d.buf(&hdr(T_IN, 0));
     d.add(0, &[(h, 16, false)]);
     d.service();
@@ -243,13 +243,13 @@ fn indirect_non_negoziato_e_un_errore() {
 fn event_idx_e_notifiche() {
     let mut d = driver(MemBackend::new(4096), VirtioBlkConfig::default());
     assert_ne!(d.features & F_EVENT_IDX, 0);
-    // Il dispositivo chiede la notifica per il prossimo indice.
+    // The device asks for notification at the next index.
     submit(&mut d, T_IN, 0, &[], 512, false);
     d.service();
     assert_eq!(d.avail_event(0), 1);
     assert_eq!(d.irq(), INT_VRING);
     d.pop_used(0).unwrap(); // used_event = 1
-    // Il driver sposta used_event avanti: due richieste senza interrupt.
+    // The driver moves used_event forward: two requests without an interrupt.
     d.set_used_event(0, 3);
     for _ in 0..2 {
         submit(&mut d, T_IN, 0, &[], 512, false);
@@ -271,7 +271,7 @@ fn no_interrupt_senza_event_idx() {
     submit(&mut d, T_IN, 0, &[], 512, false);
     d.service();
     assert_eq!(d.irq(), 0);
-    assert!(d.pop_used(0).is_some(), "il buffer torna comunque");
+    assert!(d.pop_used(0).is_some(), "the buffer comes back anyway");
     d.set_avail_flags(0, 0);
     submit(&mut d, T_IN, 0, &[], 512, false);
     d.service();
@@ -292,7 +292,7 @@ fn niente_lavoro_prima_di_driver_ok() {
     assert!(d.pop_used(0).is_some());
 }
 
-/// Backend che non ha i dati finché non si apre il rubinetto.
+/// Backend that has no data until the tap is opened.
 struct Lento {
     pronto: Rc<RefCell<bool>>,
     disco: MemBackend,
@@ -328,7 +328,7 @@ fn backend_non_pronto_sospende_la_richiesta() {
     assert_eq!(d.irq(), 0);
     assert!(blk(&mut d).has_pending());
     d.service();
-    assert_eq!(d.pop_used(0), None, "la seconda richiesta aspetta la prima");
+    assert_eq!(d.pop_used(0), None, "the second request waits for the first");
     *pronto.borrow_mut() = true;
     d.service();
     assert_eq!(d.irq(), INT_VRING);
@@ -366,12 +366,12 @@ fn mem_backend_limiti() {
 
 #[test]
 fn copy_on_write_sopra_la_base() {
-    // Base di 3 cluster e mezzo, in sola lettura; ogni settore vale il suo numero.
+    // Base of 3 and a half clusters, read-only; every sector is worth its number.
     let base: Vec<u8> = (0..14336u32).map(|i| (i / 512) as u8).collect();
     let mut cow = CowBackend::new(MemBackend::from_vec(base.clone()).read_only());
     assert_eq!(cow.size(), 14336);
     assert!(!BlockBackend::read_only(&cow));
-    // Scrittura parziale a cavallo di due cluster (settori 7 e 8).
+    // Partial write straddling two clusters (sectors 7 and 8).
     cow.write_sectors(7, &[0xEE; 1024]).unwrap();
     assert_eq!(cow.dirty_clusters(), 2);
     let mut all = vec![0u8; 14336];
@@ -379,15 +379,15 @@ fn copy_on_write_sopra_la_base() {
     let mut expect = base.clone();
     expect[7 * 512..9 * 512].fill(0xEE);
     assert_eq!(all, expect);
-    assert_eq!(cow.base().data(), &base[..], "la base non cambia");
-    // Ultimo cluster corto (settori 24..28) scritto in parte.
+    assert_eq!(cow.base().data(), &base[..], "the base doesn't change");
+    // Short last cluster (sectors 24..28) partially written.
     cow.write_sectors(27, &[0x11; 512]).unwrap();
     cow.read_sectors(24, &mut all[..2048]).unwrap();
     assert_eq!(&all[..1536], &base[24 * 512..27 * 512]);
     assert_eq!(&all[1536..2048], &[0x11; 512][..]);
     assert_eq!(cow.write_sectors(28, &[0; 512]), Err(BlockError::OutOfRange));
 
-    // Un cluster scritto per intero non legge la base.
+    // A fully written cluster doesn't read the base.
     struct Illeggibile;
     impl BlockBackend for Illeggibile {
         fn size(&self) -> u64 {
@@ -411,9 +411,9 @@ fn copy_on_write_sopra_la_base() {
     assert_eq!(b, [5; 512]);
 }
 
-/// Overlay persistente (ADR 0017): i cluster scritti dal guest dall'ultima
-/// `take_dirty`, i cluster caricati da un overlay non contano come scritti,
-/// e dopo il ripristino di uno snapshot l'insieme è vuoto.
+/// Persistent overlay (ADR 0017): the clusters written by the guest since the last
+/// `take_dirty`, the clusters loaded from an overlay don't count as written,
+/// and after restoring a snapshot the set is empty.
 #[test]
 fn copy_on_write_cluster_scritti_e_caricati() {
     let base = || MemBackend::from_vec(vec![0x5A; 3 * 4096 + 1024]).read_only();
@@ -433,9 +433,9 @@ fn copy_on_write_cluster_scritti_e_caricati() {
 
     let mut other = CowBackend::new(base());
     other.load_cluster(3, &[9; 1024]).unwrap();
-    assert_eq!(other.load_cluster(3, &[9; 4096]), Err(BlockError::Io), "l'ultimo cluster è corto");
+    assert_eq!(other.load_cluster(3, &[9; 4096]), Err(BlockError::Io), "the last cluster is short");
     assert_eq!(other.load_cluster(4, &[9; 4096]), Err(BlockError::OutOfRange));
-    assert!(other.take_dirty().is_empty(), "caricato, non scritto dal guest");
+    assert!(other.take_dirty().is_empty(), "loaded, not written by the guest");
     let mut s = [0u8; 512];
     other.read_sectors(25, &mut s).unwrap();
     assert_eq!(s, [9; 512]);
@@ -446,7 +446,7 @@ fn copy_on_write_cluster_scritti_e_caricati() {
     other.write_sectors(0, &[4; 512]).unwrap();
     let bytes = w.into_bytes();
     other.restore_state(&mut vetro_snapshot::Reader::new(&bytes)).unwrap();
-    assert!(other.take_dirty().is_empty(), "dopo il ripristino si confronta tutto");
+    assert!(other.take_dirty().is_empty(), "after the restore everything is compared");
     assert_eq!(other.clusters().map(|(c, _)| c).collect::<Vec<_>>(), [0, 1]);
 }
 

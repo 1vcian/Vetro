@@ -1,12 +1,12 @@
-//! LTP (criterio di uscita di M2): una selezione dei test di syscall del
-//! Linux Test Project gira su Vetro e su `qemu-aarch64` con lo stesso
-//! ambiente; l'esito (codice d'uscita e conteggi TPASS/TFAIL/TBROK/TCONF)
-//! deve coincidere. Binari da `tools/ltp/build.sh` (in `target/ltp/bin`).
+//! LTP (M2 exit criterion): a selection of the syscall tests of the
+//! Linux Test Project runs on Vetro and on `qemu-aarch64` with the same
+//! environment; the outcome (exit code and TPASS/TFAIL/TBROK/TCONF counts)
+//! must match. Binaries from `tools/ltp/build.sh` (in `target/ltp/bin`).
 //!
-//! Vetro riceve dall'oracolo versione del kernel e numero di CPU. I test di
-//! `tools/ltp/qemu-divergent.txt`, su cui QEMU si discosta da Linux, si
-//! confrontano con l'esecuzione nativa su un host Linux aarch64; quelli di
-//! `tools/ltp/skip.txt` sono esclusi. Vedi l'ADR 0010.
+//! Vetro receives the kernel version and the number of CPUs from the oracle. The tests in
+//! `tools/ltp/qemu-divergent.txt`, on which QEMU departs from Linux, are
+//! compared with the native run on an aarch64 Linux host; those in
+//! `tools/ltp/skip.txt` are excluded. See ADR 0010.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -36,8 +36,8 @@ fn skip_list() -> Vec<String> {
     list("tools/ltp/skip.txt")
 }
 
-/// Test su cui QEMU user mode si discosta da Linux (tools/ltp/qemu-divergent.txt):
-/// l'oracolo è l'esecuzione nativa su un host Linux aarch64.
+/// Tests on which QEMU user mode departs from Linux (tools/ltp/qemu-divergent.txt):
+/// the oracle is the native run on an aarch64 Linux host.
 fn divergent_list() -> Vec<String> {
     list("tools/ltp/qemu-divergent.txt")
 }
@@ -72,8 +72,8 @@ fn env_for(wd: &Path) -> Vec<(String, String)> {
     ]
 }
 
-/// Quello che l'oracolo mostra al guest e che Vetro deve imitare: versione
-/// del kernel (uname -r) e CPU disponibili, chiesti a QEMU con BusyBox.
+/// What the oracle shows the guest and Vetro must imitate: kernel
+/// version (uname -r) and available CPUs, asked of QEMU with BusyBox.
 #[derive(Clone)]
 struct Host {
     release: String,
@@ -127,8 +127,8 @@ fn run_vetro(bin: &Path, name: &str, host: &Host) -> Esito {
     conta(&text, status)
 }
 
-/// Esegue su Vetro in un thread a parte: un panic o un blocco (per esempio
-/// un'attesa sull'host) diventano l'esito del caso, non della corsa.
+/// Runs on Vetro in a separate thread: a panic or a hang (for example
+/// a wait on the host) becomes the outcome of the case, not of the run.
 fn run_vetro_limited(bin: &Path, name: &str, host: &Host) -> Esito {
     let (tx, rx) = std::sync::mpsc::channel();
     let (bin, name2, host) = (bin.to_path_buf(), name.to_string(), host.clone());
@@ -139,8 +139,8 @@ fn run_vetro_limited(bin: &Path, name: &str, host: &Host) -> Esito {
     let vuoto = |s: &str| Esito { status: s.into(), pass: 0, fail: 0, brok: 0, conf: 0 };
     match rx.recv_timeout(Duration::from_secs(180)) {
         Ok(Ok(e)) => e,
-        Ok(Err(_)) => vuoto("panic di Vetro"),
-        Err(_) => vuoto("timeout di Vetro (180 s)"),
+        Ok(Err(_)) => vuoto("Vetro panic"),
+        Err(_) => vuoto("Vetro timeout (180 s)"),
     }
 }
 
@@ -150,10 +150,10 @@ fn run_qemu(q: &Path, bin: &Path, name: &str) -> Esito {
     let out = qemu::run_program_with(q, &opts, bin, &[], &env_for(&wd), &wd, &[], Duration::from_secs(300));
     match out {
         Ok(o) => {
-            // QEMU scrive "uncaught target signal" anche quando muore un
-            // figlio del test (atteso in molti casi): il segnale conta solo
-            // se il processo non è uscito normalmente (codice assente, o
-            // 128+N dal wrapper Docker).
+            // QEMU writes "uncaught target signal" also when a child of the test
+            // dies (expected in many cases): the signal counts only
+            // if the process did not exit normally (code absent, or
+            // 128+N from the Docker wrapper).
             let status = match (o.exit_code, o.signal()) {
                 (Some(c), _) if c < 128 => format!("exit {c}"),
                 (_, Some(s)) => format!("segnale {s}"),
@@ -167,18 +167,18 @@ fn run_qemu(q: &Path, bin: &Path, name: &str) -> Esito {
     }
 }
 
-/// Esegue il binario direttamente sull'host (solo Linux aarch64).
+/// Runs the binary directly on the host (aarch64 Linux only).
 fn run_native(bin: &Path, name: &str) -> Esito {
     use std::os::unix::process::ExitStatusExt;
     use std::process::{Command, Stdio};
     let wd = workdir(&format!("{name}.native"));
     let nofile: u64 = std::env::var("VETRO_ORACLE_NOFILE").ok().and_then(|n| n.parse().ok()).unwrap_or(1024);
     let mut cmd = Command::new(bin);
-    // SAFETY: tra fork ed exec solo setpgid e setrlimit, async-signal-safe.
+    // SAFETY: between fork and exec only setpgid and setrlimit, async-signal-safe.
     unsafe {
         std::os::unix::process::CommandExt::pre_exec(&mut cmd, move || {
-            // Un gruppo di processi a sé: allo scadere si uccidono anche i
-            // figli del test, che altrimenti terrebbero aperti stdout/stderr.
+            // A process group of its own: on timeout the test's children are killed
+            // too, which would otherwise keep stdout/stderr open.
             libc::setpgid(0, 0);
             let mut r = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
             libc::getrlimit(libc::RLIMIT_NOFILE, &mut r);
@@ -216,7 +216,7 @@ fn run_native(bin: &Path, name: &str) -> Esito {
             break s;
         }
         if std::time::Instant::now() > deadline {
-            // SAFETY: kill di un gruppo di processi che abbiamo creato noi.
+            // SAFETY: kill of a process group that we created ourselves.
             unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
             break child.wait().unwrap();
         }
@@ -237,21 +237,21 @@ fn ltp_matches_qemu() {
     let dir = root().join("target/ltp/bin");
     if !dir.is_dir() {
         if std::env::var("VETRO_REQUIRE_GUEST_BINS").is_ok_and(|v| v == "1") {
-            panic!("target/ltp/bin mancante: esegui tools/ltp/build.sh");
+            panic!("target/ltp/bin missing: run tools/ltp/build.sh");
         }
         eprintln!("SKIP ltp_matches_qemu: esegui tools/ltp/build.sh");
         return;
     }
     let Some(q) = qemu::locate_or_skip("ltp_matches_qemu") else { return };
-    // Il wrapper Docker deve vedere il sysroot e la configurazione.
+    // The Docker wrapper must see the sysroot and the configuration.
     let mounts = [root().join("tools"), root().join("target/tmp/ltp")];
     std::fs::create_dir_all(&mounts[1]).unwrap();
     let joined = mounts.iter().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>().join(":");
-    // SAFETY: il test è l'unico thread che tocca l'ambiente a questo punto.
+    // SAFETY: the test is the only thread touching the environment at this point.
     unsafe { std::env::set_var("VETRO_ORACLE_MOUNTS", joined) };
 
-    // Per default un sottoinsieme rapido (tools/ltp/quick.txt); il giro
-    // completo con VETRO_LTP_FULL=1 (job linux della CI, in release).
+    // By default a quick subset (tools/ltp/quick.txt); the full
+    // run with VETRO_LTP_FULL=1 (CI linux job, in release).
     let full = std::env::var("VETRO_LTP_FULL").is_ok_and(|v| v == "1");
     let quick = std::fs::read_to_string(root().join("tools/ltp/quick.txt")).unwrap_or_default();
     let only = std::env::var("VETRO_LTP_ONLY").ok().or_else(|| {
@@ -264,10 +264,10 @@ fn ltp_matches_qemu() {
                 .join(",")
         })
     });
-    // Vetro gira in questo processo e usa un descrittore dell'host per ogni
-    // file del guest; l'oracolo invece deve vedere il limite originale.
+    // Vetro runs in this process and uses one host descriptor for each
+    // guest file; the oracle instead must see the original limit.
     let nofile = vetro_cli::raise_fd_limit();
-    // SAFETY: il test è l'unico thread che tocca l'ambiente a questo punto.
+    // SAFETY: the test is the only thread touching the environment at this point.
     unsafe { std::env::set_var("VETRO_ORACLE_NOFILE", nofile.to_string()) };
     let host = oracle_host(&q);
     eprintln!("oracolo: kernel {}, {} CPU", host.release, host.cpus);
@@ -275,7 +275,7 @@ fn ltp_matches_qemu() {
     let divergent = divergent_list();
     if !native_oracle() && !divergent.is_empty() {
         eprintln!(
-            "SKIP {} test di tools/ltp/qemu-divergent.txt: servono un host Linux aarch64 (oracolo nativo)",
+            "SKIP {} tests of tools/ltp/qemu-divergent.txt: an aarch64 Linux host is needed (native oracle)",
             divergent.len()
         );
     }
@@ -288,20 +288,20 @@ fn ltp_matches_qemu() {
         .filter(|n| only.as_ref().is_none_or(|o| o.split(',').any(|x| x == n)))
         .collect();
     names.sort();
-    // I test di temporizzazione girano da soli alla fine (tools/ltp/timing.txt).
+    // The timing tests run on their own at the end (tools/ltp/timing.txt).
     let timing = list("tools/ltp/timing.txt");
     let (serial, parallel): (Vec<String>, Vec<String>) =
         names.iter().cloned().partition(|n| timing.contains(n));
     let results = std::sync::Mutex::new(BTreeMap::new());
     let run_one = |name: &String| {
         let bin = dir.join(name);
-        // Un panic nel kernel emulato è un fallimento di questo caso, non
-        // di tutta la corsa.
+        // A panic in the emulated kernel is a failure of this case, not
+        // of the whole run.
         let ours = run_vetro_limited(&bin, name, &host);
         let oracle =
             || if divergent.contains(name) { run_native(&bin, name) } else { run_qemu(&q, &bin, name) };
-        // Vetro è deterministico, l'oracolo no (tempi reali su un host
-        // carico): se diverge si riprova fino a due volte.
+        // Vetro is deterministic, the oracle is not (real time on a loaded
+        // host): if it diverges it is retried up to twice.
         let mut theirs = oracle();
         for _ in 0..2 {
             if theirs == ours {
@@ -339,10 +339,10 @@ fn ltp_matches_qemu() {
         }
     }
     eprintln!(
-        "LTP: {} test, {} identici a QEMU, {} diversi; TPASS negli identici: {ok_pass} su {total_pass}",
+        "LTP: {} tests, {} identical to QEMU, {} different; TPASS in the identical ones: {ok_pass} of {total_pass}",
         results.len(),
         results.len() - diff.len(),
         diff.len()
     );
-    assert!(diff.is_empty(), "LTP diverge da QEMU:\n{}", diff.join("\n"));
+    assert!(diff.is_empty(), "LTP diverges from QEMU:\n{}", diff.join("\n"));
 }

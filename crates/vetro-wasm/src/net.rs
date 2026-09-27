@@ -1,27 +1,27 @@
-//! Connessioni TCP dal JS verso i servizi del guest (ABI 5): l'inoltro di
-//! porte di `vetro-net` (`Stack::host_connect`, come `hostfwd` di QEMU),
-//! la base per un client ADB in JS verso adbd sulla 5555 del guest.
+//! TCP connections from JS to the guest's services (ABI 5): the port
+//! forwarding of `vetro-net` (`Stack::host_connect`, like QEMU's `hostfwd`),
+//! the basis for an ADB client in JS towards adbd on the guest's 5555.
 //!
-//! Aprire, scrivere, chiudere e leggere byte arrivati sono ingressi: passano
-//! da `Machine::net` e arrivano al guest prima della prossima istruzione
-//! (per il replay di M10 vanno registrati con il numero di istruzione).
-//! Lo stato e una lettura senza byte pronti non toccano la macchina.
+//! Opening, writing, closing and reading arrived bytes are inputs: they go
+//! through `Machine::net` and reach the guest before the next instruction
+//! (for M10's replay they must be recorded with the instruction count).
+//! The state and a read with no bytes ready don't touch the machine.
 
 use vetro_machine::vetro_net::{CloseReason, HostConnState};
 use vetro_machine::{HostNetOp, Input, Reply};
 
 use crate::Vm;
 
-/// Codici di stato di [`vetro_net_state`].
+/// Status codes of [`vetro_net_state`].
 pub mod state {
-    /// Connessione sconosciuta (o già rilasciata), o macchina senza rete.
+    /// Unknown connection (or already released), or machine without a network.
     pub const UNKNOWN: u32 = 0;
     pub const CONNECTING: u32 = 1;
     pub const OPEN: u32 = 2;
     pub const CLOSED: u32 = 3;
 }
 
-/// Motivi di chiusura in [`vetro_net_state`] (`out[0]`).
+/// Close reasons in [`vetro_net_state`] (`out[0]`).
 pub mod reason {
     pub const NONE: u32 = 0;
     pub const NORMAL: u32 = 1;
@@ -42,29 +42,29 @@ fn reason_code(r: CloseReason) -> u32 {
 }
 
 impl Vm {
-    /// Byte del guest pronti per la connessione (senza toccare la macchina).
+    /// Guest bytes ready for the connection (without touching the machine).
     fn net_readable(&self, conn: u64) -> usize {
         self.m.net_view(|s| s.host_conn(conn).map_or(0, |i| i.readable)).unwrap_or(0)
     }
 
-    /// La connessione esiste (senza toccare la macchina).
+    /// The connection exists (without touching the machine).
     fn net_known(&self, conn: u64) -> bool {
         self.m.net_view(|s| s.host_conn(conn).is_some()).unwrap_or(false)
     }
 
-    /// Un'operazione sulle connessioni dell'host: ingresso della macchina,
-    /// registrato per il replay (M10, ADR 0019).
+    /// An operation on the host connections: a machine input,
+    /// recorded for replay (M10, ADR 0019).
     fn host(&mut self, op: HostNetOp) -> Reply {
         self.m.input(Input::HostNet(op))
     }
 }
 
-/// Apre una connessione TCP verso `guest_port` del guest (10.0.2.15, dal
-/// gateway 10.0.2.2); il SYN parte prima della prossima istruzione.
-/// Restituisce l'id (> 0), o 0 senza rete o con una porta non valida.
+/// Opens a TCP connection to the guest's `guest_port` (10.0.2.15, from the
+/// gateway 10.0.2.2); the SYN leaves before the next instruction.
+/// Returns the id (> 0), or 0 without a network or with an invalid port.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_net_connect(vm: *mut Vm, guest_port: u32) -> u64 {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
     let Ok(port) = u16::try_from(guest_port) else { return 0 };
     if port == 0 {
@@ -76,11 +76,11 @@ pub unsafe extern "C" fn vetro_net_connect(vm: *mut Vm, guest_port: u32) -> u64 
     }
 }
 
-/// Mette in coda `len` byte per il guest; restituisce quanti ne ha presi
-/// (al più 256 KiB in coda: il resto va riproposto dopo un quanto).
+/// Queues `len` bytes for the guest; returns how many it took
+/// (at most 256 KiB queued: the rest must be offered again after a quantum).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_net_send(vm: *mut Vm, conn: u64, src: *const u8, len: usize) -> usize {
-    // SAFETY: `vm` viene da `vetro_machine_new`, `src` vale per `len` byte.
+    // SAFETY: `vm` comes from `vetro_machine_new`, `src` is valid for `len` bytes.
     let vm = unsafe { &mut *vm };
     if len == 0 {
         return 0;
@@ -92,11 +92,11 @@ pub unsafe extern "C" fn vetro_net_send(vm: *mut Vm, conn: u64, src: *const u8, 
     }
 }
 
-/// Copia e consuma al più `cap` byte arrivati dal guest; 0 = niente (la
-/// fine del flusso è nello stato).
+/// Copies and consumes at most `cap` bytes arrived from the guest; 0 = nothing (the
+/// end of the stream is in the state).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_net_recv(vm: *mut Vm, conn: u64, dst: *mut u8, cap: usize) -> usize {
-    // SAFETY: `vm` viene da `vetro_machine_new`, `dst` vale per `cap` byte.
+    // SAFETY: `vm` comes from `vetro_machine_new`, `dst` is valid for `cap` bytes.
     let vm = unsafe { &mut *vm };
     if cap == 0 || vm.net_readable(conn) == 0 {
         return 0;
@@ -111,10 +111,10 @@ pub unsafe extern "C" fn vetro_net_recv(vm: *mut Vm, conn: u64, dst: *mut u8, ca
     }
 }
 
-/// Chiude il verso JS→guest (FIN dopo i byte in coda). 1 = fatto.
+/// Closes the JS→guest direction (FIN after the queued bytes). 1 = done.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_net_shutdown(vm: *mut Vm, conn: u64) -> u32 {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
     if !vm.net_known(conn) {
         return 0;
@@ -122,10 +122,10 @@ pub unsafe extern "C" fn vetro_net_shutdown(vm: *mut Vm, conn: u64) -> u32 {
     (vm.host(HostNetOp::Shutdown(conn)) == Reply::Done) as u32
 }
 
-/// Interrompe la connessione (RST al guest). 1 = fatto.
+/// Aborts the connection (RST to the guest). 1 = done.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_net_abort(vm: *mut Vm, conn: u64) -> u32 {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
     if !vm.net_known(conn) {
         return 0;
@@ -133,11 +133,11 @@ pub unsafe extern "C" fn vetro_net_abort(vm: *mut Vm, conn: u64) -> u32 {
     (vm.host(HostNetOp::Abort(conn)) == Reply::Done) as u32
 }
 
-/// Dimentica la connessione (se è ancora viva, prima la interrompe). Da
-/// chiamare quando lo stato è `CLOSED` e i byte sono stati letti. 1 = fatto.
+/// Forgets the connection (if it is still alive, it aborts it first). To be
+/// called when the state is `CLOSED` and the bytes have been read. 1 = done.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_net_release(vm: *mut Vm, conn: u64) -> u32 {
-    // SAFETY: `vm` viene da `vetro_machine_new`.
+    // SAFETY: `vm` comes from `vetro_machine_new`.
     let vm = unsafe { &mut *vm };
     if !vm.net_known(conn) {
         return 0;
@@ -145,14 +145,14 @@ pub unsafe extern "C" fn vetro_net_release(vm: *mut Vm, conn: u64) -> u32 {
     (vm.host(HostNetOp::Release(conn)) == Reply::Done) as u32
 }
 
-/// Stato della connessione (codici di [`state`]); in `out` (al più `cap`
-/// valori): motivo della chiusura ([`reason`]), byte leggibili, spazio per
-/// `vetro_net_send`, fine del flusso dal guest (1 = il guest ha chiuso e
-/// tutto è stato letto), byte in coda non ancora presi dal guest. Non tocca
-/// la macchina.
+/// State of the connection (codes of [`state`]); in `out` (at most `cap`
+/// values): close reason ([`reason`]), readable bytes, room for
+/// `vetro_net_send`, end of stream from the guest (1 = the guest has closed and
+/// everything has been read), queued bytes not yet taken by the guest. It doesn't touch
+/// the machine.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_net_state(vm: *const Vm, conn: u64, out: *mut u32, cap: usize) -> u32 {
-    // SAFETY: `vm` viene da `vetro_machine_new`, `out` vale per `cap` valori.
+    // SAFETY: `vm` comes from `vetro_machine_new`, `out` is valid for `cap` values.
     let vm = unsafe { &*vm };
     let Some(info) = vm.m.net_view(|s| s.host_conn(conn)).flatten() else { return state::UNKNOWN };
     let (code, why) = match info.state {
@@ -174,14 +174,14 @@ mod tests {
     use super::*;
     use crate::{dev, vetro_machine_free, vetro_machine_new_with};
 
-    /// Senza kernel nessuno risponde al SYN: la connessione resta in attesa;
-    /// l'interruzione la chiude senza pacchetti se il SYN non è partito.
+    /// Without a kernel nobody answers the SYN: the connection keeps waiting;
+    /// the abort closes it without packets if the SYN hasn't left.
     #[test]
     fn connessioni_dall_api() {
         let vm = vetro_machine_new_with(64 << 20, 0, 0, dev::NET, 0, 0);
         let none = vetro_machine_new_with(64 << 20, 0, 0, 0, 0, 0);
         unsafe {
-            assert_eq!(vetro_net_connect(none, 5555), 0, "senza rete");
+            assert_eq!(vetro_net_connect(none, 5555), 0, "without a network");
             assert_eq!(vetro_net_connect(vm, 0), 0);
             assert_eq!(vetro_net_connect(vm, 70000), 0);
             let c = vetro_net_connect(vm, 5555);

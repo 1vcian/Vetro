@@ -1,8 +1,8 @@
-//! Test della modalità sistema su un bus di prova: traduzione identità con
-//! fault iniettabili per pagina, RAM fisica da 1 MiB a 0x4000_0000.
-//! Codifiche da `tools/a64asm.sh`; i valori attesi di ESR, maschere e
-//! registri ID sono quelli letti da `qemu-system-aarch64 -cpu cortex-a53`
-//! (vedi `id.rs`), salvo le differenze documentate in `docs/specs/cpu.md`.
+//! System mode tests on a test bus: identity translation with
+//! per-page injectable faults, 1 MiB of physical RAM at 0x4000_0000.
+//! Encodings from `tools/a64asm.sh`; the expected values of ESR, masks and
+//! ID registers are those read from `qemu-system-aarch64 -cpu cortex-a53`
+//! (see `id.rs`), except for the differences documented in `docs/specs/cpu.md`.
 
 use super::*;
 use crate::mem::Access;
@@ -16,11 +16,11 @@ const VBAR: u64 = RAM + 0x1000;
 
 struct Bus {
     ram: Vec<u8>,
-    /// Pagine (VA >> 12) che non si traducono.
+    /// Pages (VA >> 12) that do not translate.
     faults: Vec<(u64, BusFault)>,
-    /// Pagine di memoria Device.
+    /// Device memory pages.
     device: Vec<u64>,
-    /// Privilegio dell'ultima traduzione di dati.
+    /// Privilege of the last data translation.
     last_el: Option<u8>,
     tlbi: Vec<(TlbiOp, u64)>,
     at: Vec<(u64, Access, u8)>,
@@ -143,7 +143,7 @@ struct M {
 }
 
 impl M {
-    /// CPU appena resettata a EL1h, PC = RAM, VBAR = RAM + 0x1000.
+    /// CPU just reset to EL1h, PC = RAM, VBAR = RAM + 0x1000.
     fn new() -> M {
         let mut cpu = Cpu::new();
         cpu.reset_system(SysConfig::default());
@@ -152,7 +152,7 @@ impl M {
         M { cpu, bus: Bus::new(), env: Env::default() }
     }
 
-    /// CPU a EL0 (SP_EL0), PC = `pc`.
+    /// CPU at EL0 (SP_EL0), PC = `pc`.
     fn at_el0(pc: u64) -> M {
         let mut m = M::new();
         m.cpu.set_el_sp(0, false);
@@ -165,14 +165,14 @@ impl M {
         self.cpu.step_system(&mut self.bus, &mut self.env)
     }
 
-    /// Esegue `insn` al PC corrente.
+    /// Executes `insn` at the current PC.
     fn one(&mut self, insn: u32) -> SysEvent {
         let pc = self.cpu.pc;
         self.bus.put(pc, &[insn]);
         self.step()
     }
 
-    /// Esegue `insn` e pretende un'eccezione sincrona con ESR `esr`.
+    /// Executes `insn` and expects a synchronous exception with ESR `esr`.
     fn expect_sync(&mut self, insn: u32, want: u64) {
         let pc = self.cpu.pc;
         let from_el = self.cpu.sys.el;
@@ -219,16 +219,16 @@ fn stato_di_reset_e_registri_id() {
     assert_eq!(x[0], 4, "CurrentEL = EL1");
     assert_eq!(x[1], 0x410f_d034);
     assert_eq!(x[2], 0x8000_0000);
-    assert_eq!(x[3], 0x0100_0011, "EL0/EL1 solo AArch64, GICv3");
+    assert_eq!(x[3], 0x0100_0011, "EL0/EL1 AArch64 only, GICv3");
     assert_eq!(x[4], 0x0001_1120);
     assert_eq!(x[5], 0x3c0);
     assert_eq!(x[6], 1);
     assert_eq!(x[7], 0x00c5_0838);
     assert_eq!(x[8], 0x1122);
-    assert_eq!(x[9], 0, "codifica riservata dello spazio ID");
+    assert_eq!(x[9], 0, "reserved encoding of the ID space");
     assert_eq!(x[10], 0x0a20_0023);
     assert_eq!(x[11], 4, "DCZID a EL1: DZP = 0");
-    assert_eq!(x[12], 0xa, "OS lock attivo al reset");
+    assert_eq!(x[12], 0xa, "OS lock active at reset");
     assert_eq!(x[13], 0x100);
 }
 
@@ -269,15 +269,15 @@ fn svc_da_el0_e_ritorno() {
     assert_eq!((m.cpu.sys.el, m.cpu.pc, m.cpu.sp), (0, RAM + 0x2000, RAM + 0x8000));
     assert_eq!(m.cpu.sp_el(1), RAM + 0x9000);
     assert_eq!(m.step(), SysEvent::Executed);
-    assert_eq!(m.cpu.x[3], RAM + 0x8000, "a EL0 SP è SP_EL0");
+    assert_eq!(m.cpu.x[3], RAM + 0x8000, "at EL0 SP is SP_EL0");
     m.cpu.nzcv = 0x6000_0000;
     let ev = m.step();
     assert_eq!(ev, SysEvent::Exception { kind: ExceptionKind::Sync, esr: 0x5600_0042, from_el: 0 });
-    assert_eq!(m.cpu.pc, VBAR + 0x400, "vettore sincrono da EL0");
-    assert_eq!(m.cpu.sys.elr_el1, RAM + 0x2008, "ELR dopo la SVC");
+    assert_eq!(m.cpu.pc, VBAR + 0x400, "synchronous vector from EL0");
+    assert_eq!(m.cpu.sys.elr_el1, RAM + 0x2008, "ELR after the SVC");
     assert_eq!(m.cpu.sys.spsr_el1, 0x6000_0000, "SPSR: NZCV, EL0t");
     assert_eq!((m.cpu.sys.el, m.cpu.sys.spsel, m.cpu.sys.daif), (1, true, 0x3c0));
-    assert_eq!(m.cpu.sp, RAM + 0x9000, "a EL1h SP è SP_EL1");
+    assert_eq!(m.cpu.sp, RAM + 0x9000, "at EL1h SP is SP_EL1");
     for _ in ERET_BACK {
         assert_eq!(m.step(), SysEvent::Executed);
     }
@@ -289,11 +289,11 @@ fn svc_da_el0_e_ritorno() {
 #[test]
 fn vettori_da_el1_con_sp_el0_e_sp_el1() {
     let mut m = M::new();
-    // svc #0x7 a EL1h: gruppo 0x200, ELR dopo l'istruzione.
+    // svc #0x7 at EL1h: group 0x200, ELR after the instruction.
     let ev = m.one(0xd40000e1);
     assert_eq!(ev, SysEvent::Exception { kind: ExceptionKind::Sync, esr: 0x5600_0007, from_el: 1 });
     assert_eq!((m.cpu.pc, m.cpu.sys.elr_el1, m.cpu.sys.spsr_el1), (VBAR + 0x200, RAM + 4, 0x3c5));
-    // A EL1t: gruppo 0x000 e SPSR con M = 4.
+    // At EL1t: group 0x000 and SPSR with M = 4.
     let mut m = M::new();
     m.cpu.sp = 0x1111;
     m.bus.put(RAM, &[0xd50040bf, 0xd4000121]); // msr SPSel, #0; svc #0x9
@@ -324,10 +324,10 @@ fn eret_illegale_e_stato_illegale() {
     for _ in 0..6 {
         assert_eq!(m.step(), SysEvent::Executed);
     }
-    // SPSR chiede EL2h: EL e SP restano, IL = 1, NZCV e DAIF da SPSR.
+    // SPSR asks for EL2h: EL and SP stay, IL = 1, NZCV and DAIF from SPSR.
     assert_eq!((m.cpu.pc, m.cpu.sys.el, m.cpu.sys.spsel, m.cpu.sys.il), (RAM + 0x100, 1, true, true));
     assert_eq!(m.cpu.nzcv, 0);
-    // Come QEMU: ESR 0x3a000000, SPSR con IL.
+    // Like QEMU: ESR 0x3a000000, SPSR with IL.
     m.expect_sync(0xd503201f, 0x3a00_0000);
     assert_eq!(m.cpu.sys.spsr_el1, 0x0010_03c5);
     assert!(!m.cpu.sys.il);
@@ -336,14 +336,14 @@ fn eret_illegale_e_stato_illegale() {
 #[test]
 fn trap_e_undefined_da_el0() {
     let el0 = RAM + 0x3000;
-    // Con SCTLR di reset (UCT, DZE, UMA, UCI = 0; nTWI = 1) e CNTKCTL = 0.
-    // Sindromi verificate contro QEMU, tranne DAIFSet (vedi sotto).
+    // With the reset SCTLR (UCT, DZE, UMA, UCI = 0; nTWI = 1) and CNTKCTL = 0.
+    // Syndromes verified against QEMU, except DAIFSet (see below).
     let cases: &[(u32, u64)] = &[
         (0xd53b0020, 0x6232_c001), // mrs x0, CTR_EL0
         (0xd50b7422, 0x6212_dc48), // dc zva, x2
         (0xd53b4223, 0x6232_d065), // mrs x3, DAIF
-        // msr DAIFSet, #2: sindrome architetturale (Op1 = 3, Op2 = 6).
-        // QEMU 10 scambia Op1 e Op2 (0x620793e4).
+        // msr DAIFSet, #2: architectural syndrome (Op1 = 3, Op2 = 6).
+        // QEMU 10 swaps Op1 and Op2 (0x620793e4).
         (0xd50342df, 0x620c_d3e4),
         (0xd53be044, 0x6234_f881), // mrs x4, CNTVCT_EL0
         (0xd53be009, 0x6230_f921), // mrs x9, CNTFRQ_EL0
@@ -364,13 +364,13 @@ fn trap_e_undefined_da_el0() {
         m.expect_sync(insn, want);
         assert_eq!(m.cpu.sys.spsr_el1, 0, "{insn:#010x}: SPSR EL0t");
     }
-    // WFI si trappa solo con nTWI = 0 (ESR come QEMU).
+    // WFI is trapped only with nTWI = 0 (ESR like QEMU).
     let mut m = M::at_el0(el0);
     assert_eq!(m.one(0xd503207f), SysEvent::WaitForInterrupt);
     let mut m = M::at_el0(el0);
     m.cpu.sys.sctlr_el1 &= !sctlr::NTWI;
     m.expect_sync(0xd503207f, 0x07e0_0000);
-    // WFE non si trappa mai (come QEMU).
+    // WFE is never trapped (like QEMU).
     let mut m = M::at_el0(el0);
     m.cpu.sys.sctlr_el1 &= !sctlr::NTWE;
     assert_eq!(m.one(0xd503205f), SysEvent::Executed);
@@ -408,14 +408,14 @@ fn accessi_permessi_da_el0() {
     }
     assert_eq!(m.cpu.x[0], 0x8444_8004);
     assert_eq!(m.cpu.x[1], 4, "DZE = 1: DZP = 0");
-    assert!(m.bus.ram[0x5000..0x5040].iter().all(|&b| b == 0), "DC ZVA azzera il blocco allineato");
+    assert!(m.bus.ram[0x5000..0x5040].iter().all(|&b| b == 0), "DC ZVA zeroes the aligned block");
     assert_eq!(m.cpu.x[3], 0);
     assert_eq!(m.cpu.sys.daif, 0x80);
     assert_eq!(m.cpu.x[4], 12345);
     assert_eq!(m.cpu.x[8], 0x77);
-    assert_eq!(m.cpu.x[9], 62_500_000, "CNTFRQ leggibile con EL0VCTEN");
+    assert_eq!(m.cpu.x[9], 62_500_000, "CNTFRQ readable with EL0VCTEN");
     assert_eq!(m.cpu.sys.el, 0);
-    // DCZID a EL0 con DZE = 0: DZP = 1 (0x14, come QEMU).
+    // DCZID at EL0 with DZE = 0: DZP = 1 (0x14, like QEMU).
     let mut m = M::at_el0(el0);
     m.one(0xd53b00e1);
     assert_eq!(m.cpu.x[1], 0x14);
@@ -423,20 +423,20 @@ fn accessi_permessi_da_el0() {
 
 #[test]
 fn hvc_smc_brk_e_sp_el0_a_el1() {
-    // HVC a EL1 con conduit HVC: evento per il PSCI, PC dopo l'istruzione.
+    // HVC at EL1 with HVC conduit: event for PSCI, PC after the instruction.
     let mut m = M::new();
     assert_eq!(m.one(0xd40000a2), SysEvent::Hvc(5));
     assert_eq!(m.cpu.pc, RAM + 4);
-    // SMC senza EL3: UNDEFINED, ELR sulla SMC (come QEMU).
+    // SMC without EL3: UNDEFINED, ELR on the SMC (like QEMU).
     m.expect_sync(0xd40000c3, 0x0200_0000);
-    // Con conduit SMC si invertono.
+    // With the SMC conduit they are swapped.
     let mut m = M::new();
     m.cpu.sys.cfg.psci = PsciConduit::Smc;
     assert_eq!(m.one(0xd40000c3), SysEvent::Smc(6));
     m.expect_sync(0xd40000a2, 0x0200_0000);
     let mut m = M::new();
     m.expect_sync(0xd4200ee0, 0xf200_0077); // brk #0x77
-    // MRS SP_EL0 a EL1h legge la copia; a EL1t è UNDEFINED (come QEMU).
+    // MRS SP_EL0 at EL1h reads the copy; at EL1t it is UNDEFINED (like QEMU).
     let mut m = M::new();
     m.cpu.sys.sp_el[0] = 0xabc0;
     m.bus.put(RAM, &[0xd5384100, 0xd50040bf, 0xd5384101]);
@@ -445,7 +445,7 @@ fn hvc_smc_brk_e_sp_el0_a_el1() {
     m.step();
     let ev = m.step();
     assert!(matches!(ev, SysEvent::Exception { esr: 0x0200_0000, .. }));
-    assert_eq!(m.cpu.pc, VBAR, "da EL1t: gruppo 0x000");
+    assert_eq!(m.cpu.pc, VBAR, "from EL1t: group 0x000");
 }
 
 #[test]
@@ -456,17 +456,17 @@ fn trap_fp_simd_da_cpacr() {
         0x4ea38441, // add v1.4s, v2.4s, v3.4s
     ];
     for insn in insns {
-        // CPACR_EL1 = 0 (reset): trap anche a EL1, ESR come QEMU.
+        // CPACR_EL1 = 0 (reset): trap at EL1 too, ESR like QEMU.
         let mut m = M::new();
         m.expect_sync(insn, 0x1fe0_0000);
-        // FPEN = 01: EL1 esegue, EL0 trappa.
+        // FPEN = 01: EL1 executes, EL0 traps.
         let mut m = M::new();
         m.cpu.sys.cpacr_el1 = 1 << 20;
         assert_eq!(m.one(insn), SysEvent::Executed);
         let mut m = M::at_el0(RAM + 0x3000);
         m.cpu.sys.cpacr_el1 = 1 << 20;
         m.expect_sync(insn, 0x1fe0_0000);
-        // FPEN = 11: nessuna trap.
+        // FPEN = 11: no trap.
         let mut m = M::at_el0(RAM + 0x3000);
         m.cpu.sys.cpacr_el1 = 3 << 20;
         assert_eq!(m.one(insn), SysEvent::Executed);
@@ -476,7 +476,7 @@ fn trap_fp_simd_da_cpacr() {
 #[test]
 fn abort_dei_dati_e_delle_istruzioni() {
     let data = RAM + 0x6000;
-    // Translation fault di livello 3 in lettura da EL1 e da EL0.
+    // Level 3 translation fault on read from EL1 and from EL0.
     let mut m = M::new();
     m.cpu.x[1] = data + 8;
     m.bus.faults.push((data >> 12, BusFault::Abort { fsc: 0b000111, ea: false }));
@@ -485,21 +485,21 @@ fn abort_dei_dati_e_delle_istruzioni() {
     let mut m = M::at_el0(RAM + 0x3000);
     m.cpu.x[1] = data;
     m.bus.faults.push((data >> 12, BusFault::Abort { fsc: 0b001111, ea: false }));
-    m.expect_sync(0xf9000022, 0x9200_004f); // str x2, [x1]: WnR, permesso L3
-    // Abort esterno sull'accesso fisico: EA dal bus (slave error in scrittura).
+    m.expect_sync(0xf9000022, 0x9200_004f); // str x2, [x1]: WnR, L3 permission
+    // External abort on the physical access: EA from the bus (slave error on write).
     let mut m = M::new();
     m.cpu.x[1] = 0x1_0000_0000;
     m.expect_sync(0xf9400020, 0x9600_0010);
     assert_eq!(m.cpu.sys.far_el1, 0x1_0000_0000);
     m.cpu.pc = RAM;
     m.expect_sync(0xf9000022, 0x9600_0250);
-    // Instruction abort: fetch da una pagina che non si traduce.
+    // Instruction abort: fetch from a page that does not translate.
     let mut m = M::at_el0(data);
     m.bus.faults.push((data >> 12, BusFault::Abort { fsc: 0b000101, ea: false }));
     let ev = m.step();
     assert_eq!(ev, SysEvent::Exception { kind: ExceptionKind::Sync, esr: 0x8200_0005, from_el: 0 });
     assert_eq!((m.cpu.sys.far_el1, m.cpu.sys.elr_el1), (data, data));
-    // Limite di Vetro nella traduzione: evento, stato invariato.
+    // Vetro limitation in translation: event, state unchanged.
     let mut m = M::new();
     m.cpu.x[1] = data;
     m.bus.faults.push((data >> 12, BusFault::Unimplemented("granulo 64 KiB")));
@@ -511,33 +511,33 @@ fn abort_dei_dati_e_delle_istruzioni() {
 #[test]
 fn fault_di_allineamento() {
     let data = RAM + 0x6000;
-    // Memoria Device disallineata (a MMU spenta tutti i dati sono Device):
-    // ESR e FAR come QEMU.
+    // Unaligned Device memory (with the MMU off all data is Device):
+    // ESR and FAR like QEMU.
     let mut m = M::new();
     m.bus.device.push(data >> 12);
     m.cpu.x[1] = data + 1;
     m.expect_sync(0xf9400020, 0x9600_0021);
     assert_eq!(m.cpu.sys.far_el1, data + 1);
-    // Allineato su Device: nessun fault.
+    // Aligned on Device: no fault.
     let mut m = M::new();
     m.bus.device.push(data >> 12);
     m.cpu.x[1] = data + 8;
     assert_eq!(m.one(0xf9400020), SysEvent::Executed);
-    // DC ZVA su Device: sempre fault di allineamento (WnR = 1).
+    // DC ZVA on Device: always an alignment fault (WnR = 1).
     let mut m = M::new();
     m.bus.device.push(data >> 12);
     m.cpu.x[1] = data;
     m.expect_sync(0xd50b7421, 0x9600_0061);
-    // SCTLR.A: disallineato su memoria normale.
+    // SCTLR.A: unaligned on normal memory.
     let mut m = M::new();
     m.cpu.sys.sctlr_el1 |= sctlr::A;
     m.cpu.x[1] = data + 4;
     m.expect_sync(0xf9400020, 0x9600_0021);
-    // Senza SCTLR.A la memoria normale ammette il disallineato.
+    // Without SCTLR.A normal memory allows unaligned access.
     let mut m = M::new();
     m.cpu.x[1] = data + 4;
     assert_eq!(m.one(0xa9402027), SysEvent::Executed); // ldp x7, x8, [x1]
-    // Esclusive: sempre allineate; WnR per STXR.
+    // Exclusives: always aligned; WnR for STXR.
     let mut m = M::new();
     m.cpu.x[1] = data + 4;
     m.expect_sync(0xc85f7c23, 0x9600_0021); // ldxr x3, [x1]
@@ -580,7 +580,7 @@ fn top_byte_ignore_sui_salti() {
     let mut m = M::new();
     m.cpu.x[1] = 0x5a00_0000_4000_0100;
     m.one(0xd61f0020);
-    assert_eq!(m.cpu.pc, 0x5a00_0000_4000_0100, "senza TBI il tag resta");
+    assert_eq!(m.cpu.pc, 0x5a00_0000_4000_0100, "without TBI the tag stays");
 }
 
 #[test]
@@ -588,21 +588,21 @@ fn irq_mascherati_e_smascherati() {
     let mut m = M::new();
     m.env.irq = true;
     m.bus.put(RAM, &[0xd50342ff, 0xd503201f, 0xd503201f]); // msr DAIFClr, #2; nop; nop
-    // Mascherato al reset: l'istruzione si esegue.
+    // Masked at reset: the instruction is executed.
     assert_eq!(m.step(), SysEvent::Executed);
     assert_eq!(m.cpu.sys.daif, 0x340);
-    // Smascherato: si prende prima della prossima istruzione, ELR = PC.
+    // Unmasked: taken before the next instruction, ELR = PC.
     let ev = m.step();
     assert_eq!(ev, SysEvent::Exception { kind: ExceptionKind::Irq, esr: 0, from_el: 1 });
     assert_eq!((m.cpu.pc, m.cpu.sys.elr_el1, m.cpu.sys.spsr_el1), (VBAR + 0x280, RAM + 4, 0x345));
     assert_eq!(m.cpu.sys.daif, 0x3c0);
-    assert_eq!(m.cpu.sys.esr_el1, 0, "IRQ non scrive ESR");
-    // Da EL0: gruppo 0x400 + 0x80.
+    assert_eq!(m.cpu.sys.esr_el1, 0, "IRQ does not write ESR");
+    // From EL0: group 0x400 + 0x80.
     let mut m = M::at_el0(RAM + 0x3000);
     m.env.irq = true;
     assert!(matches!(m.step(), SysEvent::Exception { kind: ExceptionKind::Irq, from_el: 0, .. }));
     assert_eq!(m.cpu.pc, VBAR + 0x480);
-    // FIQ prima dell'IRQ; SError con PSTATE.A = 0.
+    // FIQ before IRQ; SError with PSTATE.A = 0.
     let mut m = M::at_el0(RAM + 0x3000);
     m.env.irq = true;
     m.env.fiq = true;
@@ -627,7 +627,7 @@ fn wfi_restituisce_l_attesa() {
 fn registri_dell_ambiente() {
     let mut m = M::new();
     m.env.counter = 777;
-    m.env.irq = true; // mascherato: si vede solo in ISR_EL1
+    m.env.irq = true; // masked: visible only in ISR_EL1
     m.env.values.push((EnvReg::IccIar1El1, 27));
     m.cpu.x[3] = 1;
     m.bus.put(
@@ -646,12 +646,12 @@ fn registri_dell_ambiente() {
     }
     assert_eq!((m.cpu.x[0], m.cpu.x[1], m.cpu.x[2], m.cpu.x[4]), (777, 777, 27, 0x80));
     assert_eq!(m.env.writes, [(EnvReg::IccEoir1El1, 27), (EnvReg::CntvCtlEl0, 1)]);
-    // Sola lettura e sola scrittura: UNDEFINED.
+    // Read-only and write-only: UNDEFINED.
     let mut m = M::new();
     m.expect_sync(0xd538cc22, 0x0200_0000); // mrs x2, S3_0_C12_C12_1 (ICC_EOIR1_EL1)
     m.cpu.pc = RAM;
     m.expect_sync(0xd518cc02, 0x0200_0000); // msr S3_0_C12_C12_0 (ICC_IAR1_EL1), x2
-    // Senza GICv3 gli ICC_* non esistono; il timer sì.
+    // Without GICv3 the ICC_* do not exist; the timer does.
     let mut m = M::new();
     m.cpu.sys.cfg.gicv3 = false;
     m.expect_sync(0xd538cc02, 0x0200_0000);
@@ -665,7 +665,7 @@ fn tlbi_at_e_svuotamento_del_tlb() {
     let mut m = M::new();
     m.cpu.x[1] = 0x0005_0000_0000_1234;
     m.cpu.x[2] = 0x4000_5000;
-    m.cpu.x[3] = 0x00c5_0839 | 0b1111 << 38; // bit MTE: QEMU li azzera
+    m.cpu.x[3] = 0x00c5_0839 | 0b1111 << 38; // MTE bits: QEMU clears them
     m.cpu.x[4] = 0x25;
     m.cpu.x[5] = 0x8000;
     m.bus.at_result = AtResult::Par(0xff00_0000_4000_5b80);
@@ -689,8 +689,8 @@ fn tlbi_at_e_svuotamento_del_tlb() {
     assert_eq!(m.cpu.sys.par_el1, 0xff00_0000_4000_5b80);
     assert_eq!(m.cpu.sys.sctlr_el1, 0x00c5_0839);
     assert_eq!((m.cpu.sys.tcr_el1, m.cpu.sys.ttbr0_el1), (0x25, 0x8000));
-    assert_eq!(m.bus.flushes, 2, "SCTLR e TCR svuotano il TLB, TTBR no");
-    // AT con abort esterno sul walk: Data Abort con CM = 1 e WnR = 1.
+    assert_eq!(m.bus.flushes, 2, "SCTLR and TCR flush the TLB, TTBR does not");
+    // AT with external abort on the walk: Data Abort with CM = 1 and WnR = 1.
     let mut m = M::new();
     m.cpu.x[2] = 0x1234;
     m.bus.at_result = AtResult::Abort { fsc: 0b010101, ea: true };
@@ -730,24 +730,24 @@ fn registri_con_maschere_di_qemu() {
     let x = m.cpu.x;
     assert_eq!((x[1], x[3], x[4], x[6]), (0x3c0, 0xf000_0000, 0, 0));
     assert_eq!(m.cpu.sys.csselr_el1, 0xf);
-    assert_eq!(x[8], 0xffff_ffff_ffff_ffe0, "VBAR: solo i 5 bit bassi azzerati");
-    assert_eq!(x[9], 0x8, "OS lock tolto");
+    assert_eq!(x[8], 0xffff_ffff_ffff_ffe0, "VBAR: only the low 5 bits cleared");
+    assert_eq!(x[9], 0x8, "OS lock removed");
     assert_eq!(x[11], 0xffff_ffff_ffff_fffc);
-    // CCSIDR secondo CSSELR (valori di QEMU).
+    // CCSIDR according to CSSELR (QEMU values).
     for (sel, want) in [(0u64, 0x700f_e01au64), (1, 0x203f_e002), (2, 0x707f_e07a), (3, 0)] {
         let mut m = M::new();
         m.cpu.sys.csselr_el1 = sel;
         m.one(0xd5390006);
         assert_eq!(m.cpu.x[6], want, "CSSELR {sel}");
     }
-    // Registro della A53 non ancora modellato (PMU): limite di Vetro, stato
-    // invariato.
+    // A53 register not yet modelled (PMU): Vetro limitation, state
+    // unchanged.
     let mut m = M::new();
     let ev = m.one(0xd53b9c0c); // mrs x12, PMCR_EL0
-    assert_eq!(ev, SysEvent::Unimplemented { raw: 0xd53b9c0c, what: "MRS/MSR registro di sistema" });
+    assert_eq!(ev, SysEvent::Unimplemented { raw: 0xd53b9c0c, what: "MRS/MSR system register" });
     assert_eq!(m.cpu.pc, RAM);
-    // Codifica non allocata o di un'estensione successiva (FPMR): UNDEFINED
-    // come in QEMU (sonda: sysreg_unalloc_id, sysreg_fpmr).
+    // Unallocated encoding or one from a later extension (FPMR): UNDEFINED
+    // as in QEMU (probe: sysreg_unalloc_id, sysreg_fpmr).
     for raw in [0xd538002c, 0xd53b4440] {
         let mut m = M::new();
         assert!(matches!(m.one(raw), SysEvent::Exception { esr: 0x0200_0000, .. }), "{raw:#x}");
@@ -756,7 +756,7 @@ fn registri_con_maschere_di_qemu() {
 
 #[test]
 fn registri_di_debug_come_qemu() {
-    // Valori e sindromi dalla sonda di sistema (dbg_*, dbgw_*, el0).
+    // Values and syndromes from the system probe (dbg_*, dbgw_*, el0).
     let mut m = M::new();
     m.cpu.x[10] = u64::MAX;
     m.cpu.x[11] = 0xffff_ffff_ffff_ff0f;
@@ -786,12 +786,12 @@ fn registri_di_debug_come_qemu() {
     }
     let x = m.cpu.x;
     assert_eq!(&x[..6], &[0; 6], "OSDTR*, OSECCR, MDCCSR, DBGDTR*: RAZ/WI");
-    assert_eq!(x[6], 0xff, "DBGCLAIMSET legge sempre 0xff");
-    assert_eq!(x[7], 0xff, "CLAIM accesi dalla scrittura di DBGCLAIMSET");
-    assert_eq!(x[8], 0xf0, "DBGCLAIMCLR spegne i bit scritti");
+    assert_eq!(x[6], 0xff, "DBGCLAIMSET always reads 0xff");
+    assert_eq!(x[7], 0xff, "CLAIM bits set by the DBGCLAIMSET write");
+    assert_eq!(x[8], 0xf0, "DBGCLAIMCLR clears the written bits");
     assert_eq!(x[9], 0xff);
     assert_eq!(m.cpu.sys.dbgclaim, 0xf0);
-    // Assenti in QEMU per la A53 (UNDEFINED), MDCCSR in scrittura compreso.
+    // Absent in QEMU for the A53 (UNDEFINED), MDCCSR on write included.
     for raw in [
         0xd513010a, // msr S2_3_C0_C1_0, x10
         0xd5301480, // mrs x0, DBGPRCR_EL1
@@ -805,13 +805,13 @@ fn registri_di_debug_come_qemu() {
         let mut m = M::new();
         m.expect_sync(raw, 0x0200_0000);
     }
-    // MDSCR_EL1.TDCC non cambia nulla a EL1.
+    // MDSCR_EL1.TDCC changes nothing at EL1.
     let mut m = M::new();
     m.cpu.sys.mdscr_el1 = 1 << 12;
     assert_eq!(m.one(0xd5330103), SysEvent::Executed); // mrs x3, MDCCSR_EL0
 
-    // Da EL0: il canale di debug con TDCC = 0 va, con TDCC = 1 è in trap;
-    // OSDTRRX e CLAIM sono solo di EL1.
+    // From EL0: the debug channel works with TDCC = 0, traps with TDCC = 1;
+    // OSDTRRX and CLAIM are EL1 only.
     let el0 = RAM + 0x3000;
     let dcc: &[(u32, u64)] = &[
         (0xd5330102, 0x6220_c043), // mrs x2, MDCCSR_EL0
@@ -844,8 +844,8 @@ fn registri_di_debug_come_qemu() {
 
 #[test]
 fn modalita_utente_invariata() {
-    // Le istruzioni che la modalità sistema riconosce restano, in modalità
-    // utente, quello che erano prima.
+    // The instructions that system mode recognises stay, in user
+    // mode, what they were before.
     let cases: &[(u32, Result<(), Exception>)] = &[
         (0xd69f03e0, Err(Exception::Undefined(0xd69f03e0))), // eret
         (0xd4000002, Err(Exception::Undefined(0xd4000002))), // hvc #0
@@ -857,13 +857,13 @@ fn modalita_utente_invariata() {
         (0xd508871f, Err(Exception::Undefined(0xd508871f))), // tlbi vmalle1
         (
             0xd5380001, // mrs x1, MIDR_EL1
-            Err(Exception::Unimplemented { raw: 0xd5380001, what: "MRS/MSR registro di sistema" }),
+            Err(Exception::Unimplemented { raw: 0xd5380001, what: "MRS/MSR system register" }),
         ),
         (
             0xd53be042, // mrs x2, CNTVCT_EL0
-            Err(Exception::Unimplemented { raw: 0xd53be042, what: "MRS/MSR registro di sistema" }),
+            Err(Exception::Unimplemented { raw: 0xd53be042, what: "MRS/MSR system register" }),
         ),
-        // Canale di debug: SIGILL come in QEMU user (MDSCR_EL1.TDCC = 1).
+        // Debug channel: SIGILL as in QEMU user (MDSCR_EL1.TDCC = 1).
         (0xd5330100, Err(Exception::Undefined(0xd5330100))), // mrs x0, MDCCSR_EL0
         (0xd5130403, Err(Exception::Undefined(0xd5130403))), // msr DBGDTR_EL0, x3
         (0xd5330502, Err(Exception::Undefined(0xd5330502))), // mrs x2, DBGDTRRX_EL0
@@ -877,7 +877,7 @@ fn modalita_utente_invariata() {
         let got = cpu.step(&mut mem);
         assert_eq!(&got, want, "{insn:#010x}");
         if got.is_err() {
-            assert_eq!(cpu, before, "{insn:#010x}: stato invariato");
+            assert_eq!(cpu, before, "{insn:#010x}: state unchanged");
         } else {
             assert_eq!(cpu.pc, 0x1004);
         }
@@ -887,8 +887,8 @@ fn modalita_utente_invariata() {
 
 #[test]
 fn allineamento_dello_stack_pointer() {
-    // SCTLR di reset: SA = SA0 = 1. Architetturale (EC 0x26); QEMU non lo
-    // controlla (differenza documentata in docs/specs/cpu.md).
+    // Reset SCTLR: SA = SA0 = 1. Architectural (EC 0x26); QEMU does not
+    // check it (difference documented in docs/specs/cpu.md).
     let insns = [
         0xf94003e0, // ldr x0, [sp]
         0xa9bf0be1, // stp x1, x2, [sp, #-0x10]!
@@ -899,23 +899,23 @@ fn allineamento_dello_stack_pointer() {
         m.cpu.sys.cpacr_el1 = 3 << 20;
         m.cpu.sp = RAM + 0x8008;
         m.expect_sync(insn, 0x9a00_0000);
-        assert_eq!(m.cpu.sp_el(1), RAM + 0x8008, "{insn:#010x}: niente writeback");
+        assert_eq!(m.cpu.sp_el(1), RAM + 0x8008, "{insn:#010x}: no writeback");
         let mut m = M::at_el0(RAM + 0x3000);
         m.cpu.sys.cpacr_el1 = 3 << 20;
         m.cpu.sp = RAM + 0x8004;
         m.expect_sync(insn, 0x9a00_0000);
-        // Senza SA0 il disallineato va.
+        // Without SA0 unaligned access works.
         let mut m = M::at_el0(RAM + 0x3000);
         m.cpu.sys.cpacr_el1 = 3 << 20;
         m.cpu.sys.sctlr_el1 &= !sctlr::SA0;
         m.cpu.sp = RAM + 0x8014;
         assert_eq!(m.one(insn), SysEvent::Executed, "{insn:#010x}");
     }
-    // PRFM non controlla lo SP.
+    // PRFM does not check the SP.
     let mut m = M::new();
     m.cpu.sp = RAM + 0x8008;
     assert_eq!(m.one(0xf98003e0), SysEvent::Executed); // prfm pldl1keep, [sp]
-    // In modalità utente nessun controllo.
+    // In user mode no check.
     let mut mem = UserMemory::new();
     mem.map(0x1000, 0xf94003e0u32.to_le_bytes().to_vec(), crate::Perm::RX).unwrap();
     mem.map(0x8000, vec![0; 64], crate::Perm::RW).unwrap();

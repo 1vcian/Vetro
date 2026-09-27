@@ -1,21 +1,21 @@
-//! Esportazione HAR 1.2 (<http://www.softwareishard.com/blog/har-12-spec/>).
+//! HAR 1.2 export (<http://www.softwareishard.com/blog/har-12-spec/>).
 //!
-//! Una voce per richiesta HTTP, in ordine di inizio. Scelte:
-//! - `startedDateTime`: `epoch_us` più il tempo del guest, in UTC con i
-//!   millisecondi (con `epoch_us = 0` l'accensione è il 1970-01-01);
-//! - `timings` dall'ispettore (millisecondi con tre decimali, cioè i
-//!   microsecondi del guest), `-1` per le fasi assenti, `ssl` sempre `-1`;
-//!   `time` è la loro somma;
-//! - `content.text` è il corpo dopo `Content-Encoding`; se non è UTF-8
-//!   va in base64 con `encoding: "base64"`. Per il corpo della richiesta
-//!   (dove HAR 1.2 non prevede `encoding`) si usa il campo personalizzato
-//!   `_encoding` (i campi che cominciano con `_` sono ammessi dalla
-//!   specifica);
-//! - la resa dei decodificatori (JSON, form, multipart, protobuf) va nel
-//!   `comment` di `postData` e `content`;
-//! - senza risposta nella cattura: `status: 0` e un commento;
-//! - `connection` è l'indice del flusso TCP, `serverIPAddress` l'indirizzo
-//!   visto dal guest.
+//! One entry per HTTP request, in order of start. Choices:
+//! - `startedDateTime`: `epoch_us` plus the guest time, in UTC with
+//!   milliseconds (with `epoch_us = 0` power-on is 1970-01-01);
+//! - `timings` from the inspector (milliseconds with three decimals, i.e. the
+//!   guest's microseconds), `-1` for absent phases, `ssl` always `-1`;
+//!   `time` is their sum;
+//! - `content.text` is the body after `Content-Encoding`; if it is not UTF-8
+//!   it goes in base64 with `encoding: "base64"`. For the request body
+//!   (where HAR 1.2 doesn't provide `encoding`) the custom field
+//!   `_encoding` is used (fields starting with `_` are allowed by the
+//!   specification);
+//! - the rendering of the decoders (JSON, form, multipart, protobuf) goes into the
+//!   `comment` of `postData` and `content`;
+//! - with no response in the capture: `status: 0` and a comment;
+//! - `connection` is the index of the TCP flow, `serverIPAddress` the address
+//!   seen by the guest.
 
 use std::fmt::Write as _;
 
@@ -24,20 +24,20 @@ use super::http::Headers;
 use super::inspector::{HttpExchange, NetworkAnalysis};
 use super::json::quote;
 
-/// Opzioni dell'esportazione.
+/// Export options.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HarOptions {
-    /// Microsecondi Unix corrispondenti al tempo 0 del guest.
+    /// Unix microseconds corresponding to guest time 0.
     pub epoch_us: u64,
 }
 
-/// Data e ora UTC in ISO 8601 con i millisecondi.
+/// UTC date and time in ISO 8601 with milliseconds.
 pub fn iso8601(unix_us: u64) -> String {
     let secs = unix_us / 1_000_000;
     let ms = (unix_us % 1_000_000) / 1000;
     let days = (secs / 86_400) as i64;
     let rem = secs % 86_400;
-    // Da giorni dall'epoca a data civile (Howard Hinnant).
+    // From days since the epoch to a civil date (Howard Hinnant).
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z - era * 146_097;
@@ -50,7 +50,7 @@ pub fn iso8601(unix_us: u64) -> String {
     format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{ms:03}Z", rem / 3600, rem % 3600 / 60, rem % 60)
 }
 
-/// Millisecondi con tre decimali da microsecondi.
+/// Milliseconds with three decimals from microseconds.
 fn ms(us: u64) -> String {
     format!("{}.{:03}", us / 1000, us % 1000)
 }
@@ -124,7 +124,7 @@ fn query_string(url: &str) -> String {
     name_values(body::form(q).into_iter())
 }
 
-/// Commento con la resa del decodificatore, per i tipi strutturati.
+/// Comment with the decoder's rendering, for structured types.
 fn decoded_comment(d: &Decoded) -> Option<String> {
     match d {
         Decoded::Json(_) | Decoded::Form(_) | Decoded::Multipart(_) | Decoded::Protobuf(_) => {
@@ -230,13 +230,13 @@ fn entry(x: &HttpExchange, opts: &HarOptions) -> String {
             }
             let mut notes = Vec::new();
             if let Some(e) = &r.body.decode_error {
-                notes.push(format!("vetro: corpo non decodificato ({e})"));
+                notes.push(format!("vetro: body not decoded ({e})"));
             }
             if let Some(c) = x.response_body.as_ref().and_then(decoded_comment) {
                 notes.push(c);
             }
             if !r.complete {
-                notes.push("vetro: risposta troncata nella cattura".into());
+                notes.push("vetro: response truncated in the capture".into());
             }
             if !notes.is_empty() {
                 write!(s, ",\"comment\":{}", quote(&notes.join("\n"))).unwrap_or(());
@@ -251,7 +251,7 @@ fn entry(x: &HttpExchange, opts: &HarOptions) -> String {
             .unwrap_or(());
         }
         None => s.push_str(
-            ",\"response\":{\"status\":0,\"statusText\":\"\",\"httpVersion\":\"\",\"cookies\":[],\"headers\":[],\"content\":{\"size\":0,\"mimeType\":\"x-unknown\"},\"redirectURL\":\"\",\"headersSize\":-1,\"bodySize\":-1,\"comment\":\"vetro: nessuna risposta nella cattura\"}",
+            ",\"response\":{\"status\":0,\"statusText\":\"\",\"httpVersion\":\"\",\"cookies\":[],\"headers\":[],\"content\":{\"size\":0,\"mimeType\":\"x-unknown\"},\"redirectURL\":\"\",\"headersSize\":-1,\"bodySize\":-1,\"comment\":\"vetro: no response in the capture\"}",
         ),
     }
     write!(
@@ -268,7 +268,7 @@ fn entry(x: &HttpExchange, opts: &HarOptions) -> String {
     )
     .unwrap_or(());
     if !req.complete {
-        s.push_str(",\"comment\":\"vetro: richiesta troncata nella cattura\"");
+        s.push_str(",\"comment\":\"vetro: request truncated in the capture\"");
     }
     if x.secure {
         s.push_str(",\"_secure\":true");
@@ -289,7 +289,7 @@ fn entry(x: &HttpExchange, opts: &HarOptions) -> String {
     s
 }
 
-/// Il documento HAR 1.2 dell'analisi (JSON, una voce per riga).
+/// The HAR 1.2 document of the analysis (JSON, one entry per line).
 pub fn to_har(a: &NetworkAnalysis, opts: &HarOptions) -> String {
     let mut s = format!(
         "{{\"log\":{{\"version\":\"1.2\",\"creator\":{{\"name\":\"Vetro\",\"version\":{}}},\"entries\":[",
@@ -304,7 +304,7 @@ pub fn to_har(a: &NetworkAnalysis, opts: &HarOptions) -> String {
 }
 
 impl NetworkAnalysis {
-    /// L'HAR 1.2 della cattura (vedi [`to_har`]).
+    /// The HAR 1.2 of the capture (see [`to_har`]).
     pub fn to_har(&self, opts: &HarOptions) -> String {
         to_har(self, opts)
     }
@@ -349,7 +349,7 @@ mod tests {
     fn har_della_sessione() {
         let a = NetworkAnalysis::from_frames(&crate::net::inspector::tests::session());
         let har = a.to_har(&HarOptions::default());
-        let v = json::parse(har.as_bytes()).expect("HAR è JSON valido");
+        let v = json::parse(har.as_bytes()).expect("HAR is valid JSON");
         let log = v.get("log").unwrap();
         assert_eq!(log.get("version").and_then(Value::as_str), Some("1.2"));
         let Some(Value::Array(entries)) = log.get("entries") else { panic!() };

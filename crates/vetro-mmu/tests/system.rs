@@ -1,8 +1,8 @@
-//! CPU in modalità sistema sopra la MMU vera ([`MmuBus`]): programmi
-//! bare-metal a EL1 con tabelle delle pagine in una RAM di prova.
+//! CPU in system mode on top of the real MMU ([`MmuBus`]): bare-metal
+//! programs at EL1 with page tables in a test RAM.
 //!
-//! I descrittori si scrivono con le costanti del formato VMSAv8-64 (Arm ARM
-//! D8.3); le codifiche delle istruzioni vengono da `tools/a64asm.sh`.
+//! Descriptors are written with the constants of the VMSAv8-64 format (Arm ARM
+//! D8.3); instruction encodings come from `tools/a64asm.sh`.
 
 use std::collections::BTreeMap;
 
@@ -11,7 +11,7 @@ use vetro_cpu::sysreg::EnvReg;
 use vetro_cpu::{Cpu, CpuEnv, SysConfig};
 use vetro_mmu::{BusError, Mmu, MmuBus, PhysMemory};
 
-/// RAM fisica da 0x4000_0000 a 0x8000_0000 (pagine assenti = zeri).
+/// Physical RAM from 0x4000_0000 to 0x8000_0000 (absent pages = zeros).
 #[derive(Default)]
 struct Ram {
     pages: BTreeMap<u64, Box<[u8; 4096]>>,
@@ -60,7 +60,7 @@ impl Ram {
     }
 }
 
-/// Nessun interrupt; i registri dell'ambiente valgono zero.
+/// No interrupts; the environment registers read as zero.
 struct NoEnv;
 
 impl CpuEnv for NoEnv {
@@ -73,7 +73,7 @@ impl CpuEnv for NoEnv {
     fn write_sysreg(&mut self, _: EnvReg, _: u64) {}
 }
 
-// Formato dei descrittori.
+// Descriptor format.
 const TABLE: u64 = 0b11;
 const PAGE: u64 = 0b11;
 const AF: u64 = 1 << 10;
@@ -90,7 +90,7 @@ const DEVICE: u64 = AF;
 
 /// MAIR: 0 = Device-nGnRnE, 1 = Normal WB, 2 = Normal Non-cacheable.
 const MAIR: u64 = 0x44_ff_00;
-/// T0SZ = 25 (39 bit, primo livello 1), TG0 = 4 KiB, EPD1, IPS = 40 bit.
+/// T0SZ = 25 (39 bits, first level 1), TG0 = 4 KiB, EPD1, IPS = 40 bits.
 const TCR: u64 = 25 | 1 << 23 | 0b010 << 32;
 
 const L1: u64 = 0x4001_0000;
@@ -110,9 +110,9 @@ struct Machine {
 }
 
 impl Machine {
-    /// Tabelle a identità per le pagine del programma: codice e vettori
-    /// del kernel (RW a EL1, UXN), codice utente (RO per tutti, PXN), dati
-    /// utente (RW per tutti) e dati del kernel (RW solo a EL1).
+    /// Identity tables for the program pages: kernel code and vectors
+    /// (RW at EL1, UXN), user code (RO for everyone, PXN), user data
+    /// (RW for everyone) and kernel data (RW only at EL1).
     fn new() -> Machine {
         let mut m = Machine { cpu: Cpu::new(), mmu: Mmu::new(Mmu::PA_BITS_CORTEX_A53), ram: Ram::default() };
         m.ram.wr(L1 + 8, L2 | TABLE);
@@ -127,12 +127,12 @@ impl Machine {
         m
     }
 
-    /// Pagina da 4 KiB nella tabella di livello 3 (VA 0x4000_0000..0x401f_ffff).
+    /// 4 KiB page in the level 3 table (VA 0x4000_0000..0x401f_ffff).
     fn map(&mut self, va: u64, pa: u64, attrs: u64) {
         self.ram.wr(L3 + ((va >> 12) & 511) * 8, pa | attrs | PAGE);
     }
 
-    /// MMU già accesa, senza passare dal programma.
+    /// MMU already on, without going through the program.
     fn mmu_on(&mut self) {
         let s = &mut self.cpu.sys;
         s.mair_el1 = MAIR;
@@ -146,7 +146,7 @@ impl Machine {
         self.cpu.step_system(&mut bus, &mut NoEnv)
     }
 
-    /// Esegue fino a un evento diverso da `Executed` o da un'eccezione.
+    /// Runs until an event other than `Executed` or an exception.
     fn run_until_event(&mut self, limit: usize) -> SysEvent {
         for _ in 0..limit {
             match self.step() {
@@ -154,7 +154,7 @@ impl Machine {
                 ev => return ev,
             }
         }
-        panic!("nessun evento in {limit} passi, PC {:#x}", self.cpu.pc);
+        panic!("no event in {limit} steps, PC {:#x}", self.cpu.pc);
     }
 }
 
@@ -195,8 +195,8 @@ const KERNEL: &[u32] = &[
     0xd5184100, // msr SP_EL0, x0
     0xd69f03e0, // eret
 ];
-/// Vettore sincrono dallo stesso livello con SP_EL1: registra ESR, FAR e
-/// salta l'istruzione colpevole.
+/// Synchronous vector from the same level with SP_EL1: records ESR, FAR and
+/// skips the offending instruction.
 const SAME_EL_SYNC: &[u32] = &[
     0xd538520c, // mrs x12, ESR_EL1
     0xd538600d, // mrs x13, FAR_EL1
@@ -205,8 +205,8 @@ const SAME_EL_SYNC: &[u32] = &[
     0xd518402e, // msr ELR_EL1, x14
     0xd69f03e0, // eret
 ];
-/// Vettore sincrono da EL0: per una SVC chiude con HVC, per il resto
-/// registra ESR e FAR e salta l'istruzione.
+/// Synchronous vector from EL0: for an SVC it finishes with HVC, otherwise it
+/// records ESR and FAR and skips the instruction.
 const LOWER_EL_SYNC: &[u32] = &[
     0xd5385211, // mrs x17, ESR_EL1
     0xd35afe32, // lsr x18, x17, #26
@@ -245,22 +245,22 @@ fn programma_bare_metal_mmu_e_svc_da_el0() {
     m.cpu.sp = KDATA + 0xff0;
     assert_eq!(m.run_until_event(200), SysEvent::Hvc(0));
     let x = m.cpu.x;
-    // AT S1E0R su una pagina solo EL1: PAR con F = 1 e permission fault L3.
+    // AT S1E0R on an EL1-only page: PAR with F = 1 and L3 permission fault.
     assert_eq!(x[10], 1 << 11 | 0b001111 << 1 | 1);
-    // AT S1E1R: PA, attributi Normal WB (0xff), Inner Shareable, NS.
+    // AT S1E1R: PA, Normal WB attributes (0xff), Inner Shareable, NS.
     assert_eq!(x[11], 0xff00_0000_4000_4b80);
-    // LDTR a EL1 su una pagina solo EL1: Data Abort stesso livello,
-    // permission fault L3 in lettura.
+    // LDTR at EL1 on an EL1-only page: Data Abort same level,
+    // L3 permission fault on read.
     assert_eq!((x[12], x[13], x[14]), (0x9600_000f, KDATA, KCODE + 26 * 4));
-    assert_eq!(x[2], 0, "LDTR fallita non scrive");
-    assert_eq!(x[9], 0xdead, "LDR a EL1 legge");
-    // A EL0: la scrittura sui dati utente riesce, la lettura dei dati del
-    // kernel dà un Data Abort da livello inferiore.
+    assert_eq!(x[2], 0, "failed LDTR does not write");
+    assert_eq!(x[9], 0xdead, "LDR at EL1 reads");
+    // At EL0: the write to user data succeeds, the read of kernel
+    // data gives a Data Abort from a lower level.
     assert_eq!(m.ram.rd(UDATA), 0x55);
     assert_eq!((x[15], x[16]), (0x9200_000f, KDATA));
     assert_eq!(x[6], 0);
-    assert_eq!(x[7], UDATA + 0xff0, "a EL0 SP è SP_EL0");
-    // SVC da EL0: ESR, SPSR = EL0t, poi HVC a EL1.
+    assert_eq!(x[7], UDATA + 0xff0, "at EL0 SP is SP_EL0");
+    // SVC from EL0: ESR, SPSR = EL0t, then HVC at EL1.
     assert_eq!((x[20], x[21]), (0x5600_0033, 0));
     assert_eq!(m.cpu.sys.elr_el1, UCODE + 9 * 4);
     assert_eq!((m.cpu.sys.el, m.cpu.sp), (1, KDATA + 0xff0));
@@ -289,7 +289,7 @@ fn tlb_tlbi_e_svuotamento_su_sctlr() {
     m.cpu.x[2] = VA >> 12;
     m.step();
     assert_eq!(m.cpu.x[0], 0xa);
-    // Il descrittore cambia ma la voce nel TLB resta finché non c'è una TLBI.
+    // The descriptor changes but the TLB entry stays until there is a TLBI.
     m.map(VA, B, NORMAL | AP_RW_EL1 | UXN | PXN);
     m.step();
     assert_eq!(m.cpu.x[0], 0xa);
@@ -297,7 +297,7 @@ fn tlb_tlbi_e_svuotamento_su_sctlr() {
     m.step();
     assert_eq!(m.cpu.x[0], 0xb);
 
-    // Una scrittura di SCTLR_EL1 svuota il TLB (come QEMU).
+    // A write to SCTLR_EL1 flushes the TLB (like QEMU).
     let mut m = Machine::new();
     m.mmu_on();
     m.map(VA, A, NORMAL | AP_RW_EL1 | UXN | PXN);
@@ -323,8 +323,8 @@ fn tlb_tlbi_e_svuotamento_su_sctlr() {
 
 #[test]
 fn abort_delle_istruzioni_e_allineamento_su_device() {
-    // EL0 salta nel codice del kernel (UXN): Instruction Abort da EL0,
-    // permission fault L3, FAR = destinazione.
+    // EL0 jumps into kernel code (UXN): Instruction Abort from EL0,
+    // L3 permission fault, FAR = destination.
     let mut m = Machine::new();
     m.mmu_on();
     m.cpu.sys.vbar_el1 = VECTORS;
@@ -341,21 +341,21 @@ fn abort_delle_istruzioni_e_allineamento_su_device() {
         (KCODE + 0x40, KCODE + 0x40, VECTORS + 0x400)
     );
 
-    // Accesso disallineato a una pagina Device: fault di allineamento dopo
-    // il walk; allineato va.
+    // Unaligned access to a Device page: alignment fault after
+    // the walk; aligned works.
     const DEV: u64 = 0x4000_8000;
     let mut m = Machine::new();
     m.mmu_on();
     m.cpu.sys.vbar_el1 = VECTORS;
     m.map(DEV, DEV, DEVICE | AP_RW_EL1 | UXN | PXN);
-    m.ram.put(KCODE, &[0xf9400020, 0xf9400020]); // ldr x0, [x1] (due volte)
+    m.ram.put(KCODE, &[0xf9400020, 0xf9400020]); // ldr x0, [x1] (twice)
     m.cpu.x[1] = DEV + 8;
     assert_eq!(m.step(), SysEvent::Executed);
     m.cpu.x[1] = DEV + 4;
     let ev = m.step();
     assert_eq!(ev, SysEvent::Exception { kind: ExceptionKind::Sync, esr: 0x9600_0021, from_el: 1 });
     assert_eq!(m.cpu.sys.far_el1, DEV + 4);
-    // La stessa pagina come Normal ammette il disallineato.
+    // The same page as Normal allows unaligned access.
     let mut m = Machine::new();
     m.mmu_on();
     m.map(DEV, DEV, NORMAL | AP_RW_EL1 | UXN | PXN);
@@ -363,7 +363,7 @@ fn abort_delle_istruzioni_e_allineamento_su_device() {
     m.cpu.x[1] = DEV + 4;
     assert_eq!(m.step(), SysEvent::Executed);
 
-    // MMU spenta: i dati sono Device, il disallineato fa fault (come QEMU).
+    // MMU off: data is Device, unaligned access faults (like QEMU).
     let mut m = Machine::new();
     m.cpu.sys.vbar_el1 = VECTORS;
     m.ram.put(KCODE, &[0xf9400020]);
@@ -379,22 +379,22 @@ fn granulo_64k_e_limite_di_vetro() {
     m.cpu.sys.tcr_el1 = TCR | 0b01 << 14; // TG0 = 64 KiB
     let ev = m.step();
     assert!(matches!(ev, SysEvent::Unimplemented { raw: 0, .. }), "{ev:?}");
-    assert_eq!((m.cpu.pc, m.cpu.sys.el), (KCODE, 1), "stato invariato");
+    assert_eq!((m.cpu.pc, m.cpu.sys.el), (KCODE, 1), "state unchanged");
 }
 
-// --- Cache delle traduzioni recenti (fetch e dati) ---
+// --- Cache of recent translations (fetch and data) ---
 //
-// La MMU tiene una scorciatoia per le traduzioni recenti
-// (`Mmu::translate_pa`), usata anche per ogni fetch. Questi programmi
-// verificano che il codice eseguito resti quello della memoria e della
-// mappatura correnti.
+// The MMU keeps a shortcut for recent translations
+// (`Mmu::translate_pa`), also used for every fetch. These programs
+// verify that the executed code stays that of the current memory and
+// mapping.
 
-/// Pagina di codice chiamata con BLR e le due pagine fisiche che le si
-/// possono mappare sotto.
+/// Code page called with BLR and the two physical pages that can be
+/// mapped under it.
 const XCODE: u64 = 0x4000_9000;
 const CODE_A: u64 = 0x4000_a000;
 const CODE_B: u64 = 0x4000_b000;
-/// Tabelle alternative per il cambio di TTBR0.
+/// Alternative tables for the TTBR0 switch.
 const L1B: u64 = 0x4001_3000;
 const L2B: u64 = 0x4001_4000;
 const L3B: u64 = 0x4001_5000;
@@ -432,7 +432,7 @@ fn codice_automodificante_su_una_pagina_gia_eseguita() {
     m.cpu.x[1] = 0xd2800040; // mov x0, #0x2
     m.cpu.x[2] = KCODE + 9 * 4;
     assert_eq!(m.run_until_event(100), SysEvent::Hvc(0));
-    assert_eq!((m.cpu.x[5], m.cpu.x[6]), (1, 2), "la seconda chiamata esegue la parola nuova");
+    assert_eq!((m.cpu.x[5], m.cpu.x[6]), (1, 2), "the second call executes the new word");
 }
 
 #[test]
@@ -467,8 +467,8 @@ fn codice_rimappato_visibile_dopo_la_tlbi() {
     m.cpu.x[4] = CODE_B | NORMAL | AP_RW_EL1 | UXN | PAGE;
     m.cpu.x[7] = XCODE >> 12;
     assert_eq!(m.run_until_event(100), SysEvent::Hvc(0));
-    // Senza TLBI resta la voce del TLB (come senza la cache), dopo la TLBI
-    // si esegue la pagina nuova.
+    // Without a TLBI the TLB entry stays (as without the cache), after the TLBI
+    // the new page is executed.
     assert_eq!((m.cpu.x[5], m.cpu.x[6], m.cpu.x[11]), (1, 1, 2));
 }
 
@@ -476,11 +476,11 @@ fn codice_rimappato_visibile_dopo_la_tlbi() {
 fn cambio_di_ttbr0_e_asid_per_il_codice() {
     let mut m = Machine::new();
     m.mmu_on();
-    // Pagina non globale: vale solo per l'ASID con cui è stata letta.
+    // Non-global page: valid only for the ASID it was read with.
     m.map(XCODE, CODE_A, NORMAL | AP_RW_EL1 | UXN | NG);
     m.ram.put(CODE_A, RET_1);
     m.ram.put(CODE_B, RET_2);
-    // Seconda serie di tabelle: uguale, ma XCODE va a CODE_B.
+    // Second set of tables: the same, but XCODE goes to CODE_B.
     m.ram.wr(L1B + 8, L2B | TABLE);
     m.ram.wr(L2B, L3B | TABLE);
     for i in 0..512 {
@@ -507,16 +507,16 @@ fn cambio_di_ttbr0_e_asid_per_il_codice() {
     );
     m.cpu.x[9] = XCODE;
     m.cpu.x[8] = L1B | 1 << 48; // ASID 1
-    m.cpu.x[12] = L1; // di nuovo ASID 0
+    m.cpu.x[12] = L1; // ASID 0 again
     assert_eq!(m.run_until_event(100), SysEvent::Hvc(0));
     assert_eq!((m.cpu.x[5], m.cpu.x[6], m.cpu.x[11]), (1, 2, 1));
 }
 
 #[test]
 fn fetch_da_el0_su_una_pagina_eseguita_a_el1() {
-    // La pagina del kernel è eseguibile solo a EL1 (UXN): dopo averla
-    // eseguita a EL1, un ERET a EL0 dentro la stessa pagina dà un
-    // Instruction Abort (permesso, livello 3).
+    // The kernel page is executable only at EL1 (UXN): after executing it
+    // at EL1, an ERET to EL0 within the same page gives an
+    // Instruction Abort (permission, level 3).
     let mut m = Machine::new();
     m.mmu_on();
     m.cpu.sys.vbar_el1 = VECTORS;

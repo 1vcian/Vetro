@@ -1,14 +1,14 @@
-//! RTC PL031 (ARM DDI0224).
+//! PL031 RTC (ARM DDI0224).
 //!
-//! Il tempo arriva dall'esterno con [`Pl031::set_time`] (secondi dall'epoca
-//! Unix, forniti dall'unico punto registrabile del motore): il dispositivo
-//! non legge mai l'orologio dell'host. DR vale `tempo + scostamento`, a 32
-//! bit con aritmetica modulare; scrivere LR cambia lo scostamento.
+//! Time comes from outside with [`Pl031::set_time`] (seconds since the Unix
+//! epoch, supplied by the engine's single recordable point): the device
+//! never reads the host clock. DR is `time + offset`, 32
+//! bits with modular arithmetic; writing LR changes the offset.
 //!
-//! Come QEMU: CR si legge sempre 1 (RTC sempre avviato) e ignora le
-//! scritture; qualunque scrittura in ICR azzera l'interrupt; l'allarme
-//! scatta quando DR raggiunge MR avanzando, oppure subito se dopo una
-//! scrittura di MR o LR i due coincidono.
+//! Like QEMU: CR always reads 1 (RTC always started) and ignores
+//! writes; any write to ICR clears the interrupt; the alarm
+//! fires when DR reaches MR moving forward, or immediately if after a
+//! write of MR or LR the two coincide.
 
 use crate::bus::{MmioDevice, sub_word};
 
@@ -22,12 +22,12 @@ pub const MIS: u64 = 0x18;
 pub const ICR: u64 = 0x1C;
 pub const PERIPH_ID0: u64 = 0xFE0;
 
-/// PeriphID0-3 e CellID0-3 (gli stessi valori di QEMU).
+/// PeriphID0-3 and CellID0-3 (the same values as QEMU).
 const ID: [u8; 8] = [0x31, 0x10, 0x14, 0x00, 0x0D, 0xF0, 0x05, 0xB1];
 
 #[derive(Clone, Debug, Default)]
 pub struct Pl031 {
-    /// Ultimo tempo ricevuto dall'esterno, in secondi.
+    /// Last time received from outside, in seconds.
     now: u64,
     /// DR = (now + offset) mod 2^32.
     offset: u32,
@@ -38,19 +38,19 @@ pub struct Pl031 {
 }
 
 impl Pl031 {
-    /// RTC con DR uguale a `now_secs` (troncato a 32 bit).
+    /// RTC with DR equal to `now_secs` (truncated to 32 bits).
     pub fn new(now_secs: u64) -> Self {
         Self { now: now_secs, ..Self::default() }
     }
 
-    /// Valore corrente del contatore (DR).
+    /// Current value of the counter (DR).
     pub fn count(&self) -> u32 {
         (self.now as u32).wrapping_add(self.offset)
     }
 
-    /// Aggiorna il tempo. Se il contatore avanza fino a raggiungere o
-    /// superare MR, l'allarme si attiva. Un tempo che torna indietro non
-    /// attiva nulla.
+    /// Updates the time. If the counter moves forward until it reaches or
+    /// passes MR, the alarm goes off. A time that goes backwards does not
+    /// trigger anything.
     pub fn set_time(&mut self, now_secs: u64) {
         let old = self.count();
         let advance = now_secs.saturating_sub(self.now);
@@ -64,13 +64,13 @@ impl Pl031 {
         }
     }
 
-    /// Secondi che mancano all'allarme, se l'interrupt non è già attivo:
-    /// serve all'host per pianificare il prossimo `set_time`.
+    /// Seconds left before the alarm, if the interrupt is not already active:
+    /// the host uses it to schedule the next `set_time`.
     pub fn seconds_to_alarm(&self) -> Option<u32> {
         (self.ris == 0).then(|| self.mr.wrapping_sub(self.count())).filter(|&s| s != 0)
     }
 
-    /// Livello della linea IRQ verso il GIC (RTCINTR).
+    /// Level of the IRQ line to the GIC (RTCINTR).
     pub fn irq_level(&self) -> bool {
         self.ris & self.imsc != 0
     }
@@ -167,7 +167,7 @@ mod tests {
         assert_eq!(r.read(DR, 4), 1_700_000_000);
         r.set_time(1_700_000_042);
         assert_eq!(r.read(DR, 4), 1_700_000_042);
-        // Nessun orologio interno: senza set_time il valore non cambia.
+        // No internal clock: without set_time the value does not change.
         assert_eq!(r.read(DR, 4), 1_700_000_042);
     }
 
@@ -179,7 +179,7 @@ mod tests {
         assert_eq!(r.read(LR, 4), 5);
         r.set_time(1010);
         assert_eq!(r.read(DR, 4), 15);
-        // Aritmetica modulare a 32 bit.
+        // 32-bit modular arithmetic.
         r.write(LR, 4, 0xFFFF_FFFF);
         r.set_time(1012);
         assert_eq!(r.read(DR, 4), 1);

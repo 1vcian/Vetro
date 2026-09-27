@@ -1,11 +1,11 @@
-//! Harness differenziale contro QEMU.
+//! Differential harness against QEMU.
 //!
-//! - [`a64`]: codifica di poche istruzioni AArch64, per prologhi ed epiloghi.
-//! - [`elf`]: costruzione di ELF64 statici minimi, senza cross-compilatore.
-//! - [`qemu`]: individua ed esegue `qemu-aarch64` (l'oracolo).
-//! - [`harness`]: programmi con stato iniziale noto e dump dello stato finale,
-//!   eseguiti su Vetro e su QEMU.
-//! - [`random`]: programmi casuali di istruzioni intere (ADR 0006).
+//! - [`a64`]: encoding of a few AArch64 instructions, for prologues and epilogues.
+//! - [`elf`]: construction of minimal static ELF64s, without a cross-compiler.
+//! - [`qemu`]: finds and runs `qemu-aarch64` (the oracle).
+//! - [`harness`]: programs with a known initial state and a dump of the final state,
+//!   run on Vetro and on QEMU.
+//! - [`random`]: random programs of integer instructions (ADR 0006).
 
 pub mod a64;
 pub mod elf;

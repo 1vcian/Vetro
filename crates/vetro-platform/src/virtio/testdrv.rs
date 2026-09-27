@@ -1,18 +1,18 @@
-//! Driver virtio di prova: fa quello che fa Linux (drivers/virtio/
-//! virtio_mmio.c e virtio_ring.c) su una RAM finta. Negozia le feature,
-//! prepara le code split, pubblica catene (dirette o indirette), notifica,
-//! legge lo used ring e gestisce l'interrupt.
+//! Test virtio driver: does what Linux does (drivers/virtio/
+//! virtio_mmio.c and virtio_ring.c) on a fake RAM. Negotiates features,
+//! sets up split queues, publishes chains (direct or indirect), notifies,
+//! reads the used ring and handles the interrupt.
 
 use std::collections::HashMap;
 
 use super::queue::{DESC_F_INDIRECT, DESC_F_NEXT, DESC_F_WRITE};
 use super::*;
 
-/// Base della RAM finta: la stessa della macchina virt.
+/// Base of the fake RAM: the same as the virt machine's.
 pub const RAM_BASE: u64 = 0x4000_0000;
 const RAM_SIZE: usize = 8 << 20;
 
-/// Come il driver raggiunge i registri del trasporto.
+/// How the driver reaches the transport registers.
 pub trait Transport {
     fn rd(&mut self, off: u64) -> u32;
     fn wr(&mut self, off: u64, v: u32);
@@ -47,7 +47,7 @@ pub struct DrvQueue {
     free: Vec<u16>,
     avail_idx: u16,
     last_used: u16,
-    /// Descrittori (diretti) occupati da ogni catena, per testa.
+    /// (Direct) descriptors taken by every chain, by head.
     chains: HashMap<u16, Vec<u16>>,
 }
 
@@ -59,7 +59,7 @@ pub struct Driver<T: Transport> {
     pub features: u64,
 }
 
-/// Buffer di una catena: (indirizzo, lunghezza, scrivibile dal dispositivo).
+/// Buffer of a chain: (address, length, writable by the device).
 pub type B = (u64, u32, bool);
 
 impl<T: Transport> Driver<T> {
@@ -74,7 +74,7 @@ impl<T: Transport> Driver<T> {
         a
     }
 
-    /// Buffer con il contenuto dato.
+    /// Buffer with the given contents.
     pub fn buf(&mut self, data: &[u8]) -> u64 {
         let a = self.alloc(data.len() as u64, 8);
         self.ram.write(a, data).unwrap();
@@ -93,7 +93,7 @@ impl<T: Transport> Driver<T> {
     }
 
     /// Fino a FEATURES_OK: reset, ACKNOWLEDGE, DRIVER, feature `offerte &
-    /// wanted`. Restituisce lo Status riletto.
+    /// wanted`. Returns the Status read back.
     pub fn negotiate(&mut self, wanted: u64) -> u32 {
         assert_eq!(self.t.rd(MAGIC_VALUE), MAGIC);
         assert_eq!(self.t.rd(VERSION), 2);
@@ -114,7 +114,7 @@ impl<T: Transport> Driver<T> {
         self.t.rd(STATUS)
     }
 
-    /// Negoziazione completa, code (al massimo `qsize` voci) e DRIVER_OK.
+    /// Full negotiation, queues (at most `qsize` entries) and DRIVER_OK.
     pub fn init(&mut self, wanted: u64, qsize: u16) -> u64 {
         let st = self.negotiate(wanted);
         assert_ne!(st & STATUS_FEATURES_OK, 0, "FEATURES_OK rifiutato");
@@ -165,7 +165,7 @@ impl<T: Transport> Driver<T> {
         self.ram.write(table + 16 * u64::from(i), &b).unwrap();
     }
 
-    /// Pubblica la testa nell'available ring e notifica la coda.
+    /// Publishes the head in the available ring and notifies the queue.
     fn publish(&mut self, qi: usize, head: u16) {
         let q = &mut self.queues[qi];
         let slot = u64::from(q.avail_idx % q.size);
@@ -176,7 +176,7 @@ impl<T: Transport> Driver<T> {
         self.t.wr(QUEUE_NOTIFY, qi as u32);
     }
 
-    /// Catena di descrittori diretti.
+    /// Chain of direct descriptors.
     pub fn add(&mut self, qi: usize, bufs: &[B]) -> u16 {
         let q = &mut self.queues[qi];
         let ids: Vec<u16> = (0..bufs.len()).map(|_| q.free.pop().expect("coda piena")).collect();
@@ -194,7 +194,7 @@ impl<T: Transport> Driver<T> {
         ids[0]
     }
 
-    /// Catena in una tabella indiretta (un solo descrittore nella coda).
+    /// Chain in an indirect table (a single descriptor in the queue).
     pub fn add_indirect(&mut self, qi: usize, bufs: &[B]) -> u16 {
         let table = self.alloc(16 * bufs.len() as u64, 16);
         for (k, &(addr, len, w)) in bufs.iter().enumerate() {
@@ -213,8 +213,8 @@ impl<T: Transport> Driver<T> {
         head
     }
 
-    /// Prossimo elemento dello used ring (testa, byte scritti), come
-    /// `virtqueue_get_buf`; con EVENT_IDX aggiorna used_event come
+    /// Next element of the used ring (head, bytes written), like
+    /// `virtqueue_get_buf`; with EVENT_IDX updates used_event like
     /// `virtqueue_enable_cb`.
     pub fn pop_used(&mut self, qi: usize) -> Option<(u16, u32)> {
         let event_idx = self.features & F_EVENT_IDX != 0;
@@ -237,7 +237,7 @@ impl<T: Transport> Driver<T> {
         Some((id, len))
     }
 
-    /// avail_event scritto dal dispositivo (con EVENT_IDX).
+    /// avail_event written by the device (with EVENT_IDX).
     pub fn avail_event(&self, qi: usize) -> u16 {
         let q = &self.queues[qi];
         self.ram.read_u16(q.used + 4 + 8 * u64::from(q.size)).unwrap()
@@ -258,7 +258,7 @@ impl<T: Transport> Driver<T> {
         self.t.service(&mut self.ram);
     }
 
-    /// Handler dell'interrupt: legge InterruptStatus e lo riconosce.
+    /// Interrupt handler: reads InterruptStatus and acknowledges it.
     pub fn irq(&mut self) -> u32 {
         let s = self.t.rd(INTERRUPT_STATUS);
         self.t.wr(INTERRUPT_ACK, s);

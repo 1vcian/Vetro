@@ -1,7 +1,7 @@
-//! Decodificatori del corpo: JSON, `application/x-www-form-urlencoded`,
-//! `multipart/*` e protobuf senza schema (formato sul filo, come
-//! `protoc --decode_raw`), scelti dal `Content-Type` e, se manca o è
-//! generico, dal contenuto.
+//! Body decoders: JSON, `application/x-www-form-urlencoded`,
+//! `multipart/*` and schemaless protobuf (wire format, like
+//! `protoc --decode_raw`), chosen from the `Content-Type` and, if missing or
+//! generic, from the contents.
 
 use std::fmt::Write as _;
 
@@ -15,26 +15,26 @@ pub enum Decoded {
     Form(Vec<(String, String)>),
     Multipart(Vec<Part>),
     Protobuf(Vec<Field>),
-    /// Testo UTF-8 non strutturato.
+    /// Unstructured UTF-8 text.
     Text(String),
-    /// Byte non riconosciuti (con il motivo, se un decodificatore scelto
-    /// dal `Content-Type` ha fallito).
+    /// Unrecognised bytes (with the reason, if a decoder chosen
+    /// from the `Content-Type` failed).
     Binary {
         len: usize,
         note: Option<String>,
     },
 }
 
-/// Una parte di un corpo multipart.
+/// A part of a multipart body.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Part {
     pub headers: Vec<(String, String)>,
-    /// `name` di `Content-Disposition`.
+    /// `name` of `Content-Disposition`.
     pub name: Option<String>,
     pub filename: Option<String>,
     pub content_type: Option<String>,
     pub data: Vec<u8>,
-    /// Il contenuto della parte, decodificato a sua volta.
+    /// The contents of the part, decoded in turn.
     pub decoded: Box<Decoded>,
 }
 
@@ -45,27 +45,27 @@ pub struct Field {
     pub value: Wire,
 }
 
-/// Valore di un campo secondo il tipo sul filo.
+/// Value of a field according to the wire type.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Wire {
     Varint(u64),
     Fixed64(u64),
     Fixed32(u32),
-    /// Lunghezza delimitata che si decodifica come messaggio.
+    /// Length-delimited, decoded as a message.
     Message(Vec<Field>),
-    /// Lunghezza delimitata in UTF-8 (e non un messaggio).
+    /// Length-delimited in UTF-8 (and not a message).
     String(String),
     Bytes(Vec<u8>),
     /// Gruppo (tipi 3/4, deprecati).
     Group(Vec<Field>),
 }
 
-/// Tipo di media del `Content-Type`, in minuscolo e senza parametri.
+/// Media type of the `Content-Type`, in lower case and without parameters.
 pub fn media_type(content_type: &str) -> String {
     content_type.split(';').next().unwrap_or("").trim().to_ascii_lowercase()
 }
 
-/// Parametro `name` del `Content-Type` (virgolette tolte).
+/// `name` parameter of the `Content-Type` (quotes removed).
 pub fn param(content_type: &str, name: &str) -> Option<String> {
     content_type.split(';').skip(1).find_map(|p| {
         let (k, v) = p.split_once('=')?;
@@ -93,7 +93,7 @@ fn is_grpc_type(m: &str) -> bool {
     m == "application/grpc" || m.starts_with("application/grpc+proto") || m == "application/grpc-web+proto"
 }
 
-/// Decodifica un corpo secondo il `Content-Type` (se c'è).
+/// Decodes a body according to the `Content-Type` (if any).
 pub fn decode(content_type: Option<&str>, data: &[u8]) -> Decoded {
     decode_depth(content_type, data, 0)
 }
@@ -118,31 +118,31 @@ fn decode_depth(content_type: Option<&str>, data: &[u8], depth: usize) -> Decode
     if m == "application/x-www-form-urlencoded" {
         return match std::str::from_utf8(data) {
             Ok(t) => Decoded::Form(form(t)),
-            Err(_) => fail("form", "non è testo".into()),
+            Err(_) => fail("form", "not text".into()),
         };
     }
     if m.starts_with("multipart/") && depth < 4 {
         return match param(ct, "boundary") {
             Some(b) => match multipart(data, &b, depth) {
                 Some(p) => Decoded::Multipart(p),
-                None => fail("multipart", "delimitatore non trovato".into()),
+                None => fail("multipart", "boundary not found".into()),
             },
-            None => fail("multipart", "manca boundary".into()),
+            None => fail("multipart", "missing boundary".into()),
         };
     }
     if is_grpc_type(&m) {
         return match grpc(data) {
             Some(f) => Decoded::Protobuf(f),
-            None => fail("gRPC", "cornici non valide".into()),
+            None => fail("gRPC", "invalid frames".into()),
         };
     }
     if is_protobuf_type(&m) {
         return match protobuf(data) {
             Some(f) => Decoded::Protobuf(f),
-            None => fail("protobuf", "formato sul filo non valido".into()),
+            None => fail("protobuf", "invalid wire format".into()),
         };
     }
-    // Tipo generico o assente: dal contenuto.
+    // Generic or absent type: from the contents.
     if let Ok(t) = std::str::from_utf8(data) {
         let trimmed = t.trim_start();
         if (trimmed.starts_with('{') || trimmed.starts_with('['))
@@ -161,7 +161,7 @@ fn hex(c: u8) -> Option<u8> {
     (c as char).to_digit(16).map(|d| d as u8)
 }
 
-/// Percent-decoding con `+` come spazio (lossy su UTF-8 non valido).
+/// Percent-decoding with `+` as space (lossy on invalid UTF-8).
 pub fn url_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
@@ -183,7 +183,7 @@ pub fn url_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Coppie di un form urlencoded (o di una query string).
+/// Pairs of an urlencoded form (or of a query string).
 pub fn form(s: &str) -> Vec<(String, String)> {
     s.split('&')
         .filter(|p| !p.is_empty())
@@ -216,7 +216,7 @@ fn multipart(data: &[u8], boundary: &str, depth: usize) -> Option<Vec<Part>> {
         if data[pos..].starts_with(b"--") {
             return Some(parts);
         }
-        // Fine della riga del delimitatore.
+        // End of the boundary line.
         pos = find(data, b"\r\n", pos)? + 2;
         let head_end = find(data, b"\r\n\r\n", pos).filter(|&e| e >= pos);
         let (headers, body_start) = match head_end {
@@ -250,7 +250,7 @@ fn multipart(data: &[u8], boundary: &str, depth: usize) -> Option<Vec<Part>> {
             data: body,
         });
         if after >= data.len() {
-            // Senza delimitatore finale: parti fino alla fine.
+            // Without a final boundary: parts up to the end.
             return Some(parts);
         }
         pos = after;
@@ -275,7 +275,7 @@ fn varint(d: &[u8], pos: &mut usize) -> Option<u64> {
 
 const MAX_PROTO_DEPTH: usize = 32;
 
-/// Campi fino alla fine di `d` (o a un end-group se `group` non è `None`).
+/// Fields up to the end of `d` (or to an end-group if `group` is not `None`).
 fn fields(d: &[u8], pos: &mut usize, depth: usize, group: Option<u64>) -> Option<Vec<Field>> {
     let mut out = Vec::new();
     while *pos < d.len() {
@@ -322,8 +322,8 @@ fn length_delimited(b: &[u8], depth: usize) -> Wire {
     if !b.is_empty() && depth < MAX_PROTO_DEPTH {
         let mut p = 0;
         if let Some(f) = fields(b, &mut p, depth + 1, None) {
-            // Un testo stampabile che per caso è anche un messaggio valido
-            // resta testo (come le euristiche degli strumenti usuali).
+            // A printable text that happens to be a valid message too
+            // stays text (like the heuristics of the usual tools).
             let printable = std::str::from_utf8(b).is_ok_and(|t| t.chars().all(|c| !c.is_control()));
             if !printable {
                 return Wire::Message(f);
@@ -336,16 +336,16 @@ fn length_delimited(b: &[u8], depth: usize) -> Wire {
     }
 }
 
-/// Decodifica protobuf senza schema; `None` se i byte non sono un
-/// messaggio valido sul filo.
+/// Decodes schemaless protobuf; `None` if the bytes are not a
+/// valid wire message.
 pub fn protobuf(d: &[u8]) -> Option<Vec<Field>> {
     let mut pos = 0;
     fields(d, &mut pos, 0, None)
 }
 
-/// Messaggi gRPC (cornici da 5 byte: compresso, lunghezza), non
-/// compressi, decodificati come protobuf; i campi di ogni messaggio sotto
-/// un campo sintetico con il numero del messaggio (da 1).
+/// gRPC messages (5-byte frames: compressed, length), not
+/// compressed, decoded as protobuf; the fields of each message under
+/// a synthetic field with the message number (from 1).
 fn grpc(d: &[u8]) -> Option<Vec<Field>> {
     let mut out = Vec::new();
     let mut pos = 0;
@@ -362,7 +362,7 @@ fn grpc(d: &[u8]) -> Option<Vec<Field>> {
     Some(out)
 }
 
-/// Resa testuale dei campi, come `protoc --decode_raw`.
+/// Textual rendering of the fields, like `protoc --decode_raw`.
 pub fn protobuf_text(fields: &[Field]) -> String {
     let mut s = String::new();
     proto_into(&mut s, fields, 0);
@@ -402,20 +402,20 @@ fn proto_into(s: &mut String, fields: &[Field], depth: usize) {
 }
 
 impl Decoded {
-    /// Nome breve del decodificatore usato.
+    /// Short name of the decoder used.
     pub fn kind(&self) -> &'static str {
         match self {
-            Decoded::Empty => "vuoto",
+            Decoded::Empty => "empty",
             Decoded::Json(_) => "json",
             Decoded::Form(_) => "form",
             Decoded::Multipart(_) => "multipart",
             Decoded::Protobuf(_) => "protobuf",
-            Decoded::Text(_) => "testo",
-            Decoded::Binary { .. } => "binario",
+            Decoded::Text(_) => "text",
+            Decoded::Binary { .. } => "binary",
         }
     }
 
-    /// Resa testuale leggibile (per l'ispettore e i commenti dell'HAR).
+    /// Readable textual rendering (for the inspector and the HAR comments).
     pub fn to_text(&self) -> String {
         match self {
             Decoded::Empty => String::new(),
@@ -426,7 +426,7 @@ impl Decoded {
                 for (i, p) in parts.iter().enumerate() {
                     let _ = writeln!(
                         s,
-                        "--- parte {} name={} filename={} type={} ({} byte)",
+                        "--- part {} name={} filename={} type={} ({} bytes)",
                         i + 1,
                         p.name.as_deref().unwrap_or("-"),
                         p.filename.as_deref().unwrap_or("-"),
@@ -444,7 +444,7 @@ impl Decoded {
             Decoded::Protobuf(f) => protobuf_text(f),
             Decoded::Text(t) => t.clone(),
             Decoded::Binary { len, note } => match note {
-                Some(n) => format!("({len} byte non decodificati: {n})"),
+                Some(n) => format!("({len} bytes not decoded: {n})"),
                 None => format!("({len} byte binari)"),
             },
         }
@@ -500,14 +500,14 @@ mod tests {
         );
         assert!(matches!(*p[1].decoded, Decoded::Json(_)));
         assert_eq!(p[2].data, [0, 1, 0xff]);
-        assert!(d.to_text().contains("--- parte 2 name=file filename=a.json"));
+        assert!(d.to_text().contains("--- part 2 name=file filename=a.json"));
         assert!(matches!(decode(Some("multipart/form-data"), body), Decoded::Binary { note: Some(_), .. }));
     }
 
     #[test]
     fn protobuf_senza_schema() {
-        // Esempi della documentazione del formato: 150 nel campo 1, "testing"
-        // nel campo 2, un messaggio annidato nel campo 3.
+        // Examples from the format documentation: 150 in field 1, "testing"
+        // in field 2, a nested message in field 3.
         let d = [
             0x08, 0x96, 0x01, 0x12, 0x07, b't', b'e', b's', b't', b'i', b'n', b'g', 0x1a, 0x03, 0x08, 0x96,
             0x01,

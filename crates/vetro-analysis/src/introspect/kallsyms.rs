@@ -1,33 +1,33 @@
-//! Simboli del kernel: `System.map` e la tabella kallsyms dentro l'`Image`.
+//! Kernel symbols: `System.map` and the kallsyms table inside the `Image`.
 //!
-//! Il kernel porta i propri simboli compressi (`CONFIG_KALLSYMS`, con
-//! `CONFIG_KALLSYMS_ALL` anche i dati): `kallsyms_num_syms`,
-//! `kallsyms_names` (per simbolo un byte di lunghezza, due se oltre 127,
-//! poi indici di token), `kallsyms_markers` (ogni 256 simboli l'offset nei
-//! nomi), `kallsyms_token_table` (256 stringhe terminate da zero),
-//! `kallsyms_token_index` (256 u16), `kallsyms_offsets` (u32 da
-//! `kallsyms_relative_base`) e `kallsyms_relative_base`. Nessun simbolo ne
-//! indica la posizione: si trova la tabella dei token dalle cifre `0`..`9`
-//! (token di se stesse), la si verifica con l'indice, e da lì il resto
-//! (`scripts/kallsyms.c`). Gli indirizzi sono quelli di collegamento
-//! (senza KASLR): lo spostamento lo ricava [`super::linux`].
+//! The kernel carries its own compressed symbols (`CONFIG_KALLSYMS`, with
+//! `CONFIG_KALLSYMS_ALL` also the data): `kallsyms_num_syms`,
+//! `kallsyms_names` (per symbol one length byte, two if above 127,
+//! then token indices), `kallsyms_markers` (every 256 symbols the offset into the
+//! names), `kallsyms_token_table` (256 zero-terminated strings),
+//! `kallsyms_token_index` (256 u16), `kallsyms_offsets` (u32 from
+//! `kallsyms_relative_base`) and `kallsyms_relative_base`. No symbol
+//! gives their position: the token table is found from the digits `0`..`9`
+//! (tokens of themselves), verified with the index, and from there the rest
+//! (`scripts/kallsyms.c`). The addresses are the link-time ones
+//! (without KASLR): [`super::linux`] derives the offset.
 
 use std::collections::BTreeMap;
 
-/// Un simbolo del kernel.
+/// A kernel symbol.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct KSym {
     pub addr: u64,
-    /// Tipo di `nm` (`T`, `t`, `D`, `d`, `B`, `R`, ...).
+    /// `nm` type (`T`, `t`, `D`, `d`, `B`, `R`, ...).
     pub kind: char,
     pub name: String,
 }
 
-/// Tabella dei simboli del kernel: nome → indirizzo e indirizzo → nome.
+/// Kernel symbol table: name → address and address → name.
 #[derive(Clone, Debug, Default)]
 pub struct Symbols {
     by_name: BTreeMap<String, u64>,
-    /// Ordinati per indirizzo.
+    /// Sorted by address.
     sorted: Vec<KSym>,
 }
 
@@ -36,13 +36,13 @@ impl Symbols {
         syms.sort();
         let mut by_name = BTreeMap::new();
         for s in &syms {
-            // A parità di nome (simboli locali ripetuti) vale il primo.
+            // For equal names (repeated local symbols) the first one wins.
             by_name.entry(s.name.clone()).or_insert(s.addr);
         }
         Symbols { by_name, sorted: syms }
     }
 
-    /// Legge un `System.map` (`indirizzo tipo nome` per riga).
+    /// Reads a `System.map` (`address type name` per line).
     pub fn parse_system_map(text: &str) -> Symbols {
         let syms = text
             .lines()
@@ -57,7 +57,7 @@ impl Symbols {
         Symbols::from_syms(syms)
     }
 
-    /// Estrae la tabella kallsyms da un `Image` arm64.
+    /// Extracts the kallsyms table from an arm64 `Image`.
     pub fn from_image(image: &[u8]) -> Result<Symbols, KallsymsError> {
         Ok(Symbols::from_syms(extract(image)?))
     }
@@ -78,8 +78,8 @@ impl Symbols {
         self.sorted.iter()
     }
 
-    /// Il simbolo che contiene `addr` (l'ultimo che non lo supera) e lo
-    /// scostamento.
+    /// The symbol containing `addr` (the last one not above it) and the
+    /// displacement.
     pub fn lookup(&self, addr: u64) -> Option<(&KSym, u64)> {
         let i = self.sorted.partition_point(|s| s.addr <= addr);
         let s = self.sorted.get(i.checked_sub(1)?)?;
@@ -87,7 +87,7 @@ impl Symbols {
     }
 }
 
-/// Perché la tabella kallsyms non si è trovata.
+/// Why the kallsyms table was not found.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KallsymsError {
     TokenTable,
@@ -100,13 +100,13 @@ pub enum KallsymsError {
 impl core::fmt::Display for KallsymsError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let what = match self {
-            KallsymsError::TokenTable => "tabella dei token",
-            KallsymsError::Markers => "marcatori",
-            KallsymsError::Names => "nomi",
-            KallsymsError::Offsets => "offset",
-            KallsymsError::Base => "base relativa",
+            KallsymsError::TokenTable => "token table",
+            KallsymsError::Markers => "markers",
+            KallsymsError::Names => "names",
+            KallsymsError::Offsets => "offsets",
+            KallsymsError::Base => "relative base",
         };
-        write!(f, "kallsyms: {what} non trovati")
+        write!(f, "kallsyms: {what} not found")
     }
 }
 
@@ -126,7 +126,7 @@ fn align(x: usize, a: usize) -> usize {
     x.div_ceil(a) * a
 }
 
-/// Tabella dei token: posizione, 256 offset, fine dell'indice.
+/// Token table: position, 256 offsets, end of the index.
 struct Tokens {
     table: usize,
     offs: [u16; 256],
@@ -141,8 +141,8 @@ impl Tokens {
     }
 }
 
-/// Le 256 stringhe da `t`, se `t + offs[i]` le delimita tutte: offsets e
-/// fine.
+/// The 256 strings from `t`, if `t + offs[i]` delimits them all: offsets and
+/// end.
 fn strings_at(image: &[u8], t: usize) -> Option<([u16; 256], usize)> {
     let mut offs = [0u16; 256];
     let mut p = t;
@@ -163,14 +163,14 @@ fn find_tokens(image: &[u8]) -> Option<Tokens> {
     while let Some(p) = image.get(from..)?.windows(DIGITS.len()).position(|w| w == DIGITS) {
         let d = from + p;
         from = d + 1;
-        // Il token di '0' (0x30) è il 48°: la tabella inizia al più 48
-        // token lunghi prima.
+        // The token of '0' (0x30) is the 48th: the table starts at most 48
+        // long tokens before.
         for t in (d.saturating_sub(48 * 64)..=d).rev() {
             let Some((offs, end)) = strings_at(image, t) else { continue };
             if t + usize::from(offs[0x30]) != d {
                 continue;
             }
-            // L'indice segue la tabella, allineato.
+            // The index follows the table, aligned.
             for idx in [end, align(end, 2), align(end, 4), align(end, 8)] {
                 if (0..256).all(|i| u16_at(image, idx + 2 * i) == Some(offs[i])) {
                     return Some(Tokens { table: t, offs, index_end: idx + 512 });
@@ -181,7 +181,7 @@ fn find_tokens(image: &[u8]) -> Option<Tokens> {
     None
 }
 
-/// Legge la lunghezza di un nome a `p`: (lunghezza, byte dell'intestazione).
+/// Reads the length of a name at `p`: (length, header bytes).
 fn name_len(image: &[u8], p: usize) -> Option<(usize, usize)> {
     let b = *image.get(p)?;
     if b & 0x80 != 0 {
@@ -192,9 +192,9 @@ fn name_len(image: &[u8], p: usize) -> Option<(usize, usize)> {
     }
 }
 
-/// Candidati per i marcatori: posizione e valori, cercando all'indietro
-/// dalla tabella dei token (u32 crescenti dal primo, che vale 0), con o
-/// senza 4 byte di allineamento prima della tabella.
+/// Candidates for the markers: position and values, searching backwards
+/// from the token table (u32 increasing from the first, which is 0), with or
+/// without 4 bytes of alignment before the table.
 fn find_markers(image: &[u8], table: usize) -> Vec<(usize, Vec<u32>)> {
     let mut out = Vec::new();
     for pad in [0usize, 4] {
@@ -219,7 +219,7 @@ fn find_markers(image: &[u8], table: usize) -> Vec<(usize, Vec<u32>)> {
     out
 }
 
-/// Cammina `n` nomi da `s`; restituisce la fine e gli offset ogni 256.
+/// Walks `n` names from `s`; returns the end and the offsets every 256.
 fn walk_names(image: &[u8], s: usize, n: usize, markers: &[u32]) -> Option<usize> {
     let mut p = s;
     for i in 0..n {
@@ -235,12 +235,12 @@ fn walk_names(image: &[u8], s: usize, n: usize, markers: &[u32]) -> Option<usize
     Some(p)
 }
 
-/// `kallsyms_num_syms` e i nomi prima dei marcatori a `mpos`: posizione
-/// di num_syms, inizio dei nomi, numero di simboli.
+/// `kallsyms_num_syms` and the names before the markers at `mpos`: position
+/// of num_syms, start of the names, number of symbols.
 fn find_names(image: &[u8], mpos: usize, markers: &[u32]) -> Option<(usize, usize, usize)> {
     let nm = markers.len();
     let last = *markers.last()? as usize;
-    // num_syms è un u32 subito prima dei nomi (allineati a 8).
+    // num_syms is a u32 right before the names (aligned to 8).
     let hi = mpos.checked_sub(last)?;
     let lo = hi.saturating_sub(256 * 260 + 16);
     for p in (lo..hi).rev() {
@@ -264,8 +264,8 @@ fn find_names(image: &[u8], mpos: usize, markers: &[u32]) -> Option<(usize, usiz
     None
 }
 
-/// La tabella kallsyms di un `Image`: simboli con gli indirizzi di
-/// collegamento, in ordine di indirizzo.
+/// The kallsyms table of an `Image`: symbols with link-time
+/// addresses, in address order.
 pub fn extract(image: &[u8]) -> Result<Vec<KSym>, KallsymsError> {
     let tok = find_tokens(image).ok_or(KallsymsError::TokenTable)?;
     let cands = find_markers(image, tok.table);
@@ -274,8 +274,8 @@ pub fn extract(image: &[u8]) -> Result<Vec<KSym>, KallsymsError> {
     }
     let found = cands.iter().find_map(|(mpos, markers)| find_names(image, *mpos, markers));
     let (num_pos, names, n) = found.ok_or(KallsymsError::Names)?;
-    // Offset: dopo l'indice dei token (kernel recenti) o prima di
-    // relative_base e num_syms (kernel più vecchi).
+    // Offsets: after the token index (recent kernels) or before
+    // relative_base and num_syms (older kernels).
     let sorted_at = |o: usize| -> bool {
         let mut prev = 0u32;
         (0..n).all(|i| match u32_at(image, o + 4 * i) {
@@ -317,16 +317,16 @@ pub fn extract(image: &[u8]) -> Result<Vec<KSym>, KallsymsError> {
     Ok(out)
 }
 
-/// `kallsyms_relative_base` a `pos`. Con `--no-apply-dynamic-relocs` (il
-/// kernel arm64 con le rilocazioni RELA) il valore nel file è zero, e sta
-/// nell'addendo della rilocazione R_AARCH64_RELATIVE di quel posto: la si
-/// cerca fra le voci `.rela.dyn` (r_offset = base del kernel + pos).
+/// `kallsyms_relative_base` at `pos`. With `--no-apply-dynamic-relocs` (the
+/// arm64 kernel with RELA relocations) the value in the file is zero, and it lives
+/// in the addend of the R_AARCH64_RELATIVE relocation for that location: it is
+/// looked up among the `.rela.dyn` entries (r_offset = kernel base + pos).
 fn relative_base(image: &[u8], pos: usize) -> Option<u64> {
     let v = u64_at(image, pos)?;
     if v != 0 {
         return Some(v);
     }
-    // Le voci R_AARCH64_RELATIVE (r_offset, 1027, addendo).
+    // The R_AARCH64_RELATIVE entries (r_offset, 1027, addend).
     const R_AARCH64_RELATIVE: u64 = 1027;
     let len = image.len() as u64;
     let mut relas = Vec::new();
@@ -340,9 +340,9 @@ fn relative_base(image: &[u8], pos: usize) -> Option<u64> {
         }
         q += 8;
     }
-    // La base di collegamento dell'`Image` giusta è quella per cui i posti
-    // da rilocare contengono zero nel file (il valore sta nell'addendo):
-    // fra le voci che puntano a `pos`, quella con la base più coerente.
+    // The right link base of the `Image` is the one for which the locations
+    // to relocate contain zero in the file (the value is in the addend):
+    // among the entries pointing to `pos`, the one with the most consistent base.
     let zero_at = |base: u64, r: u64| -> bool {
         r.checked_sub(base).and_then(|o| usize::try_from(o).ok()).and_then(|o| u64_at(image, o)) == Some(0)
     };
@@ -363,8 +363,8 @@ fn relative_base(image: &[u8], pos: usize) -> Option<u64> {
 mod tests {
     use super::*;
 
-    /// Un `Image` finto con la tabella kallsyms nell'ordine dei kernel
-    /// recenti (6.x): nomi senza compressione (ogni token è il suo byte).
+    /// A fake `Image` with the kallsyms table in the order of recent
+    /// kernels (6.x): uncompressed names (every token is its own byte).
     fn fake_image(syms: &[(u32, &str)], zero_base: bool) -> Vec<u8> {
         let base = 0xffff_8000_8000_0000u64;
         let mut img = vec![0u8; 0x100];
@@ -395,7 +395,7 @@ mod tests {
         let mut offs = Vec::new();
         for t in 0..256u32 {
             offs.push((img.len() - table) as u16);
-            // Byte stampabili: se stessi; gli altri un token di due lettere.
+            // Printable bytes: themselves; the others a two-letter token.
             if (0x21..0x7f).contains(&t) {
                 img.push(t as u8);
             } else {
@@ -422,7 +422,7 @@ mod tests {
         img.extend_from_slice(&(if zero_base { 0 } else { base }).to_le_bytes());
         img.extend_from_slice(&[0; 64]);
         if zero_base {
-            // Una voce di .rela.dyn per quel posto.
+            // A .rela.dyn entry for that location.
             img.extend_from_slice(&(base + base_pos as u64).to_le_bytes());
             img.extend_from_slice(&1027u64.to_le_bytes());
             img.extend_from_slice(&base.to_le_bytes());

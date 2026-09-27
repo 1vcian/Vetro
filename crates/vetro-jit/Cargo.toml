@@ -1,6 +1,6 @@
 [package]
 name = "vetro-jit"
-description = "Traduzione a blocchi da AArch64 verso moduli WASM."
+description = "Block translation from AArch64 to WASM modules."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -14,5 +14,5 @@ vetro-cpu = { path = "../vetro-cpu" }
 vetro-mmu = { path = "../vetro-mmu" }
 
 [dev-dependencies]
-# Solo nei test: valida i moduli generati.
+# Tests only: validates the generated modules.
 wasmparser = "0.259"

@@ -1,25 +1,25 @@
-//! Il gestore dei file di M8 (ADR 0020) sul kernel guest di M3: il demone
-//! `vetro-files` nell'initramfs, avviato da `/init` perché c'è virtio-vsock,
-//! e il client di `vetro_machine::files` dall'host.
+//! The M8 file manager (ADR 0020) on the M3 guest kernel: the
+//! `vetro-files` daemon in the initramfs, started by `/init` because there is virtio-vsock,
+//! and the `vetro_machine::files` client from the host.
 //!
-//! - list con i metadati (tipo, dimensione, modo, proprietario, destinazione
-//!   dei collegamenti), lettura di un file piccolo e di uno grande a pezzi
-//!   (1,2 MB, cinque READ), errori del guest (ENOENT, ENOTEMPTY);
-//! - scrittura atomica che conserva modo e proprietario del file sostituito
-//!   (letti dal guest con `stat`), che passa da un collegamento simbolico
-//!   senza toccarlo, file nuovi con il proprietario della cartella, file
-//!   grande scritto a pezzi e confrontato dal guest con `cmp`, nessun file
-//!   temporaneo rimasto; create, mkdir, rename, delete (anche ricorsivo);
-//! - watch con inotify: un processo del guest scrive un file e l'evento
-//!   arriva all'host entro 1 s di tempo del guest; gli eventi dei file
-//!   temporanei del demone non arrivano;
-//! - determinismo: due esecuzioni danno lo stesso log, le stesse istruzioni
-//!   e le stesse risposte;
-//! - record & replay (ADR 0019): la sessione registrata (ogni operazione del
-//!   client passa da `Machine::input`) si rigioca identica dall'avvio, senza
-//!   client.
+//! - list with metadata (type, size, mode, owner, link
+//!   targets), reading of a small file and of a large one in chunks
+//!   (1.2 MB, five READs), guest errors (ENOENT, ENOTEMPTY);
+//! - atomic write that preserves mode and owner of the replaced file
+//!   (read by the guest with `stat`), that goes through a symbolic link
+//!   without touching it, new files with the folder's owner, a large file
+//!   written in chunks and compared by the guest with `cmp`, no temporary
+//!   file left over; create, mkdir, rename, delete (recursive too);
+//! - watch with inotify: a guest process writes a file and the event
+//!   reaches the host within 1 s of guest time; the events of the daemon's
+//!   temporary files don't arrive;
+//! - determinism: two runs give the same log, the same instructions
+//!   and the same responses;
+//! - record & replay (ADR 0019): the recorded session (every operation of the
+//!   client goes through `Machine::input`) replays identically from boot, without
+//!   a client.
 //!
-//! Solo in release, come `vetro.rs`.
+//! Release only, like `vetro.rs`.
 
 use vetro_boot_tests::*;
 use vetro_machine::files::proto::{Kind, mask};
@@ -38,11 +38,11 @@ fn machine() -> Machine {
 
 fn booted(image: &[u8], initrd: &[u8]) -> Machine {
     let mut m = machine();
-    m.load_linux(image, Some(initrd), "console=ttyAMA0 vetro.noautotest").expect("caricamento del kernel");
+    m.load_linux(image, Some(initrd), "console=ttyAMA0 vetro.noautotest").expect("kernel load");
     m
 }
 
-/// Il contenuto di `seq 1 n` di BusyBox.
+/// The output of BusyBox's `seq 1 n`.
 fn seq(n: u32) -> Vec<u8> {
     (1..=n).flat_map(|i| format!("{i}\n").into_bytes()).collect()
 }
@@ -51,15 +51,15 @@ struct Script {
     m: Machine,
     fc: FilesClient,
     log: Vec<u8>,
-    /// Eventi arrivati, con il tempo del guest.
+    /// Events arrived, with the guest time.
     events: Vec<(u64, vetro_machine::files::proto::Event)>,
-    /// Ciò che l'host ha visto, per il confronto fra esecuzioni.
+    /// What the host saw, for the comparison between runs.
     seen: Vec<String>,
 }
 
 impl Script {
-    /// Un quanto, poi il client (non a macchina spenta: un ingresso dopo
-    /// l'ultima istruzione non arriverebbe mai al guest).
+    /// A quantum, then the client (not with the machine off: an input after
+    /// the last instruction would never reach the guest).
     fn quantum(&mut self) -> Stop {
         let s = self.m.run(QUANTUM);
         self.log.extend(self.m.console_output());
@@ -79,14 +79,14 @@ impl Script {
             if let Some(i) = find(&self.log[from.min(self.log.len())..], needle.as_bytes()) {
                 return from + i + needle.len();
             }
-            assert!(self.m.steps < limit, "{needle:?} non arrivato:\n{}", self.tail());
+            assert!(self.m.steps < limit, "{needle:?} did not arrive:\n{}", self.tail());
             let stop = self.quantum();
-            assert_eq!(stop, Stop::Budget, "{stop:?} in attesa di {needle:?}:\n{}", self.tail());
+            assert_eq!(stop, Stop::Budget, "{stop:?} while waiting for {needle:?}:\n{}", self.tail());
         }
     }
 
-    /// Un comando alla shell: la sua uscita (fra due marcatori, così l'eco
-    /// di una riga lunga, che l'editor di ash spezza, non conta).
+    /// A command at the shell: its output (between two markers, so the echo
+    /// of a long line, which ash's editor breaks, doesn't count).
     fn command(&mut self, cmd: &str) -> String {
         let from = self.log.len();
         let line = format!("echo VETRO-OUT-\"\"INIZIO; {cmd}; echo VETRO-OUT-\"\"FINE\n");
@@ -98,7 +98,7 @@ impl Script {
         out[start..out.len() - "VETRO-OUT-FINE".len()].trim_end_matches('\n').to_string()
     }
 
-    /// Esegue finché l'operazione `op` finisce.
+    /// Runs until operation `op` finishes.
     fn wait(&mut self, op: u32) -> Result<Outcome, FilesError> {
         let limit = self.m.steps + PHASE_BUDGET;
         loop {
@@ -112,7 +112,7 @@ impl Script {
                     return c.result;
                 }
             }
-            assert!(self.m.steps < limit, "operazione {op} non finita:\n{}", self.tail());
+            assert!(self.m.steps < limit, "operation {op} not finished:\n{}", self.tail());
             assert_eq!(self.quantum(), Stop::Budget, "{}", self.tail());
         }
     }
@@ -164,8 +164,8 @@ fn session(image: &[u8], initrd: &[u8], record: bool) -> Outcome2 {
     assert_eq!(names, [&b"a.txt"[..], b"grande", b"link"]);
     let a = &entries[0].stat;
     assert_eq!((a.kind, a.mode, a.uid, a.gid, a.size, a.nlink), (Kind::File, 0o100640, 1234, 5678, 5, 1));
-    // Senza SELinux nel guest tmpfs tiene security.selinux come un xattr
-    // qualsiasi: il demone lo legge come su Android.
+    // Without SELinux in the guest tmpfs keeps security.selinux like any other
+    // xattr: the daemon reads it as on Android.
     assert_eq!(a.selinux, "u:object_r:app_data_file:s0:c1");
     assert_eq!(entries[1].stat.selinux, "");
     let big = seq(200_000);
@@ -185,7 +185,7 @@ fn session(image: &[u8], initrd: &[u8], record: bool) -> Outcome2 {
     let Outcome::Stat(d) = s.ok(st) else { panic!() };
     assert_eq!((d.kind, d.uid, d.gid), (Kind::Dir, 4321, 8765));
 
-    // ---- Osservazione e un processo del guest che scrive --------------------
+    // ---- Watch and a guest process that writes ------------------------------
     let w = s.fc.watch("/tmp/f");
     let Outcome::Watch(wd) = s.ok(w) else { panic!() };
     let t0 = s.m.guest_ns();
@@ -197,12 +197,12 @@ fn session(image: &[u8], initrd: &[u8], record: bool) -> Outcome2 {
         {
             break *t;
         }
-        assert!(s.m.steps < limit, "evento di g.txt non arrivato: {:?}", s.events);
+        assert!(s.m.steps < limit, "event for g.txt did not arrive: {:?}", s.events);
         s.quantum();
     };
     let ms = (seen_at - t0) as f64 / 1e6;
-    eprintln!("evento della scrittura del guest dopo {ms:.1} ms di tempo del guest");
-    assert!(seen_at - t0 < 1_000_000_000, "evento dopo {ms} ms (più di 1 s)");
+    eprintln!("event of the guest's write after {ms:.1} ms of guest time");
+    assert!(seen_at - t0 < 1_000_000_000, "event after {ms} ms (more than 1 s)");
     assert!(s.events.iter().any(|(_, e)| e.name == b"g.txt" && e.mask & mask::CREATE != 0));
     s.until(SHELL_PROMPT, 0);
 
@@ -224,17 +224,17 @@ fn session(image: &[u8], initrd: &[u8], record: bool) -> Outcome2 {
         "nuovo contenuto\n640 1234 5678 16\nvetro-dev: xattr user.vetro=valore\n\
          vetro-dev: xattr security.selinux=u:object_r:app_data_file:s0:c1"
     );
-    // Attraverso il collegamento: cambia il file, il collegamento resta.
+    // Through the link: the file changes, the link stays.
     let w = s.fc.write_file("/tmp/f/link", b"via-link\n", 0o600);
     s.ok(w);
     let out = s.command("cat /tmp/f/a.txt; readlink /tmp/f/link; stat -c '%a %u %g' /tmp/f/a.txt");
     assert_eq!(out, "via-link\na.txt\n640 1234 5678");
-    // File nuovo: modo chiesto, proprietario della cartella.
+    // New file: requested mode, owner of the folder.
     let w = s.fc.write_file("/tmp/f/nuovo.txt", b"creato dall'host\n", 0o604);
     let Outcome::Written(st) = s.ok(w) else { panic!() };
     assert_eq!((st.mode, st.uid, st.gid), (0o100604, 4321, 8765));
     assert_eq!(st.selinux, "u:object_r:app_data_file:s0:c57", "contesto della cartella");
-    // Grande, a pezzi: il guest lo confronta con il suo.
+    // Large, in chunks: the guest compares it with its own.
     let w = s.fc.write_file("/tmp/f/copia", &big, 0o644);
     s.ok(w);
     let out = s.command("cmp /tmp/f/grande /tmp/f/copia && echo COPIA-UGUALE");
@@ -258,7 +258,7 @@ fn session(image: &[u8], initrd: &[u8], record: bool) -> Outcome2 {
         out,
         "/tmp/f/vuoto 640 4321 8765 0\n/tmp/f/d 750 4321 8765 60\n/tmp/f/d/spostato.txt 604 4321 8765 17\n\
          creato dall'host\n.\n..\na.txt\ncopia\nd\ng.txt\ngrande\nlink\nvuoto",
-        "nessun file temporaneo rimasto"
+        "no temporary file left over"
     );
     let c = s.fc.delete("/tmp/f/d", false);
     assert_eq!(s.wait(c), Err(FilesError::Errno(39)), "ENOTEMPTY");
@@ -268,13 +268,13 @@ fn session(image: &[u8], initrd: &[u8], record: bool) -> Outcome2 {
     assert_eq!(s.ok(c), Outcome::Done);
     let out = s.command("ls /tmp/f | cat");
     assert_eq!(out, "a.txt\ncopia\ng.txt\ngrande\nlink");
-    // Eventi delle scritture dell'host: il rename al posto del file vero,
-    // mai i file temporanei.
+    // Events of the host's writes: the rename onto the real file,
+    // never the temporary files.
     assert!(s.events.iter().any(|(_, e)| e.name == b"a.txt" && e.mask & mask::MOVED_TO != 0));
     assert!(s.events.iter().all(|(_, e)| !e.name.starts_with(b".vetro-tmp.")), "{:?}", s.events);
     let u = s.fc.unwatch(wd);
     assert_eq!(s.ok(u), Outcome::Done);
-    assert_eq!(s.fc.generation(), 1, "una sola connessione");
+    assert_eq!(s.fc.generation(), 1, "a single connection");
 
     s.m.input(Input::Console(b"poweroff -f\n".to_vec()));
     let limit = s.m.steps + PHASE_BUDGET;
@@ -293,7 +293,7 @@ fn session(image: &[u8], initrd: &[u8], record: bool) -> Outcome2 {
 
 fn kernel() -> Option<(Vec<u8>, Vec<u8>)> {
     if cfg!(debug_assertions) {
-        skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "gestore dei file sul kernel guest solo in release");
+        skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "file manager on the guest kernel only in release");
         return None;
     }
     let Some((image, initrd)) = guest_kernel() else {
@@ -311,18 +311,18 @@ fn gestore_dei_file_nel_guest() {
     let Some((image, initrd)) = kernel() else { return };
     let a = session(&image, &initrd, false);
     std::fs::write(repo_root().join("target/guest-kernel/vetro-files.log"), &a.log).unwrap();
-    eprintln!("gestore dei file: {} istruzioni, {} passi dell'host", a.steps, a.seen.len());
+    eprintln!("file manager: {} instructions, {} host steps", a.steps, a.seen.len());
     let b = session(&image, &initrd, false);
-    assert_eq!(a.steps, b.steps, "istruzioni diverse fra due esecuzioni uguali");
-    assert!(a.log == b.log, "log diversi fra due esecuzioni uguali");
-    assert_eq!(a.seen, b.seen, "risposte diverse fra due esecuzioni uguali");
+    assert_eq!(a.steps, b.steps, "instructions differ between two identical runs");
+    assert!(a.log == b.log, "logs differ between two identical runs");
+    assert_eq!(a.seen, b.seen, "responses differ between two identical runs");
 }
 
 #[test]
 fn gestore_dei_file_registrato_e_rigiocato() {
     let Some((image, initrd)) = kernel() else { return };
     let rec = session(&image, &initrd, true);
-    let log = Log::decode(&rec.recording.expect("registrazione").encode()).expect("il log si rilegge");
+    let log = Log::decode(&rec.recording.expect("recording").encode()).expect("the log reads back");
     let vsock = log
         .events
         .iter()
@@ -331,25 +331,21 @@ fn gestore_dei_file_registrato_e_rigiocato() {
     assert!(vsock > 20, "{vsock} ingressi vsock registrati");
     assert!(
         log.events.iter().all(|e| matches!(e.kind, vetro_machine::record::EventKind::Input(_))),
-        "nessun evento opaco"
+        "no opaque event"
     );
-    // Il replay dall'avvio, senza client: gli ingressi vengono dal log.
+    // The replay from boot, without a client: the inputs come from the log.
     let mut m = booted(&image, &initrd);
-    m.start_replay(&log).expect("stato di partenza");
+    m.start_replay(&log).expect("starting state");
     let mut out = m.console_output();
     let limit = m.steps + 20 * PHASE_BUDGET;
     while matches!(m.replay_status(), Some(ReplayStatus::Running { .. })) {
-        assert!(m.steps < limit, "replay senza fine");
+        assert!(m.steps < limit, "replay without an end");
         m.run(3 * QUANTUM + 17);
         out.extend(m.console_output());
     }
     assert_eq!(m.replay_status(), Some(&ReplayStatus::Finished));
-    assert!(out == rec.log, "log del replay diverso dalla registrazione");
+    assert!(out == rec.log, "replay log differs from the recording");
     assert_eq!(m.steps, rec.steps);
-    assert_eq!(m.digest(), rec.end, "stato finale del replay");
-    eprintln!(
-        "replay del gestore dei file: {} eventi ({vsock} vsock), {} istruzioni",
-        log.events.len(),
-        m.steps
-    );
+    assert_eq!(m.digest(), rec.end, "final state of the replay");
+    eprintln!("file manager replay: {} events ({vsock} vsock), {} instructions", log.events.len(), m.steps);
 }

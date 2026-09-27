@@ -1,12 +1,12 @@
-//! Motore del JIT su wasmtime (ADR 0012): esegue fuori dal browser gli
-//! stessi moduli che nel browser esegue il `WebAssembly` di JavaScript.
+//! JIT engine on wasmtime (ADR 0012): runs outside the browser the
+//! same modules that JavaScript's `WebAssembly` runs in the browser.
 //!
-//! Un solo `Store` con una memoria lineare (`env.mem`, dove sta
-//! `JitState`) e le funzioni `env.ld`/`env.st`, che chiamano il [`Host`]
-//! passato a [`Engine::run`]. Ogni modulo compilato diventa un'istanza nello
-//! stesso store; wasmtime non libera le istanze prima dello store e ne
-//! permette al più 10000: quando `compile` fallisce il driver chiama
-//! [`Engine::reset`], che ricomincia con uno store nuovo.
+//! A single `Store` with one linear memory (`env.mem`, where
+//! `JitState` lives) and the functions `env.ld`/`env.st`, which call the [`Host`]
+//! passed to [`Engine::run`]. Every compiled module becomes an instance in the
+//! same store; wasmtime does not free instances before the store and
+//! allows at most 10000: when `compile` fails the driver calls
+//! [`Engine::reset`], which starts again with a new store.
 
 use std::ptr::NonNull;
 
@@ -17,7 +17,7 @@ use wasmtime::{
     Caller, Instance, Linker, Memory, MemoryType, Ref, RefType, Store, Table, TableType, TypedFunc,
 };
 
-/// Dati dello store: il `Host` della corsa in corso (solo durante `run`).
+/// Store data: the `Host` of the current run (only during `run`).
 struct Ctx {
     host: Option<NonNull<dyn Host + 'static>>,
 }
@@ -27,25 +27,25 @@ pub struct NativeEngine {
     memory: Memory,
     table: Table,
     linker: Linker<Ctx>,
-    /// Il modulo di runtime (`rt.*`), da reistanziare dopo `reset`.
+    /// The runtime module (`rt.*`), to re-instantiate after `reset`.
     runtime: Option<wasmtime::Module>,
 }
 
-/// Modulo compilato e istanziato: una funzione per blocco.
+/// Compiled and instantiated module: one function per block.
 pub struct NativeModule {
     _instance: Instance,
     funcs: Vec<TypedFunc<i32, i32>>,
 }
 
-/// Il `Host` della corsa in corso.
+/// The `Host` of the current run.
 ///
 /// # Safety
-/// Va chiamata solo dentro `NativeEngine::run`, che imposta il puntatore a
-/// un `&mut dyn Host` vivo per tutta la chiamata e lo toglie alla fine.
+/// Must be called only inside `NativeEngine::run`, which sets the pointer to
+/// a `&mut dyn Host` alive for the whole call and clears it at the end.
 unsafe fn host<'a>(caller: &Caller<'_, Ctx>) -> &'a mut dyn Host {
-    let p = caller.data().host.expect("ld/st fuori da una corsa");
-    // SAFETY: vedi sopra; nessun altro riferimento al Host è attivo mentre
-    // il blocco WASM gira.
+    let p = caller.data().host.expect("ld/st outside a run");
+    // SAFETY: see above; no other reference to the Host is live while
+    // the WASM block runs.
     unsafe { &mut *p.as_ptr() }
 }
 
@@ -58,18 +58,18 @@ impl NativeEngine {
     pub fn new() -> Self {
         let mut config = wasmtime::Config::new();
         config.cranelift_opt_level(wasmtime::OptLevel::Speed);
-        let engine = wasmtime::Engine::new(&config).expect("configurazione di wasmtime");
+        let engine = wasmtime::Engine::new(&config).expect("wasmtime configuration");
         let (store, memory, table, linker) = Self::store(&engine);
         NativeEngine { store, memory, table, linker, runtime: None }
     }
 
-    /// Store nuovo con la sua memoria e gli import `env.*`.
+    /// New store with its memory and the `env.*` imports.
     fn store(engine: &wasmtime::Engine) -> (Store<Ctx>, Memory, Table, Linker<Ctx>) {
         let mut store = Store::new(engine, Ctx { host: None });
-        let memory = Memory::new(&mut store, MemoryType::new(1, None)).expect("memoria del JIT");
+        let memory = Memory::new(&mut store, MemoryType::new(1, None)).expect("JIT memory");
         let table =
             Table::new(&mut store, TableType::new(RefType::FUNCREF, TABLE_SIZE, None), Ref::Func(None))
-                .expect("tabella del JIT");
+                .expect("JIT table");
         let mut linker = Linker::new(engine);
         linker.define(&store, "env", "mem", memory).expect("env.mem");
         linker.define(&store, "env", "tbl", table).expect("env.tbl");
@@ -78,7 +78,7 @@ impl NativeEngine {
                 "env",
                 "ld",
                 move |mut caller: Caller<'_, Ctx>, state: i32, va: i64, size: i32| -> i64 {
-                    // SAFETY: chiamata solo da un blocco eseguito da `run`.
+                    // SAFETY: called only from a block executed by `run`.
                     let h = unsafe { host(&caller) };
                     match h.ld(memory.data_mut(&mut caller), va as u64, size as u32) {
                         Ok(v) => v as i64,
@@ -95,7 +95,7 @@ impl NativeEngine {
                 "env",
                 "st",
                 move |mut caller: Caller<'_, Ctx>, state: i32, va: i64, size: i32, value: i64| -> i32 {
-                    // SAFETY: chiamata solo da un blocco eseguito da `run`.
+                    // SAFETY: called only from a block executed by `run`.
                     let h = unsafe { host(&caller) };
                     match h.st(memory.data_mut(&mut caller), va as u64, size as u32, value as u64) {
                         Ok(false) => 0,
@@ -113,7 +113,7 @@ impl NativeEngine {
             .expect("env.st");
         linker
             .func_wrap("env", "vsync", move |mut caller: Caller<'_, Ctx>, state: i32| {
-                // SAFETY: chiamata solo da un blocco eseguito da `run`.
+                // SAFETY: called only from a block executed by `run`.
                 let h = unsafe { host(&caller) };
                 h.vsync(memory.data_mut(&mut caller), state as u32)
             })
@@ -131,7 +131,7 @@ impl NativeEngine {
             .expect("env.simd");
         linker
             .func_wrap("env", "resolve", move |mut caller: Caller<'_, Ctx>, _state: i32| -> i32 {
-                // SAFETY: chiamata solo dal dispatcher eseguito da `run`.
+                // SAFETY: called only from the dispatcher executed by `run`.
                 let h = unsafe { host(&caller) };
                 h.resolve(memory.data_mut(&mut caller)) as i32
             })
@@ -140,9 +140,9 @@ impl NativeEngine {
     }
 }
 
-/// Il JIT della modalità sistema su wasmtime, per `Machine::set_jit`
-/// (configurazione di default, soglia `hot_threshold`; con
-/// `VETRO_JIT_PROFILE=1` conta le istruzioni dell'interprete per classe).
+/// The system-mode JIT on wasmtime, for `Machine::set_jit`
+/// (default configuration, threshold `hot_threshold`; with
+/// `VETRO_JIT_PROFILE=1` it counts the interpreter's instructions by class).
 pub fn system_jit(hot_threshold: u32) -> Box<dyn vetro_jit::SysJitDyn> {
     let profile = std::env::var("VETRO_JIT_PROFILE").is_ok_and(|v| v == "1");
     let cfg = vetro_jit::SysJitConfig { hot_threshold, profile, ..vetro_jit::SysJitConfig::default() };
@@ -156,7 +156,7 @@ impl Default for NativeEngine {
 }
 
 impl NativeEngine {
-    /// Istanzia il runtime nello store e ne offre gli export come `rt.*`.
+    /// Instantiates the runtime in the store and offers its exports as `rt.*`.
     fn link_runtime(&mut self) -> Result<(), String> {
         let Some(m) = &self.runtime else { return Ok(()) };
         let inst = self.linker.instantiate(&mut self.store, m).map_err(|e| format!("{e:#}"))?;
@@ -185,17 +185,17 @@ impl Engine for NativeEngine {
 
     fn run(&mut self, m: &NativeModule, index: u32, state: u32, host: &mut dyn Host) -> u32 {
         let p: NonNull<dyn Host + '_> = NonNull::from(host);
-        // SAFETY: si cancella solo la durata; il puntatore resta valido per
-        // tutta la chiamata e si toglie prima di tornare.
+        // SAFETY: only the lifetime is erased; the pointer stays valid for
+        // the whole call and is cleared before returning.
         let p: NonNull<dyn Host + 'static> = unsafe { std::mem::transmute(p) };
         self.store.data_mut().host = Some(p);
         let r = m.funcs[index as usize].call(&mut self.store, state as i32);
         self.store.data_mut().host = None;
         match r {
             Ok(code) => code as u32,
-            // I moduli del traduttore non hanno trap (niente divisioni per
-            // zero, niente accessi fuori dalla memoria): una trap è un bug.
-            Err(e) => panic!("trap in un blocco del JIT: {e:#}"),
+            // The translator's modules have no traps (no divisions by
+            // zero, no out-of-memory accesses): a trap is a bug.
+            Err(e) => panic!("trap in a JIT block: {e:#}"),
         }
     }
 
@@ -206,9 +206,7 @@ impl Engine for NativeEngine {
     fn place(&mut self, m: &NativeModule, count: u32, base: u32) {
         for i in 0..count {
             let f = *m.funcs[i as usize].func();
-            self.table
-                .set(&mut self.store, (base + i) as u64, Ref::Func(Some(f)))
-                .expect("voce della tabella");
+            self.table.set(&mut self.store, (base + i) as u64, Ref::Func(Some(f))).expect("table entry");
         }
     }
 
@@ -216,12 +214,12 @@ impl Engine for NativeEngine {
         let have = self.memory.data_size(&self.store);
         if have < bytes {
             let pages = (bytes - have).div_ceil(65536) as u64;
-            self.memory.grow(&mut self.store, pages).expect("memoria del JIT");
+            self.memory.grow(&mut self.store, pages).expect("JIT memory");
         }
     }
 
-    /// I blocchi raggiungono solo la memoria dello store: vale per i byte
-    /// dell'host che vi stanno dentro (i test la usano come RAM del guest).
+    /// Blocks reach only the store's memory: this holds for the host's
+    /// bytes that live in it (the tests use it as guest RAM).
     fn host_address(&mut self, p: *const u8, len: usize) -> Option<u32> {
         let base = self.memory.data_ptr(&self.store) as usize;
         let size = self.memory.data_size(&self.store);
@@ -229,13 +227,13 @@ impl Engine for NativeEngine {
         (off.checked_add(len)? <= size && off + len <= u32::MAX as usize).then_some(off as u32)
     }
 
-    /// Store nuovo: le istanze vecchie (e la memoria) si liberano con lui.
+    /// New store: the old instances (and the memory) are freed with it.
     fn reset(&mut self) {
         let (store, memory, table, linker) = Self::store(self.store.engine());
         self.store = store;
         self.memory = memory;
         self.table = table;
         self.linker = linker;
-        self.link_runtime().expect("runtime del JIT");
+        self.link_runtime().expect("JIT runtime");
     }
 }

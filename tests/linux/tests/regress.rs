@@ -1,6 +1,6 @@
-//! Regressioni del kernel emulato trovate in revisione: `tests/linux/c/
-//! regress.c` stampa l'esito di ogni caso, e Vetro deve stampare quello che
-//! stampa QEMU (che passa le syscall al kernel dell'host).
+//! Regressions of the emulated kernel found in review: `tests/linux/c/
+//! regress.c` prints the outcome of each case, and Vetro must print what
+//! QEMU prints (which passes the syscalls to the host kernel).
 
 use vetro_linux_tests::{case, guest_bin};
 

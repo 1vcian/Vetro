@@ -1,17 +1,17 @@
-//! La piattaforma virt montata: bus con GIC, UART, RTC, GPIO e 32 slot
-//! virtio-mmio, più il timer generico della CPU 0 e il cablaggio delle
-//! linee IRQ.
+//! The assembled virt platform: bus with GIC, UART, RTC, GPIO and 32
+//! virtio-mmio slots, plus CPU 0's generic timer and the wiring of the
+//! IRQ lines.
 //!
-//! La CPU (M3) userà `bus` per gli accessi MMIO fuori dalla RAM, `gic_mut`
-//! per i registri ICC_* e `timer` per i registri CNT*. Il motore chiama
-//! [`Virt::service_virtio`] dopo gli accessi MMIO agli slot virtio e
-//! periodicamente (dati in arrivo dai backend), poi [`Virt::update_irqs`];
-//! quest'ultimo anche dopo ogni accesso MMIO e quando il contatore supera
-//! la prossima scadenza del timer.
+//! The CPU (M3) will use `bus` for MMIO accesses outside RAM, `gic_mut`
+//! for the ICC_* registers and `timer` for the CNT* registers. The engine calls
+//! [`Virt::service_virtio`] after MMIO accesses to the virtio slots and
+//! periodically (incoming data from the backends), then [`Virt::update_irqs`];
+//! the latter also after every MMIO access and when the counter passes
+//! the next timer deadline.
 //!
-//! I dispositivi virtio si montano con [`Virt::attach_virtio`] (slot
-//! scelto) o [`Virt::attach_virtio_next`] (primo slot libero dall'alto,
-//! come fa QEMU con i `-device` in ordine di riga di comando).
+//! virtio devices are attached with [`Virt::attach_virtio`] (chosen
+//! slot) or [`Virt::attach_virtio_next`] (first free slot from the top,
+//! as QEMU does with `-device` in command-line order).
 
 use crate::bus::{Bus, DeviceId};
 use crate::gic::{self, Gic};
@@ -22,14 +22,14 @@ use crate::pl061::Pl061;
 use crate::timer::GenericTimer;
 use crate::virtio::{GuestRam, VirtioDevice, VirtioMmio};
 
-/// Errore nel montaggio di un dispositivo virtio.
+/// Error attaching a virtio device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VirtioSlotError {
-    /// Lo slot non esiste (validi: 0..32).
+    /// The slot does not exist (valid: 0..32).
     NoSuchSlot(u32),
-    /// Lo slot ha già un dispositivo.
+    /// The slot already has a device.
     Occupied(u32),
-    /// Tutti gli slot sono occupati.
+    /// All slots are occupied.
     Full,
 }
 
@@ -40,12 +40,12 @@ pub struct Virt {
     uart: DeviceId,
     rtc: DeviceId,
     gpio: DeviceId,
-    /// Trasporto dello slot `k` (base `VIRTIO_BASE + k * VIRTIO_SLOT_SIZE`).
+    /// Transport of slot `k` (base `VIRTIO_BASE + k * VIRTIO_SLOT_SIZE`).
     virtio: [DeviceId; map::VIRTIO_SLOTS as usize],
 }
 
 impl Virt {
-    /// Piattaforma con l'RTC inizializzato a `now_secs` (tempo esterno).
+    /// Platform with the RTC initialised to `now_secs` (external time).
     pub fn new(now_secs: u64) -> Self {
         let mut bus = Bus::new();
         let gic = bus.map(map::GICD_BASE, gic::MMIO_SIZE, "gicv3", Box::new(Gic::new())).unwrap();
@@ -59,7 +59,7 @@ impl Virt {
         Self { bus, timer: GenericTimer::default(), gic, uart, rtc, gpio, virtio }
     }
 
-    /// Trasporto virtio-mmio dello slot `slot`.
+    /// virtio-mmio transport of slot `slot`.
     pub fn virtio(&self, slot: u32) -> Option<&VirtioMmio> {
         let id = *self.virtio.get(slot as usize)?;
         self.bus.device(id)
@@ -70,8 +70,8 @@ impl Virt {
         self.bus.device_mut(id)
     }
 
-    /// Monta `dev` nello slot `slot`; la sua linea è lo SPI
-    /// `VIRTIO_SPI_BASE + slot`, già descritto nel device tree.
+    /// Attaches `dev` to slot `slot`; its line is SPI
+    /// `VIRTIO_SPI_BASE + slot`, already described in the device tree.
     pub fn attach_virtio(&mut self, slot: u32, dev: Box<dyn VirtioDevice>) -> Result<(), VirtioSlotError> {
         let t = self.virtio_mut(slot).ok_or(VirtioSlotError::NoSuchSlot(slot))?;
         if t.device().is_some() {
@@ -81,9 +81,9 @@ impl Virt {
         Ok(())
     }
 
-    /// Monta `dev` nello slot libero più alto e ne restituisce il numero.
-    /// Come QEMU virt: il primo `-device virtio-*-device` finisce nello
-    /// slot 31 (0x0A00_3E00), il secondo nel 30, e così via.
+    /// Attaches `dev` to the highest free slot and returns its number.
+    /// Like QEMU virt: the first `-device virtio-*-device` ends up in
+    /// slot 31 (0x0A00_3E00), the second in 30, and so on.
     pub fn attach_virtio_next(&mut self, dev: Box<dyn VirtioDevice>) -> Result<u32, VirtioSlotError> {
         let slot = (0..map::VIRTIO_SLOTS as u32)
             .rev()
@@ -93,7 +93,7 @@ impl Virt {
         Ok(slot)
     }
 
-    /// Fa lavorare tutti i dispositivi virtio montati (vedi
+    /// Makes all attached virtio devices do their work (see
     /// [`VirtioMmio::service`]).
     pub fn service_virtio(&mut self, ram: &mut dyn GuestRam) {
         for id in self.virtio {
@@ -125,14 +125,14 @@ impl Virt {
     pub fn gpio(&self) -> &Pl061 {
         self.bus.device(self.gpio).unwrap()
     }
-    /// Il GPIO: l'host preme e rilascia il tasto di spegnimento con
-    /// `set_input(pl061::POWER_KEY_LINE, ..)`, poi chiama `update_irqs`.
+    /// The GPIO: the host presses and releases the power key with
+    /// `set_input(pl061::POWER_KEY_LINE, ..)`, then calls `update_irqs`.
     pub fn gpio_mut(&mut self) -> &mut Pl061 {
         self.bus.device_mut(self.gpio).unwrap()
     }
 
-    /// Porta al GIC il livello di tutte le linee: timer (PPI 27 e 30),
-    /// UART (SPI 1), RTC (SPI 2), GPIO (SPI 7) e virtio (SPI 16 + slot).
+    /// Brings the level of all lines to the GIC: timer (PPI 27 and 30),
+    /// UART (SPI 1), RTC (SPI 2), GPIO (SPI 7) and virtio (SPI 16 + slot).
     pub fn update_irqs(&mut self, cntpct: u64) {
         let timer = self.timer.irq_lines(cntpct);
         let uart = self.uart().irq_level();
@@ -152,7 +152,7 @@ impl Virt {
         }
     }
 
-    /// Linea IRQ verso la CPU 0.
+    /// IRQ line to CPU 0.
     pub fn irq_line(&self) -> bool {
         self.gic().irq_line()
     }
@@ -160,9 +160,9 @@ impl Virt {
 
 // ---- Snapshot (M6, ADR 0015) -------------------------------------------------
 
-/// Tutti i dispositivi della piattaforma, ciascuno nella sua sezione: timer,
-/// GIC, UART, RTC, GPIO e i 32 slot virtio (uno slot vuoto salva solo il
-/// suo DeviceID 0). Il bus non ha stato: le regioni le fissa `Virt::new`.
+/// All platform devices, each in its own section: timer,
+/// GIC, UART, RTC, GPIO and the 32 virtio slots (an empty slot saves only its
+/// DeviceID 0). The bus has no state: the regions are fixed by `Virt::new`.
 impl vetro_snapshot::Snapshot for Virt {
     fn save(&self, w: &mut vetro_snapshot::Writer) {
         w.section(b"TIMR", |w| w.put(&self.timer));
@@ -173,7 +173,7 @@ impl vetro_snapshot::Snapshot for Virt {
         for k in 0..map::VIRTIO_SLOTS as u32 {
             w.section(b"VIO ", |w| {
                 w.u64(u64::from(k));
-                w.put(self.virtio(k).expect("32 slot"));
+                w.put(self.virtio(k).expect("32 slots"));
             });
         }
     }
@@ -195,8 +195,8 @@ impl vetro_snapshot::Snapshot for Virt {
         part(r, b"GPIO", self.gpio_mut())?;
         for k in 0..map::VIRTIO_SLOTS as u32 {
             let mut sec = r.section(b"VIO ")?;
-            sec.expect_u64("slot virtio", u64::from(k))?;
-            sec.get(self.virtio_mut(k).expect("32 slot"))?;
+            sec.expect_u64("virtio slot", u64::from(k))?;
+            sec.get(self.virtio_mut(k).expect("32 slots"))?;
             sec.finish()?;
         }
         Ok(())
@@ -235,7 +235,7 @@ mod tests {
             assert_eq!(v.bus.read(base + virtio::MAGIC_VALUE, 4), Some(u64::from(virtio::MAGIC)));
         }
         assert_eq!(v.bus.read(map::VIRTIO_BASE + 32 * map::VIRTIO_SLOT_SIZE, 4), None);
-        assert_eq!(v.bus.read(map::RAM_BASE, 4), None, "la RAM non passa dal bus MMIO");
+        assert_eq!(v.bus.read(map::RAM_BASE, 4), None, "RAM does not go through the MMIO bus");
         assert_eq!(v.bus.read(0x0900_2000, 4), None);
     }
 
@@ -257,7 +257,7 @@ mod tests {
         v.bus.write(map::UART_BASE + pl011::CR, 4, 0x301);
         v.bus.write(map::UART_BASE + pl011::IMSC, 4, u64::from(pl011::INT_RX));
         v.uart_mut().push_input(b"k");
-        assert!(!v.irq_line(), "serve update_irqs");
+        assert!(!v.irq_line(), "update_irqs is needed");
         v.update_irqs(0);
         assert!(v.irq_line());
         assert_eq!(v.gic_mut().read_iar1(), u64::from(intid));
@@ -278,7 +278,7 @@ mod tests {
         assert!(!v.irq_line());
         v.update_irqs(1000);
         assert_eq!(v.gic_mut().read_iar1(), u64::from(map::PPI_VTIMER));
-        // Il guest spegne il timer nell'handler, poi EOI.
+        // The guest turns the timer off in the handler, then EOI.
         v.timer.set_cntv_ctl(0);
         v.update_irqs(1001);
         v.gic_mut().write_eoir1(u64::from(map::PPI_VTIMER));
@@ -299,9 +299,9 @@ mod tests {
         assert_eq!(v.bus.read(map::RTC_BASE + pl031::DR, 4), Some(106));
     }
 
-    /// Tasto di spegnimento (linea 3 del PL061) programmato come fa Linux
-    /// per gpio-keys (entrambi i fronti): pressione e rilascio arrivano
-    /// all'INTID 39.
+    /// Power key (line 3 of the PL061) programmed the way Linux does
+    /// for gpio-keys (both edges): press and release arrive
+    /// at INTID 39.
     #[test]
     fn tasto_di_spegnimento_sullo_spi_7() {
         let mut v = Virt::new(0);
@@ -342,14 +342,14 @@ mod tests {
     #[test]
     fn scelta_degli_slot_virtio() {
         let mut v = Virt::new(0);
-        assert_eq!(v.attach_virtio_next(disco()), Ok(31), "come QEMU: dall'alto");
+        assert_eq!(v.attach_virtio_next(disco()), Ok(31), "like QEMU: from the top");
         assert_eq!(v.attach_virtio_next(disco()), Ok(30));
         assert_eq!(v.attach_virtio(31, disco()), Err(VirtioSlotError::Occupied(31)));
         assert_eq!(v.attach_virtio(32, disco()), Err(VirtioSlotError::NoSuchSlot(32)));
         assert_eq!(v.attach_virtio(5, disco()), Ok(()));
         assert_eq!(v.bus.read(slot_base(5) + vio::DEVICE_ID, 4), Some(u64::from(vio::ID_BLOCK)));
         assert_eq!(v.bus.read(slot_base(31) + vio::DEVICE_ID, 4), Some(u64::from(vio::ID_BLOCK)));
-        assert_eq!(v.bus.read(slot_base(4) + vio::DEVICE_ID, 4), Some(0), "slot libero");
+        assert_eq!(v.bus.read(slot_base(4) + vio::DEVICE_ID, 4), Some(0), "free slot");
         assert_eq!(v.bus.read(slot_base(4) + vio::MAGIC_VALUE, 4), Some(u64::from(vio::MAGIC)));
         assert!(v.virtio(5).unwrap().device_as::<VirtioBlk>().is_some());
         for k in 0..32 {
@@ -360,7 +360,7 @@ mod tests {
         assert_eq!(v.attach_virtio_next(disco()), Err(VirtioSlotError::Full));
     }
 
-    /// Il driver di prova che passa dal bus della piattaforma.
+    /// The test driver that goes through the platform bus.
     struct Porta {
         v: Virt,
         slot: u32,
@@ -395,21 +395,21 @@ mod tests {
         let (reg, bit) = (u64::from(intid / 32) * 4, intid % 32);
         v.bus.write(map::GICD_BASE + GICD_IGROUPR + reg, 4, 0xFFFF_FFFF);
         v.bus.write(map::GICD_BASE + GICD_ISENABLER + reg, 4, 1 << bit);
-        // A fronte di salita, come dichiarato nel device tree.
+        // Rising edge, as declared in the device tree.
         let cfg_reg = u64::from(intid / 16) * 4;
         v.bus.write(map::GICD_BASE + GICD_ICFGR + cfg_reg, 4, 2 << ((intid % 16) * 2));
 
         let mut d = Driver::new(Porta { v, slot });
         d.init(u64::MAX, 8);
-        let h = d.buf(&[0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]); // IN, settore 1
+        let h = d.buf(&[0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]); // IN, sector 1
         let data = d.alloc(512, 8);
         let st = d.buf(&[0xFF]);
         d.add(0, &[(h, 16, false), (data, 512, true), (st, 1, true)]);
-        assert!(!d.t.v.irq_line(), "prima del servizio niente interrupt");
+        assert!(!d.t.v.irq_line(), "no interrupt before servicing");
         d.service();
         assert!(d.t.v.irq_line());
         assert_eq!(d.t.v.gic_mut().read_iar1(), u64::from(intid));
-        // Handler del guest: legge e riconosce InterruptStatus, consuma lo used ring.
+        // Guest handler: reads and acknowledges InterruptStatus, consumes the used ring.
         assert_eq!(d.irq(), vio::INT_VRING);
         assert_eq!(d.pop_used(0).map(|u| u.1), Some(513));
         assert_eq!(d.mem(st, 1), [0]);

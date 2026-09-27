@@ -1,15 +1,15 @@
-//! Inoltro di porte: connessioni TCP aperte dall'host verso un servizio del
-//! guest (come `hostfwd` della rete user di QEMU).
+//! Port forwarding: TCP connections opened by the host to a service of the
+//! guest (like the `hostfwd` of QEMU's user network).
 //!
-//! Lo stack fa da client TCP verso il guest: il SYN parte dal gateway
-//! (10.0.2.2, come slirp traduce le connessioni da localhost) da una porta
-//! effimera scelta in modo deterministico. Dal SYN-ACK in poi la connessione
-//! è la stessa macchina a stati delle connessioni del guest (`tcp.rs`); al
-//! posto dell'upstream c'è [`HostSide`], che tiene i byte in coda nei due
-//! versi. L'host (la piattaforma: `vetro boot --hostfwd`, il browser) mette
-//! byte in coda e li legge con i metodi `Stack::host_*`: nessun socket vero
-//! nel core, tutto sincrono e deterministico. Le azioni dell'host hanno
-//! effetto al successivo `Stack::poll`.
+//! The stack acts as a TCP client towards the guest: the SYN leaves from the gateway
+//! (10.0.2.2, as slirp translates connections from localhost) from an
+//! ephemeral port chosen deterministically. From the SYN-ACK on the connection
+//! is the same state machine as the guest's connections (`tcp.rs`); in
+//! place of the upstream there is [`HostSide`], which keeps the bytes queued in both
+//! directions. The host (the platform: `vetro boot --hostfwd`, the browser) queues
+//! bytes and reads them with the `Stack::host_*` methods: no real socket
+//! in the core, everything synchronous and deterministic. The host's actions take
+//! effect at the next `Stack::poll`.
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -17,69 +17,69 @@ use crate::events::CloseReason;
 use crate::upstream::{TcpRead, TcpStatus, Upstream};
 use crate::{ConnId, Flow, VirtualTime};
 
-/// Byte al massimo in coda in ciascun verso per connessione: oltre,
-/// `Stack::host_send` accetta meno byte (contropressione verso l'host) e il
-/// guest vede la finestra chiudersi finché l'host non legge.
+/// Maximum bytes queued in each direction per connection: beyond that,
+/// `Stack::host_send` accepts fewer bytes (backpressure towards the host) and the
+/// guest sees the window close until the host reads.
 pub const HOST_BUFFER: usize = 256 * 1024;
 
-/// Prima porta effimera del gateway per le connessioni dell'host (quelle di
-/// Linux partono da 32768; qui l'intervallo IANA 49152..=65535).
+/// First ephemeral port of the gateway for the host's connections (Linux's
+/// start from 32768; here the IANA range 49152..=65535).
 pub const FIRST_EPHEMERAL_PORT: u16 = 49152;
 
-/// Stato di una connessione aperta dall'host verso il guest.
+/// State of a connection opened by the host to the guest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HostConnState {
-    /// SYN mandato (o da mandare al prossimo `poll`), nessuna risposta.
+    /// SYN sent (or to be sent at the next `poll`), no answer.
     Connecting,
-    /// Handshake completato: i byte scorrono (anche durante la chiusura).
+    /// Handshake completed: the bytes flow (also during the close).
     Open,
-    /// Finita: `Normal` dopo FIN nei due versi, `Refused` se il guest ha
-    /// risposto RST al SYN (nessuno in ascolto), `GuestReset` per un RST del
-    /// guest, `RemoteReset` dopo `Stack::host_abort`, `Timeout` se il guest
-    /// non risponde.
+    /// Finished: `Normal` after FIN in both directions, `Refused` if the guest
+    /// answered RST to the SYN (nobody listening), `GuestReset` for an RST from the
+    /// guest, `RemoteReset` after `Stack::host_abort`, `Timeout` if the guest
+    /// doesn't answer.
     Closed(CloseReason),
 }
 
-/// Quel che l'host vede di una sua connessione.
+/// What the host sees of one of its connections.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HostConnInfo {
     pub state: HostConnState,
     pub flow: Flow,
-    /// Byte del guest pronti per `Stack::host_recv`.
+    /// Guest bytes ready for `Stack::host_recv`.
     pub readable: usize,
     /// Spazio per `Stack::host_send`.
     pub writable: usize,
-    /// Il guest ha chiuso il suo verso (FIN) e l'host ha letto tutto.
+    /// The guest has closed its direction (FIN) and the host has read everything.
     pub guest_eof: bool,
-    /// Byte che l'host ha messo in coda e il guest non ha ancora preso
-    /// (lo stack li prende quando la finestra del guest lo permette).
+    /// Bytes the host has queued and the guest hasn't taken yet
+    /// (the stack takes them when the guest's window allows it).
     pub unsent: usize,
 }
 
-/// Lato host di una connessione.
+/// Host side of a connection.
 #[derive(Debug)]
 pub(crate) struct HostEnd {
     pub flow: Flow,
-    /// Aperta con `host_connect`, SYN non ancora mandato.
+    /// Opened with `host_connect`, SYN not sent yet.
     pub pending_open: bool,
     pub to_guest: VecDeque<u8>,
     pub from_guest: VecDeque<u8>,
-    /// L'host ha chiuso il suo verso: FIN dopo `to_guest`.
+    /// The host has closed its direction: FIN after `to_guest`.
     pub shutdown: bool,
-    /// L'host ha chiesto l'interruzione (RST al prossimo `poll`).
+    /// The host has requested the abort (RST at the next `poll`).
     pub abort: bool,
-    /// FIN del guest arrivato (dopo tutti i suoi dati).
+    /// Guest FIN arrived (after all its data).
     pub guest_fin: bool,
     pub closed: Option<CloseReason>,
-    /// L'host l'ha rilasciata prima della fine: sparisce appena chiusa.
+    /// The host released it before the end: it disappears as soon as it is closed.
     pub released: bool,
 }
 
-/// L'"upstream" delle connessioni dell'host: le code di byte.
+/// The "upstream" of the host's connections: the byte queues.
 #[derive(Debug, Default)]
 pub(crate) struct HostSide {
     pub conns: BTreeMap<ConnId, HostEnd>,
-    /// Prossima porta effimera da provare.
+    /// Next ephemeral port to try.
     pub next_port: u16,
 }
 
@@ -122,7 +122,7 @@ impl Upstream for HostSide {
     }
 
     fn tcp_close(&mut self, _now: VirtualTime, _id: ConnId, _reset: bool) {
-        // Il motivo lo copia lo stack dalla connessione (`reap_tcp`).
+        // The stack copies the reason from the connection (`reap_tcp`).
     }
 
     fn udp_send(&mut self, _now: VirtualTime, _id: ConnId, _flow: Flow, _data: &[u8]) {}

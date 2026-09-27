@@ -1,26 +1,26 @@
-//! Valori dei registri di identificazione e di reset della Cortex-A53.
+//! Values of the Cortex-A53 identification and reset registers.
 //!
-//! Letti da `qemu-system-aarch64 -M virt,gic-version=3 -cpu cortex-a53`
-//! (QEMU 10.0.13) con un programma bare-metal. Unica differenza voluta:
-//! ID_AA64PFR0_EL1.EL0/EL1 dichiarano solo AArch64 (1) invece di AArch64 e
-//! AArch32 (2), perché Vetro non implementa AArch32 (ADR 0005 e 0009).
+//! Read from `qemu-system-aarch64 -M virt,gic-version=3 -cpu cortex-a53`
+//! (QEMU 10.0.13) with a bare-metal program. Only intended difference:
+//! ID_AA64PFR0_EL1.EL0/EL1 declare AArch64 only (1) instead of AArch64 and
+//! AArch32 (2), because Vetro does not implement AArch32 (ADR 0005 and 0009).
 
-/// MIDR_EL1: Arm, variante 0, Cortex-A53 (0xd03), revisione 4.
+/// MIDR_EL1: Arm, variant 0, Cortex-A53 (0xd03), revision 4.
 pub const MIDR_EL1: u64 = 0x410f_d034;
 pub const REVIDR_EL1: u64 = 0x0000_0100;
 pub const CTR_EL0: u64 = 0x8444_8004;
-/// DCZID_EL0.BS: blocchi di DC ZVA da 2^4 parole = 64 byte.
+/// DCZID_EL0.BS: DC ZVA blocks of 2^4 words = 64 bytes.
 pub const DCZID_BS: u64 = 4;
-/// L1 dati e istruzioni separate, L2 unificata; LoUU = LoUIS = 1, LoC = 2.
+/// Separate L1 data and instruction, unified L2; LoUU = LoUIS = 1, LoC = 2.
 pub const CLIDR_EL1: u64 = 0x0a20_0023;
-/// CCSIDR_EL1 per CSSELR_EL1 = 0 (L1 D, 32 KiB), 1 (L1 I, 32 KiB), 2 (L2,
-/// 1 MiB); gli altri valgono 0.
+/// CCSIDR_EL1 for CSSELR_EL1 = 0 (L1 D, 32 KiB), 1 (L1 I, 32 KiB), 2 (L2,
+/// 1 MiB); the others are 0.
 pub const CCSIDR_EL1: [u64; 3] = [0x700f_e01a, 0x203f_e002, 0x707f_e07a];
-/// SCTLR_EL1 al reset (come QEMU per la Cortex-A53).
+/// SCTLR_EL1 at reset (like QEMU for the Cortex-A53).
 pub const SCTLR_EL1_RESET: u64 = 0x00c5_0838;
 
-/// Registro dello spazio degli ID con indice `CRm * 8 + op2` (op0 = 3,
-/// op1 = 0, CRn = 0, CRm = 1..=7). Le codifiche riservate valgono zero.
+/// ID space register with index `CRm * 8 + op2` (op0 = 3,
+/// op1 = 0, CRn = 0, CRm = 1..=7). Reserved encodings are zero.
 pub fn id_reg(index: u8, gicv3: bool) -> u64 {
     let gic = u64::from(gicv3);
     match index {
@@ -40,10 +40,10 @@ pub fn id_reg(index: u8, gicv3: bool) -> u64 {
         24 => 0x1011_0222,             // MVFR0_EL1
         25 => 0x1211_1111,             // MVFR1_EL1
         26 => 0x0000_0043,             // MVFR2_EL1
-        32 => 0x0000_0011 | gic << 24, // ID_AA64PFR0_EL1: EL0/EL1 solo AArch64, FP e AdvSIMD
-        40 => 0x1030_5106,             // ID_AA64DFR0_EL1: 6 breakpoint, 4 watchpoint, PMUv3
+        32 => 0x0000_0011 | gic << 24, // ID_AA64PFR0_EL1: EL0/EL1 AArch64 only, FP and AdvSIMD
+        40 => 0x1030_5106,             // ID_AA64DFR0_EL1: 6 breakpoints, 4 watchpoints, PMUv3
         48 => 0x0001_1120,             // ID_AA64ISAR0_EL1: AES+PMULL, SHA1, SHA256, CRC32
-        56 => 0x0000_1122,             // ID_AA64MMFR0_EL1: PA 40 bit, ASID 16 bit, 4K e 64K
+        56 => 0x0000_1122,             // ID_AA64MMFR0_EL1: PA 40 bits, ASID 16 bits, 4K and 64K
         _ => 0,
     }
 }

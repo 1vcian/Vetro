@@ -1,33 +1,33 @@
-//! Programmi di test con stato iniziale noto e dump dello stato finale.
+//! Test programs with a known initial state and a dump of the final state.
 //!
-//! Layout del programma:
-//! - **prologo**: SP = [`STACK_TOP`], V0–V31, FPCR, FPSR, NZCV, x0–x30 ai
-//!   valori dati;
-//! - **corpo**: le istruzioni sotto test;
-//! - **epilogo**: scrive x0–x30, SP, NZCV, V0–V31, FPCR e FPSR nel buffer di
-//!   dump e li manda su stdout insieme al blocco di memoria, poi `exit(0)`.
+//! Program layout:
+//! - **prologue**: SP = [`STACK_TOP`], V0–V31, FPCR, FPSR, NZCV, x0–x30 at the
+//!   given values;
+//! - **body**: the instructions under test;
+//! - **epilogue**: writes x0–x30, SP, NZCV, V0–V31, FPCR and FPSR into the dump
+//!   buffer and sends them to stdout together with the memory block, then `exit(0)`.
 //!
-//! Convenzioni per il corpo: x28 ([`BASE_REG`]) punta al centro del blocco di
-//! memoria e l'epilogo lo usa come base, quindi il corpo non deve lasciarlo
-//! modificato. x27 ([`INDEX_REG`]) è un indice piccolo per gli
-//! indirizzamenti a registro.
+//! Conventions for the body: x28 ([`BASE_REG`]) points to the middle of the memory
+//! block and the epilogue uses it as a base, so the body must not leave it
+//! modified. x27 ([`INDEX_REG`]) is a small index for
+//! register addressing.
 
 use crate::a64;
 use crate::elf::{self, RW_BASE, Rw};
 
-/// Byte del blocco di memoria a [`RW_BASE`], inizializzato dal programma.
+/// Bytes of the memory block at [`RW_BASE`], initialised by the program.
 pub const MEM_SIZE: usize = 0x1000;
 pub const BASE_REG: u32 = 28;
 pub const INDEX_REG: u32 = 27;
-/// Valore di x28: centro del blocco di memoria.
+/// Value of x28: middle of the memory block.
 pub const BASE_PTR: u64 = RW_BASE + 0x800;
-const DUMP_OFF: u32 = 0x800; // rispetto a BASE_PTR: RW_BASE + 0x1000
+const DUMP_OFF: u32 = 0x800; // relative to BASE_PTR: RW_BASE + 0x1000
 const DUMP_WORDS: usize = 33; // x0..x30, sp, nzcv
-/// Nel dump: V0–V31 da questo offset, poi FPCR e FPSR.
+/// In the dump: V0–V31 from this offset, then FPCR and FPSR.
 const DUMP_V: usize = 0x200;
 const DUMP_FP: usize = 0x400;
 const DUMP_LEN: usize = 0x410;
-/// Valori iniziali di V0–V31 nel segmento RW.
+/// Initial values of V0–V31 in the RW segment.
 const VINIT_OFF: u64 = 0x2000;
 pub const STACK_TOP: u64 = RW_BASE + 0x4000;
 const RW_MEMSZ: u64 = 0x4000;
@@ -36,7 +36,7 @@ const RW_MEMSZ: u64 = 0x4000;
 pub struct Program {
     pub x: [u64; 31],
     pub v: [u128; 32],
-    /// Flag nei bit 31:28.
+    /// Flags in bits 31:28.
     pub nzcv: u32,
     pub fpcr: u32,
     pub fpsr: u32,
@@ -44,7 +44,7 @@ pub struct Program {
     pub body: Vec<u32>,
 }
 
-/// Istruzioni del prologo: il corpo inizia a questo indice.
+/// Prologue instructions: the body starts at this index.
 pub const PROLOGUE_LEN: usize = 4 + 1 + 4 + 16 + 4 + 1 + 4 + 1 + 4 + 1 + 31 * 4;
 
 impl Program {
@@ -54,7 +54,7 @@ impl Program {
         Program { x, v: [0; 32], nzcv: 0, fpcr: 0, fpsr: 0, mem: vec![0; MEM_SIZE], body }
     }
 
-    /// Indice (nell'immagine) dell'istruzione `i` del corpo.
+    /// Index (in the image) of instruction `i` of the body.
     pub fn body_index(i: usize) -> usize {
         PROLOGUE_LEN + i
     }
@@ -163,7 +163,7 @@ impl Dump {
         })
     }
 
-    /// Differenze leggibili rispetto a `other` (vuoto se identici).
+    /// Readable differences with respect to `other` (empty if identical).
     pub fn diff(&self, other: &Dump) -> String {
         let mut s = String::new();
         for r in 0..31 {
@@ -197,22 +197,22 @@ impl Dump {
     }
 }
 
-/// Esito di un'esecuzione, comparabile tra Vetro e QEMU.
+/// Outcome of a run, comparable between Vetro and QEMU.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Run {
     Dump(Box<Dump>),
     Signal(i32),
-    /// Qualsiasi altro esito (uscita inattesa, syscall mancante, timeout).
+    /// Any other outcome (unexpected exit, missing syscall, timeout).
     Other(String),
 }
 
-/// Esegue su Vetro con l'interprete.
+/// Runs on Vetro with the interpreter.
 pub fn run_vetro(image: &[u8]) -> Run {
     run_vetro_with(image, false)
 }
 
-/// Esegue su Vetro col JIT (M4), traducendo ogni blocco dalla prima
-/// esecuzione: i programmi di test passano quasi sempre una volta sola.
+/// Runs on Vetro with the JIT (M4), translating each block from the first
+/// execution: the test programs almost always pass only once.
 pub fn run_vetro_jit(image: &[u8]) -> Run {
     run_vetro_with(image, true)
 }
@@ -227,7 +227,7 @@ fn run_vetro_with(image: &[u8], jit: bool) -> Run {
     match out.exit {
         Exit::Code(0) => match Dump::parse(&out.stdout) {
             Some(d) => Run::Dump(Box::new(d)),
-            None => Run::Other(format!("stdout di {} byte", out.stdout.len())),
+            None => Run::Other(format!("stdout of {} bytes", out.stdout.len())),
         },
         Exit::Signal { signo, .. } => Run::Signal(signo),
         Exit::Unimplemented { .. } => Run::Signal(4),
@@ -258,7 +258,7 @@ pub fn run_qemu(qemu: &std::path::Path, name: &str, image: &[u8]) -> Run {
     }
 }
 
-/// Differenza leggibile tra due esiti (vuota se coincidono).
+/// Readable difference between two outcomes (empty if they match).
 pub fn compare(vetro: &Run, qemu: &Run) -> String {
     match (vetro, qemu) {
         (Run::Dump(a), Run::Dump(b)) => a.diff(b),
@@ -269,7 +269,7 @@ pub fn compare(vetro: &Run, qemu: &Run) -> String {
 
 fn summary(r: &Run) -> String {
     match r {
-        Run::Dump(_) => "uscita regolare con dump".into(),
+        Run::Dump(_) => "regular exit with dump".into(),
         Run::Signal(s) => format!("segnale {s}"),
         Run::Other(s) => s.clone(),
     }

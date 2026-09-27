@@ -1,4 +1,4 @@
-//! La MMU di un core: registri, TLB e ultimo fault.
+//! The MMU of a core: registers, TLB and last fault.
 
 use vetro_cpu::Access;
 
@@ -9,24 +9,24 @@ use crate::walk::{
     Perms, PhysMemory, Translation, check, check_device_alignment, fault, mmu_off, select, walk_tables,
 };
 
-/// Voci della cache delle traduzioni recenti: una per slot del TLB.
+/// Entries of the cache of recent translations: one per TLB slot.
 const RECENT: usize = 512;
 
-/// Traduzione recente riuscita a MMU accesa, già pronta per il controllo
-/// dei permessi. È solo una scorciatoia: vale finché i registri di
-/// traduzione non cambiano (`epoch`) e finché lo slot del TLB da cui viene
-/// resta com'era (`tlb_gen`). In quelle condizioni il percorso completo
-/// ([`Mmu::translate_checked`]) troverebbe nel TLB la stessa voce e darebbe
-/// lo stesso risultato: la cache non cambia nulla di osservabile, nemmeno
-/// quando il guest modifica le tabelle senza TLBI.
+/// Recent successful translation with the MMU on, ready for the permission
+/// check. It is only a shortcut: valid as long as the translation
+/// registers do not change (`epoch`) and as long as the TLB slot it comes from
+/// stays as it was (`tlb_gen`). Under those conditions the full path
+/// ([`Mmu::translate_checked`]) would find the same entry in the TLB and give
+/// the same result: the cache changes nothing observable, not even
+/// when the guest modifies the tables without a TLBI.
 #[derive(Clone, Copy, Debug)]
 struct Recent {
-    /// VA[63:12] intera (tag compreso: `select` dipende dai bit alti).
+    /// Whole VA[63:12] (tag included: `select` depends on the high bits).
     vpage: u64,
-    /// Indirizzo fisico della pagina da 4 KiB.
+    /// Physical address of the 4 KiB page.
     pa_page: u64,
     perms: Perms,
-    /// Memoria Device (byte MAIR 0b0000xxxx): i dati non allineati fanno
+    /// Device memory (MAIR byte 0b0000xxxx): unaligned data accesses
     /// fault.
     device: bool,
     epoch: u64,
@@ -42,36 +42,36 @@ const EMPTY: Recent = Recent {
     tlb_gen: 0,
 };
 
-/// MMU stage 1 del regime EL1&0 per un core.
+/// Stage 1 MMU of the EL1&0 regime for one core.
 #[derive(Clone, Debug)]
 pub struct Mmu {
-    /// Registri di traduzione. Dopo aver cambiato SCTLR o TCR il sistema
-    /// chiama [`Tlb::flush_all`] come QEMU (l'architettura permette di tenere
-    /// quei campi nel TLB, ma il guest deve comunque fare una TLBI).
+    /// Translation registers. After changing SCTLR or TCR the system
+    /// calls [`Tlb::flush_all`] like QEMU (the architecture allows keeping
+    /// those fields in the TLB, but the guest must do a TLBI anyway).
     pub regs: MmuRegs,
     pa_bits: u32,
     tlb: Tlb,
     last_fault: Option<Fault>,
-    /// Cache delle traduzioni recenti (vedi [`Recent`]), indicizzata come
-    /// il TLB.
+    /// Cache of recent translations (see [`Recent`]), indexed like
+    /// the TLB.
     recent: Box<[Recent; RECENT]>,
-    /// Registri con cui sono state riempite le voci dell'epoca corrente.
+    /// Registers with which the entries of the current epoch were filled.
     recent_regs: MmuRegs,
-    /// Epoca corrente: cresce quando cambiano i registri di traduzione.
+    /// Current epoch: grows when the translation registers change.
     recent_epoch: u64,
-    /// Colpi della cache recente (solo per i test).
+    /// Hits of the recent cache (tests only).
     #[cfg(test)]
     pub(crate) recent_hits: u64,
 }
 
 impl Mmu {
-    /// PARange della Cortex-A53 (ID_AA64MMFR0_EL1.PARange = 0b0010).
+    /// PARange of the Cortex-A53 (ID_AA64MMFR0_EL1.PARange = 0b0010).
     pub const PA_BITS_CORTEX_A53: u32 = 40;
 
-    /// `pa_bits` è PARange (32..=48): limita TCR.IPS e l'identità a MMU
-    /// spenta.
+    /// `pa_bits` is PARange (32..=48): limits TCR.IPS and the identity mapping with the MMU
+    /// off.
     pub fn new(pa_bits: u32) -> Self {
-        assert!((32..=48).contains(&pa_bits), "PARange non supportato: {pa_bits}");
+        assert!((32..=48).contains(&pa_bits), "unsupported PARange: {pa_bits}");
         Mmu {
             regs: MmuRegs::default(),
             pa_bits,
@@ -89,10 +89,10 @@ impl Mmu {
         self.pa_bits
     }
 
-    /// Traduce `va` per un accesso con privilegio `el` (0 o 1), passando dal
-    /// TLB. Ordine: identità se SCTLR.M = 0; controllo della metà e dei bit
-    /// alti (translation fault di livello 0); lookup nel TLB; walk (che su un
-    /// miss rispetta EPDx); permessi.
+    /// Translates `va` for an access with privilege `el` (0 or 1), going through the
+    /// TLB. Order: identity if SCTLR.M = 0; check of the half and of the high
+    /// bits (level 0 translation fault); TLB lookup; walk (which on a
+    /// miss honours EPDx); permissions.
     pub fn translate<P: PhysMemory + ?Sized>(
         &mut self,
         phys: &mut P,
@@ -103,10 +103,10 @@ impl Mmu {
         self.translate_checked(phys, va, access, el, true)
     }
 
-    /// Come [`translate`](Self::translate), ma con `aligned = false` un
-    /// accesso ai dati su memoria Device (anche a MMU spenta, dove i dati
-    /// sono Device-nGnRnE) dà [`FaultKind::Alignment`]: dopo i fault del
-    /// walk e prima dei permessi, come `AArch64.FirstStageTranslate`.
+    /// Like [`translate`](Self::translate), but with `aligned = false` a
+    /// data access on Device memory (even with the MMU off, where data
+    /// is Device-nGnRnE) gives [`FaultKind::Alignment`]: after the walk
+    /// faults and before the permissions, like `AArch64.FirstStageTranslate`.
     pub fn translate_checked<P: PhysMemory + ?Sized>(
         &mut self,
         phys: &mut P,
@@ -137,8 +137,8 @@ impl Mmu {
         Ok(t)
     }
 
-    /// Come `translate_pa_with`, con i registri già in `self.regs` (per i
-    /// test, che li cambiano direttamente).
+    /// Like `translate_pa_with`, with the registers already in `self.regs` (for
+    /// tests, which change them directly).
     #[cfg(test)]
     #[inline]
     pub(crate) fn translate_pa<P: PhysMemory + ?Sized>(
@@ -154,12 +154,12 @@ impl Mmu {
         self.translate_recent(phys, va, access, el, aligned)
     }
 
-    /// Come [`translate_checked`](Self::translate_checked) con i registri
-    /// `regs`, che diventano quelli della MMU, ma restituisce solo
-    /// l'indirizzo fisico e passa prima dalla cache delle traduzioni recenti.
-    /// Risultato, fault e stato del TLB dopo la chiamata sono identici a
-    /// quelli del percorso completo. La usa [`MmuBus`](crate::MmuBus), a cui
-    /// la CPU passa i registri a ogni accesso.
+    /// Like [`translate_checked`](Self::translate_checked) with the registers
+    /// `regs`, which become the MMU's, but returns only
+    /// the physical address and goes through the cache of recent translations first.
+    /// Result, fault and TLB state after the call are identical to
+    /// those of the full path. Used by [`MmuBus`](crate::MmuBus), to which
+    /// the CPU passes the registers on every access.
     #[inline]
     pub(crate) fn translate_pa_with<P: PhysMemory + ?Sized>(
         &mut self,
@@ -175,8 +175,8 @@ impl Mmu {
         self.translate_recent(phys, va, access, el, aligned)
     }
 
-    /// Nuova epoca della cache recente se `regs` (i registri correnti) non
-    /// sono quelli con cui è stata riempita.
+    /// New epoch of the recent cache if `regs` (the current registers) are not
+    /// the ones it was filled with.
     #[inline]
     fn sync_recent(&mut self, regs: &MmuRegs) {
         if !regs.same(&self.recent_regs) {
@@ -185,8 +185,8 @@ impl Mmu {
         }
     }
 
-    /// Cache recente, poi percorso completo. Richiede `self.regs ==
-    /// self.recent_regs` (lo garantisce `sync_recent`).
+    /// Recent cache, then full path. Requires `self.regs ==
+    /// self.recent_regs` (guaranteed by `sync_recent`).
     #[inline]
     fn translate_recent<P: PhysMemory + ?Sized>(
         &mut self,
@@ -217,8 +217,8 @@ impl Mmu {
         self.translate_fill(phys, va, access, el, aligned, slot)
     }
 
-    /// Percorso completo e riempimento della voce recente (fuori linea: il
-    /// percorso veloce resta piccolo e si inlinea nel fetch).
+    /// Full path and filling of the recent entry (out of line: the
+    /// fast path stays small and gets inlined into the fetch).
     #[inline(never)]
     fn translate_fill<P: PhysMemory + ?Sized>(
         &mut self,
@@ -245,8 +245,8 @@ impl Mmu {
         Ok(t.pa)
     }
 
-    /// Come [`translate`](Self::translate) ma senza leggere né riempire il
-    /// TLB: per il debugger e per verificare le tabelle.
+    /// Like [`translate`](Self::translate) but without reading or filling the
+    /// TLB: for the debugger and for checking the tables.
     pub fn walk<P: PhysMemory + ?Sized>(
         &self,
         phys: &mut P,
@@ -273,12 +273,12 @@ impl Mmu {
         &mut self.tlb
     }
 
-    /// Esegue una TLBI su questo core (vedi [`Tlb::tlbi`]).
+    /// Executes a TLBI on this core (see [`Tlb::tlbi`]).
     pub fn tlbi(&mut self, op: TlbiOp, xt: u64) {
         self.tlb.tlbi(op, xt);
     }
 
-    /// Fault dettagliato dell'ultimo accesso fallito tramite
+    /// Detailed fault of the last access that failed through
     /// [`VirtMemory`](crate::VirtMemory).
     pub fn last_fault(&self) -> Option<Fault> {
         self.last_fault
@@ -291,11 +291,11 @@ impl Mmu {
 
 // ---- Snapshot (M6, ADR 0015) -------------------------------------------------
 
-/// Registri di traduzione e TLB. La cache delle traduzioni recenti non si
-/// salva: è una scorciatoia che non cambia nulla di osservabile (vedi
-/// [`Recent`]) e al ripristino riparte vuota. L'ultimo fault serve solo alla
-/// diagnosi di [`VirtMemory`](crate::VirtMemory) (modalità utente) e riparte
-/// vuoto.
+/// Translation registers and TLB. The cache of recent translations is not
+/// saved: it is a shortcut that changes nothing observable (see
+/// [`Recent`]) and on restore it restarts empty. The last fault only serves the
+/// diagnostics of [`VirtMemory`](crate::VirtMemory) (user mode) and restarts
+/// empty.
 impl vetro_snapshot::Snapshot for Mmu {
     fn save(&self, w: &mut vetro_snapshot::Writer) {
         w.u64(u64::from(self.pa_bits));
@@ -307,7 +307,7 @@ impl vetro_snapshot::Snapshot for Mmu {
     }
 
     fn restore(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
-        r.expect_u64("PARange della MMU", u64::from(self.pa_bits))?;
+        r.expect_u64("MMU PARange", u64::from(self.pa_bits))?;
         let g = &mut self.regs;
         for v in [&mut g.sctlr, &mut g.tcr, &mut g.ttbr0, &mut g.ttbr1, &mut g.mair] {
             *v = r.u64()?;

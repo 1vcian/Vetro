@@ -1,13 +1,13 @@
-//! Riferimento nativo dei test web (tests/web): gli stessi copioni di
-//! `boot-disk.mjs`, `devices.mjs` e `android-boot.mjs` (3 GiB of RAM, ADR
-//! 0028), con la stessa API di vetro-wasm
-//! compilata per l'host, l'interprete e un disco locale sempre pronto.
-//! Scrive istruzioni e log grezzo in `target/web-test/native-*.{steps,log}`:
-//! `tools/web-test.sh` lo esegue prima dei test in Node, che devono dare le
-//! stesse istruzioni e lo stesso log byte per byte (col JIT in V8 e con il
-//! disco servito via HTTP Range).
+//! Native reference of the web tests (tests/web): the same scripts as
+//! `boot-disk.mjs`, `devices.mjs` and `android-boot.mjs` (3 GiB of RAM, ADR
+//! 0028), with the same vetro-wasm API
+//! compiled for the host, the interpreter and a local disk that is always ready.
+//! Writes instructions and raw log to `target/web-test/native-*.{steps,log}`:
+//! `tools/web-test.sh` runs it before the tests in Node, which must give the
+//! same instructions and the same log byte for byte (with the JIT in V8 and with the
+//! disk served via HTTP Range).
 //!
-//! Solo in release, come `vetro.rs`.
+//! Release only, like `vetro.rs`.
 
 use vetro_boot_tests::*;
 use vetro_platform::virtio::{CowBackend, MemBackend};
@@ -16,13 +16,13 @@ use vetro_wasm::{Vm, dev, devices_from, stop};
 const QUANTUM: u64 = 1_000_000;
 const PHASE_BUDGET: u64 = 6_000_000_000;
 const CMDLINE: &[u8] = b"console=ttyAMA0 vetro.noautotest";
-// Come boot-disk.mjs.
+// Like boot-disk.mjs.
 const SIZE: usize = 3 * 1024 * 1024 + 5 * 512 + 100;
 const WRITE_AT: usize = 1_000_000;
 const WRITTEN: &str = "VETRO-SCRITTO";
 const BTN_LEFT: u32 = 0x110;
 
-/// Il disco di prova di boot-disk.mjs (xorshift32, un byte per passo).
+/// The test disk of boot-disk.mjs (xorshift32, one byte per step).
 fn make_disk() -> Vec<u8> {
     let mut s: u32 = 0x9e37_79b9;
     (0..SIZE)
@@ -35,8 +35,8 @@ fn make_disk() -> Vec<u8> {
         .collect()
 }
 
-/// La `Session` di tests/web/lib.mjs: quanti con confini assoluti, log e
-/// ingressi solo ai confini.
+/// The `Session` of tests/web/lib.mjs: quanta with absolute boundaries, log and
+/// inputs only at the boundaries.
 struct Session {
     vm: Vm,
     log: Vec<u8>,
@@ -67,7 +67,7 @@ impl Session {
             }
             self.log.extend_from_slice(&buf[..n]);
         }
-        assert_ne!(s, stop::BLOCKED, "il disco locale è sempre pronto");
+        assert_ne!(s, stop::BLOCKED, "the local disk is always ready");
         s
     }
 
@@ -78,9 +78,9 @@ impl Session {
             if let Some(i) = hay.windows(needle.len()).position(|w| w == needle.as_bytes()) {
                 return from + i + needle.len();
             }
-            assert!(self.vm.machine().steps < limit, "{needle:?} non arrivato:\n{}", self.tail());
+            assert!(self.vm.machine().steps < limit, "{needle:?} did not arrive:\n{}", self.tail());
             let s = self.quantum();
-            assert_eq!(s, stop::BUDGET, "arresto {s} in attesa di {needle:?}:\n{}", self.tail());
+            assert_eq!(s, stop::BUDGET, "stop {s} while waiting for {needle:?}:\n{}", self.tail());
         }
     }
 
@@ -137,8 +137,8 @@ fn disk_session(image: &[u8], initrd: &[u8]) -> u64 {
     );
     let at = s.command(&cmd, at);
     let text = s.tail();
-    // Il messaggio del kernel su drop_caches può arrivare subito dopo il testo.
-    assert!(text.contains(&format!("\n{WRITTEN}")), "byte scritti non riletti:\n{text}");
+    // The kernel's message about drop_caches can arrive right after the text.
+    assert!(text.contains(&format!("\n{WRITTEN}")), "written bytes not read back:\n{text}");
     let _ = at;
     s.poweroff();
     s.save("disk")
@@ -183,12 +183,12 @@ fn ram3g_session(image: &[u8], initrd: &[u8]) -> u64 {
 #[test]
 fn riferimento_nativo_dei_test_web() {
     if cfg!(debug_assertions) {
-        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "riferimento dei test web solo in release");
+        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "web test reference only in release");
     }
     let Some((image, initrd)) = guest_kernel() else {
         return skip_or_fail(
             "VETRO_REQUIRE_GUEST_KERNEL",
-            "target/guest-kernel mancante: esegui tools/guest-kernel/build.sh",
+            "target/guest-kernel missing: run tools/guest-kernel/build.sh",
         );
     };
     let (image, initrd) = (std::fs::read(image).unwrap(), std::fs::read(initrd).unwrap());

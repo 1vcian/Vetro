@@ -1,5 +1,5 @@
-//! Messaggi DNS (RFC 1035): quel che serve per registrare domande e risposte
-//! e per rispondere dal sinkhole. Solo classe IN; dei record estrae gli A.
+//! DNS messages (RFC 1035): what is needed to record queries and answers
+//! and to answer from the sinkhole. IN class only; of the records it extracts the A ones.
 
 use std::net::Ipv4Addr;
 
@@ -14,16 +14,16 @@ pub const RCODE_NXDOMAIN: u8 = 3;
 pub const RCODE_NOTIMP: u8 = 4;
 
 const HEADER_LEN: usize = 12;
-/// Limite ai puntatori di compressione seguiti: evita cicli.
+/// Limit on the compression pointers followed: avoids loops.
 const MAX_JUMPS: usize = 16;
 
 fn be16(b: &[u8], at: usize) -> Option<u16> {
     Some(u16::from_be_bytes([*b.get(at)?, *b.get(at + 1)?]))
 }
 
-/// Legge un nome a partire da `at`. Restituisce il nome in minuscolo, con i
-/// punti, senza punto finale ("" per la radice), e la posizione subito dopo
-/// il nome nel messaggio (dopo il primo puntatore, se c'è).
+/// Reads a name starting at `at`. Returns the name in lower case, with the
+/// dots, without a final dot ("" for the root), and the position right after
+/// the name in the message (after the first pointer, if any).
 fn read_name(msg: &[u8], mut at: usize) -> Option<(String, usize)> {
     let mut name = String::new();
     let mut end = None;
@@ -40,7 +40,7 @@ fn read_name(msg: &[u8], mut at: usize) -> Option<(String, usize)> {
                     name.push('.');
                 }
                 for &b in label {
-                    // I byte non stampabili diventano \DDD come in zone file.
+                    // Non-printable bytes become \DDD as in zone files.
                     let c = b.to_ascii_lowercase();
                     if c.is_ascii_graphic() && c != b'.' && c != b'\\' {
                         name.push(char::from(c));
@@ -67,22 +67,22 @@ fn read_name(msg: &[u8], mut at: usize) -> Option<(String, usize)> {
     }
 }
 
-/// Domanda DNS (prima domanda del messaggio).
+/// DNS question (first question of the message).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Query {
     pub id: u16,
-    /// Bit RD della richiesta.
+    /// RD bit of the request.
     pub recursion_desired: bool,
     pub opcode: u8,
     pub name: String,
     pub qtype: u16,
     pub qclass: u16,
-    /// Byte della sezione domanda (nome, tipo, classe), da ricopiare nella
-    /// risposta.
+    /// Bytes of the question section (name, type, class), to copy into the
+    /// answer.
     pub question: Vec<u8>,
 }
 
-/// Analizza una domanda (QR = 0, almeno una domanda).
+/// Parses a query (QR = 0, at least one question).
 pub fn parse_query(msg: &[u8]) -> Option<Query> {
     if msg.len() < HEADER_LEN {
         return None;
@@ -112,11 +112,11 @@ pub struct Response {
     pub rcode: u8,
     pub name: String,
     pub qtype: u16,
-    /// Indirizzi dei record A della sezione risposte, in ordine.
+    /// Addresses of the A records of the answer section, in order.
     pub addrs: Vec<Ipv4Addr>,
 }
 
-/// Analizza una risposta (QR = 1).
+/// Parses an answer (QR = 1).
 pub fn parse_response(msg: &[u8]) -> Option<Response> {
     if msg.len() < HEADER_LEN {
         return None;
@@ -152,8 +152,8 @@ pub fn parse_response(msg: &[u8]) -> Option<Response> {
     Some(Response { id: be16(msg, 0)?, rcode: (flags & 0xf) as u8, name, qtype, addrs })
 }
 
-/// Costruisce la risposta a `q`: record A per `addrs` (con TTL `ttl`) e
-/// codice `rcode`. Il nome nei record è un puntatore alla domanda.
+/// Builds the answer to `q`: A records for `addrs` (with TTL `ttl`) and
+/// code `rcode`. The name in the records is a pointer to the question.
 pub fn build_response(q: &Query, rcode: u8, addrs: &[Ipv4Addr], ttl: u32) -> Vec<u8> {
     let mut m = Vec::with_capacity(HEADER_LEN + q.question.len() + addrs.len() * 16);
     m.extend_from_slice(&q.id.to_be_bytes());
@@ -180,7 +180,7 @@ pub fn build_response(q: &Query, rcode: u8, addrs: &[Ipv4Addr], ttl: u32) -> Vec
     m
 }
 
-/// Costruisce una domanda (usata dai test e dai client finti).
+/// Builds a query (used by the tests and the fake clients).
 pub fn build_query(id: u16, name: &str, qtype: u16) -> Vec<u8> {
     let mut m = Vec::new();
     m.extend_from_slice(&id.to_be_bytes());
@@ -216,7 +216,7 @@ mod tests {
     #[test]
     fn compression_loop_is_rejected() {
         let mut m = build_query(1, "a", TYPE_A);
-        // Sostituisce il nome con un puntatore a se stesso.
+        // Replaces the name with a pointer to itself.
         m.truncate(HEADER_LEN);
         m.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1]);
         assert!(parse_query(&m).is_none());

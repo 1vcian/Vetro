@@ -1,42 +1,42 @@
-//! `JitCpu`: esecuzione in modalità utente che alterna blocchi tradotti e
-//! passi dell'interprete (ADR 0012).
+//! `JitCpu`: user-mode execution that alternates translated blocks and
+//! interpreter steps (ADR 0012).
 //!
-//! # Contratto
-//! [`JitCpu::run`] esegue al più `budget` passi e si ferma dopo il primo
-//! passo che dà un'eccezione. Il risultato è identico a chiamare
-//! `Cpu::step` lo stesso numero di volte: stessi registri, stessa memoria,
-//! stessa eccezione (la produce sempre l'interprete: un blocco che fa fault
-//! lascia lo stato di prima dell'istruzione e l'interprete la riprova).
-//! Il chiamante (il kernel emulato) conta i passi come faceva con
-//! l'interprete, così l'orologio del guest non cambia.
+//! # Contract
+//! [`JitCpu::run`] executes at most `budget` steps and stops after the first
+//! step that raises an exception. The result is identical to calling
+//! `Cpu::step` the same number of times: same registers, same memory,
+//! same exception (it is always produced by the interpreter: a block that faults
+//! leaves the state as it was before the instruction and the interpreter retries it).
+//! The caller (the emulated kernel) counts steps as it did with the
+//! interpreter, so the guest clock does not change.
 //!
-//! # Cache e invalidazione
-//! - I blocchi si cercano per (spazio d'indirizzamento, `pc`): lo spazio è
-//!   [`UserMemory::space_id`], che cambia a ogni copia (fork).
-//! - Un blocco sta in una pagina da 4 KiB, che si sorveglia con
-//!   [`UserMemory::watch_code`]. Ogni cambiamento della pagina (store del
-//!   guest, scrittura del kernel emulato, munmap, mprotect, mremap...) la
-//!   mette tra le pagine sporche; prima di ogni blocco e dopo ogni passo
-//!   dell'interprete le pagine sporche si raccolgono e i loro blocchi si
-//!   scartano. Uno store di un blocco su una pagina sorvegliata fa uscire il
-//!   blocco dopo l'istruzione (`STOP`).
-//! - Il codice di pagine condivise (MAP_SHARED) non si traduce: può
-//!   cambiare da un altro spazio.
-//! - Lo stesso blocco (stesso `pc`, stesse parole) in spazi diversi riusa il
-//!   modulo già compilato: dopo un fork o un exec dello stesso binario non si
-//!   ricompila nulla.
-//! - Un blocco si compila dopo `hot_threshold` esecuzioni del suo inizio
-//!   con l'interprete (0 = subito, per i test di parità).
+//! # Cache and invalidation
+//! - Blocks are looked up by (address space, `pc`): the space is
+//!   [`UserMemory::space_id`], which changes on every copy (fork).
+//! - A block lies within a 4 KiB page, which is watched with
+//!   [`UserMemory::watch_code`]. Every change to the page (guest store,
+//!   write by the emulated kernel, munmap, mprotect, mremap...) puts it
+//!   among the dirty pages; before every block and after every interpreter
+//!   step the dirty pages are collected and their blocks are
+//!   discarded. A store by a block to a watched page makes the block exit
+//!   after the instruction (`STOP`).
+//! - Code in shared pages (MAP_SHARED) is not translated: it can
+//!   change from another space.
+//! - The same block (same `pc`, same words) in different spaces reuses the
+//!   already compiled module: after a fork or an exec of the same binary nothing
+//!   is recompiled.
+//! - A block is compiled after `hot_threshold` executions of its start
+//!   with the interpreter (0 = immediately, for the parity tests).
 //!
-//! # Concatenamento (ADR 0026)
-//! Come in modalità sistema: le regioni stanno nella tabella del motore
-//! (`Engine::place`) e il dispatcher (`translate::dispatcher`) passa
-//! dall'una all'altra con la cache dei salti in `JitState` (`area::JC`),
-//! senza tornare all'host. Una voce vale per il contesto dello spazio
-//! d'indirizzamento (`Space::ctx`), che cambia a ogni invalidazione delle
-//! sue pagine: le voci di uno spazio restano buone quando lo scheduler ci
-//! torna. Le voci mancanti le scrive l'host (`Host::resolve`) se la regione
-//! è già compilata.
+//! # Chaining (ADR 0026)
+//! As in system mode: the regions live in the engine's table
+//! (`Engine::place`) and the dispatcher (`translate::dispatcher`) goes
+//! from one to the other with the jump cache in `JitState` (`area::JC`),
+//! without returning to the host. An entry is valid for the context of the
+//! address space (`Space::ctx`), which changes on every invalidation of
+//! its pages: a space's entries stay good when the scheduler comes back
+//! to it. Missing entries are written by the host (`Host::resolve`) if the region
+//! is already compiled.
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
@@ -53,14 +53,14 @@ use crate::{FAULT, NEXT, STOP, SVC};
 
 #[derive(Clone, Copy, Debug)]
 pub struct JitConfig {
-    /// Esecuzioni con l'interprete prima di compilare un blocco.
+    /// Executions with the interpreter before compiling a block.
     pub hot_threshold: u32,
-    /// Come i moduli importano la memoria (condivisa nel browser con i
-    /// thread).
+    /// How the modules import the memory (shared in the browser with
+    /// threads).
     pub memory: MemoryImport,
-    /// Indirizzo di `JitState` nella memoria del motore (allineato a 16).
+    /// Address of `JitState` in the engine's memory (aligned to 16).
     pub state_addr: u32,
-    /// Conta per classe le istruzioni dell'interprete ([`Profile`]).
+    /// Counts the interpreter's instructions per class ([`Profile`]).
     pub profile: bool,
 }
 
@@ -75,44 +75,44 @@ impl Default for JitConfig {
     }
 }
 
-/// Contatori, per le misure.
+/// Counters, for measurements.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct JitStats {
-    /// Passi eseguiti dai blocchi tradotti.
+    /// Steps executed by the translated blocks.
     pub jit_steps: u64,
-    /// Passi eseguiti dall'interprete.
+    /// Steps executed by the interpreter.
     pub interp_steps: u64,
-    /// Corse di blocchi.
+    /// Block runs.
     pub block_runs: u64,
-    /// Moduli compilati.
+    /// Modules compiled.
     pub compiled: u64,
-    /// Blocchi riusati da un altro spazio senza ricompilare.
+    /// Blocks reused from another space without recompiling.
     pub reused: u64,
-    /// Pagine invalidate.
+    /// Pages invalidated.
     pub invalidated_pages: u64,
-    /// Uscite per fault e per store su codice.
+    /// Exits due to faults and to stores to code.
     pub faults: u64,
     pub stops: u64,
-    /// Azzeramenti del motore (tutto il codice compilato scartato).
+    /// Engine resets (all compiled code discarded).
     pub resets: u64,
-    /// Voci della cache dei salti chieste dal dispatcher all'host.
+    /// Jump cache entries requested by the dispatcher from the host.
     pub resolves: u64,
 }
 
-/// Esito della ricerca di un blocco.
+/// Outcome of looking up a block.
 enum Look<M> {
     Hot(Rc<Compiled<M>>),
-    /// Da tradurre ora.
+    /// To translate now.
     Translate,
-    /// All'interprete (freddo).
+    /// To the interpreter (cold).
     Interp,
-    /// All'interprete: la prima istruzione non si traduce (dopo di lei può
-    /// cominciare una regione).
+    /// To the interpreter: the first instruction is not translated (a region may
+    /// start after it).
     One,
 }
 
-/// Hash per chiavi u64 (indirizzi, pagine): la ricerca del blocco si fa a
-/// ogni corsa, SipHash costerebbe quanto il blocco.
+/// Hash for u64 keys (addresses, pages): the block lookup happens on
+/// every run, SipHash would cost as much as the block.
 #[derive(Default)]
 struct U64Hasher(u64);
 
@@ -126,8 +126,8 @@ impl Hasher for U64Hasher {
         }
     }
     fn write_u64(&mut self, v: u64) {
-        // Moltiplicazione di Fibonacci e ripiegamento: i bit bassi (quelli
-        // che usa la tabella) dipendono da tutto l'indirizzo.
+        // Fibonacci multiplication and folding: the low bits (the ones
+        // the table uses) depend on the whole address.
         let h = v.wrapping_mul(0x9E37_79B9_7F4A_7C15);
         self.0 = h ^ (h >> 32);
     }
@@ -135,19 +135,19 @@ impl Hasher for U64Hasher {
 
 type FastMap<V> = HashMap<u64, V, BuildHasherDefault<U64Hasher>>;
 
-/// Un ingresso di una regione compilata.
+/// An entry of a compiled region.
 struct Compiled<M> {
     _module: Rc<M>,
-    /// Voce della tabella del motore.
+    /// Entry of the engine's table.
     slot: u32,
-    /// Passi massimi del blocco base d'ingresso.
+    /// Maximum steps of the base entry block.
     max_steps: u64,
-    /// Indice del blocco base d'ingresso (`JitState::entry`).
+    /// Index of the base entry block (`JitState::entry`).
     bb: u32,
 }
 
-/// Voce della cache dei salti (`area::JC`): `pc` → regione, valida per
-/// `ctx` (formato di `docs/specs/jit.md`).
+/// Jump cache entry (`area::JC`): `pc` → region, valid for
+/// `ctx` (format of `docs/specs/jit.md`).
 fn install_jc<M>(mem: &mut [u8], at: usize, pc: u64, ctx: u32, c: &Compiled<M>) {
     let e = at + area::JC as usize + ((pc >> 2) & (area::JC_ENTRIES as u64 - 1)) as usize * 16;
     mem[e..e + 8].copy_from_slice(&pc.to_le_bytes());
@@ -156,23 +156,23 @@ fn install_jc<M>(mem: &mut [u8], at: usize, pc: u64, ctx: u32, c: &Compiled<M>) 
     mem[e + 12..e + 16].copy_from_slice(&w.to_le_bytes());
 }
 
-/// Gli ingressi di una regione compilata; il primo è il suo inizio.
+/// The entries of a compiled region; the first is its start.
 type Entries<M> = Rc<[(u64, Rc<Compiled<M>>)]>;
 
 enum Entry<M> {
-    /// Visto `n` volte, non ancora compilato.
+    /// Seen `n` times, not yet compiled.
     Cold(u32),
     Hot(Rc<Compiled<M>>),
-    /// La prima istruzione non si traduce: la esegue l'interprete.
+    /// The first instruction is not translated: the interpreter executes it.
     NoBlock,
 }
 
 struct Space<M> {
     blocks: FastMap<Entry<M>>,
-    /// Pagina → inizi dei blocchi compilati che vi stanno.
+    /// Page → starts of the compiled blocks that lie in it.
     pages: FastMap<Vec<u64>>,
     last_use: u64,
-    /// Contesto delle voci della cache dei salti di questo spazio.
+    /// Context of this space's jump cache entries.
     ctx: u32,
 }
 
@@ -194,38 +194,38 @@ impl<M> Space<M> {
     }
 }
 
-/// Identità di un blocco compilato: indirizzo e parole delle istruzioni.
+/// Identity of a compiled block: address and instruction words.
 type BlockKey = (u64, Vec<u32>);
 
-/// Spazi d'indirizzamento tenuti in cache (gli altri si scartano, il meno
-/// usato di recente per primo).
+/// Address spaces kept in cache (the others are discarded, least
+/// recently used first).
 const MAX_SPACES: usize = 64;
 
-/// Esecutore JIT della modalità utente.
+/// User-mode JIT executor.
 pub struct JitCpu<E: Engine> {
     engine: E,
     cfg: JitConfig,
     spaces: FastMap<Space<E::Module>>,
-    /// Moduli già compilati, per (pc, parole del blocco).
+    /// Already compiled modules, by (pc, block words).
     compiled: HashMap<BlockKey, Entries<E::Module>>,
     tick: u64,
     pub stats: JitStats,
-    /// Istruzioni dell'interprete per classe, se `cfg.profile`.
+    /// Interpreter instructions per class, if `cfg.profile`.
     pub profile: Option<Profile>,
-    /// Il dispatcher (compilato alla prima corsa e dopo ogni azzeramento).
+    /// The dispatcher (compiled at the first run and after every reset).
     dispatcher: Option<E::Module>,
-    /// Prossima voce libera della tabella del motore.
+    /// Next free entry of the engine's table.
     next_slot: u32,
-    /// Ultimo contesto assegnato a uno spazio.
+    /// Last context assigned to a space.
     ctx_seq: u32,
 }
 
-/// `Host` sopra la memoria utente.
+/// `Host` on top of user memory.
 struct MemHost<'a, M> {
     mem: &'a mut UserMemory,
-    /// I registri SIMD/FP della `Cpu` (per `vsync`).
+    /// The SIMD/FP registers of the `Cpu` (for `vsync`).
     v: &'a [u128; 32],
-    /// Lo spazio della corsa (per `resolve`) e l'indirizzo di `JitState`.
+    /// The run's space (for `resolve`) and the address of `JitState`.
     space: &'a Space<M>,
     at: usize,
     resolves: &'a mut u64,
@@ -249,8 +249,8 @@ impl<M> Host for MemHost<'_, M> {
         state::vsync_in(mem, state as usize, self.v);
     }
 
-    /// Voce mancante della cache dei salti: se la regione di `pc` è già
-    /// compilata in questo spazio, la scrive col contesto della corsa.
+    /// Missing jump cache entry: if the region of `pc` is already
+    /// compiled in this space, writes it with the run's context.
     fn resolve(&mut self, mem: &mut [u8]) -> bool {
         let pc = state::read_u64(mem, self.at, off::PC);
         *self.resolves += 1;
@@ -267,9 +267,9 @@ impl<M> Host for MemHost<'_, M> {
 
 impl<E: Engine> JitCpu<E> {
     pub fn new(mut engine: E, cfg: JitConfig) -> Self {
-        assert!(cfg.state_addr.is_multiple_of(16), "JitState va allineato a 16 byte");
+        assert!(cfg.state_addr.is_multiple_of(16), "JitState must be aligned to 16 bytes");
         engine.reserve(cfg.state_addr as usize + area::SIZE as usize);
-        engine.runtime(&translate::runtime(cfg.memory)).expect("runtime del JIT rifiutato dal motore");
+        engine.runtime(&translate::runtime(cfg.memory)).expect("JIT runtime rejected by the engine");
         let at = cfg.state_addr as usize;
         engine.memory()[at..at + area::SIZE as usize].fill(0);
         JitCpu {
@@ -293,7 +293,7 @@ impl<E: Engine> JitCpu<E> {
         &mut self.engine
     }
 
-    /// Scarta i blocchi delle pagine cambiate.
+    /// Discards the blocks of the changed pages.
     fn drain(&mut self, space: u64, mem: &mut UserMemory) {
         if !mem.code_dirty() {
             return;
@@ -309,7 +309,7 @@ impl<E: Engine> JitCpu<E> {
             }
         }
         if any {
-            // Le voci della cache dei salti di questo spazio non valgono più.
+            // This space's jump cache entries are no longer valid.
             let ctx = self.next_ctx();
             if let Some(s) = self.spaces.get_mut(&space) {
                 s.ctx = ctx;
@@ -317,9 +317,9 @@ impl<E: Engine> JitCpu<E> {
         }
     }
 
-    /// Contesto nuovo per le voci della cache dei salti. Allo scadere dei
-    /// valori la cache si svuota e si riparte (gli spazi prendono contesti
-    /// nuovi).
+    /// New context for the jump cache entries. When the values run out
+    /// the cache is emptied and everything starts over (the spaces get new
+    /// contexts).
     fn next_ctx(&mut self) -> u32 {
         if self.ctx_seq == u32::MAX {
             let at = self.cfg.state_addr as usize;
@@ -330,7 +330,7 @@ impl<E: Engine> JitCpu<E> {
             for id in ids {
                 self.ctx_seq += 1;
                 let c = self.ctx_seq;
-                self.spaces.get_mut(&id).expect("spazio").ctx = c;
+                self.spaces.get_mut(&id).expect("space").ctx = c;
             }
         }
         self.ctx_seq += 1;
@@ -350,23 +350,23 @@ impl<E: Engine> JitCpu<E> {
             let ctx = self.next_ctx();
             self.spaces.insert(id, Space::new(ctx));
         }
-        let s = self.spaces.get_mut(&id).expect("appena inserito");
+        let s = self.spaces.get_mut(&id).expect("just inserted");
         s.last_use = tick;
         s
     }
 
-    /// Esegue al più `budget` passi (almeno uno se `budget > 0`); si ferma
-    /// dopo il primo passo che dà un'eccezione. Restituisce i passi eseguiti
-    /// (compreso quello dell'eccezione) e l'esito dell'ultimo.
+    /// Executes at most `budget` steps (at least one if `budget > 0`); stops
+    /// after the first step that raises an exception. Returns the steps executed
+    /// (including the one with the exception) and the outcome of the last one.
     pub fn run(&mut self, cpu: &mut Cpu, mem: &mut UserMemory, budget: u64) -> (u64, Result<(), Exception>) {
         let id = mem.space_id();
         self.drain(id, mem);
         self.space(id);
         let at = self.cfg.state_addr as usize;
         let mut done = 0u64;
-        // Vero se lo stato aggiornato sta in JitState e non nella Cpu.
+        // True if the updated state is in JitState and not in the Cpu.
         let mut in_jit = false;
-        // `pc` di JitState quando `in_jit` (letto insieme a `steps`).
+        // `pc` of JitState when `in_jit` (read together with `steps`).
         let mut jit_pc = 0;
         while done < budget {
             let pc = if in_jit { jit_pc } else { cpu.pc };
@@ -379,8 +379,8 @@ impl<E: Engine> JitCpu<E> {
                     None
                 }
                 Look::Translate => {
-                    // La compilazione può azzerare il motore (e la sua
-                    // memoria): prima lo stato torna nella Cpu.
+                    // Compiling may reset the engine (and its
+                    // memory): first the state goes back into the Cpu.
                     if in_jit {
                         JitState::load(self.engine.memory(), at).to_cpu(cpu);
                         in_jit = false;
@@ -399,12 +399,12 @@ impl<E: Engine> JitCpu<E> {
                         in_jit = false;
                     }
                     self.compile_dispatcher();
-                    // La compilazione può aver azzerato il motore (e gli
-                    // spazi): si cerca di nuovo.
+                    // Compiling may have reset the engine (and the
+                    // spaces): look up again.
                     self.space(id);
                     continue;
                 }
-                let ctx = self.spaces.get(&id).expect("spazio della corsa").ctx;
+                let ctx = self.spaces.get(&id).expect("space of the run").ctx;
                 let m = self.engine.memory();
                 install_jc(m, at, pc, ctx, c);
                 if !in_jit {
@@ -420,9 +420,9 @@ impl<E: Engine> JitCpu<E> {
                     state::write_u32(m, at, off::EXIT_DETAIL, 0);
                 }
                 let code = {
-                    let space = self.spaces.get(&id).expect("spazio della corsa");
+                    let space = self.spaces.get(&id).expect("space of the run");
                     let mut host = MemHost { mem, v: &cpu.v, space, at, resolves: &mut self.stats.resolves };
-                    let d = self.dispatcher.as_ref().expect("dispatcher compilato");
+                    let d = self.dispatcher.as_ref().expect("dispatcher compiled");
                     self.engine.run(d, 0, self.cfg.state_addr, &mut host)
                 };
                 let m = self.engine.memory();
@@ -453,7 +453,7 @@ impl<E: Engine> JitCpu<E> {
                             }
                         }
                     }
-                    other => panic!("codice d'uscita del blocco sconosciuto: {other}"),
+                    other => panic!("unknown block exit code: {other}"),
                 }
                 continue;
             }
@@ -461,7 +461,7 @@ impl<E: Engine> JitCpu<E> {
                 JitState::load(self.engine.memory(), at).to_cpu(cpu);
                 in_jit = false;
             }
-            // Interprete fino alla fine del blocco (salto, pagina, budget).
+            // Interpreter until the end of the block (jump, page, budget).
             loop {
                 let old = cpu.pc;
                 let r = self.interp_step(id, cpu, mem);
@@ -473,9 +473,9 @@ impl<E: Engine> JitCpu<E> {
                     break;
                 }
                 if hot.is_some() || one {
-                    // Blocco compilato ma più lungo del budget rimasto, o
-                    // istruzione non traducibile: un passo, poi si cerca
-                    // di nuovo (una regione può cominciare subito dopo).
+                    // Block compiled but longer than the remaining budget, or
+                    // untranslatable instruction: one step, then look up
+                    // again (a region may start right after).
                     break;
                 }
             }
@@ -486,8 +486,8 @@ impl<E: Engine> JitCpu<E> {
         (done, Ok(()))
     }
 
-    /// Scarta tutti i blocchi di tutti gli spazi e azzera il motore. Le
-    /// pagine restano sorvegliate: al massimo qualche invalidazione a vuoto.
+    /// Discards all blocks of all spaces and resets the engine. The
+    /// pages stay watched: at most a few empty invalidations.
     fn reset(&mut self) {
         self.spaces.clear();
         self.compiled.clear();
@@ -507,7 +507,7 @@ impl<E: Engine> JitCpu<E> {
             Ok(d) => d,
             Err(_) => {
                 self.reset();
-                self.engine.compile(&wasm).expect("dispatcher del JIT rifiutato dal motore")
+                self.engine.compile(&wasm).expect("JIT dispatcher rejected by the engine")
             }
         };
         self.dispatcher = Some(d);
@@ -525,10 +525,10 @@ impl<E: Engine> JitCpu<E> {
         r
     }
 
-    /// Cerca il blocco di `pc` e conta le esecuzioni di quelli freddi.
+    /// Looks up the block of `pc` and counts the executions of cold ones.
     fn lookup(&mut self, id: u64, pc: u64) -> Look<E::Module> {
         let threshold = self.cfg.hot_threshold;
-        let s = self.spaces.get_mut(&id).expect("spazio creato da run");
+        let s = self.spaces.get_mut(&id).expect("space created by run");
         match s.blocks.get_mut(&pc) {
             Some(Entry::Hot(c)) => Look::Hot(c.clone()),
             Some(Entry::NoBlock) => Look::One,
@@ -547,15 +547,15 @@ impl<E: Engine> JitCpu<E> {
         }
     }
 
-    /// Traduce e installa il blocco di `pc` (o lo segna non traducibile).
+    /// Translates and installs the block of `pc` (or marks it untranslatable).
     fn install(&mut self, id: u64, pc: u64, mem: &mut UserMemory) -> Option<Rc<Compiled<E::Module>>> {
         let es = self.translate(pc, mem);
-        // Dopo un azzeramento del motore lo spazio va ricreato.
+        // After an engine reset the space must be recreated.
         let s = self.space(id);
         match es {
             Some(es) => {
-                // L'inizio, e gli altri blocchi base dove non c'è già un
-                // blocco compilato.
+                // The start, and the other base blocks where there is not already a
+                // compiled block.
                 for (i, (epc, c)) in es.iter().enumerate() {
                     if i > 0 && matches!(s.blocks.get(epc), Some(Entry::Hot(_))) {
                         continue;
@@ -573,7 +573,7 @@ impl<E: Engine> JitCpu<E> {
         }
     }
 
-    /// Legge, decodifica e compila il blocco che inizia a `pc`.
+    /// Reads, decodes and compiles the block that starts at `pc`.
     fn translate(&mut self, pc: u64, mem: &mut UserMemory) -> Option<Entries<E::Module>> {
         let (block, words) = translate::discover(pc, None, MAX_REGION, |a| {
             if !mem.is_private(a) {
@@ -593,17 +593,17 @@ impl<E: Engine> JitCpu<E> {
         let module = match self.engine.compile(&wasm) {
             Ok(m) => m,
             Err(_) => {
-                // Motore pieno (wasmtime: istanze per store): si scarta
-                // tutto il codice compilato e si riprova una volta.
+                // Engine full (wasmtime: instances per store): all compiled
+                // code is discarded and we retry once.
                 self.reset();
                 match self.engine.compile(&wasm) {
                     Ok(m) => m,
-                    Err(e) => panic!("modulo del JIT rifiutato dal motore a pc={pc:#x}: {e}"),
+                    Err(e) => panic!("JIT module rejected by the engine at pc={pc:#x}: {e}"),
                 }
             }
         };
         self.stats.compiled += 1;
-        // Nella tabella del dispatcher (dopo un eventuale azzeramento).
+        // In the dispatcher's table (after a possible reset).
         let slot = self.next_slot;
         self.engine.place(&module, 1, slot);
         self.next_slot += 1;
@@ -616,7 +616,7 @@ impl<E: Engine> JitCpu<E> {
                 (epc, Rc::new(Compiled { _module: module.clone(), slot, max_steps, bb }))
             })
             .collect();
-        let at = es.iter().position(|e| e.1.bb == first).expect("ingresso della regione");
+        let at = es.iter().position(|e| e.1.bb == first).expect("region entry");
         es.swap(0, at);
         let es: Entries<E::Module> = es.into();
         self.compiled.insert(key, es.clone());

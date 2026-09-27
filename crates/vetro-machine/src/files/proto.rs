@@ -1,32 +1,32 @@
-//! Il protocollo di `vetro-files` (ADR 0020, `docs/specs/files.md`),
-//! versione [`VERSION`]: codifica delle richieste, lettura dei frame del
-//! demone e dei loro corpi. Nessuna macchina qui: solo byte.
+//! The `vetro-files` protocol (ADR 0020, `docs/specs/files.md`),
+//! version [`VERSION`]: request encoding, reading the daemon's frames
+//! and their bodies. No machine here: only bytes.
 //!
-//! Tutto in little endian. Un frame è `u32 lunghezza` (byte che seguono),
-//! `u8 tipo`, `u32 id`, corpo. Stringhe: `u16 lunghezza` e byte; blocchi di
-//! byte: `u32 lunghezza` e byte. Percorsi, nomi e destinazioni dei
-//! collegamenti sono byte del file system del guest (`Vec<u8>`), anche non
-//! UTF-8 (ADR 0021): [`display_name`] li mostra.
+//! Everything in little endian. A frame is `u32 length` (bytes that follow),
+//! `u8 type`, `u32 id`, body. Strings: `u16 length` and bytes; byte
+//! blocks: `u32 length` and bytes. Paths, names and link
+//! targets are bytes of the guest file system (`Vec<u8>`), possibly non-
+//! UTF-8 (ADR 0021): [`display_name`] shows them.
 
 use core::fmt;
 
-/// Porta vsock del demone nel guest.
+/// vsock port of the daemon in the guest.
 pub const PORT: u32 = 5200;
-/// "VTRF" in little endian, nel saluto del demone.
+/// "VTRF" in little endian, in the daemon's greeting.
 pub const MAGIC: u32 = u32::from_le_bytes(*b"VTRF");
-/// Versione del protocollo parlata da questo client (2: richiesta SQL,
+/// Protocol version spoken by this client (2: SQL request,
 /// ADR 0021).
 pub const VERSION: u16 = 2;
-/// Versione più vecchia accettata (senza SQL: il demone risponde `ENOSYS`).
+/// Oldest accepted version (without SQL: the daemon answers `ENOSYS`).
 pub const MIN_VERSION: u16 = 1;
-/// Frame più lungo accettato dal demone (una lista enorme è un errore di
-/// protocollo, non un'allocazione senza limiti).
+/// Longest frame accepted from the daemon (a huge list is a protocol
+/// error, not an unbounded allocation).
 pub const MAX_FRAME: usize = 64 << 20;
-/// Pezzo usato dal client per letture e scritture (al più il `max_chunk`
-/// del saluto).
+/// Chunk used by the client for reads and writes (at most the greeting's
+/// `max_chunk`).
 pub const CHUNK: usize = 256 << 10;
 
-/// Tipi dei frame.
+/// Frame types.
 pub mod ty {
     pub const STAT: u8 = 1;
     pub const LIST: u8 = 2;
@@ -47,7 +47,7 @@ pub mod ty {
     pub const EVENT: u8 = 0x82;
 }
 
-/// Bit degli eventi di inotify (`<sys/inotify.h>`), come arrivano in
+/// inotify event bits (`<sys/inotify.h>`), as they arrive in
 /// [`Event::mask`].
 pub mod mask {
     pub const ACCESS: u32 = 0x1;
@@ -65,7 +65,7 @@ pub mod mask {
     pub const ISDIR: u32 = 0x4000_0000;
 }
 
-/// Tipo di un file.
+/// Type of a file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Other,
@@ -119,7 +119,7 @@ impl Kind {
     }
 }
 
-/// Metadati di un file (`lstat` nel guest).
+/// Metadata of a file (`lstat` in the guest).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stat {
     pub kind: Kind,
@@ -131,46 +131,46 @@ pub struct Stat {
     pub mtime_s: i64,
     pub mtime_ns: u32,
     pub nlink: u32,
-    /// Destinazione di un collegamento simbolico (vuota altrimenti).
+    /// Target of a symbolic link (empty otherwise).
     pub link: Vec<u8>,
-    /// Contesto SELinux (xattr `security.selinux`), vuoto se non c'è.
+    /// SELinux context (xattr `security.selinux`), empty if absent.
     pub selinux: String,
 }
 
-/// Una voce di una cartella.
+/// An entry of a folder.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
     pub name: Vec<u8>,
     pub stat: Stat,
 }
 
-/// Un evento di inotify su una cartella o un file osservato.
+/// An inotify event on a watched folder or file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Event {
-    /// Id dell'osservazione (`inotify_add_watch`); `u32::MAX` per
+    /// Id of the watch (`inotify_add_watch`); `u32::MAX` for
     /// `IN_Q_OVERFLOW`.
     pub wd: u32,
     pub mask: u32,
     pub cookie: u32,
-    /// Nome dentro la cartella osservata (vuoto per la cartella stessa).
+    /// Name inside the watched folder (empty for the folder itself).
     pub name: Vec<u8>,
 }
 
-/// Il saluto del demone, primo frame di ogni connessione.
+/// The daemon's greeting, first frame of every connection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Hello {
     pub version: u16,
-    /// Bit 0: SELinux attivo nel guest (`/sys/fs/selinux`).
+    /// Bit 0: SELinux enabled in the guest (`/sys/fs/selinux`).
     pub flags: u16,
-    /// Byte al più per una lettura o una scrittura.
+    /// Maximum bytes for one read or one write.
     pub max_chunk: u32,
 }
 
-/// Un frame del demone.
+/// A daemon frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Frame {
     Hello(Hello),
-    /// Risposta alla richiesta `id`: `status` 0 o un errno del guest.
+    /// Response to request `id`: `status` 0 or a guest errno.
     Reply {
         id: u32,
         status: u32,
@@ -179,7 +179,7 @@ pub enum Frame {
     Event(Event),
 }
 
-/// Un valore di SQLite (parametro legato o colonna di una riga).
+/// A SQLite value (bound parameter or column of a row).
 #[derive(Clone, Debug, PartialEq)]
 pub enum SqlValue {
     Null,
@@ -189,7 +189,7 @@ pub enum SqlValue {
     Blob(Vec<u8>),
 }
 
-/// Codici dei valori nel protocollo.
+/// Value codes in the protocol.
 mod vty {
     pub const NULL: u8 = 0;
     pub const INT: u8 = 1;
@@ -198,21 +198,21 @@ mod vty {
     pub const BLOB: u8 = 4;
 }
 
-/// L'esito di una richiesta SQL riuscita.
+/// The outcome of a successful SQL request.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct SqlResult {
-    /// Righe cambiate direttamente dalle istruzioni (non dai trigger).
+    /// Rows changed directly by the statements (not by triggers).
     pub changes: u64,
-    /// `sqlite3_last_insert_rowid` alla fine.
+    /// `sqlite3_last_insert_rowid` at the end.
     pub last_rowid: i64,
-    /// Righe oltre il limite del demone (10000 o 16 MiB) non restituite.
+    /// Rows over the daemon's limit (10000 or 16 MiB), not returned.
     pub truncated: bool,
-    /// Colonne e righe dell'ultima istruzione che ne restituisce.
+    /// Columns and rows of the last statement that returns any.
     pub columns: Vec<String>,
     pub rows: Vec<Vec<SqlValue>>,
 }
 
-/// Una richiesta dell'host.
+/// A request from the host.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Request {
     Stat {
@@ -226,9 +226,9 @@ pub enum Request {
         offset: u64,
         len: u32,
     },
-    /// Apre una scrittura atomica sul file temporaneo `handle` (scelto dal
-    /// client). `mode`: permessi di un file nuovo; `excl`: fallisce se il
-    /// file c'è già.
+    /// Opens an atomic write on the temporary file `handle` (chosen by the
+    /// client). `mode`: permissions of a new file; `excl`: fails if the
+    /// file already exists.
     WOpen {
         handle: u32,
         path: Vec<u8>,
@@ -240,7 +240,7 @@ pub enum Request {
         offset: u64,
         data: Vec<u8>,
     },
-    /// Proprietario, modo e xattr, fsync, rename sul file vero.
+    /// Owner, mode and xattrs, fsync, rename onto the real file.
     WCommit {
         handle: u32,
     },
@@ -269,10 +269,10 @@ pub enum Request {
     Unwatch {
         wd: u32,
     },
-    /// Istruzioni SQL sul database `path`, nel guest con SQLite (ADR 0021):
-    /// in una transazione (tranne `readonly`), parametri `?N` legati per
-    /// posizione; con `expect` un numero diverso di righe cambiate annulla
-    /// tutto.
+    /// SQL statements on the database `path`, in the guest with SQLite (ADR 0021):
+    /// in one transaction (except `readonly`), `?N` parameters bound by
+    /// position; with `expect`, a different number of changed rows rolls
+    /// everything back.
     Sql {
         path: Vec<u8>,
         sql: String,
@@ -282,13 +282,13 @@ pub enum Request {
     },
 }
 
-/// Un errore di protocollo: il demone ha mandato byte che non tornano.
+/// A protocol error: the daemon sent bytes that don't add up.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProtoError(pub String);
 
 impl fmt::Display for ProtoError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "protocollo di vetro-files: {}", self.0)
+        write!(f, "vetro-files protocol: {}", self.0)
     }
 }
 
@@ -339,7 +339,7 @@ impl W {
         self.u32(b.len() as u32);
         self.0.extend_from_slice(b);
     }
-    /// Frame: lunghezza, tipo, id, poi il corpo scritto da `body`.
+    /// Frame: length, type, id, then the body written by `body`.
     fn frame(ty: u8, id: u32, body: impl FnOnce(&mut W)) -> Vec<u8> {
         let mut w = W(Vec::with_capacity(64));
         w.u32(0);
@@ -353,7 +353,7 @@ impl W {
 }
 
 impl Request {
-    /// Il tipo del frame.
+    /// The frame type.
     pub fn ty(&self) -> u8 {
         match self {
             Request::Stat { .. } => ty::STAT,
@@ -373,7 +373,7 @@ impl Request {
         }
     }
 
-    /// Il frame della richiesta con l'id `id`.
+    /// The frame of the request with id `id`.
     pub fn encode(&self, id: u32) -> Vec<u8> {
         W::frame(self.ty(), id, |w| match self {
             Request::Stat { path } | Request::List { path } | Request::Watch { path } => w.str(path),
@@ -420,8 +420,8 @@ impl Request {
         })
     }
 
-    /// Legge una richiesta (tipo, id e corpo senza la lunghezza): serve ai
-    /// demoni finti dei test.
+    /// Reads a request (type, id and body without the length): used by the
+    /// fake daemons of the tests.
     pub fn decode(frame: &[u8]) -> Result<(u32, Request), ProtoError> {
         let mut r = R::new(frame);
         let t = r.u8()?;
@@ -451,14 +451,14 @@ impl Request {
                 let params = (0..n).map(|_| r.value()).collect::<Result<_, _>>()?;
                 Request::Sql { path, sql, params, expect, readonly }
             }
-            t => return Err(ProtoError(format!("richiesta di tipo {t}"))),
+            t => return Err(ProtoError(format!("request of type {t}"))),
         };
         r.end()?;
         Ok((id, req))
     }
 }
 
-/// Codifica di un saluto (per i demoni finti dei test).
+/// Encoding of a greeting (for the fake daemons of the tests).
 pub fn encode_hello(h: &Hello) -> Vec<u8> {
     W::frame(ty::HELLO, 0, |w| {
         w.u32(MAGIC);
@@ -468,7 +468,7 @@ pub fn encode_hello(h: &Hello) -> Vec<u8> {
     })
 }
 
-/// Codifica di una risposta (per i demoni finti dei test).
+/// Encoding of a response (for the fake daemons of the tests).
 pub fn encode_reply(id: u32, status: u32, body: &[u8]) -> Vec<u8> {
     W::frame(ty::REPLY, id, |w| {
         w.u32(status);
@@ -476,7 +476,7 @@ pub fn encode_reply(id: u32, status: u32, body: &[u8]) -> Vec<u8> {
     })
 }
 
-/// Codifica di un evento (per i demoni finti dei test).
+/// Encoding of an event (for the fake daemons of the tests).
 pub fn encode_event(e: &Event) -> Vec<u8> {
     W::frame(ty::EVENT, 0, |w| {
         w.u32(e.wd);
@@ -486,14 +486,14 @@ pub fn encode_event(e: &Event) -> Vec<u8> {
     })
 }
 
-/// Corpo con un [`Stat`] (per i demoni finti dei test).
+/// Body with a [`Stat`] (for the fake daemons of the tests).
 pub fn encode_stat(s: &Stat) -> Vec<u8> {
     let mut w = W(Vec::new());
     put_stat(&mut w, s);
     w.0
 }
 
-/// Corpo di una lista (per i demoni finti dei test).
+/// Body of a list (for the fake daemons of the tests).
 pub fn encode_list(entries: &[Entry]) -> Vec<u8> {
     let mut w = W(Vec::new());
     w.u32(entries.len() as u32);
@@ -504,8 +504,8 @@ pub fn encode_list(entries: &[Entry]) -> Vec<u8> {
     w.0
 }
 
-/// Corpo della risposta a una richiesta SQL riuscita (per i demoni finti
-/// dei test).
+/// Body of the response to a successful SQL request (for the fake daemons
+/// of the tests).
 pub fn encode_sql_ok(res: &SqlResult) -> Vec<u8> {
     let mut w = W(Vec::new());
     w.u32(0);
@@ -526,8 +526,8 @@ pub fn encode_sql_ok(res: &SqlResult) -> Vec<u8> {
     w.0
 }
 
-/// Corpo della risposta a una richiesta SQL fallita in SQLite (per i
-/// demoni finti dei test).
+/// Body of the response to a SQL request that failed in SQLite (for the
+/// fake daemons of the tests).
 pub fn encode_sql_err(code: u32, message: &str) -> Vec<u8> {
     let mut w = W(Vec::new());
     w.u32(code);
@@ -535,7 +535,7 @@ pub fn encode_sql_err(code: u32, message: &str) -> Vec<u8> {
     w.0
 }
 
-/// Corpo di una lettura (per i demoni finti dei test).
+/// Body of a read (for the fake daemons of the tests).
 pub fn encode_read(size: u64, data: &[u8]) -> Vec<u8> {
     let mut w = W(Vec::new());
     w.u64(size);
@@ -569,11 +569,7 @@ impl<'a> R<'a> {
     }
     fn take(&mut self, n: usize) -> Result<&'a [u8], ProtoError> {
         if self.b.len() - self.at < n {
-            return Err(ProtoError(format!(
-                "frame corto ({} byte, ne servono {})",
-                self.b.len(),
-                self.at + n
-            )));
+            return Err(ProtoError(format!("short frame ({} bytes, {} needed)", self.b.len(), self.at + n)));
         }
         let s = &self.b[self.at..self.at + n];
         self.at += n;
@@ -595,7 +591,7 @@ impl<'a> R<'a> {
         let n = self.u16()? as usize;
         Ok(String::from_utf8_lossy(self.take(n)?).into_owned())
     }
-    /// Una stringa come byte (percorsi e nomi del guest).
+    /// A string as bytes (guest paths and names).
     fn name(&mut self) -> Result<Vec<u8>, ProtoError> {
         let n = self.u16()? as usize;
         Ok(self.take(n)?.to_vec())
@@ -607,7 +603,7 @@ impl<'a> R<'a> {
             vty::REAL => SqlValue::Real(f64::from_bits(self.u64()?)),
             vty::TEXT => SqlValue::Text(String::from_utf8_lossy(self.bytes()?).into_owned()),
             vty::BLOB => SqlValue::Blob(self.bytes()?.to_vec()),
-            t => return Err(ProtoError(format!("valore SQL di tipo {t}"))),
+            t => return Err(ProtoError(format!("SQL value of type {t}"))),
         })
     }
     fn bytes(&mut self) -> Result<&'a [u8], ProtoError> {
@@ -616,7 +612,7 @@ impl<'a> R<'a> {
     }
     fn end(&self) -> Result<(), ProtoError> {
         if self.at != self.b.len() {
-            return Err(ProtoError(format!("{} byte in più nel frame", self.b.len() - self.at)));
+            return Err(ProtoError(format!("{} extra bytes in the frame", self.b.len() - self.at)));
         }
         Ok(())
     }
@@ -636,7 +632,7 @@ impl<'a> R<'a> {
     }
 }
 
-/// Il corpo di una risposta a STAT o WCOMMIT.
+/// The body of a response to STAT or WCOMMIT.
 pub fn parse_stat(body: &[u8]) -> Result<Stat, ProtoError> {
     let mut r = R::new(body);
     let s = r.stat()?;
@@ -644,14 +640,14 @@ pub fn parse_stat(body: &[u8]) -> Result<Stat, ProtoError> {
     Ok(s)
 }
 
-/// Il corpo di una risposta a LIST.
+/// The body of a response to LIST.
 pub fn parse_list(body: &[u8]) -> Result<Vec<Entry>, ProtoError> {
     let mut r = R::new(body);
     let n = r.u32()? as usize;
-    // Una voce occupa almeno 45 byte: un conteggio impossibile è un errore,
-    // non un'allocazione enorme.
+    // An entry takes at least 45 bytes: an impossible count is an error,
+    // not a huge allocation.
     if n > body.len() / 45 {
-        return Err(ProtoError(format!("lista di {n} voci in {} byte", body.len())));
+        return Err(ProtoError(format!("list of {n} entries in {} bytes", body.len())));
     }
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
@@ -661,7 +657,7 @@ pub fn parse_list(body: &[u8]) -> Result<Vec<Entry>, ProtoError> {
     Ok(out)
 }
 
-/// Il corpo di una risposta a READ: dimensione del file e byte letti.
+/// The body of a response to READ: file size and bytes read.
 pub fn parse_read(body: &[u8]) -> Result<(u64, Vec<u8>), ProtoError> {
     let mut r = R::new(body);
     let size = r.u64()?;
@@ -670,8 +666,8 @@ pub fn parse_read(body: &[u8]) -> Result<(u64, Vec<u8>), ProtoError> {
     Ok((size, data))
 }
 
-/// Il corpo di una risposta a SQL: l'esito, o il codice di SQLite e il suo
-/// messaggio se SQLite ha rifiutato (niente è cambiato).
+/// The body of a response to SQL: the outcome, or the SQLite code and its
+/// message if SQLite refused (nothing changed).
 pub fn parse_sql(body: &[u8]) -> Result<Result<SqlResult, (u32, String)>, ProtoError> {
     let mut r = R::new(body);
     let code = r.u32()?;
@@ -686,9 +682,9 @@ pub fn parse_sql(body: &[u8]) -> Result<Result<SqlResult, (u32, String)>, ProtoE
     let ncols = r.u16()? as usize;
     let columns = (0..ncols).map(|_| r.str()).collect::<Result<Vec<_>, _>>()?;
     let nrows = r.u32()? as usize;
-    // Un valore occupa almeno un byte: un conteggio impossibile è un errore.
+    // A value takes at least one byte: an impossible count is an error.
     if ncols > 0 && nrows > body.len() / ncols {
-        return Err(ProtoError(format!("{nrows} righe di {ncols} colonne in {} byte", body.len())));
+        return Err(ProtoError(format!("{nrows} rows of {ncols} columns in {} bytes", body.len())));
     }
     let mut rows = Vec::with_capacity(if ncols > 0 { nrows } else { 0 });
     for _ in 0..nrows {
@@ -698,8 +694,8 @@ pub fn parse_sql(body: &[u8]) -> Result<Result<SqlResult, (u32, String)>, ProtoE
     Ok(Ok(SqlResult { changes, last_rowid, truncated, columns, rows }))
 }
 
-/// SQL e parametri nel formato del protocollo (`bytes` SQL, `u16` numero
-/// di parametri, valori): il formato con cui il JS li passa a vetro-wasm.
+/// SQL and parameters in the protocol format (`bytes` SQL, `u16` number
+/// of parameters, values): the format in which the JS passes them to vetro-wasm.
 pub fn encode_sql_args(sql: &str, params: &[SqlValue]) -> Vec<u8> {
     let mut w = W(Vec::new());
     w.bytes(sql.as_bytes());
@@ -710,18 +706,18 @@ pub fn encode_sql_args(sql: &str, params: &[SqlValue]) -> Vec<u8> {
     w.0
 }
 
-/// L'inverso di [`encode_sql_args`].
+/// The inverse of [`encode_sql_args`].
 pub fn decode_sql_args(b: &[u8]) -> Result<(String, Vec<SqlValue>), ProtoError> {
     let mut r = R::new(b);
-    let sql = core::str::from_utf8(r.bytes()?).map_err(|_| ProtoError("SQL non UTF-8".into()))?.to_string();
+    let sql = core::str::from_utf8(r.bytes()?).map_err(|_| ProtoError("non-UTF-8 SQL".into()))?.to_string();
     let n = r.u16()?;
     let params = (0..n).map(|_| r.value()).collect::<Result<_, _>>()?;
     r.end()?;
     Ok((sql, params))
 }
 
-/// Un nome o un percorso del guest da mostrare: UTF-8 com'è, ogni byte che
-/// non fa parte di UTF-8 valido come `\xNN`.
+/// A guest name or path to show: UTF-8 as is, every byte that
+/// is not part of valid UTF-8 as `\xNN`.
 pub fn display_name(b: &[u8]) -> String {
     let mut out = String::new();
     for chunk in b.utf8_chunks() {
@@ -733,7 +729,7 @@ pub fn display_name(b: &[u8]) -> String {
     out
 }
 
-/// Il corpo di una risposta a WATCH: l'id dell'osservazione.
+/// The body of a response to WATCH: the id of the watch.
 pub fn parse_watch(body: &[u8]) -> Result<u32, ProtoError> {
     let mut r = R::new(body);
     let wd = r.u32()?;
@@ -741,7 +737,7 @@ pub fn parse_watch(body: &[u8]) -> Result<u32, ProtoError> {
     Ok(wd)
 }
 
-/// Accumula i byte del demone e ne estrae i frame completi.
+/// Accumulates the daemon's bytes and extracts the complete frames.
 #[derive(Clone, Debug, Default)]
 pub struct Decoder {
     buf: Vec<u8>,
@@ -757,12 +753,12 @@ impl Decoder {
         self.buf.extend_from_slice(bytes);
     }
 
-    /// Byte ricevuti e non ancora consumati.
+    /// Bytes received and not consumed yet.
     pub fn pending(&self) -> usize {
         self.buf.len() - self.at
     }
 
-    /// Il prossimo frame completo, se c'è.
+    /// The next complete frame, if any.
     pub fn next_frame(&mut self) -> Option<Result<Frame, ProtoError>> {
         let rest = &self.buf[self.at..];
         if rest.len() < 4 {
@@ -770,7 +766,7 @@ impl Decoder {
         }
         let len = u32::from_le_bytes(rest[..4].try_into().unwrap()) as usize;
         if !(5..=MAX_FRAME).contains(&len) {
-            return Some(Err(ProtoError(format!("frame lungo {len} byte"))));
+            return Some(Err(ProtoError(format!("frame {len} bytes long"))));
         }
         if rest.len() < 4 + len {
             return None;
@@ -793,7 +789,7 @@ impl Decoder {
             ty::HELLO => {
                 let magic = r.u32()?;
                 if magic != MAGIC {
-                    return Err(ProtoError(format!("saluto con magia {magic:#x}")));
+                    return Err(ProtoError(format!("greeting with magic {magic:#x}")));
                 }
                 let h = Hello { version: r.u16()?, flags: r.u16()?, max_chunk: r.u32()? };
                 r.end()?;
@@ -808,12 +804,12 @@ impl Decoder {
                 r.end()?;
                 Ok(Frame::Event(e))
             }
-            t => Err(ProtoError(format!("frame di tipo {t:#x}"))),
+            t => Err(ProtoError(format!("frame of type {t:#x}"))),
         }
     }
 }
 
-/// Nome simbolico di un errno di Linux (arm64 usa i numeri generici).
+/// Symbolic name of a Linux errno (arm64 uses the generic numbers).
 pub fn errno_name(e: u32) -> &'static str {
     match e {
         1 => "EPERM",
@@ -863,7 +859,7 @@ mod tests {
         }
     }
 
-    /// Ogni richiesta si rilegge uguale, e il frame ha la lunghezza giusta.
+    /// Every request reads back the same, and the frame has the right length.
     #[test]
     fn richieste_andata_e_ritorno() {
         let reqs = [
@@ -908,7 +904,7 @@ mod tests {
             assert_eq!(f[4], r.ty());
             assert_eq!(Request::decode(&f[4..]).unwrap(), (i as u32 + 100, r.clone()));
         }
-        // Byte esatti di una richiesta: il formato è il contratto con il C.
+        // Exact bytes of a request: the format is the contract with the C code.
         assert_eq!(
             Request::Read { path: "/a".into(), offset: 2, len: 3 }.encode(9),
             [21, 0, 0, 0, 3, 9, 0, 0, 0, 2, 0, b'/', b'a', 2, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0]
@@ -929,8 +925,8 @@ mod tests {
         );
     }
 
-    /// I frame del demone arrivano a pezzi qualsiasi (anche un byte alla
-    /// volta) e si ricompongono.
+    /// The daemon's frames arrive in arbitrary pieces (even one byte at a
+    /// time) and are reassembled.
     #[test]
     fn frame_a_pezzi() {
         let hello = Hello { version: VERSION, flags: 1, max_chunk: 1 << 20 };
@@ -979,7 +975,7 @@ mod tests {
         assert!(d.next_frame().unwrap().is_err(), "magia sbagliata");
         assert!(parse_list(&[255, 255, 255, 255]).is_err(), "conteggio impossibile");
         assert!(parse_read(&encode_read(1, b"x")[..11]).is_err(), "corpo corto");
-        assert!(parse_watch(&[1, 0, 0, 0, 0]).is_err(), "byte in più");
+        assert!(parse_watch(&[1, 0, 0, 0, 0]).is_err(), "extra bytes");
         assert_eq!(errno_name(2), "ENOENT");
         assert!(parse_sql(&encode_sql_err(1, "x")[..6]).is_err(), "messaggio corto");
         let mut ok = encode_sql_ok(&SqlResult {
@@ -989,10 +985,10 @@ mod tests {
         });
         let n = ok.len();
         ok[n - 9] = 9;
-        assert!(parse_sql(&ok).is_err(), "tipo di valore sconosciuto");
+        assert!(parse_sql(&ok).is_err(), "unknown value type");
     }
 
-    /// Risposte SQL andata e ritorno, e nomi mostrati con `\xNN`.
+    /// SQL responses round trip, and names shown with `\xNN`.
     #[test]
     fn sql_e_nomi() {
         let res = SqlResult {
@@ -1016,6 +1012,6 @@ mod tests {
         let args = encode_sql_args("SELECT ?1", &params);
         assert_eq!(decode_sql_args(&args).unwrap(), ("SELECT ?1".to_string(), params));
         assert!(decode_sql_args(&args[..args.len() - 1]).is_err());
-        assert!(decode_sql_args(&[1, 0, 0, 0, 0xff, 0, 0]).is_err(), "SQL non UTF-8");
+        assert!(decode_sql_args(&[1, 0, 0, 0, 0xff, 0, 0]).is_err(), "non-UTF-8 SQL");
     }
 }

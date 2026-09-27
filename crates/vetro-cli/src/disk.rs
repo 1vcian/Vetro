@@ -1,13 +1,13 @@
-//! Dischi virtio-blk da file per `vetro boot` (runner nativo).
+//! File-backed virtio-blk disks for `vetro boot` (native runner).
 //!
-//! Il file si legge soltanto: le scritture del guest finiscono in un
-//! [`CowBackend`] in memoria (come `snapshot=on` di QEMU), quindi l'immagine
-//! non cambia mai e due avvii partono dallo stesso disco.
+//! The file is only read: the guest's writes end up in an in-memory
+//! [`CowBackend`] (like QEMU's `snapshot=on`), so the image
+//! never changes and two boots start from the same disk.
 //!
-//! Con `--overlay=FILE` (M6, ADR 0017) le scritture del guest si conservano
-//! in FILE, nello stesso formato dell'overlay del browser
-//! (`vetro_snapshot::overlay`): all'avvio successivo si riapplicano. FILE
-//! ricorda l'immagine base ([`base_identity`]): con un'altra base si scarta.
+//! With `--overlay=FILE` (M6, ADR 0017) the guest's writes are kept
+//! in FILE, in the same format as the browser's overlay
+//! (`vetro_snapshot::overlay`): on the next boot they are reapplied. FILE
+//! remembers the base image ([`base_identity`]): with a different base it is discarded.
 
 use std::fs::{File, OpenOptions};
 use std::os::unix::fs::FileExt;
@@ -16,8 +16,8 @@ use std::path::Path;
 use vetro_machine::vetro_snapshot::overlay::{LoadError, Overlay, Patches};
 use vetro_platform::virtio::{BlockBackend, BlockError, CowBackend};
 
-/// Immagine su file, in sola lettura. La dimensione è arrotondata per difetto
-/// a 512 byte (come QEMU per i dischi raw).
+/// Image in a file, read-only. The size is rounded down
+/// to 512 bytes (like QEMU for raw disks).
 pub struct FileBackend {
     file: File,
     size: u64,
@@ -54,14 +54,14 @@ impl BlockBackend for FileBackend {
     }
 }
 
-/// Disco scrivibile dal guest sopra un file che resta intatto.
+/// Guest-writable disk on top of a file that stays intact.
 pub fn cow_disk(path: &Path) -> std::io::Result<CowBackend<FileBackend>> {
     FileBackend::open(path).map(CowBackend::new)
 }
 
-/// Identità dell'immagine base per l'overlay: nome del file, dimensione e
-/// data di modifica (in ns). Cambia se l'immagine si sostituisce o si
-/// modifica; non cambia se si sposta in un'altra cartella.
+/// Identity of the base image for the overlay: file name, size and
+/// modification date (in ns). It changes if the image is replaced or
+/// modified; it does not change if it is moved to another folder.
 pub fn base_identity(path: &Path) -> std::io::Result<Vec<u8>> {
     let meta = std::fs::metadata(path)?;
     let mtime = meta.modified()?.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
@@ -69,18 +69,18 @@ pub fn base_identity(path: &Path) -> std::io::Result<Vec<u8>> {
     Ok(format!("file:{name}|{}|{mtime}", meta.len()).into_bytes())
 }
 
-/// Overlay persistente di un disco su file.
+/// Persistent overlay of a file-backed disk.
 pub struct FileOverlay {
     file: File,
     overlay: Overlay,
-    /// Dopo un ripristino si confrontano tutti i cluster, non solo gli scritti.
+    /// After a restore all clusters are compared, not just the written ones.
     full_sync: bool,
 }
 
 impl FileOverlay {
-    /// Apre (o crea) l'overlay `path` per il disco `cow` con base
-    /// `identity` e ne carica i cluster nel copy-on-write. Il secondo valore
-    /// dice perché un file esistente si è scartato (altra base, illeggibile).
+    /// Opens (or creates) the overlay `path` for the disk `cow` with base
+    /// `identity` and loads its clusters into the copy-on-write. The second value
+    /// says why an existing file was discarded (different base, unreadable).
     pub fn open<B: BlockBackend>(
         path: &Path,
         identity: &[u8],
@@ -101,9 +101,9 @@ impl FileOverlay {
         Ok((FileOverlay { file, overlay, full_sync: false }, discarded))
     }
 
-    /// Scrive nel file i cluster scritti dal guest dall'ultima volta (tutti
-    /// quelli diversi dal file dopo [`after_restore`](Self::after_restore)).
-    /// Restituisce se ha scritto qualcosa.
+    /// Writes to the file the clusters written by the guest since last time (all
+    /// those that differ from the file after [`after_restore`](Self::after_restore)).
+    /// Returns whether it wrote anything.
     pub fn persist<B: BlockBackend>(&mut self, cow: &mut CowBackend<B>) -> std::io::Result<bool> {
         let dirty = cow.take_dirty();
         let p = if core::mem::take(&mut self.full_sync) {
@@ -118,8 +118,8 @@ impl FileOverlay {
         Ok(true)
     }
 
-    /// I cluster in memoria vengono da uno snapshot: al prossimo
-    /// [`persist`](Self::persist) il file si riallinea a tutti.
+    /// The in-memory clusters come from a snapshot: on the next
+    /// [`persist`](Self::persist) the file is realigned to all of them.
     pub fn after_restore(&mut self) {
         self.full_sync = true;
     }
@@ -129,8 +129,8 @@ impl FileOverlay {
     }
 }
 
-/// Applica le scritture in ordine (l'intestazione per ultima, dopo che i
-/// dati sono sul disco).
+/// Applies the writes in order (the header last, after the
+/// data is on disk).
 fn apply(file: &File, p: &Patches) -> std::io::Result<()> {
     if let Some(n) = p.truncate {
         file.set_len(n)?;
@@ -158,14 +158,14 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("disco.img");
         let data: Vec<u8> = (0..1536u32).map(|i| (i % 251) as u8).collect();
-        // 1536 + 100 byte: la coda sotto i 512 non fa parte del disco.
+        // 1536 + 100 bytes: the tail below 512 is not part of the disk.
         let mut f = data.clone();
         f.extend_from_slice(&[0xee; 100]);
         std::fs::write(&path, &f).unwrap();
 
         let mut d = cow_disk(&path).unwrap();
         assert_eq!(d.size(), 1536);
-        assert!(!d.read_only(), "il copy-on-write accetta le scritture");
+        assert!(!d.read_only(), "the copy-on-write accepts writes");
         let mut buf = vec![0; 1024];
         d.read_sectors(1, &mut buf).unwrap();
         assert_eq!(buf, data[512..]);
@@ -174,13 +174,13 @@ mod tests {
         assert_eq!(&buf[..512], &data[512..1024]);
         assert_eq!(&buf[512..], &[7; 512][..]);
         assert_eq!(d.read_sectors(3, &mut [0; 512]), Err(BlockError::OutOfRange));
-        assert_eq!(std::fs::read(&path).unwrap(), f, "il file non cambia");
+        assert_eq!(std::fs::read(&path).unwrap(), f, "the file does not change");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// `--overlay`: le scritture tornano alla riapertura; con un'altra base
-    /// l'overlay si scarta e il file si riscrive; dopo un ripristino il file
-    /// si riallinea.
+    /// `--overlay`: the writes come back on reopening; with a different base
+    /// the overlay is discarded and the file is rewritten; after a restore the file
+    /// is realigned.
     #[test]
     fn overlay_su_file() {
         let dir = std::env::temp_dir().join(format!("vetro-overlay-{}", std::process::id()));
@@ -197,7 +197,7 @@ mod tests {
         d.write_sectors(3, &[0xaa; 512]).unwrap();
         d.write_sectors(20, &[0xbb; 1024]).unwrap();
         assert!(o.persist(&mut d).unwrap());
-        assert!(!o.persist(&mut d).unwrap(), "niente di nuovo");
+        assert!(!o.persist(&mut d).unwrap(), "nothing new");
         let saved = {
             let mut w = vetro_machine::vetro_snapshot::Writer::new();
             d.save_state(&mut w);
@@ -223,16 +223,16 @@ mod tests {
         let mut d3 = cow_disk(&base).unwrap();
         FileOverlay::open(&ov, &id, &mut d3).unwrap();
         d3.read_sectors(3, &mut buf).unwrap();
-        assert_eq!(buf, [0xaa; 512], "riallineato allo snapshot");
+        assert_eq!(buf, [0xaa; 512], "realigned to the snapshot");
 
         let mut d4 = cow_disk(&base).unwrap();
         let (mut o4, discarded) = FileOverlay::open(&ov, b"file:altro|32768|1", &mut d4).unwrap();
-        assert!(discarded.unwrap().to_string().contains("altra immagine base"));
+        assert!(discarded.unwrap().to_string().contains("another base image"));
         d4.read_sectors(3, &mut buf).unwrap();
         assert_eq!(buf, data[3 * 512..4 * 512]);
         assert!(o4.persist(&mut d4).unwrap());
-        assert_eq!(std::fs::metadata(&ov).unwrap().len(), 4096, "riscritto da capo: solo l'intestazione");
-        assert_eq!(std::fs::read(&base).unwrap(), data, "la base non cambia");
+        assert_eq!(std::fs::metadata(&ov).unwrap().len(), 4096, "rewritten from scratch: header only");
+        assert_eq!(std::fs::read(&base).unwrap(), data, "the base does not change");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

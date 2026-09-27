@@ -1,39 +1,39 @@
-//! virtio-gpu 2D (virtio v1.2, §5.7), senza virgl né blob.
+//! virtio-gpu 2D (virtio v1.2, §5.7), without virgl or blobs.
 //!
-//! Code: 0 = controllo (comando leggibile, risposta scrivibile), 1 =
-//! cursore (comandi senza risposta). Feature offerta: EDID (disattivabile).
-//! Le risorse 2D stanno in memoria dell'host (come le immagini pixman di
-//! QEMU); il guest ci copia i pixel dalla sua memoria di backing con
-//! TRANSFER_TO_HOST_2D e le mostra con SET_SCANOUT e RESOURCE_FLUSH. Il
-//! risultato arriva al [`DisplayBackend`] (nel browser: canvas o WebGPU;
-//! nei test: [`MemDisplay`]).
+//! Queues: 0 = control (readable command, writable response), 1 =
+//! cursor (commands without a response). Feature offered: EDID (can be disabled).
+//! 2D resources live in host memory (like QEMU's pixman
+//! images); the guest copies the pixels into them from its backing memory with
+//! TRANSFER_TO_HOST_2D and shows them with SET_SCANOUT and RESOURCE_FLUSH. The
+//! result reaches the [`DisplayBackend`] (in the browser: canvas or WebGPU;
+//! in tests: [`MemDisplay`]).
 //!
-//! Comandi: GET_DISPLAY_INFO, GET_EDID, RESOURCE_CREATE_2D, RESOURCE_UNREF,
+//! Commands: GET_DISPLAY_INFO, GET_EDID, RESOURCE_CREATE_2D, RESOURCE_UNREF,
 //! SET_SCANOUT, RESOURCE_FLUSH, TRANSFER_TO_HOST_2D,
-//! RESOURCE_ATTACH_BACKING, RESOURCE_DETACH_BACKING; UPDATE_CURSOR e
-//! MOVE_CURSOR sulla coda del cursore. Controlli ed errori come QEMU 10.0
+//! RESOURCE_ATTACH_BACKING, RESOURCE_DETACH_BACKING; UPDATE_CURSOR and
+//! MOVE_CURSOR on the cursor queue. Checks and errors like QEMU 10.0
 //! (hw/display/virtio-gpu.c):
-//! - id di risorsa 0 o già usato: ERR_INVALID_RESOURCE_ID; formato
-//!   sconosciuto: ERR_INVALID_PARAMETER; oltre `max_hostmem` (256 MiB):
+//! - resource id 0 or already used: ERR_INVALID_RESOURCE_ID; unknown
+//!   format: ERR_INVALID_PARAMETER; over `max_hostmem` (256 MiB):
 //!   ERR_OUT_OF_MEMORY;
-//! - rettangoli di TRANSFER e FLUSH fuori dalla risorsa, di SET_SCANOUT
-//!   fuori o più piccoli di 16x16: ERR_INVALID_PARAMETER; scanout
-//!   inesistente: ERR_INVALID_SCANOUT_ID;
-//! - TRANSFER, SET_SCANOUT e DETACH senza backing, ATTACH su una risorsa
-//!   che ce l'ha già, più di 16384 voci o voci fuori dalla RAM: ERR_UNSPEC;
-//! - GET_CAPSET*, comandi 3D e UUID: ERR_UNSPEC; blob: ERR_INVALID_PARAMETER;
-//! - con VIRTIO_GPU_FLAG_FENCE la risposta riporta flag, fence_id e ctx_id:
-//!   i comandi si eseguono subito, quindi il fence è già segnalato.
+//! - TRANSFER and FLUSH rectangles outside the resource, SET_SCANOUT ones
+//!   outside or smaller than 16x16: ERR_INVALID_PARAMETER; nonexistent
+//!   scanout: ERR_INVALID_SCANOUT_ID;
+//! - TRANSFER, SET_SCANOUT and DETACH without backing, ATTACH on a resource
+//!   that already has it, more than 16384 entries or entries outside RAM: ERR_UNSPEC;
+//! - GET_CAPSET*, 3D commands and UUID: ERR_UNSPEC; blobs: ERR_INVALID_PARAMETER;
+//! - with VIRTIO_GPU_FLAG_FENCE the response carries flags, fence_id and ctx_id:
+//!   commands are executed immediately, so the fence is already signalled.
 //!
-//! Differenze volute da QEMU, solo su richieste malformate che Linux non
-//! manda: un comando più corto della sua struttura riceve
-//! ERR_INVALID_PARAMETER (QEMU risponde OK_NODATA senza eseguirlo, o per
-//! l'intestazione blocca la coda). Una risposta che non entra nei buffer
-//! scrivibili si tronca, come in QEMU.
+//! Deliberate differences from QEMU, only on malformed requests that Linux doesn't
+//! send: a command shorter than its structure gets
+//! ERR_INVALID_PARAMETER (QEMU answers OK_NODATA without executing it, or for
+//! the header stalls the queue). A response that doesn't fit in the writable
+//! buffers is truncated, as in QEMU.
 //!
-//! Il display: `set_display` cambia la risoluzione richiesta di uno
-//! scanout (evento VIRTIO_GPU_EVENT_DISPLAY con interrupt di
-//! configurazione, come il ridimensionamento di una finestra in QEMU).
+//! The display: `set_display` changes the requested resolution of a
+//! scanout (VIRTIO_GPU_EVENT_DISPLAY event with a configuration
+//! interrupt, like resizing a window in QEMU).
 
 use core::any::Any;
 use std::collections::BTreeMap;
@@ -74,24 +74,24 @@ pub const RESP_ERR_INVALID_CONTEXT_ID: u32 = 0x1204;
 pub const RESP_ERR_INVALID_PARAMETER: u32 = 0x1205;
 
 pub const FLAG_FENCE: u32 = 1 << 0;
-/// Bit di `events_read`: la configurazione dei display è cambiata.
+/// Bit of `events_read`: the display configuration has changed.
 pub const EVENT_DISPLAY: u32 = 1 << 0;
 
-/// Scanout al più (VIRTIO_GPU_MAX_SCANOUTS).
+/// Maximum scanouts (VIRTIO_GPU_MAX_SCANOUTS).
 pub const MAX_SCANOUTS: u32 = 16;
-/// Voci di backing al più per ATTACH_BACKING (come QEMU).
+/// Maximum backing entries for ATTACH_BACKING (like QEMU).
 pub const MAX_BACKING_ENTRIES: u32 = 16384;
-/// Lato del cursore (QEMU alloca sempre 64x64).
+/// Cursor side (QEMU always allocates 64x64).
 pub const CURSOR_SIZE: u32 = 64;
 
 const CTRLQ: usize = 0;
 const CURSORQ: usize = 1;
 const HDR_LEN: usize = 24;
-/// Byte del buffer EDID nella risposta.
+/// Bytes of the EDID buffer in the response.
 const EDID_BLOB: usize = 1024;
 
-/// Formati 2D, con i valori di `enum virtio_gpu_formats`. Il nome dice
-/// l'ordine dei byte in memoria (B8G8R8A8: B nel primo byte).
+/// 2D formats, with the values of `enum virtio_gpu_formats`. The name gives
+/// the byte order in memory (B8G8R8A8: B in the first byte).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PixelFormat {
     B8G8R8A8 = 1,
@@ -120,12 +120,12 @@ impl PixelFormat {
         })
     }
 
-    /// Tutti i formati sono a 32 bit.
+    /// All formats are 32-bit.
     pub const fn bytes_per_pixel(self) -> u32 {
         4
     }
 
-    /// Un pixel (4 byte in memoria) in RGBA; il canale X diventa 255.
+    /// A pixel (4 bytes in memory) in RGBA; the X channel becomes 255.
     pub fn to_rgba(self, p: [u8; 4]) -> [u8; 4] {
         use PixelFormat::*;
         match self {
@@ -159,8 +159,8 @@ impl Rect {
         Self { x: le32(b, 0), y: le32(b, 4), width: le32(b, 8), height: le32(b, 12) }
     }
 
-    /// Dentro un'area `w`x`h`, con i controlli di QEMU (anche contro
-    /// l'overflow di x + width, fatto a 64 bit).
+    /// Inside a `w`x`h` area, with QEMU's checks (also against
+    /// overflow of x + width, done in 64 bits).
     fn within(&self, w: u32, h: u32) -> bool {
         self.x <= w
             && self.y <= h
@@ -180,9 +180,9 @@ impl Rect {
     }
 }
 
-/// L'immagine di uno scanout: la parte della risorsa scelta con
-/// SET_SCANOUT. `data` parte dal pixel (0, 0) dello scanout; le righe
-/// distano `stride` byte.
+/// The image of a scanout: the part of the resource chosen with
+/// SET_SCANOUT. `data` starts at pixel (0, 0) of the scanout; rows
+/// are `stride` bytes apart.
 #[derive(Clone, Copy, Debug)]
 pub struct Frame<'a> {
     pub width: u32,
@@ -193,39 +193,39 @@ pub struct Frame<'a> {
 }
 
 impl Frame<'_> {
-    /// Il pixel (x, y) in RGBA.
+    /// Pixel (x, y) in RGBA.
     pub fn rgba(&self, x: u32, y: u32) -> [u8; 4] {
         let o = (y * self.stride + x * 4) as usize;
         self.format.to_rgba(self.data[o..o + 4].try_into().unwrap())
     }
 }
 
-/// Stato del cursore di uno scanout.
+/// Cursor state of a scanout.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Cursor {
-    /// Risorsa dell'immagine (0 = cursore nascosto).
+    /// Resource of the image (0 = cursor hidden).
     pub resource_id: u32,
     pub x: u32,
     pub y: u32,
     pub hot_x: u32,
     pub hot_y: u32,
-    /// Immagine 64x64 in B8G8R8A8 come la risorsa (vuota se la risorsa
-    /// non è 64x64 o non c'è), aggiornata da UPDATE_CURSOR.
+    /// 64x64 image in B8G8R8A8 like the resource (empty if the resource
+    /// is not 64x64 or absent), updated by UPDATE_CURSOR.
     pub image: Vec<u8>,
 }
 
-/// Dove va l'immagine. I metodi ricevono sempre dati già validati.
+/// Where the image goes. The methods always receive already validated data.
 pub trait DisplayBackend: Any {
-    /// Il rettangolo `dirty` (coordinate dello scanout) di `frame` è
-    /// cambiato. Dopo SET_SCANOUT arriva con l'intero scanout.
+    /// The `dirty` rectangle (scanout coordinates) of `frame` has
+    /// changed. After SET_SCANOUT it arrives with the whole scanout.
     fn update(&mut self, scanout: u32, frame: &Frame<'_>, dirty: Rect);
-    /// Lo scanout non mostra più niente.
+    /// The scanout no longer shows anything.
     fn disable(&mut self, scanout: u32);
     /// Cursore definito (UPDATE_CURSOR) o spostato (MOVE_CURSOR).
     fn cursor(&mut self, _scanout: u32, _cursor: &Cursor) {}
 }
 
-/// Backend in memoria: l'ultima immagine di ogni scanout, in RGBA.
+/// In-memory backend: the last image of every scanout, in RGBA.
 #[derive(Clone, Debug, Default)]
 pub struct MemDisplay {
     /// Per scanout: (larghezza, altezza, pixel RGBA riga per riga).
@@ -236,7 +236,7 @@ pub struct MemDisplay {
 }
 
 impl MemDisplay {
-    /// Il pixel (x, y) dello scanout, in RGBA.
+    /// Pixel (x, y) of the scanout, in RGBA.
     pub fn pixel(&self, scanout: u32, x: u32, y: u32) -> Option<[u8; 4]> {
         let (w, h, px) = self.screens.get(&scanout)?;
         if x >= *w || y >= *h {
@@ -271,20 +271,20 @@ impl DisplayBackend for MemDisplay {
     }
 }
 
-/// Configurazione del dispositivo.
+/// Device configuration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GpuConfig {
-    /// Numero di scanout (1..=16).
+    /// Number of scanouts (1..=16).
     pub scanouts: u32,
-    /// Risoluzione iniziale dello scanout 0 (quella di QEMU: 1280x800).
+    /// Initial resolution of scanout 0 (QEMU's: 1280x800).
     pub width: u32,
     pub height: u32,
     /// Offre VIRTIO_GPU_F_EDID.
     pub edid: bool,
-    /// Monitor descritto dall'EDID (le dimensioni preferite si prendono
-    /// dalla risoluzione dello scanout).
+    /// Monitor described by the EDID (the preferred dimensions are taken
+    /// from the scanout resolution).
     pub monitor: EdidInfo,
-    /// Memoria massima delle risorse (come `max_hostmem` di QEMU).
+    /// Maximum resource memory (like QEMU's `max_hostmem`).
     pub max_hostmem: u64,
 }
 
@@ -305,11 +305,11 @@ struct Resource {
     width: u32,
     height: u32,
     format: PixelFormat,
-    /// Pixel, righe da `width * 4` byte (lo stride di pixman a 32 bit).
+    /// Pixels, rows of `width * 4` bytes (pixman's 32-bit stride).
     data: Vec<u8>,
-    /// Memoria del guest: (indirizzo, lunghezza).
+    /// Guest memory: (address, length).
     backing: Option<Vec<(u64, u32)>>,
-    /// Scanout che la mostrano (bit per scanout).
+    /// Scanouts showing it (one bit per scanout).
     scanouts: u32,
 }
 
@@ -321,10 +321,10 @@ impl Resource {
 
 #[derive(Clone, Debug, Default)]
 struct Scanout {
-    /// Risoluzione chiesta dall'host (0x0 = display spento).
+    /// Resolution requested by the host (0x0 = display off).
     req_width: u32,
     req_height: u32,
-    /// Risorsa mostrata (0 = nessuna) e sua parte.
+    /// Resource shown (0 = none) and its part.
     resource_id: u32,
     rect: Rect,
     cursor: Cursor,
@@ -350,7 +350,7 @@ pub struct VirtioGpu {
 }
 
 impl VirtioGpu {
-    /// Code da 64 (controllo) e 16 (cursore) come QEMU senza virgl.
+    /// 64-entry (control) and 16-entry (cursor) queues like QEMU without virgl.
     pub fn new(backend: Box<dyn DisplayBackend>, config: GpuConfig) -> Self {
         let n = config.scanouts.clamp(1, MAX_SCANOUTS) as usize;
         let mut scanouts = vec![Scanout::default(); n];
@@ -368,8 +368,8 @@ impl VirtioGpu {
         }
     }
 
-    /// Cambia backend (es. quello del browser al posto di [`MemDisplay`]):
-    /// il nuovo riceve subito l'immagine e il cursore di ogni scanout.
+    /// Changes backend (e.g. the browser's instead of [`MemDisplay`]):
+    /// the new one immediately receives the image and cursor of every scanout.
     pub fn set_backend(&mut self, backend: Box<dyn DisplayBackend>) {
         self.backend = backend;
         for (i, s) in self.scanouts.iter().enumerate() {
@@ -387,7 +387,7 @@ impl VirtioGpu {
         self.backend.as_mut()
     }
 
-    /// Accesso tipizzato al backend.
+    /// Typed access to the backend.
     pub fn backend_as_mut<T: DisplayBackend>(&mut self) -> Option<&mut T> {
         let b: &mut dyn Any = self.backend.as_mut();
         b.downcast_mut()
@@ -398,9 +398,9 @@ impl VirtioGpu {
         b.downcast_ref()
     }
 
-    /// Risoluzione chiesta per lo scanout `scanout` (0x0 = spento), come il
-    /// ridimensionamento della finestra: il driver lo vede con un
-    /// interrupt di configurazione e rilegge GET_DISPLAY_INFO.
+    /// Resolution requested for scanout `scanout` (0x0 = off), like
+    /// resizing the window: the driver sees it with a
+    /// configuration interrupt and rereads GET_DISPLAY_INFO.
     pub fn set_display(&mut self, scanout: u32, width: u32, height: u32) {
         if let Some(s) = self.scanouts.get_mut(scanout as usize) {
             s.req_width = width;
@@ -410,7 +410,7 @@ impl VirtioGpu {
         }
     }
 
-    /// L'immagine attuale dello scanout, se ne mostra una.
+    /// The current image of the scanout, if it shows one.
     pub fn frame(&self, scanout: u32) -> Option<Frame<'_>> {
         let s = self.scanouts.get(scanout as usize)?;
         let r = self.resources.get(&s.resource_id)?;
@@ -441,7 +441,7 @@ impl VirtioGpu {
         let mut c = [0u8; 16];
         c[0..4].copy_from_slice(&self.events_read.to_le_bytes());
         c[8..12].copy_from_slice(&(self.scanouts.len() as u32).to_le_bytes());
-        // num_capsets = 0: niente 3D.
+        // num_capsets = 0: no 3D.
         c
     }
 
@@ -520,7 +520,7 @@ impl VirtioGpu {
         Ok(())
     }
 
-    /// Risorsa con backing (`virtio_gpu_find_check_resource` con
+    /// Resource with backing (`virtio_gpu_find_check_resource` with
     /// require_backing).
     fn with_backing(&mut self, id: u32) -> Result<&mut Resource, u32> {
         let r = self.resources.get_mut(&id).ok_or(RESP_ERR_INVALID_RESOURCE_ID)?;
@@ -590,9 +590,9 @@ impl VirtioGpu {
         }
         let stride = u64::from(r.stride());
         let backing = r.backing.as_ref().unwrap();
-        // Come QEMU: righe intere copiate in un colpo solo se il
-        // rettangolo copre tutta la larghezza, altrimenti riga per riga
-        // (sorgente a offset + stride * riga).
+        // Like QEMU: whole rows copied in one go if the
+        // rectangle covers the full width, otherwise row by row
+        // (source at offset + stride * row).
         if rect.x == 0 && rect.width == r.width {
             let dst = (u64::from(rect.y) * stride) as usize;
             let len = (stride * u64::from(rect.height)) as usize;
@@ -620,7 +620,7 @@ impl VirtioGpu {
         let mut backing = Vec::with_capacity(n as usize);
         for e in ents.chunks(16) {
             let (addr, len) = (le64(e, 0), le32(e, 8));
-            // Come dma_memory_map: ogni voce deve stare tutta in RAM.
+            // Like dma_memory_map: every entry must lie entirely in RAM.
             let mut b = [0u8; 1];
             let last = addr.checked_add(u64::from(len).saturating_sub(1)).ok_or(RESP_ERR_UNSPEC)?;
             if len > 0 && (ram.read(addr, &mut b).is_err() || ram.read(last, &mut b).is_err()) {
@@ -638,7 +638,7 @@ impl VirtioGpu {
         Ok(())
     }
 
-    /// Esegue un comando della coda di controllo; restituisce la risposta.
+    /// Executes a command of the control queue; returns the response.
     fn command(&mut self, c: &DescChain, ram: &dyn GuestRam) -> Vec<u8> {
         let cmd = c.read_to_vec(ram, 0).unwrap_or_default();
         let mut hdr = [0u8; HDR_LEN];
@@ -670,7 +670,7 @@ impl VirtioGpu {
         cmd: &[u8],
         ram: &dyn GuestRam,
     ) -> Result<Option<Vec<u8>>, u32> {
-        // Lunghezza di ogni comando (struct virtio_gpu_*).
+        // Length of every command (struct virtio_gpu_*).
         let need = match ty {
             CMD_GET_DISPLAY_INFO => HDR_LEN,
             CMD_GET_EDID => HDR_LEN + 8,
@@ -695,8 +695,8 @@ impl VirtioGpu {
             CMD_RESOURCE_ATTACH_BACKING => self.attach_backing(c, cmd, ram).map(|_| None),
             CMD_RESOURCE_DETACH_BACKING => self.detach_backing(cmd).map(|_| None),
             CMD_RESOURCE_CREATE_BLOB | CMD_SET_SCANOUT_BLOB => Err(RESP_ERR_INVALID_PARAMETER),
-            // GET_EDID senza la feature, capset, 3D, UUID: come il default
-            // di QEMU.
+            // GET_EDID without the feature, capset, 3D, UUID: like QEMU's
+            // default.
             _ => Err(RESP_ERR_UNSPEC),
         }
     }
@@ -727,9 +727,9 @@ impl VirtioGpu {
     }
 }
 
-/// Copia dal backing (voci in ordine, viste come spazio contiguo) a
-/// partire da `offset`; ciò che il backing non copre resta com'è, come
-/// `iov_to_buf` di QEMU.
+/// Copies from the backing (entries in order, seen as contiguous space)
+/// starting at `offset`; what the backing doesn't cover stays as it is, like
+/// QEMU's `iov_to_buf`.
 fn read_backing(ram: &dyn GuestRam, backing: &[(u64, u32)], mut offset: u64, out: &mut [u8]) {
     let mut done = 0usize;
     for &(addr, len) in backing {
@@ -742,7 +742,7 @@ fn read_backing(ram: &dyn GuestRam, backing: &[(u64, u32)], mut offset: u64, out
             continue;
         }
         let n = ((len - offset) as usize).min(out.len() - done);
-        // Le voci sono state controllate all'ATTACH: la RAM non si restringe.
+        // The entries were checked at ATTACH: RAM doesn't shrink.
         let _ = ram.read(addr + offset, &mut out[done..done + n]);
         done += n;
         offset = 0;
@@ -767,7 +767,7 @@ impl VirtioDevice for VirtioGpu {
     }
 
     fn write_config(&mut self, offset: u64, data: &[u8]) {
-        // events_clear (offset 4) azzera i bit di events_read.
+        // events_clear (offset 4) clears the bits of events_read.
         let mut v = [0u8; 4];
         for (i, &b) in data.iter().enumerate() {
             if let Some(k) = (offset + i as u64).checked_sub(4).filter(|&k| k < 4) {
@@ -809,10 +809,10 @@ impl VirtioDevice for VirtioGpu {
         Ok(())
     }
 
-    /// Risorse (pixel compressi a blocchi, backing, scanout che le mostrano),
-    /// scanout (risoluzione chiesta, risorsa e rettangolo, cursore), eventi.
-    /// Il backend del display è un collegamento: non si salva, e al
-    /// ripristino riceve di nuovo l'immagine e il cursore di ogni scanout.
+    /// Resources (block-compressed pixels, backing, scanouts showing them),
+    /// scanouts (requested resolution, resource and rectangle, cursor), events.
+    /// The display backend is a link: it isn't saved, and at
+    /// restore it receives the image and cursor of every scanout again.
     fn save_state(&self, w: &mut vetro_snapshot::Writer) {
         w.len_of(self.scanouts.len());
         w.seq(&self.resources, |w, (&id, r)| {
@@ -849,17 +849,17 @@ impl VirtioDevice for VirtioGpu {
 
     fn restore_state(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
         use vetro_snapshot::Error;
-        r.expect_u64("scanout della GPU", self.scanouts.len() as u64)?;
+        r.expect_u64("GPU scanouts", self.scanouts.len() as u64)?;
         let n = r.len_of(20)?;
         let mut resources = BTreeMap::new();
         for _ in 0..n {
             let id = r.u32()?;
             let (width, height) = (r.u32()?, r.u32()?);
             let format =
-                PixelFormat::from_virtio(r.u32()?).ok_or_else(|| Error::invalid("formato di risorsa"))?;
+                PixelFormat::from_virtio(r.u32()?).ok_or_else(|| Error::invalid("resource format"))?;
             let data = vetro_snapshot::decompress(r)?;
             if id == 0 || data.len() as u64 != u64::from(width) * 4 * u64::from(height) {
-                return Err(Error::invalid(format!("risorsa {id} della GPU")));
+                return Err(Error::invalid(format!("GPU resource {id}")));
             }
             let backing = r.opt(|r| r.seq(12, |r| Ok((r.u64()?, r.u32()?))))?;
             let scanouts = r.u32()?;
@@ -878,7 +878,7 @@ impl VirtioDevice for VirtioGpu {
                     .get(&s.resource_id)
                     .is_some_and(|res| s.rect.within(res.width, res.height));
                 if !ok {
-                    return Err(Error::invalid(format!("scanout sulla risorsa {}", s.resource_id)));
+                    return Err(Error::invalid(format!("scanout on resource {}", s.resource_id)));
                 }
             }
             s.cursor = Cursor {
@@ -892,7 +892,7 @@ impl VirtioDevice for VirtioGpu {
         }
         self.events_read = r.u32()?;
         self.display_changed = r.bool()?;
-        // Il display collegato mostra lo stato ripristinato.
+        // The attached display shows the restored state.
         for (i, s) in self.scanouts.iter().enumerate() {
             match self.resources.get(&s.resource_id) {
                 Some(res) => {

@@ -1,13 +1,13 @@
-//! Il kernel Linux del guest letto dall'esterno (ADR 0027), sopra i punti
-//! di aggancio della macchina ([`crate::hooks`]) e le strutture di
+//! The guest's Linux kernel read from outside (ADR 0027), on top of the
+//! machine's hook points ([`crate::hooks`]) and the structures of
 //! `vetro-analysis` ([`vetro_analysis::introspect`]).
 //!
-//! - [`Machine::linux`]: processi, thread, mappe, file aperti adesso;
-//! - [`SyscallTracer`]: syscall di EL0 con processo, argomenti, risultato
-//!   e decodifica (percorsi, dati, indirizzi, transazioni binder), e i
-//!   punti d'arresto scattati con registri e processo.
+//! - [`Machine::linux`]: processes, threads, maps, files open right now;
+//! - [`SyscallTracer`]: EL0 syscalls with process, arguments, result
+//!   and decoding (paths, data, addresses, binder transactions), and the
+//!   breakpoints hit, with registers and process.
 //!
-//! Nulla scrive nel guest: l'esecuzione resta la stessa, con e senza.
+//! Nothing writes into the guest: execution stays the same, with or without.
 
 use std::collections::BTreeMap;
 
@@ -17,7 +17,7 @@ use crate::Machine;
 use crate::hooks::{Event, GuestView, Tracer};
 
 impl Machine {
-    /// Legge il kernel Linux del guest com'è adesso (fra due quanti).
+    /// Reads the guest's Linux kernel as it is right now (between two quanta).
     pub fn linux<R>(&self, kernel: &Kernel, f: impl FnOnce(&Linux<'_, GuestView<'_>>) -> R) -> R {
         self.with_guest(|g| {
             let regs = g.cpu_regs();
@@ -26,34 +26,34 @@ impl Machine {
     }
 }
 
-/// Un punto d'arresto scattato.
+/// A breakpoint that was hit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BreakpointHit {
     pub id: u32,
     pub va: u64,
-    /// Istruzioni eseguite (compresa quella del punto).
+    /// Instructions executed (including the one at the breakpoint).
     pub step: u64,
     pub pid: i32,
     pub tid: i32,
     pub comm: String,
-    /// x0-x7 prima dell'istruzione (gli argomenti di una funzione).
+    /// x0-x7 before the instruction (a function's arguments).
     pub args: [u64; 8],
-    /// x30 (indirizzo di ritorno) e SP_EL0 prima dell'istruzione.
+    /// x30 (return address) and SP_EL0 before the instruction.
     pub lr: u64,
     pub sp: u64,
 }
 
-/// Tracciatore delle syscall e dei punti d'arresto con la decodifica di
+/// Tracer of syscalls and breakpoints with the decoding of
 /// `vetro-analysis`.
 pub struct SyscallTracer {
     pub kernel: Kernel,
-    /// Syscall concluse, in ordine di ritorno.
+    /// Completed syscalls, in return order.
     pub records: Vec<SyscallRecord>,
-    /// Punti d'arresto scattati, in ordine.
+    /// Breakpoints hit, in order.
     pub hits: Vec<BreakpointHit>,
-    /// Solo le syscall di questo processo (tgid), se c'è.
+    /// Only the syscalls of this process (tgid), if set.
     pub only_pid: Option<i32>,
-    /// Record al più conservati (oltre, si contano in `dropped`).
+    /// Maximum records kept (beyond that, they are counted in `dropped`).
     pub max_records: usize,
     pub dropped: u64,
     pending: BTreeMap<u64, SyscallRecord>,
@@ -80,7 +80,7 @@ impl SyscallTracer {
         }
     }
 
-    /// Il task che gira adesso.
+    /// The task running right now.
     fn current(lx: &Linux<'_, GuestView<'_>>, g: &GuestView<'_>) -> Option<Task> {
         lx.task(lx.current(g.cpu.sys.tpidr_el1)?)
     }
@@ -112,7 +112,7 @@ impl Tracer for SyscallTracer {
                 let fd_path = |fd: u32| lx.fd_file(addr, fd).map(|f| lx.file_path(f));
                 r.decode_entry(&user, &fd_path);
                 if matches!(e.nr, 93 | 94) {
-                    // exit ed exit_group non tornano: il record è completo così.
+                    // exit and exit_group do not return: the record is complete as is.
                     self.push(r);
                 } else {
                     self.pending.insert(e.key, r);

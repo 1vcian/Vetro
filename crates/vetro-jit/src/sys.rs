@@ -1,64 +1,64 @@
-//! `SysJit`: il JIT della modalità sistema (ADR 0012, ADR 0013).
+//! `SysJit`: the system-mode JIT (ADR 0012, ADR 0013).
 //!
-//! # Contratto
-//! [`SysJit::run`] esegue soltanto blocchi tradotti, al più `budget` passi,
-//! e si ferma prima di qualunque cosa debba fare l'interprete: istruzioni
-//! non tradotte, fault (compresi gli accessi fuori dalla RAM, cioè MMIO),
-//! SVC. Ogni blocco eseguito dà lo stesso risultato che avrebbero dato i
-//! suoi passi con `Cpu::step_system`, a patto che:
-//! - il chiamante non gli chieda di girare quando l'interprete prenderebbe
-//!   un interrupt (IRQ, FIQ o SError non mascherati), con PSTATE.IL o con
-//!   un PC non allineato;
-//! - `budget` non superi i passi fino al prossimo evento della piattaforma
-//!   (scadenza del timer): dentro i blocchi nulla cambia le linee di
-//!   interrupt, perché nessun blocco tocca l'MMIO o i registri di sistema.
+//! # Contract
+//! [`SysJit::run`] executes only translated blocks, at most `budget` steps,
+//! and stops before anything the interpreter has to do: untranslated
+//! instructions, faults (including accesses outside RAM, i.e. MMIO),
+//! SVC. Every block executed gives the same result that its steps would
+//! have given with `Cpu::step_system`, provided that:
+//! - the caller does not ask it to run when the interpreter would take
+//!   an interrupt (unmasked IRQ, FIQ or SError), with PSTATE.IL or with
+//!   a misaligned PC;
+//! - `budget` does not exceed the steps until the next platform event
+//!   (timer deadline): inside the blocks nothing changes the interrupt
+//!   lines, because no block touches MMIO or the system registers.
 //!
-//! Così l'orologio (il numero di istruzioni) e i punti in cui arrivano gli
-//! interrupt sono identici all'interprete.
+//! So the clock (the number of instructions) and the points where
+//! interrupts arrive are identical to the interpreter.
 //!
-//! # Regioni (ADR 0024)
-//! - Una regione si cerca per (`pc`, EL, TBI0, TBI1, SPSel, FP) e vale per
-//!   l'indirizzo fisico da cui è stata letta: a ogni ingresso dall'host si
-//!   ritraduce `pc` con la MMU (per un fetch, con i permessi di EL: la
-//!   stessa traduzione dell'interprete, cache delle traduzioni recenti
-//!   compresa) e si usa la regione di quella pagina fisica. Il codice freddo
-//!   (sotto la soglia) non si traduce nemmeno.
-//! - Ogni blocco base di una regione compilata è anche un suo ingresso: un
-//!   `pc` già dentro una regione non ne fa tradurre un'altra.
-//! - MSR DAIF/DAIFClr che smascherano interrupt fanno uscire con `YIELD`:
-//!   `run` torna al chiamante, che ricontrolla gli interrupt.
-//! - Ogni pagina fisica con blocchi è sorvegliata ([`SysPhys::watch_code`]):
-//!   qualunque scrittura (CPU, DMA dei dispositivi, caricamento) la segna
-//!   sporca, e i suoi blocchi si scartano prima della corsa successiva. Uno
-//!   store di un blocco su una pagina sorvegliata lo fa uscire subito dopo
+//! # Regions (ADR 0024)
+//! - A region is looked up by (`pc`, EL, TBI0, TBI1, SPSel, FP) and is valid for
+//!   the physical address it was read from: on every entry from the host
+//!   `pc` is translated again with the MMU (as a fetch, with the permissions of EL: the
+//!   same translation as the interpreter, including the cache of recent
+//!   translations) and the region of that physical page is used. Cold code
+//!   (below the threshold) is not even translated.
+//! - Every base block of a compiled region is also one of its entries: a
+//!   `pc` already inside a region does not cause another one to be translated.
+//! - MSR DAIF/DAIFClr that unmask interrupts exit with `YIELD`:
+//!   `run` returns to the caller, which checks interrupts again.
+//! - Every physical page with blocks is watched ([`SysPhys::watch_code`]):
+//!   any write (CPU, device DMA, loading) marks it
+//!   dirty, and its blocks are discarded before the next run. A
+//!   store by a block to a watched page makes it exit right after
 //!   (`STOP`).
 //!
-//! # Concatenamento
-//! I blocchi stanno in una tabella di funzioni condivisa fra i moduli; il
-//! dispatcher (un modulo generato, [`translate::dispatcher`]) passa da un
-//! blocco al successivo senza tornare all'host, finché la cache dei salti
-//! ([`area::JC`]) ha una voce per il nuovo `pc` con il contesto corrente. Le
-//! voci le scrive solo l'host, dopo aver verificato la traduzione del
-//! fetch; il contesto (`ctx`) è un'epoca che cambia con i registri di
-//! traduzione, con ogni TLBI e con ogni invalidazione di blocchi, più i
-//! parametri della regione (EL, TBI, SPSel, FP).
+//! # Chaining
+//! The blocks live in a function table shared among the modules; the
+//! dispatcher (a generated module, [`translate::dispatcher`]) goes from one
+//! block to the next without returning to the host, as long as the jump cache
+//! ([`area::JC`]) has an entry for the new `pc` with the current context. The
+//! entries are written only by the host, after checking the translation of the
+//! fetch; the context (`ctx`) is an epoch that changes with the translation
+//! registers, with every TLBI and with every block invalidation, plus the
+//! region parameters (EL, TBI, SPSel, FP).
 //!
-//! # TLB software
-//! I blocchi leggono e scrivono la RAM direttamente quando la pagina è
-//! nella TLB software ([`area::tlb`]) del loro EL e l'accesso è allineato,
-//! o nella TLB dei non allineati ([`area::tlb_u`], riempita solo dopo un
-//! accesso non allineato riuscito: memoria Normal e SCTLR_EL1.A a 0) e
-//! l'accesso resta nella pagina; altrimenti chiamano `ld`/`st`. L'host
-//! riempie la TLB solo dopo un
-//! accesso riuscito (stessi permessi, stessa pagina), solo per pagine di
-//! RAM che il motore raggiunge ([`Engine::host_address`]) e, per le
-//! scritture, solo per pagine senza blocchi. La svuota con i registri di
-//! traduzione e con le TLBI, come il TLB della MMU.
+//! # Software TLB
+//! The blocks read and write RAM directly when the page is
+//! in the software TLB ([`area::tlb`]) of their EL and the access is aligned,
+//! or in the TLB of unaligned ones ([`area::tlb_u`], filled only after a
+//! successful unaligned access: Normal memory and SCTLR_EL1.A at 0) and
+//! the access stays within the page; otherwise they call `ld`/`st`. The host
+//! fills the TLB only after a
+//! successful access (same permissions, same page), only for RAM pages
+//! that the engine can reach ([`Engine::host_address`]) and, for
+//! writes, only for pages without blocks. It flushes it with the translation
+//! registers and with TLBIs, like the MMU's TLB.
 //!
-//! Il TLB della MMU vede meno accessi che con l'interprete (niente fetch
-//! dentro i blocchi, niente accessi dal percorso veloce): il risultato
-//! cambia solo per un guest che modifica le tabelle delle pagine senza
-//! TLBI, che l'architettura lascia imprevedibile e Linux non fa.
+//! The MMU's TLB sees fewer accesses than with the interpreter (no fetches
+//! inside the blocks, no accesses from the fast path): the result
+//! changes only for a guest that modifies the page tables without
+//! TLBI, which the architecture leaves unpredictable and Linux does not do.
 
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
@@ -75,31 +75,31 @@ use crate::translate::{self, MAX_REGION, Region, SysTarget, ZVA_BYTES};
 use crate::wasm::MemoryImport;
 use crate::{FAULT, NEXT, STOP, SVC, YIELD};
 
-/// La memoria fisica vista dal JIT della modalità sistema.
+/// Physical memory as seen by the system-mode JIT.
 pub trait SysPhys: PhysMemory {
-    /// Lettura dalla sola RAM, senza effetti: falso se `[pa, pa+len)` non è
-    /// tutto RAM.
+    /// Read from RAM only, with no side effects: false if `[pa, pa+len)` is not
+    /// all RAM.
     fn ram_read(&mut self, pa: u64, buf: &mut [u8]) -> bool;
-    /// Scrittura nella sola RAM: `None` se non è RAM, altrimenti
-    /// `Some(true)` se ha toccato una pagina sorvegliata (ora sporca).
+    /// Write to RAM only: `None` if it is not RAM, otherwise
+    /// `Some(true)` if it touched a watched page (now dirty).
     fn ram_write(&mut self, pa: u64, data: &[u8]) -> Option<bool>;
-    /// Sorveglia la pagina fisica `page` (`pa >> 12`): falso se non è RAM.
+    /// Watches physical page `page` (`pa >> 12`): false if it is not RAM.
     fn watch_code(&mut self, page: u64) -> bool;
-    /// Vero se la pagina è sorvegliata.
+    /// True if the page is watched.
     fn is_watched(&self, page: u64) -> bool;
-    /// Aggiunge a `out` le pagine sorvegliate scritte dall'ultima chiamata
-    /// (che non sono più sorvegliate).
+    /// Appends to `out` the watched pages written since the last call
+    /// (which are no longer watched).
     fn take_code_dirty(&mut self, out: &mut Vec<u64>);
-    /// La RAM come blocco contiguo dell'host: indirizzo fisico d'inizio,
-    /// puntatore e lunghezza. Serve alla TLB software dei blocchi.
+    /// RAM as a contiguous host block: physical start address,
+    /// pointer and length. Used by the blocks' software TLB.
     fn ram_region(&mut self) -> Option<(u64, *mut u8, usize)> {
         None
     }
 }
 
-/// Memoria fisica ridotta alla RAM (per i walk e gli accessi dell'host):
-/// tutto il resto è un decode error, che per il JIT vuol dire "lo fa
-/// l'interprete".
+/// Physical memory reduced to RAM (for the host's walks and accesses):
+/// everything else is a decode error, which for the JIT means "the
+/// interpreter does it".
 struct RamOnly<'a>(&'a mut dyn SysPhys);
 
 impl PhysMemory for RamOnly<'_> {
@@ -111,7 +111,7 @@ impl PhysMemory for RamOnly<'_> {
     }
 }
 
-/// Registri di traduzione della CPU (come `Cpu::translation_regs`).
+/// CPU translation registers (like `Cpu::translation_regs`).
 pub fn translation_regs(cpu: &Cpu) -> TranslationRegs {
     let s = &cpu.sys;
     TranslationRegs {
@@ -125,20 +125,20 @@ pub fn translation_regs(cpu: &Cpu) -> TranslationRegs {
 
 #[derive(Clone, Copy, Debug)]
 pub struct SysJitConfig {
-    /// Ingressi (con l'interprete) all'inizio di un blocco prima di
-    /// tradurlo.
+    /// Entries (with the interpreter) at the start of a block before
+    /// translating it.
     pub hot_threshold: u32,
-    /// Blocchi da raccogliere prima di compilarli in un solo modulo: fino
-    /// ad allora i blocchi caldi restano all'interprete. 1 = subito. Il
-    /// modulo si compila prima se i blocchi in attesa vengono richiesti
-    /// `batch` volte in tutto (un ciclo caldo non aspetta gli altri).
+    /// Blocks to collect before compiling them into a single module: until
+    /// then the hot blocks stay with the interpreter. 1 = immediately. The
+    /// module is compiled earlier if the waiting blocks are requested
+    /// `batch` times in total (a hot loop does not wait for the others).
     pub batch: usize,
-    /// Come i moduli importano la memoria.
+    /// How the modules import the memory.
     pub memory: MemoryImport,
-    /// Indirizzo di `JitState` (e dell'area che lo segue, [`area::SIZE`]
-    /// byte) nella memoria del motore, allineato a 16.
+    /// Address of `JitState` (and of the area that follows it, [`area::SIZE`]
+    /// bytes) in the engine's memory, aligned to 16.
     pub state_addr: u32,
-    /// Conta per classe le istruzioni dell'interprete
+    /// Counts the interpreter's instructions per class
     /// ([`SysJit::profile_step`], [`Profile`]).
     pub profile: bool,
 }
@@ -155,66 +155,66 @@ impl Default for SysJitConfig {
     }
 }
 
-/// Contatori, per le misure.
+/// Counters, for measurements.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SysJitStats {
-    /// Passi eseguiti dai blocchi.
+    /// Steps executed by the blocks.
     pub jit_steps: u64,
-    /// Corse del dispatcher (ingressi dall'host).
+    /// Dispatcher runs (entries from the host).
     pub runs: u64,
-    /// Voci della cache dei salti chieste dal dispatcher all'host.
+    /// Jump cache entries requested by the dispatcher from the host.
     pub resolves: u64,
-    /// Chiamate a [`SysJit::run`].
+    /// Calls to [`SysJit::run`].
     pub calls: u64,
-    /// Blocchi e moduli compilati.
+    /// Blocks and modules compiled.
     pub blocks: u64,
     pub modules: u64,
-    /// Blocchi riusati (stesse istruzioni allo stesso indirizzo) senza
-    /// ricompilare.
+    /// Blocks reused (same instructions at the same address) without
+    /// recompiling.
     pub reused: u64,
-    /// Pagine con blocchi invalidate.
+    /// Pages with blocks invalidated.
     pub invalidated_pages: u64,
-    /// Uscite per fault (compresi gli accessi MMIO) e per SVC.
+    /// Exits due to faults (including MMIO accesses) and to SVC.
     pub faults: u64,
     pub svcs: u64,
-    /// Uscite per store su codice.
+    /// Exits due to stores to code.
     pub stops: u64,
-    /// Uscite dopo aver smascherato interrupt (`YIELD`).
+    /// Exits after unmasking interrupts (`YIELD`).
     pub yields: u64,
-    /// Nuove epoche del concatenamento e svuotamenti della TLB software.
+    /// New chaining epochs and software TLB flushes.
     pub epochs: u64,
     pub tlb_flushes: u64,
-    /// Voci scritte nella TLB software.
+    /// Entries written into the software TLB.
     pub tlb_fills: u64,
-    /// Azzeramenti del motore.
+    /// Engine resets.
     pub resets: u64,
 }
 
-/// Esito di [`SysJit::run`].
+/// Outcome of [`SysJit::run`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SysRun {
-    /// Passi eseguiti dai blocchi.
+    /// Steps executed by the blocks.
     pub steps: u64,
-    /// Che cosa fare dopo.
+    /// What to do next.
     pub next: Next,
 }
 
-/// Dopo una corsa del JIT.
+/// After a JIT run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Next {
-    /// Passi esauriti: si può richiamare il JIT.
+    /// Steps exhausted: the JIT can be called again.
     Jit,
-    /// La prossima istruzione va all'interprete (fault, accesso MMIO, SVC,
-    /// istruzione non tradotta, blocco più lungo dei passi rimasti); dopo
-    /// si può richiamare il JIT.
+    /// The next instruction goes to the interpreter (fault, MMIO access, SVC,
+    /// untranslated instruction, block longer than the remaining steps); afterwards
+    /// the JIT can be called again.
     One,
-    /// Codice freddo (o in attesa di compilazione): conviene interpretare
-    /// fino al prossimo salto prima di richiamare il JIT.
+    /// Cold code (or waiting for compilation): better to interpret
+    /// up to the next jump before calling the JIT again.
     Cold,
 }
 
-/// Hash per chiavi intere (indirizzi, pagine): la ricerca si fa a ogni
-/// ingresso dall'host.
+/// Hash for integer keys (addresses, pages): the lookup happens on every
+/// entry from the host.
 #[derive(Default)]
 struct U64Hasher(u64);
 
@@ -235,7 +235,7 @@ impl Hasher for U64Hasher {
 
 type FastMap<K, V> = HashMap<K, V, BuildHasherDefault<U64Hasher>>;
 
-/// Chiave di un blocco: `pc` e i parametri di [`SysTarget`] in un byte.
+/// Key of a block: `pc` and the parameters of [`SysTarget`] in one byte.
 type Key = (u64, u8);
 
 fn flags(sys: SysTarget) -> u8 {
@@ -247,20 +247,20 @@ fn flags(sys: SysTarget) -> u8 {
         | (sys.cntk & 3) << 5
 }
 
-/// Bit dei parametri della regione nel contesto (`ctx = epoca << CTX_SHIFT
-/// | parametri`).
+/// Bits of the region parameters in the context (`ctx = epoch << CTX_SHIFT
+/// | parameters`).
 const CTX_SHIFT: u32 = 7;
 
-/// I parametri di traduzione per lo stato corrente della CPU.
+/// The translation parameters for the current CPU state.
 pub fn target(cpu: &Cpu) -> SysTarget {
     let t = cpu.sys.tcr_el1;
-    // CPACR_EL1.FPEN come `Cpu::fp_trapped`: 11 nessuna trap, 01 solo EL0.
+    // CPACR_EL1.FPEN like `Cpu::fp_trapped`: 11 no trap, 01 EL0 only.
     let fp = match cpu.sys.cpacr_el1 >> cpacr::FPEN_SHIFT & 3 {
         0b11 => true,
         0b01 => cpu.sys.el == 1,
         _ => false,
     };
-    // CNTKCTL_EL1: conta solo a EL0 (a EL1 CNTPCT/CNTVCT si leggono sempre).
+    // CNTKCTL_EL1: counts only at EL0 (at EL1 CNTPCT/CNTVCT can always be read).
     let k = cpu.sys.cntkctl_el1;
     let cntk = if cpu.sys.el == 0 {
         (k & cntkctl::EL0PCTEN != 0) as u8 | ((k & cntkctl::EL0VCTEN != 0) as u8) << 1
@@ -277,30 +277,30 @@ pub fn target(cpu: &Cpu) -> SysTarget {
     }
 }
 
-/// Un ingresso di una regione compilata.
+/// An entry of a compiled region.
 struct Compiled<M> {
     _module: Rc<M>,
-    /// Voce della tabella.
+    /// Table entry.
     slot: u32,
-    /// Passi massimi del blocco base d'ingresso.
+    /// Maximum steps of the base entry block.
     max_steps: u8,
-    /// Indice del blocco base d'ingresso (`JitState::entry`).
+    /// Index of the base entry block (`JitState::entry`).
     bb: u8,
 }
 
-/// Gli ingressi di una regione compilata: (indirizzo, ingresso); il primo
-/// è l'inizio della regione.
+/// The entries of a compiled region: (address, entry); the first
+/// is the start of the region.
 type Entries<M> = Rc<[(u64, Rc<Compiled<M>>)]>;
 
-/// Un blocco per una pagina fisica: compilato, o `None` se la prima
-/// istruzione non si traduce.
+/// A block for a physical page: compiled, or `None` if the first
+/// instruction is not translated.
 struct Variant<M> {
     pa: u64,
     block: Option<Rc<Compiled<M>>>,
 }
 
 struct Entry<M> {
-    /// Ingressi visti con l'interprete.
+    /// Entries seen with the interpreter.
     seen: u32,
     variants: Vec<Variant<M>>,
 }
@@ -311,7 +311,7 @@ impl<M> Default for Entry<M> {
     }
 }
 
-/// Un blocco caldo in attesa di compilazione.
+/// A hot block waiting for compilation.
 struct Pending {
     key: Key,
     pa: u64,
@@ -326,38 +326,38 @@ enum Look<M> {
     Cold,
 }
 
-/// I blocchi conosciuti, separati dal motore: l'host li consulta
-/// (`resolve`) mentre il motore esegue il dispatcher.
+/// The known blocks, separate from the engine: the host consults them
+/// (`resolve`) while the engine runs the dispatcher.
 struct Cache<M> {
     blocks: FastMap<Key, Entry<M>>,
-    /// Pagina fisica → chiavi con varianti in quella pagina.
+    /// Physical page → keys with variants in that page.
     pages: FastMap<u64, Vec<Key>>,
-    /// Moduli compilati per (chiave, istruzioni): lo stesso codice allo
-    /// stesso indirizzo virtuale (un'altra pagina fisica, un altro
-    /// processo) non si ricompila.
+    /// Modules compiled by (key, instructions): the same code at the
+    /// same virtual address (another physical page, another
+    /// process) is not recompiled.
     compiled: HashMap<(Key, Vec<u32>), Entries<M>>,
     pending: Vec<Pending>,
-    /// Richieste di blocchi in attesa dall'ultima compilazione.
+    /// Block requests pending since the last compilation.
     pending_hits: usize,
     next_slot: u32,
     epoch: u32,
     hot_threshold: u32,
-    /// Indirizzo di `JitState` nella memoria del motore.
+    /// Address of `JitState` in the engine's memory.
     at: usize,
     stats: SysJitStats,
 }
 
 impl<M> Cache<M> {
-    /// Contesto delle voci della cache dei salti valide adesso per `el`.
-    /// Contesto delle voci della cache dei salti valide adesso per i
-    /// parametri `fl` ([`flags`]: EL, TBI, SPSel, FP).
+    /// Context of the jump cache entries valid now for `el`.
+    /// Context of the jump cache entries valid now for the
+    /// parameters `fl` ([`flags`]: EL, TBI, SPSel, FP).
     fn ctx(&self, fl: u8) -> u32 {
         self.epoch << CTX_SHIFT | fl as u32
     }
 
-    /// Cerca il blocco di `pc` per la pagina fisica da cui la CPU lo
-    /// leggerebbe adesso (stessa traduzione del fetch dell'interprete) e,
-    /// se `count`, conta gli ingressi di quelli non tradotti.
+    /// Looks up the block of `pc` for the physical page the CPU would
+    /// read it from now (same translation as the interpreter's fetch) and,
+    /// if `count`, counts the entries of untranslated ones.
     #[allow(clippy::too_many_arguments)]
     fn lookup(
         &mut self,
@@ -372,9 +372,9 @@ impl<M> Cache<M> {
         if !pc.is_multiple_of(4) {
             return Look::One;
         }
-        // Codice freddo (nessuna variante e sotto la soglia): la traduzione
-        // del fetch non serve. Conta come prima (l'interprete eseguirà
-        // comunque le stesse istruzioni, anche se il fetch fallisce).
+        // Cold code (no variant and below the threshold): the fetch
+        // translation is not needed. Count as before (the interpreter will
+        // execute the same instructions anyway, even if the fetch fails).
         let threshold = self.hot_threshold;
         match self.blocks.get_mut(&(pc, fl)) {
             None if !count => return Look::Cold,
@@ -414,7 +414,7 @@ impl<M> Cache<M> {
         if e.seen < threshold { Look::Cold } else { Look::Translate(pa) }
     }
 
-    /// Voce della cache dei salti: `pc` → blocco, valida per `ctx`.
+    /// Jump cache entry: `pc` → block, valid for `ctx`.
     fn install_jc(&self, mem: &mut [u8], pc: u64, ctx: u32, c: &Compiled<M>) {
         let e = self.at + area::JC as usize + ((pc >> 2) & (area::JC_ENTRIES as u64 - 1)) as usize * 16;
         mem[e..e + 8].copy_from_slice(&pc.to_le_bytes());
@@ -423,10 +423,10 @@ impl<M> Cache<M> {
         mem[e + 12..e + 16].copy_from_slice(&w.to_le_bytes());
     }
 
-    /// Registra gli ingressi di una regione di `key` alla pagina fisica di
-    /// `pa`: l'inizio sempre, gli altri blocchi base solo dove non c'è già
-    /// un blocco compilato (niente codice duplicato per i ritorni e i salti
-    /// dentro la regione).
+    /// Records the entries of a region of `key` at the physical page of
+    /// `pa`: the start always, the other base blocks only where there is not
+    /// already a compiled block (no duplicated code for returns and jumps
+    /// inside the region).
     fn record_entries(&mut self, key: Key, pa: u64, entries: &Entries<M>) {
         for (i, (epc, c)) in entries.iter().enumerate() {
             let k = (*epc, key.1);
@@ -451,7 +451,7 @@ impl<M> Cache<M> {
     }
 }
 
-/// Il JIT della modalità sistema.
+/// The system-mode JIT.
 pub struct SysJit<E: Engine> {
     engine: E,
     cfg: SysJitConfig,
@@ -459,36 +459,36 @@ pub struct SysJit<E: Engine> {
     cache: Cache<E::Module>,
     regs: Option<TranslationRegs>,
     flushes: u64,
-    /// La RAM vista dal motore: (pa d'inizio, indirizzo in `env.mem`, byte).
+    /// RAM as seen by the engine: (start pa, address in `env.mem`, bytes).
     ram: Option<(u64, u32, u64)>,
     ram_key: Option<(u64, usize, usize)>,
     dirty: Vec<u64>,
     profile: Option<Profile>,
-    /// Orologio della prossima corsa ([`SysJit::set_time`]).
+    /// Clock of the next run ([`SysJit::set_time`]).
     time: Option<Clock>,
-    /// Indirizzi virtuali che nessuna regione contiene
-    /// ([`SysJit::set_stops`], punti di aggancio dell'introspezione).
+    /// Virtual addresses that no region contains
+    /// ([`SysJit::set_stops`], introspection hook points).
     stops: std::collections::BTreeSet<u64>,
 }
 
-/// L'orologio del guest per le regioni (ADR 0026): istruzioni eseguite
-/// dalla macchina e CNTVOFF. MRS di CNTPCT/CNTVCT nelle regioni ne danno lo
-/// stesso valore dell'interprete.
+/// The guest clock for the regions (ADR 0026): instructions executed
+/// by the machine and CNTVOFF. MRS of CNTPCT/CNTVCT in the regions gives the
+/// same value as the interpreter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Clock {
     pub steps: u64,
     pub cntvoff: u64,
 }
 
-/// L'host dei blocchi: accessi attraverso la MMU con i permessi di EL e le
-/// regole della modalità sistema; tutto ciò che non è un accesso semplice
-/// alla RAM è un fault, e lo rifà l'interprete. Risolve anche le voci
-/// mancanti della cache dei salti per il dispatcher.
+/// The blocks' host: accesses through the MMU with the permissions of EL and the
+/// system-mode rules; everything that is not a simple access
+/// to RAM is a fault, and the interpreter redoes it. It also resolves missing
+/// jump cache entries for the dispatcher.
 struct SysHost<'a, M> {
     cache: &'a mut Cache<M>,
     mmu: &'a mut Mmu,
     phys: &'a mut dyn SysPhys,
-    /// I registri SIMD/FP della `Cpu` (per `vsync`).
+    /// The SIMD/FP registers of the `Cpu` (for `vsync`).
     v: &'a [u128; 32],
     regs: TranslationRegs,
     el: u8,
@@ -497,19 +497,19 @@ struct SysHost<'a, M> {
 }
 
 impl<M> SysHost<'_, M> {
-    /// Traduzione di un accesso ai dati di `size` byte (1, 2, 4, 8, o
-    /// [`ZVA_BYTES`] per DC ZVA).
-    /// Restituisce anche se l'accesso era allineato.
+    /// Translation of a data access of `size` bytes (1, 2, 4, 8, or
+    /// [`ZVA_BYTES`] for DC ZVA).
+    /// Also returns whether the access was aligned.
     fn translate(&mut self, va: u64, size: u32, access: Access) -> Result<(u64, bool), ()> {
-        // Metà di un accesso da 16 byte non allineato a 16 (`SIZE_PART_OF_MISALIGNED`):
-        // i permessi e l'allineamento sono quelli dell'accesso intero.
+        // Half of a 16-byte access not aligned to 16 (`SIZE_PART_OF_MISALIGNED`):
+        // the permissions and alignment are those of the whole access.
         let part = size & translate::SIZE_PART_OF_MISALIGNED != 0;
         let size = size & !translate::SIZE_PART_OF_MISALIGNED;
         let zva = size == ZVA_BYTES;
         let aligned = !zva && !part && va & (size as u64 - 1) == 0;
-        // Come `SysMem::access`: big-endian non implementato, allineamento
-        // con SCTLR_EL1.A (non per DC ZVA). A cavallo di pagina:
-        // all'interprete.
+        // Like `SysMem::access`: big-endian not implemented, alignment
+        // with SCTLR_EL1.A (not for DC ZVA). Crossing a page:
+        // to the interpreter.
         let big = if self.el == 0 { sctlr::E0E } else { sctlr::EE };
         if self.regs.sctlr & big != 0
             || (!aligned && !zva && self.regs.sctlr & sctlr::A != 0)
@@ -523,9 +523,9 @@ impl<M> SysHost<'_, M> {
         Ok((pa, aligned))
     }
 
-    /// Voci della TLB software per la pagina di `va` (tradotta in `pa`):
-    /// dopo un accesso riuscito non allineato (`aligned` falso) la pagina è
-    /// Normal e SCTLR_EL1.A è 0, e vale anche per quelli non allineati.
+    /// Software TLB entries for the page of `va` (translated to `pa`):
+    /// after a successful unaligned access (`aligned` false) the page is
+    /// Normal and SCTLR_EL1.A is 0, and it is valid for unaligned ones too.
     fn fill(&mut self, mem: &mut [u8], va: u64, pa: u64, write: bool, aligned: bool) {
         let Some((base, addr, len)) = self.ram else { return };
         let page = pa & !0xfff;
@@ -577,9 +577,9 @@ impl<M> Host for SysHost<'_, M> {
         state::vsync_in(mem, state as usize, self.v);
     }
 
-    /// Voce mancante della cache dei salti per `pc` di `JitState`: se il
-    /// blocco c'è già (compilato, per la pagina fisica di adesso), la scrive
-    /// col contesto corrente.
+    /// Missing jump cache entry for the `pc` of `JitState`: if the
+    /// block already exists (compiled, for the current physical page), writes it
+    /// with the current context.
     fn resolve(&mut self, mem: &mut [u8]) -> bool {
         let at = self.cache.at;
         let pc = state::read_u64(mem, at, off::PC);
@@ -597,10 +597,10 @@ impl<M> Host for SysHost<'_, M> {
 
 impl<E: Engine> SysJit<E> {
     pub fn new(mut engine: E, cfg: SysJitConfig) -> Self {
-        assert!(cfg.state_addr.is_multiple_of(16), "JitState va allineato a 16 byte");
+        assert!(cfg.state_addr.is_multiple_of(16), "JitState must be aligned to 16 bytes");
         assert!(cfg.batch >= 1);
         engine.reserve(cfg.state_addr as usize + area::SIZE as usize);
-        engine.runtime(&translate::runtime(cfg.memory)).expect("runtime del JIT rifiutato dal motore");
+        engine.runtime(&translate::runtime(cfg.memory)).expect("JIT runtime rejected by the engine");
         let mut j = SysJit {
             engine,
             cfg,
@@ -633,14 +633,14 @@ impl<E: Engine> SysJit<E> {
         j
     }
 
-    /// Indirizzi virtuali (di qualunque spazio) che le regioni non
-    /// contengono: un blocco finisce prima, e una regione non comincia lì.
-    /// Così l'istruzione a quell'indirizzo la esegue sempre l'interprete,
-    /// che vi controlla i punti di aggancio dell'introspezione (ADR 0027).
-    /// Il risultato dell'esecuzione non cambia. Se l'insieme cambia si
-    /// dimenticano tutti i blocchi (anche quelli in attesa) e le voci della
-    /// cache dei salti (nuova epoca); le voci della tabella restano
-    /// occupate fino al prossimo azzeramento, senza toccare il motore.
+    /// Virtual addresses (of any space) that the regions do not
+    /// contain: a block ends before, and a region does not start there.
+    /// So the instruction at that address is always executed by the interpreter,
+    /// which checks the introspection hook points there (ADR 0027).
+    /// The result of the execution does not change. If the set changes
+    /// all blocks (even the waiting ones) and the jump cache entries are
+    /// forgotten (new epoch); the table entries stay
+    /// occupied until the next reset, without touching the engine.
     pub fn set_stops(&mut self, stops: &[u64]) {
         let new: std::collections::BTreeSet<u64> = stops.iter().copied().collect();
         if new == self.stops {
@@ -664,9 +664,9 @@ impl<E: Engine> SysJit<E> {
         self.cache.stats
     }
 
-    /// Con `cfg.profile`: conta la classe dell'istruzione che l'interprete
-    /// sta per eseguire a `cpu.pc` (letta con la traduzione di un fetch,
-    /// senza effetti sulla RAM; un fetch che fallisce non si conta).
+    /// With `cfg.profile`: counts the class of the instruction that the interpreter
+    /// is about to execute at `cpu.pc` (read with a fetch translation,
+    /// without effects on RAM; a fetch that fails is not counted).
     pub fn profile_step(&mut self, cpu: &Cpu, mmu: &mut Mmu, phys: &mut dyn SysPhys) {
         let Some(p) = &mut self.profile else { return };
         let regs = translation_regs(cpu);
@@ -684,18 +684,18 @@ impl<E: Engine> SysJit<E> {
         }
     }
 
-    /// L'orologio per la prossima [`run`](Self::run) (vale solo per quella):
-    /// senza, MRS di CNTPCT/CNTVCT nelle regioni esce all'interprete.
+    /// The clock for the next [`run`](Self::run) (valid only for that one):
+    /// without it, MRS of CNTPCT/CNTVCT in the regions exits to the interpreter.
     pub fn set_time(&mut self, c: Clock) {
         self.time = Some(c);
     }
 
-    /// Istruzioni dell'interprete per classe, se `cfg.profile`.
+    /// Interpreter instructions per class, if `cfg.profile`.
     pub fn profile(&self) -> Option<&Profile> {
         self.profile.as_ref()
     }
 
-    /// Cache dei salti vuota e TLB software vuota.
+    /// Empty jump cache and empty software TLB.
     fn init_area(&mut self) {
         let at = self.cache.at;
         let m = self.engine.memory();
@@ -703,7 +703,7 @@ impl<E: Engine> SysJit<E> {
         self.flush_tlb(false);
     }
 
-    /// Svuota la TLB software (solo le tabelle di scrittura se `writes_only`).
+    /// Flushes the software TLB (only the write tables if `writes_only`).
     fn flush_tlb(&mut self, writes_only: bool) {
         let at = self.cache.at;
         let m = self.engine.memory();
@@ -723,7 +723,7 @@ impl<E: Engine> SysJit<E> {
         self.cache.stats.tlb_flushes += 1;
     }
 
-    /// Nuova epoca: le voci della cache dei salti non valgono più.
+    /// New epoch: the jump cache entries are no longer valid.
     fn new_epoch(&mut self) {
         self.cache.epoch += 1;
         self.cache.stats.epochs += 1;
@@ -734,7 +734,7 @@ impl<E: Engine> SysJit<E> {
         }
     }
 
-    /// Scarta i blocchi delle pagine scritte.
+    /// Discards the blocks of the written pages.
     fn drain(&mut self, phys: &mut dyn SysPhys) {
         phys.take_code_dirty(&mut self.dirty);
         if self.dirty.is_empty() {
@@ -760,8 +760,8 @@ impl<E: Engine> SysJit<E> {
         }
     }
 
-    /// Registri di traduzione cambiati o TLBI: nuova epoca e TLB software
-    /// vuota.
+    /// Translation registers changed or TLBI: new epoch and empty
+    /// software TLB.
     fn sync_regime(&mut self, cpu: &Cpu, mmu: &Mmu) {
         let r = translation_regs(cpu);
         let f = mmu.tlb().flushes();
@@ -773,7 +773,7 @@ impl<E: Engine> SysJit<E> {
         }
     }
 
-    /// La RAM vista dal motore (si ricalcola se cambia).
+    /// RAM as seen by the engine (recomputed if it changes).
     fn sync_ram(&mut self, phys: &mut dyn SysPhys) {
         let Some((base, ptr, len)) = phys.ram_region() else {
             self.ram = None;
@@ -786,8 +786,8 @@ impl<E: Engine> SysJit<E> {
         }
     }
 
-    /// Esegue blocchi tradotti per al più `budget` passi (vedi il contratto
-    /// del modulo).
+    /// Executes translated blocks for at most `budget` steps (see the module
+    /// contract).
     pub fn run(&mut self, cpu: &mut Cpu, mmu: &mut Mmu, phys: &mut dyn SysPhys, budget: u64) -> SysRun {
         self.cache.stats.calls += 1;
         self.drain(phys);
@@ -810,8 +810,8 @@ impl<E: Engine> SysJit<E> {
                 Look::One => break Next::One,
                 Look::Cold => break Next::Cold,
                 Look::Translate(pa) => {
-                    // La compilazione può azzerare il motore e la sua
-                    // memoria: prima lo stato torna nella Cpu.
+                    // Compiling may reset the engine and its
+                    // memory: first the state goes back into the Cpu.
                     if in_jit {
                         JitState::load(self.engine.memory(), at).to_cpu_sys(cpu);
                         in_jit = false;
@@ -832,7 +832,7 @@ impl<E: Engine> SysJit<E> {
                 }
                 self.compile_dispatcher();
             }
-            // L'epoca può essere cambiata (compilazione, azzeramento).
+            // The epoch may have changed (compilation, reset).
             let ctx = self.cache.ctx(fl);
             let m = self.engine.memory();
             self.cache.install_jc(m, pc, ctx, &c);
@@ -848,7 +848,7 @@ impl<E: Engine> SysJit<E> {
                 state::write_u32(m, at, off::CTX, ctx);
                 state::write_u32(m, at, off::EXIT_DETAIL, 0);
             }
-            // Orologio: `steps` di JitState riparte da 0 a ogni corsa.
+            // Clock: `steps` of JitState restarts from 0 on every run.
             match time {
                 Some(c) => {
                     state::write_u64(m, at, off::TIME_BASE, c.steps + done);
@@ -860,7 +860,7 @@ impl<E: Engine> SysJit<E> {
             let code = {
                 let v = &cpu.v;
                 let mut host = SysHost { cache: &mut self.cache, mmu, phys, v, regs, el, fl, ram: self.ram };
-                let d = self.dispatcher.as_ref().expect("dispatcher compilato");
+                let d = self.dispatcher.as_ref().expect("dispatcher compiled");
                 self.engine.run(d, 0, self.cfg.state_addr, &mut host)
             };
             self.cache.stats.runs += 1;
@@ -885,11 +885,11 @@ impl<E: Engine> SysJit<E> {
                     break Next::One;
                 }
                 YIELD => {
-                    // Interrupt smascherati: decide il chiamante (`jit_budget`).
+                    // Interrupts unmasked: the caller decides (`jit_budget`).
                     self.cache.stats.yields += 1;
                     break Next::Jit;
                 }
-                other => panic!("codice d'uscita del dispatcher sconosciuto: {other}"),
+                other => panic!("unknown dispatcher exit code: {other}"),
             }
         };
         if in_jit {
@@ -898,9 +898,9 @@ impl<E: Engine> SysJit<E> {
         SysRun { steps: done, next }
     }
 
-    /// Legge e traduce il blocco di `pc` alla pagina fisica di `pa`; lo
-    /// compila subito o lo mette fra quelli in attesa (`Err(Cold)`).
-    /// `Err(One)`: la prima istruzione non si traduce.
+    /// Reads and translates the block of `pc` at the physical page of `pa`;
+    /// compiles it immediately or puts it among the waiting ones (`Err(Cold)`).
+    /// `Err(One)`: the first instruction is not translated.
     fn install(
         &mut self,
         pc: u64,
@@ -933,7 +933,7 @@ impl<E: Engine> SysJit<E> {
             return Err(Next::One);
         };
         if !was_watched {
-            // Niente scritture dirette su una pagina che ora ha blocchi.
+            // No direct writes to a page that now has blocks.
             self.flush_tlb(true);
         }
         if let Some(es) = self.cache.compiled.get(&(key, words.clone())) {
@@ -944,8 +944,8 @@ impl<E: Engine> SysJit<E> {
         }
         self.cache.pending.push(Pending { key, pa, words, block });
         if self.cache.pending.len() < self.cfg.batch {
-            // I blocchi in attesa restano sorvegliati: una scrittura li
-            // toglie da `pending` (`drain`).
+            // The waiting blocks stay watched: a write removes them
+            // from `pending` (`drain`).
             self.cache.pages.entry(page).or_default().push(key);
             return Err(Next::Cold);
         }
@@ -962,7 +962,7 @@ impl<E: Engine> SysJit<E> {
             .ok_or(Next::Cold)
     }
 
-    /// Compila in un modulo i blocchi in attesa.
+    /// Compiles the waiting blocks into one module.
     fn compile_pending(&mut self) {
         let n = self.cache.pending.len() as u32;
         self.cache.pending_hits = 0;
@@ -977,12 +977,12 @@ impl<E: Engine> SysJit<E> {
         let module = match self.engine.compile(&wasm) {
             Ok(m) => m,
             Err(_) => {
-                // Motore pieno (wasmtime: istanze per store): si scarta
-                // tutto e si riprova una volta.
+                // Engine full (wasmtime: instances per store): everything is
+                // discarded and we retry once.
                 self.reset();
                 match self.engine.compile(&wasm) {
                     Ok(m) => m,
-                    Err(e) => panic!("modulo del JIT rifiutato dal motore: {e}"),
+                    Err(e) => panic!("JIT module rejected by the engine: {e}"),
                 }
             }
         };
@@ -1004,7 +1004,7 @@ impl<E: Engine> SysJit<E> {
                     (epc, Rc::new(c))
                 })
                 .collect();
-            let at = es.iter().position(|e| e.1.bb as u32 == first).expect("ingresso della regione");
+            let at = es.iter().position(|e| e.1.bb as u32 == first).expect("region entry");
             es.swap(0, at);
             let es: Entries<E::Module> = es.into();
             self.cache.stats.blocks += 1;
@@ -1019,15 +1019,15 @@ impl<E: Engine> SysJit<E> {
             Ok(d) => d,
             Err(_) => {
                 self.reset();
-                self.engine.compile(&wasm).expect("dispatcher del JIT rifiutato dal motore")
+                self.engine.compile(&wasm).expect("JIT dispatcher rejected by the engine")
             }
         };
         self.dispatcher = Some(d);
     }
 
-    /// Scarta tutto il codice compilato e azzera il motore (tabella piena o
-    /// motore pieno). Le pagine restano sorvegliate: al più qualche
-    /// invalidazione a vuoto.
+    /// Discards all compiled code and resets the engine (table full or
+    /// engine full). The pages stay watched: at most a few
+    /// empty invalidations.
     fn reset(&mut self) {
         let c = &mut self.cache;
         c.blocks.clear();
@@ -1041,7 +1041,7 @@ impl<E: Engine> SysJit<E> {
         self.ram_key = None;
         self.init_area();
         self.new_epoch();
-        // I blocchi in attesa tornano a contare nelle pagine.
+        // The waiting blocks count again in the pages.
         let c = &mut self.cache;
         for i in 0..c.pending.len() {
             let (k, pa) = (c.pending[i].key, c.pending[i].pa);
@@ -1050,19 +1050,19 @@ impl<E: Engine> SysJit<E> {
     }
 }
 
-/// Il JIT della modalità sistema come oggetto (per `vetro-machine`, che
-/// non conosce il motore).
+/// The system-mode JIT as an object (for `vetro-machine`, which
+/// does not know the engine).
 pub trait SysJitDyn {
     fn run(&mut self, cpu: &mut Cpu, mmu: &mut Mmu, phys: &mut dyn SysPhys, budget: u64) -> SysRun;
     fn stats(&self) -> SysJitStats;
-    /// Vero se conta le istruzioni dell'interprete ([`SysJit::profile_step`]).
+    /// True if it counts the interpreter's instructions ([`SysJit::profile_step`]).
     fn profiling(&self) -> bool {
         false
     }
     fn profile_step(&mut self, _cpu: &Cpu, _mmu: &mut Mmu, _phys: &mut dyn SysPhys) {}
-    /// L'orologio per la prossima corsa ([`SysJit::set_time`]).
+    /// The clock for the next run ([`SysJit::set_time`]).
     fn set_time(&mut self, _c: Clock) {}
-    /// Indirizzi che le regioni non contengono ([`SysJit::set_stops`]).
+    /// Addresses that the regions do not contain ([`SysJit::set_stops`]).
     fn set_stops(&mut self, stops: &[u64]);
     fn profile(&self) -> Option<&Profile> {
         None

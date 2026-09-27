@@ -1,4 +1,4 @@
-//! Gateway virtuale: DHCP, ARP, ICMP, DNS e UDP, visti da un finto guest.
+//! Virtual gateway: DHCP, ARP, ICMP, DNS and UDP, as seen by a fake guest.
 
 mod common;
 
@@ -14,7 +14,7 @@ fn sinkhole_stack() -> Stack<Sinkhole> {
     Stack::new(config(), Sinkhole::new(SinkholeConfig::default()))
 }
 
-/// Messaggio DHCP del client costruito con smoltcp (codificatore indipendente).
+/// Client DHCP message built with smoltcp (independent encoder).
 fn dhcp_client(message_type: DhcpMessageType, requested: Option<Ipv4Addr>, broadcast: bool) -> Vec<u8> {
     let hostname = [smoltcp::wire::DhcpOption { kind: 12, data: b"vetro-guest" }];
     let repr = DhcpRepr {
@@ -42,7 +42,7 @@ fn dhcp_client(message_type: DhcpMessageType, requested: Option<Ipv4Addr>, broad
     };
     let mut buf = vec![0u8; repr.buffer_len()];
     repr.emit(&mut DhcpPacket::new_unchecked(&mut buf[..])).unwrap();
-    // Dal client senza indirizzo: 0.0.0.0:68 → 255.255.255.255:67.
+    // From the client without an address: 0.0.0.0:68 → 255.255.255.255:67.
     let udp = wire::build_udp(Ipv4Addr::UNSPECIFIED, 68, Ipv4Addr::BROADCAST, 67, &buf);
     let ip = wire::build_ipv4(Ipv4Addr::UNSPECIFIED, Ipv4Addr::BROADCAST, wire::PROTO_UDP, 1, &udp);
     wire::build_eth(Mac::BROADCAST, GUEST_MAC, wire::ETHERTYPE_IPV4, &ip)
@@ -53,9 +53,9 @@ fn expect_dhcp(out: &Out, want: DhcpMessageType, eth_dst: Mac) -> (Ipv4Addr, Vec
     assert_eq!(*d, eth_dst);
     assert_eq!(*src, SocketAddrV4::new(GW_IP, 67));
     assert_eq!(*dst, SocketAddrV4::new(Ipv4Addr::BROADCAST, 68));
-    assert!(payload.len() >= 300, "risposta BOOTP di almeno 300 byte");
+    assert!(payload.len() >= 300, "BOOTP response of at least 300 bytes");
     let pkt = DhcpPacket::new_checked(&payload[..]).unwrap();
-    let r = DhcpRepr::parse(&pkt).expect("DHCP analizzabile da smoltcp");
+    let r = DhcpRepr::parse(&pkt).expect("DHCP parseable by smoltcp");
     assert_eq!(r.message_type, want);
     assert_eq!(r.transaction_id, 0xdead_beef);
     assert_eq!(r.client_hardware_address.0, GUEST_MAC.0);
@@ -131,8 +131,8 @@ fn dhcp_discover_offer_request_ack() {
 fn dhcp_request_for_another_server_is_ignored() {
     let mut s = sinkhole_stack();
     let mut frame = dhcp_client(DhcpMessageType::Request, Some(GUEST_IP), false);
-    // Cambia il server id (opzione 54) con un altro server e ricalcola il
-    // checksum UDP azzerandolo (0 = assente in IPv4).
+    // Changes the server id (option 54) to another server and recomputes the
+    // UDP checksum by zeroing it (0 = absent in IPv4).
     let pos = frame.windows(6).position(|w| w == [54, 4, 10, 0, 2, 2]).unwrap();
     frame[pos + 5] = 77;
     frame[14 + 20 + 6..14 + 20 + 8].copy_from_slice(&[0, 0]);
@@ -157,8 +157,8 @@ fn arp_answers_only_for_gateway_addresses() {
             }]
         );
     }
-    // Il probe ARP del guest per il proprio indirizzo non deve avere risposta
-    // (altrimenti il guest vedrebbe un conflitto), né un host inesistente.
+    // The guest's ARP probe for its own address must get no answer
+    // (otherwise the guest would see a conflict), nor a nonexistent host.
     for target in [GUEST_IP, Ipv4Addr::new(10, 0, 2, 99)] {
         s.receive(t(0), &Guest::arp_request(target));
         assert!(drain(&mut s).is_empty());
@@ -181,7 +181,7 @@ fn icmp_echo_gateway_and_external() {
         s.receive(t(5), &Guest::ipv4(dst, wire::PROTO_ICMP, &echo_request(7, 3, b"ping-vetro")));
     }
     let out = drain(&mut s);
-    assert_eq!(out.len(), 2, "il gateway e il DNS rispondono, l'esterno no (answer_ping falso)");
+    assert_eq!(out.len(), 2, "the gateway and the DNS answer, the outside doesn't (answer_ping false)");
     for (o, src) in out.iter().zip([GW_IP, DNS_IP]) {
         assert_eq!(
             *o,
@@ -227,7 +227,7 @@ fn dns_ask(
     let Out::Udp { src, dst, payload, .. } = &out[0] else { panic!("{out:?}") };
     assert_eq!(*src, SocketAddrV4::new(DNS_IP, 53));
     assert_eq!(*dst, SocketAddrV4::new(GUEST_IP, sport));
-    // Validazione indipendente dell'intestazione DNS.
+    // Independent validation of the DNS header.
     let p = DnsPacket::new_checked(&payload[..]).unwrap();
     assert_eq!(p.transaction_id(), txid);
     assert_eq!(p.rcode(), DnsRcode::NoError);
@@ -242,10 +242,10 @@ fn dns_resolves_to_deterministic_fake_addresses() {
     assert_eq!(a.addrs, vec![Ipv4Addr::new(198, 18, 0, 1)]);
     let b = dns_ask(&mut s, 1, 40001, 2, "tracker.example.net", TYPE_A);
     assert_eq!(b.addrs, vec![Ipv4Addr::new(198, 18, 0, 2)]);
-    // Stesso nome (anche con maiuscole): stesso indirizzo.
+    // Same name (even with capitals): same address.
     let c = dns_ask(&mut s, 2, 40002, 3, "EXAMPLE.com", TYPE_A);
     assert_eq!(c.addrs, vec![Ipv4Addr::new(198, 18, 0, 1)]);
-    // AAAA: nessun record, così il guest usa IPv4.
+    // AAAA: no record, so the guest uses IPv4.
     let d = dns_ask(&mut s, 3, 40003, 4, "example.com", TYPE_AAAA);
     assert!(d.addrs.is_empty());
 
@@ -262,7 +262,7 @@ fn dns_resolves_to_deterministic_fake_addresses() {
     );
     assert_eq!(s.upstream().hostname(Ipv4Addr::new(198, 18, 0, 2)), Some("tracker.example.net"));
 
-    // Registro: per la prima domanda UdpOpen, UdpData, DnsQuery, UdpData, DnsAnswer.
+    // Log: for the first query UdpOpen, UdpData, DnsQuery, UdpData, DnsAnswer.
     let first: Vec<_> = s.events().iter().take(5).map(|e| e.kind.clone()).collect();
     let flow =
         vetro_net::Flow { guest: SocketAddrV4::new(GUEST_IP, 40000), remote: SocketAddrV4::new(DNS_IP, 53) };
@@ -310,8 +310,8 @@ fn udp_flow_reply_record_and_idle_close() {
     assert_eq!(rec.len(), 1);
     assert_eq!(rec[0].datagrams, vec![(t(0), b"hello".to_vec()), (t(100), b"again!".to_vec())]);
 
-    // Chiusura per inattività: la scadenza annunciata è 60 s dopo l'ultimo
-    // datagramma (in entrambi i versi).
+    // Close for inactivity: the announced deadline is 60 s after the last
+    // datagram (in either direction).
     assert_eq!(s.next_deadline(), Some(t(60_100)));
     s.poll(t(60_099));
     assert_eq!(s.udp_flows(), 1);
@@ -333,7 +333,7 @@ fn udp_to_gateway_port_is_unreachable() {
     let out = drain(&mut s);
     let [Out::Icmp { src, dst, ty: 3, code: 3, data, .. }] = &out[..] else { panic!("{out:?}") };
     assert_eq!((*src, *dst), (GW_IP, GUEST_IP));
-    // Intestazione IP originale + 8 byte di UDP.
+    // Original IP header + 8 bytes of UDP.
     assert_eq!(data[..], frame[14..14 + 28]);
     assert!(s.events().is_empty());
 }
@@ -350,7 +350,7 @@ fn bad_checksums_and_unsupported_frames_are_dropped() {
     let mut f = Guest::udp(1, SocketAddrV4::new(DNS_IP, 53), &dns::build_query(1, "a.b", TYPE_A));
     f[14 + 10] ^= 0xff;
     s.receive(t(0), &f);
-    // IPv6 (non supportato), frame troncato, frame per un altro MAC.
+    // IPv6 (not supported), truncated frame, frame for another MAC.
     s.receive(t(0), &wire::build_eth(GW_MAC, GUEST_MAC, wire::ETHERTYPE_IPV6, &[0x60; 40]));
     s.receive(t(0), &[0u8; 10]);
     s.receive(t(0), &wire::build_eth(Mac([2, 0, 0, 0, 0, 1]), GUEST_MAC, wire::ETHERTYPE_ARP, &[0; 28]));
@@ -367,7 +367,7 @@ fn bad_checksums_and_unsupported_frames_are_dropped() {
     let st = s.stats();
     assert_eq!((st.bad_checksum, st.ipv6, st.malformed, st.not_for_us, st.fragments), (2, 1, 1, 1, 1));
 
-    // Con la verifica disattivata lo stesso pacchetto passa.
+    // With verification disabled the same packet goes through.
     let mut s = Stack::new(NetConfig { verify_checksums: false, ..config() }, Sinkhole::default());
     let mut f = Guest::udp(1, SocketAddrV4::new(DNS_IP, 53), &dns::build_query(1, "a.b", TYPE_A));
     f[14 + 20 + 6] ^= 0xff;

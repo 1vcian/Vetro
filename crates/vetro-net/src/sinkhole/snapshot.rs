@@ -1,8 +1,8 @@
-//! Il sinkhole negli snapshot (M6, ADR 0015): ciò che ha registrato
-//! (connessioni, byte del guest, flussi UDP, domande DNS), le risposte in
-//! corso e i nomi finti già assegnati. La configurazione non si salva: è
-//! quella con cui è stato costruito (la macchina la controlla con l'hash
-//! della sua configurazione).
+//! The sinkhole in snapshots (M6, ADR 0015): what it has recorded
+//! (connections, guest bytes, UDP flows, DNS queries), the responses in
+//! progress and the fake names already assigned. The configuration is not saved: it is
+//! the one it was built with (the machine checks it with the hash
+//! of its configuration).
 
 use vetro_snapshot::{Reader, Result, Snapshot, Writer};
 

@@ -1,42 +1,42 @@
-//! Decompressori per il kernel dentro un `boot.img`: gzip (RFC 1951 e 1952)
-//! e LZ4 (formato legacy di `lz4 -l`, quello del GKI, e formato frame).
+//! Decompressors for the kernel inside a `boot.img`: gzip (RFC 1951 and 1952)
+//! and LZ4 (legacy format of `lz4 -l`, the one used by GKI, and frame format).
 //!
-//! Servono solo al kernel: i ramdisk passano al guest compressi così come
-//! sono, e li apre il kernel. Senza dipendenze, perché `vetro-machine` va
-//! anche nel browser. Scritti per essere corretti, non velocissimi: una
-//! tabella diretta a 9 bit per i codici di Huffman corti e la decodifica
-//! canonica bit per bit (come `puff.c` di zlib) per gli altri.
+//! Needed only for the kernel: ramdisks are passed to the guest compressed as
+//! they are, and the kernel opens them. No dependencies, because `vetro-machine` also runs
+//! in the browser. Written to be correct, not very fast: a
+//! 9-bit direct table for short Huffman codes and canonical
+//! bit-by-bit decoding (like zlib's `puff.c`) for the others.
 //!
-//! gzip controlla CRC32 e lunghezza di ogni membro. Del formato frame di LZ4
-//! non si verificano i checksum xxHash (opzionali nel formato): un errore nei
-//! dati compressi di solito rompe comunque la decodifica, e il kernel
-//! risultante viene poi validato dal caricatore (header dell'`Image`).
+//! gzip checks CRC32 and length of every member. For the LZ4 frame format
+//! the xxHash checksums are not verified (optional in the format): an error in the
+//! compressed data usually breaks decoding anyway, and the resulting
+//! kernel is then validated by the loader (`Image` header).
 
 use std::fmt;
 
-/// Tetto all'uscita: un kernel arm64 sta ampiamente sotto.
+/// Output cap: an arm64 kernel is well below it.
 pub const MAX_OUTPUT: usize = 512 << 20;
 
-/// Magic dell'`Image` arm64 (`ARM\x64` all'offset 56).
+/// Magic of the arm64 `Image` (`ARM\x64` at offset 56).
 const IMAGE_MAGIC: &[u8; 4] = b"ARM\x64";
 const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
-/// `lz4 -l`: blocchi indipendenti da 8 MiB non compressi.
+/// `lz4 -l`: independent 8 MiB blocks of uncompressed data.
 pub const LZ4_LEGACY_MAGIC: u32 = 0x184c_2102;
 pub const LZ4_FRAME_MAGIC: u32 = 0x184d_2204;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecompressError {
-    /// I dati finiscono prima del previsto.
+    /// The data ends earlier than expected.
     Truncated,
-    /// Intestazione non valida o funzione del formato non supportata.
+    /// Invalid header or unsupported format feature.
     BadHeader(&'static str),
-    /// Dati compressi non validi.
+    /// Invalid compressed data.
     BadData(&'static str),
-    /// CRC32 del membro gzip diverso da quello dichiarato.
+    /// CRC32 of the gzip member differs from the declared one.
     Crc { expected: u32, actual: u32 },
-    /// Lunghezza del membro gzip (modulo 2^32) diversa da quella dichiarata.
+    /// Length of the gzip member (modulo 2^32) differs from the declared one.
     Length { expected: u32, actual: u32 },
-    /// Uscita oltre [`MAX_OUTPUT`].
+    /// Output over [`MAX_OUTPUT`].
     TooLarge,
 }
 
@@ -44,25 +44,25 @@ impl fmt::Display for DecompressError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             DecompressError::Truncated => write!(f, "dati compressi troncati"),
-            DecompressError::BadHeader(w) => write!(f, "intestazione non valida: {w}"),
-            DecompressError::BadData(w) => write!(f, "dati compressi non validi: {w}"),
+            DecompressError::BadHeader(w) => write!(f, "invalid header: {w}"),
+            DecompressError::BadData(w) => write!(f, "invalid compressed data: {w}"),
             DecompressError::Crc { expected, actual } => {
                 write!(f, "CRC32 sbagliato: atteso {expected:#010x}, calcolato {actual:#010x}")
             }
             DecompressError::Length { expected, actual } => {
                 write!(f, "lunghezza sbagliata: attesa {expected}, ottenuta {actual}")
             }
-            DecompressError::TooLarge => write!(f, "uscita oltre {} MiB", MAX_OUTPUT >> 20),
+            DecompressError::TooLarge => write!(f, "output over {} MiB", MAX_OUTPUT >> 20),
         }
     }
 }
 
 impl std::error::Error for DecompressError {}
 
-/// Formato riconosciuto dai primi byte.
+/// Format recognised from the first bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
-    /// `Image` arm64 non compresso.
+    /// Uncompressed arm64 `Image`.
     Image,
     Gzip,
     Lz4Legacy,
@@ -98,7 +98,7 @@ pub fn detect(data: &[u8]) -> Format {
 }
 
 // ---------------------------------------------------------------------------
-// CRC32 (IEEE 802.3, riflesso), quello di gzip.
+// CRC32 (IEEE 802.3, reflected), the gzip one.
 
 fn crc32_table() -> [u32; 256] {
     let mut t = [0u32; 256];
@@ -132,7 +132,7 @@ impl<'a> Bits<'a> {
         Bits { data, pos: 0, buf: 0, cnt: 0 }
     }
 
-    /// Riempie il buffer fin dove ci sono byte.
+    /// Fills the buffer as far as there are bytes.
     fn refill(&mut self) {
         while self.cnt <= 56 && self.pos < self.data.len() {
             self.buf |= (self.data[self.pos] as u64) << self.cnt;
@@ -157,8 +157,8 @@ impl<'a> Bits<'a> {
         Ok(v)
     }
 
-    /// Scarta i bit fino al confine di byte e restituisce i byte già letti
-    /// nel buffer allo stream: da qui si legge a byte.
+    /// Discards the bits up to the byte boundary and gives the bytes already read
+    /// into the buffer back to the stream: from here on it is read by bytes.
     fn align(&mut self) {
         let drop = self.cnt % 8;
         self.buf >>= drop;
@@ -173,11 +173,11 @@ const FAST_BITS: u32 = 9;
 const MAX_BITS: usize = 15;
 
 struct Huffman {
-    /// Indice: i prossimi 9 bit dello stream. Valore: `simbolo << 4 | lunghezza`,
-    /// 0 se il codice è più lungo di 9 bit.
+    /// Index: the next 9 bits of the stream. Value: `symbol << 4 | length`,
+    /// 0 if the code is longer than 9 bits.
     fast: Vec<u16>,
     counts: [u16; MAX_BITS + 1],
-    /// Simboli in ordine canonico (lunghezza, poi valore).
+    /// Symbols in canonical order (length, then value).
     symbols: Vec<u16>,
 }
 
@@ -188,12 +188,12 @@ impl Huffman {
             counts[l as usize] += 1;
         }
         counts[0] = 0;
-        // Codice sovra-sottoscritto: non è un albero.
+        // Over-subscribed code: not a tree.
         let mut left: i32 = 1;
         for &c in &counts[1..] {
             left = (left << 1) - c as i32;
             if left < 0 {
-                return Err(DecompressError::BadData("codice di Huffman sovra-sottoscritto"));
+                return Err(DecompressError::BadData("over-subscribed Huffman code"));
             }
         }
         let mut offs = [0u16; MAX_BITS + 2];
@@ -207,8 +207,8 @@ impl Huffman {
                 offs[l as usize] += 1;
             }
         }
-        // Tabella diretta per i codici fino a FAST_BITS bit: codici canonici,
-        // bit invertiti (lo stream è LSB per primo, i codici MSB per primi).
+        // Direct table for codes up to FAST_BITS bits: canonical codes,
+        // bit-reversed (the stream is LSB first, the codes MSB first).
         let mut fast = vec![0u16; 1 << FAST_BITS];
         let mut code: u32 = 0;
         let mut idx = 0usize;
@@ -245,7 +245,7 @@ impl Huffman {
             br.cnt -= len;
             return Ok(e >> 4);
         }
-        // Codice lungo (o non valido): decodifica canonica bit per bit.
+        // Long (or invalid) code: canonical bit-by-bit decoding.
         let (mut code, mut first, mut index) = (0i32, 0i32, 0i32);
         for len in 1..=MAX_BITS {
             code |= br.bits(1)? as i32;
@@ -257,7 +257,7 @@ impl Huffman {
             first = (first + count) << 1;
             code <<= 1;
         }
-        Err(DecompressError::BadData("codice di Huffman non valido"))
+        Err(DecompressError::BadData("invalid Huffman code"))
     }
 }
 
@@ -273,7 +273,7 @@ const DIST_BASE: [u16; 30] = [
 ];
 const DIST_EXTRA: [u8; 30] =
     [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];
-/// Ordine delle lunghezze del codice delle lunghezze nei blocchi dinamici.
+/// Order of the code-length code lengths in dynamic blocks.
 const CL_ORDER: [usize; 19] = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
 
 fn fixed_tables() -> (Huffman, Huffman) {
@@ -291,7 +291,7 @@ fn dynamic_tables(br: &mut Bits) -> Result<(Huffman, Huffman), DecompressError> 
     let ndist = br.bits(5)? as usize + 1;
     let ncode = br.bits(4)? as usize + 4;
     if nlen > 286 || ndist > 30 {
-        return Err(DecompressError::BadData("troppi codici nel blocco dinamico"));
+        return Err(DecompressError::BadData("too many codes in the dynamic block"));
     }
     let mut cl = [0u8; 19];
     for &i in &CL_ORDER[..ncode] {
@@ -306,7 +306,7 @@ fn dynamic_tables(br: &mut Bits) -> Result<(Huffman, Huffman), DecompressError> 
             0..=15 => (sym as u8, 1),
             16 => {
                 if i == 0 {
-                    return Err(DecompressError::BadData("ripetizione senza lunghezza precedente"));
+                    return Err(DecompressError::BadData("repeat without a previous length"));
                 }
                 (lengths[i - 1], 3 + br.bits(2)? as usize)
             }
@@ -314,13 +314,13 @@ fn dynamic_tables(br: &mut Bits) -> Result<(Huffman, Huffman), DecompressError> 
             _ => (0, 11 + br.bits(7)? as usize),
         };
         if i + rep > nlen + ndist {
-            return Err(DecompressError::BadData("troppe lunghezze nel blocco dinamico"));
+            return Err(DecompressError::BadData("too many lengths in the dynamic block"));
         }
         lengths[i..i + rep].fill(val);
         i += rep;
     }
     if lengths[256] == 0 {
-        return Err(DecompressError::BadData("manca il codice di fine blocco"));
+        return Err(DecompressError::BadData("missing end-of-block code"));
     }
     Ok((Huffman::new(&lengths[..nlen])?, Huffman::new(&lengths[nlen..nlen + ndist])?))
 }
@@ -340,12 +340,12 @@ fn inflate_block(
         } else {
             let s = sym - 257;
             if s >= 29 {
-                return Err(DecompressError::BadData("simbolo di lunghezza non valido"));
+                return Err(DecompressError::BadData("invalid length symbol"));
             }
             let len = LEN_BASE[s] as usize + br.bits(LEN_EXTRA[s] as u32)? as usize;
             let d = dist.decode(br)? as usize;
             if d >= 30 {
-                return Err(DecompressError::BadData("simbolo di distanza non valido"));
+                return Err(DecompressError::BadData("invalid distance symbol"));
             }
             let d = DIST_BASE[d] as usize + br.bits(DIST_EXTRA[d] as u32)? as usize;
             copy_match(out, d, len)?;
@@ -356,10 +356,10 @@ fn inflate_block(
     }
 }
 
-/// Copia `len` byte da `dist` byte indietro (le sovrapposizioni ripetono).
+/// Copies `len` bytes from `dist` bytes back (overlaps repeat).
 fn copy_match(out: &mut Vec<u8>, dist: usize, len: usize) -> Result<(), DecompressError> {
     if dist == 0 || dist > out.len() {
-        return Err(DecompressError::BadData("distanza oltre l'inizio dei dati"));
+        return Err(DecompressError::BadData("distance before the start of the data"));
     }
     let start = out.len() - dist;
     if dist >= len {
@@ -373,7 +373,7 @@ fn copy_match(out: &mut Vec<u8>, dist: usize, len: usize) -> Result<(), Decompre
     Ok(())
 }
 
-/// Decomprime uno stream deflate grezzo; restituisce i dati e i byte letti.
+/// Decompresses a raw deflate stream; returns the data and the bytes read.
 pub fn inflate(data: &[u8]) -> Result<(Vec<u8>, usize), DecompressError> {
     let mut out = Vec::new();
     let mut br = Bits::new(data);
@@ -387,7 +387,7 @@ pub fn inflate(data: &[u8]) -> Result<(Vec<u8>, usize), DecompressError> {
                 let len = u16::from_le_bytes([hdr[0], hdr[1]]);
                 let nlen = u16::from_le_bytes([hdr[2], hdr[3]]);
                 if len != !nlen {
-                    return Err(DecompressError::BadData("blocco non compresso con LEN/NLEN incoerenti"));
+                    return Err(DecompressError::BadData("stored block with inconsistent LEN/NLEN"));
                 }
                 let body = data.get(p + 4..p + 4 + len as usize).ok_or(DecompressError::Truncated)?;
                 out.extend_from_slice(body);
@@ -401,7 +401,7 @@ pub fn inflate(data: &[u8]) -> Result<(Vec<u8>, usize), DecompressError> {
                 let (lit, dist) = dynamic_tables(&mut br)?;
                 inflate_block(&mut br, &mut out, &lit, &dist)?;
             }
-            _ => return Err(DecompressError::BadData("tipo di blocco riservato")),
+            _ => return Err(DecompressError::BadData("reserved block type")),
         }
         if out.len() > MAX_OUTPUT {
             return Err(DecompressError::TooLarge);
@@ -413,8 +413,8 @@ pub fn inflate(data: &[u8]) -> Result<(Vec<u8>, usize), DecompressError> {
     }
 }
 
-/// Decomprime un file gzip (anche più membri concatenati; quello che segue
-/// l'ultimo membro, per esempio zeri di riempimento, si ignora).
+/// Decompresses a gzip file (also several concatenated members; whatever follows
+/// the last member, for example padding zeros, is ignored).
 pub fn gunzip(data: &[u8]) -> Result<Vec<u8>, DecompressError> {
     let mut out = Vec::new();
     let mut p = 0;
@@ -429,14 +429,14 @@ pub fn gunzip(data: &[u8]) -> Result<Vec<u8>, DecompressError> {
 fn gunzip_member(data: &[u8], out: &mut Vec<u8>) -> Result<usize, DecompressError> {
     let hdr = data.get(..10).ok_or(DecompressError::Truncated)?;
     if hdr[..2] != GZIP_MAGIC {
-        return Err(DecompressError::BadHeader("manca il magic di gzip"));
+        return Err(DecompressError::BadHeader("missing gzip magic"));
     }
     if hdr[2] != 8 {
-        return Err(DecompressError::BadHeader("metodo di compressione diverso da deflate"));
+        return Err(DecompressError::BadHeader("compression method other than deflate"));
     }
     let flg = hdr[3];
     if flg & 0xe0 != 0 {
-        return Err(DecompressError::BadHeader("flag riservati di gzip"));
+        return Err(DecompressError::BadHeader("reserved gzip flags"));
     }
     let mut p = 10;
     if flg & 4 != 0 {
@@ -482,8 +482,8 @@ fn le32(data: &[u8], p: usize) -> Result<u32, DecompressError> {
     data.get(p..p + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap())).ok_or(DecompressError::Truncated)
 }
 
-/// Decodifica un blocco LZ4 in coda a `out` (le distanze possono risalire
-/// ai blocchi precedenti, come nei frame a blocchi collegati).
+/// Decodes an LZ4 block appending to `out` (distances may reach back
+/// into previous blocks, as in frames with linked blocks).
 pub fn lz4_block(src: &[u8], out: &mut Vec<u8>) -> Result<(), DecompressError> {
     let mut i = 0;
     let byte = |i: &mut usize| -> Result<u8, DecompressError> {
@@ -506,7 +506,7 @@ pub fn lz4_block(src: &[u8], out: &mut Vec<u8>) -> Result<(), DecompressError> {
         out.extend_from_slice(src.get(i..i + lit).ok_or(DecompressError::Truncated)?);
         i += lit;
         if i == src.len() {
-            // L'ultima sequenza ha solo letterali.
+            // The last sequence has only literals.
             return Ok(());
         }
         let off = u16::from_le_bytes([byte(&mut i)?, byte(&mut i)?]) as usize;
@@ -527,11 +527,11 @@ pub fn lz4_block(src: &[u8], out: &mut Vec<u8>) -> Result<(), DecompressError> {
     }
 }
 
-/// Formato legacy (`lz4 -l`): magic, poi blocchi `dimensione (u32) + dati`
-/// fino alla fine; un altro magic apre uno stream concatenato.
+/// Legacy format (`lz4 -l`): magic, then `size (u32) + data` blocks
+/// to the end; another magic opens a concatenated stream.
 pub fn lz4_legacy(data: &[u8]) -> Result<Vec<u8>, DecompressError> {
     if le32(data, 0)? != LZ4_LEGACY_MAGIC {
-        return Err(DecompressError::BadHeader("manca il magic di lz4 legacy"));
+        return Err(DecompressError::BadHeader("missing lz4 legacy magic"));
     }
     let mut out = Vec::new();
     let mut p = 4;
@@ -551,8 +551,8 @@ pub fn lz4_legacy(data: &[u8]) -> Result<Vec<u8>, DecompressError> {
     Ok(out)
 }
 
-/// Formato frame (`lz4` senza `-l`), anche più frame concatenati e frame
-/// saltabili. Niente dizionari esterni.
+/// Frame format (`lz4` without `-l`), also several concatenated frames and
+/// skippable frames. No external dictionaries.
 pub fn lz4_frame(data: &[u8]) -> Result<Vec<u8>, DecompressError> {
     let mut out = Vec::new();
     let mut p = 0;
@@ -564,16 +564,16 @@ pub fn lz4_frame(data: &[u8]) -> Result<Vec<u8>, DecompressError> {
         }
         if magic != LZ4_FRAME_MAGIC {
             if p == 0 {
-                return Err(DecompressError::BadHeader("manca il magic del frame lz4"));
+                return Err(DecompressError::BadHeader("missing lz4 frame magic"));
             }
             break;
         }
         let flg = *data.get(p + 4).ok_or(DecompressError::Truncated)?;
         if flg >> 6 != 1 {
-            return Err(DecompressError::BadHeader("versione del frame lz4 diversa da 1"));
+            return Err(DecompressError::BadHeader("lz4 frame version other than 1"));
         }
         if flg & 1 != 0 {
-            return Err(DecompressError::BadHeader("frame lz4 con dizionario"));
+            return Err(DecompressError::BadHeader("lz4 frame with a dictionary"));
         }
         p += 7 + if flg & 8 != 0 { 8 } else { 0 };
         loop {
@@ -601,7 +601,7 @@ pub fn lz4_frame(data: &[u8]) -> Result<Vec<u8>, DecompressError> {
     Ok(out)
 }
 
-/// Decomprime secondo il formato riconosciuto; `Image` resta com'è.
+/// Decompresses according to the detected format; `Image` stays as it is.
 pub fn decompress(data: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>, DecompressError> {
     use std::borrow::Cow;
     match detect(data) {
@@ -609,6 +609,6 @@ pub fn decompress(data: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>, DecompressE
         Format::Gzip => gunzip(data).map(Cow::Owned),
         Format::Lz4Legacy => lz4_legacy(data).map(Cow::Owned),
         Format::Lz4Frame => lz4_frame(data).map(Cow::Owned),
-        Format::Unknown => Err(DecompressError::BadHeader("formato del kernel sconosciuto")),
+        Format::Unknown => Err(DecompressError::BadHeader("unknown kernel format")),
     }
 }

@@ -1,7 +1,7 @@
-//! Interprete di riferimento: esegue una `Insn` decodificata.
+//! Reference interpreter: executes a decoded `Insn`.
 //!
-//! Scritto per essere leggibile contro il pseudocodice dell'Arm ARM, non per
-//! essere veloce (la velocità è compito del JIT, M4).
+//! Written to be readable against the Arm ARM pseudocode, not to
+//! be fast (speed is the JIT's job, M4).
 
 use crate::bits::{ones, ror};
 use crate::decode::*;
@@ -10,7 +10,7 @@ use crate::state::{Cpu, Monitor};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Exception {
-    /// `pc` punta già all'istruzione successiva.
+    /// `pc` already points to the next instruction.
     Svc(u16),
     Breakpoint(u16),
     Undefined(u32),
@@ -31,8 +31,8 @@ pub enum Exception {
     PcAlignment {
         addr: u64,
     },
-    /// Load/store con base SP non allineato a 16 byte con SCTLR_EL1.SA/SA0
-    /// (solo in modalità sistema: la modalità utente non lo produce).
+    /// Load/store with SP base not aligned to 16 bytes with SCTLR_EL1.SA/SA0
+    /// (system mode only: user mode does not produce it).
     SpAlignment,
 }
 
@@ -45,7 +45,7 @@ impl From<MemFault> for Exception {
     }
 }
 
-/// Dimensione zero-estesa ai 64 bit.
+/// Size zero-extended to 64 bits.
 #[inline]
 fn trunc(v: u64, sf: bool) -> u64 {
     if sf { v } else { v as u32 as u64 }
@@ -56,7 +56,7 @@ fn datasize(sf: bool) -> u32 {
     if sf { 64 } else { 32 }
 }
 
-/// `AddWithCarry(x, y, carry)`: risultato troncato e flag NZCV.
+/// `AddWithCarry(x, y, carry)`: truncated result and NZCV flags.
 fn add_with_carry(x: u64, y: u64, carry: bool, sf: bool) -> (u64, (bool, bool, bool, bool)) {
     if sf {
         let (r1, c1) = x.overflowing_add(y);
@@ -87,7 +87,7 @@ fn shift_reg(v: u64, shift: Shift, amount: u32, sf: bool) -> u64 {
     trunc(r, sf)
 }
 
-/// `ExtendReg(reg, type, shift)` su 64 bit, poi troncato dal chiamante.
+/// `ExtendReg(reg, type, shift)` on 64 bits, then truncated by the caller.
 pub(crate) fn extend_reg(v: u64, extend: u8, shift: u8) -> u64 {
     let e = match extend {
         0 => v as u8 as u64,
@@ -128,7 +128,7 @@ fn check_aligned(addr: u64, bytes: u64) -> Result<(), Exception> {
     if !addr.is_multiple_of(bytes) { Err(Exception::Alignment { addr }) } else { Ok(()) }
 }
 
-/// Valore caricato di `1 << size` byte, esteso come chiede `op`.
+/// Loaded value of `1 << size` bytes, extended as `op` asks.
 fn extend_load(raw: u64, size: u8, op: MemOp) -> u64 {
     let bits = 8u32 << size;
     match op {
@@ -141,9 +141,9 @@ fn extend_load(raw: u64, size: u8, op: MemOp) -> u64 {
 }
 
 impl Cpu {
-    /// Controllo dell'allineamento dello stack pointer (`CheckSPAlignment`)
-    /// per un load/store con base `rn`: solo in modalità sistema, con
-    /// SCTLR_EL1.SA0 a EL0 o SA a EL1.
+    /// Stack pointer alignment check (`CheckSPAlignment`)
+    /// for a load/store with base `rn`: system mode only, with
+    /// SCTLR_EL1.SA0 at EL0 or SA at EL1.
     #[inline]
     pub(crate) fn check_sp_alignment(&self, rn: u8) -> Result<(), Exception> {
         if rn == 31 && self.sys.mode == crate::sys::Mode::System && self.sp & 15 != 0 {
@@ -155,8 +155,8 @@ impl Cpu {
         Ok(())
     }
 
-    /// Esegue un'istruzione. Su eccezione lo stato resta invariato (tranne
-    /// `Svc`, vedi docs/specs/cpu.md).
+    /// Executes an instruction. On an exception the state stays unchanged (except
+    /// `Svc`, see docs/specs/cpu.md).
     pub fn step<M: Memory>(&mut self, mem: &mut M) -> Result<(), Exception> {
         let pc = self.pc;
         if pc & 3 != 0 {
@@ -174,7 +174,7 @@ impl Cpu {
         Ok(())
     }
 
-    /// Restituisce `Some(target)` se l'istruzione salta.
+    /// Returns `Some(target)` if the instruction branches.
     pub(crate) fn execute<M: Memory>(
         &mut self,
         insn: Insn,
@@ -407,9 +407,9 @@ impl Cpu {
                 let addr = self.xr(rt) & !63;
                 mem.zero_block(addr)?;
             }
-            // Istruzioni che la modalità sistema esegue prima di arrivare qui
-            // (`crate::sys`): in modalità utente si comportano come prima
-            // che il decoder le riconoscesse.
+            // Instructions that system mode executes before getting here
+            // (`crate::sys`): in user mode they behave as they did before
+            // the decoder recognised them.
             Insn::Wfi | Insn::Wfe => {}
             Insn::Hvc { .. } | Insn::Smc { .. } | Insn::Eret | Insn::MsrImm { .. } | Insn::Sys { .. } => {
                 return Err(Exception::Undefined(raw));
@@ -418,7 +418,7 @@ impl Cpu {
                 return Err(Exception::Undefined(raw));
             }
             Insn::Mrs { reg, .. } | Insn::Msr { reg, .. } if !reg.is_el0_legacy() => {
-                return Err(Exception::Unimplemented { raw, what: "MRS/MSR registro di sistema" });
+                return Err(Exception::Unimplemented { raw, what: "MRS/MSR system register" });
             }
             Insn::Mrs { reg, rt } => {
                 let v = match reg {
@@ -427,11 +427,11 @@ impl Cpu {
                     SysReg::TpidrroEl0 => self.tpidrro_el0,
                     SysReg::Fpcr => self.fpcr as u64,
                     SysReg::Fpsr => self.fpsr as u64,
-                    // Blocco DC ZVA di 2^4 parole = 64 byte, DC ZVA permesso.
+                    // DC ZVA block of 2^4 words = 64 bytes, DC ZVA permitted.
                     SysReg::DczidEl0 => 4,
-                    // Valore della Cortex-A53 (come QEMU `-cpu cortex-a53`).
+                    // Cortex-A53 value (like QEMU `-cpu cortex-a53`).
                     SysReg::CtrEl0 => crate::sys::id::CTR_EL0,
-                    _ => unreachable!("registro non di M1, escluso sopra"),
+                    _ => unreachable!("register not in M1, excluded above"),
                 };
                 self.set_x(rt, v);
             }
@@ -440,11 +440,11 @@ impl Cpu {
                 match reg {
                     SysReg::Nzcv => self.nzcv = (v as u32) & 0xf000_0000,
                     SysReg::TpidrEl0 => self.tpidr_el0 = v,
-                    // Sola lettura a EL0 (DCZID e CTR li rifiuta già il decoder).
+                    // Read-only at EL0 (DCZID and CTR are already rejected by the decoder).
                     SysReg::TpidrroEl0 => return Err(Exception::Undefined(raw)),
                     SysReg::Fpcr => self.fpcr = v as u32 & crate::state::FPCR_MASK,
                     SysReg::Fpsr => self.fpsr = v as u32 & crate::state::FPSR_MASK,
-                    _ => unreachable!("registro non di M1, escluso sopra"),
+                    _ => unreachable!("register not in M1, excluded above"),
                 }
             }
 

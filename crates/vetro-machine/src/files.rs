@@ -1,41 +1,41 @@
-//! Client del gestore dei file (M8, ADR 0020, `docs/specs/files.md`): parla
-//! con `vetro-files`, il demone di Vetro nel guest, su virtio-vsock.
+//! File manager client (M8, ADR 0020, `docs/specs/files.md`): talks
+//! to `vetro-files`, Vetro's daemon in the guest, over virtio-vsock.
 //!
-//! Il demone legge e scrive i file passando dal kernel del guest (niente
-//! accesso diretto all'immagine del disco). Il client sta dalla parte
-//! dell'host e non tocca la macchina se non con [`Machine::input`]
-//! (connessione, byte mandati, byte letti: tutti ingressi registrati per il
-//! replay, ADR 0019) e con [`Machine::vsock_view`] (stato della connessione
-//! e byte pronti, sola lettura). Chi lo usa chiama [`FilesClient::pump`] fra
-//! un quanto e l'altro, come per la console: le richieste partono e le
-//! risposte arrivano lì, sempre agli stessi numeri d'istruzione con lo
-//! stesso copione.
+//! The daemon reads and writes files through the guest kernel (no
+//! direct access to the disk image). The client lives on the host
+//! side and touches the machine only through [`Machine::input`]
+//! (connection, bytes sent, bytes read: all inputs recorded for
+//! replay, ADR 0019) and [`Machine::vsock_view`] (connection state
+//! and ready bytes, read-only). The user calls [`FilesClient::pump`] between
+//! one quantum and the next, as for the console: requests leave and
+//! responses arrive there, always at the same instruction counts with the
+//! same script.
 //!
-//! Le operazioni ([`FilesClient::list`], [`FilesClient::read`],
-//! [`FilesClient::write_file`], [`FilesClient::sql`], ...) restituiscono un
-//! id; la
-//! [`Completion`] con quell'id esce da [`FilesClient::take_completion`]. Una
-//! lettura lunga diventa più richieste READ da [`proto::CHUNK`] byte una
-//! dopo l'altra; una scrittura diventa WOPEN, i WDATA e WCOMMIT mandati
-//! insieme (il demone li serve in ordine: il file vero cambia solo al
-//! WCOMMIT, con un rename atomico). Gli eventi di inotify escono da
-//! [`FilesClient::take_event`]. I percorsi sono byte del file system del
-//! guest (`impl AsRef<[u8]>`: anche `&str`), non per forza UTF-8 (ADR 0021).
+//! The operations ([`FilesClient::list`], [`FilesClient::read`],
+//! [`FilesClient::write_file`], [`FilesClient::sql`], ...) return an
+//! id; the
+//! [`Completion`] with that id comes out of [`FilesClient::take_completion`]. A
+//! long read becomes several READ requests of [`proto::CHUNK`] bytes one
+//! after the other; a write becomes WOPEN, the WDATAs and WCOMMIT sent
+//! together (the daemon serves them in order: the real file changes only at
+//! WCOMMIT, with an atomic rename). inotify events come out of
+//! [`FilesClient::take_event`]. Paths are bytes of the guest file system
+//! (`impl AsRef<[u8]>`: `&str` too), not necessarily UTF-8 (ADR 0021).
 //!
-//! Connessione: il client si collega alla porta [`proto::PORT`] del guest;
-//! se nessuno ascolta (demone non ancora partito) riprova ogni
-//! [`RETRY_NS`] di tempo del guest. Se la connessione cade dopo il saluto,
-//! le operazioni in corso finiscono con [`FilesError::Disconnected`], le
-//! osservazioni si perdono (il demone le toglie) e il client si ricollega:
-//! [`FilesClient::generation`] cresce a ogni saluto, così chi osserva sa di
-//! dover rifare i WATCH. Le connessioni verso la porta del demone rimaste
-//! da una sessione precedente (uno snapshot ripristinato) si chiudono al
-//! primo collegamento.
+//! Connection: the client connects to the guest's [`proto::PORT`] port;
+//! if nobody is listening (daemon not started yet) it retries every
+//! [`RETRY_NS`] of guest time. If the connection drops after the greeting,
+//! the operations in flight end with [`FilesError::Disconnected`], the
+//! watches are lost (the daemon removes them) and the client reconnects:
+//! [`FilesClient::generation`] grows at every greeting, so whoever watches knows
+//! to redo the WATCHes. Connections to the daemon's port left over
+//! from a previous session (a restored snapshot) are closed at the
+//! first connection.
 //!
-//! Le **radici da mostrare** ([`FilesClient::set_roots`]) le decide chi
-//! chiama: oggi a mano o dalla riga di comando; con Android le imposterà il
-//! rilevamento dell'app in primo piano dal decoder Binder
-//! ([`app_roots`] dà le cartelle di un pacchetto).
+//! The **roots to show** ([`FilesClient::set_roots`]) are decided by the
+//! caller: today by hand or from the command line; with Android they will be
+//! set by the detection of the foreground app from the Binder decoder
+//! ([`app_roots`] gives the folders of a package).
 
 pub mod proto;
 
@@ -48,11 +48,11 @@ use vetro_platform::virtio::{VsockConn, VsockState};
 use crate::{Input, Machine, ReplayStatus, Reply, VsockOp};
 use proto::{Decoder, Entry, Event, Frame, Hello, Request, SqlResult, SqlValue, Stat};
 
-/// Attesa fra due tentativi di collegamento (tempo del guest): 100 ms.
+/// Wait between two connection attempts (guest time): 100 ms.
 pub const RETRY_NS: u64 = 100_000_000;
 
-/// Le cartelle di un'app Android (pacchetto `package`, utente 0) da
-/// mostrare quando è in primo piano (docs/PLAN.md, M8).
+/// The folders of an Android app (package `package`, user 0) to
+/// show when it is in the foreground (docs/PLAN.md, M8).
 pub fn app_roots(package: &str) -> Vec<String> {
     ["/data/data/", "/data/user_de/0/", "/sdcard/Android/data/", "/sdcard/Android/media/"]
         .iter()
@@ -60,36 +60,36 @@ pub fn app_roots(package: &str) -> Vec<String> {
         .collect()
 }
 
-/// Esito di un'operazione.
+/// Outcome of an operation.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Outcome {
     Stat(Stat),
     List(Vec<Entry>),
-    /// Byte letti e dimensione del file al primo pezzo.
+    /// Bytes read and file size at the first chunk.
     Data {
         size: u64,
         data: Vec<u8>,
     },
-    /// Scrittura fatta: i metadati del file dopo il rename.
+    /// Write done: the file metadata after the rename.
     Written(Stat),
-    /// Osservazione aperta: il suo id (lo stesso degli [`Event::wd`]).
+    /// Watch opened: its id (the same as [`Event::wd`]).
     Watch(u32),
-    /// SQL eseguito e confermato nel guest (ADR 0021).
+    /// SQL executed and committed in the guest (ADR 0021).
     Sql(SqlResult),
     Done,
 }
 
-/// Perché un'operazione non è riuscita.
+/// Why an operation failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FilesError {
-    /// Errore del guest (errno di Linux).
+    /// Guest error (Linux errno).
     Errno(u32),
-    /// Il demone ha mandato byte senza senso: connessione chiusa.
+    /// The daemon sent meaningless bytes: connection closed.
     Protocol(String),
-    /// La connessione è caduta prima della risposta.
+    /// The connection dropped before the response.
     Disconnected,
-    /// SQLite ha rifiutato (codice primario e messaggio): la transazione è
-    /// annullata, il database non è cambiato.
+    /// SQLite refused (primary code and message): the transaction is
+    /// rolled back, the database has not changed.
     Sql { code: u32, message: String },
 }
 
@@ -98,36 +98,36 @@ impl fmt::Display for FilesError {
         match self {
             FilesError::Errno(e) => write!(f, "{} ({e})", proto::errno_name(*e)),
             FilesError::Protocol(m) => write!(f, "protocollo: {m}"),
-            FilesError::Disconnected => f.write_str("connessione con vetro-files caduta"),
+            FilesError::Disconnected => f.write_str("connection with vetro-files dropped"),
             FilesError::Sql { code, message } => write!(f, "SQLite {code}: {message}"),
         }
     }
 }
 
-/// Un'operazione finita.
+/// A finished operation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Completion {
     pub op: u32,
     pub result: Result<Outcome, FilesError>,
 }
 
-/// Stato del collegamento con il demone.
+/// State of the link with the daemon.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LinkState {
-    /// Mai provato (prima di `pump`).
+    /// Never tried (before `pump`).
     Idle,
-    /// Richiesta di connessione partita, saluto non ancora arrivato.
+    /// Connection request sent, greeting not arrived yet.
     Connecting,
     /// Saluto ricevuto: le richieste partono.
     Ready(Hello),
-    /// Nessuno in ascolto (o connessione caduta): nuovo tentativo al tempo
-    /// del guest indicato.
+    /// Nobody listening (or connection dropped): new attempt at the indicated
+    /// guest time.
     Waiting { until_ns: u64 },
 }
 
 #[derive(Clone, Debug)]
 enum Work {
-    /// Una richiesta, una risposta.
+    /// One request, one response.
     Simple(Request),
     Read {
         path: Vec<u8>,
@@ -152,7 +152,7 @@ struct Op {
     started: bool,
 }
 
-/// Il client (vedi il modulo).
+/// The client (see the module).
 #[derive(Clone, Debug)]
 pub struct FilesClient {
     port: u32,
@@ -165,7 +165,7 @@ pub struct FilesClient {
     next_op: u32,
     next_handle: u32,
     ops: BTreeMap<u32, Op>,
-    /// Richiesta del protocollo in attesa → operazione.
+    /// Pending protocol request → operation.
     waiting: BTreeMap<u32, u32>,
     done: VecDeque<Completion>,
     events: VecDeque<Event>,
@@ -180,7 +180,7 @@ impl Default for FilesClient {
 }
 
 impl FilesClient {
-    /// Un client per il demone sulla porta vsock `port` del guest.
+    /// A client for the daemon on the guest's vsock port `port`.
     pub fn new(port: u32) -> Self {
         FilesClient {
             port,
@@ -213,22 +213,22 @@ impl FilesClient {
         matches!(self.link, LinkState::Ready(_))
     }
 
-    /// Saluti ricevuti: cresce a ogni (ri)collegamento.
+    /// Greetings received: grows at every (re)connection.
     pub fn generation(&self) -> u32 {
         self.generation
     }
 
-    /// Operazioni non ancora finite.
+    /// Operations not finished yet.
     pub fn pending(&self) -> usize {
         self.ops.len()
     }
 
-    /// Le radici da mostrare (default `/`).
+    /// The roots to show (default `/`).
     pub fn roots(&self) -> &[String] {
         &self.roots
     }
 
-    /// Imposta le radici da mostrare (l'app in primo piano, o a mano).
+    /// Sets the roots to show (the foreground app, or by hand).
     pub fn set_roots(&mut self, roots: Vec<String>) {
         self.roots = roots;
     }
@@ -253,7 +253,7 @@ impl FilesClient {
         self.push(Work::Simple(Request::List { path: path.as_ref().to_vec() }))
     }
 
-    /// Legge `len` byte da `offset` (`u64::MAX` = fino alla fine), a pezzi.
+    /// Reads `len` bytes from `offset` (`u64::MAX` = to the end), in chunks.
     pub fn read(&mut self, path: impl AsRef<[u8]>, offset: u64, len: u64) -> u32 {
         self.push(Work::Read {
             path: path.as_ref().to_vec(),
@@ -264,13 +264,13 @@ impl FilesClient {
         })
     }
 
-    /// Il file intero.
+    /// The whole file.
     pub fn read_file(&mut self, path: impl AsRef<[u8]>) -> u32 {
         self.read(path, 0, u64::MAX)
     }
 
-    /// Sostituisce (o crea, con permessi `mode`) il file con `data`, in modo
-    /// atomico: un file che c'è già tiene proprietario, modo e xattr.
+    /// Replaces (or creates, with permissions `mode`) the file with `data`,
+    /// atomically: an existing file keeps owner, mode and xattrs.
     pub fn write_file(&mut self, path: impl AsRef<[u8]>, data: &[u8], mode: u32) -> u32 {
         self.push(Work::Write {
             path: path.as_ref().to_vec(),
@@ -282,7 +282,7 @@ impl FilesClient {
         })
     }
 
-    /// Crea un file vuoto (fallisce se c'è già).
+    /// Creates an empty file (fails if it already exists).
     pub fn create(&mut self, path: impl AsRef<[u8]>, mode: u32) -> u32 {
         self.push(Work::Simple(Request::Create { path: path.as_ref().to_vec(), mode }))
     }
@@ -291,7 +291,7 @@ impl FilesClient {
         self.push(Work::Simple(Request::Mkdir { path: path.as_ref().to_vec(), mode }))
     }
 
-    /// Cancella un file o una cartella (vuota, o tutto con `recursive`).
+    /// Deletes a file or a folder (empty, or everything with `recursive`).
     pub fn delete(&mut self, path: impl AsRef<[u8]>, recursive: bool) -> u32 {
         self.push(Work::Simple(Request::Delete { path: path.as_ref().to_vec(), recursive }))
     }
@@ -300,7 +300,7 @@ impl FilesClient {
         self.push(Work::Simple(Request::Rename { from: from.as_ref().to_vec(), to: to.as_ref().to_vec() }))
     }
 
-    /// Osserva una cartella (o un file) con inotify.
+    /// Watches a folder (or a file) with inotify.
     pub fn watch(&mut self, path: impl AsRef<[u8]>) -> u32 {
         self.push(Work::Simple(Request::Watch { path: path.as_ref().to_vec() }))
     }
@@ -309,11 +309,11 @@ impl FilesClient {
         self.push(Work::Simple(Request::Unwatch { wd }))
     }
 
-    /// Esegue `sql` sul database SQLite `path` nel guest, con il motore vero
-    /// e come il proprietario del file (ADR 0021): tutte le istruzioni in
-    /// una transazione (tranne `readonly`), `params` legati a `?1`, `?2`, ...;
-    /// con `expect` un numero diverso di righe cambiate annulla tutto
-    /// ([`FilesError::Sql`]). L'esito è [`Outcome::Sql`].
+    /// Runs `sql` on the SQLite database `path` in the guest, with the real engine
+    /// and as the file's owner (ADR 0021): all statements in
+    /// one transaction (except `readonly`), `params` bound to `?1`, `?2`, ...;
+    /// with `expect`, a different number of changed rows rolls everything back
+    /// ([`FilesError::Sql`]). The outcome is [`Outcome::Sql`].
     pub fn sql(
         &mut self,
         path: impl AsRef<[u8]>,
@@ -336,12 +336,12 @@ impl FilesClient {
         self.done.pop_front()
     }
 
-    /// Il prossimo evento di inotify.
+    /// The next inotify event.
     pub fn take_event(&mut self) -> Option<Event> {
         self.events.pop_front()
     }
 
-    // ---- Protocollo (senza macchina) ---------------------------------------
+    // ---- Protocol (no machine) ---------------------------------------------
 
     fn chunk(&self) -> usize {
         match self.link {
@@ -393,19 +393,19 @@ impl FilesClient {
         self.done.push_back(Completion { op, result });
     }
 
-    /// Byte arrivati dal demone. `Err` = errore di protocollo: la
-    /// connessione va chiusa.
+    /// Bytes arrived from the daemon. `Err` = protocol error: the
+    /// connection must be closed.
     fn on_bytes(&mut self, bytes: &[u8]) -> Result<(), String> {
         self.dec.push(bytes);
         while let Some(f) = self.dec.next_frame() {
             match f.map_err(|e| e.0)? {
                 Frame::Hello(h) => {
                     if self.is_ready() {
-                        return Err("secondo saluto".into());
+                        return Err("second greeting".into());
                     }
                     if !(proto::MIN_VERSION..=proto::VERSION).contains(&h.version) {
                         return Err(format!(
-                            "versione {} del demone, attese da {} a {}",
+                            "daemon version {}, expected {} to {}",
                             h.version,
                             proto::MIN_VERSION,
                             proto::VERSION
@@ -421,7 +421,7 @@ impl FilesClient {
                 Frame::Event(e) => self.events.push_back(e),
                 Frame::Reply { id, status, body } => {
                     let Some(op) = self.waiting.remove(&id) else {
-                        return Err(format!("risposta a una richiesta sconosciuta ({id})"));
+                        return Err(format!("response to an unknown request ({id})"));
                     };
                     self.on_reply(op, status, &body)?;
                 }
@@ -448,8 +448,8 @@ impl FilesClient {
         }
     }
 
-    /// Una risposta per l'operazione `op` (tolta dalla tabella): l'esito se
-    /// è finita, `None` se continua.
+    /// A response for operation `op` (removed from the table): the outcome if
+    /// it is finished, `None` if it continues.
     fn advance(
         &mut self,
         id: u32,
@@ -501,7 +501,7 @@ impl FilesClient {
                 if *replies > 0 {
                     return Ok(None);
                 }
-                // L'ultima risposta è quella di WCOMMIT.
+                // The last response is the WCOMMIT one.
                 Ok(Some(match first.take() {
                     Some(e) => Err(e),
                     None => Ok(Outcome::Written(proto::parse_stat(body).map_err(|e| e.0)?)),
@@ -510,8 +510,8 @@ impl FilesClient {
         }
     }
 
-    /// La connessione è finita: le operazioni partite falliscono con
-    /// `why`, quelle non partite aspettano il prossimo collegamento.
+    /// The connection is over: operations already sent fail with
+    /// `why`, those not sent wait for the next connection.
     fn on_closed(&mut self, why: FilesError) {
         self.conn = None;
         self.dec = Decoder::default();
@@ -523,17 +523,17 @@ impl FilesClient {
         }
     }
 
-    // ---- Con la macchina -----------------------------------------------------
+    // ---- With the machine ----------------------------------------------------
 
     fn input(m: &mut Machine, op: VsockOp) -> Reply {
         m.input(Input::Vsock(op))
     }
 
-    /// Fa avanzare il collegamento: connessione (o nuovo tentativo), byte
-    /// arrivati, richieste in coda. Da chiamare fra un quanto e l'altro.
-    /// Non fa niente senza virtio-vsock, durante un replay (gli ingressi
-    /// vengono dal log) e con la macchina ferma su un disco (gli ingressi
-    /// sarebbero rimandati).
+    /// Advances the link: connection (or a new attempt), bytes
+    /// arrived, queued requests. To be called between one quantum and the next.
+    /// Does nothing without virtio-vsock, during a replay (the inputs
+    /// come from the log) and with the machine stopped on a disk (the inputs
+    /// would be deferred).
     pub fn pump(&mut self, m: &mut Machine) {
         if m.blocked() || matches!(m.replay_status(), Some(ReplayStatus::Running { .. })) {
             return;
@@ -541,8 +541,8 @@ impl FilesClient {
         let Some(conns) = m.vsock_view(|v| v.connections()) else { return };
         let now = m.guest_ns();
         if !self.cleaned {
-            // Connessioni verso il demone rimaste da una sessione precedente
-            // (snapshot ripristinato): nessuno le legge più.
+            // Connections to the daemon left over from a previous session
+            // (restored snapshot): nobody reads them any more.
             self.cleaned = true;
             for c in conns.iter().filter(|c| c.guest_port == self.port && Some(**c) != self.conn) {
                 Self::input(m, VsockOp::Release(*c));
@@ -595,8 +595,8 @@ impl FilesClient {
 
 #[cfg(test)]
 mod tests {
-    //! Il client contro un demone finto in memoria che parla il protocollo
-    //! (le prove con il demone vero stanno in tests/boot/tests/files.rs).
+    //! The client against a fake in-memory daemon that speaks the protocol
+    //! (the tests with the real daemon live in tests/boot/tests/files.rs).
 
     use super::proto::*;
     use super::*;
@@ -629,7 +629,7 @@ mod tests {
             }
         }
 
-        /// Serve tutti i frame di `bytes`; restituisce le risposte.
+        /// Serves all the frames of `bytes`; returns the responses.
         fn serve(&mut self, bytes: &[u8]) -> Vec<u8> {
             let mut out = Vec::new();
             let mut at = 0;
@@ -676,7 +676,7 @@ mod tests {
                         Some(f) => (0, encode_stat(&Self::stat(f.len()))),
                     },
                     Request::Watch { .. } => (0, 7u32.to_le_bytes().to_vec()),
-                    // Un database finto: una tabella `t(v)` di interi.
+                    // A fake database: a table `t(v)` of integers.
                     Request::Sql { path, sql, params, expect, readonly } => match self.files.get_mut(&path) {
                         None => (2, vec![]),
                         Some(_) if sql.starts_with("SELECT") => (
@@ -714,7 +714,7 @@ mod tests {
         }
     }
 
-    /// Un client che ha chiesto la connessione e aspetta il saluto.
+    /// A client that asked for the connection and waits for the greeting.
     fn connecting() -> FilesClient {
         FilesClient { link: LinkState::Connecting, ..FilesClient::default() }
     }
@@ -723,7 +723,7 @@ mod tests {
         encode_hello(&Hello { version: VERSION, flags: 0, max_chunk })
     }
 
-    /// Fa girare client e demone finto finché ci sono byte da scambiare.
+    /// Runs client and fake daemon as long as there are bytes to exchange.
     fn exchange(c: &mut FilesClient, d: &mut Fake) {
         while !c.out.is_empty() {
             let req = core::mem::take(&mut c.out);
@@ -736,16 +736,16 @@ mod tests {
         core::iter::from_fn(|| c.take_completion()).collect()
     }
 
-    /// Le operazioni chieste prima del saluto partono al saluto; letture e
-    /// scritture a pezzi (il pezzo più piccolo fra quello del client e il
-    /// `max_chunk` del demone).
+    /// Operations requested before the greeting leave at the greeting; reads and
+    /// writes in chunks (the smaller chunk between the client's and the
+    /// daemon's `max_chunk`).
     #[test]
     fn letture_e_scritture_a_pezzi() {
         let mut d = Fake::new(1000);
         let big: Vec<u8> = (0..4321u32).map(|i| (i * 7) as u8).collect();
         let mut c = FilesClient::default();
         let w = c.write_file("/tmp/big", &big, 0o600);
-        assert!(c.out.is_empty(), "niente prima del saluto");
+        assert!(c.out.is_empty(), "nothing before the greeting");
         c.link = LinkState::Connecting;
         c.on_bytes(&hello(1000)).unwrap();
         assert!(c.is_ready());
@@ -766,10 +766,10 @@ mod tests {
         assert_eq!(get(part), Ok(Outcome::Data { size: 4321, data: big[999..2001].to_vec() }));
         assert_eq!(get(tail), Ok(Outcome::Data { size: 4321, data: big[4000..].to_vec() }));
         assert_eq!(get(missing), Err(FilesError::Errno(2)));
-        // 5 pezzi (4 pieni e l'ultimo corto) + 2 + 1 + 1.
+        // 5 chunks (4 full and the last one short) + 2 + 1 + 1.
         assert_eq!(d.reads, 5 + 2 + 1 + 1);
 
-        // Un file vuoto: WOPEN e WCOMMIT soli; lettura di 0 byte.
+        // An empty file: WOPEN and WCOMMIT alone; read of 0 bytes.
         let e = c.write_file("/tmp/vuoto", &[], 0o644);
         exchange(&mut c, &mut d);
         assert!(matches!(all(&mut c)[0], Completion { op, result: Ok(Outcome::Written(_)) } if op == e));
@@ -778,14 +778,14 @@ mod tests {
         assert_eq!(all(&mut c), [Completion { op: r, result: Ok(Outcome::Data { size: 0, data: vec![] }) }]);
     }
 
-    /// Un errore in mezzo a una scrittura la fa fallire con il primo errore.
+    /// An error in the middle of a write makes it fail with the first error.
     #[test]
     fn scrittura_con_errore() {
         let mut c = connecting();
         c.on_bytes(&hello(1 << 20)).unwrap();
         let w = c.write_file("/tmp/x", b"abc", 0o600);
         let reqs = core::mem::take(&mut c.out);
-        // WOPEN rifiutato (EACCES), WDATA e WCOMMIT senza handle (EBADF).
+        // WOPEN refused (EACCES), WDATA and WCOMMIT without a handle (EBADF).
         let mut ids = Vec::new();
         let mut at = 0;
         while at < reqs.len() {
@@ -814,10 +814,10 @@ mod tests {
         assert!(c.on_bytes(&bad).is_err(), "versione 0");
         let mut c = connecting();
         c.on_bytes(&encode_hello(&Hello { version: MIN_VERSION, flags: 0, max_chunk: 1 << 20 })).unwrap();
-        assert!(c.is_ready(), "un demone di versione 1 va bene (senza SQL)");
+        assert!(c.is_ready(), "a version 1 daemon is fine (without SQL)");
         let mut c = connecting();
         c.on_bytes(&hello(1 << 20)).unwrap();
-        assert!(c.on_bytes(&hello(1 << 20)).is_err(), "secondo saluto");
+        assert!(c.on_bytes(&hello(1 << 20)).is_err(), "second greeting");
         let mut c = connecting();
         c.on_bytes(&hello(1 << 20)).unwrap();
         bad = encode_reply(99, 0, &[]);
@@ -832,8 +832,8 @@ mod tests {
         c.on_bytes(&encode_event(&ev)).unwrap();
         assert_eq!(c.take_completion(), Some(Completion { op: w, result: Ok(Outcome::Watch(7)) }));
         assert_eq!(c.take_event(), Some(ev));
-        // Una lettura partita e una non ancora partita, poi la connessione
-        // cade: la prima fallisce, la seconda aspetta il prossimo saluto.
+        // One read sent and one not sent yet, then the connection
+        // drops: the first fails, the second waits for the next greeting.
         let r = c.read_file("/tmp/a");
         c.link = LinkState::Connecting;
         let later = c.stat("/tmp/a");
@@ -850,8 +850,8 @@ mod tests {
         );
     }
 
-    /// SQL: parametri e righe andata e ritorno, errori di SQLite come
-    /// `FilesError::Sql`, database che non c'è come errno.
+    /// SQL: parameters and rows round trip, SQLite errors as
+    /// `FilesError::Sql`, a database that doesn't exist as errno.
     #[test]
     fn sql() {
         let mut d = Fake::new(1 << 20);
@@ -885,11 +885,11 @@ mod tests {
         );
         assert!(matches!(get(ro), Err(FilesError::Sql { code: 8, .. })));
         assert_eq!(get(missing), Err(FilesError::Errno(2)));
-        assert_eq!(d.files[b"/db".as_slice()], [2], "solo l'UPDATE riuscito");
+        assert_eq!(d.files[b"/db".as_slice()], [2], "only the successful UPDATE");
         assert_eq!(get(wrong).unwrap_err().to_string(), "SQLite 19: 1 righe cambiate, attese 2: annullato");
     }
 
-    /// Nomi non UTF-8: i byte arrivano e ripartono uguali.
+    /// Non-UTF-8 names: the bytes arrive and go back unchanged.
     #[test]
     fn nomi_non_utf8() {
         let mut d = Fake::new(1 << 20);
@@ -903,7 +903,7 @@ mod tests {
         let done = all(&mut c);
         assert_eq!(done[0].result, Ok(Outcome::Data { size: 1, data: b"x".to_vec() }));
         assert_eq!((done[0].op, done[1].op), (r, lossy));
-        assert_eq!(done[1].result, Err(FilesError::Errno(2)), "con U+FFFD non si riapre");
+        assert_eq!(done[1].result, Err(FilesError::Errno(2)), "with U+FFFD it can't be reopened");
         let ev = Event { wd: 1, mask: 0, cookie: 0, name: b"\xfe".to_vec() };
         c.on_bytes(&encode_event(&ev)).unwrap();
         assert_eq!(c.take_event(), Some(ev));

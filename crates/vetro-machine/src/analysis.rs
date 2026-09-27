@@ -1,7 +1,7 @@
-//! Tracciatori di analisi sopra gli agganci dell'introspezione (ADR 0027):
-//! il decoder Binder di M8 ([`BinderTracer`]) e il contenitore
-//! [`Tracers`] che ne ospita più d'uno (la macchina ha un solo
-//! tracciatore). Nulla scrive nel guest.
+//! Analysis tracers on top of the introspection hooks (ADR 0027):
+//! the M8 Binder decoder ([`BinderTracer`]) and the container
+//! [`Tracers`] that holds more than one (the machine has a single
+//! tracer). Nothing writes into the guest.
 
 use std::collections::BTreeMap;
 
@@ -9,9 +9,9 @@ use vetro_analysis::introspect::{BinderLog, Kernel, Linux, Party, Task};
 
 use crate::hooks::{Event, GuestView, Tracer};
 
-/// Il profilo del kernel da un file: `boot.img` di Android (kernel GKI
-/// decompresso, con kallsyms e BTF dentro) o `Image` (con `System.map` e
-/// BTF staccato facoltativi, come il kernel di prova).
+/// The kernel profile from a file: Android `boot.img` (GKI kernel
+/// decompressed, with kallsyms and BTF inside) or `Image` (with optional
+/// `System.map` and detached BTF, like the test kernel).
 pub fn kernel_profile(file: &[u8], system_map: Option<&str>, btf: Option<&[u8]>) -> Result<Kernel, String> {
     if file.starts_with(b"ANDROID!") {
         let b = crate::android::BootImage::parse(file).map_err(|e| e.to_string())?;
@@ -21,12 +21,12 @@ pub fn kernel_profile(file: &[u8], system_map: Option<&str>, btf: Option<&[u8]>)
     Kernel::load(Some(file), system_map, btf)
 }
 
-/// Più tracciatori insieme: gli eventi arrivano a tutti, nell'ordine.
+/// Several tracers together: events reach all of them, in order.
 #[derive(Default)]
 pub struct Tracers(pub Vec<Box<dyn Tracer>>);
 
 impl Tracers {
-    /// Il tracciatore di tipo `T`, se c'è.
+    /// The tracer of type `T`, if present.
     pub fn get<T: Tracer>(&self) -> Option<&T> {
         self.0.iter().find_map(|t| {
             let a: &dyn std::any::Any = t.as_ref();
@@ -50,8 +50,8 @@ impl Tracer for Tracers {
     }
 }
 
-/// Nomi dei processi per tgid: la riga di comando (per le app il
-/// pacchetto), letta una volta.
+/// Process names by tgid: the command line (for apps, the
+/// package), read once.
 #[derive(Default)]
 pub struct ProcessNames(BTreeMap<i32, String>);
 
@@ -71,15 +71,15 @@ impl ProcessNames {
             .map(|c| String::from_utf8_lossy(c.split(|&b| b == 0).next().unwrap_or(&[])).into_owned())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| t.comm.clone());
-        // Un figlio di zygote appena creato si chiama ancora come zygote:
-        // non si conserva finché non prende il nome dell'app.
+        // A freshly created zygote child is still named like zygote:
+        // it is not kept until it takes the app's name.
         if !name.starts_with("zygote") && name != "<pre-initialized>" && name != "usap64" {
             self.0.insert(t.tgid, name.clone());
         }
         name
     }
 
-    /// Il processo è uscito o ha fatto exec: il nome va riletto.
+    /// The process exited or did an exec: the name must be read again.
     pub fn forget(&mut self, tgid: i32) {
         self.0.remove(&tgid);
     }
@@ -94,15 +94,15 @@ impl ProcessNames {
     }
 }
 
-/// Decoder Binder (M8): ogni `ioctl(BINDER_WRITE_READ)` di EL0, con le
-/// transazioni inviate (all'ingresso) e ricevute (all'uscita) decodificate
-/// e accoppiate in [`BinderLog`] (mittente, destinatario, interfaccia,
-/// metodo, accessi sensibili). Le altre syscall costano un confronto.
+/// Binder decoder (M8): every EL0 `ioctl(BINDER_WRITE_READ)`, with the
+/// transactions sent (on entry) and received (on exit) decoded
+/// and paired in [`BinderLog`] (sender, recipient, interface,
+/// method, sensitive accesses). Other syscalls cost one comparison.
 pub struct BinderTracer {
     pub kernel: Kernel,
     pub log: BinderLog,
     pub names: ProcessNames,
-    /// Thread dentro una `ioctl` binder: chiave SP_EL1 -> (osservatore, arg).
+    /// Threads inside a binder `ioctl`: key SP_EL1 -> (observer, arg).
     pending: BTreeMap<u64, (Party, u64)>,
 }
 
@@ -122,7 +122,7 @@ impl Tracer for BinderTracer {
         use vetro_analysis::introspect::binder::BINDER_WRITE_READ;
         use vetro_analysis::introspect::strace::{binder_received, binder_sent};
         match ev {
-            // execve: il nome del processo cambia.
+            // execve: the process name changes.
             Event::SyscallEnter(e) if e.nr == 221 => {
                 let regs = g.cpu_regs();
                 let lx = Linux::new(g, &self.kernel, &regs);
@@ -155,9 +155,9 @@ impl Tracer for BinderTracer {
                     }
                     let before = self.log.calls.len();
                     self.log.observe(g.steps, &t, me.clone());
-                    // Chiamata non vista dal mittente (thread non
-                    // tracciato prima): il mittente dal pid del kernel
-                    // (0 per le oneway).
+                    // Call not seen from the sender (thread not
+                    // traced before): the sender from the kernel's pid
+                    // (0 for oneway calls).
                     if self.log.calls.len() > before
                         && t.sender_pid > 0
                         && let Some(s) = lx.find_pid(t.sender_pid)

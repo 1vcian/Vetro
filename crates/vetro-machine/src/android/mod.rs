@@ -1,34 +1,34 @@
-//! Immagini di avvio Android (M5): `boot.img` (header v0–v4),
-//! `vendor_boot.img` (v3 e v4, con la tabella dei ramdisk e la sezione
-//! bootconfig) e `init_boot.img`, trasformate in quello che il caricatore di
-//! Linux ([`crate::boot`], [`crate::Machine::load_linux`]) si aspetta: un
-//! `Image` non compresso, un initrd e una riga di comando. È il lavoro del
-//! bootloader (u-boot di Cuttlefish, ABL): specifica in
-//! `docs/specs/android-boot.md`, decisioni in ADR 0018.
+//! Android boot images (M5): `boot.img` (header v0–v4),
+//! `vendor_boot.img` (v3 and v4, with the ramdisk table and the
+//! bootconfig section) and `init_boot.img`, turned into what the Linux
+//! loader ([`crate::boot`], [`crate::Machine::load_linux`]) expects: an
+//! uncompressed `Image`, an initrd and a command line. It is the bootloader's
+//! job (Cuttlefish's u-boot, ABL): specification in
+//! `docs/specs/android-boot.md`, decisions in ADR 0018.
 //!
-//! Modulo puro: niente file, niente memoria del guest. Formati di
-//! riferimento: `system/tools/mkbootimg` di AOSP (`bootimg.h`,
-//! `mkbootimg.py`, copia in `tools/mkbootimg/`) e source.android.com
+//! Pure module: no files, no guest memory. Reference
+//! formats: AOSP's `system/tools/mkbootimg` (`bootimg.h`,
+//! `mkbootimg.py`, copy in `tools/mkbootimg/`) and source.android.com
 //! (Boot image header, Vendor boot partitions, Implement bootconfig).
 //!
-//! Il bootloader di Vetro:
-//! - decomprime il kernel se è gzip o LZ4 ([`decompress`]);
-//! - mette in fila i ramdisk del vendor (v4: quelli della tabella, in ordine,
-//!   senza quelli di tipo recovery salvo avvio in recovery) e subito dopo,
-//!   senza allineamento, il ramdisk generico (da `init_boot` se c'è,
-//!   altrimenti da `boot`): il kernel apre gli archivi concatenati uno dopo
-//!   l'altro e il generico si sovrappone al vendor;
-//! - con `vendor_boot` v4 sposta i parametri `androidboot.*` del bootloader
-//!   ([`BootOptions::params`]) nel bootconfig, dopo la sezione bootconfig
-//!   del vendor, e chiude l'initrd col blocco bootconfig ([`bootconfig`]);
-//!   aggiunge `bootconfig` alla riga di comando se manca;
-//! - riga di comando: `boot`, poi `vendor_boot`, poi i parametri del
-//!   bootloader rimasti.
+//! Vetro's bootloader:
+//! - decompresses the kernel if it is gzip or LZ4 ([`decompress`]);
+//! - lines up the vendor ramdisks (v4: those of the table, in order,
+//!   without the recovery-type ones unless booting into recovery) and right after,
+//!   with no alignment, the generic ramdisk (from `init_boot` if present,
+//!   otherwise from `boot`): the kernel opens the concatenated archives one after
+//!   the other and the generic one is overlaid on the vendor one;
+//! - with `vendor_boot` v4 moves the bootloader's `androidboot.*` parameters
+//!   ([`BootOptions::params`]) into the bootconfig, after the vendor's bootconfig
+//!   section, and closes the initrd with the bootconfig block ([`bootconfig`]);
+//!   adds `bootconfig` to the command line if missing;
+//! - command line: `boot`, then `vendor_boot`, then the remaining bootloader
+//!   parameters.
 //!
-//! Il resto delle immagini non serve alla macchina virt e si ignora: gli
-//! indirizzi di caricamento (il layout è quello di QEMU, [`crate::boot`]),
-//! il DTB del vendor e di `boot` v2 (Vetro genera il suo), `second`,
-//! `recovery_dtbo` e la firma GKI.
+//! The rest of the images is not needed by the virt machine and is ignored: the
+//! load addresses (the layout is QEMU's, [`crate::boot`]),
+//! the DTB of the vendor and of `boot` v2 (Vetro generates its own), `second`,
+//! `recovery_dtbo` and the GKI signature.
 
 pub mod bootconfig;
 pub mod decompress;
@@ -39,7 +39,7 @@ use std::fmt;
 
 pub const BOOT_MAGIC: &[u8; 8] = b"ANDROID!";
 pub const VENDOR_BOOT_MAGIC: &[u8; 8] = b"VNDRBOOT";
-/// Pagina fissa di `boot.img` e `init_boot.img` dalla versione 3.
+/// Fixed page of `boot.img` and `init_boot.img` from version 3.
 pub const BOOT_V3_PAGE_SIZE: u32 = 4096;
 
 const BOOT_V0_HEADER: usize = 1632;
@@ -49,10 +49,10 @@ const BOOT_V3_HEADER: usize = 1580;
 const BOOT_V4_HEADER: usize = 1584;
 const VENDOR_V3_HEADER: usize = 2112;
 const VENDOR_V4_HEADER: usize = 2128;
-/// Dimensione minima di una voce della tabella dei ramdisk (v4).
+/// Minimum size of an entry of the ramdisk table (v4).
 const RAMDISK_ENTRY_V4: usize = 108;
 
-/// Quale immagine: per i messaggi d'errore.
+/// Which image: for error messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Which {
     Boot,
@@ -72,41 +72,41 @@ impl fmt::Display for Which {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AndroidError {
-    /// Più corta dell'header.
+    /// Shorter than the header.
     Truncated(Which),
     BadMagic(Which),
     UnsupportedVersion(Which, u32),
-    /// Pagina non potenza di due fra 2 e 16 KiB (i valori di `mkbootimg`).
+    /// Page not a power of two between 2 and 16 KiB (the `mkbootimg` values).
     BadPageSize(Which, u32),
-    /// Una sezione dichiarata esce dall'immagine.
+    /// A declared section goes past the end of the image.
     OutOfBounds(Which, &'static str),
-    /// Tabella dei ramdisk del vendor incoerente.
+    /// Inconsistent vendor ramdisk table.
     BadRamdiskTable(&'static str),
-    /// `init_boot.img` con un kernel o con header prima della v4.
+    /// `init_boot.img` with a kernel or with a header older than v4.
     BadInitBoot(&'static str),
     /// `vendor_boot` insieme a un `boot.img` v0–v2, o `init_boot` senza v4.
     Mismatch(&'static str),
-    /// `boot.img` senza kernel.
+    /// `boot.img` without a kernel.
     NoKernel,
-    /// Kernel compresso in un formato che non si sa aprire, o dati rotti.
+    /// Kernel compressed in a format we can't open, or broken data.
     Kernel(Format, DecompressError),
     Bootconfig(String),
-    /// Il kernel non si carica (header dell'`Image`, RAM).
+    /// The kernel doesn't load (`Image` header, RAM).
     Load(BootError),
 }
 
 impl fmt::Display for AndroidError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AndroidError::Truncated(w) => write!(f, "{w}: più corta dell'header"),
+            AndroidError::Truncated(w) => write!(f, "{w}: shorter than the header"),
             AndroidError::BadMagic(w) => write!(f, "{w}: magic sbagliato"),
-            AndroidError::UnsupportedVersion(w, v) => write!(f, "{w}: header versione {v} non supportata"),
-            AndroidError::BadPageSize(w, p) => write!(f, "{w}: dimensione di pagina {p} non valida"),
-            AndroidError::OutOfBounds(w, s) => write!(f, "{w}: la sezione {s} esce dall'immagine"),
-            AndroidError::BadRamdiskTable(m) => write!(f, "vendor_boot.img: tabella dei ramdisk: {m}"),
+            AndroidError::UnsupportedVersion(w, v) => write!(f, "{w}: header version {v} not supported"),
+            AndroidError::BadPageSize(w, p) => write!(f, "{w}: invalid page size {p}"),
+            AndroidError::OutOfBounds(w, s) => write!(f, "{w}: section {s} goes past the end of the image"),
+            AndroidError::BadRamdiskTable(m) => write!(f, "vendor_boot.img: ramdisk table: {m}"),
             AndroidError::BadInitBoot(m) => write!(f, "init_boot.img: {m}"),
             AndroidError::Mismatch(m) => write!(f, "immagini incompatibili: {m}"),
-            AndroidError::NoKernel => write!(f, "boot.img: nessun kernel"),
+            AndroidError::NoKernel => write!(f, "boot.img: no kernel"),
             AndroidError::Kernel(fmt_, e) => write!(f, "kernel ({fmt_}): {e}"),
             AndroidError::Bootconfig(m) => write!(f, "bootconfig: {m}"),
             AndroidError::Load(e) => write!(f, "kernel: {e}"),
@@ -130,7 +130,7 @@ fn le64(b: &[u8], off: usize) -> u64 {
     u64::from_le_bytes(b[off..off + 8].try_into().unwrap())
 }
 
-/// Stringa terminata da NUL (o dal campo pieno).
+/// NUL-terminated string (or terminated by the full field).
 fn cstr(b: &[u8]) -> String {
     let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
     String::from_utf8_lossy(&b[..end]).into_owned()
@@ -140,7 +140,7 @@ fn round_up(n: u64, page: u64) -> u64 {
     n.div_ceil(page) * page
 }
 
-/// Sezione `[off, off + len)` dell'immagine; `off` avanza alla pagina dopo.
+/// Section `[off, off + len)` of the image; `off` advances to the page after.
 fn take<'a>(
     img: &'a [u8],
     off: &mut u64,
@@ -166,14 +166,14 @@ fn check_page(w: Which, page: u32) -> Result<(), AndroidError> {
     }
 }
 
-/// Versione di Android e livello delle patch di sicurezza (campo
-/// `os_version`: `a<<25 | b<<18 | c<<11 | (anno-2000)<<4 | mese`).
+/// Android version and security patch level (field
+/// `os_version`: `a<<25 | b<<18 | c<<11 | (year-2000)<<4 | month`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct OsVersion {
     pub major: u8,
     pub minor: u8,
     pub patch: u8,
-    /// 0 se non indicato.
+    /// 0 if not specified.
     pub year: u16,
     pub month: u8,
 }
@@ -196,7 +196,7 @@ impl OsVersion {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BootImage<'a> {
     pub header_version: u32,
-    /// 4096 dalla v3; dall'header prima.
+    /// 4096 from v3; from the header before that.
     pub page_size: u32,
     pub kernel: &'a [u8],
     pub ramdisk: &'a [u8],
@@ -206,13 +206,13 @@ pub struct BootImage<'a> {
     pub recovery_dtbo: &'a [u8],
     /// v2 (ignorato: Vetro genera il suo DTB).
     pub dtb: &'a [u8],
-    /// Riga di comando; v0–v2: `cmdline` seguita da `extra_cmdline`, senza
-    /// separatore (mkbootimg spezza una riga lunga a 511 byte).
+    /// Command line; v0–v2: `cmdline` followed by `extra_cmdline`, with no
+    /// separator (mkbootimg splits a long line at 511 bytes).
     pub cmdline: String,
     /// Nome del prodotto (v0–v2).
     pub name: String,
     pub os_version: OsVersion,
-    /// Firma GKI della v4 (ignorata).
+    /// v4 GKI signature (ignored).
     pub signature: &'a [u8],
 }
 
@@ -221,11 +221,11 @@ impl<'a> BootImage<'a> {
         Self::parse_as(img, Which::Boot)
     }
 
-    /// `init_boot.img`: header v4 senza kernel, solo il ramdisk generico.
+    /// `init_boot.img`: v4 header without a kernel, only the generic ramdisk.
     pub fn parse_init_boot(img: &'a [u8]) -> Result<Self, AndroidError> {
         let b = Self::parse_as(img, Which::InitBoot)?;
         if b.header_version < 4 {
-            return Err(AndroidError::BadInitBoot("header prima della versione 4"));
+            return Err(AndroidError::BadInitBoot("header older than version 4"));
         }
         if !b.kernel.is_empty() {
             return Err(AndroidError::BadInitBoot("contiene un kernel"));
@@ -316,15 +316,15 @@ impl<'a> BootImage<'a> {
     }
 }
 
-/// Tipo di un ramdisk del vendor (`VENDOR_RAMDISK_TYPE_*`).
+/// Type of a vendor ramdisk (`VENDOR_RAMDISK_TYPE_*`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RamdiskType {
     None,
-    /// Da caricare sempre.
+    /// Always loaded.
     Platform,
-    /// Solo per l'avvio in recovery.
+    /// Only for booting into recovery.
     Recovery,
-    /// Moduli del kernel.
+    /// Kernel modules.
     Dlkm,
     Other(u32),
 }
@@ -341,7 +341,7 @@ impl RamdiskType {
     }
 }
 
-/// Un ramdisk della tabella del vendor (v3: uno solo, tutta la sezione).
+/// A ramdisk of the vendor table (v3: just one, the whole section).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VendorRamdisk<'a> {
     pub kind: RamdiskType,
@@ -356,12 +356,12 @@ pub struct VendorBoot<'a> {
     pub header_version: u32,
     pub page_size: u32,
     pub cmdline: String,
-    /// Nome del prodotto.
+    /// Product name.
     pub name: String,
-    /// Tutta la sezione dei ramdisk.
+    /// The whole ramdisk section.
     pub ramdisk_section: &'a [u8],
     pub ramdisks: Vec<VendorRamdisk<'a>>,
-    /// Ignorato: Vetro genera il suo DTB.
+    /// Ignored: Vetro generates its own DTB.
     pub dtb: &'a [u8],
     /// Sezione bootconfig (v4), testo `chiave=valore` una riga per parametro.
     pub bootconfig: &'a [u8],
@@ -401,20 +401,20 @@ impl<'a> VendorBoot<'a> {
             });
         } else {
             let (table_size, num, entry_size) = (le32(img, 2112), le32(img, 2116), le32(img, 2120) as usize);
-            let table = take(img, &mut off, table_size, page, w, "tabella dei ramdisk")?;
+            let table = take(img, &mut off, table_size, page, w, "ramdisk table")?;
             bootconfig = take(img, &mut off, le32(img, 2124), page, w, "bootconfig")?;
             if num > 0 && entry_size < RAMDISK_ENTRY_V4 {
-                return Err(AndroidError::BadRamdiskTable("voci più corte di 108 byte"));
+                return Err(AndroidError::BadRamdiskTable("entries shorter than 108 bytes"));
             }
             if (num as usize).checked_mul(entry_size).is_none_or(|n| n > table.len()) {
-                return Err(AndroidError::BadRamdiskTable("più voci di quante ne stiano nella tabella"));
+                return Err(AndroidError::BadRamdiskTable("more entries than fit in the table"));
             }
             for e in table.chunks_exact(entry_size.max(1)).take(num as usize) {
                 let (size, at) = (le32(e, 0) as usize, le32(e, 4) as usize);
                 let data = at
                     .checked_add(size)
                     .and_then(|end| ramdisk_section.get(at..end))
-                    .ok_or(AndroidError::BadRamdiskTable("ramdisk fuori dalla sezione"))?;
+                    .ok_or(AndroidError::BadRamdiskTable("ramdisk outside the section"))?;
                 let mut board_id = [0u32; 16];
                 for (i, b) in board_id.iter_mut().enumerate() {
                     *b = le32(e, 44 + 4 * i);
@@ -440,35 +440,35 @@ impl<'a> VendorBoot<'a> {
     }
 }
 
-/// Scelte del bootloader.
+/// Bootloader choices.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BootOptions {
-    /// Parametri aggiunti dal bootloader (sintassi della riga di comando):
-    /// gli `androidboot.*` vanno nel bootconfig se `vendor_boot` è v4, gli
-    /// altri in coda alla riga di comando.
+    /// Parameters added by the bootloader (command-line syntax):
+    /// the `androidboot.*` ones go into the bootconfig if `vendor_boot` is v4, the
+    /// others at the end of the command line.
     pub params: String,
-    /// Avvio in recovery: carica anche i ramdisk del vendor di tipo recovery.
+    /// Boot into recovery: also loads the recovery-type vendor ramdisks.
     pub recovery: bool,
 }
 
-/// Quello che il bootloader passa al kernel.
+/// What the bootloader passes to the kernel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AndroidBoot {
-    /// `Image` arm64 non compresso.
+    /// Uncompressed arm64 `Image`.
     pub kernel: Vec<u8>,
-    /// Formato del kernel nel `boot.img`.
+    /// Format of the kernel in the `boot.img`.
     pub kernel_format: Format,
-    /// Ramdisk concatenati e, se c'è, il blocco bootconfig in coda.
+    /// Concatenated ramdisks and, if present, the bootconfig block at the end.
     pub initrd: Vec<u8>,
     pub cmdline: String,
-    /// Testo del bootconfig (senza NUL e trailer), vuoto se non c'è.
+    /// Bootconfig text (without NULs and trailer), empty if there is none.
     pub bootconfig: String,
-    /// Descrizione dei ramdisk caricati, in ordine (per i messaggi).
+    /// Description of the loaded ramdisks, in order (for messages).
     pub ramdisks: Vec<String>,
 }
 
 impl AndroidBoot {
-    /// Legge le immagini e le combina ([`assemble`]).
+    /// Reads the images and combines them ([`assemble`]).
     pub fn from_images(
         boot: &[u8],
         vendor_boot: Option<&[u8]>,
@@ -481,7 +481,7 @@ impl AndroidBoot {
         assemble(&boot, vendor.as_ref(), init.as_ref(), opts)
     }
 
-    /// L'initrd per il caricatore, `None` se vuoto.
+    /// The initrd for the loader, `None` if empty.
     pub fn initrd(&self) -> Option<&[u8]> {
         (!self.initrd.is_empty()).then_some(&self.initrd)
     }
@@ -499,7 +499,7 @@ fn ramdisk_label(r: &VendorRamdisk) -> String {
     format!("{name} ({kind}, {} byte)", r.data.len())
 }
 
-/// Combina le immagini come il bootloader (vedi la documentazione del modulo).
+/// Combines the images like the bootloader (see the module documentation).
 pub fn assemble(
     boot: &BootImage,
     vendor: Option<&VendorBoot>,
@@ -519,7 +519,7 @@ pub fn assemble(
     let kernel =
         decompress::decompress(boot.kernel).map_err(|e| AndroidError::Kernel(format, e))?.into_owned();
 
-    // Ramdisk: vendor in ordine di tabella, poi il generico, senza spazi.
+    // Ramdisks: vendor in table order, then the generic one, with no gaps.
     let mut initrd = Vec::new();
     let mut ramdisks = Vec::new();
     for r in vendor.iter().flat_map(|v| &v.ramdisks) {
@@ -538,7 +538,7 @@ pub fn assemble(
         ramdisks.push(format!("generico da {from} ({} byte)", generic.len()));
     }
 
-    // Parametri del bootloader: androidboot.* nel bootconfig se c'è.
+    // Bootloader parameters: androidboot.* into the bootconfig if there is one.
     let has_bootconfig = vendor.is_some_and(|v| v.header_version >= 4);
     let mut extra = Vec::new();
     let mut params: Vec<(&str, String)> = Vec::new();

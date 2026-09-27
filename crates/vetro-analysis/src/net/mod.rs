@@ -1,22 +1,22 @@
-//! Analisi di rete (M7, ADR 0016): dai frame Ethernet catturati al confine
-//! di virtio-net fino alle richieste HTTP decodificate.
+//! Network analysis (M7, ADR 0016): from the Ethernet frames captured at the
+//! virtio-net boundary up to the decoded HTTP requests.
 //!
-//! - [`capture`]: frame con marca temporale in tempo virtuale del guest;
-//! - [`pcapng`]: esportazione pcapng (e rilettura, per i test);
+//! - [`capture`]: frames timestamped in guest virtual time;
+//! - [`pcapng`]: pcapng export (and reading back, for the tests);
 //! - [`packet`]: Ethernet, IPv4, TCP, UDP;
-//! - [`flow`]: flussi TCP ricostruiti (sequenze, ritrasmissioni, fuori
-//!   ordine) e flussi UDP;
-//! - [`dns`]: messaggi DNS (le domande al sinkhole e le sue risposte);
-//! - [`http`]: HTTP/1.1, richieste e risposte, `chunked`, `gzip`/`deflate`
-//!   (con [`inflate`]);
-//! - [`body`]: decodificatori del corpo (JSON, form, multipart, protobuf
-//!   senza schema);
-//! - [`inspector`]: il modello dell'ispettore di rete (richieste con
-//!   timing) e l'esportazione [`har`] 1.2.
-//! - [`view`]: lista e dettaglio dell'ispettore in JSON per l'app web.
+//! - [`flow`]: reassembled TCP streams (sequences, retransmissions, out of
+//!   order) and UDP flows;
+//! - [`dns`]: DNS messages (the queries to the sinkhole and its answers);
+//! - [`http`]: HTTP/1.1, requests and responses, `chunked`, `gzip`/`deflate`
+//!   (with [`inflate`]);
+//! - [`body`]: body decoders (JSON, form, multipart, schema-less
+//!   protobuf);
+//! - [`inspector`]: the network inspector model (requests with
+//!   timing) and the [`har`] 1.2 export.
+//! - [`view`]: inspector list and detail as JSON for the web app.
 //!
-//! Tutto è deterministico (niente orologio dell'host, tabelle ordinate) e
-//! senza dipendenze: compila in `wasm32-unknown-unknown`.
+//! Everything is deterministic (no host clock, sorted tables) and
+//! dependency-free: it compiles for `wasm32-unknown-unknown`.
 
 pub mod body;
 pub mod capture;

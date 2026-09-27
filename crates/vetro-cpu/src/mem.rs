@@ -1,4 +1,4 @@
-//! Interfaccia verso la memoria del guest e spazio d'indirizzamento utente.
+//! Interface to guest memory and user address space.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
@@ -20,33 +20,33 @@ pub struct MemFault {
     pub access: Access,
 }
 
-/// Memoria vista dalla CPU (indirizzi virtuali, little-endian).
+/// Memory as seen by the CPU (virtual addresses, little-endian).
 ///
-/// I metodi con un'implementazione di default servono alla modalità
-/// sistema; in modalità utente coincidono con `read` e `write`.
+/// The methods with a default implementation serve system
+/// mode; in user mode they coincide with `read` and `write`.
 pub trait Memory {
     fn read(&mut self, addr: u64, buf: &mut [u8]) -> Result<(), MemFault>;
     fn write(&mut self, addr: u64, data: &[u8]) -> Result<(), MemFault>;
     fn fetch(&mut self, addr: u64) -> Result<u32, MemFault>;
 
-    /// Lettura di LDTR: a EL1 i permessi sono quelli di EL0.
+    /// LDTR read: at EL1 the permissions are those of EL0.
     fn read_unpriv(&mut self, addr: u64, buf: &mut [u8]) -> Result<(), MemFault> {
         self.read(addr, buf)
     }
 
-    /// Scrittura di STTR: a EL1 i permessi sono quelli di EL0.
+    /// STTR write: at EL1 the permissions are those of EL0.
     fn write_unpriv(&mut self, addr: u64, data: &[u8]) -> Result<(), MemFault> {
         self.write(addr, data)
     }
 
-    /// DC ZVA: azzera il blocco di 64 byte allineato che parte da `addr`.
-    /// Su memoria Device dà un fault di allineamento (modalità sistema).
+    /// DC ZVA: zeroes the aligned 64-byte block that starts at `addr`.
+    /// On Device memory it gives an alignment fault (system mode).
     fn zero_block(&mut self, addr: u64) -> Result<(), MemFault> {
         self.write(addr, &[0u8; 64])
     }
 }
 
-/// Permessi di una regione.
+/// Permissions of a region.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct Perm {
     pub read: bool,
@@ -61,7 +61,7 @@ impl Perm {
     pub const RX: Perm = Perm { read: true, write: false, exec: true };
     pub const RWX: Perm = Perm { read: true, write: true, exec: true };
 
-    /// Dai bit PROT_READ (1), PROT_WRITE (2), PROT_EXEC (4).
+    /// From the bits PROT_READ (1), PROT_WRITE (2), PROT_EXEC (4).
     pub fn from_prot(prot: u32) -> Perm {
         Perm { read: prot & 1 != 0, write: prot & 2 != 0, exec: prot & 4 != 0 }
     }
@@ -77,13 +77,13 @@ impl Perm {
 
 const PAGE: usize = 4096;
 
-/// Memoria dietro una regione.
+/// Memory behind a region.
 #[derive(Clone)]
 enum Backing {
-    /// Privata e pigra: solo le pagine scritte esistono, le altre valgono
-    /// zero. Un fork copia solo le pagine presenti.
+    /// Private and lazy: only written pages exist, the others read as
+    /// zero. A fork copies only the present pages.
     Pages { pages: BTreeMap<usize, Box<[u8; PAGE]>>, base: usize },
-    /// Condivisa (MAP_SHARED): resta la stessa dopo un fork.
+    /// Shared (MAP_SHARED): stays the same after a fork.
     Shared(Rc<RefCell<Vec<u8>>>, usize),
 }
 
@@ -92,19 +92,19 @@ struct Region {
     backing: Backing,
     len: usize,
     perm: Perm,
-    /// Falso per le MAP_SHARED di file aperti in sola lettura: mprotect
-    /// non può aggiungere la scrittura (VM_MAYWRITE di Linux).
+    /// False for MAP_SHARED of files opened read-only: mprotect
+    /// cannot add write (Linux's VM_MAYWRITE).
     may_write: bool,
-    /// MAP_GROWSDOWN: un accesso appena sotto la estende (VM_GROWSDOWN).
+    /// MAP_GROWSDOWN: an access just below extends it (VM_GROWSDOWN).
     grows_down: bool,
-    /// Tutte le pagine già presenti (contenuto da un file, o MAP_POPULATE):
-    /// solo per /proc/<pid>/pagemap.
+    /// All pages already present (content from a file, or MAP_POPULATE):
+    /// only for /proc/<pid>/pagemap.
     populated: bool,
 }
 
 impl Region {
-    /// Regione privata con contenuto iniziale (le pagine a zero non si
-    /// allocano).
+    /// Private region with initial content (zero pages are not
+    /// allocated).
     fn own(data: Vec<u8>, perm: Perm) -> Region {
         let mut pages = BTreeMap::new();
         for (i, chunk) in data.chunks(PAGE).enumerate() {
@@ -124,7 +124,7 @@ impl Region {
         }
     }
 
-    /// Regione privata tutta a zero, senza allocare nulla.
+    /// All-zero private region, without allocating anything.
     fn zeroed(len: usize, perm: Perm) -> Region {
         Region {
             len,
@@ -185,8 +185,8 @@ impl Region {
         }
     }
 
-    /// Vero se il byte `off` della regione sta in una pagina che inizia oltre
-    /// la fine del buffer condiviso.
+    /// True if byte `off` of the region is in a page that starts beyond
+    /// the end of the shared buffer.
     fn past_end(&self, off: u64) -> bool {
         match &self.backing {
             Backing::Shared(buf, base) => {
@@ -197,11 +197,11 @@ impl Region {
         }
     }
 
-    /// Divide la regione a `k` byte dall'inizio; restituisce la coda.
+    /// Splits the region `k` bytes from the start; returns the tail.
     fn split_off(&mut self, k: usize) -> Region {
         let tail = match &mut self.backing {
             Backing::Pages { pages, base } => {
-                // La coda ha le stesse pagine logiche, spostata di k byte.
+                // The tail has the same logical pages, shifted by k bytes.
                 let abs = *base + k;
                 let first = abs / PAGE;
                 let tail_pages = pages.split_off(&first);
@@ -227,8 +227,8 @@ impl Region {
     }
 }
 
-/// Hash per numeri di pagina (moltiplicazione di Fibonacci): le pagine
-/// sorvegliate si controllano a ogni scrittura, SipHash costerebbe troppo.
+/// Hash for page numbers (Fibonacci multiplication): watched pages
+/// are checked on every write, SipHash would cost too much.
 #[derive(Default)]
 struct PageHasher(u64);
 
@@ -248,29 +248,29 @@ impl Hasher for PageHasher {
 
 type PageSet = HashSet<u64, BuildHasherDefault<PageHasher>>;
 
-/// Identità degli spazi d'indirizzamento (vedi [`UserMemory::space_id`]).
+/// Identity of address spaces (see [`UserMemory::space_id`]).
 static NEXT_SPACE: AtomicU64 = AtomicU64::new(1);
 
-/// Sorveglianza delle pagine di codice per il JIT (ADR 0012,
-/// "Invalidazione"). Il JIT segna con [`UserMemory::watch_code`] le pagine
-/// da cui ha tradotto dei blocchi; ogni cambiamento del contenuto o della
-/// mappatura di una di esse (scrittura del guest o del kernel emulato, mmap,
-/// munmap, mprotect, mremap...) la toglie dalla sorveglianza e la mette tra
-/// le pagine sporche, che il JIT raccoglie con
-/// [`UserMemory::take_code_dirty`] e invalida.
+/// Watching of code pages for the JIT (ADR 0012,
+/// "Invalidation"). The JIT marks with [`UserMemory::watch_code`] the pages
+/// it has translated blocks from; every change to the content or the
+/// mapping of one of them (write by the guest or by the emulated kernel, mmap,
+/// munmap, mprotect, mremap...) removes it from watching and puts it among
+/// the dirty pages, which the JIT collects with
+/// [`UserMemory::take_code_dirty`] and invalidates.
 #[derive(Default)]
 struct CodeWatch {
     pages: PageSet,
     dirty: Vec<u64>,
 }
 
-/// Spazio d'indirizzamento di un processo in user mode: regioni disgiunte
-/// con permessi, che si possono sovrascrivere, togliere e riproteggere a
-/// pezzi (mmap MAP_FIXED, munmap, mprotect). È l'implementazione di
-/// [`Memory`] per il livello Linux user mode; da M3 la traduzione la fa la MMU.
+/// Address space of a user mode process: disjoint regions
+/// with permissions, which can be overwritten, removed and re-protected in
+/// pieces (mmap MAP_FIXED, munmap, mprotect). It is the implementation of
+/// [`Memory`] for the Linux user mode level; from M3 the MMU does the translation.
 pub struct UserMemory {
     regions: BTreeMap<u64, Region>,
-    /// Identità unica di questo spazio: una copia (fork) ne ha un'altra.
+    /// Unique identity of this space: a copy (fork) has another one.
     space: u64,
     watch: CodeWatch,
 }
@@ -285,8 +285,8 @@ impl Default for UserMemory {
     }
 }
 
-/// La copia è un altro spazio (fork): nuova identità e nessuna pagina
-/// sorvegliata, perché i blocchi tradotti del JIT sono per spazio.
+/// The copy is another space (fork): new identity and no watched
+/// pages, because the JIT's translated blocks are per space.
 impl Clone for UserMemory {
     fn clone(&self) -> Self {
         UserMemory {
@@ -317,34 +317,34 @@ impl UserMemory {
         Self::default()
     }
 
-    /// Identità dello spazio d'indirizzamento, unica nel processo host (una
-    /// copia ne riceve una nuova). Chiave della cache dei blocchi del JIT.
+    /// Identity of the address space, unique in the host process (a
+    /// copy receives a new one). Key of the JIT's block cache.
     pub fn space_id(&self) -> u64 {
         self.space
     }
 
-    /// Sorveglia la pagina `page` (indirizzo >> 12): il prossimo
-    /// cambiamento del suo contenuto o della sua mappatura la segna sporca.
+    /// Watches page `page` (address >> 12): the next
+    /// change to its content or its mapping marks it dirty.
     pub fn watch_code(&mut self, page: u64) {
         self.watch.pages.insert(page);
     }
 
-    /// Vero se ci sono pagine sorvegliate diventate sporche.
+    /// True if there are watched pages that became dirty.
     #[inline]
     pub fn code_dirty(&self) -> bool {
         !self.watch.dirty.is_empty()
     }
 
-    /// Pagine sorvegliate cambiate dall'ultima chiamata (e non più
-    /// sorvegliate).
+    /// Watched pages changed since the last call (and no longer
+    /// watched).
     pub fn take_code_dirty(&mut self) -> Vec<u64> {
         std::mem::take(&mut self.watch.dirty)
     }
 
-    /// Vero se il codice a `addr` può stare in una cache di blocchi
-    /// tradotti: solo memoria privata. Le mappature condivise (MAP_SHARED)
-    /// cambiano anche da altri processi o dai file, fuori dalla vista di
-    /// questo spazio.
+    /// True if the code at `addr` can live in a cache of translated
+    /// blocks: private memory only. Shared mappings (MAP_SHARED)
+    /// change also from other processes or from files, outside the view of
+    /// this space.
     pub fn is_private(&self, addr: u64) -> bool {
         match self.find(addr) {
             Some((b, _)) => matches!(self.regions[&b].backing, Backing::Pages { .. }),
@@ -352,7 +352,7 @@ impl UserMemory {
         }
     }
 
-    /// Segna sporche le pagine sorvegliate che toccano `[start, end)`.
+    /// Marks dirty the watched pages that touch `[start, end)`.
     fn touch(&mut self, start: u64, end: u64) {
         if self.watch.pages.is_empty() || start >= end {
             return;
@@ -374,7 +374,7 @@ impl UserMemory {
         }
     }
 
-    /// Come [`touch`](Self::touch) per una scrittura di `len` byte a `addr`.
+    /// Like [`touch`](Self::touch) for a write of `len` bytes at `addr`.
     #[inline]
     fn touch_write(&mut self, addr: u64, len: usize) {
         if !self.watch.pages.is_empty() {
@@ -389,7 +389,7 @@ impl UserMemory {
         false
     }
 
-    /// Mappa `[base, base+data.len())`, che non deve sovrapporsi ad altro.
+    /// Maps `[base, base+data.len())`, which must not overlap anything else.
     pub fn map(&mut self, base: u64, data: Vec<u8>, perm: Perm) -> Result<(), Overlap> {
         let end = base.checked_add(data.len() as u64).ok_or(Overlap { base })?;
         if data.is_empty() || self.overlaps(base, end) {
@@ -400,7 +400,7 @@ impl UserMemory {
         Ok(())
     }
 
-    /// Come [`map`](Self::map) ma sostituisce ciò che c'era (MAP_FIXED).
+    /// Like [`map`](Self::map) but replaces what was there (MAP_FIXED).
     pub fn map_fixed(&mut self, base: u64, data: Vec<u8>, perm: Perm) {
         if data.is_empty() {
             return;
@@ -409,7 +409,7 @@ impl UserMemory {
         self.regions.insert(base, Region::own(data, perm));
     }
 
-    /// Mappa `len` byte a zero senza allocare (mmap anonima privata).
+    /// Maps `len` zero bytes without allocating (private anonymous mmap).
     pub fn map_zeroed(&mut self, base: u64, len: usize, perm: Perm) {
         if len == 0 {
             return;
@@ -418,9 +418,9 @@ impl UserMemory {
         self.regions.insert(base, Region::zeroed(len, perm));
     }
 
-    /// Mappa `len` byte del buffer condiviso `buf` da `off` in poi a `base`,
-    /// sostituendo ciò che c'era (MAP_SHARED). Con `may_write` falso la
-    /// regione non potrà mai diventare scrivibile.
+    /// Maps `len` bytes of the shared buffer `buf` from `off` onwards at `base`,
+    /// replacing what was there (MAP_SHARED). With `may_write` false the
+    /// region can never become writable.
     pub fn map_shared(
         &mut self,
         base: u64,
@@ -447,14 +447,14 @@ impl UserMemory {
         );
     }
 
-    /// Vero se nessuna regione in `[start, end)` vieta la scrittura.
+    /// True if no region in `[start, end)` forbids writing.
     pub fn may_write(&self, start: u64, end: u64) -> bool {
         let first = self.regions.range(..=start).next_back().map_or(start, |(&b, _)| b);
         self.regions.range(first..end).all(|(&b, r)| b + r.len as u64 <= start || r.may_write)
     }
 
-    /// Sposta le regioni di `[old, old+len)` a `dst` con il loro contenuto e
-    /// la loro memoria (anche condivisa), sostituendo ciò che c'era (mremap).
+    /// Moves the regions of `[old, old+len)` to `dst` with their content and
+    /// their memory (shared too), replacing what was there (mremap).
     pub fn remap(&mut self, old: u64, len: u64, dst: u64) {
         self.touch(old, old.saturating_add(len));
         self.touch(dst, dst.saturating_add(len));
@@ -469,17 +469,17 @@ impl UserMemory {
         }
     }
 
-    /// Segna come MAP_GROWSDOWN la regione che inizia a `base`.
+    /// Marks as MAP_GROWSDOWN the region that starts at `base`.
     pub fn set_grows_down(&mut self, base: u64) {
         if let Some(r) = self.regions.get_mut(&base) {
             r.grows_down = true;
         }
     }
 
-    /// Fault a `addr` non mappato: se appena sopra c'è una regione
-    /// MAP_GROWSDOWN la estende fino alla pagina di `addr`, purché resti
-    /// almeno `gap` byte dalla mappatura precedente (stack_guard_gap).
-    /// Vero se l'ha estesa.
+    /// Fault at unmapped `addr`: if just above there is a
+    /// MAP_GROWSDOWN region it extends it down to the page of `addr`, as long as at least
+    /// `gap` bytes remain from the previous mapping (stack_guard_gap).
+    /// True if it extended it.
     pub fn grow_down(&mut self, addr: u64, gap: u64) -> bool {
         let page = addr & !(PAGE as u64 - 1);
         let Some((&b, r)) = self.regions.range(page + 1..).next() else { return false };
@@ -510,10 +510,10 @@ impl UserMemory {
         true
     }
 
-    /// Come [`remap`](Self::remap), ma il vecchio intervallo resta mappato
-    /// (MREMAP_DONTUNMAP): le regioni private restano con gli stessi permessi
-    /// e senza pagine (si leggono a zero), quelle condivise restano sulla
-    /// stessa memoria.
+    /// Like [`remap`](Self::remap), but the old range stays mapped
+    /// (MREMAP_DONTUNMAP): private regions stay with the same permissions
+    /// and without pages (they read as zero), shared ones stay on the
+    /// same memory.
     pub fn remap_dontunmap(&mut self, old: u64, len: u64, dst: u64) {
         self.split_at(old);
         self.split_at(old + len);
@@ -534,8 +534,8 @@ impl UserMemory {
         }
     }
 
-    /// Allunga di `extra` byte la regione che finisce a `end`: una condivisa
-    /// continua nello stesso buffer, una privata con pagine a zero.
+    /// Extends by `extra` bytes the region that ends at `end`: a shared one
+    /// continues in the same buffer, a private one with zero pages.
     pub fn extend(&mut self, end: u64, extra: usize) {
         let Some((&b, r)) = self.regions.range(..end).next_back() else { return };
         if b + r.len as u64 != end || extra == 0 {
@@ -557,8 +557,8 @@ impl UserMemory {
         self.regions.insert(end, tail);
     }
 
-    /// Divide la regione che contiene `at` (se c'è) in modo che `at` sia un
-    /// confine.
+    /// Splits the region that contains `at` (if any) so that `at` is a
+    /// boundary.
     fn split_at(&mut self, at: u64) {
         let Some((&b, r)) = self.regions.range(..at).next_back() else { return };
         let end = b + r.len as u64;
@@ -570,7 +570,7 @@ impl UserMemory {
         self.regions.insert(at, tail);
     }
 
-    /// Toglie ogni mappatura in `[start, end)`.
+    /// Removes every mapping in `[start, end)`.
     pub fn unmap(&mut self, start: u64, end: u64) {
         if start >= end {
             return;
@@ -584,8 +584,8 @@ impl UserMemory {
         }
     }
 
-    /// Cambia i permessi di `[start, end)`. Fallisce (senza cambiare nulla)
-    /// se una parte dell'intervallo non è mappata.
+    /// Changes the permissions of `[start, end)`. Fails (without changing anything)
+    /// if part of the range is not mapped.
     pub fn protect(&mut self, start: u64, end: u64, perm: Perm) -> Result<(), MemFault> {
         if !self.is_mapped(start, end) {
             return Err(MemFault { addr: start, access: Access::Read });
@@ -599,7 +599,7 @@ impl UserMemory {
         Ok(())
     }
 
-    /// Vero se ogni byte di `[start, end)` è mappato.
+    /// True if every byte of `[start, end)` is mapped.
     pub fn is_mapped(&self, start: u64, end: u64) -> bool {
         let mut at = start;
         while at < end {
@@ -611,16 +611,16 @@ impl UserMemory {
         true
     }
 
-    /// Regione che contiene `addr`: (base, lunghezza).
+    /// Region that contains `addr`: (base, length).
     fn find(&self, addr: u64) -> Option<(u64, u64)> {
         let (&b, r) = self.regions.range(..=addr).next_back()?;
         let len = r.len as u64;
         (addr < b + len).then_some((b, len))
     }
 
-    /// Identità "fisica" di un indirizzo in una regione condivisa: (buffer,
-    /// offset nel buffer). Serve ai futex condivisi tra processi, che Linux
-    /// riconosce dalla pagina e non dall'indirizzo virtuale.
+    /// "Physical" identity of an address in a shared region: (buffer,
+    /// offset in the buffer). Needed for futexes shared between processes, which Linux
+    /// recognises by the page and not by the virtual address.
     pub fn shared_key(&self, addr: u64) -> Option<(usize, u64)> {
         let (b, _) = self.find(addr)?;
         match &self.regions[&b].backing {
@@ -631,13 +631,13 @@ impl UserMemory {
         }
     }
 
-    /// Permessi della pagina che contiene `addr`.
+    /// Permissions of the page that contains `addr`.
     pub fn perm_at(&self, addr: u64) -> Option<Perm> {
         let (b, _) = self.find(addr)?;
         Some(self.regions[&b].perm)
     }
 
-    /// Cerca dall'alto verso il basso un buco di `len` byte dentro
+    /// Searches from top to bottom for a hole of `len` bytes within
     /// `[bottom, top)`.
     pub fn find_free(&self, len: u64, bottom: u64, top: u64) -> Option<u64> {
         let mut end = top;
@@ -655,22 +655,22 @@ impl UserMemory {
         (end >= bottom.saturating_add(len)).then(|| end - len)
     }
 
-    /// Come [`ranges`](Self::ranges) con in più se la memoria è condivisa
-    /// (la `s` di /proc/self/maps).
+    /// Like [`ranges`](Self::ranges) plus whether the memory is shared
+    /// (the `s` of /proc/self/maps).
     pub fn maps(&self) -> impl Iterator<Item = (u64, u64, Perm, bool)> + '_ {
         self.regions
             .iter()
             .map(|(&b, r)| (b, b + r.len as u64, r.perm, matches!(r.backing, Backing::Shared(..))))
     }
 
-    /// Intervalli mappati, per /proc/self/maps e il debug.
+    /// Mapped ranges, for /proc/self/maps and debugging.
     pub fn ranges(&self) -> impl Iterator<Item = (u64, u64, Perm)> + '_ {
         self.regions.iter().map(|(&b, r)| (b, b + r.len as u64, r.perm))
     }
 
-    /// Vero se la pagina di `addr` ha memoria (per /proc/<pid>/pagemap): le
-    /// pagine private esistono solo dopo la prima scrittura o se hanno un
-    /// contenuto iniziale (file, MAP_POPULATE); quelle condivise sempre.
+    /// True if the page of `addr` has memory (for /proc/<pid>/pagemap):
+    /// private pages exist only after the first write or if they have
+    /// initial content (file, MAP_POPULATE); shared ones always.
     pub fn page_present(&self, addr: u64) -> bool {
         let Some((b, _)) = self.find(addr) else { return false };
         let r = &self.regions[&b];
@@ -682,7 +682,7 @@ impl UserMemory {
         }
     }
 
-    /// Alloca le pagine di `[start, end)` (MAP_POPULATE).
+    /// Allocates the pages of `[start, end)` (MAP_POPULATE).
     pub fn populate(&mut self, start: u64, end: u64) {
         for (&b, r) in self.regions.range_mut(..end) {
             if b + r.len as u64 > start {
@@ -691,8 +691,8 @@ impl UserMemory {
         }
     }
 
-    /// Vero se `addr` cade in una pagina di una mappatura condivisa che
-    /// inizia oltre la fine del file (o dell'oggetto): Linux dà SIGBUS.
+    /// True if `addr` falls in a page of a shared mapping that
+    /// starts beyond the end of the file (or object): Linux gives SIGBUS.
     pub fn beyond_eof(&self, addr: u64) -> bool {
         match self.find(addr) {
             Some((b, _)) => self.regions[&b].past_end(addr - b),
@@ -700,8 +700,8 @@ impl UserMemory {
         }
     }
 
-    /// Regione che contiene tutto `[addr, addr+len)`, con il permesso `a`.
-    /// `Ok(None)` se l'intervallo attraversa più regioni (percorso lento).
+    /// Region that contains all of `[addr, addr+len)`, with permission `a`.
+    /// `Ok(None)` if the range crosses several regions (slow path).
     fn locate(&self, addr: u64, len: usize, a: Access) -> Result<Option<(u64, usize)>, MemFault> {
         match self.find(addr) {
             Some((b, rlen)) => {
@@ -716,7 +716,7 @@ impl UserMemory {
         }
     }
 
-    /// Controlla byte per byte un intervallo che attraversa più regioni.
+    /// Checks byte by byte a range that crosses several regions.
     fn check_slow(&self, addr: u64, len: usize, a: Access) -> Result<(), MemFault> {
         for k in 0..len {
             let p = addr.wrapping_add(k as u64);
@@ -728,8 +728,8 @@ impl UserMemory {
         Ok(())
     }
 
-    /// Scrittura che ignora i permessi (caricatore ELF, kernel che prepara
-    /// lo stack su pagine già mappate).
+    /// Write that ignores permissions (ELF loader, kernel preparing
+    /// the stack on already mapped pages).
     pub fn poke(&mut self, addr: u64, data: &[u8]) -> Result<(), MemFault> {
         self.touch_write(addr, data.len());
         for (k, &byte) in data.iter().enumerate() {
@@ -748,7 +748,7 @@ impl Memory for UserMemory {
     fn read(&mut self, addr: u64, buf: &mut [u8]) -> Result<(), MemFault> {
         let len = buf.len();
         if len == 0 {
-            return Ok(()); // un accesso vuoto non tocca memoria (es. iovec {NULL, 0})
+            return Ok(()); // an empty access does not touch memory (e.g. iovec {NULL, 0})
         }
         if let Some((b, off)) = self.locate(addr, len, Access::Read)? {
             self.regions[&b].read(off, buf);
@@ -757,7 +757,7 @@ impl Memory for UserMemory {
         self.check_slow(addr, len, Access::Read)?;
         for (k, o) in buf.iter_mut().enumerate() {
             let p = addr.wrapping_add(k as u64);
-            let (b, _) = self.find(p).expect("verificato sopra");
+            let (b, _) = self.find(p).expect("checked above");
             let mut one = [0u8; 1];
             self.regions[&b].read((p - b) as usize, &mut one);
             *o = one[0];
@@ -778,7 +778,7 @@ impl Memory for UserMemory {
         self.touch_write(addr, data.len());
         for (k, &byte) in data.iter().enumerate() {
             let p = addr.wrapping_add(k as u64);
-            let (b, _) = self.find(p).expect("verificato sopra");
+            let (b, _) = self.find(p).expect("checked above");
             self.regions.get_mut(&b).unwrap().write((p - b) as usize, &[byte]);
         }
         Ok(())
@@ -793,7 +793,7 @@ impl Memory for UserMemory {
         self.check_slow(addr, 4, Access::Fetch)?;
         for (k, o) in w.iter_mut().enumerate() {
             let p = addr.wrapping_add(k as u64);
-            let (b, _) = self.find(p).expect("verificato sopra");
+            let (b, _) = self.find(p).expect("checked above");
             let mut one = [0u8; 1];
             self.regions[&b].read((p - b) as usize, &mut one);
             *o = one[0];
@@ -812,7 +812,7 @@ mod tests {
         m.map(0x1000, vec![0; 0x1000], Perm::RW).unwrap();
         m.map(0x2000, vec![0; 0x1000], Perm::RW).unwrap();
         assert!(m.map(0x1800, vec![0; 16], Perm::R).is_err());
-        // attraversa due regioni
+        // crosses two regions
         m.write(0x1ffe, &[1, 2, 3, 4]).unwrap();
         let mut b = [0; 4];
         m.read(0x1ffe, &mut b).unwrap();
@@ -861,7 +861,7 @@ mod tests {
         m.remap(0x40000, 0x1000, 0x80000);
         assert!(!m.is_mapped(0x40000, 0x41000));
         m.extend(0x81000, 0x1000);
-        // La memoria spostata e l'estensione restano quelle del buffer.
+        // The moved memory and the extension stay those of the buffer.
         m.poke(0x81004, &[9]).unwrap();
         assert_eq!(buf.borrow()[0x10], 5);
         assert_eq!(buf.borrow()[0x1004], 9);
@@ -877,20 +877,20 @@ mod tests {
         let mut a = UserMemory::new();
         let buf = Rc::new(RefCell::new(vec![0u8; 0x2000]));
         a.map_shared(0x40000, buf.clone(), 0, 0x2000, Perm::RW, true);
-        let mut b = a.clone(); // come un fork
+        let mut b = a.clone(); // like a fork
         b.write(0x41000, &[42]).unwrap();
         let mut x = [0u8; 1];
         a.read(0x41000, &mut x).unwrap();
         assert_eq!(x[0], 42);
-        a.protect(0x40000, 0x41000, Perm::R).unwrap(); // divide la regione
+        a.protect(0x40000, 0x41000, Perm::R).unwrap(); // splits the region
         b.write(0x41001, &[7]).unwrap();
         a.read(0x41001, &mut x).unwrap();
         assert_eq!(x[0], 7);
         assert_eq!(buf.borrow()[0x1001], 7);
     }
 
-    /// Sorveglianza del codice per il JIT: ogni cambiamento di una pagina
-    /// sorvegliata la segna sporca una volta sola, le altre no.
+    /// Code watching for the JIT: every change to a watched page
+    /// marks it dirty only once, the others do not.
     #[test]
     fn code_watch_reports_every_kind_of_change() {
         let mut m = UserMemory::new();
@@ -902,9 +902,9 @@ mod tests {
         };
         watch_all(&mut m);
         assert!(!m.code_dirty());
-        m.write(0x10ffe, &[0; 4]).unwrap(); // a cavallo di due pagine
+        m.write(0x10ffe, &[0; 4]).unwrap(); // straddling two pages
         assert_eq!(m.take_code_dirty(), [0x10, 0x11]);
-        m.write(0x10000, &[0]).unwrap(); // non più sorvegliata
+        m.write(0x10000, &[0]).unwrap(); // no longer watched
         assert!(!m.code_dirty());
         assert!(m.write(0x20000, &[0]).is_err());
         assert!(!m.code_dirty());
@@ -919,14 +919,14 @@ mod tests {
         assert_eq!(m.take_code_dirty(), [0x10]);
         m.remap(0x12000, 0x1000, 0x30000);
         assert_eq!(m.take_code_dirty(), [0x12]);
-        // Una copia (fork) è un altro spazio, senza pagine sorvegliate.
+        // A copy (fork) is another space, without watched pages.
         m.watch_code(0x10);
         let mut c = m.clone();
         assert_ne!(c.space_id(), m.space_id());
         c.poke(0x10000, &[9]).unwrap();
         assert!(!c.code_dirty());
         assert!(!m.code_dirty());
-        // Solo la memoria privata può stare nella cache dei blocchi.
+        // Only private memory can live in the block cache.
         assert!(m.is_private(0x10000));
         m.map_shared(0x50000, Rc::new(RefCell::new(vec![0; 0x1000])), 0, 0x1000, Perm::RX, false);
         assert!(!m.is_private(0x50000));

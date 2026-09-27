@@ -1,6 +1,6 @@
-//! Carico di virgola mobile e SIMD (`tests/linux/c/fpsimd.c`, M4): lo stesso
-//! riassunto dei risultati su Vetro (con l'interprete e, con `VETRO_JIT=1`,
-//! col JIT) e su QEMU.
+//! Floating-point and SIMD workload (`tests/linux/c/fpsimd.c`, M4): the same
+//! summary of the results on Vetro (with the interpreter and, with `VETRO_JIT=1`,
+//! with the JIT) and on QEMU.
 
 use vetro_linux_tests::{case, guest_bin};
 

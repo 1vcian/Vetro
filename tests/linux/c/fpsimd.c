@@ -1,11 +1,11 @@
-// Carico rappresentativo di virgola mobile e SIMD (M4, JIT per Android: ART,
-// bionic, Skia e SwiftShader ne fanno largo uso): conversioni, prodotti di
-// matrici float e double, riduzioni, memcpy/strlen/memchr NEON, TBL, EXT,
-// ADDV/UMAXV, FCMP/FCSEL, FPCR/FPSR. Ogni sezione stampa un riassunto
-// esatto (bit dei risultati in esadecimale): Vetro, col JIT e senza, deve
-// stampare quello che stampa QEMU (tests/linux/tests/fpsimd.rs).
+// Representative floating-point and SIMD workload (M4, JIT for Android: ART,
+// bionic, Skia and SwiftShader use them heavily): conversions, float and double
+// matrix products, reductions, NEON memcpy/strlen/memchr, TBL, EXT,
+// ADDV/UMAXV, FCMP/FCSEL, FPCR/FPSR. Each section prints an exact
+// summary (result bits in hexadecimal): Vetro, with the JIT and without, must
+// print what QEMU prints (tests/linux/tests/fpsimd.rs).
 //
-// Uso: fpsimd [ripetizioni]  (default 1; più ripetizioni per le misure)
+// Usage: fpsimd [repetitions]  (default 1; more repetitions for measurements)
 #include <arm_neon.h>
 #include <math.h>
 #include <stdint.h>
@@ -40,7 +40,7 @@ static void set_fpsr(uint64_t v) { __asm__ volatile("msr fpsr, %0" ::"r"(v)); }
 
 static void set_fpcr(uint64_t v) { __asm__ volatile("msr fpcr, %0" ::"r"(v)); }
 
-// Pseudo-casuale deterministico.
+// Deterministic pseudo-random.
 static uint64_t rng_state = 0x5eed1234abcdull;
 static uint64_t rnd(void) {
     rng_state ^= rng_state << 13;
@@ -49,7 +49,7 @@ static uint64_t rnd(void) {
     return rng_state;
 }
 
-// Valori interessanti: normali, piccoli, grandi, denormali, zeri, infiniti, NaN.
+// Interesting values: normal, small, large, denormal, zeros, infinities, NaN.
 static double special_d(int i) {
     static const uint64_t s[] = {
         0x0000000000000000ull, 0x8000000000000000ull, 0x3ff0000000000000ull, 0xbff0000000000000ull,
@@ -65,7 +65,7 @@ static double special_d(int i) {
 
 #define N_SPECIAL 20
 
-// --- conversioni ------------------------------------------------------
+// --- conversions ------------------------------------------------------
 static uint64_t conversions(int reps) {
     uint64_t h = 0;
     for (int r = 0; r < reps; r++) {
@@ -97,7 +97,7 @@ static uint64_t conversions(int reps) {
     return h;
 }
 
-// --- aritmetica scalare, FCMP/FCSEL, fma --------------------------------
+// --- scalar arithmetic, FCMP/FCSEL, fma ---------------------------------
 static uint64_t scalar_arith(int reps) {
     uint64_t h = 0;
     double acc = 1.0;
@@ -132,7 +132,7 @@ static uint64_t scalar_arith(int reps) {
     return h;
 }
 
-// --- prodotti di matrici ---------------------------------------------
+// --- matrix products -------------------------------------------------
 #define M 24
 static uint64_t matmul(int reps) {
     static float af[M][M], bf[M][M], cf[M][M];
@@ -159,7 +159,7 @@ static uint64_t matmul(int reps) {
                 cd[i][j] = t;
             }
         }
-        // Versione NEON (FMLA vettoriale, elemento indicizzato).
+        // NEON version (vector FMLA, indexed element).
         for (int i = 0; i < M; i++) {
             for (int j = 0; j < M; j += 4) {
                 float32x4_t acc = vdupq_n_f32(0);
@@ -179,14 +179,14 @@ static uint64_t matmul(int reps) {
                 h = mix(h, bits_d(cd[i][j]));
             }
         }
-        // Le matrici cambiano un po' a ogni giro.
+        // The matrices change a little at every round.
         af[r % M][(r * 7) % M] += 1.0f;
         bd[(r * 5) % M][r % M] *= -0.5;
     }
     return h;
 }
 
-// --- SIMD intero: memcpy, strlen, memchr NEON, TBL, EXT, ADDV, UMAXV ---
+// --- integer SIMD: NEON memcpy, strlen, memchr, TBL, EXT, ADDV, UMAXV ---
 static void neon_memcpy(uint8_t *d, const uint8_t *s, size_t n) {
     size_t i = 0;
     for (; i + 64 <= n; i += 64) {
@@ -199,7 +199,7 @@ static void neon_memcpy(uint8_t *d, const uint8_t *s, size_t n) {
 
 static size_t neon_strlen(const char *s) {
     size_t i = 0;
-    // Allineato a 16: le letture non escono dalla pagina.
+    // Aligned to 16: the reads do not leave the page.
     while (((uintptr_t)(s + i) & 15) != 0) {
         if (s[i] == 0) return i;
         i++;
@@ -208,7 +208,7 @@ static size_t neon_strlen(const char *s) {
         uint8x16_t v = vld1q_u8((const uint8_t *)s + i);
         uint8x16_t z = vceqq_u8(v, vdupq_n_u8(0));
         if (vmaxvq_u8(z) != 0) {
-            // Primo zero: indice minimo fra le corsie a zero.
+            // First zero: minimum index among the zero lanes.
             static const uint8_t idx[16] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
             uint8x16_t pos = vorrq_u8(vld1q_u8(idx), vmvnq_u8(z));
             return i + vminvq_u8(pos);
@@ -282,7 +282,7 @@ static uint64_t simd_int(int reps) {
     return h;
 }
 
-// --- vettoriale in virgola mobile: riduzioni, conversioni, confronti ---
+// --- floating-point vector: reductions, conversions, comparisons -------
 static uint64_t simd_fp(int reps) {
     enum { LEN = 1024 };
     static float x[LEN], y[LEN];
@@ -324,7 +324,7 @@ static uint64_t simd_fp(int reps) {
     return h;
 }
 
-// --- FPCR: arrotondamenti, FZ, DN; FPSR: flag cumulativi ---------------
+// --- FPCR: roundings, FZ, DN; FPSR: cumulative flags -------------------
 static uint64_t fpcr_modes(int reps) {
     uint64_t h = 0;
     for (int r = 0; r < reps; r++) {

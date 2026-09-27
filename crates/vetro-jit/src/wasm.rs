@@ -1,10 +1,10 @@
-//! Encoder minimo di moduli WebAssembly (formato binario 1.0 con le
-//! estensioni di segno, "sign-extension ops", presenti in ogni motore).
+//! Minimal encoder of WebAssembly modules (binary format 1.0 with the
+//! sign extensions, "sign-extension ops", present in every engine).
 //!
-//! Solo ciò che serve ai moduli del JIT: tipi di funzione, import di una
-//! memoria e di funzioni, funzioni con variabili locali, export e codice.
+//! Only what the JIT's modules need: function types, imports of a
+//! memory and of functions, functions with local variables, exports and code.
 
-/// Tipi di valore.
+/// Value types.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ValType {
     I32 = 0x7f,
@@ -14,7 +14,7 @@ pub enum ValType {
     V128 = 0x7b,
 }
 
-/// Opcode usati dal traduttore (Core spec, sezione 5.4).
+/// Opcodes used by the translator (Core spec, section 5.4).
 pub mod op {
     pub const UNREACHABLE: u8 = 0x00;
     pub const BLOCK: u8 = 0x02;
@@ -53,7 +53,7 @@ pub mod op {
     pub const I32_GT_U: u8 = 0x4b;
     pub const I32_LE_S: u8 = 0x4c;
     pub const I32_MUL: u8 = 0x6c;
-    // Virgola mobile (ADR 0026).
+    // Floating point (ADR 0026).
     pub const F32_LOAD: u8 = 0x2a;
     pub const F64_LOAD: u8 = 0x2b;
     pub const F32_EQ: u8 = 0x5b;
@@ -160,10 +160,10 @@ pub mod op {
     pub const I64_EXTEND32_S: u8 = 0xc4;
 }
 
-/// Tipo di blocco di `if`: vuoto o con un risultato.
+/// Block type of `if`: empty or with one result.
 pub const BLOCK_EMPTY: u8 = 0x40;
 
-/// Conversioni saturanti (prefisso 0xfc).
+/// Saturating conversions (prefix 0xfc).
 pub mod sat {
     pub const I32_TRUNC_SAT_F32_S: u32 = 0;
     pub const I32_TRUNC_SAT_F32_U: u32 = 1;
@@ -175,8 +175,8 @@ pub mod sat {
     pub const I64_TRUNC_SAT_F64_U: u32 = 7;
 }
 
-/// SIMD a 128 bit (prefisso 0xfd, "fixed-width SIMD"): opcode usati dal
-/// traduttore (ADR 0026).
+/// 128-bit SIMD (prefix 0xfd, "fixed-width SIMD"): opcodes used by the
+/// translator (ADR 0026).
 pub mod v {
     pub const LOAD: u32 = 0x00;
     pub const LOAD8_SPLAT: u32 = 0x07;
@@ -393,14 +393,14 @@ fn name(out: &mut Vec<u8>, s: &str) {
     out.extend_from_slice(s.as_bytes());
 }
 
-/// Corpo di una funzione: variabili locali e istruzioni.
+/// Body of a function: local variables and instructions.
 #[derive(Clone, Debug, Default)]
 pub struct Func {
-    /// Gruppi (quantità, tipo) di variabili locali oltre ai parametri.
+    /// Groups (count, type) of local variables beyond the parameters.
     pub locals: Vec<(u32, ValType)>,
     pub code: Vec<u8>,
-    /// Blocchi (`block`, `loop`, `if`) aperti nel punto corrente: serve a
-    /// calcolare le etichette di `br`.
+    /// Blocks (`block`, `loop`, `if`) open at the current point: used to
+    /// compute the labels of `br`.
     pub depth: u32,
 }
 
@@ -453,8 +453,8 @@ impl Func {
     pub fn i32_store(&mut self, offset: u32) -> &mut Self {
         self.memarg(op::I32_STORE, 2, offset)
     }
-    /// Load di `bytes` byte (1, 2, 4, 8) esteso a zero in un i64, con
-    /// l'allineamento naturale come suggerimento.
+    /// Load of `bytes` bytes (1, 2, 4, 8) zero-extended into an i64, with
+    /// the natural alignment as a hint.
     pub fn i64_load_n(&mut self, bytes: u32, offset: u32) -> &mut Self {
         match bytes {
             1 => self.memarg(op::I64_LOAD8_U, 0, offset),
@@ -463,7 +463,7 @@ impl Func {
             _ => self.memarg(op::I64_LOAD, 3, offset),
         }
     }
-    /// Store dei `bytes` byte bassi di un i64.
+    /// Store of the low `bytes` bytes of an i64.
     pub fn i64_store_n(&mut self, bytes: u32, offset: u32) -> &mut Self {
         match bytes {
             1 => self.memarg(op::I64_STORE8, 0, offset),
@@ -478,19 +478,19 @@ impl Func {
     pub fn f64_load(&mut self, offset: u32) -> &mut Self {
         self.memarg(op::F64_LOAD, 3, offset)
     }
-    /// Istruzione con prefisso 0xfc (conversioni saturanti, [`sat`]).
+    /// Instruction with prefix 0xfc (saturating conversions, [`sat`]).
     pub fn sat(&mut self, o: u32) -> &mut Self {
         self.code.push(0xfc);
         uleb(&mut self.code, o as u64);
         self
     }
-    /// Istruzione SIMD senza immediati ([`v`]).
+    /// SIMD instruction without immediates ([`v`]).
     pub fn v(&mut self, o: u32) -> &mut Self {
         self.code.push(0xfd);
         uleb(&mut self.code, o as u64);
         self
     }
-    /// `v128.load` / `v128.store` (allineamento 16 come suggerimento).
+    /// `v128.load` / `v128.store` (alignment 16 as a hint).
     pub fn v128_load(&mut self, offset: u32) -> &mut Self {
         self.v(v::LOAD);
         uleb(&mut self.code, 4);
@@ -503,7 +503,7 @@ impl Func {
         uleb(&mut self.code, offset as u64);
         self
     }
-    /// `v128.load{8,16,32,64}_splat` di `bytes` byte.
+    /// `v128.load{8,16,32,64}_splat` of `bytes` bytes.
     pub fn v128_load_splat(&mut self, bytes: u32, offset: u32) -> &mut Self {
         let (o, a) = match bytes {
             1 => (v::LOAD8_SPLAT, 0),
@@ -516,34 +516,34 @@ impl Func {
         uleb(&mut self.code, offset as u64);
         self
     }
-    /// `v128.const` dai due u64 (basso, alto).
+    /// `v128.const` from the two u64 (low, high).
     pub fn v128_const(&mut self, lo: u64, hi: u64) -> &mut Self {
         self.v(v::CONST);
         self.code.extend_from_slice(&lo.to_le_bytes());
         self.code.extend_from_slice(&hi.to_le_bytes());
         self
     }
-    /// `i8x16.shuffle` con gli indici `lanes` (0..32).
+    /// `i8x16.shuffle` with the indices `lanes` (0..32).
     pub fn shuffle(&mut self, lanes: [u8; 16]) -> &mut Self {
         debug_assert!(lanes.iter().all(|&l| l < 32));
         self.v(v::SHUFFLE);
         self.code.extend_from_slice(&lanes);
         self
     }
-    /// Estrazione o sostituzione di una corsia (`o` di [`v`]).
+    /// Extraction or replacement of a lane (`o` of [`v`]).
     pub fn lane(&mut self, o: u32, lane: u8) -> &mut Self {
         self.v(o);
         self.code.push(lane);
         self
     }
-    /// `call_indirect` sul tipo `ty` nella tabella 0.
+    /// `call_indirect` on type `ty` in table 0.
     pub fn call_indirect(&mut self, ty: u32) -> &mut Self {
         self.code.push(op::CALL_INDIRECT);
         uleb(&mut self.code, ty as u64);
         self.code.push(0);
         self
     }
-    /// `loop` o `block` con tipo `bt`.
+    /// `loop` or `block` with type `bt`.
     pub fn loop_(&mut self, bt: u8) -> &mut Self {
         self.code.push(op::LOOP);
         self.code.push(bt);
@@ -566,8 +566,8 @@ impl Func {
         uleb(&mut self.code, depth as u64);
         self
     }
-    /// `br_table`: salta all'etichetta `labels[i]` (i32 in cima allo
-    /// stack), o a `default` se `i` è fuori.
+    /// `br_table`: jumps to label `labels[i]` (i32 on top of the
+    /// stack), or to `default` if `i` is out of range.
     pub fn br_table(&mut self, labels: &[u32], default: u32) -> &mut Self {
         self.code.push(op::BR_TABLE);
         uleb(&mut self.code, labels.len() as u64);
@@ -582,7 +582,7 @@ impl Func {
         uleb(&mut self.code, f as u64);
         self
     }
-    /// `if` con tipo di blocco `bt` (`BLOCK_EMPTY` o un [`ValType`]).
+    /// `if` with block type `bt` (`BLOCK_EMPTY` or a [`ValType`]).
     pub fn if_(&mut self, bt: u8) -> &mut Self {
         self.code.push(op::IF);
         self.code.push(bt);
@@ -611,23 +611,23 @@ impl Func {
     }
 }
 
-/// Tipo di funzione: parametri e risultati.
+/// Function type: parameters and results.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FuncType {
     pub params: Vec<ValType>,
     pub results: Vec<ValType>,
 }
 
-/// Import di una memoria: minimo di pagine e, per una memoria condivisa
-/// (thread), il massimo obbligatorio.
+/// Import of a memory: minimum pages and, for a shared memory
+/// (threads), the mandatory maximum.
 #[derive(Clone, Copy, Debug)]
 pub struct MemoryImport {
     pub min: u32,
     pub shared_max: Option<u32>,
 }
 
-/// Modulo in costruzione. Le funzioni importate precedono quelle definite
-/// nello spazio degli indici, come vuole il formato.
+/// Module under construction. Imported functions precede defined ones
+/// in the index space, as the format requires.
 #[derive(Clone, Debug, Default)]
 pub struct Module {
     types: Vec<FuncType>,
@@ -635,7 +635,7 @@ pub struct Module {
     func_imports: Vec<(String, String, u32)>,
     funcs: Vec<(u32, Func)>,
     exports: Vec<(String, u32)>,
-    /// Tabella di funzioni importata: (modulo, campo, minimo di voci).
+    /// Imported function table: (module, field, minimum entries).
     table: Option<(String, String, u32)>,
 }
 
@@ -644,7 +644,7 @@ impl Module {
         Self::default()
     }
 
-    /// Indice del tipo (riusa un tipo identico già presente).
+    /// Index of the type (reuses an identical type already present).
     pub fn ty(&mut self, params: &[ValType], results: &[ValType]) -> u32 {
         let t = FuncType { params: params.to_vec(), results: results.to_vec() };
         if let Some(i) = self.types.iter().position(|x| *x == t) {
@@ -658,21 +658,21 @@ impl Module {
         self.memory = Some((module.into(), field.into(), mem));
     }
 
-    /// Importa la tabella 0 (`funcref`, almeno `min` voci): la condividono
-    /// i moduli del JIT per il concatenamento dei blocchi.
+    /// Imports table 0 (`funcref`, at least `min` entries): the JIT's modules
+    /// share it for block chaining.
     pub fn import_table(&mut self, module: &str, field: &str, min: u32) {
         self.table = Some((module.into(), field.into(), min));
     }
 
-    /// Importa una funzione; restituisce il suo indice. Va chiamata prima di
-    /// definire funzioni.
+    /// Imports a function; returns its index. Must be called before
+    /// defining functions.
     pub fn import_func(&mut self, module: &str, field: &str, ty: u32) -> u32 {
-        assert!(self.funcs.is_empty(), "import dopo le funzioni definite");
+        assert!(self.funcs.is_empty(), "import after the defined functions");
         self.func_imports.push((module.into(), field.into(), ty));
         (self.func_imports.len() - 1) as u32
     }
 
-    /// Definisce una funzione; restituisce il suo indice.
+    /// Defines a function; returns its index.
     pub fn func(&mut self, ty: u32, f: Func) -> u32 {
         self.funcs.push((ty, f));
         (self.func_imports.len() + self.funcs.len() - 1) as u32
@@ -770,7 +770,7 @@ mod tests {
 
     fn validate(bytes: &[u8]) {
         let mut v = wasmparser::Validator::new_with_features(wasmparser::WasmFeatures::default());
-        v.validate_all(bytes).expect("modulo WASM non valido");
+        v.validate_all(bytes).expect("invalid WASM module");
     }
 
     #[test]
@@ -845,8 +845,8 @@ mod tests {
 
     #[test]
     fn invalid_body_is_rejected() {
-        // Controllo del controllo: un corpo che lascia il tipo sbagliato
-        // sullo stack deve essere rifiutato dal validatore.
+        // Checking the check: a body that leaves the wrong type
+        // on the stack must be rejected by the validator.
         let mut m = Module::new();
         let t = m.ty(&[ValType::I32], &[ValType::I32]);
         let mut f = Func::default();

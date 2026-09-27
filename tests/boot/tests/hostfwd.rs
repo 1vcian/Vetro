@@ -1,25 +1,25 @@
-//! Inoltro di porte verso il guest (`Stack::host_connect`, come `hostfwd`
-//! della rete user di QEMU): l'host apre connessioni TCP verso un servizio
-//! del kernel guest di M3 (BusyBox `nc -l -e cat`, l'eco).
+//! Port forwarding to the guest (`Stack::host_connect`, like the `hostfwd`
+//! of QEMU's user network): the host opens TCP connections to a service
+//! of the M3 guest kernel (BusyBox `nc -l -e cat`, the echo).
 //!
-//! Sotto Vetro (API diretta dello stack, tra un quanto e l'altro):
-//! - il guest vede la connessione arrivare da 10.0.2.2 (`nc -v`);
-//! - eco di 200 KB (più della finestra di 64 KiB e della coda dell'host),
-//!   confrontato byte per byte;
-//! - chiusura pulita dall'host (FIN, TIME-WAIT, `Normal`) e dal guest (il
-//!   servizio scrive e chiude: l'host vede la fine del flusso);
-//! - porta senza servizio: il guest risponde RST (`Refused`);
-//! - reset dall'host (`RemoteReset`) e dal guest (chiusura con dati non
-//!   letti: `GuestReset`);
-//! - determinismo: due esecuzioni danno stesso log, istruzioni e registro.
+//! Under Vetro (direct API of the stack, between one quantum and the next):
+//! - the guest sees the connection arrive from 10.0.2.2 (`nc -v`);
+//! - echo of 200 KB (more than the 64 KiB window and the host queue),
+//!   compared byte by byte;
+//! - clean close from the host (FIN, TIME-WAIT, `Normal`) and from the guest (the
+//!   service writes and closes: the host sees the end of the stream);
+//! - port without a service: the guest answers RST (`Refused`);
+//! - reset from the host (`RemoteReset`) and from the guest (close with unread
+//!   data: `GuestReset`);
+//! - determinism: two runs give the same log, instructions and event log.
 //!
-//! Confronto con QEMU (`-netdev user,hostfwd=tcp:127.0.0.1:PORTA-:5555`):
-//! lo stesso `nc -n -v -l -p 5555 -e cat` nel guest, un client dall'host
-//! (su macOS dentro il container di QEMU, perché le connessioni che Docker
-//! inoltra arrivano dal suo gateway e non da localhost): stessa riga
-//! `connect to ... from 10.0.2.2:...` (porta sorgente a parte) e stessa eco.
+//! Comparison with QEMU (`-netdev user,hostfwd=tcp:127.0.0.1:PORT-:5555`):
+//! the same `nc -n -v -l -p 5555 -e cat` in the guest, a client from the host
+//! (on macOS inside the QEMU container, because the connections that Docker
+//! forwards arrive from its gateway and not from localhost): same line
+//! `connect to ... from 10.0.2.2:...` (source port aside) and same echo.
 //!
-//! Solo in release, come `net.rs`.
+//! Release only, like `net.rs`.
 
 use std::io::{Read, Write};
 use std::process::Command;
@@ -31,7 +31,7 @@ use vetro_machine::{Devices, Machine, MachineConfig, NetSetup, Stop};
 
 const PHASE_BUDGET: u64 = 6_000_000_000;
 const PORT: u16 = 5555;
-/// Il servizio del confronto con QEMU: eco, con la riga di connessione.
+/// The service of the comparison with QEMU: echo, with the connection line.
 const ECHO_SERVER: &str = "nc -n -v -l -p 5555 -e cat";
 const LISTENING: &str = "listening on";
 const MESSAGE: &[u8] = b"VETRO-ECO-HOSTFWD\n";
@@ -49,7 +49,7 @@ impl Run {
     fn step(&mut self, what: &str) {
         let stop = self.m.run(1_000_000);
         self.log.extend(self.m.console_output());
-        assert!(matches!(stop, Stop::Budget), "{stop:?} in attesa di {what}:\n{}", self.tail());
+        assert!(matches!(stop, Stop::Budget), "{stop:?} while waiting for {what}:\n{}", self.tail());
     }
 
     fn until(&mut self, needle: &str, from: usize) -> usize {
@@ -58,7 +58,7 @@ impl Run {
             if let Some(i) = find(&self.log[from.min(self.log.len())..], needle.as_bytes()) {
                 return from + i + needle.len();
             }
-            assert!(self.m.steps < limit, "{needle:?} non arrivato:\n{}", self.tail());
+            assert!(self.m.steps < limit, "{needle:?} did not arrive:\n{}", self.tail());
             self.step(needle);
         }
     }
@@ -69,9 +69,9 @@ impl Run {
         (at, normalize(&String::from_utf8_lossy(&self.log[from..at])))
     }
 
-    /// Esegue quanti di istruzioni e, tra un quanto e l'altro, dà allo
-    /// stack di rete la funzione dell'host finché questa non restituisce
-    /// vero. È il punto in cui gli ingressi dell'host entrano nella macchina.
+    /// Runs quanta of instructions and, between one quantum and the next, gives the
+    /// network stack the host function until it returns
+    /// true. It is the point where the host's inputs enter the machine.
     fn pump(&mut self, what: &str, mut host: impl FnMut(&mut Stack<Sinkhole>) -> bool) {
         let limit = self.m.steps + PHASE_BUDGET;
         loop {
@@ -98,31 +98,31 @@ fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
-/// Le righe `listening on ...` e `connect to ... from ...` di `nc -v`, con
-/// le porte sorgente (effimere: 49152 in Vetro, quella del client in QEMU)
-/// sostituite.
+/// The `listening on ...` and `connect to ... from ...` lines of `nc -v`, with
+/// the source ports (ephemeral: 49152 in Vetro, the client's in QEMU)
+/// replaced.
 fn connect_line(out: &str) -> String {
     let listening = out
         .lines()
         .find(|l| l.starts_with(LISTENING))
-        .unwrap_or_else(|| panic!("manca la riga di ascolto di nc:\n{out}"));
+        .unwrap_or_else(|| panic!("missing nc's listening line:\n{out}"));
     let line = out
         .lines()
         .find(|l| l.contains("connect to"))
-        .unwrap_or_else(|| panic!("manca la riga di connessione di nc:\n{out}"));
+        .unwrap_or_else(|| panic!("missing nc's connection line:\n{out}"));
     let mut r = String::new();
     let mut rest = line.trim();
     while let Some(i) = rest.find("10.0.2.2:") {
         r.push_str(&rest[..i + "10.0.2.2:".len()]);
         rest = rest[i + "10.0.2.2:".len()..].trim_start_matches(|c: char| c.is_ascii_digit());
-        r.push_str("PORTA");
+        r.push_str("PORT");
     }
     r.push_str(rest);
     format!("{} | {r}", listening.trim())
 }
 
-/// Connessione dall'host con i byte da mandare e quelli ricevuti; chiude il
-/// suo verso quando ha mandato tutto e ricevuto `expect` byte.
+/// Connection from the host with the bytes to send and those received; closes its
+/// direction when it has sent everything and received `expect` bytes.
 struct Transfer {
     id: ConnId,
     data: Vec<u8>,
@@ -134,11 +134,11 @@ struct Transfer {
 
 impl Transfer {
     fn new(s: &mut Stack<Sinkhole>, data: Vec<u8>, expect: usize) -> Self {
-        let id = s.host_connect(PORT).expect("porta effimera");
+        let id = s.host_connect(PORT).expect("ephemeral port");
         Transfer { id, data, sent: 0, got: Vec::new(), expect, shut: false }
     }
 
-    /// Un giro dell'host; vero quando la connessione è chiusa.
+    /// One host round; true when the connection is closed.
     fn turn(&mut self, s: &mut Stack<Sinkhole>) -> bool {
         self.sent += s.host_send(self.id, &self.data[self.sent..]);
         let mut buf = [0u8; 65536];
@@ -169,7 +169,7 @@ struct Session {
 fn session(image: &[u8], initrd: &[u8]) -> Session {
     let devices = Devices { net: Some(NetSetup::default()), ..Devices::default() };
     let mut m = Machine::with_devices(&MachineConfig::default(), &devices);
-    m.load_linux(image, Some(initrd), "console=ttyAMA0 vetro.noautotest").expect("caricamento del kernel");
+    m.load_linux(image, Some(initrd), "console=ttyAMA0 vetro.noautotest").expect("kernel load");
     let mut r = Run { m, log: Vec::new() };
     let at = r.until(SHELL_PROMPT, 0);
     let (at, out) = r.command("udhcpc -i eth0 -n -q", at);
@@ -177,7 +177,7 @@ fn session(image: &[u8], initrd: &[u8]) -> Session {
     let (at, _) = r.command("printf '#!/bin/sh\\nsleep 2\\n' > /tmp/dorme; chmod +x /tmp/dorme", at);
     let (at, _) = r.command("printf '#!/bin/sh\\necho ciao\\n' > /tmp/saluta; chmod +x /tmp/saluta", at);
 
-    // 1. Il copione del confronto con QEMU: un messaggio breve, eco.
+    // 1. The script of the comparison with QEMU: a short message, echo.
     r.m.console_input(format!("{ECHO_SERVER}\n").as_bytes());
     r.until(LISTENING, at);
     let mut t = r.m.net(|s| Transfer::new(s, MESSAGE.to_vec(), MESSAGE.len())).unwrap();
@@ -191,50 +191,50 @@ fn session(image: &[u8], initrd: &[u8]) -> Session {
     let echo = t.got.clone();
     assert_eq!(echo, MESSAGE);
 
-    // 2. Eco di 200 KB.
+    // 2. Echo of 200 KB.
     r.m.console_input(format!("{ECHO_SERVER}\n").as_bytes());
     r.until(LISTENING, at);
     let data = payload();
     let mut t = r.m.net(|s| Transfer::new(s, data.clone(), data.len())).unwrap();
-    r.pump("eco di 200 KB", |s| t.turn(s));
+    r.pump("200 KB echo", |s| t.turn(s));
     assert_eq!(t.got.len(), data.len());
-    assert!(t.got == data, "eco di 200 KB diversa");
+    assert!(t.got == data, "200 KB echo differs");
     assert_eq!(r.state(t.id), HostConnState::Closed(CloseReason::Normal));
     let big = t.id;
     let at = r.until(SHELL_PROMPT, at);
 
-    // 3. Porta senza servizio: RST del guest.
+    // 3. Port without a service: guest RST.
     let refused = r.m.net(|s| s.host_connect(5556).unwrap()).unwrap();
     r.pump("rifiuto", |s| matches!(s.host_conn(refused).unwrap().state, HostConnState::Closed(_)));
     assert_eq!(r.state(refused), HostConnState::Closed(CloseReason::Refused));
 
-    // 4. Il servizio scrive e chiude per primo.
+    // 4. The service writes and closes first.
     r.m.console_input(b"nc -n -v -l -p 5555 -e /tmp/saluta\n");
     r.until(LISTENING, at);
     let mut t = r.m.net(|s| Transfer::new(s, Vec::new(), usize::MAX)).unwrap();
-    r.pump("chiusura dal guest", |s| t.turn(s));
+    r.pump("close from the guest", |s| t.turn(s));
     assert_eq!(t.got, b"ciao\n");
     assert_eq!(r.state(t.id), HostConnState::Closed(CloseReason::Normal));
     let at = r.until(SHELL_PROMPT, at);
 
-    // 5. Reset dall'host a connessione aperta.
+    // 5. Reset from the host with the connection open.
     r.m.console_input(format!("{ECHO_SERVER}\n").as_bytes());
     r.until(LISTENING, at);
     let mut t = r.m.net(|s| Transfer::new(s, b"x".to_vec(), usize::MAX)).unwrap();
-    r.pump("eco prima del reset", |s| {
+    r.pump("echo before the reset", |s| {
         t.turn(s);
         t.got == b"x"
     });
     r.m.net(|s| s.host_abort(t.id)).unwrap();
-    r.pump("reset dall'host", |s| matches!(s.host_conn(t.id).unwrap().state, HostConnState::Closed(_)));
+    r.pump("reset from the host", |s| matches!(s.host_conn(t.id).unwrap().state, HostConnState::Closed(_)));
     assert_eq!(r.state(t.id), HostConnState::Closed(CloseReason::RemoteReset));
     let at = r.until(SHELL_PROMPT, at);
 
-    // 6. Reset dal guest: il servizio esce senza leggere i dati arrivati.
+    // 6. Reset from the guest: the service exits without reading the arrived data.
     r.m.console_input(b"nc -n -v -l -p 5555 -e /tmp/dorme\n");
     r.until(LISTENING, at);
-    let mut t = r.m.net(|s| Transfer::new(s, b"non letti".to_vec(), usize::MAX)).unwrap();
-    r.pump("reset dal guest", |s| {
+    let mut t = r.m.net(|s| Transfer::new(s, b"not read".to_vec(), usize::MAX)).unwrap();
+    r.pump("reset from the guest", |s| {
         t.turn(s);
         matches!(s.host_conn(t.id).unwrap().state, HostConnState::Closed(_))
     });
@@ -273,7 +273,7 @@ fn session(image: &[u8], initrd: &[u8]) -> Session {
 #[test]
 fn inoltro_di_porte_verso_il_guest() {
     if cfg!(debug_assertions) {
-        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "inoltro di porte sotto Vetro solo in release");
+        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "port forwarding under Vetro only in release");
     }
     let Some((image, initrd)) = guest_kernel() else {
         return skip_or_fail(
@@ -287,32 +287,32 @@ fn inoltro_di_porte_verso_il_guest() {
     let dir = repo_root().join("target/guest-kernel");
     std::fs::write(dir.join("vetro-hostfwd.log"), &a.log).unwrap();
     std::fs::write(dir.join("vetro-hostfwd-events.log"), &a.events).unwrap();
-    eprintln!("Vetro: {} ({} istruzioni)", a.connect_line, a.steps);
+    eprintln!("Vetro: {} ({} instructions)", a.connect_line, a.steps);
     assert_eq!(
         a.connect_line,
-        "listening on 0.0.0.0:5555 ... | connect to 10.0.2.15:5555 from 10.0.2.2:PORTA (10.0.2.2:PORTA)"
+        "listening on 0.0.0.0:5555 ... | connect to 10.0.2.15:5555 from 10.0.2.2:PORT (10.0.2.2:PORT)"
     );
     let b = session(&image, &initrd);
-    assert_eq!(a.steps, b.steps, "istruzioni diverse fra due esecuzioni uguali");
-    assert!(a.log == b.log, "log diversi fra due esecuzioni uguali");
-    assert!(a.events == b.events, "registri di rete diversi fra due esecuzioni uguali");
+    assert_eq!(a.steps, b.steps, "instructions differ between two identical runs");
+    assert!(a.log == b.log, "logs differ between two identical runs");
+    assert!(a.events == b.events, "network event logs differ between two identical runs");
     assert_eq!(a.echo, MESSAGE);
 
-    // Confronto con QEMU, se c'è: stessa riga di connessione, stessa eco.
+    // Comparison with QEMU, if present: same connection line, same echo.
     match qemu_hostfwd(&image_path, &initrd_path) {
         Some((line, echo)) => {
             eprintln!("QEMU:  {line}");
-            assert_eq!(line, a.connect_line, "il guest vede la connessione come sotto QEMU");
-            assert_eq!(echo, a.echo, "eco come sotto QEMU");
+            assert_eq!(line, a.connect_line, "the guest sees the connection as under QEMU");
+            assert_eq!(echo, a.echo, "echo as under QEMU");
         }
         None => skip_or_fail(
             "VETRO_REQUIRE_SYSTEM_ORACLE",
-            "qemu-system-aarch64 assente: confronto dell'inoltro di porte con QEMU saltato",
+            "qemu-system-aarch64 missing: port forwarding comparison with QEMU skipped",
         ),
     }
 }
 
-/// Lo stesso copione sotto QEMU con `hostfwd`; `None` senza oracolo.
+/// The same script under QEMU with `hostfwd`; `None` without the oracle.
 fn qemu_hostfwd(image: &std::path::Path, initrd: &std::path::Path) -> Option<(String, Vec<u8>)> {
     let qemu = qemu_system()?;
     let docker = qemu.file_name().is_some_and(|n| n.to_string_lossy().contains("docker"));
@@ -334,19 +334,19 @@ fn qemu_hostfwd(image: &std::path::Path, initrd: &std::path::Path) -> Option<(St
         .arg(initrd)
         .args(["-append", "console=ttyAMA0 vetro.noautotest"]);
     let limit = timeout();
-    let mut con = Console::spawn(cmd).expect("avvio di qemu-system-aarch64");
+    let mut con = Console::spawn(cmd).expect("start of qemu-system-aarch64");
     let fail = |con: &Console, what: &str| -> ! {
         let log = normalize(&con.log());
         let tail: Vec<&str> = log.lines().rev().take(40).collect();
         panic!("QEMU: {what}:\n{}", tail.into_iter().rev().collect::<Vec<_>>().join("\n"))
     };
-    let at = con.wait_for(SHELL_PROMPT, 0, limit).unwrap_or_else(|| fail(&con, "nessun prompt"));
+    let at = con.wait_for(SHELL_PROMPT, 0, limit).unwrap_or_else(|| fail(&con, "no prompt"));
     con.send("udhcpc -i eth0 -n -q\n");
     let at = con.wait_for(SHELL_PROMPT, at, limit).unwrap_or_else(|| fail(&con, "udhcpc"));
     con.send(&format!("{ECHO_SERVER}\n"));
-    con.wait_for(LISTENING, at, limit).unwrap_or_else(|| fail(&con, "nc non in ascolto"));
+    con.wait_for(LISTENING, at, limit).unwrap_or_else(|| fail(&con, "nc not listening"));
     let echo = if docker {
-        // Da localhost dentro il container, come un client sull'host.
+        // From localhost inside the container, like a client on the host.
         let script = format!(
             "exec 3<>/dev/tcp/127.0.0.1/{host_port} && printf '%s' \"$1\" >&3 && IFS= read -r l <&3 && printf '%s\\n' \"$l\""
         );
@@ -355,17 +355,17 @@ fn qemu_hostfwd(image: &std::path::Path, initrd: &std::path::Path) -> Option<(St
             .arg(String::from_utf8_lossy(MESSAGE).as_ref())
             .output()
             .expect("docker exec");
-        assert!(out.status.success(), "client nel container: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(out.status.success(), "client in the container: {}", String::from_utf8_lossy(&out.stderr));
         out.stdout
     } else {
         let mut s = std::net::TcpStream::connect(("127.0.0.1", host_port)).expect("connessione a hostfwd");
         s.set_read_timeout(Some(limit)).unwrap();
         s.write_all(MESSAGE).unwrap();
         let mut got = vec![0u8; MESSAGE.len()];
-        s.read_exact(&mut got).expect("eco da QEMU");
+        s.read_exact(&mut got).expect("echo from QEMU");
         got
     };
-    let end = con.wait_for(SHELL_PROMPT, at, limit).unwrap_or_else(|| fail(&con, "nc non è uscito"));
+    let end = con.wait_for(SHELL_PROMPT, at, limit).unwrap_or_else(|| fail(&con, "nc did not exit"));
     let out = normalize(&con.log()[..end]);
     con.send("poweroff -f\n");
     con.finish(Duration::from_secs(30));

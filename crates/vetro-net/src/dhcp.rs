@@ -1,7 +1,7 @@
-//! Server DHCP (RFC 2131/2132) per un solo guest, come la rete user di QEMU.
+//! DHCP server (RFC 2131/2132) for a single guest, like QEMU's user network.
 //!
-//! Qualsiasi client riceve lo stesso indirizzo (`NetConfig::guest_ip`): la
-//! macchina virtuale ha una sola scheda di rete.
+//! Any client gets the same address (`NetConfig::guest_ip`): the
+//! virtual machine has a single network card.
 
 use std::net::Ipv4Addr;
 
@@ -21,7 +21,7 @@ pub const INFORM: u8 = 8;
 
 const MAGIC: [u8; 4] = [99, 130, 83, 99];
 const FIXED_LEN: usize = 236;
-/// Molti client scartano risposte BOOTP più corte di 300 byte.
+/// Many clients discard BOOTP responses shorter than 300 bytes.
 const MIN_REPLY_LEN: usize = 300;
 
 pub const OPT_SUBNET_MASK: u8 = 1;
@@ -50,7 +50,7 @@ pub struct Packet {
     pub requested_ip: Option<Ipv4Addr>,
     pub server_id: Option<Ipv4Addr>,
     pub hostname: Option<String>,
-    /// Tutte le opzioni, in ordine: (codice, valore).
+    /// All the options, in order: (code, value).
     pub options: Vec<(u8, Vec<u8>)>,
 }
 
@@ -112,7 +112,7 @@ pub fn parse(p: &[u8]) -> Option<Packet> {
     })
 }
 
-/// Costruisce un messaggio BOOTP con le opzioni date (in quest'ordine).
+/// Builds a BOOTP message with the given options (in this order).
 pub fn build(
     op: u8,
     xid: u32,
@@ -144,7 +144,7 @@ pub fn build(
     p
 }
 
-/// Parametri della rete annunciati dal server.
+/// Network parameters announced by the server.
 #[derive(Clone, Copy, Debug)]
 pub struct Lease {
     pub server: Ipv4Addr,
@@ -155,19 +155,19 @@ pub struct Lease {
     pub lease_secs: u32,
 }
 
-/// Risposta del server: messaggio da inviare e tipo.
+/// Server response: message to send and type.
 #[derive(Clone, Debug)]
 pub struct Reply {
     pub message_type: u8,
     pub packet: Vec<u8>,
-    /// Indirizzo IP e MAC di destinazione.
+    /// Destination IP and MAC address.
     pub dst_ip: Ipv4Addr,
     pub dst_mac: Mac,
     pub yiaddr: Ipv4Addr,
 }
 
-/// Decide la risposta a un messaggio del client. `None` se non va risposto
-/// (messaggio non per noi, Release, Decline).
+/// Decides the response to a client message. `None` if it must not be answered
+/// (message not for us, Release, Decline).
 pub fn respond(req: &Packet, lease: &Lease) -> Option<Reply> {
     if req.op != 1 {
         return None;
@@ -176,8 +176,8 @@ pub fn respond(req: &Packet, lease: &Lease) -> Option<Reply> {
     let (reply_type, yiaddr) = match mt {
         DISCOVER => (OFFER, lease.client),
         REQUEST => {
-            // Un REQUEST con server id diverso dal nostro è la scelta di un
-            // altro server: si tace (RFC 2131 4.3.2).
+            // A REQUEST with a server id other than ours is the choice of
+            // another server: stay silent (RFC 2131 4.3.2).
             if req.server_id.is_some_and(|s| s != lease.server) {
                 return None;
             }
@@ -200,9 +200,9 @@ pub fn respond(req: &Packet, lease: &Lease) -> Option<Reply> {
         opts.push((OPT_DNS, lease.dns.octets().to_vec()));
     }
     let packet = build(2, req.xid, req.flags, req.ciaddr, yiaddr, req.chaddr, &opts);
-    // RFC 2131 4.1: al ciaddr se il client ce l'ha già (e non è un NAK),
-    // altrimenti broadcast IP; a livello Ethernet broadcast solo se il
-    // client ha chiesto il bit B.
+    // RFC 2131 4.1: to ciaddr if the client already has it (and it is not a NAK),
+    // otherwise IP broadcast; at the Ethernet level broadcast only if the
+    // client asked for the B bit.
     let (dst_ip, dst_mac) = if !req.ciaddr.is_unspecified() && reply_type != NAK {
         (req.ciaddr, req.chaddr)
     } else if req.broadcast_flag() || reply_type == NAK {
