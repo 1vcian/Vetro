@@ -93,7 +93,16 @@ import { ANDROID_DISK, ANDROID_HOME_NS, ANDROID_PARAMS, ANDROID_WAKE, ANDROID_GR
 import { DiskOverlay, fromBase64, opfsFile, sha256Hex, SnapshotStore, snapshotKey, staleReason, toBase64 } from '../node/persist.mjs';
 import { androidSnapshotKey, downloadPrebuilt, findPrebuilt, PREBUILT_CHUNK, prebuiltSnapUrl } from '../node/prebuilt.mjs';
 
+/** Largest quantum (instructions). */
 const QUANTUM = 1_000_000;
+/**
+ * Wall time a quantum should take: the page's messages (inputs) get in only
+ * between slices, and a slice ends after the quantum that crosses SLICE_MS.
+ * With Android in the browser the guest runs at a few tens of MIPS, so a
+ * fixed 1M-instruction quantum took 20-200 ms: quanta are sized from the
+ * measured speed instead.
+ */
+const QUANTUM_MS = 3;
 const SLICE_MS = 12;
 /**
  * Real time: how far (ms) guest time may run ahead of the real clock. Past
@@ -105,8 +114,10 @@ const SLICE_MS = 12;
 const AHEAD_MS = 4;
 /** Instructions per millisecond of guest time (10 ns each). */
 const STEPS_PER_MS = 100_000;
-/** Smallest quantum in real time, so a quantum always makes progress. */
+/** Smallest quantum, so a quantum always makes progress. */
 const MIN_QUANTUM = 20_000;
+/** Measured guest speed (instructions per ms of wall time), for QUANTUM_MS. */
+let stepsPerMs = 50_000;
 /**
  * Automatic snapshots (after the home screen, after an install) wait until the
  * user has not touched the machine for this long: saving stops the guest for
@@ -1052,10 +1063,17 @@ async function loop() {
     const slice = performance.now();
     let stop;
     for (;;) {
-      let budget = target === null ? QUANTUM : Math.min(QUANTUM, Number(target - m.steps));
+      const size = Math.max(MIN_QUANTUM, Math.min(QUANTUM, Math.round(stepsPerMs * QUANTUM_MS)));
+      let budget = target === null ? size : Math.min(size, Number(target - m.steps));
       // Real time: no further than AHEAD_MS past the clock.
       if (realtime) budget = Math.min(budget, Math.max(MIN_QUANTUM, Math.floor((AHEAD_MS - aheadMs()) * STEPS_PER_MS)));
+      const q0 = performance.now();
+      const s0 = m.steps;
       stop = budget > 0 ? m.run(budget) : 'Budget';
+      const qMs = performance.now() - q0;
+      // Speed from whole quanta that took measurable time (a WFI jump counts
+      // as fast: the next quantum corrects it).
+      if (stop === 'Budget' && qMs > 0.5) stepsPerMs = 0.7 * stepsPerMs + 0.3 * (Number(m.steps - s0) / qMs);
       if (stop === 'Blocked') {
         activity();
         const w = performance.now();
@@ -1078,8 +1096,6 @@ async function loop() {
       }
       if (stop !== 'Budget' || performance.now() - slice > SLICE_MS) break;
       if (realtime && aheadMs() > AHEAD_MS) break;
-      // An input arrived during the slice: it reaches the guest now.
-      if (inbox.length) break;
     }
     if (mode === 'paused') continue;
     if (flush()) activity();
@@ -1125,6 +1141,7 @@ async function loop() {
         inputs: inputLog.length,
         memory: m.memoryBytes,
         input: { ...inputWait },
+        quantum: Math.round(stepsPerMs * QUANTUM_MS),
         // Guest time ahead of the real clock (ms; > 0: the guest is early).
         aheadMs: aheadMs(),
       });

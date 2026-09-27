@@ -13,8 +13,8 @@
 // real clock), VETRO_TAPS taps (default 8) at the centre of the test app, each
 // flipping its colour (blue/orange): the time from the press to the first
 // frame drawn and to the first frame that covers the centre, polled pixel
-// check as a cross-check; then the Home key (the launcher animation): frames
-// per second over 4 s. Results on stdout and in
+// check as a cross-check; then the Home key (the launcher animation): time to
+// the first frame and frames per second while drawing, over 15 s. Results on stdout and in
 // target/aosp/responsiveness.json. VETRO_TAP_LIMIT_MS (unset: none) fails the
 // run when the median tap-to-frame time is above it; VETRO_APP_QUERY adds URL
 // parameters (a device profile, `graphics=full`).
@@ -33,6 +33,8 @@ if (process.env.VETRO_ANDROID !== '1' || !process.env.VETRO_ANDROID_PROFILE) {
 }
 
 const TAPS = Number(process.env.VETRO_TAPS ?? 8);
+/** How long the Home key's frames are counted. */
+const HOME_WAIT_MS = 15_000;
 const out = join(root, 'target/aosp');
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
 const PERF = `(() => { const p = window.vetroState.perf; return { frames: p.frames, pixels: p.pixels, drawMs: p.drawMs, maxDrawMs: p.maxDrawMs, input: p.input ?? null }; })()`;
@@ -99,13 +101,13 @@ run(async () => {
     await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', ...base }, page.s);
     await sleep(80);
     await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base }, page.s);
-    await sleep(4000);
+    await sleep(HOME_WAIT_MS);
     const a1 = await page.eval(PERF);
     const first = await page.eval(`(() => { const f = window.vetroState.perf.frameLog.find((f) => f.t > ${ta}); return f ? f.t - ${ta} : null; })()`);
     const busy = await page.eval(`(() => { const l = window.vetroState.perf.frameLog.filter((f) => f.t > ${ta}); return l.length > 1 ? (l.length - 1) / ((l.at(-1).t - l[0].t) / 1000) : null; })()`);
-    res.home_animation = { frames: a1.frames - a0.frames, fps_4s: (a1.frames - a0.frames) / 4, fps_while_drawing: busy, first_frame_ms: first,
+    res.home_animation = { frames: a1.frames - a0.frames, window_ms: HOME_WAIT_MS, fps_while_drawing: busy, first_frame_ms: first,
       draw_ms_mean: (a1.drawMs - a0.drawMs) / Math.max(1, a1.frames - a0.frames), max_draw_ms: a1.maxDrawMs };
-    console.log(`Home key: first frame ${first?.toFixed(0)} ms, ${res.home_animation.frames} frames in 4 s (${busy?.toFixed(1)} frames/s while drawing), ` +
+    console.log(`Home key: first frame ${first?.toFixed(0)} ms, ${res.home_animation.frames} frames in ${HOME_WAIT_MS / 1000} s (${busy?.toFixed(1)} frames/s while drawing), ` +
       `draw ${res.home_animation.draw_ms_mean.toFixed(2)} ms per frame (max ${a1.maxDrawMs.toFixed(1)} ms)`);
     const limit = process.env.VETRO_TAP_LIMIT_MS;
     if (limit) check(res.tap_median.frame_ms <= Number(limit), `median tap-to-frame ${res.tap_median.frame_ms} ms > ${limit} ms`);
