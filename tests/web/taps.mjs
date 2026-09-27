@@ -32,7 +32,15 @@ const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
  * the page drew its touch feedback. `null` times: not seen.
  */
 export async function measureTaps(page, cdp, n, { limitMs = 120_000, pauseMs = 1500, log = console.log } = {}) {
-  const r = await page.eval("(() => { const b = document.getElementById('screen').getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; })()");
+  const r = await page.eval(`(() => {
+    const c = document.getElementById('screen');
+    c.scrollIntoView({ block: 'center' });
+    const b = c.getBoundingClientRect();
+    const x = b.left + b.width / 2, y = b.top + b.height / 2;
+    const hit = document.elementFromPoint(x, y);
+    return { x, y, hit: hit ? (hit.id || hit.className || hit.tagName) : null };
+  })()`);
+  if (r.hit !== 'screen') throw new Error(`the centre of the screen is covered by ${r.hit} (${r.x}, ${r.y})`);
   const taps = [];
   let colour = await page.eval(CENTRE);
   for (let i = 0; i < n; i++) {
