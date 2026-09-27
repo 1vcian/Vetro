@@ -29,7 +29,8 @@
 // VETRO_ANDROID_MANIFEST), downloaded with verification into OPFS and
 // restored (download and restore times); then the checks of 3 (adb, the APK
 // installed and opened, a real click). 2. Second start from OPFS: ready time
-// (M6: under 15 s), adb.
+// and first frame (M6: under 15 s), adb, three taps on the test app with the
+// time from the press to its redraw (tests/web/taps.mjs).
 //
 // The times go to stdout and to target/aosp/chrome-measurements.json.
 //
@@ -44,6 +45,7 @@ import { appMounts, serve } from '../../tools/web-serve.mjs';
 import { check, Fail, root, run } from './lib.mjs';
 import { findChrome, launch, openPage } from './chrome.mjs';
 import { colorSeen } from '../../web/node/android.mjs';
+import { measureTaps, median } from './taps.mjs';
 
 if (process.env.VETRO_ANDROID !== '1') {
   console.log('SKIP: long Android test in Chrome (VETRO_ANDROID=1 to run it)');
@@ -167,7 +169,9 @@ async function session(chrome, profile, url, kind) {
     } else {
       misure.ripristino = m;
       console.log(`second start from the snapshot: ready ${secs(boot.ms)} s after the page opened (read ${boot.times.readSnapshot?.toFixed(0)} ms, restore ${boot.times.restore?.toFixed(0)} ms), first frame at ${secs(frame)} s`);
-      check(boot.ms < 15_000 || process.env.VETRO_ANDROID_SLOW === '1', `second start ready in ${secs(boot.ms)} s: M6 wants the home screen in under 15 s (VETRO_ANDROID_SLOW=1 on slow machines)`);
+      // M6: the screen back (the first frame drawn) in under 15 s from opening the page.
+      check(Math.max(boot.ms, frame) < 15_000 || process.env.VETRO_ANDROID_SLOW === '1',
+        `second start: first frame ${secs(frame)} s after the page opened (ready ${secs(boot.ms)} s): M6 wants the home screen in under 15 s (VETRO_ANDROID_SLOW=1 on slow machines)`);
     }
     await new Promise((ok) => setTimeout(ok, 3000));
     const shot = prebuilt ? 'chrome-home-prebuilt.png' : 'chrome-home-2.png';
@@ -189,8 +193,17 @@ async function session(chrome, profile, url, kind) {
     const sh = await page.eval("window.vetroAndroid.shell('getprop sys.boot_completed; getprop ro.product.model')");
     check(sh.stdout.startsWith('1\n'), `adb shell: ${JSON.stringify(sh)}`);
     console.log(`adb after the restore: ${JSON.stringify(devices)}, shell ${JSON.stringify(sh.stdout)}`);
-    // After the prebuilt run the second start only checks the restore and adb.
-    if (kind === 'second') return;
+    // After the prebuilt run the second start checks the restore and adb,
+    // then how fast the test app answers taps (reported, not enforced).
+    if (kind === 'second') {
+      misure.taps = await measureTaps(page, cdp, 3, { limitMs: 60_000 });
+      const med = (k) => median(misure.taps.map((t) => t[k]));
+      misure.tap_median = { frame_ms: med('frame_ms'), centre_ms: med('centre_ms'), polled_ms: med('polled_ms') };
+      console.log(`taps after the second start: median ${misure.tap_median.centre_ms?.toFixed(0)} ms from the press to the app's redraw ` +
+        `(first frame ${misure.tap_median.frame_ms?.toFixed(0)} ms, pixel polled ${misure.tap_median.polled_ms} ms)`);
+      check(misure.taps.every((t) => t.ripple), 'the page did not draw its touch feedback');
+      return;
+    }
     const apk = join(root, 'target/apps/tocco.apk');
     check(existsSync(apk), 'target/apps/tocco.apk missing: tests/apps/tocco/build.sh');
     const b64 = readFileSync(apk).toString('base64');

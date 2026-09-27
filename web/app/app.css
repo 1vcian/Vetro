@@ -127,6 +127,40 @@ main {
   image-rendering: pixelated;
 }
 
+/* Touch feedback drawn by the page at once, before the guest answers: the
+   press registered even when the emulated phone takes a while to redraw. */
+.touch-ripple {
+  position: absolute;
+  width: 44px;
+  height: 44px;
+  margin: -22px 0 0 -22px;
+  border-radius: 50%;
+  background: rgb(255 255 255 / 0.45);
+  box-shadow: 0 0 0 2px rgb(0 0 0 / 0.25);
+  pointer-events: none;
+  animation: touch-ripple 450ms ease-out forwards;
+}
+
+@keyframes touch-ripple {
+  from { transform: scale(0.35); opacity: 1; }
+  to { transform: scale(1.6); opacity: 0; }
+}
+
+/* The machine is busy outside the guest (saving its snapshot): inputs wait. */
+#screen-busy {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  padding: 6px 12px;
+  border-radius: 14px;
+  background: rgb(0 0 0 / 0.7);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1.3;
+  pointer-events: none;
+}
+
 /* Scanout off: explanation and test pattern button. The box
    lets mouse and touches through to the canvas, the button doesn't. */
 #screen-off {
