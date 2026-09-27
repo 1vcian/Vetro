@@ -143,6 +143,8 @@ export function appMounts() {
     ['/wasm/vetro_wasm.wasm', join(root, 'target/wasm32-unknown-unknown/release/vetro_wasm.wasm')],
     ['/guest/', join(root, 'target/guest-kernel')],
     ['/disks/', join(root, 'target/web-disks')],
+    // Prebuilt Android snapshots (tools/aosp/prebuilt-snapshot.mjs, ADR 0031).
+    ['/aosp/snapshots/', join(root, 'target/aosp/prebuilt')],
     ['/aosp/', join(root, 'target/aosp/out')],
     ['/', join(root, 'web')],
   ];

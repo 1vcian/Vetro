@@ -22,9 +22,18 @@
 //    the touchscreen) turns it orange. adb devices and shell from the page.
 //    Screenshots chrome-app-*.png.
 //
+// With VETRO_ANDROID_PREBUILT=1 (ADR 0031, the nightly criterion): no cold
+// boot. 1. First start with an empty profile: the prebuilt snapshot at the
+// home screen is found by the app's key next to the image (a local server
+// serves target/aosp/prebuilt as /aosp/snapshots/, or R2 with
+// VETRO_ANDROID_MANIFEST), downloaded with verification into OPFS and
+// restored (download and restore times); then the checks of 3 (adb, the APK
+// installed and opened, a real click). 2. Second start from OPFS: ready time
+// (M6: under 15 s), adb.
+//
 // The times go to stdout and to target/aosp/chrome-measurements.json.
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { appMounts, serve } from '../../tools/web-serve.mjs';
@@ -37,6 +46,7 @@ if (process.env.VETRO_ANDROID !== '1') {
   process.exit(0);
 }
 
+const PREBUILT = process.env.VETRO_ANDROID_PREBUILT === '1';
 const BOOT_LIMIT_MS = Number(process.env.VETRO_ANDROID_BOOT_MINUTES ?? 240) * 60_000;
 const out = join(root, 'target/aosp');
 const misure = { inizio: new Date().toISOString() };
@@ -64,12 +74,12 @@ const near = (a, b) => colorSeen(a, b) !== null;
 const BLU = [0x15, 0x65, 0xc0];
 const ARANCIONE = [0xef, 0x6c, 0x00];
 
-async function session(chrome, profile, url, first) {
+async function session(chrome, profile, url, kind) {
   const { proc, cdp } = await launch(chrome, profile);
   try {
     const t0 = Date.now();
     const { page } = await openPage(cdp, url);
-    if (first) {
+    if (kind === 'cold') {
       // Boot phases, up to sys.boot_completed.
       let seen = 0;
       await page.waitFor('sys.boot_completed', async () => {
@@ -104,16 +114,37 @@ async function session(chrome, profile, url, first) {
       check(misure.home_1.colors > 20, `home screen: almost uniform screen (${misure.home_1.colors} colours)`);
       return;
     }
-    // Second start: from the snapshot.
-    const boot = await page.waitFor('restore', async () => (await page.state())?.boot, 5 * 60_000);
-    check(boot.mode === 'snapshot', `second start from ${boot.mode}, not from the snapshot`);
+    // From a snapshot: the prebuilt one (downloaded) or the one in OPFS.
+    const prebuilt = kind === 'prebuilt';
+    const boot = await page.waitFor(prebuilt ? 'prebuilt snapshot downloaded and restored' : 'restore', async () => {
+      const st = await page.state();
+      const pb = (await page.eval(ANDROID_STATE)).prebuilt;
+      if (pb?.state === 'failed') throw new Fail(`prebuilt download failed: ${pb.error}`);
+      if (pb?.state === 'missing') throw new Fail(`no prebuilt snapshot: ${pb.reason}`);
+      if (st?.stopped) throw new Fail(`machine stopped: ${JSON.stringify(st.stopped)}`);
+      return st?.boot;
+    }, (prebuilt ? 60 : 5) * 60_000);
+    check(boot.mode === 'snapshot', `start from ${boot.mode}, not from a snapshot`);
+    check(boot.prebuilt === prebuilt, `prebuilt ${boot.prebuilt}, expected ${prebuilt}`);
     const frame = await page.waitFor('first frame', async () => (await page.state())?.firstFrame, 60_000);
-    misure.ripristino = { pronto_ms: boot.ms, primo_fotogramma_ms: frame, apertura_ms: Date.now() - t0, times: boot.times, size: boot.size, memoria: boot.memory };
-    console.log(`second start from the snapshot: ready ${secs(boot.ms)} s after the page opened (read ${boot.times.readSnapshot?.toFixed(0)} ms, restore ${boot.times.restore?.toFixed(0)} ms), first frame at ${secs(frame)} s`);
+    const pb = (await page.eval(ANDROID_STATE)).prebuilt;
+    const m = { pronto_ms: boot.ms, primo_fotogramma_ms: frame, apertura_ms: Date.now() - t0, times: boot.times, size: boot.size, memoria: boot.memory };
+    if (prebuilt) {
+      misure.prebuilt = { ...m, download_ms: pb.ms, bytes: pb.bytes, retries: pb.retries };
+      console.log(`first start from the prebuilt snapshot: ${(pb.size / 2 ** 20).toFixed(0)} MiB downloaded and verified in ${secs(pb.ms)} s ` +
+        `(${(pb.bytes / pb.ms / 1000).toFixed(1)} MB/s, ${pb.retries} retries), ready ${secs(boot.ms)} s after the page opened ` +
+        `(restore ${boot.times.restore?.toFixed(0)} ms), first frame at ${secs(frame)} s`);
+    } else {
+      misure.ripristino = m;
+      console.log(`second start from the snapshot: ready ${secs(boot.ms)} s after the page opened (read ${boot.times.readSnapshot?.toFixed(0)} ms, restore ${boot.times.restore?.toFixed(0)} ms), first frame at ${secs(frame)} s`);
+      check(boot.ms < 15_000 || process.env.VETRO_ANDROID_SLOW === '1', `second start ready in ${secs(boot.ms)} s: M6 wants the home screen in under 15 s (VETRO_ANDROID_SLOW=1 on slow machines)`);
+    }
     await new Promise((ok) => setTimeout(ok, 3000));
-    await screenshot(page, 'chrome-home-2.png');
-    misure.home_2 = await page.eval(SCREEN);
-    check(misure.home_2.colors > 20, `home screen after the restore: almost uniform screen (${misure.home_2.colors} colours)`);
+    const shot = prebuilt ? 'chrome-home-prebuilt.png' : 'chrome-home-2.png';
+    await screenshot(page, shot);
+    const screen = await page.eval(SCREEN);
+    misure[prebuilt ? 'home_prebuilt' : 'home_2'] = screen;
+    check(screen.colors > 20, `screen after the restore: almost uniform (${screen.colors} colours)`);
     // adb after the restore, then the APK.
     await page.waitFor('adb connected after the restore', async () => (await page.eval(ANDROID_STATE)).adb.state === 'ready', 10 * 60_000);
     const devices = await page.eval('window.vetroAndroid.devices()');
@@ -121,6 +152,8 @@ async function session(chrome, profile, url, first) {
     const sh = await page.eval("window.vetroAndroid.shell('getprop sys.boot_completed; getprop ro.product.model')");
     check(sh.stdout.startsWith('1\n'), `adb shell: ${JSON.stringify(sh)}`);
     console.log(`adb after the restore: ${JSON.stringify(devices)}, shell ${JSON.stringify(sh.stdout)}`);
+    // After the prebuilt run the second start only checks the restore and adb.
+    if (kind === 'second') return;
     const apk = join(root, 'target/apps/tocco.apk');
     check(existsSync(apk), 'target/apps/tocco.apk missing: tests/apps/tocco/build.sh');
     const b64 = readFileSync(apk).toString('base64');
@@ -163,7 +196,8 @@ run(async () => {
   const srv = await serve({ mounts: appMounts(), port });
   const manifest = process.env.VETRO_ANDROID_MANIFEST ?? `${srv.url}/aosp/manifest.json`;
   if (!process.env.VETRO_ANDROID_MANIFEST) check(existsSync(join(out, 'out/web/disk.json')), 'target/aosp/out/web/disk.json missing: node tools/aosp/web-disk.mjs');
-  const url = `${srv.url}/app/?os=android&autostart=1&manifest=${encodeURIComponent(manifest)}`;
+  if (PREBUILT && !process.env.VETRO_ANDROID_MANIFEST) check(readdirSync(join(out, 'prebuilt')).some((f) => f.endsWith('.json')), 'target/aosp/prebuilt has no snapshot: tools/aosp/prebuilt-snapshot.mjs');
+  const url = `${srv.url}/app/?os=android&autostart=1${PREBUILT ? '' : '&cold=1'}&manifest=${encodeURIComponent(manifest)}`;
   misure.manifest = manifest;
   // VETRO_ANDROID_PROFILE: a Chrome profile to keep (with the snapshot in
   // OPFS); VETRO_ANDROID_SKIP_BOOT=1 skips the first boot and resumes from the
@@ -173,8 +207,13 @@ run(async () => {
   if (keep) mkdirSync(keep, { recursive: true });
   let ok = false;
   try {
-    if (process.env.VETRO_ANDROID_SKIP_BOOT !== '1') await session(chrome, profile, url, true);
-    await session(chrome, profile, url, false);
+    if (PREBUILT) {
+      await session(chrome, profile, url, 'prebuilt');
+      await session(chrome, profile, url, 'second');
+    } else {
+      if (process.env.VETRO_ANDROID_SKIP_BOOT !== '1') await session(chrome, profile, url, 'cold');
+      await session(chrome, profile, url, 'restore');
+    }
     ok = true;
   } finally {
     misure.fine = new Date().toISOString();

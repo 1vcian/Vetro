@@ -3,7 +3,14 @@ name: nightly
 on:
   schedule:
     - cron: "0 2 * * *"
+    # Sundays: also the Android cold boot (ADR 0031).
+    - cron: "0 4 * * 0"
   workflow_dispatch:
+    inputs:
+      cold:
+        description: "Also run the Android cold boot in Chrome (hours)"
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -11,16 +18,117 @@ env:
 
 jobs:
   differential:
+    if: github.event.schedule != '0 4 * * 0'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - run: rustup show active-toolchain || rustup toolchain install
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-user
       - uses: Swatinem/rust-cache@v2
-      # Programmi casuali con semi nuovi a ogni notte (ADR 0006); un caso
-      # fallito si riproduce con VETRO_DIFF_SEED=<seme> VETRO_DIFF_CASES=1.
-      # Da M3: avvio del kernel headless.
+      # Random programs with new seeds every night (ADR 0006); a failed case
+      # is reproduced with VETRO_DIFF_SEED=<seed> VETRO_DIFF_CASES=1.
       - run: cargo test --release -p vetro-diff -p vetro-isa-tests
         env:
           VETRO_DIFF_CASES: "20000"
           VETRO_DIFF_SEED: "${{ github.run_number }}000000"
+
+  # M5/M6 exit criteria with Vetro's AOSP image in headless Chrome (ADR 0031):
+  # the image from R2 (public), the app served on port 8080 (allowed by the
+  # bucket's CORS). Every night: first start from the prebuilt snapshot at the
+  # home screen (found by the key of the vetro-wasm built here, downloaded,
+  # verified, restored), adb, the test APK installed through the page and
+  # opened, a real click that changes the app's colour; then a second start
+  # from OPFS. It fails if R2 has no prebuilt snapshot for this vetro-wasm:
+  # regenerate it (tools/aosp/prebuilt-snapshot.mjs, upload-snapshot.sh).
+  android:
+    if: github.event.schedule != '0 4 * * 0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cargo build --release --target wasm32-unknown-unknown -p vetro-wasm
+      - name: Test APK (Android SDK of the runner)
+        run: |
+          plat=$(ls "$ANDROID_HOME/platforms" | sort -V | tail -1)
+          bt=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
+          VETRO_ANDROID_PLATFORM="$plat" VETRO_ANDROID_BUILD_TOOLS="$bt" tests/apps/tocco/build.sh
+      - name: Prebuilt snapshot for this vetro-wasm
+        run: node tools/aosp/prebuilt-key.mjs --require
+      - name: Android in Chrome from the prebuilt snapshot
+        run: |
+          set -o pipefail
+          manifest=$(node -e "import('./web/node/android.mjs').then((m) => console.log(m.DEFAULT_MANIFEST))")
+          VETRO_ANDROID_MANIFEST="$manifest" node tests/web/android-chrome.mjs 2>&1 | tee android.log
+        env:
+          VETRO_ANDROID: "1"
+          VETRO_ANDROID_PREBUILT: "1"
+          VETRO_WEB_PORT: "8080"
+          # The runner is slower than the reference Mac: the 15 s second
+          # start is measured and reported, not enforced here.
+          VETRO_ANDROID_SLOW: "1"
+      - if: always()
+        run: |
+          [ -f target/aosp/chrome-measurements.json ] && echo "::notice title=Android measurements::$(tr -d '\n' < target/aosp/chrome-measurements.json | cut -c1-3000)" || true
+          if [ -s android.log ]; then
+            grep -E '^(first start|second start|APK installed|touch received|adb after)' android.log | sed 's/^/::notice title=Android::/' || true
+          fi
+      - if: failure()
+        run: |
+          [ -s android.log ] && echo "::error title=android.log::$(grep -vE '^\s*$' android.log | tail -n 60 | awk '{gsub(/%/, "%25"); gsub(/\r/, ""); printf "%s%%0A", $0}')" || true
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-screens
+          path: |
+            target/aosp/*.png
+            target/aosp/chrome-measurements.json
+          if-no-files-found: ignore
+
+  # The first boot from scratch to the home screen in Chrome: about 45 minutes
+  # on an Apple silicon Mac, several times that on a hosted runner (ADR 0031):
+  # weekly (Sundays) and by hand, not every night.
+  android-cold:
+    if: github.event.schedule == '0 4 * * 0' || inputs.cold
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cargo build --release --target wasm32-unknown-unknown -p vetro-wasm
+      - name: Test APK (Android SDK of the runner)
+        run: |
+          plat=$(ls "$ANDROID_HOME/platforms" | sort -V | tail -1)
+          bt=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
+          VETRO_ANDROID_PLATFORM="$plat" VETRO_ANDROID_BUILD_TOOLS="$bt" tests/apps/tocco/build.sh
+      - name: Android cold boot in Chrome, then the second start
+        run: |
+          set -o pipefail
+          manifest=$(node -e "import('./web/node/android.mjs').then((m) => console.log(m.DEFAULT_MANIFEST))")
+          VETRO_ANDROID_MANIFEST="$manifest" node tests/web/android-chrome.mjs 2>&1 | tee android-cold.log
+        env:
+          VETRO_ANDROID: "1"
+          VETRO_WEB_PORT: "8080"
+          VETRO_ANDROID_SLOW: "1"
+          VETRO_ANDROID_BOOT_MINUTES: "300"
+      - if: always()
+        run: |
+          if [ -s android-cold.log ]; then
+            grep -E '^(phase|boot finished|home screen drawn|snapshot|second start|APK installed|touch received)' android-cold.log | sed 's/^/::notice title=Android cold boot::/' || true
+          fi
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-cold
+          path: |
+            target/aosp/*.png
+            target/aosp/chrome-measurements.json
+          if-no-files-found: ignore
