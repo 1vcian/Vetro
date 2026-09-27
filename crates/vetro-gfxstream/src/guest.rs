@@ -315,7 +315,9 @@ pub fn scene_redraw(gu: &mut Guest) -> Vec<u8> {
 pub fn scene_redraw_expected() -> Vec<u8> {
     let n = SCENE_SIZE;
     scene_expected()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .enumerate()
         .flat_map(|(i, p)| {
             let (x, y) = (i as u32 % n, i as u32 / n);

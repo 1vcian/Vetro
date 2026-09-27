@@ -275,7 +275,7 @@ fn from_rgba(fmt: u32, rgba: &[u8]) -> Vec<u8> {
     if comps == 4 {
         return rgba.to_vec();
     }
-    rgba.chunks_exact(4).flat_map(|p| p[..comps].to_vec()).collect()
+    rgba.as_chunks::<4>().0.iter().flat_map(|p| p[..comps].to_vec()).collect()
 }
 
 enum Item {
