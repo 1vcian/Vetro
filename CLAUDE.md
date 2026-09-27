@@ -49,6 +49,16 @@ tools/wasm-boot.sh --jit             # boot in Node: interpreter and JIT in V8, 
 tools/pages/build.sh && node tests/web/pages.mjs   # GitHub Pages site and its Chrome test
 ```
 
+Heavy tests (boot tests, full workspace with the oracle, LTP, browser and
+Android runs) go to the build VM when it is on, not the Mac:
+
+```sh
+tools/remote/test.sh -- cargo test --release -p vetro-boot-tests   # runs on the VM, native QEMU 10
+```
+
+If the VM is off (the script exits with 3), run only light checks locally
+(fmt, clippy, the crates you touched) and leave the heavy ones to CI.
+
 Oracle on macOS (QEMU user mode only exists on Linux; Docker must be running):
 
 ```sh
