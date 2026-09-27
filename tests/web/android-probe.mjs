@@ -25,7 +25,16 @@ run(async () => {
     const { page } = await openPage(cdp, url);
     await page.waitFor('restore', async () => (await page.state())?.boot, 10 * 60_000);
     const t0 = Date.now();
-    await page.waitFor('adb', async () => (await page.eval('window.vetroAndroid.state()')).adb.state === 'ready', 20 * 60_000);
+    let last = 0;
+    await page.waitFor('adb', async () => {
+      const a = (await page.eval('window.vetroAndroid.state()')).adb;
+      if (Date.now() - last > 30_000) {
+        last = Date.now();
+        const s = (await page.state()).stats;
+        console.log(`${((Date.now() - t0) / 1000).toFixed(0)} s: adb ${JSON.stringify(a)}, guest ${s?.guestSecs.toFixed(1)} s, ${s?.mips.toFixed(0)} MIPS`);
+      }
+      return a.state === 'ready';
+    }, 30 * 60_000);
     console.log(`adb ready ${((Date.now() - t0) / 1000).toFixed(0)} s after the restore`);
     for (const cmd of process.argv.slice(2)) {
       const t = Date.now();
