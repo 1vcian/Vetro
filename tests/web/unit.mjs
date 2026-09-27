@@ -215,7 +215,7 @@ test('persistenza: MemFile, cache degli snapshot, chiavi', async () => {
   eq(r.meta.size, 3, 'dimensione nei metadati');
   eq([...fromBase64(r.meta.console)], [0, 255, 10], 'console in base64');
   eq(staleReason(r.meta, [{ generation: 3 }, null]), null, 'stessa generazione: vale');
-  check(staleReason(r.meta, [{ generation: 4 }, null])?.includes('generazione 4'), 'disco andato avanti: non vale');
+  check(staleReason(r.meta, [{ generation: 4 }, null])?.includes('generation 4'), 'disco andato avanti: non vale');
   await store.remove('k');
   eq(await store.load('k'), null, 'tolto');
 

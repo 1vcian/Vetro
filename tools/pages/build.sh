@@ -1,51 +1,54 @@
 #!/usr/bin/env bash
-# Il sito di GitHub Pages: l'app web di Vetro con il kernel guest di M3, più i
-# sorgenti GPL di ciò che il sito distribuisce (kernel Linux e BusyBox
-# dell'initramfs, vedi CLAUDE.md, "Licenze").
+# The GitHub Pages site: Vetro's web app with the M3 guest kernel, plus the
+# GPL sources of what the site distributes (Linux kernel and the initramfs's
+# BusyBox, see CLAUDE.md, "Licensing").
 #
-#   tools/pages/build.sh [uscita]        # predefinita: target/pages
+#   tools/pages/build.sh [output]        # default: target/pages
 #
-# Serve: target/guest-kernel (tools/guest-kernel/build.sh) e la rete per i
-# sorgenti di BusyBox. Costruisce vetro-wasm in release. Struttura:
+# Needs: target/guest-kernel (tools/guest-kernel/build.sh) and the network for
+# the BusyBox sources and the prebuilt Android snapshot lookup. Builds
+# vetro-wasm in release. Layout:
 #
-#   index.html, .nojekyll      pagina d'ingresso (rimanda ad app/)
-#   app/, node/                web/app e web/node (l'app importa ../node/)
-#   wasm/vetro_wasm.wasm       la macchina
+#   index.html, .nojekyll      landing page (links to app/)
+#   app/, node/                web/app and web/node (the app imports ../node/)
+#   app/android-prebuilt.json  the prebuilt Android snapshot for this
+#                              vetro-wasm, if R2 has it (ADR 0031)
+#   wasm/vetro_wasm.wasm       the machine
 #   guest/Image, guest/initramfs.cpio.gz
-#   sources/                   sorgenti GPL: kernel (a pezzi da 60 MiB, il
-#                              limite di Pages è 100 MiB per file), BusyBox e
-#                              patch di Alpine, configurazione, script
+#   sources/                   GPL sources: kernel (in 60 MiB pieces, Pages's
+#                              limit is 100 MiB per file), BusyBox and
+#                              Alpine's patches, configuration, scripts
 #
-# Niente immagini Android: le immagini di sistema arrivano come artefatti
-# versionati (M5) e quelle dell'SDK di Google non si ridistribuiscono.
+# No Android images: the system images are versioned artifacts on R2 (M5), and
+# Google's SDK images are not redistributed.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 out=${1:-$root/target/pages}
 guest=$root/target/guest-kernel
 
-# BusyBox dell'initramfs: pacchetto Alpine busybox-static 1.37.0-r20
-# (target/guest-kernel/VERSIONS), cioè i sorgenti upstream più le patch di
-# aports al commit che ha introdotto -r20 sul ramo 3.22-stable.
+# The initramfs's BusyBox: Alpine package busybox-static 1.37.0-r20
+# (target/guest-kernel/VERSIONS), i.e. the upstream sources plus the aports
+# patches at the commit that introduced -r20 on the 3.22-stable branch.
 BUSYBOX_VER=1.37.0
 BUSYBOX_SHA256=3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4
 APORTS_COMMIT=2e97d754a30d558f15524b8e422303c8a96832df
 APORTS_PKGREL=20
 APORTS_SHA256=f3969b717e36d97febb6f3694d0de12a94383fc45c150c5cb31b7a75df18e502
-# Copia dei due archivi su Cloudflare R2 (i server d'origine a volte
-# rifiutano i runner di CI); si prova per prima, l'origine è il ripiego.
-# Il contenuto è comunque verificato con sha256.
+# Copy of the two archives on Cloudflare R2 (the origin servers sometimes
+# refuse CI runners); tried first, the origin is the fallback. The content is
+# verified with sha256 either way.
 MIRROR=${VETRO_SOURCES_MIRROR:-https://pub-06e88fdd7f374fffb06844d60083f2ae.r2.dev/sources}
 
-# sha256 portabile: sha256sum (Linux) o shasum (macOS).
+# Portable sha256: sha256sum (Linux) or shasum (macOS).
 sha256() { if command -v sha256sum >/dev/null; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
 
 for f in Image initramfs.cpio.gz VERSIONS sources/README sources/defconfig; do
-  [ -f "$guest/$f" ] || { echo "manca $guest/$f: esegui tools/guest-kernel/build.sh" >&2; exit 1; }
+  [ -f "$guest/$f" ] || { echo "missing $guest/$f: run tools/guest-kernel/build.sh" >&2; exit 1; }
 done
 kernel_tar=$(ls "$guest"/sources/linux-*.tar.xz)
 grep -q "busybox-static-$BUSYBOX_VER-r$APORTS_PKGREL " "$guest/VERSIONS" || {
-  echo "VERSIONS non indica busybox-static-$BUSYBOX_VER-r$APORTS_PKGREL: aggiorna BUSYBOX_* e APORTS_* in $0" >&2
+  echo "VERSIONS does not say busybox-static-$BUSYBOX_VER-r$APORTS_PKGREL: update BUSYBOX_* and APORTS_* in $0" >&2
   exit 1
 }
 
@@ -68,7 +71,7 @@ echo "==> prebuilt Android snapshot"
 node "$root/tools/aosp/prebuilt-key.mjs" --wasm="$out/wasm/vetro_wasm.wasm" --write="$out/app/android-prebuilt.json" \
   ${VETRO_REQUIRE_PREBUILT:+--require}
 
-echo "==> sorgenti GPL"
+echo "==> GPL sources"
 src=$out/sources
 cp "$guest"/sources/{README,defconfig} "$guest/VERSIONS" "$src/"
 cp "$root/guest/kernel/config/vetro.config" "$src/"
@@ -77,18 +80,18 @@ for f in "$guest"/sources/*; do
 done
 (cd "$src" && split -b 60m "$kernel_tar" "$(basename "$kernel_tar")." \
   && sha256 "$kernel_tar" | sed "s|  .*/|  |" > "$(basename "$kernel_tar").sha256")
-# fetch FILE SHA256 URL_ORIGINE: dalla cache, poi dal mirror, poi dall'origine.
+# fetch FILE SHA256 ORIGIN_URL: from the cache, then the mirror, then the origin.
 fetch() {
   local file=$1 sum=$2 origin=$3 url
   for url in "" "$MIRROR/$(basename "$1")" "$origin"; do
     if [ -n "$url" ]; then
-      curl -sSfL --retry 3 -o "$file.tmp" "$url" || { echo "   (non scaricato da $url)"; continue; }
+      curl -sSfL --retry 3 -o "$file.tmp" "$url" || { echo "   (not downloaded from $url)"; continue; }
       mv "$file.tmp" "$file"
     fi
     [ -f "$file" ] && echo "$sum  $file" | sha256 -c - >/dev/null 2>&1 && return 0
     rm -f "$file"
   done
-  echo "impossibile ottenere $(basename "$file") con sha256 $sum" >&2
+  echo "cannot get $(basename "$file") with sha256 $sum" >&2
   return 1
 }
 cache=$root/target/pages-cache
@@ -103,17 +106,17 @@ tar xzf "$ap" -O "aports-$APORTS_COMMIT-main-busybox/main/busybox/APKBUILD" | gr
 cp "$ap" "$src/"
 cat >> "$src/README" <<EOF
 
-Sorgenti su questo sito:
-  $(basename "$kernel_tar").a?  il tarball del kernel a pezzi; ricomponilo con
+Sources on this site:
+  $(basename "$kernel_tar").a?  the kernel tarball in pieces; put it back together with
       cat $(basename "$kernel_tar").a? > $(basename "$kernel_tar")
       shasum -a 256 -c $(basename "$kernel_tar").sha256
-  busybox-$BUSYBOX_VER.tar.bz2   sorgenti upstream (sha256 $BUSYBOX_SHA256)
+  busybox-$BUSYBOX_VER.tar.bz2   upstream sources (sha256 $BUSYBOX_SHA256)
   $(basename "$ap")
-      APKBUILD e patch di Alpine per busybox $BUSYBOX_VER-r$APORTS_PKGREL
+      Alpine's APKBUILD and patches for busybox $BUSYBOX_VER-r$APORTS_PKGREL
       (aports, commit $APORTS_COMMIT)
   vetro.config, defconfig, build.sh, Dockerfile, init, ...
-      configurazione del kernel e script di costruzione dell'initramfs.
-Il codice di Vetro è sotto PolyForm Noncommercial 1.0.0:
+      kernel configuration and initramfs build scripts.
+Vetro's code is under PolyForm Noncommercial 1.0.0:
 https://github.com/1vcian/Vetro
 EOF
 

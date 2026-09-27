@@ -1,14 +1,15 @@
 #!/usr/bin/env node
-// Il sito di GitHub Pages (tools/pages/build.sh) come lo serve Pages: sotto
-// un sottopercorso (/Vetro/) e senza intestazioni COOP/COEP. In Chrome
-// headless la pagina d'ingresso porta all'app, l'app avvia il kernel guest
-// fino alla shell e la console risponde, l'ispettore di rete vede una
-// richiesta del guest (corpi vuoti come "0 B"); i sorgenti GPL ci sono e il tarball
-// del kernel ricomposto dai pezzi ha lo sha256 dichiarato.
+// The GitHub Pages site (tools/pages/build.sh) as Pages serves it: under a
+// subpath (/Vetro/) and without COOP/COEP headers. In headless Chrome the
+// landing page leads to the app, the app boots the guest kernel to the shell
+// and the console answers, the network inspector sees a guest request (empty
+// bodies as "0 B"); the GPL sources are there and the kernel tarball put back
+// together from its pieces has the declared sha256; the prebuilt Android
+// snapshot the site announces, if any, is the one for its vetro-wasm.
 //
 //   node tests/web/pages.mjs [target/pages]
 //
-// Senza Chrome dice SKIP (non è un test passato), o fallisce con
+// Without Chrome it says SKIP (not a passed test), or fails with
 // VETRO_REQUIRE_BROWSER=1.
 
 import { createHash } from 'node:crypto';
@@ -23,22 +24,22 @@ import { findPrebuilt } from '../../web/node/prebuilt.mjs';
 
 run(async () => {
   const site = process.argv[2] ?? join(root, 'target/pages');
-  if (!existsSync(join(site, 'index.html'))) throw new Fail(`${site} mancante: esegui tools/pages/build.sh`);
+  if (!existsSync(join(site, 'index.html'))) throw new Fail(`${site} missing: run tools/pages/build.sh`);
 
-  // Sorgenti GPL: il tarball ricomposto dai pezzi è quello dichiarato.
+  // GPL sources: the tarball put back together from its pieces is the declared one.
   const src = join(site, 'sources');
   const files = readdirSync(src);
   const sums = files.filter((f) => /^linux-.*\.tar\.xz\.sha256$/.test(f));
-  check(sums.length === 1, `sources/: atteso un linux-*.tar.xz.sha256, trovati ${sums}`);
+  check(sums.length === 1, `sources/: expected one linux-*.tar.xz.sha256, found ${sums}`);
   const [want, name] = readFileSync(join(src, sums[0]), 'utf8').trim().split(/\s+/);
   const parts = files.filter((f) => f.startsWith(`${name}.a`)).sort();
-  check(parts.length > 1, `sources/: pezzi di ${name} assenti`);
+  check(parts.length > 1, `sources/: pieces of ${name} missing`);
   const h = createHash('sha256');
   for (const p of parts) h.update(readFileSync(join(src, p)));
-  check(h.digest('hex') === want, `sources/: ${name} ricomposto non ha lo sha256 ${want}`);
-  for (const f of ['README', 'defconfig', 'vetro.config', 'VERSIONS', 'index.html']) check(files.includes(f), `sources/${f} assente`);
-  check(files.some((f) => /^busybox-.*\.tar\.bz2$/.test(f)), 'sources/: sorgenti di BusyBox assenti');
-  console.log(`sorgenti GPL: ${name} in ${parts.length} pezzi (sha256 giusto), BusyBox e patch di Alpine`);
+  check(h.digest('hex') === want, `sources/: ${name} put back together does not have sha256 ${want}`);
+  for (const f of ['README', 'defconfig', 'vetro.config', 'VERSIONS', 'index.html']) check(files.includes(f), `sources/${f} missing`);
+  check(files.some((f) => /^busybox-.*\.tar\.bz2$/.test(f)), 'sources/: BusyBox sources missing');
+  console.log(`GPL sources: ${name} in ${parts.length} pieces (right sha256), BusyBox and Alpine's patches`);
 
   // The prebuilt Android snapshot (ADR 0031): if the site announces one, it
   // is the one for the site's own vetro-wasm (same key) and R2 has it with
@@ -57,7 +58,7 @@ run(async () => {
 
   const chrome = findChrome();
   if (!chrome) {
-    const msg = 'SKIP: Chrome non trovato (VETRO_CHROME): sito non provato nel browser';
+    const msg = 'SKIP: Chrome not found (VETRO_CHROME): site not tried in the browser';
     if (process.env.VETRO_REQUIRE_BROWSER === '1') throw new Fail(msg);
     console.log(msg);
     return;
@@ -67,32 +68,33 @@ run(async () => {
   const { proc, cdp } = await launch(chrome, profile);
   try {
     const { page } = await openPage(cdp, `${srv.url}/Vetro/`);
-    const href = await page.waitFor('pagina d\'ingresso', () => page.eval("document.querySelector('a.button')?.href ?? ''"), 30_000);
-    check(href.startsWith(`${srv.url}/Vetro/app/`), `il pulsante porta a ${href}`);
+    const href = await page.waitFor('landing page', () => page.eval("document.querySelector('a.button')?.href ?? ''"), 30_000);
+    check(href.startsWith(`${srv.url}/Vetro/app/`), `the button leads to ${href}`);
     const t0 = Date.now();
     await page.eval(`location.href = ${JSON.stringify(href)}`);
     let at = await page.until('# ');
     const ms = Date.now() - t0;
     const isolated = await page.eval('crossOriginIsolated');
-    check(!isolated, 'la pagina non dovrebbe essere isolata (Pages non manda COOP/COEP)');
+    check(!isolated, 'the page should not be isolated (Pages sends no COOP/COEP)');
     await page.type('uname -sr');
     at = await page.until('Linux 6.18', at);
     const state = await page.state();
-    check(state.boot?.mode === 'cold', `atteso un avvio da zero: ${JSON.stringify(state.boot)}`);
-    // L'ispettore di rete del sito (ABI 8): una richiesta del guest compare.
+    check(state.boot?.mode === 'cold', `expected a cold boot: ${JSON.stringify(state.boot)}`);
+    // The site's network inspector (ABI 8): a guest request shows up.
     await page.type('udhcpc -i eth0 -n -q >/dev/null && wget -q -O /dev/null http://pages.vetro.test/prova; echo RETE-$((1+1))');
     at = await page.until('RETE-2', at);
-    const req = await page.waitFor('richiesta nell\'ispettore', async () =>
+    const req = await page.waitFor('request in the inspector', async () =>
       (await page.eval('window.vetroAnalysis.state().requests'))?.requests.find((r) => r.host === 'pages.vetro.test'), 30_000);
-    check(req.method === 'GET' && req.path === '/prova' && req.status === 200, `ispettore: ${JSON.stringify(req)}`);
-    // La risposta del sinkhole è vuota (Content-Length: 0, senza
-    // Content-Type): nella lista "0 B" per i due corpi, tipo dal contenuto.
-    const cells = await page.waitFor('riga nella tabella', () => page.eval(`(() => {
+    check(req.method === 'GET' && req.path === '/prova' && req.status === 200, `inspector: ${JSON.stringify(req)}`);
+    // The sinkhole's response is empty (Content-Length: 0, no Content-Type):
+    // "0 B" in the list for both bodies, type from the content (the
+    // inspector's own label, "vuoto").
+    const cells = await page.waitFor('row in the table', () => page.eval(`(() => {
       const r = document.querySelector('#net-table tr[data-i="${req.i}"]');
       return r ? [...r.cells].slice(6, 9).map((c) => c.textContent) : null;
     })()`), 10_000);
-    check(JSON.stringify(cells) === JSON.stringify(['0 B', '0 B', 'vuoto']), `celle richiesta, risposta, tipo: ${JSON.stringify(cells)}`);
-    console.log(`sito sotto /Vetro/ senza COOP/COEP: shell in ${(ms / 1000).toFixed(2)} s, la console risponde, l'ispettore vede la rete (corpi vuoti: 0 B)`);
+    check(JSON.stringify(cells) === JSON.stringify(['0 B', '0 B', 'vuoto']), `request, response, type cells: ${JSON.stringify(cells)}`);
+    console.log(`site under /Vetro/ without COOP/COEP: shell in ${(ms / 1000).toFixed(2)} s, the console answers, the inspector sees the network (empty bodies: 0 B)`);
   } finally {
     await srv.close();
     await closeChrome(proc, cdp, profile);

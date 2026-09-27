@@ -1,21 +1,22 @@
-// Persistenza fra una sessione e l'altra (M6, ADR 0017). Non usa API di
-// Node: gira nel Worker dell'app (OPFS) e nei test in Node (file in memoria).
+// Persistence from one session to the next (M6, ADR 0017). Uses no Node
+// API: it runs in the app's Worker (OPFS) and in Node tests (in-memory files).
 //
-// - `DiskOverlay`: l'overlay copy-on-write persistente di un disco. Le
-//   scritture del guest stanno nel copy-on-write di vetro-wasm; qui si
-//   chiedono le scritture da fare sul file (`vetro_overlay_take`) e si
-//   applicano. Il formato del file è quello di `vetro_snapshot::overlay`,
-//   uguale per la CLI (`vetro boot --disk=... --overlay=FILE`).
-// - `SnapshotStore`: la cache degli snapshot della macchina, un file di
-//   byte e uno di metadati per chiave (`snapshotKey`), in OPFS o in memoria.
-//   I metadati si scrivono dopo i byte: sono il segno che lo snapshot è
-//   completo.
+// - `DiskOverlay`: a disk's persistent copy-on-write overlay. The guest's
+//   writes are in vetro-wasm's copy-on-write layer; here the writes to make
+//   to the file are requested (`vetro_overlay_take`) and applied. The file
+//   format is `vetro_snapshot::overlay`, the same as the CLI's
+//   (`vetro boot --disk=... --overlay=FILE`).
+// - `SnapshotStore`: the machine snapshot cache, one file of bytes and one of
+//   metadata per key (`snapshotKey`), in OPFS or in memory. The metadata is
+//   written after the bytes: it marks the snapshot as complete. A snapshot
+//   downloaded from elsewhere (the prebuilt one, ADR 0031) goes through
+//   `downloadTarget`.
 //
-// I file sono oggetti con l'interfaccia di `FileSystemSyncAccessHandle`
-// (getSize, read, write, truncate, flush, close): quelli veri di OPFS nel
-// Worker, `MemFile` altrove.
+// Files are objects with the `FileSystemSyncAccessHandle` interface
+// (getSize, read, write, truncate, flush, close): the real OPFS ones in the
+// Worker, `MemFile` elsewhere.
 
-/** Un file in memoria con l'interfaccia di FileSystemSyncAccessHandle. */
+/** An in-memory file with the FileSystemSyncAccessHandle interface. */
 export class MemFile {
   #buf;
   #len;
@@ -58,32 +59,32 @@ export class MemFile {
 
   close() {}
 
-  /** Copia del contenuto. */
+  /** A copy of the content. */
   bytes() {
     return this.#buf.slice(0, this.#len);
   }
 }
 
-/** Il contenuto intero di un file (MemFile o FileSystemSyncAccessHandle). */
+/** The whole content of a file (MemFile or FileSystemSyncAccessHandle). */
 export function readAll(file) {
   const out = new Uint8Array(file.getSize());
-  if (out.length && file.read(out, { at: 0 }) !== out.length) throw new Error('lettura corta');
+  if (out.length && file.read(out, { at: 0 }) !== out.length) throw new Error('short read');
   return out;
 }
 
-/** Cartella `name` di OPFS (creata se manca). */
+/** OPFS directory `name` (created if missing). */
 export async function opfsDir(name) {
   const root = await navigator.storage.getDirectory();
   return root.getDirectoryHandle(name, { create: true });
 }
 
-/** Handle sincrono sul file `name` della cartella OPFS `dir` (solo in un Worker). */
+/** Synchronous handle on file `name` of OPFS directory `dir` (only in a Worker). */
 export async function opfsFile(dir, name) {
   const d = typeof dir === 'string' ? await opfsDir(dir) : dir;
   return (await d.getFileHandle(name, { create: true })).createSyncAccessHandle();
 }
 
-/** SHA-256 esadecimale di byte o di una stringa. */
+/** Hex SHA-256 of bytes or of a string. */
 export async function sha256Hex(data) {
   const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
   const d = await crypto.subtle.digest('SHA-256', bytes);
@@ -91,11 +92,11 @@ export async function sha256Hex(data) {
 }
 
 /**
- * Chiave della cache degli snapshot: SHA-256 del JSON di `parts`, che deve
- * contenere tutto quello che rende uno snapshot applicabile (versione del
- * formato, kernel, initramfs, riga di comando, configurazione della macchina,
- * identità e parametri dei dischi). Le chiavi ordinate: stessa chiave per gli
- * stessi valori.
+ * Snapshot cache key: SHA-256 of the JSON of `parts`, which must contain
+ * everything that makes a snapshot applicable (format version, kernel,
+ * initramfs, command line, machine configuration, disk identities and
+ * parameters; for Android `androidKeyParts`). Keys sorted: the same values
+ * give the same key.
  */
 export async function snapshotKey(parts) {
   const sorted = (v) =>
@@ -105,18 +106,18 @@ export async function snapshotKey(parts) {
   return (await sha256Hex(JSON.stringify(sorted(parts)))).slice(0, 32);
 }
 
-/** L'overlay persistente del disco `disk` di una Machine su `file`. */
+/** The persistent overlay of disk `disk` of a Machine on `file`. */
 export class DiskOverlay {
   stats = { persists: 0, writes: 0, bytes: 0, ms: 0 };
 
   /**
-   * Legge `file` e apre l'overlay per l'immagine base `identity`: i cluster
-   * salvati entrano nel disco. `opened.code`: 'Loaded', 'New', 'Mismatch'
-   * (overlay di un'altra base, scartato), 'Corrupt' (scartato).
+   * Reads `file` and opens the overlay for base image `identity`: the saved
+   * clusters go into the disk. `opened.code`: 'Loaded', 'New', 'Mismatch'
+   * (overlay of another base, discarded), 'Corrupt' (discarded).
    */
   static open(machine, disk, file, identity) {
     const opened = machine.overlayOpen(disk, identity, readAll(file));
-    if (opened.code === 'NoDisk') throw new Error(`overlay del disco ${disk}: ${opened.message}`);
+    if (opened.code === 'NoDisk') throw new Error(`overlay of disk ${disk}: ${opened.message}`);
     return new DiskOverlay(machine, disk, file, opened);
   }
 
@@ -128,15 +129,15 @@ export class DiskOverlay {
   }
 
   /**
-   * Scrive nel file le scritture del guest dall'ultima volta (dopo un
-   * ripristino, tutti i cluster diversi dal file). Restituisce se ha scritto.
+   * Writes to the file the guest's writes since last time (after a restore,
+   * every cluster that differs from the file). Returns whether it wrote.
    */
   persist() {
     const p = this.m.overlayTake(this.disk);
     if (!p) return false;
     const t0 = performance.now();
     if (p.truncate !== null) this.file.truncate(p.truncate);
-    // Prima i dati, poi l'intestazione (offset 0), con un flush in mezzo.
+    // Data first, then the header (offset 0), with a flush in between.
     let header = null;
     for (const w of p.writes) {
       if (w.at === 0) {
@@ -171,17 +172,17 @@ export class DiskOverlay {
   }
 }
 
-/** Cache degli snapshot: `<chiave>.snap` (byte) e `<chiave>.json` (metadati). */
+/** Snapshot cache: `<key>.snap` (bytes) and `<key>.json` (metadata). */
 export class SnapshotStore {
   #dir;
   #mem;
 
-  /** In OPFS (Worker), nella cartella `name`. */
+  /** In OPFS (Worker), in directory `name`. */
   static async opfs(name = 'vetro-snapshots') {
     return new SnapshotStore(await opfsDir(name), null);
   }
 
-  /** In memoria (Node, test). */
+  /** In memory (Node, tests). */
   static memory() {
     return new SnapshotStore(null, new Map());
   }
@@ -224,7 +225,7 @@ export class SnapshotStore {
     await this.#dir.removeEntry(name).catch(() => {});
   }
 
-  /** { meta, bytes } per la chiave, o null (manca o è incompleto). */
+  /** { meta, bytes } for the key, or null (missing or incomplete). */
   async load(key) {
     const m = await this.#read(`${key}.json`);
     if (!m) return null;
@@ -392,7 +393,7 @@ export class SnapshotStore {
     };
   }
 
-  /** Salva i byte, poi i metadati (con `size`). */
+  /** Saves the bytes, then the metadata (with `size`). */
   async save(key, meta, bytes) {
     await this.#remove(`${key}.json`);
     await this.#write(`${key}.snap`, bytes);
@@ -407,22 +408,22 @@ export class SnapshotStore {
 }
 
 /**
- * Uno snapshot salvato vale solo con gli overlay dei dischi alla stessa
- * generazione di quando è stato preso (ADR 0017): se il disco è andato
- * avanti dopo, lo snapshot (RAM e cache del guest) non corrisponde più al
- * disco. `overlays[i]` è il DiskOverlay del disco i (o null se il disco non
- * è persistente). Restituisce null se vale, o il motivo.
+ * A saved snapshot is valid only with the disk overlays at the generation
+ * they had when it was taken (ADR 0017): if a disk moved on afterwards, the
+ * snapshot (RAM and guest caches) no longer matches it. `overlays[i]` is disk
+ * i's DiskOverlay (or null if the disk is not persistent). Returns null if
+ * valid, or the reason.
  */
 export function staleReason(meta, overlays) {
   for (const [i, o] of overlays.entries()) {
     if (!o) continue;
     const saved = meta.generations?.[i] ?? null;
-    if (saved !== o.generation) return `disco ${i}: overlay alla generazione ${o.generation}, snapshot alla ${saved}`;
+    if (saved !== o.generation) return `disk ${i}: overlay at generation ${o.generation}, snapshot at ${saved}`;
   }
   return null;
 }
 
-/** Codifica in base64 di byte (per i metadati JSON). */
+/** Base64 of bytes (for JSON metadata). */
 export function toBase64(bytes) {
   let s = '';
   for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
