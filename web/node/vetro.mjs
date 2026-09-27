@@ -4,12 +4,13 @@
 
 import { JitEngine } from './jit-engine.mjs';
 
-export const ABI_VERSION = 14;
+export const ABI_VERSION = 15;
 /** Codes of vetro_run. */
 export const STOP = ['Budget', 'PowerOff', 'Reset', 'Idle', 'Unimplemented', 'Blocked'];
 
 /** Device bits of vetro_machine_new_with. */
-export const DEV = { GPU: 1, KEYBOARD: 2, TABLET: 4, MULTITOUCH: 8, NET: 16, VSOCK: 32, DEFAULT: 1 | 2 | 4 | 16 };
+/** GPU_3D: gfxstream GLES over virtio-gpu 3D, drawn by WebGL2 (ADR 0037). */
+export const DEV = { GPU: 1, KEYBOARD: 2, TABLET: 4, MULTITOUCH: 8, NET: 16, VSOCK: 32, GPU_3D: 64, DEFAULT: 1 | 2 | 4 | 16 };
 /** Disk bits. */
 export const DISK = { READ_ONLY: 1 };
 /** Devices of vetro_input_events. */
@@ -45,6 +46,12 @@ const toUtf8 = new TextEncoder();
 export const SNAPSHOT_HEADER_LEN = 36;
 /** Where the chunks of vetro_snapshot_save_stream go (import vetro_host.snapshot_write). */
 let snapshotSink = null;
+/** The WebGL2 executor of the gfxstream op stream (web/app/gl.mjs), or null: batches then run nowhere (reads return zeros). */
+let glExecutor = null;
+/** Sets the executor the import vetro_host.gl_execute hands the batches to (ADR 0037). */
+export function setGlExecutor(e) {
+  glExecutor = e;
+}
 /** Where those of vetro_snapshot_restore_stream come from (import vetro_host.snapshot_read). */
 let snapshotSource = null;
 
@@ -208,6 +215,11 @@ export async function instantiate(wasmBytes, { jitBudget } = {}) {
         if (!snapshotSink) throw new Error('vetro_host.snapshot_write outside Machine.snapshotSaveTo');
         snapshotSink(ptr >>> 0, len >>> 0);
       },
+      gl_execute: (wp, wn, bp, bn, op, on) => {
+        if (!glExecutor) return;
+        const buf = exports.memory.buffer;
+        glExecutor.execute(new Uint32Array(buf, wp >>> 0, wn >>> 0), new Uint8Array(buf, bp >>> 0, bn >>> 0), new Uint8Array(buf, op >>> 0, on >>> 0));
+      },
     },
     vetro_jit: jit.imports(),
   };
@@ -300,6 +312,40 @@ export class Machine {
       out.set(src.subarray(at, at + r.width * 4), y * r.width * 4);
     }
     return out;
+  }
+
+  /** The scanout shows a 3D resource (drawn by the WebGL2 executor, ADR 0037). */
+  displayIs3d(scanout = 0) {
+    return this.#x.vetro_display_is_3d(this.#vm, scanout) === 1;
+  }
+
+  /**
+   * Reads back the 3D scanout (host read, not seen by the guest): the RGBA
+   * view of `displayPixels`, or null.
+   */
+  displayRead3d(scanout = 0) {
+    const ptr = this.#x.vetro_display_read_3d(this.#vm, scanout) >>> 0;
+    return ptr ? this.displayPixels(scanout) : null;
+  }
+
+  /** Gives the machine's gfxstream renderer the executor set with setGlExecutor: false without GPU_3D. */
+  glEnable() {
+    return this.#x.vetro_gl_enable(this.#vm) === 1;
+  }
+
+  /** gfxstream counters { calls, batches, presents, readbackBytes, unhandled }, or null. */
+  glStats() {
+    const p = this.#scratch(40);
+    const n = this.#x.vetro_gl_stats(this.#vm, p, 5);
+    if (n < 5) return null;
+    const v = new BigUint64Array(this.#x.memory.buffer, p, 5);
+    return { calls: Number(v[0]), batches: Number(v[1]), presents: Number(v[2]), readbackBytes: Number(v[3]), unhandled: Number(v[4]) };
+  }
+
+  /** New lines of the gfxstream decoder's log (unhandled calls…). */
+  glTakeLog() {
+    const n = this.#x.vetro_gl_take_log(this.#vm);
+    return n ? this.#message().split('\n') : [];
   }
 
   /** Resolution requested for the scanout (host input). */

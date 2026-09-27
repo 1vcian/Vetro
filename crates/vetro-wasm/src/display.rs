@@ -27,6 +27,9 @@ pub struct Screen {
     pub cursor_rgba: Vec<u8>,
     /// Cursor changes (shape or position).
     pub cursor_updates: u64,
+    /// The scanout shows a 3D resource (ADR 0037): the WebGL2 executor draws
+    /// it; `rgba` holds only what `set_3d_pixels` read back last.
+    pub three_d: bool,
 }
 
 fn union(a: Option<Rect>, b: Rect) -> Rect {
@@ -60,6 +63,25 @@ impl WebDisplay {
     pub fn take_dirty(&mut self, scanout: u32) -> Option<Rect> {
         self.screens.get_mut(scanout as usize)?.dirty.take()
     }
+
+    /// The pixels of a 3D scanout read back by the host (RGBA, rows from
+    /// the top); returns the pointer of the image.
+    pub fn set_3d_pixels(
+        &mut self,
+        scanout: u32,
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    ) -> Option<*const u8> {
+        let s = self.screens.get_mut(scanout as usize)?;
+        if !s.three_d {
+            return None;
+        }
+        s.width = width;
+        s.height = height;
+        s.rgba = rgba;
+        Some(s.rgba.as_ptr())
+    }
 }
 
 impl DisplayBackend for WebDisplay {
@@ -67,7 +89,8 @@ impl DisplayBackend for WebDisplay {
         let s = self.screen_mut(scanout);
         s.updates += 1;
         let mut dirty = dirty;
-        if !s.on || (s.width, s.height) != (frame.width, frame.height) {
+        if !s.on || s.three_d || (s.width, s.height) != (frame.width, frame.height) {
+            s.three_d = false;
             s.width = frame.width;
             s.height = frame.height;
             s.rgba = vec![0; (frame.width * frame.height * 4) as usize];
@@ -91,6 +114,20 @@ impl DisplayBackend for WebDisplay {
         let s = self.screen_mut(scanout);
         s.updates += 1;
         s.on = false;
+        s.three_d = false;
+        s.dirty = None;
+    }
+
+    fn update_3d(&mut self, scanout: u32, width: u32, height: u32, _dirty: Rect) {
+        let s = self.screen_mut(scanout);
+        s.updates += 1;
+        if !s.three_d || (s.width, s.height) != (width, height) {
+            s.rgba.clear();
+        }
+        s.on = true;
+        s.three_d = true;
+        s.width = width;
+        s.height = height;
         s.dirty = None;
     }
 

@@ -363,7 +363,7 @@ impl Gl {
             return vec![0; (w * h * cb.tex.bpp) as usize];
         }
         let n = (w * h * cb.tex.bpp) as usize;
-        self.ops.op_read(Code::ReadTexture, &[cb.id, x, y, w, h, cb.tex.format, cb.tex.ty], n);
+        self.ops.op_read(Code::ReadTexture, &[cb.id, x, y, w, h, cb.tex.format, cb.tex.ty, n as u32], n);
         let mut out = self.flush();
         out.truncate(n);
         if cb.tex.swizzle {
@@ -2348,7 +2348,7 @@ impl Gl {
             g::glReadPixels => {
                 let v: Vec<u32> = (0..6).map(|k| a.u(k)).collect();
                 let n = r.out(0).len();
-                self.ops.op_read(Code::ReadPixels, &[v[0], v[1], v[2], v[3], v[4], v[5], 0], n);
+                self.ops.op_read(Code::ReadPixels, &[v[0], v[1], v[2], v[3], v[4], v[5], 0, n as u32], n);
                 let data = self.flush();
                 let o = r.out(0);
                 let m = o.len().min(data.len());
@@ -2356,7 +2356,7 @@ impl Gl {
             }
             g::glReadPixelsOffsetAEMU => {
                 let v: Vec<u32> = (0..7).map(|k| a.u(k)).collect();
-                self.ops.op(Code::ReadPixels, &[v[0], v[1], v[2], v[3], v[4], v[5], 1 + v[6]]);
+                self.ops.op(Code::ReadPixels, &[v[0], v[1], v[2], v[3], v[4], v[5], 1 + v[6], 0]);
             }
             // ---- simple queries ----
             g::glGetError => r.ret = 0,

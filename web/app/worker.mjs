@@ -81,13 +81,23 @@
 //   next session resumes from the last snapshot: writes made after it are
 //   lost, like going back to the last saved state; without a snapshot the
 //   first boot runs again. Snapshots go to and come from OPFS in chunks.
+//
+// Accelerated graphics (ADR 0037), with `config.gpu === 'webgl'` and Android:
+// the machine's GPU offers 3D (DEV.GPU_3D) with the gfxstream decoder, the
+// image gets GFXSTREAM_PARAMS (gfxstream EGL instead of SwiftShader), and the
+// decoder's op batches run here on a WebGL2 context of an OffscreenCanvas
+// (web/app/gl.mjs). A presented scanout reaches the page as an ImageBitmap
+// (`frame3d`), not as RGBA rectangles. Without WebGL2 or with limits below
+// the fixed profile the Worker falls back to SwiftShader (`gpu` status).
+// Snapshots are off on this path (the decoder cannot save its state yet).
 
-import { DEV, INOTIFY, INPUT, instantiate, Machine, TIMELINE_EFFECT, TIMELINE_INPUT } from '../node/vetro.mjs';
+import { DEV, INOTIFY, INPUT, instantiate, Machine, setGlExecutor, TIMELINE_EFFECT, TIMELINE_INPUT } from '../node/vetro.mjs';
+import { WebGlExecutor } from './gl.mjs';
 import { Recording } from '../node/recording.mjs';
 import { BlobSource, DiskFeeder, LayoutSource, MemoryCache, OpfsCache, RangeSource } from '../node/disk.mjs';
 import { AdbClient } from '../node/adb.mjs';
 import { apkInfo } from '../node/apk.mjs';
-import { ANDROID_DISK, ANDROID_HOME_NS, ANDROID_PARAMS, ANDROID_WAKE, BootProgress, gridColors, HOME_DRAW_NS, HOME_MIN_COLORS, HOME_POLL_NS, HOME_QUERY, isHome, machineDevices } from '../node/android.mjs';
+import { ANDROID_DISK, ANDROID_HOME_NS, ANDROID_PARAMS, ANDROID_WAKE, BootProgress, GFXSTREAM_PARAMS, gridColors, HOME_DRAW_NS, HOME_MIN_COLORS, HOME_POLL_NS, HOME_QUERY, isHome, machineDevices } from '../node/android.mjs';
 import { DiskOverlay, fromBase64, opfsFile, sha256Hex, SnapshotStore, snapshotKey, staleReason, toBase64 } from '../node/persist.mjs';
 import { androidSnapshotKey, downloadPrebuilt, findPrebuilt, PREBUILT_CHUNK, prebuiltSnapUrl } from '../node/prebuilt.mjs';
 
@@ -199,12 +209,38 @@ async function openDisk(d, i, sources) {
 
 const devicesOf = (c) => machineDevices(DEV, c);
 
+/** The WebGL2 executor of the accelerated path (ADR 0037), or null. */
+let glExec = null;
+let glStatsAt = 0;
+
+/**
+ * WebGL2 for the accelerated path: an executor on an OffscreenCanvas, or the
+ * reason why not (then the image keeps SwiftShader).
+ */
+function makeGlExecutor(c) {
+  if (typeof OffscreenCanvas === 'undefined') return { why: 'no OffscreenCanvas in the Worker' };
+  try {
+    const probe = new OffscreenCanvas(1, 1).getContext('webgl2');
+    if (!probe) return { why: 'no WebGL2' };
+    const short = WebGlExecutor.check(probe);
+    probe.getExtension('WEBGL_lose_context')?.loseContext();
+    if (short.length) return { why: `WebGL2 limits below the profile: ${short.join(', ')}` };
+    const exec = new WebGlExecutor(new OffscreenCanvas(c.width, c.height), (bitmap, width, height) => {
+      post({ type: 'frame3d', bitmap, width, height }, [bitmap]);
+    });
+    return { exec };
+  } catch (e) {
+    return { why: String(e.message ?? e) };
+  }
+}
+
 /** New machine with the disks (and their overlays). */
 async function build(c, sources) {
   for (const o of overlays) o?.close();
   overlays = [];
   m?.free();
   m = new Machine(exports, { ramSize: BigInt(c.ramMiB) << 20n, devices: devicesOf(c), width: c.width, height: c.height });
+  if (glExec) m.glEnable();
   feeder = new DiskFeeder(m);
   for (const [i, d] of (c.disks ?? []).entries()) await openDisk(d, i, sources);
 }
@@ -270,6 +306,19 @@ async function start(c) {
   let jitEngine;
   ({ exports, jit: jitEngine } = await instantiate(wasm));
   times.wasm = performance.now() - t0;
+  if (c.gpu === 'webgl') {
+    const g = c.android ? makeGlExecutor(c) : { why: 'only with the AOSP image' };
+    if (g.exec) {
+      glExec = g.exec;
+      setGlExecutor(glExec);
+      // The decoder's state is not in snapshots yet (ADR 0037).
+      c.snapshot = false;
+      post({ type: 'gpu', mode: 'webgl' });
+    } else {
+      c.gpu = null;
+      post({ type: 'gpu', mode: 'swiftshader', why: g.why });
+    }
+  }
   if (c.android) android = await prepareAndroid(c);
   const kernel = android ? null : await bytesOf(c.kernel, 'the kernel');
   const initrd = android ? null : await bytesOf(c.initrd, 'the initramfs');
@@ -409,7 +458,7 @@ async function prepareAndroid(c) {
     manifest,
     manifestUrl: url,
     images,
-    params: c.android.params ?? ANDROID_PARAMS,
+    params: [c.android.params ?? ANDROID_PARAMS, c.gpu === 'webgl' ? GFXSTREAM_PARAMS : ''].filter(Boolean).join(' '),
     progress: new BootProgress(),
     bootedNs: null,
     homeNs: null,
@@ -564,7 +613,7 @@ function androidTick() {
   // shows it (FallbackHome can stay for tens of seconds of guest time first).
   if (a.focusNs !== null && a.homeNs === null) {
     const size = m.displaySize();
-    const px = size && m.displayPixels();
+    const px = size && (m.displayIs3d() ? m.displayRead3d() : m.displayPixels());
     const colors = px ? gridColors(px, size.width, size.height) : 0;
     if (colors >= HOME_MIN_COLORS || m.guestNs - a.focusNs >= HOME_DRAW_NS) {
       a.homeNs = m.guestNs;
@@ -807,6 +856,8 @@ function flush() {
     const size = m.displaySize();
     if (!size) {
       post({ type: 'frame', off: true });
+    } else if (m.displayIs3d()) {
+      // Drawn by the WebGL2 executor: frames arrive as `frame3d`.
     } else {
       const rect = m.displayTakeDirty();
       if (rect) {
@@ -814,6 +865,11 @@ function flush() {
         post({ type: 'frame', width: size.width, height: size.height, rect, pixels }, [pixels.buffer]);
       }
     }
+  }
+  if (glExec && performance.now() - glStatsAt > 1000) {
+    glStatsAt = performance.now();
+    const log = m.glTakeLog();
+    post({ type: 'gl', stats: m.glStats(), executor: { ...glExec.stats }, log: [...log, ...glExec.log.splice(0)] });
   }
   const c = m.cursor();
   if (c && c.updates !== lastCursor) {

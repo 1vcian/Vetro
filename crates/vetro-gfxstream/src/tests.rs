@@ -6,27 +6,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use vetro_platform::virtio::gpu::{Backing, Box3d, Create3d, Rect, Renderer3d, Transfer3d};
-use vetro_platform::virtio::{GuestRam, RamError};
 
 use crate::exec::{CODES, Code, GlExecutor};
-use crate::tables::{GLES2, GLES2_BASE, RC, RC_BASE, gles2 as g, rc};
-use crate::wire::P;
-use crate::{Gfxstream, formats};
-
-struct Ram(Vec<u8>);
-
-impl GuestRam for Ram {
-    fn read(&self, addr: u64, buf: &mut [u8]) -> Result<(), RamError> {
-        let a = addr as usize;
-        buf.copy_from_slice(self.0.get(a..a + buf.len()).ok_or(RamError { addr, len: buf.len() })?);
-        Ok(())
-    }
-    fn write(&mut self, addr: u64, data: &[u8]) -> Result<(), RamError> {
-        let a = addr as usize;
-        self.0.get_mut(a..a + data.len()).ok_or(RamError { addr, len: data.len() })?.copy_from_slice(data);
-        Ok(())
-    }
-}
+use crate::formats;
+use crate::guest::{Guest, V, call};
+use crate::tables::{gles2 as g, rc};
 
 /// Records batches; read ops get bytes 0, 1, 2… (mod 251).
 #[derive(Default)]
@@ -59,110 +43,14 @@ fn ops(log: &Rc<RefCell<Log>>) -> Vec<(Code, Vec<u32>)> {
     v
 }
 
-enum V<'a> {
-    S(u64),
-    B(&'a [u8]),
-    O(u32),
-}
-
-/// One call encoded like emugen's encoders.
-fn call(op: u32, args: &[V<'_>]) -> Vec<u8> {
-    let spec = if op >= RC_BASE { &RC[(op - RC_BASE) as usize] } else { &GLES2[(op - GLES2_BASE) as usize] };
-    assert_eq!(spec.params.len(), args.len(), "{}", spec.name);
-    let mut body = Vec::new();
-    for (p, a) in spec.params.iter().zip(args) {
-        match (p, a) {
-            (P::S1, V::S(v)) => body.push(*v as u8),
-            (P::S2, V::S(v)) => body.extend_from_slice(&(*v as u16).to_le_bytes()),
-            (P::S4, V::S(v)) => body.extend_from_slice(&(*v as u32).to_le_bytes()),
-            (P::S8, V::S(v)) => body.extend_from_slice(&v.to_le_bytes()),
-            (P::In, V::B(b)) => {
-                body.extend_from_slice(&(b.len() as u32).to_le_bytes());
-                body.extend_from_slice(b);
-            }
-            (P::Out, V::O(n)) => body.extend_from_slice(&n.to_le_bytes()),
-            _ => panic!("argument kind for {}", spec.name),
-        }
-    }
-    let mut p = op.to_le_bytes().to_vec();
-    p.extend_from_slice(&((body.len() + 8) as u32).to_le_bytes());
-    p.extend(body);
-    p
-}
-
-const PIPE_BASE: u64 = 0x1000;
-const PIPE_SIZE: u32 = 1 << 20;
-
-/// A guest with one pipe per virtio context.
-struct Guest {
-    gfx: Gfxstream,
-    ram: Ram,
-    log: Rc<RefCell<Log>>,
-}
-
-impl Guest {
-    fn new() -> Self {
-        let log = Rc::new(RefCell::new(Log::default()));
-        let gfx = Gfxstream::new(Box::new(FakeExec(log.clone())), (1280, 800));
-        Self { gfx, ram: Ram(vec![0; 64 << 20]), log }
-    }
-
-    /// Opens virtio context `ctx` with its pipe resource (id 100 + ctx) and
-    /// connects to `service`.
-    fn open(&mut self, ctx: u32, service: &str) {
-        self.gfx.context_create(ctx, 0, b"test").unwrap();
-        let res = 100 + ctx;
-        let args = Create3d {
-            target: 0,
-            format: 64,
-            bind: 1 << 17,
-            width: PIPE_SIZE,
-            height: 1,
-            ..Create3d::default()
-        };
-        self.gfx.resource_create(res, &args).unwrap();
-        self.gfx.context_attach(ctx, res);
-        let mut s = service.as_bytes().to_vec();
-        s.push(0);
-        self.send(ctx, &s);
-    }
-
-    fn ents(ctx: u32) -> [(u64, u32); 1] {
-        [(PIPE_BASE + u64::from(ctx) * u64::from(PIPE_SIZE), PIPE_SIZE)]
-    }
-
-    fn send(&mut self, ctx: u32, data: &[u8]) {
-        let ents = Self::ents(ctx);
-        let mut b = Backing::new(&mut self.ram, &ents);
-        b.write(0, data);
-        let t = Transfer3d {
-            bx: Box3d { x: 0, w: data.len() as u32, h: 1, d: 1, ..Box3d::default() },
-            ..Transfer3d::default()
-        };
-        self.gfx.transfer_to_host(ctx, 100 + ctx, &t, &mut b).unwrap();
-    }
-
-    fn recv(&mut self, ctx: u32, n: usize) -> Vec<u8> {
-        let ents = Self::ents(ctx);
-        let mut b = Backing::new(&mut self.ram, &ents);
-        let t = Transfer3d {
-            bx: Box3d { x: 0, w: n as u32, h: 1, d: 1, ..Box3d::default() },
-            ..Transfer3d::default()
-        };
-        self.gfx.transfer_from_host(ctx, 100 + ctx, &t, &mut b).unwrap();
-        let mut out = vec![0; n];
-        b.read(0, &mut out);
-        out
-    }
-
-    fn u32(&mut self, ctx: u32) -> u32 {
-        u32::from_le_bytes(self.recv(ctx, 4).try_into().unwrap())
-    }
+fn guest() -> (Guest, Rc<RefCell<Log>>) {
+    let log = Rc::new(RefCell::new(Log::default()));
+    (Guest::new(Box::new(FakeExec(log.clone()))), log)
 }
 
 #[test]
 fn process_pipe_and_render_control_handshake() {
-    let mut gu = Guest::new();
+    let (mut gu, _log) = guest();
     gu.open(1, "pipe:GLProcessPipe");
     gu.send(1, &100i32.to_le_bytes());
     let puid = u64::from_le_bytes(gu.recv(1, 8).try_into().unwrap());
@@ -205,7 +93,7 @@ fn process_pipe_and_render_control_handshake() {
 /// SurfaceFlinger's first composition.
 #[test]
 fn surface_program_and_frame() {
-    let mut gu = Guest::new();
+    let (mut gu, log) = guest();
     // The gralloc buffer: an RGBA8888 render target resource (ColorBuffer 7).
     let rgba = Create3d {
         target: 2,
@@ -310,7 +198,7 @@ fn surface_program_and_frame() {
     gu.gfx.scanout(0, Some((7, Rect::new(0, 0, 64, 32))));
     Renderer3d::flush(&mut gu.gfx, 0, 7, Rect::new(0, 0, 64, 32));
 
-    let o = ops(&gu.log);
+    let o = ops(&log);
     let codes: Vec<Code> = o.iter().map(|(c, _)| *c).collect();
     // The ColorBuffer's texture, the surface on it, then the program.
     assert_eq!(codes[0], Code::Create);
@@ -334,18 +222,18 @@ fn surface_program_and_frame() {
     let present = o.iter().find(|(c, _)| *c == Code::Present).unwrap();
     assert_eq!(present.1, [cb_tex, 64, 32]);
     // The shader text given to WebGL uses sampler2D.
-    let log = gu.log.borrow();
-    let blob = &log.batches.last().unwrap().1;
+    let lb = log.borrow();
+    let blob = &lb.batches.last().unwrap().1;
     let text = String::from_utf8_lossy(blob);
     assert!(text.contains("uniform sampler2D uTex"));
     assert!(!text.contains("GL_OES_EGL_image_external"));
-    drop(log);
+    drop(lb);
     assert!(gu.gfx.gl.log.is_empty(), "{:?}", gu.gfx.gl.log);
 }
 
 #[test]
 fn color_buffer_transfers_swizzle_bgra_and_read_back() {
-    let mut gu = Guest::new();
+    let (mut gu, log) = guest();
     let bgra = Create3d {
         target: 2,
         format: formats::VIRGL_FORMAT_B8G8R8A8_UNORM,
@@ -372,14 +260,14 @@ fn color_buffer_transfers_swizzle_bgra_and_read_back() {
         gu.gfx.transfer_to_host(0, 9, &t, &mut b).unwrap();
     }
     gu.gfx.flush_ops();
-    let o = ops(&gu.log);
+    let o = ops(&log);
     let up = o.iter().find(|(c, _)| *c == Code::TexUpload).unwrap();
     assert_eq!(&up.1[1..5], &[1, 1, 2, 1]);
-    let log = gu.log.borrow();
-    let blob = &log.batches[0].1;
+    let lb = log.borrow();
+    let blob = &lb.batches[0].1;
     let (off, len) = (up.1[7] as usize, up.1[8] as usize);
     assert_eq!(&blob[off..off + len], &[22, 21, 20, 23, 26, 25, 24, 27], "BGRA → RGBA");
-    drop(log);
+    drop(lb);
     // Read back into the guest: RGBA from the executor → BGRA bytes.
     {
         let mut b = Backing::new(&mut gu.ram, &ents);
@@ -394,12 +282,12 @@ fn color_buffer_transfers_swizzle_bgra_and_read_back() {
     let mut back = vec![0u8; 8];
     Backing::new(&mut gu.ram, &ents).read(0, &mut back);
     assert_eq!(back, [2, 1, 0, 3, 6, 5, 4, 7]);
-    assert!(ops(&gu.log).iter().any(|(c, a)| *c == Code::ReadTexture && a[1..5] == [0, 0, 4, 2]));
+    assert!(ops(&log).iter().any(|(c, a)| *c == Code::ReadTexture && a[1..5] == [0, 0, 4, 2]));
 }
 
 #[test]
 fn two_threads_switch_contexts_with_minimal_state() {
-    let mut gu = Guest::new();
+    let (mut gu, log) = guest();
     for c in [1, 2] {
         gu.open(c, "pipe:opengles");
         let mut s = 0u32.to_le_bytes().to_vec();
@@ -413,7 +301,7 @@ fn two_threads_switch_contexts_with_minimal_state() {
     gu.send(2, &call(g::glClearColor, &[V::S(0), V::S(u64::from(1f32.to_bits())), V::S(0), V::S(0)]));
     gu.send(1, &call(g::glClear, &[V::S(0x4000)]));
     gu.gfx.flush_ops();
-    let codes: Vec<Code> = ops(&gu.log).iter().map(|(c, _)| *c).collect();
+    let codes: Vec<Code> = ops(&log).iter().map(|(c, _)| *c).collect();
     // ctx1: Enable(BLEND); switch to ctx2: its default vertex array,
     // Disable(BLEND); ClearColor; back to ctx1: Enable, clear color back,
     // its vertex array; Clear.
@@ -432,4 +320,19 @@ fn two_threads_switch_contexts_with_minimal_state() {
             Code::Clear
         ]
     );
+}
+
+#[test]
+fn synthetic_scene_binds_the_cpu_buffer_as_external_texture() {
+    let (mut gu, log) = guest();
+    let back = crate::guest::scene(&mut gu);
+    assert_eq!(back.len(), 64 * 64 * 4);
+    assert_eq!(crate::guest::scene_expected().len(), back.len());
+    let o = ops(&log);
+    let cb8 = gu.gfx.gl.cbs[&8].id;
+    // rcBindTexture: the texture bound on unit 0 becomes buffer 8's.
+    assert!(o.iter().any(|(c, a)| *c == Code::BindTexture && a == &[0x0DE1, cb8]));
+    assert!(o.iter().any(|(c, _)| *c == Code::Present));
+    assert!(o.iter().any(|(c, a)| *c == Code::ReadTexture && a[1..5] == [0, 0, 64, 64]));
+    assert!(gu.gfx.gl.log.is_empty(), "{:?}", gu.gfx.gl.log);
 }

@@ -113,10 +113,16 @@ export function findChrome() {
   return CANDIDATES.find((p) => existsSync(p));
 }
 
-export async function launch(chrome, profile) {
+/**
+ * Starts headless Chrome. `webgl`: WebGL2 on Chrome's own SwiftShader
+ * (ANGLE), the same rasteriser on every host, for the rendering tests of the
+ * accelerated path (ADR 0037); otherwise the GPU is off.
+ */
+export async function launch(chrome, profile, { webgl = false } = {}) {
+  const gpu = webgl ? ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] : ['--disable-gpu'];
   const proc = spawn(chrome, [
     '--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run',
-    '--no-default-browser-check', '--disable-gpu', '--window-size=1400,1000',
+    '--no-default-browser-check', ...gpu, '--window-size=1400,1000',
   ], { stdio: ['ignore', 'ignore', 'pipe'], detached: true });
   const url = await new Promise((ok, ko) => {
     let err = '';

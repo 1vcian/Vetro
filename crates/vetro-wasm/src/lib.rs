@@ -38,6 +38,7 @@ pub mod analysis;
 pub mod disk;
 pub mod display;
 pub mod files;
+pub mod gl;
 pub mod jit;
 pub mod net;
 pub mod replay;
@@ -81,7 +82,10 @@ use display::WebDisplay;
 /// `vetro_snapshot_restore_stream`, imports `vetro_host.snapshot_write/read`).
 /// 13: snapshot configuration hash and compression level (ADR 0031).
 /// 14: import `vetro_jit.ready` (background JIT compilation, ADR 0038).
-pub const ABI_VERSION: u32 = 14;
+/// 15: accelerated graphics (ADR 0037): device bit `GPU_3D`, import
+/// `vetro_host.gl_execute`, exports `vetro_gl_*` and `vetro_display_is_3d`,
+/// `vetro_display_read_3d`.
+pub const ABI_VERSION: u32 = 15;
 
 /// Alignment of the [`vetro_alloc`] buffers (enough for `JitState`).
 const ALLOC_ALIGN: usize = 16;
@@ -108,6 +112,9 @@ pub mod dev {
     pub const NET: u32 = 16;
     /// virtio-vsock (CID 3), for the file manager (`vetro_files_*`).
     pub const VSOCK: u32 = 32;
+    /// The GPU offers 3D with the gfxstream decoder (ADR 0037); with
+    /// `GPU` only.
+    pub const GPU_3D: u32 = 64;
     /// Those of `Devices::default` (the machine of the boot test).
     pub const DEFAULT: u32 = GPU | KEYBOARD | TABLET | NET;
 }
@@ -899,6 +906,7 @@ pub fn devices_from(bits: u32, width: u32, height: u32) -> Devices {
     let gpu = GpuConfig {
         width: if width == 0 { d.width } else { width },
         height: if height == 0 { d.height } else { height },
+        virgl: bits & dev::GPU_3D != 0,
         ..d
     };
     let pointer = if bits & dev::MULTITOUCH != 0 {
@@ -941,6 +949,72 @@ pub extern "C" fn vetro_machine_new_with(
     install_panic_hook();
     let cfg = config(ram_size, now_secs, seed);
     Box::into_raw(Box::new(Vm::with_devices(&cfg, &devices_from(devices, width, height))))
+}
+
+/// Installs the WebGL2 executor (import `vetro_host.gl_execute`) in the
+/// GPU's gfxstream renderer: 1 if the machine has one (`GPU_3D`), else 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_gl_enable(vm: *mut Vm) -> u32 {
+    // SAFETY: `vm` comes from `vetro_machine_new`.
+    let vm = unsafe { &*vm };
+    vm.with_gpu(gl::enable).unwrap_or(false) as u32
+}
+
+/// gfxstream counters into `out` (u64): GLES calls, batches run, frames
+/// presented, bytes read back, unhandled calls. Returns how many were
+/// written (0 without a renderer).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_gl_stats(vm: *const Vm, out: *mut u64, cap: usize) -> usize {
+    // SAFETY: `vm` comes from `vetro_machine_new`; `out` holds `cap` values.
+    let vm = unsafe { &*vm };
+    let Some(Some(s)) = vm.with_gpu(|g| {
+        g.renderer_as::<vetro_machine::vetro_gfxstream::Gfxstream>().map(|r| r.gl.stats.clone())
+    }) else {
+        return 0;
+    };
+    let v = [s.calls, s.batches, s.presents, s.readback_bytes, s.unhandled];
+    let n = v.len().min(cap);
+    if n > 0 {
+        // SAFETY: see above.
+        unsafe { core::slice::from_raw_parts_mut(out, n) }.copy_from_slice(&v[..n]);
+    }
+    n
+}
+
+/// Takes the gfxstream decoder's log (unhandled calls…) into the message
+/// buffer (`vetro_message_ptr`/`len`), one line per entry; returns its length.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_gl_take_log(vm: *mut Vm) -> usize {
+    // SAFETY: `vm` comes from `vetro_machine_new`.
+    let vm = unsafe { &mut *vm };
+    let lines = vm
+        .with_gpu(|g| g.renderer_as_mut::<vetro_machine::vetro_gfxstream::Gfxstream>().map(|r| r.take_log()))
+        .flatten()
+        .unwrap_or_default();
+    vm.message = lines.join("\n");
+    vm.message.len()
+}
+
+/// 1 if scanout `scanout` shows a 3D resource (its pixels are drawn by the
+/// WebGL2 executor, not in `vetro_display_ptr`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_display_is_3d(vm: *const Vm, scanout: u32) -> u32 {
+    // SAFETY: `vm` comes from `vetro_machine_new`.
+    let vm = unsafe { &*vm };
+    vm.with_gpu(|g| g.scanout_3d(scanout).is_some()).unwrap_or(false) as u32
+}
+
+/// Reads back the 3D scanout into the display's RGBA image (the one of
+/// `vetro_display_ptr`, rows from the top) and returns its pointer; null if
+/// the scanout is not 3D. A host read (screenshots, home-screen detection):
+/// the guest never sees it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_display_read_3d(vm: *mut Vm, scanout: u32) -> *const u8 {
+    // SAFETY: `vm` comes from `vetro_machine_new`.
+    let vm = unsafe { &*vm };
+    let px = vm.with_gpu(|g| gl::scanout_rgba(g, scanout)).flatten();
+    let Some((w, h, rgba)) = px else { return core::ptr::null() };
+    vm.with_display(|d| d.set_3d_pixels(scanout, w, h, rgba)).flatten().unwrap_or(core::ptr::null())
 }
 
 /// Size of scanout `scanout`: `(width << 32) | height`, 0 if

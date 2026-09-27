@@ -343,7 +343,7 @@ mod tests {
         b.op(Code::Viewport, &[0, 0, 640, 480]);
         b.op_blob(Code::BufferData, &[0x8892, 0x88E4], &[1, 2, 3]);
         b.op_blob(Code::BufferSubData, &[0x8892, 4], &[9]);
-        b.op_read(Code::ReadPixels, &[0, 0, 1, 1, 0x1908, 0x1401], 4);
+        b.op_read(Code::ReadPixels, &[0, 0, 1, 1, 0x1908, 0x1401, 0, 4], 4);
         assert_eq!(b.words[0], (Code::Viewport as u32) << 16 | 5);
         assert_eq!(b.words[5], (Code::BufferData as u32) << 16 | 5);
         assert_eq!(&b.words[8..10], &[0, 3]);

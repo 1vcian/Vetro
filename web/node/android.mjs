@@ -46,6 +46,13 @@ export const DEFAULT_MANIFEST = ANDROID_VERSIONS[0].manifest;
 export const ANDROID_PARAMS = 'nokaslr';
 
 /**
+ * Boot parameters that switch the image from SwiftShader to gfxstream GLES
+ * over virtio-gpu 3D (ADR 0037): the same as
+ * `vetro_machine::android::GFXSTREAM_PARAMS` (checked by tests/web/gl.mjs).
+ */
+export const GFXSTREAM_PARAMS = 'androidboot.hardware.egl=emulation androidboot.hardware.gltransport=virtio-gpu-pipe androidboot.hardware.hwcomposer.mode=client androidboot.hardware.hwcomposer.display_framebuffer_format=rgba androidboot.opengles.version=196608';
+
+/**
  * The machine the app builds for Vetro's AOSP image (ADR 0028): the
  * prebuilt snapshot (ADR 0031) is made with exactly this machine, and its key
  * contains it. `files`: virtio-vsock for the file manager (on by default in
@@ -69,6 +76,7 @@ export function machineDevices(DEV, c) {
   devices |= c.pointer === 'multitouch' ? DEV.MULTITOUCH : DEV.TABLET;
   if (c.net) devices |= DEV.NET;
   if (c.files) devices |= DEV.VSOCK;
+  if (c.gpu === 'webgl') devices |= DEV.GPU_3D;
   return devices;
 }
 

@@ -18,6 +18,8 @@ pub mod exec;
 pub mod formats;
 pub mod gl;
 pub mod glsl;
+#[doc(hidden)]
+pub mod guest;
 pub mod state;
 pub mod tables;
 pub mod wire;

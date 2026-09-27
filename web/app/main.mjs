@@ -45,6 +45,11 @@
 // menu, or a profile JSON file) fills screen and RAM and gives the Worker the
 // profile's bootloader parameters and after-boot adb commands
 // (web/node/profiles.mjs, starters in web/app/profiles/).
+//
+// Accelerated graphics (ADR 0037, experimental): `&gpu=webgl` with the AOSP
+// image runs the guest's GLES on the browser's GPU (WebGL2 in the Worker);
+// frames arrive as ImageBitmaps. Without WebGL2 the Worker keeps SwiftShader
+// and says so; `window.vetroState.gpu` holds the mode and the counters.
 
 import { absAxis, BUTTONS, evdevCode } from './keymap.mjs';
 import { keyToBytes, Terminal } from './terminal.mjs';
@@ -163,6 +168,22 @@ function placeCursor() {
   cursorCanvas.style.top = `${(cursor.y - cursor.hotY) * k}px`;
 }
 new ResizeObserver(placeCursor).observe(screen);
+
+/** A frame of the accelerated path: an ImageBitmap drawn by WebGL2 in the Worker. */
+function onFrame3d(msg) {
+  if (!vetroState.firstFrame) vetroState.firstFrame = performance.now() - startedAt;
+  $('screen-off').hidden = true;
+  if (msg.width !== fb.width || msg.height !== fb.height) {
+    fb = { width: msg.width, height: msg.height };
+    renderer.resize(fb.width, fb.height);
+    $('screen-wrap').style.maxWidth = fb.height > fb.width ? `calc(85vh * ${fb.width / fb.height})` : '';
+    placeCursor();
+  }
+  renderer.drawBitmap(msg.bitmap);
+  msg.bitmap.close();
+  const g = (vetroState.gpu ??= { mode: 'webgl' });
+  g.frames = (g.frames ?? 0) + 1;
+}
 
 function onFrame(msg) {
   if (msg.off) {
@@ -715,6 +736,7 @@ async function start() {
     snapshot: el.snapshot.checked,
     persist: el.persist.checked,
     android: android ? { manifest: new URL(el.manifestUrl.value.trim() || DEFAULT_MANIFEST, location.href).href, prebuilt: !el.coldBoot.checked } : null,
+    gpu: android && q.get('gpu') === 'webgl' ? 'webgl' : null,
   };
   if (android) {
     config.net = true;
@@ -766,6 +788,18 @@ async function start() {
         break;
       case 'frame':
         onFrame(msg);
+        break;
+      case 'frame3d':
+        onFrame3d(msg);
+        break;
+      case 'gpu':
+        vetroState.gpu = { ...(vetroState.gpu ?? {}), mode: msg.mode, why: msg.why ?? null };
+        if (msg.mode !== 'webgl') setStatus(`accelerated graphics unavailable (${msg.why}): using SwiftShader`);
+        break;
+      case 'gl':
+        vetroState.gpu = { ...(vetroState.gpu ?? {}), stats: msg.stats, executor: msg.executor };
+        for (const l of msg.log) console.warn(`vetro-gl: ${l}`);
+        (vetroState.gpu.log ??= []).push(...msg.log.slice(0, Math.max(0, 500 - vetroState.gpu.log.length)));
         break;
       case 'cursor':
         onCursor(msg);

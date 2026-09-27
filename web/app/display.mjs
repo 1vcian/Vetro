@@ -4,6 +4,8 @@
 //   - Canvas2D (default): putImageData of the rectangle;
 //   - WebGPU (option): an rgba8unorm texture updated with writeTexture
 //     and drawn with a triangle that covers the canvas.
+// With accelerated graphics (ADR 0037) the Worker draws with WebGL2 and
+// sends whole frames as ImageBitmaps: `drawBitmap`.
 
 export class Canvas2DRenderer {
   name = 'canvas 2D';
@@ -20,6 +22,10 @@ export class Canvas2DRenderer {
 
   draw(rect, pixels) {
     this.ctx.putImageData(new ImageData(pixels, rect.width, rect.height), rect.x, rect.y);
+  }
+
+  drawBitmap(bitmap) {
+    this.ctx.drawImage(bitmap, 0, 0);
   }
 
   clear() {
@@ -79,7 +85,7 @@ export class WebGpuRenderer {
     this.texture = this.device.createTexture({
       size: [width, height],
       format: 'rgba8unorm',
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
     });
     this.bind = this.device.createBindGroup({
       layout: this.pipeline.getBindGroupLayout(0),
@@ -96,6 +102,15 @@ export class WebGpuRenderer {
       pixels,
       { bytesPerRow: rect.width * 4, rowsPerImage: rect.height },
       [rect.width, rect.height],
+    );
+    this.#present();
+  }
+
+  drawBitmap(bitmap) {
+    this.device.queue.copyExternalImageToTexture(
+      { source: bitmap },
+      { texture: this.texture },
+      [Math.min(bitmap.width, this.canvas.width), Math.min(bitmap.height, this.canvas.height)],
     );
     this.#present();
   }
