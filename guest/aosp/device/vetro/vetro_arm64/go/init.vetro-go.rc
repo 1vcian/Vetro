@@ -18,12 +18,8 @@ on early-init && property:ro.boot.vetro.profile=go
     setprop ro.vetro.profile go
     write /dev/kmsg "VETRO: low-RAM (go) profile"
 
-# microG without Google accounts has nothing to sync, yet it kept ~27% of the
-# CPU busy on the idle home screen (ADR 0037): in the Go profile it loses the
-# battery-saving exemption the regular image grants it, runs nothing in the
-# background, and sits in the "restricted" standby bucket (jobs and alarms
-# deferred). It still works when an app calls it.
-on property:sys.boot_completed=1 && property:ro.vetro.profile=go
-    exec_background - system system -- /system/bin/cmd deviceidle whitelist -com.google.android.gms
-    exec_background - system system -- /system/bin/cmd appops set com.google.android.gms RUN_ANY_IN_BACKGROUND ignore
-    exec_background - system system -- /system/bin/am set-standby-bucket com.google.android.gms restricted
+# microG's battery-saving exemption (sysconfig-vetro-microg.xml) is dropped
+# by the vetro_arm64_go product only: init cannot run `cmd deviceidle` or
+# `cmd appops` (no SELinux domain transition from init to a shell command,
+# and a vendor domain may not call the platform's services), so the boot
+# switch cannot restrict microG.

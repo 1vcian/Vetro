@@ -1,2 +1,2 @@
 Apps not installed by the vetro_arm64_go product (Vetro, ADR 0037):
-BasicDreams PhotoTable EasterEgg Traceur ThreadNetworkDemoApp DeviceAsWebcam Music Calendar
+BasicDreams PhotoTable EasterEgg Traceur ThreadNetworkDemoApp DeviceAsWebcam Music Calendar sysconfig-vetro-microg.xml

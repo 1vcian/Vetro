@@ -27,5 +27,8 @@ prebuilt_etc {
         "DeviceAsWebcam",
         "Music",
         "Calendar",
+        // microG without its battery-saving exemption: it dozes and defers
+        // its jobs like any app (it kept ~27% of the idle CPU, ADR 0037).
+        "sysconfig-vetro-microg.xml",
     ],
 }
