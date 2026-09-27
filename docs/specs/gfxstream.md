@@ -2,7 +2,7 @@
 
 Decision: ADR 0037. Crates: `vetro-platform` (virtio-gpu 3D, `Renderer3d`),
 `vetro-gfxstream` (host decoder), `vetro-machine` (wiring, boot parameters),
-`vetro-wasm` (ABI 14), `web/app/gl.mjs` (executor).
+`vetro-wasm` (ABI 15), `web/app/gl.mjs` (executor).
 
 ## Path of a GL call
 1. The guest's `libGLESv2_emulation` encodes the call (emugen) into its
@@ -136,7 +136,7 @@ All guest contexts share the executor's one WebGL2 context: when a render
 thread whose context is not the active one sends a call,
 `state::transition` emits only the state that differs.
 
-## In the page (vetro-wasm ABI 14, web/app)
+## In the page (vetro-wasm ABI 15, web/app)
 `DEV.GPU_3D` (64) gives the GPU virgl; `vetro_gl_enable` installs the JS
 executor; `vetro_gl_stats`, `vetro_gl_take_log`; `vetro_display_is_3d`,
 `vetro_display_read_3d` (host readback of the scanout for the home-screen
