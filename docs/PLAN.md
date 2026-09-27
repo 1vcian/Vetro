@@ -136,6 +136,24 @@ Safari mobile; qualsiasi componente cloud obbligatorio.
 - **Uscita:** replay identico con ritorno al momento esatto di una chiamata;
   30 app superano i flussi base; criteri 1.0 soddisfatti.
 
+## Preinstalled apps (owner's list, 2026-09-27)
+
+Apps that ship preinstalled in Vetro's Android image (as prebuilt APKs with
+pinned versions and SHA-256, like microG), each with its licence recorded
+and, where required, its source published next to the image:
+
+| App | Source | Licence | Notes |
+|---|---|---|---|
+| **Jenny** (local-first AI agent) | https://github.com/flagdizero/jenny-android-ai-agent (release APK, v0.11.0 as of 2026-09-27) | AGPL-3.0 | We redistribute it unmodified: publish the exact source tag with the image. It may want network access and an API key or a local model; check it runs in the emulator (CPU features, 64-bit only, RAM). |
+| **Chromium** (latest stable) | official Chromium builds for Android arm64 (e.g. the Chromium snapshot `ChromePublic.apk`), or a trusted open build | BSD-3 plus third-party notices | Large APK and heavy at runtime (its own JIT): measure the effect on image size, snapshot size and speed. Name it Chromium, never Chrome. Keep the version current with each image release. |
+| **A couple of games** | to be chosen later; prefer open-source games (F-Droid) with redistributable licences and 64-bit arm64 builds | per game | Pick light 2D games that run well with software rendering (SwiftShader) and one CPU. |
+
+Rules: only apps whose licence allows redistribution; pinned hashes; no
+Google apps or trademarks; each addition is measured (image size, snapshot
+size, boot time) and gets a short note in `docs/progress/M5.md`. The list is
+built into the next AOSP rebuild (the VM is started by the owner when a
+batch is ready).
+
 ## Product track: open core, server and plans (decided 2026-09-26)
 
 The owner's direction: this repository becomes **private** (the full
