@@ -136,10 +136,10 @@ Safari mobile; qualsiasi componente cloud obbligatorio.
 - **Uscita:** replay identico con ritorno al momento esatto di una chiamata;
   30 app superano i flussi base; criteri 1.0 soddisfatti.
 
-## Preinstalled apps (owner's list, 2026-09-27)
+## Suggested apps (owner's list, 2026-09-27; delivered through the in-page catalog)
 
-Apps that ship preinstalled in Vetro's Android image (as prebuilt APKs with
-pinned versions and SHA-256, like microG), each with its licence recorded
+Apps offered to users (as APKs with pinned versions and SHA-256, like
+microG), each with its licence recorded
 and, where required, its source published next to the image:
 
 | App | Source | Licence | Notes |
@@ -168,8 +168,9 @@ in-page ADB client (the same path as drag and drop), with a progress bar.
 - Installed apps persist in the user's disk overlay and local snapshot
   (OPFS).
 - Only redistributable apps; AGPL/GPL apps show the source link in the card.
-- Preinstalled list shrinks to the essentials (microG, possibly Jenny);
-  Chromium and games move to the catalog ("advanced" for heavy ones).
+- Nothing is preinstalled beyond the system components (microG). Jenny,
+  Chromium and games are all offered through the catalog ("advanced" for
+  heavy ones). The table above lists the catalog's first entries.
 - Plans: Free gets the basic catalog; Pro gets curated analysis sets.
 
 ## Product track: open core, server and plans (decided 2026-09-26)
