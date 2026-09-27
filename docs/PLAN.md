@@ -154,6 +154,24 @@ size, boot time) and gets a short note in `docs/progress/M5.md`. The list is
 built into the next AOSP rebuild (the VM is started by the owner when a
 batch is ready).
 
+
+**Update (2026-09-27): in-page app catalog instead of preinstalling
+everything.** One base snapshot for everyone (small, fast to download);
+the web app shows a catalog of suggested apps with an **Install** button
+that downloads the APK and installs it into the running guest through the
+in-page ADB client (the same path as drag and drop), with a progress bar.
+- APKs mirrored on our R2 (the origins don't send CORS headers), pinned
+  versions and SHA-256, verified before install.
+- Catalog = a JSON file on R2 (name, icon, description, size, licence,
+  source link, minimum image version), updatable without touching the site
+  or the snapshot.
+- Installed apps persist in the user's disk overlay and local snapshot
+  (OPFS).
+- Only redistributable apps; AGPL/GPL apps show the source link in the card.
+- Preinstalled list shrinks to the essentials (microG, possibly Jenny);
+  Chromium and games move to the catalog ("advanced" for heavy ones).
+- Plans: Free gets the basic catalog; Pro gets curated analysis sets.
+
 ## Product track: open core, server and plans (decided 2026-09-26)
 
 The owner's direction: this repository becomes **private** (the full
