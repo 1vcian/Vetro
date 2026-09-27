@@ -70,6 +70,16 @@ let pointerKind = 'tablet';
 /** State visible to tests: how the machine started, saved snapshots, disks. */
 const vetroState = (window.vetroState = { boot: null, snapshots: [], disks: [], stopped: null });
 let startedAt = 0;
+/**
+ * Responsiveness as the user feels it (read by tests/web/android-chrome.mjs):
+ * frames drawn and their cost, and for each press on the screen the time to
+ * the next frame drawn (`frameMs`) and when the Worker applied it
+ * (`appliedMs`, from the Worker's stats). Times are page milliseconds.
+ */
+const perf = (vetroState.perf = { frames: 0, pixels: 0, drawMs: 0, maxDrawMs: 0, taps: [], frameLog: [] });
+const PERF_LOG = 600;
+/** Absolute time (ms since the epoch, fractional), comparable between the page and the Worker. */
+const absNow = () => performance.timeOrigin + performance.now();
 
 // ---- File manager ------------------------------------------------------------
 
@@ -179,7 +189,17 @@ function onFrame(msg) {
     $('screen-wrap').style.maxWidth = fb.height > fb.width ? `calc(85vh * ${fb.width / fb.height})` : '';
     placeCursor();
   }
+  const t = performance.now();
   renderer.draw(msg.rect, msg.pixels);
+  const now = performance.now();
+  const drawMs = now - t;
+  perf.frames++;
+  perf.pixels += msg.rect.width * msg.rect.height;
+  perf.drawMs += drawMs;
+  perf.maxDrawMs = Math.max(perf.maxDrawMs, drawMs);
+  perf.frameLog.push({ t: now, x: msg.rect.x, y: msg.rect.y, w: msg.rect.width, h: msg.rect.height, workerMs: msg.at ? absNow() - msg.at : null });
+  if (perf.frameLog.length > PERF_LOG) perf.frameLog.shift();
+  for (const tap of perf.taps) if (tap.frameMs === null) tap.frameMs = now - tap.t;
 }
 
 // Scanout off: with the test kernel the guest does not draw until a program
@@ -205,7 +225,9 @@ function onCursor(msg) {
 
 // ---- Input -----------------------------------------------------------------
 
-const send = (msg) => worker?.postMessage(msg);
+// Every input carries the page's absolute time `t`: the Worker measures how
+// long it waited before reaching the machine (not part of the guest input).
+const send = (msg) => worker?.postMessage({ ...msg, t: absNow() });
 const held = new Set();
 
 screen.addEventListener('keydown', (e) => {
@@ -252,6 +274,8 @@ screen.addEventListener('pointerdown', (e) => {
   screen.setPointerCapture(e.pointerId);
   e.preventDefault();
   const [x, y] = abs(e);
+  perf.taps.push({ t: performance.now(), frameMs: null });
+  if (perf.taps.length > 100) perf.taps.shift();
   if (pointerKind === 'multitouch') {
     const slot = slotFor(e.pointerId);
     if (slot !== null) send({ type: 'touch', slot, x, y, down: true });
@@ -773,6 +797,7 @@ async function start() {
         vetroState.disks = msg.disks;
         vetroState.memory = Math.max(vetroState.memory ?? 0, msg.memory ?? 0);
         vetroState.stats = msg;
+        if (msg.input) perf.input = msg.input;
         break;
       case 'restored': {
         vetroState.boot = { mode: 'snapshot', ms: performance.now() - startedAt, steps: msg.steps, size: msg.size, times: msg.times, memory: msg.memory, prebuilt: !!msg.prebuilt };

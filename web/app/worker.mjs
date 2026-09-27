@@ -149,6 +149,11 @@ let ignoredNotice = false;
 /** Real-time reference (reset when guest time jumps). */
 const clock = { t0: 0, g0: 0n, paused: 0 };
 
+/** Page inputs: how long they waited in the Worker before reaching the machine (ms). */
+const inputWait = { count: 0, lastMs: 0, maxMs: 0, sumMs: 0 };
+/** Absolute time (ms since the epoch), comparable with the page's. */
+const absNow = () => performance.timeOrigin + performance.now();
+
 const post = (msg, transfer = []) => postMessage(msg, transfer);
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
 const status = (text) => post({ type: 'status', text });
@@ -676,6 +681,16 @@ function apply(msg) {
     ignoredNotice = true;
     return;
   }
+  if (msg.t !== undefined) {
+    // The page's timestamp is a measurement, not part of the guest input.
+    const waited = absNow() - msg.t;
+    inputWait.count++;
+    inputWait.lastMs = waited;
+    inputWait.maxMs = Math.max(inputWait.maxMs, waited);
+    inputWait.sumMs += waited;
+    msg = { ...msg };
+    delete msg.t;
+  }
   inputLog.push([Number(m.steps), msg]);
   switch (msg.type) {
     case 'serial':
@@ -809,7 +824,7 @@ function flush() {
       const rect = m.displayTakeDirty();
       if (rect) {
         const pixels = m.displayCopy(rect);
-        post({ type: 'frame', width: size.width, height: size.height, rect, pixels }, [pixels.buffer]);
+        post({ type: 'frame', width: size.width, height: size.height, rect, pixels, at: absNow() }, [pixels.buffer]);
       }
     }
   }
@@ -1030,6 +1045,9 @@ async function loop() {
         jit: m.jitStats(),
         inputs: inputLog.length,
         memory: m.memoryBytes,
+        input: { ...inputWait },
+        // Guest time ahead of the real clock (ms; > 0: the guest is early).
+        aheadMs: guestMs() - (now - clock.t0 - clock.paused),
       });
       if (mode !== 'live' || m.rrStatus().state === 'Recording') postRr();
       lastStats = now;
