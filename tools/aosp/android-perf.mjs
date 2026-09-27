@@ -19,6 +19,7 @@
 //   --idle=S         guest seconds of launcher (and app) idle (default 20)
 //   --profile        interpreter instruction classes (VETRO_JIT_PROFILE=1 does the same)
 //   --no-jit         interpreter only
+//   --bg-compile     JIT modules compiled in a Worker (ADR 0038)
 //   --threshold=N    JIT hot threshold (default 64, the app's)
 //   --cold=S         cold boot for S guest seconds instead of the restore
 //   --restore-only   stops after the restore (to profile it)
@@ -121,7 +122,8 @@ async function main() {
     const f = manifest.files.find((x) => x.path === path);
     return { ...f, url: new URL(path, manifestUrl).href };
   });
-  const { exports } = await instantiate(readFileSync(wasmPath));
+  const { exports, jit: engine } = await instantiate(readFileSync(wasmPath));
+  if (flag('bg-compile')) await engine.startBackground();
   const M = ANDROID_MACHINE;
   const devices = machineDevices(DEV, M);
   const m = new Machine(exports, { ramSize: BigInt(M.ramMiB) << 20n, devices, width: M.width, height: M.height });
@@ -130,7 +132,7 @@ async function main() {
   const cache = new FileCache(cacheDir, layout.key, ANDROID_DISK.blockSize, Math.ceil(layout.size / ANDROID_DISK.blockSize));
   feeder.add(layout, { cache, ...ANDROID_DISK });
   const { key } = await androidSnapshotKey(m, { machine: M, devices, manifest, images, params: ANDROID_PARAMS, layout });
-  const res = { wasm: wasmPath, key, jit, profile, phases: [] };
+  const res = { wasm: wasmPath, key, jit, profile, bgCompile: flag('bg-compile'), phases: [] };
   // The app is fetched before the machine runs: the host's actions must not
   // wait on the network while the guest advances.
   const cat = await loadCatalog(CATALOG_URL);
@@ -310,6 +312,8 @@ async function main() {
     if (flowError) throw flowError;
   }
   res.totalWallMs = Math.round(performance.now() - t0);
+  res.engine = engine.stats;
+  log(`JS engine: ${JSON.stringify(engine.stats)}`);
   res.steps = String(m.steps);
   if (profile) {
     res.profileReport = m.jitProfile(60);

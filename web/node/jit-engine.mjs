@@ -16,7 +16,14 @@
 // - memory: it is vetro-wasm's linear memory, where `JitState`, the
 //   jump cache, the software TLB and the guest RAM live.
 //
-// vetro-wasm calls it through the imports `vetro_jit.compile/entry/place/drop/reset`
+// Background compilation (ADR 0038, off by default): after
+// `startBackground()`, `compile` hands the module to a Worker
+// (jit-compiler.mjs) and returns at once; until the Worker posts the compiled
+// module back, `ready(id)` is 0 and vetro-jit runs those regions in the
+// interpreter (same guest execution). `place` is deferred to the arrival. A
+// module needed at once (`entry`: the dispatcher) is compiled here.
+//
+// vetro-wasm calls it through the imports `vetro_jit.compile/entry/place/drop/reset/ready`
 // (crates/vetro-wasm/src/jit.rs). No dependencies: only the
 // WebAssembly API, the same in Node and in the browser.
 
@@ -45,8 +52,12 @@ export class JitEngine {
   /** Entries of vetro-wasm's function table handed out with `entry`, and the free ones. */
   #entries = [];
   #free = [];
+  /** Background compilation (ADR 0038): the Worker, the generation (reset), id -> { bytes, places }. */
+  #bg = null;
+  #gen = 0;
+  #pending = new Map();
   /** Compiled modules, bytes and resets, for the benchmarks. */
-  stats = { modules: 0, bytes: 0, resets: 0, compileMs: 0, refused: 0 };
+  stats = { modules: 0, bytes: 0, resets: 0, compileMs: 0, refused: 0, background: 0, workerMs: 0, instantiateMs: 0, forced: 0, stale: 0 };
 
   constructor({ budget = CODE_BUDGET } = {}) {
     this.#budget = budget;
@@ -55,6 +66,85 @@ export class JitEngine {
   /** To be called right after instantiating vetro-wasm (the imports are needed first). */
   attach(vetroExports) {
     this.#vetro = vetroExports;
+  }
+
+  /**
+   * Turns on background compilation (ADR 0038): modules compiled from now on
+   * are compiled by a Worker. In Node a `worker_threads` Worker, in the
+   * browser a module Worker. Resolves when the Worker is running.
+   */
+  async startBackground() {
+    if (this.#bg) return;
+    const url = new URL('./jit-compiler.mjs', import.meta.url);
+    let port;
+    if (typeof Worker === 'function' && typeof process === 'undefined') {
+      const w = new Worker(url, { type: 'module' });
+      port = { post: (m) => w.postMessage(m), stop: () => w.terminate() };
+      w.onmessage = (e) => this.#arrived(e.data);
+    } else {
+      const { Worker: NodeWorker } = await import('node:worker_threads');
+      const w = new NodeWorker(url);
+      w.on('message', (m) => this.#arrived(m));
+      // The Worker must not keep Node alive.
+      w.unref();
+      port = { post: (m) => w.postMessage(m), stop: () => w.terminate() };
+    }
+    this.#bg = port;
+  }
+
+  /** Stops the Worker (modules still compiling are compiled here when needed). */
+  stopBackground() {
+    this.#bg?.stop();
+    this.#bg = null;
+    for (const id of [...this.#pending.keys()]) this.#force(id);
+  }
+
+  #instantiate(module) {
+    const v = this.#vetro;
+    return new WebAssembly.Instance(module, {
+      env: { mem: v.memory, tbl: this.#tbl(), ld: v.vetro_jit_ld, st: v.vetro_jit_st, resolve: v.vetro_jit_resolve },
+      rt: this.#rt,
+    });
+  }
+
+  /** A module from the Worker: instantiated and placed, unless dropped or from before a reset. */
+  #arrived({ id, gen, module, ms, error }) {
+    const p = this.#pending.get(id);
+    if (!p || gen !== this.#gen) {
+      this.stats.stale++;
+      return;
+    }
+    if (error) {
+      console.error(`vetro_jit background compile: ${error}`);
+      this.#force(id);
+      return;
+    }
+    const t0 = performance.now();
+    this.#install(id, this.#instantiate(module), p);
+    this.stats.instantiateMs += performance.now() - t0;
+    this.stats.workerMs += ms;
+    this.stats.background++;
+  }
+
+  #install(id, instance, p) {
+    this.#pending.delete(id);
+    this.#instances.set(id, instance.exports);
+    for (const [count, base] of p.places) this.place(id, count, base);
+  }
+
+  /** Compiles a module still in the Worker here, now (it is needed at once). */
+  #force(id) {
+    const p = this.#pending.get(id);
+    if (!p) return;
+    const t0 = performance.now();
+    this.#install(id, this.#instantiate(new WebAssembly.Module(p.bytes)), p);
+    this.stats.compileMs += performance.now() - t0;
+    this.stats.forced++;
+  }
+
+  /** 1 if module `id` can run, 0 while the Worker compiles it. */
+  ready(id) {
+    return this.#pending.has(id) ? 0 : 1;
   }
 
   #tbl() {
@@ -69,15 +159,19 @@ export class JitEngine {
       this.stats.refused++;
       throw new RangeError(`JIT code limit (${this.#budget} bytes since the last reset)`);
     }
-    const t0 = performance.now();
-    const module = new WebAssembly.Module(bytes);
-    const instance = new WebAssembly.Instance(module, {
-      env: { mem: v.memory, tbl: this.#tbl(), ld: v.vetro_jit_ld, st: v.vetro_jit_st, resolve: v.vetro_jit_resolve },
-      rt: this.#rt,
-    });
-    this.stats.compileMs += performance.now() - t0;
     const id = this.#next++;
-    this.#instances.set(id, instance.exports);
+    if (this.#bg) {
+      this.#pending.set(id, { bytes, places: [] });
+      this.#bg.post({ id, gen: this.#gen, bytes });
+    } else {
+      const t0 = performance.now();
+      const instance = new WebAssembly.Instance(new WebAssembly.Module(bytes), {
+        env: { mem: v.memory, tbl: this.#tbl(), ld: v.vetro_jit_ld, st: v.vetro_jit_st, resolve: v.vetro_jit_resolve },
+        rt: this.#rt,
+      });
+      this.stats.compileMs += performance.now() - t0;
+      this.#instances.set(id, instance.exports);
+    }
     this.stats.modules++;
     this.stats.bytes += bytes.length;
     this.#since += bytes.length;
@@ -104,10 +198,16 @@ export class JitEngine {
 
   drop(id) {
     this.#instances.delete(id);
+    this.#pending.delete(id);
   }
 
   /** Puts `b0..b<count-1>` of module `id` into the table from `base`. */
   place(id, count, base) {
+    const p = this.#pending.get(id);
+    if (p) {
+      p.places.push([count, base]);
+      return;
+    }
     const x = this.#instances.get(id);
     const t = this.#tbl();
     for (let i = 0; i < count; i++) t.set(base + i, x[`b${i}`]);
@@ -116,6 +216,8 @@ export class JitEngine {
   /** Discards instances and table: the following modules use a new table. */
   reset() {
     this.#instances.clear();
+    this.#pending.clear();
+    this.#gen++;
     this.#table = null;
     // The entries handed to Rust keep their modules alive (the dispatcher
     // holds the block table, which holds every block): clearing them lets the
@@ -138,6 +240,7 @@ export class JitEngine {
    * going through JS at every run. Returns the entry.
    */
   entry(id, index) {
+    this.#force(id);
     const t = this.#vetro.__indirect_function_table;
     const i = this.#free.length ? this.#free.pop() : t.grow(1);
     t.set(i, this.#instances.get(id)[`b${index}`]);
@@ -172,6 +275,7 @@ export class JitEngine {
       drop: (id) => this.drop(id),
       place: (id, count, base) => this.place(id, count, base),
       reset: () => this.reset(),
+      ready: (id) => this.ready(id),
     };
   }
 }
