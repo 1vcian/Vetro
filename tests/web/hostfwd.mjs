@@ -60,7 +60,7 @@ async function session(x, kernel) {
   check(sock.state().state === 'Unknown', 'connection not released');
   at = await s.until(SHELL_PROMPT, at);
   const conn = s.text(0, at).split('\n').find((l) => l.startsWith('connect to'));
-  check(/^connect to 10\.0\.2\.15:5555 from 10\.0\.2\.2:49152 /.test(conn ?? ''), `riga di nc: ${conn}`);
+  check(/^connect to 10\.0\.2\.15:5555 from 10\.0\.2\.2:49152 /.test(conn ?? ''), `nc line: ${conn}`);
 
   const refused = m.connectGuest(5556);
   while (refused.state().state !== 'Closed') {

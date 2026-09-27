@@ -125,7 +125,7 @@ run(async () => {
     const pcap = readFileSync(await saved('pcapng'));
     check(pcap.subarray(0, 4).toString('hex') === '0a0d0d0a', 'downloaded pcapng');
     console.log(`recording: ${rec.info.events} events, ${rec.meta.keyframes} keyframes in OPFS; downloaded log ` +
-      `(${(log.length / 2 ** 20).toFixed(1)} MiB), HAR e pcapng (${pcap.length} byte)`);
+      `(${(log.length / 2 ** 20).toFixed(1)} MiB), HAR and pcapng (${pcap.length} bytes)`);
 
     // 5. Replay: identical replay.
     await click('#tabs [data-tab="replay"]');
@@ -154,10 +154,10 @@ run(async () => {
     check(paused.steps >= wgetInput.step && paused.registers.includes('pc ') && paused.registers.includes('vbar_el1'), `registers: ${JSON.stringify(paused)}`);
     const mem = await page.waitFor('memory dump', async () => {
       const t = await page.eval("document.getElementById('rr-mem').textContent");
-      return /fisico 0x[0-9a-f]+\n[0-9a-f]{16} {2}([0-9a-f]{2} ){15}[0-9a-f]{2}/.test(t) ? t : null;
+      return /physical 0x[0-9a-f]+\n[0-9a-f]{16} {2}([0-9a-f]{2} ){15}[0-9a-f]{2}/.test(t) ? t : null;
     }, 30_000);
     await click('#rr-continue');
-    const cont = await page.waitFor('fine del replay continuato', async () => (await state()).replayEnded, 120_000);
+    const cont = await page.waitFor('end of the continued replay', async () => (await state()).replayEnded, 120_000);
     check(cont.status.state === 'Finished' && cont.steps === rec.info.endSteps, `continue: ${JSON.stringify(cont)}`);
     console.log(`jump to instruction ${wgetInput.step}: stopped at ${paused.steps}, registers and memory (${mem.split('\n')[0]}); continue: identical`);
 
