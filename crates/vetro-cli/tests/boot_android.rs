@@ -200,7 +200,7 @@ fn profile_option_messages() {
     };
     let (code, err) = run(&["--profile=nope", "--boot-img=/nonexistent/boot.img"]);
     assert_eq!(code, Some(2));
-    assert!(err.contains("nope: not a starter profile (default, phone, small-phone, tablet)"), "{err}");
+    assert!(err.contains("nope: not a starter profile (light, default, phone, small-phone, tablet)"), "{err}");
     let dir = std::env::temp_dir().join(format!("vetro-profile-cli-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let bad = dir.join("bad.json");
