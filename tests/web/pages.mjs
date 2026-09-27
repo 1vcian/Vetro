@@ -18,6 +18,8 @@ import { join } from 'node:path';
 import { serve } from '../../tools/web-serve.mjs';
 import { closeChrome, findChrome, launch, openPage } from './chrome.mjs';
 import { check, Fail, root, run } from './lib.mjs';
+import { prebuiltKey } from '../../tools/aosp/prebuilt-key.mjs';
+import { findPrebuilt } from '../../web/node/prebuilt.mjs';
 
 run(async () => {
   const site = process.argv[2] ?? join(root, 'target/pages');
@@ -37,6 +39,21 @@ run(async () => {
   for (const f of ['README', 'defconfig', 'vetro.config', 'VERSIONS', 'index.html']) check(files.includes(f), `sources/${f} assente`);
   check(files.some((f) => /^busybox-.*\.tar\.bz2$/.test(f)), 'sources/: sorgenti di BusyBox assenti');
   console.log(`sorgenti GPL: ${name} in ${parts.length} pezzi (sha256 giusto), BusyBox e patch di Alpine`);
+
+  // The prebuilt Android snapshot (ADR 0031): if the site announces one, it
+  // is the one for the site's own vetro-wasm (same key) and R2 has it with
+  // that size and sha256.
+  const hintPath = join(site, 'app/android-prebuilt.json');
+  if (existsSync(hintPath)) {
+    const hint = JSON.parse(readFileSync(hintPath, 'utf8'));
+    const { key } = await prebuiltKey(readFileSync(join(site, 'wasm/vetro_wasm.wasm')), hint.manifest);
+    check(hint.key === key, `android-prebuilt.json: key ${hint.key}, the site's vetro-wasm has ${key}`);
+    const found = await findPrebuilt(hint.manifest, key);
+    check(found.info && found.info.size === hint.size && found.info.sha256 === hint.sha256, `prebuilt snapshot on R2: ${found.missing ?? 'size or sha256 differ'}`);
+    console.log(`prebuilt Android snapshot: key ${key} matches the site's vetro-wasm, ${(hint.size / 2 ** 20).toFixed(0)} MiB on R2`);
+  } else {
+    console.log('prebuilt Android snapshot: none announced (the app cold boots Android)');
+  }
 
   const chrome = findChrome();
   if (!chrome) {

@@ -35,7 +35,7 @@ import { DEV, instantiate, Machine } from '../../web/node/vetro.mjs';
 import { AdbClient } from '../../web/node/adb.mjs';
 import { DiskFeeder, LayoutSource, MemoryCache } from '../../web/node/disk.mjs';
 import {
-  ANDROID_COMPACT, ANDROID_HOME_NS, ANDROID_MACHINE, ANDROID_PARAMS, ANDROID_WAKE, BootProgress, DEFAULT_MANIFEST,
+  ANDROID_COMPACT, ANDROID_DISK, ANDROID_HOME_NS, ANDROID_MACHINE, ANDROID_PARAMS, ANDROID_WAKE, BootProgress, DEFAULT_MANIFEST,
   gridColors, HOME_DRAW_NS, HOME_MIN_COLORS, HOME_POLL_NS, HOME_QUERY, isHome, machineDevices,
 } from '../../web/node/android.mjs';
 import { toBase64 } from '../../web/node/persist.mjs';
@@ -85,7 +85,7 @@ async function main() {
   const m = new Machine(exports, { ramSize: BigInt(M.ramMiB) << 20n, devices, width: M.width, height: M.height });
   const feeder = new DiskFeeder(m);
   const layout = await new LayoutSource(new URL('web/disk.json', manifestUrl).href).open();
-  feeder.add(layout, { cache: new MemoryCache(), blockSize: 1 << 20, maxBlocks: 64, readOnly: false, readahead: 1 });
+  feeder.add(layout, { cache: new MemoryCache(), ...ANDROID_DISK });
   const { key, parts } = await androidSnapshotKey(m, { machine: M, devices, manifest, images, params: ANDROID_PARAMS, layout });
   log(`key ${key}: ${JSON.stringify(parts)}`);
 

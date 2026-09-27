@@ -60,6 +60,14 @@ cp "$root/target/wasm32-unknown-unknown/release/vetro_wasm.wasm" "$out/wasm/"
 cp "$guest/Image" "$guest/initramfs.cpio.gz" "$out/guest/"
 touch "$out/.nojekyll"
 
+# The prebuilt Android snapshot for this vetro-wasm (ADR 0031): the app looks
+# it up by its own key; the hint only tells the page its size. Written only if
+# R2 has the snapshot for exactly this vetro-wasm (key: snapshot format and
+# machine configuration), so the site never announces one it cannot restore.
+echo "==> prebuilt Android snapshot"
+node "$root/tools/aosp/prebuilt-key.mjs" --wasm="$out/wasm/vetro_wasm.wasm" --write="$out/app/android-prebuilt.json" \
+  ${VETRO_REQUIRE_PREBUILT:+--require}
+
 echo "==> sorgenti GPL"
 src=$out/sources
 cp "$guest"/sources/{README,defconfig} "$guest/VERSIONS" "$src/"

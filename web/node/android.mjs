@@ -41,6 +41,13 @@ export const ANDROID_PARAMS = 'nokaslr';
 export const ANDROID_MACHINE = { ramMiB: 2048, width: 1280, height: 800, pointer: 'multitouch', net: true, files: true };
 
 /**
+ * The disk of the AOSP image in the app (the `web/disk.json` map): 1 MiB
+ * blocks, 64 of them in the module's memory (the rest in the OPFS cache),
+ * writable (copy-on-write in memory). The same for the prebuilt snapshot.
+ */
+export const ANDROID_DISK = { blockSize: 1 << 20, maxBlocks: 64, readOnly: false, readahead: 1 };
+
+/**
  * vetro-wasm device bits for a machine configuration (`DEV` of vetro.mjs):
  * the same function for the app's Worker and the prebuilt snapshot tool.
  */

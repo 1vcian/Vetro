@@ -86,7 +86,7 @@ import { Recording } from '../node/recording.mjs';
 import { BlobSource, DiskFeeder, LayoutSource, MemoryCache, OpfsCache, RangeSource } from '../node/disk.mjs';
 import { AdbClient } from '../node/adb.mjs';
 import { apkInfo } from '../node/apk.mjs';
-import { ANDROID_HOME_NS, ANDROID_PARAMS, ANDROID_WAKE, BootProgress, gridColors, HOME_DRAW_NS, HOME_MIN_COLORS, HOME_POLL_NS, HOME_QUERY, isHome, machineDevices } from '../node/android.mjs';
+import { ANDROID_DISK, ANDROID_HOME_NS, ANDROID_PARAMS, ANDROID_WAKE, BootProgress, gridColors, HOME_DRAW_NS, HOME_MIN_COLORS, HOME_POLL_NS, HOME_QUERY, isHome, machineDevices } from '../node/android.mjs';
 import { DiskOverlay, fromBase64, opfsFile, sha256Hex, SnapshotStore, snapshotKey, staleReason, toBase64 } from '../node/persist.mjs';
 import { androidSnapshotKey, downloadPrebuilt, findPrebuilt, PREBUILT_CHUNK, prebuiltSnapUrl } from '../node/prebuilt.mjs';
 
@@ -102,8 +102,6 @@ const CONSOLE_TAIL = 64 * 1024;
 const HOME_GIVE_UP_NS = 3000_000_000_000n;
 /** Wait (guest time) before trying to connect to adbd again. */
 const ADB_RETRY_NS = 5_000_000_000n;
-/** Android disk blocks kept in memory (64 MiB): the rest is in OPFS. */
-const ANDROID_MAX_BLOCKS = 64;
 const EV_SYN = 0;
 const EV_REL = 2;
 const REL_WHEEL = 8;
@@ -403,7 +401,7 @@ async function prepareAndroid(c) {
   };
   const images = ['boot.img', 'vendor_boot.img', 'init_boot.img'].map(file);
   const layout = new URL(c.android.layout ?? 'web/disk.json', url).href;
-  c.disks = [{ layout, blockSize: c.android.blockSize ?? 1 << 20, maxBlocks: ANDROID_MAX_BLOCKS, readOnly: false, readahead: 1 }];
+  c.disks = [{ layout, ...ANDROID_DISK }];
   return {
     manifest,
     manifestUrl: url,

@@ -12,6 +12,7 @@
 //
 //   node tests/web/unit.mjs
 
+import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { BlobSource, composePlan, composeRead, DiskFeeder, LayoutSource, MemoryCache, parseLayout, RangeSource } from '../../web/node/disk.mjs';
@@ -29,6 +30,7 @@ import {
 import { encodeSqlArgs, pathBytes, pathString, sqlValue } from '../../web/node/vetro.mjs';
 import { bodyCell, duration, fromB64, guestTime, hexdump, typeText } from '../../web/app/analysis.mjs';
 import { check, root, run } from './lib.mjs';
+import { downloadPrebuilt, findPrebuilt, PREBUILT_CHUNK, PREBUILT_FORMAT, prebuiltInfoUrl, prebuiltProblem, prebuiltSnapUrl } from '../../web/node/prebuilt.mjs';
 
 const eq = (a, b, what) => check(JSON.stringify(a) === JSON.stringify(b), `${what}: ${JSON.stringify(a)} invece di ${JSON.stringify(b)}`);
 let count = 0;
@@ -567,6 +569,101 @@ test('snapshot cache: metadata and reading into a given buffer', async () => {
   await store.readInto('k', view);
   eq([...view], [5, 6, 7, 8], 'bytes in the buffer');
   eq(await store.loadMeta('altro'), null, 'missing key');
+});
+
+test('prebuilt snapshot: lookup, verified download, retries, resume, damage (ADR 0031)', async () => {
+  const dir = join(root, 'target/web-test/prebuilt/snapshots');
+  mkdirSync(dir, { recursive: true });
+  const size = 2 * PREBUILT_CHUNK + 12345;
+  const data = new Uint8Array(size);
+  let x = 1;
+  for (let i = 0; i < size; i += 4) {
+    x = (x * 1103515245 + 12345) >>> 0;
+    data[i] = x >>> 24;
+  }
+  const key = 'k'.repeat(32);
+  const chunks = [];
+  for (let at = 0; at < size; at += PREBUILT_CHUNK) chunks.push(createHash('sha256').update(data.subarray(at, at + PREBUILT_CHUNK)).digest('hex'));
+  const info = { format: PREBUILT_FORMAT, version: 1, key, size, sha256: createHash('sha256').update(data).digest('hex'), chunk: PREBUILT_CHUNK, chunks, meta: { why: 'prebuilt', steps: '7' } };
+  writeFileSync(join(dir, `${key}.snap`), data);
+  writeFileSync(join(dir, `${key}.json`), JSON.stringify(info));
+  const bad = data.slice();
+  bad[PREBUILT_CHUNK + 5] ^= 1;
+  writeFileSync(join(dir, 'bad.snap'), bad);
+  const log = [];
+  const srv = await serve({ mounts: [['/img/', join(root, 'target/web-test/prebuilt')]], onRequest: (r) => log.push(r) });
+  const manifest = `${srv.url}/img/manifest.json`;
+  /** A fetch whose bodies break after `after` bytes (the first `times` times). */
+  const breaking = (after, times) => async (url, opts) => {
+    const res = await fetch(url, opts);
+    if (times-- <= 0) return res;
+    const reader = res.body.getReader();
+    let sent = 0;
+    return new Response(new ReadableStream({
+      async pull(c) {
+        const { done, value } = await reader.read();
+        if (done) return c.close();
+        if (sent + value.length > after) {
+          reader.cancel();
+          return c.error(new TypeError('network error'));
+        }
+        sent += value.length;
+        c.enqueue(value);
+      },
+    }), { status: res.status, headers: res.headers });
+  };
+  try {
+    eq(prebuiltInfoUrl(manifest, key), `${srv.url}/img/snapshots/${key}.json`, 'info URL next to the manifest');
+    const none = await findPrebuilt(manifest, 'x'.repeat(32));
+    check(!none.info && /no prebuilt snapshot/.test(none.missing), `404: ${JSON.stringify(none)}`);
+    const found = await findPrebuilt(manifest, key);
+    check(found.info?.size === size, `found: ${JSON.stringify(found.missing)}`);
+    check(prebuiltProblem(info, 'y'.repeat(32))?.includes('key'), 'another key is refused');
+    check(prebuiltProblem({ ...info, chunks: chunks.slice(1) }, key) !== null, 'chunk list of the wrong length');
+    const url = prebuiltSnapUrl(manifest, key);
+
+    // A break in the middle: retried with a Range from the verified chunk.
+    let store = SnapshotStore.memory();
+    let t = await store.downloadTarget(key);
+    let seen = 0;
+    const r1 = await downloadPrebuilt(info, url, t.file, { resume: t.resume, saveResume: t.saveResume, fetch: breaking(PREBUILT_CHUNK + (1 << 20), 1), onProgress: (p) => (seen = p.loaded) });
+    eq([r1.retries, seen <= size], [1, true], 'one retry');
+    await t.finish(info.meta);
+    const meta = await store.loadMeta(key);
+    eq([meta.size, meta.why], [size, 'prebuilt'], 'metadata written at the end');
+    const got = new Uint8Array(size);
+    await store.readInto(key, got);
+    check(Buffer.compare(got, data) === 0, 'same bytes after a retry');
+    check(log.some((r) => r.range === `bytes=${PREBUILT_CHUNK}-`), `range from the first unverified chunk: ${JSON.stringify(log.map((r) => r.range))}`);
+
+    // Interrupted for good, then resumed in a new session.
+    store = SnapshotStore.memory();
+    t = await store.downloadTarget(key);
+    let err = null;
+    await downloadPrebuilt(info, url, t.file, { resume: t.resume, saveResume: t.saveResume, fetch: breaking(PREBUILT_CHUNK + (1 << 20), 99), retries: 0 }).catch((e) => (err = e));
+    check(err, 'gives up without retries');
+    t.close();
+    eq(await store.loadMeta(key), null, 'no snapshot before it is complete');
+    t = await store.downloadTarget(key);
+    eq(t.resume, { sha256: info.sha256, verified: 1 }, 'resume state');
+    log.length = 0;
+    const r2 = await downloadPrebuilt(info, url, t.file, { resume: t.resume, saveResume: t.saveResume });
+    eq(r2.resumedFrom, PREBUILT_CHUNK, 'resumed after the verified chunk');
+    eq(r2.bytes, size - PREBUILT_CHUNK, 'only the rest downloaded');
+    await t.finish(info.meta);
+    await store.readInto(key, got);
+    check(Buffer.compare(got, data) === 0, 'same bytes after resuming');
+
+    // A damaged chunk is never written.
+    store = SnapshotStore.memory();
+    t = await store.downloadTarget(key);
+    err = null;
+    await downloadPrebuilt(info, `${srv.url}/img/snapshots/bad.snap`, t.file, { resume: t.resume, saveResume: t.saveResume }).catch((e) => (err = e));
+    check(/chunk 1: sha256/.test(err?.message), `damaged chunk: ${err?.message}`);
+    eq(t.file.getSize(), PREBUILT_CHUNK, 'only the good chunk written');
+  } finally {
+    await srv.close();
+  }
 });
 
 /** A minimal ZIP: [name, data, method, uncompressed length]. */
