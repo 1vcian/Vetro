@@ -69,11 +69,19 @@ const CB_BASE: u64 = 40 << 20;
 pub struct Guest {
     pub gfx: Gfxstream,
     pub ram: Ram,
+    /// Per context, where the next write goes in the pipe buffer: like
+    /// upstream `VirtioGpuPipeStream`, writes follow each other in the
+    /// buffer (the transfer box's x is the offset) until a read or a wrap.
+    written: std::collections::BTreeMap<u32, u32>,
 }
 
 impl Guest {
     pub fn new(exec: Box<dyn GlExecutor>) -> Self {
-        Self { gfx: Gfxstream::new(exec, (1280, 800)), ram: Ram(vec![0; 64 << 20]) }
+        Self {
+            gfx: Gfxstream::new(exec, (1280, 800)),
+            ram: Ram(vec![0; 64 << 20]),
+            written: Default::default(),
+        }
     }
 
     /// Opens virtio context `ctx` with its pipe resource (id 100 + ctx) and
@@ -102,16 +110,22 @@ impl Guest {
 
     pub fn send(&mut self, ctx: u32, data: &[u8]) {
         let ents = Self::ents(ctx);
+        let mut pos = self.written.get(&ctx).copied().unwrap_or(0);
+        if data.len() as u32 > PIPE_SIZE - pos {
+            pos = 0;
+        }
         let mut b = Backing::new(&mut self.ram, &ents);
-        b.write(0, data);
+        b.write(u64::from(pos), data);
         let t = Transfer3d {
-            bx: Box3d { x: 0, w: data.len() as u32, h: 1, d: 1, ..Box3d::default() },
+            bx: Box3d { x: pos, w: data.len() as u32, h: 1, d: 1, ..Box3d::default() },
             ..Transfer3d::default()
         };
         self.gfx.transfer_to_host(ctx, 100 + ctx, &t, &mut b).unwrap();
+        self.written.insert(ctx, pos + data.len() as u32);
     }
 
     pub fn recv(&mut self, ctx: u32, n: usize) -> Vec<u8> {
+        self.written.insert(ctx, 0);
         let ents = Self::ents(ctx);
         let mut b = Backing::new(&mut self.ram, &ents);
         let t = Transfer3d {

@@ -95,6 +95,17 @@ pub struct Gfxstream {
 }
 
 /// Resource kind as upstream's `GetResourceType` decides it.
+/// Where a transfer box starts in the resource's backing. Like upstream
+/// gfxstream (`virgl_format_to_linear_base`), the backing is the resource
+/// laid out tightly (rows of width x bytes per pixel) and the box's
+/// position gives the offset: the command's `offset` and `stride` are not
+/// used. The pipe stream relies on it: it appends its writes in the buffer
+/// and names each one by x.
+fn linear_base(a: &Create3d, t: &Transfer3d) -> u64 {
+    let bpp = u64::from(formats::tex_of_virgl(a.format).bpp.max(1));
+    u64::from(t.bx.y) * u64::from(a.width) * bpp + u64::from(t.bx.x) * bpp
+}
+
 fn kind_of(a: &Create3d) -> ResKind {
     use formats::*;
     if a.target == PIPE_BUFFER {
@@ -330,17 +341,16 @@ impl Renderer3d for Gfxstream {
             ResKind::Pipe => {
                 let ctx = if self.ctxs.contains_key(&ctx) { ctx } else { r.ctx };
                 let mut buf = vec![0u8; t.bx.w as usize];
-                let n = backing.read(t.offset, &mut buf);
+                let n = backing.read(linear_base(&r.args, t), &mut buf);
                 buf.truncate(n);
                 self.pipe_write(ctx, &buf);
             }
             ResKind::ColorBuffer => {
                 let tex = formats::tex_of_virgl(r.args.format);
                 let row = (t.bx.w * tex.bpp) as usize;
-                let stride =
-                    if t.stride != 0 { t.stride as usize } else { (r.args.width * tex.bpp) as usize };
+                let stride = (r.args.width * tex.bpp) as usize;
                 let mut data = vec![0u8; stride * t.bx.h.saturating_sub(1) as usize + row];
-                backing.read(t.offset, &mut data);
+                backing.read(linear_base(&r.args, t), &mut data);
                 self.gl.cb_upload(res, t.bx.x, t.bx.y, t.bx.w, t.bx.h, &data, stride);
                 self.maybe_flush();
             }
@@ -369,16 +379,16 @@ impl Renderer3d for Gfxstream {
                 if n < t.bx.w as usize {
                     self.gl.warn(format!("pipe read of {} bytes with {n} available", t.bx.w));
                 }
-                backing.write(t.offset, &bytes);
+                backing.write(linear_base(&r.args, t), &bytes);
             }
             ResKind::ColorBuffer => {
                 let tex = formats::tex_of_virgl(r.args.format);
                 let row = (t.bx.w * tex.bpp) as usize;
-                let stride =
-                    if t.stride != 0 { t.stride as usize } else { (r.args.width * tex.bpp) as usize };
+                let stride = (r.args.width * tex.bpp) as usize;
+                let base = linear_base(&r.args, t);
                 let px = self.gl.cb_read(res, t.bx.x, t.bx.y, t.bx.w, t.bx.h);
                 for (k, line) in px.chunks(row.max(1)).enumerate().take(t.bx.h as usize) {
-                    backing.write(t.offset + (k * stride) as u64, line);
+                    backing.write(base + (k * stride) as u64, line);
                 }
             }
             ResKind::Buffer => {}
