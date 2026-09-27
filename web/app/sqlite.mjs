@@ -1,41 +1,41 @@
-// Lettore del formato file di SQLite 3 (https://www.sqlite.org/fileformat.html),
-// senza dipendenze, per il gestore dei file (M8): tabelle, colonne e righe
-// di un database letto dal guest. Solo lettura: le modifiche passano dal
-// motore SQLite vero nel guest (richiesta SQL del demone, ADR 0021);
-// `sqlQuote` e i costruttori di SQL qui sotto le preparano.
+// Reader of the SQLite 3 file format (https://www.sqlite.org/fileformat.html),
+// with no dependencies, for the file manager (M8): tables, columns and rows
+// of a database read from the guest. Read-only: changes go through the
+// real SQLite engine in the guest (SQL request of the daemon, ADR 0021);
+// `sqlQuote` and the SQL builders below prepare them.
 //
-// Copre: intestazione (pagine da 512 a 65536 byte, byte riservati,
-// codifica UTF-8 / UTF-16), b-tree delle tabelle (pagine interne e foglie),
-// payload con pagine di overflow, formato dei record (NULL, interi da 1 a 8
-// byte, reali, 0/1, BLOB, testo), la tabella sqlite_schema, gli alias del
-// rowid (INTEGER PRIMARY KEY), le tabelle WITHOUT ROWID (b-tree di indice)
-// e il WAL (file -wal): come al recupero di SQLite, frame con salt e checksum
-// cumulativi validi fino all'ultimo commit, l'ultima versione di ogni pagina
-// (ADR 0021; il -shm non serve). Non copre: le pagine libere (non servono
-// per leggere).
+// Covers: header (pages from 512 to 65536 bytes, reserved bytes,
+// UTF-8 / UTF-16 encoding), table b-trees (interior and leaf pages),
+// payload with overflow pages, record format (NULL, integers from 1 to 8
+// bytes, reals, 0/1, BLOB, text), the sqlite_schema table, rowid aliases
+// (INTEGER PRIMARY KEY), WITHOUT ROWID tables (index b-trees) and the WAL
+// (-wal file): as in SQLite's recovery, frames with valid cumulative salt
+// and checksum up to the last commit, the latest version of each page
+// (ADR 0021; the -shm is not needed). Does not cover: free pages (not
+// needed for reading).
 
 const MAGIC = 'SQLite format 3\0';
 
 export class SqliteError extends Error {}
 
-/** È un file SQLite (dai primi 16 byte)? */
+/** Is it an SQLite file (from the first 16 bytes)? */
 export function isSqlite(bytes) {
   if (bytes.length < 100) return false;
   for (let i = 0; i < 16; i++) if (bytes[i] !== MAGIC.charCodeAt(i)) return false;
   return true;
 }
 
-/** Legge un varint di SQLite da `b` in `at`: [valore (BigInt), byte usati]. */
+/** Reads an SQLite varint from `b` at `at`: [value (BigInt), bytes used]. */
 export function varint(b, at) {
   let v = 0n;
   for (let i = 0; i < 8; i++) {
     const x = b[at + i];
-    if (x === undefined) throw new SqliteError('varint oltre la fine della pagina');
+    if (x === undefined) throw new SqliteError('varint past the end of the page');
     v = (v << 7n) | BigInt(x & 0x7f);
     if (x < 0x80) return [v, i + 1];
   }
   const x = b[at + 8];
-  if (x === undefined) throw new SqliteError('varint oltre la fine della pagina');
+  if (x === undefined) throw new SqliteError('varint past the end of the page');
   return [(v << 8n) | BigInt(x), 9];
 }
 
@@ -44,10 +44,10 @@ const num = (v) => (v >= BigInt(Number.MIN_SAFE_INTEGER) && v <= BigInt(Number.M
 const WAL_MAGIC = 0x377f0682;
 
 /**
- * Le pagine confermate di un WAL (https://www.sqlite.org/walformat.html):
- * { pageSize, pages: Map(numero → offset nel WAL), dbPages (dimensione del
- * database all'ultimo commit), frames (frame validi) } o null se il WAL è
- * vuoto, di un'altra dimensione di pagina o senza commit validi.
+ * The committed pages of a WAL (https://www.sqlite.org/walformat.html):
+ * { pageSize, pages: Map(number → offset in the WAL), dbPages (size of the
+ * database at the last commit), frames (valid frames) } or null if the WAL
+ * is empty, of another page size or without valid commits.
  */
 export function walPages(wal, pageSize = 0) {
   if (!wal || wal.length < 32) return null;
@@ -56,7 +56,7 @@ export function walPages(wal, pageSize = 0) {
   if ((magic & ~1) >>> 0 !== WAL_MAGIC || dv.getUint32(4) !== 3007000) return null;
   const ps = dv.getUint32(8) || 65536;
   if (ps < 512 || ps > 65536 || (ps & (ps - 1)) !== 0 || (pageSize && ps !== pageSize)) return null;
-  // Checksum di SQLite su parole a 32 bit, nell'ordine dei byte indicato dal bit 0 della magia.
+  // SQLite checksum over 32-bit words, in the byte order given by bit 0 of the magic.
   const big = (magic & 1) === 1;
   let s0 = 0;
   let s1 = 0;
@@ -84,7 +84,7 @@ export function walPages(wal, pageSize = 0) {
     pending.push([pgno, off + 24]);
     const commit = dv.getUint32(off + 4);
     if (commit !== 0) {
-      // Frame di commit: la transazione (e le precedenti) valgono.
+      // Commit frame: the transaction (and the previous ones) count.
       for (const [n, at] of pending) pages.set(n, at);
       pending = [];
       dbPages = commit;
@@ -94,19 +94,19 @@ export function walPages(wal, pageSize = 0) {
   return frames ? { pageSize: ps, pages, dbPages, frames } : null;
 }
 
-/** Il database aperto da un Uint8Array (e dal suo WAL, se c'è). */
+/** The database opened from a Uint8Array (and from its WAL, if there is one). */
 export class SqliteDb {
   constructor(bytes, wal = null) {
-    // Un database in WAL può avere ancora tutto nel WAL (file principale vuoto).
+    // A database in WAL mode can still have everything in the WAL (empty main file).
     const w0 = !isSqlite(bytes) && bytes.length < 100 ? walPages(wal) : null;
     let head = bytes;
     if (w0?.pages.has(1)) head = wal.subarray(w0.pages.get(1), w0.pages.get(1) + w0.pageSize);
-    if (!isSqlite(head)) throw new SqliteError('non è un database SQLite 3');
+    if (!isSqlite(head)) throw new SqliteError('not an SQLite 3 database');
     this.b = bytes;
     const dv = new DataView(head.buffer, head.byteOffset, head.byteLength);
     let ps = dv.getUint16(16);
     if (ps === 1) ps = 65536;
-    if (ps < 512 || ps > 65536 || (ps & (ps - 1)) !== 0) throw new SqliteError(`dimensione di pagina ${ps}`);
+    if (ps < 512 || ps > 65536 || (ps & (ps - 1)) !== 0) throw new SqliteError(`page size ${ps}`);
     this.pageSize = ps;
     this.pageCount = Math.floor(bytes.length / ps);
     this.wal = null;
@@ -123,21 +123,21 @@ export class SqliteDb {
     this._schema = null;
   }
 
-  /** Frame del WAL applicati (0 senza WAL). */
+  /** WAL frames applied (0 without a WAL). */
   get walFrames() {
     return this.wal?.frames ?? 0;
   }
 
   page(n) {
-    if (n < 1 || n > this.pageCount) throw new SqliteError(`pagina ${n} fuori dal file (${this.pageCount} pagine)`);
+    if (n < 1 || n > this.pageCount) throw new SqliteError(`page ${n} outside the file (${this.pageCount} pages)`);
     const at = this.wal?.pages.get(n);
     if (at !== undefined) return this.wal.bytes.subarray(at, at + this.pageSize);
     const p = this.b.subarray((n - 1) * this.pageSize, n * this.pageSize);
-    if (p.length < this.pageSize) throw new SqliteError(`pagina ${n} oltre la fine del file`);
+    if (p.length < this.pageSize) throw new SqliteError(`page ${n} past the end of the file`);
     return p;
   }
 
-  /** Payload di una cella: i byte locali più le pagine di overflow. */
+  /** Payload of a cell: the local bytes plus the overflow pages. */
   #payload(page, at, size, isTable) {
     const u = this.usable;
     const x = isTable ? u - 35 : Math.floor(((u - 12) * 64) / 255) - 23;
@@ -151,7 +151,7 @@ export class SqliteDb {
     let next = new DataView(page.buffer, page.byteOffset + at + local, 4).getUint32(0);
     let guard = 0;
     while (filled < size) {
-      if (next === 0 || guard++ > this.pageCount) throw new SqliteError('catena di overflow interrotta');
+      if (next === 0 || guard++ > this.pageCount) throw new SqliteError('broken overflow chain');
       const p = this.page(next);
       next = new DataView(p.buffer, p.byteOffset, 4).getUint32(0);
       const n = Math.min(u - 4, size - filled);
@@ -162,9 +162,9 @@ export class SqliteDb {
   }
 
   /**
-   * Decodifica un record: array di valori (null, Number/BigInt, String,
-   * Uint8Array); con `types` vi aggiunge i tipi ('null', 'integer', 'real',
-   * 'text', 'blob').
+   * Decodes a record: array of values (null, Number/BigInt, String,
+   * Uint8Array); with `types` it adds the types to it ('null', 'integer',
+   * 'real', 'text', 'blob').
    */
   record(p, types = null) {
     const [hs, n0] = varint(p, 0);
@@ -195,16 +195,16 @@ export class SqliteDb {
         const v = p.subarray(body, body + len);
         out.push(st % 2 === 0 ? v.slice() : this.text.decode(v));
         body += len;
-      } else throw new SqliteError(`tipo seriale ${st} riservato`);
+      } else throw new SqliteError(`reserved serial type ${st}`);
     }
     return out;
   }
 
-  /** Righe di un b-tree di tabella: [{ rowid, values, types }] in ordine di rowid. */
+  /** Rows of a table b-tree: [{ rowid, values, types }] in rowid order. */
   tableRows(root, limit = Infinity) {
     const rows = [];
     const walk = (n, depth) => {
-      if (depth > 64) throw new SqliteError('b-tree troppo profondo (ciclo?)');
+      if (depth > 64) throw new SqliteError('b-tree too deep (cycle?)');
       const page = this.page(n);
       const base = n === 1 ? 100 : 0;
       const type = page[base];
@@ -226,24 +226,24 @@ export class SqliteDb {
           const types = [];
           rows.push({ rowid: num(rowid), values: this.record(this.#payload(page, at, Number(size), true), types), types });
         }
-      } else throw new SqliteError(`pagina ${n} di tipo ${type}, attesa una pagina di tabella`);
+      } else throw new SqliteError(`page ${n} of type ${type}, expected a table page`);
     };
     walk(root, 0);
     return rows;
   }
 
-  /** Record di un b-tree di indice (tabelle WITHOUT ROWID), in ordine; i tipi in `types`. */
+  /** Records of an index b-tree (WITHOUT ROWID tables), in order; the types in `types`. */
   indexRecords(root, limit = Infinity, types = null) {
     const out = [];
     const walk = (n, depth) => {
-      if (depth > 64) throw new SqliteError('b-tree troppo profondo (ciclo?)');
+      if (depth > 64) throw new SqliteError('b-tree too deep (cycle?)');
       const page = this.page(n);
       const base = n === 1 ? 100 : 0;
       const type = page[base];
       const dv = new DataView(page.buffer, page.byteOffset, page.byteLength);
       const cells = dv.getUint16(base + 3);
       const interior = type === 0x02;
-      if (type !== 0x02 && type !== 0x0a) throw new SqliteError(`pagina ${n} di tipo ${type}, attesa una pagina di indice`);
+      if (type !== 0x02 && type !== 0x0a) throw new SqliteError(`page ${n} of type ${type}, expected an index page`);
       const hdr = interior ? 12 : 8;
       for (let i = 0; i < cells && out.length < limit; i++) {
         let at = dv.getUint16(base + hdr + 2 * i);
@@ -263,13 +263,13 @@ export class SqliteDb {
     return out;
   }
 
-  /** Voci di sqlite_schema: [{ type, name, table, root, sql }]. */
+  /** Entries of sqlite_schema: [{ type, name, table, root, sql }]. */
   schema() {
     this._schema ??= this.tableRows(1).map(({ values: [type, name, table, root, sql] }) => ({ type, name, table, root, sql }));
     return this._schema;
   }
 
-  /** Le tabelle: [{ name, columns, withoutRowid, root, sql }]. */
+  /** The tables: [{ name, columns, withoutRowid, root, sql }]. */
   tables() {
     return this.schema()
       .filter((e) => e.type === 'table')
@@ -277,15 +277,15 @@ export class SqliteDb {
   }
 
   /**
-   * Righe della tabella `name` (al più `limit`): { columns, rows, rowids,
-   * types, table } con `rows` array di array nell'ordine delle colonne
-   * (rowid in testa se la tabella ne ha uno senza alias), `rowids` il rowid
-   * di ogni riga (null per WITHOUT ROWID), `types` i tipi dei valori (come
-   * `record`) e `table` la voce di `tables()`.
+   * Rows of the table `name` (at most `limit`): { columns, rows, rowids,
+   * types, table } with `rows` an array of arrays in column order (rowid
+   * first if the table has one without an alias), `rowids` the rowid of
+   * each row (null for WITHOUT ROWID), `types` the types of the values (as
+   * in `record`) and `table` the entry of `tables()`.
    */
   rows(name, limit = 1000) {
     const t = this.tables().find((x) => x.name === name);
-    if (!t) throw new SqliteError(`tabella ${name} non trovata`);
+    if (!t) throw new SqliteError(`table ${name} not found`);
     if (t.withoutRowid) {
       const types = [];
       const recs = this.indexRecords(t.root, limit, types);
@@ -313,16 +313,16 @@ export class SqliteDb {
   }
 }
 
-/** Un identificatore SQL fra virgolette doppie. */
+/** An SQL identifier in double quotes. */
 export function sqlQuote(name) {
   return `"${String(name).replace(/"/g, '""')}"`;
 }
 
 /**
- * Il WHERE che identifica una riga: `rowid = ?N` se la tabella ha un rowid,
- * altrimenti le colonne della chiave primaria (tutte le colonne se non la
- * trova) con `IS ?N`. `row` sono i valori di `rows()` per quella riga.
- * Restituisce { where, params } a partire dal parametro `first`.
+ * The WHERE that identifies a row: `rowid = ?N` if the table has a rowid,
+ * otherwise the primary key columns (all columns if it does not find it)
+ * with `IS ?N`. `row` are the values of `rows()` for that row.
+ * Returns { where, params } starting from parameter `first`.
  */
 function whereRow(t, row, rowid, first) {
   if (!t.withoutRowid) return { where: `rowid = ?${first}`, params: [rowid] };
@@ -333,25 +333,25 @@ function whereRow(t, row, rowid, first) {
   };
 }
 
-/** Colonna vera della tabella per l'indice `i` di `rows().columns` (-1 = rowid senza alias). */
+/** Real column of the table for index `i` of `rows().columns` (-1 = rowid without an alias). */
 function tableColumn(t, i) {
   return t.withoutRowid || t.rowidAlias >= 0 ? i : i - 1;
 }
 
 /**
- * SQL per cambiare una cella: { sql, params } con il nuovo valore in ?1
- * (`value`: parametro di GuestFiles.sql, anche { type, value }).
- * `view` è il risultato di `rows()`, `r` e `i` riga e colonna della vista.
+ * SQL to change a cell: { sql, params } with the new value in ?1
+ * (`value`: a GuestFiles.sql parameter, also { type, value }).
+ * `view` is the result of `rows()`, `r` and `i` row and column of the view.
  */
 export function updateCellSql(view, r, i, value) {
   const t = view.table;
   const col = tableColumn(t, i);
-  if (col < 0) throw new SqliteError('il rowid di una tabella senza alias non si cambia da qui');
+  if (col < 0) throw new SqliteError('the rowid of a table without an alias cannot be changed from here');
   const w = whereRow(t, t.withoutRowid ? view.rows[r] : null, view.rowids[r], 2);
   return { sql: `UPDATE ${sqlQuote(t.name)} SET ${sqlQuote(t.columns[col])} = ?1 WHERE ${w.where}`, params: [value, ...w.params] };
 }
 
-/** SQL per togliere la riga `r` della vista. */
+/** SQL to remove row `r` of the view. */
 export function deleteRowSql(view, r) {
   const t = view.table;
   const w = whereRow(t, t.withoutRowid ? view.rows[r] : null, view.rowids[r], 1);
@@ -359,8 +359,8 @@ export function deleteRowSql(view, r) {
 }
 
 /**
- * SQL per inserire una riga: `values` mappa il nome di colonna al valore
- * (le colonne che mancano prendono il loro DEFAULT).
+ * SQL to insert a row: `values` maps the column name to the value
+ * (missing columns take their DEFAULT).
  */
 export function insertRowSql(table, values) {
   const cols = Object.keys(values);
@@ -371,7 +371,7 @@ export function insertRowSql(table, values) {
   };
 }
 
-/** Le colonne di un record di una tabella WITHOUT ROWID: prima la chiave, poi le altre. */
+/** The columns of a record of a WITHOUT ROWID table: the key first, then the others. */
 function orderWithoutRowid(t, rec, empty = null) {
   const order = [...t.pk, ...t.columns.map((_, i) => i).filter((i) => !t.pk.includes(i))];
   const v = new Array(t.columns.length).fill(empty);
@@ -388,7 +388,7 @@ function unquote(s) {
   return s;
 }
 
-/** Divide `s` sulle virgole di primo livello (fuori da parentesi e virgolette). */
+/** Splits `s` on the top-level commas (outside parentheses and quotes). */
 function splitTop(s) {
   const out = [];
   let depth = 0;
@@ -414,7 +414,7 @@ function splitTop(s) {
   return out;
 }
 
-/** Prima parola (nome) di una definizione di colonna, virgolette comprese. */
+/** First word (name) of a column definition, quotes included. */
 function firstToken(s) {
   s = s.trim();
   const m = /^("(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]|'(?:[^']|'')*'|\S+)/s.exec(s);
@@ -422,8 +422,8 @@ function firstToken(s) {
 }
 
 /**
- * Colonne di un CREATE TABLE: { columns, rowidAlias (indice o -1),
- * withoutRowid, pk (indici della chiave primaria) }.
+ * Columns of a CREATE TABLE: { columns, rowidAlias (index or -1),
+ * withoutRowid, pk (indices of the primary key) }.
  */
 export function parseCreateTable(sql) {
   const open = sql.indexOf('(');
@@ -445,7 +445,7 @@ export function parseCreateTable(sql) {
     res.columns.push(name);
     if (/\bPRIMARY\s+KEY\b/i.test(rest)) {
       res.pk = [i];
-      // Solo "INTEGER" esatto rende la colonna un alias del rowid.
+      // Only exactly "INTEGER" makes the column an alias of the rowid.
       if (/^\s*INTEGER\s+PRIMARY\s+KEY\b/i.test(rest) && !/\bDESC\b/i.test(rest)) res.rowidAlias = i;
     }
   }
@@ -463,12 +463,12 @@ export function parseCreateTable(sql) {
   return res;
 }
 
-/** Un valore per la tabella della pagina. */
+/** A value for the page's table. */
 export function formatValue(v) {
   if (v === null) return 'NULL';
   if (v instanceof Uint8Array) {
     const hex = Array.from(v.subarray(0, 32), (x) => x.toString(16).padStart(2, '0')).join('');
-    return `x'${hex}${v.length > 32 ? '…' : ''}' (${v.length} byte)`;
+    return `x'${hex}${v.length > 32 ? '…' : ''}' (${v.length} bytes)`;
   }
   return String(v);
 }

@@ -1,63 +1,62 @@
-// Il Worker dell'app: la macchina di vetro-wasm gira qui, a quanti, fuori
-// dal thread della pagina. Riceve la configurazione e gli ingressi
-// (tastiera, puntatore, tocco, console, tasto di accensione) come messaggi,
-// e manda alla pagina l'uscita della console, i rettangoli cambiati dello
-// scanout (ArrayBuffer trasferiti, niente copie), il cursore e le
-// statistiche.
+// The app's Worker: the vetro-wasm machine runs here, in quanta, off the
+// page's thread. It receives the configuration and the inputs (keyboard,
+// pointer, touch, console, power button) as messages, and sends the page
+// the console output, the changed rectangles of the scanout (transferred
+// ArrayBuffers, no copies), the cursor and the statistics.
 //
-// Gli ingressi arrivano alla macchina fra un quanto e l'altro, cioè a un
-// numero di istruzioni preciso: il registro `inputLog` (istruzione, evento)
-// è quello che il replay di M10 rigiocherà.
+// Inputs reach the machine between one quantum and the next, that is at a
+// precise instruction count: the `inputLog` register (instruction, event)
+// is what the M10 replay will play back.
 //
-// Tempo: il guest conta istruzioni (10 ns l'una). Con `realtime` il Worker
-// non lascia correre il tempo del guest davanti all'orologio vero (dorme la
-// differenza); senza, va alla massima velocità. Mentre un disco aspetta
-// dati (`Blocked`) il tempo del guest è fermo (ADR 0014).
+// Time: the guest counts instructions (10 ns each). With `realtime` the
+// Worker does not let guest time run ahead of the real clock (it sleeps the
+// difference); without it, it goes at full speed. While a disk waits for
+// data (`Blocked`) guest time is stopped (ADR 0014).
 //
-// Gestore dei file (M8, ADR 0020): con `files` la macchina ha virtio-vsock e
-// il Worker tiene il client `GuestFiles` del demone `vetro-files` del guest;
-// le richieste della pagina (messaggi `files`) sono ingressi come gli altri
-// (registrati in `inputLog`), il client avanza fra una fetta e l'altra e
-// risposte, eventi di inotify e stato tornano alla pagina (`files-reply`,
-// `files-event`, `files-status`). Dopo il ripristino di uno snapshot il
-// client è nuovo: le connessioni rimaste nello snapshot si chiudono.
+// File manager (M8, ADR 0020): with `files` the machine has virtio-vsock and
+// the Worker holds the `GuestFiles` client of the guest's `vetro-files`
+// daemon; the page's requests (`files` messages) are inputs like the others
+// (recorded in `inputLog`), the client advances between one slice and the
+// next, and replies, inotify events and status go back to the page
+// (`files-reply`, `files-event`, `files-status`). After a snapshot restore
+// the client is new: the connections left in the snapshot are closed.
 //
-// Ispettore di rete e timeline (M7, ADR 0023): con la rete la cattura è
-// accesa dall'avvio; ogni ~0,7 s, se qualcosa è cambiato, il Worker manda
-// alla pagina la lista delle richieste e la timeline (`analysis`); dettaglio,
-// HAR e pcapng a richiesta (`inspect`). Gli ingressi dell'utente li annota
-// vetro-wasm; qui si annotano i comandi del gestore dei file (non le letture
-// del pannello) e, come effetti, i file cambiati visti dalle osservazioni.
+// Network inspector and timeline (M7, ADR 0023): with the network the
+// capture is on from boot; every ~0.7 s, if something changed, the Worker
+// sends the page the list of requests and the timeline (`analysis`);
+// detail, HAR and pcapng on request (`inspect`). User inputs are annotated
+// by vetro-wasm; here the file manager commands are annotated (not the
+// panel's reads) and, as effects, the changed files seen by the watches.
 //
-// Record & replay (M10, ADR 0019 e 0023): i comandi della pagina (`rr`) si
-// eseguono fra una fetta e l'altra. Alla fine di una registrazione (o dopo
-// aver caricato un log) i keyframe vanno in OPFS (`vetro-recordings/`,
-// `Recording` di web/node/recording.mjs) e il log resta lì per la sessione
-// successiva. Un replay (anche il salto a un'istruzione) riparte dal
-// keyframe più vicino: durante il replay gli ingressi della pagina si
-// scartano, il gestore dei file è chiuso, niente tempo reale né snapshot in
-// cache; al punto chiesto la macchina si ferma (`paused`: registri e
-// memoria si leggono con `inspect`), alla fine del replay il verdetto
-// (`replay-ended`: `Finished` = replay identico, `Diverged`) e la macchina
-// continua libera.
+// Record & replay (M10, ADR 0019 and 0023): the page's commands (`rr`) run
+// between one slice and the next. At the end of a recording (or after
+// loading a log) the keyframes go to OPFS (`vetro-recordings/`,
+// `Recording` of web/node/recording.mjs) and the log stays there for the
+// next session. A replay (also a jump to an instruction) restarts from the
+// nearest keyframe: during the replay the page's inputs are discarded, the
+// file manager is closed, no real time and no cached snapshots; at the
+// requested point the machine stops (`paused`: registers and memory are
+// read with `inspect`), at the end of the replay the verdict
+// (`replay-ended`: `Finished` = identical replay, `Diverged`) and the
+// machine runs free again.
 //
-// Persistenza (M6, ADR 0017):
-// - le scritture del guest sui dischi vanno nell'overlay copy-on-write, che
-//   si salva in OPFS (`vetro-overlays/`) fra una fetta e l'altra (al più
-//   una volta al secondo, e sempre quando il guest si ferma in attesa) e si
-//   riapplica alla sessione successiva; un overlay di un'altra immagine base
-//   si scarta;
-// - lo snapshot della macchina si salva in OPFS (`vetro-snapshots/`) la
-//   prima volta che il guest è a riposo (avvio finito), e di nuovo quando è
-//   a riposo e i dischi sono cambiati da allora, o a richiesta della pagina.
-//   A riposo: `Idle`, oppure REST_NS di tempo del guest senza uscita sulla
-//   console, senza cambi dello scanout, senza ingressi e senza attività dei
-//   dischi (il kernel ha sempre un timer, quindi `Idle` da solo non basta). La chiave comprende la versione del formato,
-//   gli hash di kernel e initramfs, la riga di comando, la configurazione
-//   della macchina e l'identità dei dischi; i metadati tengono la
-//   generazione dell'overlay di ogni disco al momento del salvataggio. Alla
-//   sessione successiva lo snapshot si ripristina invece di avviare il
-//   kernel, se gli overlay sono ancora a quella generazione.
+// Persistence (M6, ADR 0017):
+// - the guest's writes to the disks go to the copy-on-write overlay, which
+//   is saved in OPFS (`vetro-overlays/`) between one slice and the next (at
+//   most once per second, and always when the guest stops waiting) and is
+//   reapplied in the next session; an overlay of another base image is
+//   discarded;
+// - the machine snapshot is saved in OPFS (`vetro-snapshots/`) the first
+//   time the guest is at rest (boot finished), and again when it is at rest
+//   and the disks have changed since then, or on request from the page.
+//   At rest: `Idle`, or REST_NS of guest time without console output,
+//   without scanout changes, without inputs and without disk activity (the
+//   kernel always has a timer, so `Idle` alone is not enough). The key
+//   includes the format version, the hashes of kernel and initramfs, the
+//   command line, the machine configuration and the identity of the disks;
+//   the metadata hold the overlay generation of each disk at the time of
+//   the save. In the next session the snapshot is restored instead of
+//   booting the kernel, if the overlays are still at that generation.
 //
 // Vetro's AOSP image (M5/M6, ADR 0028), with `config.android`:
 // - the version's manifest.json (R2 or a local server) gives the image hashes
@@ -92,11 +91,11 @@ import { androidSnapshotKey, downloadPrebuilt, findPrebuilt, PREBUILT_CHUNK, pre
 
 const QUANTUM = 1_000_000;
 const SLICE_MS = 12;
-/** Salvataggio degli overlay al più ogni tanti ms mentre il guest lavora. */
+/** Overlays are saved at most every this many ms while the guest works. */
 const PERSIST_MS = 1000;
-/** Tempo del guest senza attività dopo cui il guest è a riposo (1,5 s). */
+/** Guest time without activity after which the guest is at rest (1.5 s). */
 const REST_NS = 1_500_000_000n;
-/** Coda della console tenuta per lo snapshot (la pagina la rimostra). */
+/** Console tail kept for the snapshot (the page shows it again). */
 const CONSOLE_TAIL = 64 * 1024;
 /** If the home screen does not come within this long after sys.boot_completed, the snapshot is saved anyway. */
 const HOME_GIVE_UP_NS = 3000_000_000_000n;
@@ -114,51 +113,51 @@ let running = false;
 const inbox = [];
 let wake = null;
 const inputLog = [];
-/** Overlay persistente di ogni disco (o null). */
+/** Persistent overlay of each disk (or null). */
 let overlays = [];
 let store = null;
 let snapKey = null;
-/** Metadati dell'ultimo snapshot salvato o ripristinato in questa sessione. */
+/** Metadata of the last snapshot saved or restored in this session. */
 let lastSnapshot = null;
 let saveRequested = false;
 /** Why the requested snapshot is saved (for the page). */
-let saveWhy = 'richiesta';
+let saveWhy = 'requested';
 /** Android state (config.android), or null with the test kernel. */
 let android = null;
 let startT0 = 0;
 let consoleTail = [];
 let consoleTailLen = 0;
-/** Client del gestore dei file (GuestFiles) e ultimo stato mandato alla pagina. */
+/** File manager client (GuestFiles) and last status sent to the page. */
 let files = null;
 let filesKey = '';
-/** Cartella osservata per ogni wd (per gli effetti sui file della timeline). */
+/** Folder watched for each wd (for the timeline's file effects). */
 const watchPaths = new Map();
-/** 'live', 'replay' (rifà il log), 'paused' (fermo al punto chiesto). */
+/** 'live', 'replay' (replays the log), 'paused' (stopped at the requested point). */
 let mode = 'live';
-/** Istruzione a cui fermarsi durante il replay (BigInt) o null. */
+/** Instruction to stop at during the replay (BigInt) or null. */
 let target = null;
-/** Comandi di registrazione e replay, eseguiti fra una fetta e l'altra. */
+/** Recording and replay commands, run between one slice and the next. */
 const control = [];
 let recording = null;
-/** Finestra di attribuzione della timeline (µs, 0 = quella di vetro-analysis). */
+/** Attribution window of the timeline (µs, 0 = vetro-analysis's default). */
 let windowUs = 0;
 let lastAnalysis = -1n;
 let lastAnalysisAt = 0;
 let ignoredNotice = false;
-/** Riferimento del tempo reale (si azzera quando il tempo del guest salta). */
+/** Real-time reference (reset when guest time jumps). */
 const clock = { t0: 0, g0: 0n, paused: 0 };
 
 const post = (msg, transfer = []) => postMessage(msg, transfer);
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
 const status = (text) => post({ type: 'status', text });
 
-/** I byte di un file scelto o di un URL. */
+/** The bytes of a chosen file or of a URL. */
 async function bytesOf(src, what) {
   if (!src) return null;
   if (src.file) return new Uint8Array(await src.file.arrayBuffer());
-  status(`scarico ${what}: ${src.url}`);
+  status(`downloading ${what}: ${src.url}`);
   const res = await fetch(src.url);
-  if (!res.ok) throw new Error(`${src.url}: stato ${res.status}`);
+  if (!res.ok) throw new Error(`${src.url}: status ${res.status}`);
   return new Uint8Array(await res.arrayBuffer());
 }
 
@@ -171,7 +170,7 @@ async function openDisk(d, i, sources) {
       try {
         cache = await OpfsCache.open(source.key, d.blockSize, Math.ceil(source.size / d.blockSize));
       } catch (e) {
-        status(`OPFS non disponibile (${e.message ?? e}): cache in memoria`);
+        status(`OPFS not available (${e.message ?? e}): in-memory cache`);
       }
     }
     cache ??= new MemoryCache();
@@ -187,10 +186,10 @@ async function openDisk(d, i, sources) {
       const o = DiskOverlay.open(m, index, file, source.key);
       overlays[index] = o;
       const info = o.info;
-      if (o.opened.code === 'Mismatch' || o.opened.code === 'Corrupt') status(`disco ${i}: ${o.opened.message}`);
-      else if (o.opened.code === 'Loaded') status(`disco ${i}: overlay persistente, ${info.clusters} cluster scritti nelle sessioni precedenti`);
+      if (o.opened.code === 'Mismatch' || o.opened.code === 'Corrupt') status(`disk ${i}: ${o.opened.message}`);
+      else if (o.opened.code === 'Loaded') status(`disk ${i}: persistent overlay, ${info.clusters} clusters written in previous sessions`);
     } catch (e) {
-      status(`disco ${i}: overlay persistente non disponibile (${e.message ?? e}): scritture solo in memoria`);
+      status(`disk ${i}: persistent overlay not available (${e.message ?? e}): writes in memory only`);
     }
   }
   return index;
@@ -198,7 +197,7 @@ async function openDisk(d, i, sources) {
 
 const devicesOf = (c) => machineDevices(DEV, c);
 
-/** Macchina nuova con i dischi (e i loro overlay). */
+/** New machine with the disks (and their overlays). */
 async function build(c, sources) {
   for (const o of overlays) o?.close();
   overlays = [];
@@ -208,7 +207,7 @@ async function build(c, sources) {
   for (const [i, d] of (c.disks ?? []).entries()) await openDisk(d, i, sources);
 }
 
-/** Salva gli overlay cambiati; restituisce se ha scritto qualcosa. */
+/** Saves the changed overlays; returns whether it wrote anything. */
 function persistOverlays() {
   let wrote = false;
   for (const o of overlays) if (o?.persist()) wrote = true;
@@ -217,7 +216,7 @@ function persistOverlays() {
 
 const generations = () => overlays.map((o) => (o ? o.generation : null));
 
-/** Snapshot della macchina in OPFS, insieme agli overlay (salvati prima). */
+/** Machine snapshot in OPFS, together with the overlays (saved first). */
 async function saveSnapshot(why) {
   persistOverlays();
   const meta = {
@@ -264,13 +263,13 @@ async function start(c) {
   const t0 = performance.now();
   startT0 = t0;
   const times = {};
-  status('carico vetro-wasm');
+  status('loading vetro-wasm');
   const wasm = await (await fetch(c.wasmUrl)).arrayBuffer();
   ({ exports } = await instantiate(wasm));
   times.wasm = performance.now() - t0;
   if (c.android) android = await prepareAndroid(c);
-  const kernel = android ? null : await bytesOf(c.kernel, 'il kernel');
-  const initrd = android ? null : await bytesOf(c.initrd, "l'initramfs");
+  const kernel = android ? null : await bytesOf(c.kernel, 'the kernel');
+  const initrd = android ? null : await bytesOf(c.initrd, 'the initramfs');
   times.files = performance.now() - t0 - times.wasm;
   const sources = [];
   await build(c, sources);
@@ -324,8 +323,8 @@ async function start(c) {
           times.restore = performance.now() - t3 - readMs;
           restored = { meta, size: meta.size, prebuilt };
         } catch (e) {
-          status(`snapshot non usato: ${e.message}`);
-          // Con 'Corrupt' la macchina va scartata: si rifà da capo.
+          status(`snapshot not used: ${e.message}`);
+          // With 'Corrupt' the machine must be discarded: start over.
           if (e.code === 'Corrupt' || e.code === 'Memory') await build(c, sources);
         }
       }
@@ -368,9 +367,9 @@ async function start(c) {
   try {
     recording = new Recording(m, c.opfs ? await SnapshotStore.opfs('vetro-recordings') : SnapshotStore.memory());
     const info = await recording.restore();
-    if (info && !info.sameMachine) status('registrazione salvata di una macchina configurata diversamente: non si può rigiocare qui');
+    if (info && !info.sameMachine) status('saved recording of a differently configured machine: it cannot be replayed here');
   } catch (e) {
-    status(`archivio delle registrazioni non disponibile (${e.message ?? e}): in memoria`);
+    status(`recording archive not available (${e.message ?? e}): in memory`);
     recording = new Recording(m, SnapshotStore.memory());
   }
   postRr();
@@ -645,8 +644,8 @@ async function adbInstall(bytes, msg) {
 
 function apply(msg) {
   if (mode !== 'live') {
-    // Durante il replay gli ingressi vengono dal log.
-    if (!ignoredNotice) status('replay in corso: gli ingressi della pagina non arrivano al guest');
+    // During the replay the inputs come from the log.
+    if (!ignoredNotice) status('replay in progress: the page\'s inputs do not reach the guest');
     ignoredNotice = true;
     return;
   }
@@ -685,7 +684,7 @@ function apply(msg) {
   }
 }
 
-/** Operazioni del gestore dei file chieste dalla pagina. */
+/** File manager operations requested by the page. */
 const FILE_OPS = {
   stat: (a) => files.stat(a.path),
   list: (a) => files.list(a.path),
@@ -700,24 +699,24 @@ const FILE_OPS = {
     return wd;
   }),
   unwatch: (a) => files.unwatch(a.wd),
-  // SQL nel guest con il motore vero, come il proprietario del database (ADR 0021).
+  // SQL in the guest with the real engine, as the owner of the database (ADR 0021).
   sql: (a) => files.sql(a.path, a.sql, a.params ?? [], { expect: a.expect ?? null, readonly: !!a.readonly }),
 };
 
-/** I comandi del gestore dei file che sono azioni dell'utente (timeline). */
+/** The file manager commands that are user actions (timeline). */
 const FILE_COMMANDS = {
-  write: (a) => `salva ${a.path}`,
-  mkdir: (a) => `nuova cartella ${a.path}`,
-  create: (a) => `nuovo file ${a.path}`,
-  delete: (a) => `cancella ${a.path}`,
-  rename: (a) => `rinomina ${a.path} → ${a.to}`,
-  sql: (a) => (a.readonly ? null : `SQL su ${a.path}: ${a.sql.length > 80 ? `${a.sql.slice(0, 80)}…` : a.sql}`),
+  write: (a) => `save ${a.path}`,
+  mkdir: (a) => `new folder ${a.path}`,
+  create: (a) => `new file ${a.path}`,
+  delete: (a) => `delete ${a.path}`,
+  rename: (a) => `rename ${a.path} → ${a.to}`,
+  sql: (a) => (a.readonly ? null : `SQL on ${a.path}: ${a.sql.length > 80 ? `${a.sql.slice(0, 80)}…` : a.sql}`),
 };
 
-/** Gli eventi di inotify che cambiano file, con il nome nella timeline. */
+/** The inotify events that change files, with their name in the timeline. */
 const FILE_CHANGES = [
-  [INOTIFY.CREATE, 'creato'], [INOTIFY.CLOSE_WRITE, 'scritto'], [INOTIFY.MOVED_TO, 'spostato qui'],
-  [INOTIFY.MOVED_FROM, 'spostato via'], [INOTIFY.DELETE, 'cancellato'],
+  [INOTIFY.CREATE, 'created'], [INOTIFY.CLOSE_WRITE, 'written'], [INOTIFY.MOVED_TO, 'moved here'],
+  [INOTIFY.MOVED_FROM, 'moved away'], [INOTIFY.DELETE, 'deleted'],
 ];
 
 function fileEffect(e) {
@@ -725,7 +724,7 @@ function fileEffect(e) {
   if (!change || e.name.startsWith('.vetro-tmp.')) return;
   const dir = watchPaths.get(e.wd) ?? `wd ${e.wd}`;
   const path = e.name ? `${dir.replace(/\/$/, '')}/${e.name}` : dir;
-  m.timelineEffect(TIMELINE_EFFECT.FILE, `${change[1]}${e.mask & INOTIFY.ISDIR ? ' (cartella)' : ''} ${path}`);
+  m.timelineEffect(TIMELINE_EFFECT.FILE, `${change[1]}${e.mask & INOTIFY.ISDIR ? ' (folder)' : ''} ${path}`);
 }
 
 function openFiles() {
@@ -740,13 +739,13 @@ function openFiles() {
 function filesRequest(msg) {
   const reply = (r) => post({ type: 'files-reply', id: msg.id, ...r }, r.result?.data ? [r.result.data.buffer] : []);
   const op = FILE_OPS[msg.op];
-  if (!files || !op) return reply({ ok: false, error: files ? `operazione ${msg.op} sconosciuta` : 'gestore dei file spento' });
+  if (!files || !op) return reply({ ok: false, error: files ? `unknown operation ${msg.op}` : 'file manager off' });
   const label = FILE_COMMANDS[msg.op]?.(msg.args);
   if (label) m.timelineInput(TIMELINE_INPUT.FILES, label);
   op(msg.args).then((result) => reply({ ok: true, result }), (e) => reply({ ok: false, error: e.message, code: e.code }));
 }
 
-/** Fa avanzare il gestore dei file; manda lo stato alla pagina se è cambiato. */
+/** Advances the file manager; sends the status to the page if it changed. */
 function pumpFiles() {
   if (!files) return;
   files.pump();
@@ -762,7 +761,7 @@ let lastUpdates = -1;
 let lastCursor = -1;
 let lastCursorResource = -1;
 
-/** Console, fotogramma, cursore; restituisce se il guest ha mostrato qualcosa. */
+/** Console, frame, cursor; returns whether the guest showed anything. */
 function flush() {
   let active = false;
   const out = m.consoleRead();
@@ -800,21 +799,21 @@ function flush() {
   return active;
 }
 
-/** Azzera il riferimento del tempo reale (all'inizio e quando il tempo del guest salta). */
+/** Resets the real-time reference (at the start and when guest time jumps). */
 function resetClock() {
   clock.t0 = performance.now();
   clock.g0 = m.guestNs;
   clock.paused = 0;
 }
 
-/** Stato di registrazione e replay per la pagina. */
+/** Recording and replay status for the page. */
 function postRr(extra = {}) {
   if (!m) return;
   post({ type: 'rr', status: m.rrStatus(), info: m.logInfo(), meta: recording?.meta ?? null, mode, steps: Number(m.steps),
     target: target === null ? null : Number(target), ...extra });
 }
 
-/** Lista dell'ispettore e timeline, se sono cambiate (al più ogni 700 ms, o subito con `force`). */
+/** Inspector list and timeline, if they changed (at most every 700 ms, or at once with `force`). */
 function postAnalysis(force = false) {
   const now = performance.now();
   if (!force && now - lastAnalysisAt < 700) return;
@@ -825,17 +824,17 @@ function postAnalysis(force = false) {
   post({ type: 'analysis', requests: m.inspectRequests(), timeline: m.timeline(windowUs), capture: m.captureStats() });
 }
 
-/** Al punto chiesto del replay: ferma e manda registri e stato. */
+/** At the requested point of the replay: stops and sends registers and state. */
 function pause() {
   mode = 'paused';
   target = null;
-  status(`replay fermo all'istruzione ${m.steps}: registri e memoria nel pannello Registrazione`);
+  status(`replay stopped at instruction ${m.steps}: registers and memory in the Recording panel`);
   post({ type: 'paused', steps: Number(m.steps), registers: m.registersText() });
   postAnalysis(true);
   postRr();
 }
 
-/** Fine del replay (identico o no): la macchina continua libera. */
+/** End of the replay (identical or not): the machine runs free again. */
 function replayEnded(st) {
   mode = 'live';
   target = null;
@@ -858,8 +857,8 @@ async function startReplay(step, stopAt) {
   } finally {
     recording.dropKeyframes();
   }
-  // Il client del gestore dei file l'ha già tolto vetro-wasm (le sue
-  // operazioni sono nel log): qui si rifiutano le richieste in corso.
+  // vetro-wasm has already removed the file manager client (its
+  // operations are in the log): here the pending requests are rejected.
   files?.close();
   files = null;
   filesKey = '';
@@ -872,24 +871,24 @@ async function startReplay(step, stopAt) {
   if (target !== null && m.steps >= target) pause();
 }
 
-/** Un comando di registrazione o replay. */
+/** A recording or replay command. */
 async function rr(cmd) {
   try {
     switch (cmd.op) {
       case 'record-start':
-        if (mode !== 'live') throw new Error('prima finisci il replay');
+        if (mode !== 'live') throw new Error('finish the replay first');
         m.recordStart(cmd.keyframeEvery);
-        status(`registrazione in corso (keyframe ogni ${cmd.keyframeEvery / 1e6} M istruzioni)`);
+        status(`recording (keyframe every ${cmd.keyframeEvery / 1e6} M instructions)`);
         break;
       case 'record-stop': {
-        if (!m.recordStop()) throw new Error('nessuna registrazione in corso');
+        if (!m.recordStop()) throw new Error('no recording in progress');
         const meta = await recording.store();
-        status(`registrazione finita: ${meta.events} ingressi, ${meta.keyframes} keyframe salvati`);
+        status(`recording finished: ${meta.events} inputs, ${meta.keyframes} keyframes saved`);
         break;
       }
       case 'load-log': {
         const meta = await recording.load(new Uint8Array(cmd.bytes));
-        status(`log caricato: ${meta.events} ingressi, ${meta.keyframes} keyframe`);
+        status(`log loaded: ${meta.events} inputs, ${meta.keyframes} keyframes`);
         break;
       }
       case 'replay':
@@ -914,7 +913,7 @@ async function loop() {
   const guestMs = () => Number(m.guestNs - clock.g0) / 1e6;
   let lastStats = 0;
   let lastPersist = performance.now();
-  // Ultima attività del guest (tempo del guest) e riposo già usato.
+  // Last guest activity (guest time) and rest already used.
   let activeNs = m.guestNs;
   let rested = false;
   const activity = () => {
@@ -973,21 +972,21 @@ async function loop() {
       if (persistOverlays()) activity();
       lastPersist = now;
     }
-    // Snapshot: la prima volta che il guest è a riposo (avvio finito), poi a
-    // riposo se i dischi sono cambiati, o a richiesta. Android: see androidTick.
+    // Snapshot: the first time the guest is at rest (boot finished), then at
+    // rest if the disks have changed, or on request. Android: see androidTick.
     const rest = !android && (stop === 'Idle' || (!rested && m.guestNs - activeNs >= REST_NS));
     if (rest && stop !== 'Idle') {
       rested = true;
       if (persistOverlays()) activity();
     }
     if (store && mode === 'live' && (saveRequested || (rest && (!lastSnapshot || String(generations()) !== String(lastSnapshot.generations))))) {
-      const why = saveRequested ? saveWhy : lastSnapshot ? 'dischi cambiati' : 'avvio finito';
+      const why = saveRequested ? saveWhy : lastSnapshot ? 'disks changed' : 'boot finished';
       saveRequested = false;
-      saveWhy = 'richiesta';
+      saveWhy = 'requested';
       status(`saving the snapshot (${why})`);
-      await saveSnapshot(why).catch((e) => status(`snapshot non salvato: ${e.message ?? e}`));
+      await saveSnapshot(why).catch((e) => status(`snapshot not saved: ${e.message ?? e}`));
     }
-    // Dopo un replay il contatore può tornare indietro.
+    // After a replay the counter can go back.
     if (m.steps < steps0) {
       steps0 = m.steps;
       wall0 = now;
@@ -1012,7 +1011,7 @@ async function loop() {
     }
     postAnalysis();
     if (stop === 'Idle' && mode === 'live') {
-      status('il guest aspetta un ingresso');
+      status('the guest is waiting for input');
       if (!inbox.length && !saveRequested && !control.length) await new Promise((ok) => (wake = ok));
       wake = null;
       continue;
@@ -1022,7 +1021,7 @@ async function loop() {
       post({ type: 'stopped', reason: stop, steps: Number(m.steps) });
       return;
     }
-    // Tempo reale: il guest non corre davanti all'orologio.
+    // Real time: the guest does not run ahead of the clock.
     const ahead = realtime ? guestMs() - (performance.now() - clock.t0 - clock.paused) : 0;
     await sleep(Math.max(0, Math.min(ahead, 50)));
   }
@@ -1030,7 +1029,7 @@ async function loop() {
 
 const enc = new TextEncoder();
 
-/** Letture della pagina: dettaglio, esportazioni, registri, memoria, finestra della timeline. */
+/** The page's reads: detail, exports, registers, memory, timeline window. */
 async function inspect(msg) {
   switch (msg.op) {
     case 'request':
@@ -1070,7 +1069,7 @@ async function inspect(msg) {
       postAnalysis(true);
       return { result: true };
     default:
-      throw new Error(`lettura ${msg.op} sconosciuta`);
+      throw new Error(`unknown read ${msg.op}`);
   }
 }
 
@@ -1088,7 +1087,7 @@ onmessage = (e) => {
     return;
   }
   if (msg.type === 'inspect') {
-    // Letture che non toccano il guest: subito, fra una fetta e l'altra.
+    // Reads that do not touch the guest: at once, between one slice and the next.
     inspect(msg).then(
       ({ result, transfer = [] }) => post({ type: 'inspect-reply', id: msg.id, ok: true, result }, transfer),
       (err) => post({ type: 'inspect-reply', id: msg.id, ok: false, error: String(err.message ?? err) }),
@@ -1103,9 +1102,9 @@ onmessage = (e) => {
     return;
   }
   if (msg.type === 'save') {
-    // Non è un ingresso del guest: si salva fra due fette.
+    // Not a guest input: it is saved between two slices.
     if (store) saveRequested = true;
-    else status('cache degli snapshot non attiva');
+    else status('snapshot cache not active');
     wake?.();
     return;
   }

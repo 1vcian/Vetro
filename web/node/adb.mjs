@@ -1,5 +1,5 @@
-// ADB client in JavaScript (M5/M6, ADR 0028, docs/specs/net.md "Come adb
-// userà l'inoltro"): speaks the adb protocol with the guest's adbd over a TCP
+// ADB client in JavaScript (M5/M6, ADR 0028, docs/specs/net.md "How adb
+// will use forwarding"): speaks the adb protocol with the guest's adbd over a TCP
 // connection to port 5555, without a host adb. Uses no Node API: it runs in
 // the app's Worker and in tests.
 //

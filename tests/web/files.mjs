@@ -1,20 +1,20 @@
 #!/usr/bin/env node
-// M8: il gestore dei file via vetro-wasm (ABI 7, `GuestFiles` di
-// web/node/vetro.mjs, ADR 0020) sul kernel guest di M3 con virtio-vsock: il
-// demone `vetro-files` del guest risponde al JS.
-//   - list con proprietario e modo; lettura; file che non c'è (ENOENT);
-//   - scrittura dal JS che conserva modo e proprietario, letta dal guest
-//     con `cat` e `stat`; file nuovo;
-//   - osservazione: un processo del guest scrive un file e l'evento arriva
-//     entro 1 s di tempo del guest;
-//   - file grande (1,2 MB) scritto e riletto a pezzi, confrontato dal guest
-//     con `cmp`;
-//   - modifica (ADR 0021): righe di un database in WAL tenuto aperto da un
-//     processo del guest cambiate con SQL nel guest (GuestFiles.sql), viste
-//     dal lettore della pagina nel -wal e rilette dal guest con sqlite3;
-//     SharedPreferences riscritte come Android e rilette dal guest; un nome
-//     non UTF-8 elencato e riaperto (surrogateescape);
-//   - istruzioni e log uguali in due esecuzioni (anche col JIT).
+// M8: the file manager via vetro-wasm (ABI 7, `GuestFiles` of
+// web/node/vetro.mjs, ADR 0020) on the M3 guest kernel with virtio-vsock: the
+// guest's `vetro-files` daemon answers JS.
+//   - list with owner and mode; read; a file that doesn't exist (ENOENT);
+//   - write from JS that preserves mode and owner, read by the guest
+//     with `cat` and `stat`; new file;
+//   - watch: a guest process writes a file and the event arrives
+//     within 1 s of guest time;
+//   - large file (1.2 MB) written and read back in chunks, compared by the guest
+//     with `cmp`;
+//   - editing (ADR 0021): rows of a WAL database kept open by a
+//     guest process changed with SQL in the guest (GuestFiles.sql), seen
+//     by the page's reader in the -wal and reread by the guest with sqlite3;
+//     SharedPreferences rewritten like Android and reread by the guest; a
+//     non-UTF-8 name listed and reopened (surrogateescape);
+//   - instructions and log equal in two runs (also with the JIT).
 //
 //   node tests/web/files.mjs [--no-jit]
 
@@ -27,7 +27,7 @@ const jit = !process.argv.includes('--no-jit');
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-/** Il contenuto di `seq 1 n` di BusyBox. */
+/** The output of BusyBox's `seq 1 n`. */
 function seq(n) {
   let s = '';
   for (let i = 1; i <= n; i++) s += `${i}\n`;
@@ -44,7 +44,7 @@ async function session(x, kernel) {
   });
   files = s.m.files();
   files.onEvent = (e) => events.push({ ns: s.m.guestNs, ...e });
-  // Aspetta una Promise del gestore facendo girare la macchina.
+  // Waits for a file manager Promise by running the machine.
   const wait = async (p) => {
     let done = false;
     let value;
@@ -52,15 +52,15 @@ async function session(x, kernel) {
     p.then((v) => { done = true; value = v; }, (e) => { done = true; error = e; });
     const limit = s.m.steps + 6_000_000_000n;
     while (!done) {
-      check(s.m.steps < limit, `operazione del gestore non finita:\n${s.tail()}`);
+      check(s.m.steps < limit, `file manager operation not finished:\n${s.tail()}`);
       const stop = await s.quantum();
-      check(stop === 'Budget', `${stop} durante un'operazione del gestore`);
+      check(stop === 'Budget', `${stop} during a file manager operation`);
       await null;
     }
     if (error) throw error;
     return value;
   };
-  // Uscita di un comando fra due marcatori.
+  // Output of a command between two markers.
   const command = async (cmd) => {
     const from = s.log.length;
     s.m.consoleWrite(`echo VETRO-OUT-""INIZIO; ${cmd}; echo VETRO-OUT-""FINE\n`);
@@ -77,11 +77,11 @@ async function session(x, kernel) {
   const a = list[0].stat;
   check(a.kind === 'file' && a.mode === 0o100600 && a.uid === 12 && a.gid === 34 && a.size === 4, `stat di a.txt: ${JSON.stringify(a)}`);
   const st = files.status();
-  check(st.state === 'Ready' && st.generation === 1 && st.maxChunk >= 262144, `stato: ${JSON.stringify(st)}`);
+  check(st.state === 'Ready' && st.generation === 1 && st.maxChunk >= 262144, `state: ${JSON.stringify(st)}`);
   const r = await wait(files.read('/tmp/w/a.txt'));
-  check(dec.decode(r.data) === 'uno\n' && r.size === 4, `lettura: ${JSON.stringify(r)}`);
+  check(dec.decode(r.data) === 'uno\n' && r.size === 4, `read: ${JSON.stringify(r)}`);
   const missing = await wait(files.read('/tmp/w/manca')).then(() => null, (e) => e);
-  check(missing?.code === 'ENOENT' && missing.errno === 2, `file che non c'è: ${missing}`);
+  check(missing?.code === 'ENOENT' && missing.errno === 2, `file that doesn't exist: ${missing}`);
 
   const wd = await wait(files.watch('/tmp/w'));
   const t0 = s.m.guestNs;
@@ -90,29 +90,29 @@ async function session(x, kernel) {
   const limit = s.m.steps + 6_000_000_000n;
   let ev;
   while (!(ev = events.find((e) => e.wd === wd && e.name === 'g.txt' && e.mask & INOTIFY.CLOSE_WRITE))) {
-    check(s.m.steps < limit, `evento non arrivato: ${JSON.stringify(events)}`);
+    check(s.m.steps < limit, `event did not arrive: ${JSON.stringify(events)}`);
     await s.quantum();
   }
   const ms = Number(ev.ns - t0) / 1e6;
-  check(ms < 1000, `evento dopo ${ms} ms di tempo del guest`);
+  check(ms < 1000, `event after ${ms} ms of guest time`);
   await s.until(SHELL_PROMPT, echoFrom);
 
   const w = await wait(files.writeFile('/tmp/w/a.txt', enc.encode('scritto dal JS\n'), 0o644));
-  check(w.mode === 0o100600 && w.uid === 12 && w.gid === 34 && w.size === 15, `dopo la scrittura: ${JSON.stringify(w)}`);
+  check(w.mode === 0o100600 && w.uid === 12 && w.gid === 34 && w.size === 15, `after the write: ${JSON.stringify(w)}`);
   let out = await command("cat /tmp/w/a.txt; stat -c '%a %u %g' /tmp/w/a.txt");
-  check(out === 'scritto dal JS\n600 12 34', `il guest legge: ${JSON.stringify(out)}`);
+  check(out === 'scritto dal JS\n600 12 34', `the guest reads: ${JSON.stringify(out)}`);
   const big = seq(200000);
   await wait(files.writeFile('/tmp/w/copia', big, 0o640));
   out = await command("cmp /tmp/w/grande /tmp/w/copia && echo COPIA-UGUALE; stat -c '%a' /tmp/w/copia");
-  check(out === 'COPIA-UGUALE\n640', `copia grande: ${JSON.stringify(out)}`);
+  check(out === 'COPIA-UGUALE\n640', `large copy: ${JSON.stringify(out)}`);
   const back = await wait(files.read('/tmp/w/grande'));
-  check(back.data.length === big.length && Buffer.from(back.data).equals(Buffer.from(big)), `file grande riletto: ${back.data.length} byte`);
-  check(events.some((e) => e.name === 'a.txt' && e.mask & INOTIFY.MOVED_TO), 'evento della scrittura del JS');
-  check(events.every((e) => !e.name.startsWith('.vetro-tmp.')), 'eventi dei file temporanei');
-  // ---- Modifica (ADR 0021) ------------------------------------------------
-  // Un database in WAL tenuto aperto da un processo del guest: riga cambiata
-  // con SQL nel guest, il lettore della pagina la vede nel -wal, sqlite3 del
-  // guest la rilegge.
+  check(back.data.length === big.length && Buffer.from(back.data).equals(Buffer.from(big)), `large file read back: ${back.data.length} bytes`);
+  check(events.some((e) => e.name === 'a.txt' && e.mask & INOTIFY.MOVED_TO), 'event of the JS write');
+  check(events.every((e) => !e.name.startsWith('.vetro-tmp.')), 'events of the temporary files');
+  // ---- Editing (ADR 0021) --------------------------------------------------
+  // A WAL database kept open by a guest process: row changed
+  // with SQL in the guest, the page's reader sees it in the -wal, the guest's
+  // sqlite3 rereads it.
   const db = '/tmp/w/app.db';
   out = await command(`sqlite3 -batch -list ${db} "PRAGMA journal_mode=WAL; CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT); INSERT INTO t VALUES (1, 'uno'), (2, 'due');"`);
   check(out === 'wal', `database in WAL: ${out}`);
@@ -120,44 +120,44 @@ async function session(x, kernel) {
   s.m.consoleWrite(`(echo 'SELECT 1 FROM t;'; sleep 100000) | sqlite3 ${db} >/dev/null &\n`);
   await s.until(SHELL_PROMPT, holderFrom);
   const openLimit = s.m.steps + 6_000_000_000n;
-  while (!(await command('ls /tmp/w')).includes('app.db-shm')) check(s.m.steps < openLimit, 'il database non si apre');
+  while (!(await command('ls /tmp/w')).includes('app.db-shm')) check(s.m.steps < openLimit, 'the database does not open');
   const upd = await wait(files.sql(db, 'UPDATE t SET v = ?1 WHERE rowid = ?2', ['cambiata dal JS', 2], { expect: 1 }));
   check(upd.changes === 1 && upd.columns.length === 0, `UPDATE: ${JSON.stringify(upd, (k, v) => (typeof v === 'bigint' ? `${v}` : v))}`);
   const ins = await wait(files.sql(db, 'INSERT INTO t (v) VALUES (?1)', [{ type: 'text', value: 'tre' }], { expect: 1 }));
   check(ins.lastRowid === 3n, `INSERT: rowid ${ins.lastRowid}`);
   const refused = await wait(files.sql(db, 'DELETE FROM t', [], { expect: 1 })).then(() => null, (e) => e);
-  check(refused?.code === 'SQLITE' && refused.sqlite === 19, `DELETE di 3 righe con expect 1: ${refused}`);
+  check(refused?.code === 'SQLITE' && refused.sqlite === 19, `DELETE of 3 rows with expect 1: ${refused}`);
   const sel = await wait(files.sql(db, 'SELECT id, v, 1.5, x\'ff\', NULL FROM t ORDER BY id', [], { readonly: true }));
   check(JSON.stringify(sel.rows.map((r) => r.slice(0, 3))) === '[[1,"uno",1.5],[2,"cambiata dal JS",1.5],[3,"tre",1.5]]' && sel.rows[0][3][0] === 0xff && sel.rows[0][4] === null,
     `SELECT: ${JSON.stringify(sel.rows.map((r) => r.map(String)))}`);
   out = await command(`sqlite3 -batch -list ${db} 'SELECT group_concat(v) FROM t'`);
-  check(out === 'uno,cambiata dal JS,tre', `il guest rilegge: ${out}`);
+  check(out === 'uno,cambiata dal JS,tre', `the guest rereads: ${out}`);
   const mainFile = await wait(files.read(db));
   const walFile = await wait(files.read(`${db}-wal`));
   const view = new SqliteDb(mainFile.data, walFile.data).rows('t');
   const stale = new SqliteDb(mainFile.data).rows('t').rows.length;
   check(JSON.stringify(view.rows) === '[[1,"uno"],[2,"cambiata dal JS"],[3,"tre"]]' && stale < 3,
-    `lettore con il WAL: ${JSON.stringify(view.rows)} (senza WAL ${stale} righe)`);
-  // SharedPreferences: lette, cambiate e riscritte dal JS come Android, rilette dal guest.
+    `reader with the WAL: ${JSON.stringify(view.rows)} (without WAL ${stale} rows)`);
+  // SharedPreferences: read, changed and rewritten by JS like Android, reread by the guest.
   const prefsPath = '/tmp/w/prefs.xml';
   await command(`printf '%s\\n' "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>" '<map>' '    <int name="avvii" value="3" />' '    <string name="nome">x &amp; y</string>' '</map>' > ${prefsPath} && chown 12:34 ${prefsPath} && chmod 660 ${prefsPath}`);
   const prefs = parsePrefs(dec.decode((await wait(files.read(prefsPath))).data));
-  check(prefs?.length === 2 && prefs[1].value === 'x & y', `SharedPreferences lette: ${JSON.stringify(prefs)}`);
+  check(prefs?.length === 2 && prefs[1].value === 'x & y', `SharedPreferences read: ${JSON.stringify(prefs)}`);
   prefs[0].value = checkPrefValue('int', '42');
   prefs.push({ type: 'boolean', name: 'nuovo', value: 'true' }, { type: 'set', name: 's', value: ['a', 'b'] });
   const pw = await wait(files.writeFile(prefsPath, enc.encode(prefsToXml(prefs)), 0o600));
-  check(pw.mode === 0o100660 && pw.uid === 12, `SharedPreferences: modo e proprietario ${JSON.stringify(pw)}`);
+  check(pw.mode === 0o100660 && pw.uid === 12, `SharedPreferences: mode and owner ${JSON.stringify(pw)}`);
   out = await command(`grep -c 'value="42"' ${prefsPath}; grep -c '<string>b</string>' ${prefsPath}; tail -n 1 ${prefsPath}`);
-  check(out === '1\n1\n</map>', `SharedPreferences rilette dal guest: ${JSON.stringify(out)}`);
-  // Nome non UTF-8: elencato in surrogateescape, riaperto con gli stessi byte.
+  check(out === '1\n1\n</map>', `SharedPreferences reread by the guest: ${JSON.stringify(out)}`);
+  // Non-UTF-8 name: listed in surrogateescape, reopened with the same bytes.
   await command("printf 'np' > \"/tmp/w/$(printf 'n\\377')\"");
   const odd = (await wait(files.list('/tmp/w'))).find((e) => e.name.startsWith('n'));
-  check(odd?.name === 'n\udcff', `nome non UTF-8: ${JSON.stringify(odd?.name)}`);
+  check(odd?.name === 'n\udcff', `non-UTF-8 name: ${JSON.stringify(odd?.name)}`);
   const oddData = await wait(files.read(`/tmp/w/${odd.name}`));
-  check(dec.decode(oddData.data) === 'np', 'file dal nome non UTF-8 riletto');
+  check(dec.decode(oddData.data) === 'np', 'file with the non-UTF-8 name reread');
   await wait(files.delete('/tmp/w', { recursive: true }));
   out = await command('ls /tmp');
-  check(!out.split('\n').includes('w'), `cartella non cancellata: ${out}`);
+  check(!out.split('\n').includes('w'), `folder not deleted: ${out}`);
   await s.poweroff(0);
   return { steps: s.m.steps, log: s.log, ms };
 }
@@ -167,8 +167,8 @@ run(async () => {
   const kernel = guestKernel();
   const a = await session(exports, kernel);
   const b = await session(exports, kernel);
-  check(a.steps === b.steps && a.log === b.log, `esecuzioni diverse: ${a.steps} e ${b.steps} istruzioni`);
-  console.log(`gestore dei file: list, lettura, scrittura che conserva modo e proprietario, evento dopo ${a.ms.toFixed(1)} ms ` +
-    `di tempo del guest, 1,2 MB a pezzi, SQL nel guest su un database in WAL aperto (visto nel -wal), SharedPreferences ` +
-    `riscritte, nome non UTF-8; ${a.steps} istruzioni in due esecuzioni uguali${jit ? ' (JIT)' : ''}`);
+  check(a.steps === b.steps && a.log === b.log, `runs differ: ${a.steps} and ${b.steps} instructions`);
+  console.log(`file manager: list, read, write preserving mode and owner, event after ${a.ms.toFixed(1)} ms ` +
+    `of guest time, 1.2 MB in chunks, SQL in the guest on an open WAL database (seen in the -wal), SharedPreferences ` +
+    `rewritten, non-UTF-8 name; ${a.steps} instructions in two identical runs${jit ? ' (JIT)' : ''}`);
 });

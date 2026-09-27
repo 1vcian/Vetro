@@ -1,53 +1,53 @@
 #!/bin/sh
-# M5: test dell'app web (web/app) e dell'API dei dispositivi di vetro-wasm,
-# senza dipendenze npm:
-#   1. controllo della sintassi dei moduli JS (node --check);
-#   2. test unitari JS (tests/web/unit.mjs): server con Range, DiskFeeder,
-#      mappa dei tasti, terminale, persistenza (MemFile, cache degli snapshot),
-#      lettore SQLite e visualizzatori del gestore dei file;
-#   3. riferimento nativo (tests/boot/tests/web.rs): gli stessi copioni con
-#      l'API di vetro-wasm compilata per l'host, interprete, disco locale;
-#   4. disco via HTTP Range (tests/web/boot-disk.mjs): il kernel M3 legge e
-#      scrive un disco servito da un server locale; istruzioni e log uguali
-#      a quelli con un disco locale e al riferimento nativo, anche col
-#      riavvio dalla cache;
-#   5. display e ingressi via API (tests/web/devices.mjs): framebuffer RGBA
-#      uguale al motivo del guest, cursore, tastiera, tablet, LED; istruzioni
-#      e log uguali al riferimento nativo;
-#   6. connessioni dal JS verso un servizio TCP del guest
-#      (tests/web/hostfwd.mjs, GuestSocket, inoltro di porte): eco di
-#      200 KB, chiusura, rifiuto; due esecuzioni uguali;
-#   7. snapshot e overlay persistente dei dischi via API (tests/web/snapshot.mjs,
-#      M6): salva al prompt e a metà avvio, ripristina su macchine nuove (JIT
-#      e interprete), stesso seguito del log, stesse istruzioni, stesso file
-#      dell'overlay; scritture ritrovate da un avvio da zero; overlay di
-#      un'altra base scartato; tempi e dimensioni in V8;
-#   8. gestore dei file via API (tests/web/files.mjs, M8, ADR 0020): list,
-#      letture, scritture che conservano modo e proprietario lette dal guest,
-#      evento di inotify entro 1 s di tempo del guest, 1,2 MB a pezzi; SQL
-#      nel guest su un database in WAL aperto, visto dal lettore nel -wal,
-#      SharedPreferences riscritte, nome non UTF-8 (ADR 0021); due
-#      esecuzioni uguali;
-#   9. ispettore di rete e timeline via API (tests/web/inspector.mjs, M7,
-#      ADR 0023): POST JSON e form di wget al sinkhole, lista, dettaglio con
-#      corpi decodificati, HAR, pcapng, richieste e DNS attribuiti al
-#      comando; due esecuzioni uguali;
-#  10. record & replay via API (tests/web/replay.mjs, M10): registrazione con
-#      keyframe, log da file, keyframe nell'archivio (Recording), replay
-#      identico con JIT e interprete (console, ispettore e timeline uguali),
-#      salto a un'istruzione con gli stessi registri e la stessa memoria;
-#  11. l'app in Chrome headless (tests/web/browser.mjs), se Chrome c'è
-#      (VETRO_CHROME; altrimenti SKIP, che non è un test passato;
-#      VETRO_REQUIRE_BROWSER=1 lo rende un errore): anche snapshot e dischi
-#      persistenti in OPFS, il secondo avvio dallo snapshot (tempo misurato)
-#      e il pannello del gestore dei file (albero dal vivo, un file modificato
-#      e salvato nel pannello, riletto dal guest con cat; una cella SQLite e
-#      una preferenza cambiate dal pannello e rilette dal guest).
-#  12. ispettore, timeline e record & replay nell'app in Chrome
-#      (tests/web/browser-analysis.mjs): wget verso il sinkhole nell'ispettore
-#      con il corpo JSON decodificato e legato al comando nella timeline,
-#      download di log, HAR e pcapng, replay identico, salto a un'istruzione
-#      con registri e memoria, log ricaricato e rigiocato.
+# M5: tests of the web app (web/app) and of vetro-wasm's device API,
+# without npm dependencies:
+#   1. syntax check of the JS modules (node --check);
+#   2. JS unit tests (tests/web/unit.mjs): server with Range, DiskFeeder,
+#      key map, terminal, persistence (MemFile, snapshot cache),
+#      SQLite reader and file manager viewers;
+#   3. native reference (tests/boot/tests/web.rs): the same scripts with
+#      vetro-wasm's API compiled for the host, interpreter, local disk;
+#   4. disk over HTTP Range (tests/web/boot-disk.mjs): the M3 kernel reads and
+#      writes a disk served by a local server; instructions and log equal
+#      to those with a local disk and to the native reference, also with the
+#      restart from the cache;
+#   5. display and inputs via the API (tests/web/devices.mjs): RGBA framebuffer
+#      equal to the guest's pattern, cursor, keyboard, tablet, LEDs; instructions
+#      and log equal to the native reference;
+#   6. connections from JS to a TCP service of the guest
+#      (tests/web/hostfwd.mjs, GuestSocket, port forwarding): echo of
+#      200 KB, close, refusal; two identical runs;
+#   7. snapshots and persistent disk overlay via the API (tests/web/snapshot.mjs,
+#      M6): saves at the prompt and halfway through boot, restores on new machines (JIT
+#      and interpreter), same continuation of the log, same instructions, same overlay
+#      file; writes found again by a boot from scratch; overlay of
+#      another base discarded; timings and sizes in V8;
+#   8. file manager via the API (tests/web/files.mjs, M8, ADR 0020): list,
+#      reads, writes that preserve mode and owner as read by the guest,
+#      inotify event within 1 s of guest time, 1.2 MB in chunks; SQL
+#      in the guest on an open WAL database, seen by the reader in the -wal,
+#      rewritten SharedPreferences, non-UTF-8 name (ADR 0021); two
+#      identical runs;
+#   9. network inspector and timeline via the API (tests/web/inspector.mjs, M7,
+#      ADR 0023): JSON and form POST from wget to the sinkhole, list, detail with
+#      decoded bodies, HAR, pcapng, requests and DNS attributed to the
+#      command; two identical runs;
+#  10. record & replay via the API (tests/web/replay.mjs, M10): recording with
+#      keyframes, log from a file, keyframes in the archive (Recording), identical
+#      replay with JIT and interpreter (console, inspector and timeline equal),
+#      jump to an instruction with the same registers and the same memory;
+#  11. the app in headless Chrome (tests/web/browser.mjs), if Chrome is available
+#      (VETRO_CHROME; otherwise SKIP, which is not a passed test;
+#      VETRO_REQUIRE_BROWSER=1 makes it an error): also snapshots and persistent
+#      disks in OPFS, the second boot from the snapshot (time measured)
+#      and the file manager panel (live tree, a file edited
+#      and saved in the panel, reread by the guest with cat; a SQLite cell and
+#      a preference changed from the panel and reread by the guest).
+#  12. inspector, timeline and record & replay in the app in Chrome
+#      (tests/web/browser-analysis.mjs): wget to the sinkhole in the inspector
+#      with the decoded JSON body tied to the command in the timeline,
+#      download of log, HAR and pcapng, identical replay, jump to an instruction
+#      with registers and memory, log reloaded and replayed.
 #  13. boot from Android images and 3 GiB of RAM (tests/web/android-boot.mjs,
 #      M5, ADR 0028): boot.img and init_boot.img from mkbootimg.py around the
 #      M3 kernel, vetro_load_android; instructions and log equal to the native
@@ -58,58 +58,58 @@
 #
 #   tools/web-test.sh [--no-jit]
 #
-# Serve Node >= 22 e target/guest-kernel (tools/guest-kernel/build.sh).
+# Needs Node >= 22 and target/guest-kernel (tools/guest-kernel/build.sh).
 set -eu
 cd "$(dirname "$0")/.."
 
 for a in "$@"; do
   case "$a" in
     --no-jit) ;;
-    *) echo "uso: tools/web-test.sh [--no-jit]" >&2; exit 2 ;;
+    *) echo "usage: tools/web-test.sh [--no-jit]" >&2; exit 2 ;;
   esac
 done
 
-command -v node >/dev/null || { echo "ERRORE: node non trovato (serve Node >= 22)" >&2; exit 1; }
+command -v node >/dev/null || { echo "ERROR: node not found (Node >= 22 needed)" >&2; exit 1; }
 major=$(node -p 'process.versions.node.split(".")[0]')
-[ "$major" -ge 22 ] || { echo "ERRORE: Node $(node --version), serve >= 22" >&2; exit 1; }
+[ "$major" -ge 22 ] || { echo "ERROR: Node $(node --version), >= 22 needed" >&2; exit 1; }
 [ -f target/guest-kernel/Image ] && [ -f target/guest-kernel/initramfs.cpio.gz ] \
-  || { echo "ERRORE: target/guest-kernel mancante: esegui tools/guest-kernel/build.sh" >&2; exit 1; }
+  || { echo "ERROR: target/guest-kernel missing: run tools/guest-kernel/build.sh" >&2; exit 1; }
 
 echo "==> vetro-wasm (release, wasm32-unknown-unknown)"
 cargo build --release --target wasm32-unknown-unknown -p vetro-wasm
 
-echo "==> sintassi dei moduli JS"
+echo "==> syntax of the JS modules"
 for f in web/app/*.mjs web/node/*.mjs tools/web-serve.mjs tests/web/*.mjs; do
   node --check "$f"
 done
 
-echo "==> test unitari JS"
+echo "==> JS unit tests"
 node tests/web/unit.mjs
 
-echo "==> riferimento nativo (stessi copioni, interprete, disco locale)"
+echo "==> native reference (same scripts, interpreter, local disk)"
 cargo test --release -p vetro-boot-tests --test web -- --nocapture
-# I test in Node devono dare le stesse istruzioni e lo stesso log.
+# The Node tests must give the same instructions and the same log.
 export VETRO_WEB_NATIVE=1
 
-echo "==> disco via HTTP Range"
+echo "==> disk over HTTP Range"
 node tests/web/boot-disk.mjs "$@"
 
-echo "==> display e ingressi via API"
+echo "==> display and inputs via the API"
 node tests/web/devices.mjs "$@"
 
-echo "==> connessioni verso il guest via API"
+echo "==> connections to the guest via the API"
 node tests/web/hostfwd.mjs "$@"
 
-echo "==> snapshot e overlay persistente dei dischi via API (M6)"
+echo "==> snapshots and persistent disk overlay via the API (M6)"
 node tests/web/snapshot.mjs "$@"
 
-echo "==> gestore dei file via API (M8)"
+echo "==> file manager via the API (M8)"
 node tests/web/files.mjs "$@"
 
-echo "==> ispettore di rete e timeline via API (M7)"
+echo "==> network inspector and timeline via the API (M7)"
 node tests/web/inspector.mjs "$@"
 
-echo "==> record & replay via API (M10)"
+echo "==> record & replay via the API (M10)"
 node tests/web/replay.mjs "$@"
 
 echo "==> boot from boot.img and 3 GiB of RAM (M5)"
@@ -118,8 +118,8 @@ node tests/web/android-boot.mjs "$@"
 echo "==> ADB client against a fake adbd (M5)"
 node tests/web/adb.mjs
 
-echo "==> app in Chrome headless"
+echo "==> app in headless Chrome"
 node tests/web/browser.mjs
 
-echo "==> ispettore, timeline e record & replay nell'app in Chrome"
+echo "==> inspector, timeline and record & replay in the app in Chrome"
 node tests/web/browser-analysis.mjs

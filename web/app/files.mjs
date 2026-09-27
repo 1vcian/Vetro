@@ -1,26 +1,27 @@
-// Il pannello del gestore dei file (M8, ADR 0020): albero delle radici
-// impostate dal chiamante, aggiornato dal vivo con gli eventi di inotify del
-// demone `vetro-files` nel guest, e visualizzatori (testo, JSON, XML,
-// esadecimale, immagini, SQLite) con modifica e salvataggio immediato nel
-// guest (testo, JSON, XML, esadecimale; SharedPreferences in una tabella
-// che riscrive l'XML come Android; righe SQLite con SQL eseguito nel guest
-// dal motore vero, ADR 0021).
+// The file manager panel (M8, ADR 0020): tree of the roots set by the
+// caller, updated live with the inotify events of the `vetro-files` daemon
+// in the guest, and viewers (text, JSON, XML, hexadecimal, images, SQLite)
+// with editing and immediate saving into the guest (text, JSON, XML,
+// hexadecimal; SharedPreferences in a table that rewrites the XML the way
+// Android does; SQLite rows with SQL run in the guest by the real engine,
+// ADR 0021).
 //
-// I percorsi sono stringhe in surrogateescape (ADR 0021): un byte non UTF-8
-// del nome è un surrogato solitario, mostrato come \xNN.
+// Paths are surrogateescape strings (ADR 0021): a non-UTF-8 byte of the
+// name is a lone surrogate, shown as \xNN.
 //
-// Il pannello non parla con la macchina: chiede operazioni con `rpc(op,
-// args)` (una Promise: il Worker le passa a `GuestFiles` di vetro.mjs) e
-// riceve eventi e stato con `onEvent` e `onStatus`. Le funzioni pure
-// (riconoscimento del tipo, esadecimale, modi) sono esportate per i test.
+// The panel does not talk to the machine: it requests operations with
+// `rpc(op, args)` (a Promise: the Worker hands them to `GuestFiles` of
+// vetro.mjs) and receives events and status with `onEvent` and `onStatus`.
+// The pure functions (type detection, hexadecimal, modes) are exported for
+// the tests.
 
 import { deleteRowSql, formatValue, insertRowSql, isSqlite, SqliteDb, sqlQuote, updateCellSql } from './sqlite.mjs';
 
-/** Byte letti al più per aprire un file. */
+/** Maximum bytes read to open a file. */
 export const MAX_OPEN = 16 << 20;
-/** Byte al più mostrati (e modificabili) in esadecimale. */
+/** Maximum bytes shown (and editable) in hexadecimal. */
 export const MAX_HEX = 256 << 10;
-/** Righe al più mostrate per tabella SQLite. */
+/** Maximum rows shown per SQLite table. */
 export const MAX_ROWS = 500;
 
 const IN_MODIFY = 0x2;
@@ -28,7 +29,7 @@ const IN_CLOSE_WRITE = 0x8;
 const IN_MOVED_TO = 0x80;
 const IN_Q_OVERFLOW = 0x4000;
 
-/** `drwxr-x---` di un `st_mode` e del tipo. */
+/** `drwxr-x---` from an `st_mode` and the type. */
 export function modeString(kind, mode) {
   const t = { dir: 'd', symlink: 'l', char: 'c', block: 'b', fifo: 'p', socket: 's' }[kind] ?? '-';
   let s = t;
@@ -39,7 +40,7 @@ export function modeString(kind, mode) {
   return s;
 }
 
-/** Dimensione leggibile. */
+/** Human-readable size. */
 export function sizeString(n) {
   if (n < 1024) return `${n} B`;
   if (n < 1 << 20) return `${(n / 1024).toFixed(1)} KiB`;
@@ -48,7 +49,7 @@ export function sizeString(n) {
 
 const utf8 = new TextDecoder('utf-8', { fatal: true });
 
-/** Il testo UTF-8 dei byte, o null se non sono testo (NUL o UTF-8 non valido). */
+/** The UTF-8 text of the bytes, or null if they are not text (NUL or invalid UTF-8). */
 export function asText(bytes) {
   if (bytes.includes(0)) return null;
   try {
@@ -58,7 +59,7 @@ export function asText(bytes) {
   }
 }
 
-/** Tipo di immagine dai primi byte, o null. */
+/** Image type from the first bytes, or null. */
 export function imageType(b) {
   const at = (sig, off = 0) => sig.every((x, i) => b[off + i] === x);
   if (at([0x89, 0x50, 0x4e, 0x47])) return 'image/png';
@@ -70,8 +71,8 @@ export function imageType(b) {
 }
 
 /**
- * Il visualizzatore adatto: 'sqlite', 'image', 'json', 'xml', 'text' o
- * 'hex', dal contenuto e dall'estensione.
+ * The suitable viewer: 'sqlite', 'image', 'json', 'xml', 'text' or
+ * 'hex', from the content and the extension.
  */
 export function detectView(name, bytes) {
   if (isSqlite(bytes)) return 'sqlite';
@@ -94,7 +95,7 @@ function isJson(text) {
   }
 }
 
-/** Dump esadecimale: righe `offset  16 byte  |ascii|`. */
+/** Hexadecimal dump: lines `offset  16 bytes  |ascii|`. */
 export function hexDump(bytes) {
   const lines = [];
   for (let off = 0; off < bytes.length; off += 16) {
@@ -107,9 +108,9 @@ export function hexDump(bytes) {
 }
 
 /**
- * I byte di un dump esadecimale modificato: di ogni riga contano solo le
- * cifre fra l'offset e la colonna ASCII (si possono aggiungere o togliere
- * byte). Lancia con il numero di riga se una coppia non è esadecimale.
+ * The bytes of an edited hexadecimal dump: of each line only the digits
+ * between the offset and the ASCII column count (bytes can be added or
+ * removed). Throws with the line number if a pair is not hexadecimal.
  */
 export function parseHex(text) {
   const out = [];
@@ -123,14 +124,14 @@ export function parseHex(text) {
     if (/^[0-9a-f]{8}$/i.test(parts[0]) && parts.length > 1) parts.shift();
     else if (parts.length === 1 && /^[0-9a-f]{8}$/i.test(parts[0])) return;
     for (const p of parts) {
-      if (!/^[0-9a-f]{2}$/i.test(p)) throw new Error(`riga ${i + 1}: "${p}" non è un byte esadecimale`);
+      if (!/^[0-9a-f]{2}$/i.test(p)) throw new Error(`line ${i + 1}: "${p}" is not a hexadecimal byte`);
       out.push(parseInt(p, 16));
     }
   });
   return new Uint8Array(out);
 }
 
-/** Un nome del guest con i byte non UTF-8 (surrogati solitari, ADR 0021) mostrati come \xNN. */
+/** A guest name with the non-UTF-8 bytes (lone surrogates, ADR 0021) shown as \xNN. */
 export function displayName(s) {
   return s.replace(/[\udc80-\udcff]/g, (c, i) => {
     const prev = i > 0 ? s.charCodeAt(i - 1) : 0;
@@ -143,22 +144,22 @@ export function displayName(s) {
 const ENTITIES = { lt: '<', gt: '>', amp: '&', quot: '"', apos: "'" };
 
 /**
- * Lettore XML piccolo (senza DOM, anche in Node) per i file delle
- * SharedPreferences: elementi, attributi, testo, entità, CDATA, commenti,
- * istruzioni di elaborazione. Restituisce la radice { name, attrs, children,
- * text }; lancia con la posizione se l'XML non è ben formato.
+ * Small XML reader (no DOM, also in Node) for SharedPreferences files:
+ * elements, attributes, text, entities, CDATA, comments, processing
+ * instructions. Returns the root { name, attrs, children, text }; throws
+ * with the position if the XML is not well-formed.
  */
 export function parseXml(xml) {
   let i = 0;
   const fail = (m) => {
-    throw new Error(`XML non valido: ${m} (carattere ${i})`);
+    throw new Error(`invalid XML: ${m} (character ${i})`);
   };
   const decode = (s) =>
     s.replace(/&([^;&\s]*);|&/g, (m, e) => {
-      if (e === undefined) fail('& senza entità');
+      if (e === undefined) fail('& without an entity');
       if (e in ENTITIES) return ENTITIES[e];
       const n = /^#x([0-9a-fA-F]+)$/.exec(e) ? parseInt(e.slice(2), 16) : /^#([0-9]+)$/.exec(e) ? parseInt(e.slice(1), 10) : NaN;
-      if (!(n >= 0 && n <= 0x10ffff)) fail(`entità &${e};`);
+      if (!(n >= 0 && n <= 0x10ffff)) fail(`entity &${e};`);
       return String.fromCodePoint(n);
     });
   const skip = () => {
@@ -166,15 +167,15 @@ export function parseXml(xml) {
       while (i < xml.length && /\s/.test(xml[i])) i++;
       if (xml.startsWith('<!--', i)) {
         const e = xml.indexOf('-->', i + 4);
-        if (e < 0) fail('commento non chiuso');
+        if (e < 0) fail('unclosed comment');
         i = e + 3;
       } else if (xml.startsWith('<?', i)) {
         const e = xml.indexOf('?>', i + 2);
-        if (e < 0) fail('istruzione non chiusa');
+        if (e < 0) fail('unclosed instruction');
         i = e + 2;
       } else if (xml.startsWith('<!DOCTYPE', i)) {
         const e = xml.indexOf('>', i);
-        if (e < 0) fail('DOCTYPE non chiuso');
+        if (e < 0) fail('unclosed DOCTYPE');
         i = e + 1;
       } else return;
     }
@@ -183,12 +184,12 @@ export function parseXml(xml) {
   const name = () => {
     NAME.lastIndex = i;
     const m = NAME.exec(xml);
-    if (!m) fail('nome atteso');
+    if (!m) fail('name expected');
     i += m[0].length;
     return m[0];
   };
   const element = () => {
-    if (xml[i] !== '<') fail('< atteso');
+    if (xml[i] !== '<') fail('< expected');
     i++;
     const node = { name: name(), attrs: {}, children: [], text: '' };
     for (;;) {
@@ -202,44 +203,44 @@ export function parseXml(xml) {
         i++;
         break;
       }
-      if (i === before) fail('spazio atteso fra gli attributi');
+      if (i === before) fail('space expected between attributes');
       const a = name();
       while (/\s/.test(xml[i] ?? '')) i++;
-      if (xml[i] !== '=') fail('= atteso');
+      if (xml[i] !== '=') fail('= expected');
       i++;
       while (/\s/.test(xml[i] ?? '')) i++;
       const q = xml[i];
-      if (q !== '"' && q !== "'") fail('virgolette attese');
+      if (q !== '"' && q !== "'") fail('quotes expected');
       const e = xml.indexOf(q, i + 1);
-      if (e < 0) fail('attributo non chiuso');
-      if (a in node.attrs) fail(`attributo ${a} ripetuto`);
+      if (e < 0) fail('unclosed attribute');
+      if (a in node.attrs) fail(`repeated attribute ${a}`);
       const raw = xml.slice(i + 1, e);
-      if (raw.includes('<')) fail('< in un attributo');
+      if (raw.includes('<')) fail('< in an attribute');
       node.attrs[a] = decode(raw);
       i = e + 1;
     }
     for (;;) {
-      if (i >= xml.length) fail(`<${node.name}> non chiuso`);
+      if (i >= xml.length) fail(`unclosed <${node.name}>`);
       if (xml.startsWith('</', i)) {
         i += 2;
-        if (name() !== node.name) fail(`chiusura diversa da <${node.name}>`);
+        if (name() !== node.name) fail(`closing tag differs from <${node.name}>`);
         while (/\s/.test(xml[i] ?? '')) i++;
-        if (xml[i] !== '>') fail('> atteso');
+        if (xml[i] !== '>') fail('> expected');
         i++;
         return node;
       }
       if (xml.startsWith('<!--', i)) {
         const e = xml.indexOf('-->', i + 4);
-        if (e < 0) fail('commento non chiuso');
+        if (e < 0) fail('unclosed comment');
         i = e + 3;
       } else if (xml.startsWith('<![CDATA[', i)) {
         const e = xml.indexOf(']]>', i + 9);
-        if (e < 0) fail('CDATA non chiuso');
+        if (e < 0) fail('unclosed CDATA');
         node.text += xml.slice(i + 9, e);
         i = e + 3;
       } else if (xml.startsWith('<?', i)) {
         const e = xml.indexOf('?>', i + 2);
-        if (e < 0) fail('istruzione non chiusa');
+        if (e < 0) fail('unclosed instruction');
         i = e + 2;
       } else if (xml[i] === '<') node.children.push(element());
       else {
@@ -253,18 +254,18 @@ export function parseXml(xml) {
   skip();
   const root = element();
   skip();
-  if (i < xml.length) fail('testo dopo la radice');
+  if (i < xml.length) fail('text after the root');
   return root;
 }
 
-/** Tipi delle SharedPreferences. */
+/** SharedPreferences types. */
 export const PREF_TYPES = ['string', 'int', 'long', 'float', 'boolean', 'set', 'null'];
 
 /**
- * Voci di un file XML delle SharedPreferences: [{ type, name, value }] con
- * `value` stringa (per `set` array di stringhe, per `null` null), o null se
- * la radice non è <map> o c'è un tipo che la tabella non gestisce. Lancia
- * se l'XML non è ben formato.
+ * Entries of a SharedPreferences XML file: [{ type, name, value }] with
+ * `value` a string (for `set` an array of strings, for `null` null), or null
+ * if the root is not <map> or there is a type the table does not handle.
+ * Throws if the XML is not well-formed.
  */
 export function parsePrefs(xml) {
   const root = parseXml(xml);
@@ -286,7 +287,7 @@ export function parsePrefs(xml) {
   return out;
 }
 
-/** Come ESCAPE_TABLE di FastXmlSerializer: caratteri di controllo come &#N;, poi " & < >. */
+/** Like FastXmlSerializer's ESCAPE_TABLE: control characters as &#N;, then " & < >. */
 function prefEscape(s) {
   return s.replace(/[\u0000-\u001f"&<>]/g, (c) =>
     c === '"' ? '&quot;' : c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : `&#${c.charCodeAt(0)};`,
@@ -294,11 +295,11 @@ function prefEscape(s) {
 }
 
 /**
- * L'XML delle SharedPreferences come lo scrive Android (XmlUtils.writeMapXml
- * con FastXmlSerializer e rientro): stessa intestazione, rientro di 4 spazi,
- * tag vuoti come ` />`, stessi caratteri protetti, `\n` dopo ogni tag di
- * chiusura. Come FastXmlSerializer, un testo che finisce con `\n` fa
- * rientrare il tag di chiusura.
+ * The SharedPreferences XML as Android writes it (XmlUtils.writeMapXml
+ * with FastXmlSerializer and indentation): same header, 4-space indent,
+ * empty tags as ` />`, same escaped characters, `\n` after every closing
+ * tag. Like FastXmlSerializer, a text that ends with `\n` indents the
+ * closing tag.
  */
 export function prefsToXml(entries) {
   let out = "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n";
@@ -320,14 +321,14 @@ export function prefsToXml(entries) {
   return `${out}</map>\n`;
 }
 
-/** `Float.toString` di Java per un float a 32 bit. */
+/** Java's `Float.toString` for a 32-bit float. */
 export function javaFloatString(x) {
   const f = Math.fround(x);
   if (Number.isNaN(f)) return 'NaN';
   if (f === Infinity) return 'Infinity';
   if (f === -Infinity) return '-Infinity';
   if (f === 0) return Object.is(f, -0) ? '-0.0' : '0.0';
-  // Le cifre più corte che ridanno lo stesso float.
+  // The shortest digits that give back the same float.
   let d = f;
   for (let p = 1; p <= 9; p++) {
     const v = Number(f.toPrecision(p));
@@ -347,32 +348,32 @@ export function javaFloatString(x) {
 }
 
 /**
- * Controlla un valore come lo rilegge Android (Integer.parseInt,
- * Long.parseLong, Float.parseFloat, true/false) e lo restituisce nella
- * forma che Android scriverebbe; lancia se non è valido.
+ * Checks a value the way Android reads it back (Integer.parseInt,
+ * Long.parseLong, Float.parseFloat, true/false) and returns it in the
+ * form Android would write; throws if it is not valid.
  */
 export function checkPrefValue(type, text) {
   const s = String(text);
   if (type === 'int' || type === 'long') {
-    if (!/^[+-]?\d+$/.test(s)) throw new Error(`"${s}" non è un intero`);
+    if (!/^[+-]?\d+$/.test(s)) throw new Error(`"${s}" is not an integer`);
     const v = BigInt(s);
     const bits = type === 'int' ? 32 : 64;
-    if (BigInt.asIntN(bits, v) !== v) throw new Error(`${s} fuori dall'intervallo di un ${type}`);
+    if (BigInt.asIntN(bits, v) !== v) throw new Error(`${s} out of the range of a ${type}`);
     return v.toString();
   }
   if (type === 'float') {
     const t = s.trim().replace(/[fFdD]$/, '');
-    if (!/^[+-]?(NaN|Infinity|(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?)$/.test(t)) throw new Error(`"${s}" non è un float`);
+    if (!/^[+-]?(NaN|Infinity|(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?)$/.test(t)) throw new Error(`"${s}" is not a float`);
     return javaFloatString(Number(t));
   }
   if (type === 'boolean') {
-    if (s !== 'true' && s !== 'false') throw new Error(`"${s}" non è true o false`);
+    if (s !== 'true' && s !== 'false') throw new Error(`"${s}" is not true or false`);
     return s;
   }
   return s;
 }
 
-/** Errore di sintassi XML (testo) o null. */
+/** XML syntax error (text) or null. */
 function xmlError(text) {
   if (typeof DOMParser === 'undefined') return null;
   const doc = new DOMParser().parseFromString(text, 'application/xml');
@@ -383,7 +384,7 @@ function xmlError(text) {
 const join = (dir, name) => (dir.endsWith('/') ? dir + name : `${dir}/${name}`);
 const base = (path) => path.split('/').pop();
 
-/** Un parametro SQL come testo per l'anteprima. */
+/** An SQL parameter as text for the preview. */
 function paramString(p) {
   const v = p !== null && typeof p === 'object' && !(p instanceof Uint8Array) ? p.value : p;
   if (v === null || v === undefined) return 'NULL';
@@ -392,12 +393,12 @@ function paramString(p) {
   return String(v);
 }
 
-/** Tabella del risultato di una query. */
+/** Table of a query result. */
 function resultTable(r) {
   const table = el('table', { className: 'ftable fsql-result' });
   table.append(el('tr', {}, ...r.columns.map((c) => el('th', { textContent: c }))));
   for (const row of r.rows) table.append(el('tr', {}, ...row.map((v) => el('td', { textContent: formatValue(v), className: v === null ? 'fnull' : '' }))));
-  return el('div', {}, el('div', { className: 'fnote', textContent: `${r.rows.length} righe${r.truncated ? ' (troncate)' : ''}` }), table);
+  return el('div', {}, el('div', { className: 'fnote', textContent: `${r.rows.length} rows${r.truncated ? ' (truncated)' : ''}` }), table);
 }
 const el = (tag, props = {}, ...children) => {
   const e = document.createElement(tag);
@@ -407,32 +408,32 @@ const el = (tag, props = {}, ...children) => {
 };
 
 /**
- * Il pannello. `els`: { box, status, roots, tree, path, info, mode, save,
- * reload, content, message }; `rpc(op, args)`: Promise del Worker.
+ * The panel. `els`: { box, status, roots, tree, path, info, mode, save,
+ * reload, content, message }; `rpc(op, args)`: a Promise from the Worker.
  */
 export class FilePanel {
   constructor(els, rpc) {
     this.els = els;
     this.rpc = rpc;
     this.roots = [];
-    /** Cartelle aperte: percorso → { wd, entries }. */
+    /** Open folders: path → { wd, entries }. */
     this.open = new Map();
-    /** wd → percorso. */
+    /** wd → path. */
     this.watches = new Map();
-    /** Cartelle di cui si aspetta la prima lista (nell'albero: "…"). */
+    /** Folders whose first listing is awaited (in the tree: "…"). */
     this.loading = new Set();
     this.refreshTimers = new Map();
     this.status = { state: 'None', generation: 0 };
-    /** File nel visualizzatore: { path, stat, bytes, view, dirty }. */
+    /** File in the viewer: { path, stat, bytes, view, dirty }. */
     this.current = null;
     this.imageUrl = null;
     els.mode.addEventListener('change', () => this.current && this.#render(els.mode.value));
-    els.save.addEventListener('click', () => this.save().catch((e) => this.#message(`non salvato: ${e.message}`, true)));
+    els.save.addEventListener('click', () => this.save().catch((e) => this.#message(`not saved: ${e.message}`, true)));
     els.reload.addEventListener('click', () => this.current && this.openFile(this.current.path));
     els.roots.addEventListener('change', () => this.setRoots(els.roots.value.split(',').map((s) => s.trim()).filter(Boolean)));
   }
 
-  /** Stato visibile ai test (window.vetroState.files). */
+  /** State visible to tests (window.vetroState.files). */
   snapshot() {
     return {
       ...this.status,
@@ -443,7 +444,7 @@ export class FilePanel {
     };
   }
 
-  /** Le radici da mostrare (l'app in primo piano, o a mano). */
+  /** The roots to show (the foreground app, or by hand). */
   async setRoots(roots) {
     this.roots = roots;
     this.els.roots.value = roots.join(', ');
@@ -455,13 +456,13 @@ export class FilePanel {
     if (this.status.state === 'Ready') for (const r of roots) await this.expand(r).catch(() => {});
   }
 
-  /** Stato del collegamento dal Worker. */
+  /** Connection status from the Worker. */
   onStatus(st) {
     const reconnected = st.state === 'Ready' && st.generation !== this.status.generation;
     this.status = st;
-    this.els.status.textContent = st.state === 'Ready' ? `collegato${st.selinux ? ' (SELinux)' : ''}` : st.state === 'None' ? 'spento' : 'in collegamento…';
+    this.els.status.textContent = st.state === 'Ready' ? `connected${st.selinux ? ' (SELinux)' : ''}` : st.state === 'None' ? 'off' : 'connecting…';
     if (reconnected) {
-      // Connessione nuova: le osservazioni del demone sono perse.
+      // New connection: the daemon's watches are lost.
       const paths = [...new Set([...this.roots, ...this.open.keys()])];
       this.open.clear();
       this.watches.clear();
@@ -469,7 +470,7 @@ export class FilePanel {
     }
   }
 
-  /** Evento di inotify dal guest. */
+  /** inotify event from the guest. */
   onEvent(ev) {
     if (ev.mask & IN_Q_OVERFLOW) {
       for (const p of this.open.keys()) this.#scheduleRefresh(p);
@@ -479,7 +480,7 @@ export class FilePanel {
     if (!dir) return;
     this.#scheduleRefresh(dir);
     const cur = this.current;
-    // Un database: cambia il file o il suo -wal (SQLite scrive senza chiudere).
+    // A database: the file or its -wal changes (SQLite writes without closing).
     if (cur?.view === 'sqlite' && ev.name && (join(dir, ev.name) === cur.path || join(dir, ev.name) === `${cur.path}-wal`)) {
       if (!this.sqlBusy && !this.els.content.querySelector('.fsql-edit')) {
         clearTimeout(this.sqlTimer);
@@ -488,7 +489,7 @@ export class FilePanel {
       return;
     }
     if (cur && ev.name && join(dir, ev.name) === cur.path && ev.mask & (IN_CLOSE_WRITE | IN_MOVED_TO | IN_MODIFY) && !this.saving) {
-      if (cur.dirty) this.#message('il file è cambiato nel guest: "Ricarica" per rileggerlo (le modifiche qui andrebbero perse)', true);
+      if (cur.dirty) this.#message('the file changed in the guest: "Reload" to read it again (the changes here would be lost)', true);
       else if (ev.mask & (IN_CLOSE_WRITE | IN_MOVED_TO)) this.openFile(cur.path, { quiet: true }).catch(() => {});
     }
   }
@@ -498,7 +499,7 @@ export class FilePanel {
     this.refreshTimers.set(dir, setTimeout(() => this.refresh(dir).catch(() => {}), 100));
   }
 
-  /** Apre (lista + osservazione) una cartella. */
+  /** Opens (list + watch) a folder. */
   async expand(path) {
     this.loading.add(path);
     this.#renderTree();
@@ -531,7 +532,7 @@ export class FilePanel {
     this.#renderTree();
   }
 
-  /** Rilegge una cartella aperta (dopo un evento). */
+  /** Reads an open folder again (after an event). */
   async refresh(path) {
     const d = this.open.get(path);
     if (!d) return;
@@ -548,7 +549,7 @@ export class FilePanel {
   #renderTree() {
     const tree = this.els.tree;
     tree.textContent = '';
-    // stat null: una radice (una cartella, di cui non si mostrano i metadati).
+    // stat null: a root (a folder, whose metadata is not shown).
     const node = (path, name, stat, depth) => {
       const isDir = !stat || stat.kind === 'dir';
       const isOpen = this.open.has(path);
@@ -560,15 +561,15 @@ export class FilePanel {
       row.append(el('span', { className: `fname ${stat?.kind ?? 'dir'}`, textContent: displayName(name) }));
       if (stat) {
         row.append(el('span', { className: 'fmeta', textContent: `${modeString(stat.kind, stat.mode)} ${stat.uid}:${stat.gid}${isDir ? '' : ` ${sizeString(stat.size)}`}` }));
-        row.title = `${displayName(path)}\n${modeString(stat.kind, stat.mode)} uid ${stat.uid} gid ${stat.gid}, ${stat.size} byte, ` +
-          `modificato ${new Date(stat.mtime * 1000).toISOString()}${stat.link ? `\n→ ${stat.link}` : ''}${stat.selinux ? `\nSELinux: ${stat.selinux}` : ''}`;
+        row.title = `${displayName(path)}\n${modeString(stat.kind, stat.mode)} uid ${stat.uid} gid ${stat.gid}, ${stat.size} bytes, ` +
+          `modified ${new Date(stat.mtime * 1000).toISOString()}${stat.link ? `\n→ ${stat.link}` : ''}${stat.selinux ? `\nSELinux: ${stat.selinux}` : ''}`;
       }
       row.addEventListener('click', () => {
         if (isDir) (isOpen ? this.collapse(path) : this.expand(path)).catch((e) => this.#message(`${path}: ${e.message}`, true));
         else this.openFile(path).catch((e) => this.#message(`${path}: ${e.message}`, true));
       });
       tree.append(row);
-      // Righe senza data-path: non sono voci (vetroFiles.state().shown).
+      // Rows without data-path: they are not entries (vetroFiles.state().shown).
       const note = (text) => {
         const n = el('div', { className: 'fempty', textContent: text });
         n.style.paddingLeft = `${(depth + 1) * 14 + 4}px`;
@@ -578,11 +579,11 @@ export class FilePanel {
       if (isOpen) {
         const d = this.open.get(path);
         if (d.error) tree.append(el('div', { className: 'ferr', textContent: d.error }));
-        // Prima le cartelle, poi i file, in ordine di nome.
+        // Folders first, then files, in name order.
         const dirFirst = (e) => (e.stat.kind === 'dir' ? 0 : 1);
         const sorted = [...d.entries].sort((a, b) => dirFirst(a) - dirFirst(b) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
         for (const e of sorted) node(join(path, e.name), e.name, e.stat, depth + 1);
-        if (!sorted.length && !d.error) note('(vuota)');
+        if (!sorted.length && !d.error) note('(empty)');
       }
     };
     for (const r of this.roots) node(r, r, null, 0);
@@ -594,9 +595,9 @@ export class FilePanel {
   }
 
   /**
-   * Apre un file nel visualizzatore. `quiet`: false = messaggio vuoto, true
-   * = "ricaricato", null = il messaggio resta. Un database SQLite si legge
-   * con il suo -wal, se c'è (ADR 0021).
+   * Opens a file in the viewer. `quiet`: false = empty message, true
+   * = "reloaded", null = the message stays. An SQLite database is read
+   * with its -wal, if there is one (ADR 0021).
    */
   async openFile(path, { quiet = false } = {}) {
     const stat = await this.rpc('stat', { path });
@@ -611,14 +612,14 @@ export class FilePanel {
     this.#render(view);
     this.#renderTree();
     if (quiet === false) this.#message('');
-    else if (quiet) this.#message('ricaricato: il file è cambiato nel guest');
+    else if (quiet) this.#message('reloaded: the file changed in the guest');
   }
 
   #info() {
     const c = this.current;
     const s = c.stat;
     this.els.path.textContent = displayName(c.path);
-    this.els.info.textContent = `${modeString(s.kind, s.mode)} ${s.uid}:${s.gid} ${sizeString(s.size)}${s.selinux ? ` · ${s.selinux}` : ''}${c.truncated ? ' · mostrati i primi 16 MiB' : ''}`;
+    this.els.info.textContent = `${modeString(s.kind, s.mode)} ${s.uid}:${s.gid} ${sizeString(s.size)}${s.selinux ? ` · ${s.selinux}` : ''}${c.truncated ? ' · showing the first 16 MiB' : ''}`;
   }
 
   #render(view) {
@@ -646,7 +647,7 @@ export class FilePanel {
       const part = c.bytes.subarray(0, MAX_HEX);
       text = hexDump(part);
       if (c.bytes.length > MAX_HEX) {
-        box.append(el('div', { className: 'fnote', textContent: `mostrati i primi ${sizeString(MAX_HEX)}: modifica disattivata` }));
+        box.append(el('div', { className: 'fnote', textContent: `showing the first ${sizeString(MAX_HEX)}: editing disabled` }));
       }
     } else {
       text = asText(c.bytes) ?? new TextDecoder().decode(c.bytes);
@@ -661,13 +662,13 @@ export class FilePanel {
     c.invalid = false;
     if (view === 'xml' && editable) this.#renderPrefs(box, text, area);
     if (view === 'json') {
-      const fmt = el('button', { type: 'button', textContent: 'Formatta', className: 'fsmall' });
+      const fmt = el('button', { type: 'button', textContent: 'Format', className: 'fsmall' });
       fmt.addEventListener('click', () => {
         try {
           area.value = JSON.stringify(JSON.parse(area.value), null, 2);
           area.dispatchEvent(new Event('input'));
         } catch (e) {
-          this.#message(`JSON non valido: ${e.message}`, true);
+          this.#message(`invalid JSON: ${e.message}`, true);
         }
       });
       box.prepend(fmt);
@@ -680,17 +681,17 @@ export class FilePanel {
     if (v === 'json') {
       try {
         JSON.parse(text);
-        this.#message('JSON valido');
+        this.#message('valid JSON');
       } catch (e) {
-        this.#message(`JSON non valido: ${e.message}`, true);
+        this.#message(`invalid JSON: ${e.message}`, true);
       }
     } else if (v === 'xml') {
       const err = xmlError(text);
-      this.#message(err ? `XML non valido: ${err}` : 'XML valido', !!err);
+      this.#message(err ? `invalid XML: ${err}` : 'valid XML', !!err);
     } else if (v === 'hex') {
       try {
         const n = parseHex(text).length;
-        this.#message(`${n} byte`);
+        this.#message(`${n} bytes`);
       } catch (e) {
         this.#message(e.message, true);
       }
@@ -707,10 +708,10 @@ export class FilePanel {
     if (!prefs) return;
     const c = this.current;
     const wrap = el('div', { className: 'fprefs' });
-    const note = el('div', { className: 'fnote', textContent: 'SharedPreferences: modifica nella tabella (riscrive l\'XML come Android) o nel testo qui sopra; poi "Salva"' });
+    const note = el('div', { className: 'fnote', textContent: 'SharedPreferences: edit in the table (rewrites the XML the way Android does) or in the text above; then "Save"' });
     const table = el('table', { className: 'ftable' });
     const errors = new Set();
-    // La tabella riscrive il testo; il testo, quando cambia, ridisegna la tabella.
+    // The table rewrites the text; the text, when it changes, redraws the table.
     const sync = () => {
       c.invalid = errors.size > 0;
       if (c.invalid) {
@@ -722,13 +723,13 @@ export class FilePanel {
     };
     const draw = () => {
       table.textContent = '';
-      table.append(el('tr', {}, el('th', { textContent: 'tipo' }), el('th', { textContent: 'nome' }), el('th', { textContent: 'valore' }), el('th')));
+      table.append(el('tr', {}, el('th', { textContent: 'type' }), el('th', { textContent: 'name' }), el('th', { textContent: 'value' }), el('th')));
       prefs.forEach((p, k) => {
         const type = el('select', { className: 'fpref-type' });
         for (const t of PREF_TYPES) type.append(el('option', { value: t, textContent: t, selected: t === p.type }));
         const name = el('input', { className: 'fpref-name', value: p.name, spellcheck: false });
         const value = p.type === 'set'
-          ? el('textarea', { className: 'fpref-value', value: p.value.join('\n'), rows: Math.max(2, p.value.length), spellcheck: false, title: 'un elemento per riga' })
+          ? el('textarea', { className: 'fpref-value', value: p.value.join('\n'), rows: Math.max(2, p.value.length), spellcheck: false, title: 'one element per line' })
           : el('input', { className: 'fpref-value', value: p.value ?? '', disabled: p.type === 'null', spellcheck: false });
         const check = () => {
           try {
@@ -775,7 +776,7 @@ export class FilePanel {
           } else errors.delete(k);
           sync();
         });
-        const del = el('button', { type: 'button', className: 'fsmall fpref-del', textContent: '✕', title: 'Togli la voce' });
+        const del = el('button', { type: 'button', className: 'fsmall fpref-del', textContent: '✕', title: 'Remove the entry' });
         del.addEventListener('click', () => {
           prefs.splice(k, 1);
           errors.clear();
@@ -785,11 +786,11 @@ export class FilePanel {
         table.append(el('tr', {}, el('td', {}, type), el('td', {}, name), el('td', {}, value), el('td', {}, del)));
       });
     };
-    const add = el('button', { type: 'button', className: 'fsmall fpref-add', textContent: 'Aggiungi voce' });
+    const add = el('button', { type: 'button', className: 'fsmall fpref-add', textContent: 'Add entry' });
     add.addEventListener('click', () => {
       let n = 1;
-      while (prefs.some((p) => p.name === `nuova${n}`)) n++;
-      prefs.push({ type: 'string', name: `nuova${n}`, value: '' });
+      while (prefs.some((p) => p.name === `new${n}`)) n++;
+      prefs.push({ type: 'string', name: `new${n}`, value: '' });
       draw();
       sync();
     });
@@ -801,7 +802,7 @@ export class FilePanel {
         errors.clear();
         draw();
       } catch {
-        // XML non valido: il messaggio lo dà già la validazione del testo.
+        // Invalid XML: the text validation already gives the message.
       }
     });
     draw();
@@ -821,9 +822,9 @@ export class FilePanel {
     const tables = db.tables();
     const pick = el('select', { className: 'fsmall fsql-table' });
     for (const t of tables) pick.append(el('option', { value: t.name, textContent: t.name, selected: t.name === this.sqliteTable }));
-    const insert = el('button', { type: 'button', className: 'fsmall fsql-insert', textContent: 'Inserisci riga' });
+    const insert = el('button', { type: 'button', className: 'fsmall fsql-insert', textContent: 'Insert row' });
     const free = el('button', { type: 'button', className: 'fsmall fsql-free', textContent: 'SQL…' });
-    // Editor (valore di una cella o riga nuova) e anteprima della query.
+    // Editor (value of a cell or new row) and query preview.
     const editor = el('div', { className: 'fsql-editor' });
     const out = el('div', { className: 'fsql' });
     let view = null;
@@ -840,19 +841,19 @@ export class FilePanel {
         view.rows.forEach((r, ri) => {
           const tr = el('tr');
           r.forEach((v, ci) => {
-            const td = el('td', { textContent: formatValue(v), className: v === null ? 'fnull' : '', title: `${view.types[ri][ci]} · clic per modificare` });
+            const td = el('td', { textContent: formatValue(v), className: v === null ? 'fnull' : '', title: `${view.types[ri][ci]} · click to edit` });
             td.dataset.r = ri;
             td.dataset.c = ci;
             td.addEventListener('click', () => this.#editCell(editor, view, ri, ci));
             tr.append(td);
           });
-          const del = el('button', { type: 'button', className: 'fsmall fsql-delete', textContent: '✕', title: 'Togli la riga' });
+          const del = el('button', { type: 'button', className: 'fsmall fsql-delete', textContent: '✕', title: 'Remove the row' });
           del.addEventListener('click', () => this.#sqlPreview(editor, deleteRowSql(view, ri), 1));
           tr.append(el('td', {}, del));
           table.append(tr);
         });
-        const wal = db.walFrames ? ` · WAL: ${db.walFrames} frame applicati` : '';
-        out.append(el('div', { className: 'fnote', textContent: `${view.rows.length} righe${view.rows.length === MAX_ROWS ? ' (le prime)' : ''} · pagine da ${db.pageSize} byte${wal} · clic su una cella per modificarla (SQL nel guest)` }), table);
+        const wal = db.walFrames ? ` · WAL: ${db.walFrames} frames applied` : '';
+        out.append(el('div', { className: 'fnote', textContent: `${view.rows.length} rows${view.rows.length === MAX_ROWS ? ' (the first ones)' : ''} · ${db.pageSize}-byte pages${wal} · click a cell to edit it (SQL in the guest)` }), table);
       } catch (e) {
         view = null;
         out.append(el('div', { className: 'ferr', textContent: e.message }));
@@ -861,11 +862,11 @@ export class FilePanel {
     pick.addEventListener('change', show);
     insert.addEventListener('click', () => view && this.#insertRow(editor, view.table));
     free.addEventListener('click', () => this.#sqlPreview(editor, { sql: view ? `SELECT * FROM ${sqlQuote(view.table.name)} LIMIT 10` : '', params: [] }, null));
-    box.append(el('div', {}, `${tables.length} tabelle: `, pick, ' ', insert, ' ', free), editor, out);
+    box.append(el('div', {}, `${tables.length} tables: `, pick, ' ', insert, ' ', free), editor, out);
     show();
   }
 
-  /** Editor di un valore: tipo e testo. Restituisce { box, value() } (value lancia se non valido). */
+  /** Editor of a value: type and text. Returns { box, value() } (value throws if not valid). */
   #valueEditor(v, type, allowDefault = false) {
     const types = [...(allowDefault ? ['default'] : []), 'text', 'integer', 'real', 'null', 'blob'];
     const sel = el('select', { className: 'fsmall fsql-type' });
@@ -881,15 +882,15 @@ export class FilePanel {
         case 'null':
           return null;
         case 'integer':
-          if (!/^\s*[+-]?\d+\s*$/.test(s)) throw new Error(`"${s}" non è un intero`);
-          if (BigInt.asIntN(64, BigInt(s.trim())) !== BigInt(s.trim())) throw new Error(`${s} non sta in 64 bit`);
+          if (!/^\s*[+-]?\d+\s*$/.test(s)) throw new Error(`"${s}" is not an integer`);
+          if (BigInt.asIntN(64, BigInt(s.trim())) !== BigInt(s.trim())) throw new Error(`${s} does not fit in 64 bits`);
           return { type: 'integer', value: BigInt(s.trim()) };
         case 'real':
-          if (s.trim() === '' || Number.isNaN(Number(s))) throw new Error(`"${s}" non è un numero`);
+          if (s.trim() === '' || Number.isNaN(Number(s))) throw new Error(`"${s}" is not a number`);
           return { type: 'real', value: Number(s) };
         case 'blob': {
           const h = s.replace(/\s+/g, '');
-          if (!/^([0-9a-fA-F]{2})*$/.test(h)) throw new Error('BLOB: cifre esadecimali a coppie');
+          if (!/^([0-9a-fA-F]{2})*$/.test(h)) throw new Error('BLOB: hexadecimal digits in pairs');
           return { type: 'blob', value: new Uint8Array(h.match(/../g)?.map((x) => parseInt(x, 16)) ?? []) };
         }
         case 'default':
@@ -906,13 +907,13 @@ export class FilePanel {
     const t = view.table;
     const col = view.columns[i];
     if (!t.withoutRowid && t.rowidAlias < 0 && i === 0) {
-      this.#message('il rowid di una tabella senza INTEGER PRIMARY KEY non si cambia da qui', true);
+      this.#message('the rowid of a table without INTEGER PRIMARY KEY cannot be changed from here', true);
       return;
     }
     const ed = this.#valueEditor(view.rows[r][i], view.types[r][i]);
-    const go = el('button', { type: 'button', className: 'fsmall fsql-preview', textContent: 'Anteprima' });
-    const cancel = el('button', { type: 'button', className: 'fsmall', textContent: 'Annulla' });
-    const who = t.withoutRowid ? `riga ${r + 1}` : `rowid ${view.rowids[r]}`;
+    const go = el('button', { type: 'button', className: 'fsmall fsql-preview', textContent: 'Preview' });
+    const cancel = el('button', { type: 'button', className: 'fsmall', textContent: 'Cancel' });
+    const who = t.withoutRowid ? `row ${r + 1}` : `rowid ${view.rowids[r]}`;
     go.addEventListener('click', () => {
       try {
         this.#sqlPreview(editor, updateCellSql(view, r, i, ed.value()), 1);
@@ -931,8 +932,8 @@ export class FilePanel {
       const alias = k === table.rowidAlias;
       return [col, this.#valueEditor(null, alias ? 'default' : 'null', true)];
     });
-    const go = el('button', { type: 'button', className: 'fsmall fsql-preview', textContent: 'Anteprima' });
-    const cancel = el('button', { type: 'button', className: 'fsmall', textContent: 'Annulla' });
+    const go = el('button', { type: 'button', className: 'fsmall fsql-preview', textContent: 'Preview' });
+    const cancel = el('button', { type: 'button', className: 'fsmall', textContent: 'Cancel' });
     go.addEventListener('click', () => {
       try {
         const values = {};
@@ -947,21 +948,21 @@ export class FilePanel {
     });
     cancel.addEventListener('click', () => (editor.textContent = ''));
     const rows = eds.map(([col, ed]) => el('div', { className: 'fsql-col' }, `${col}: `, ed.box));
-    editor.append(el('div', { className: 'fsql-edit' }, `Riga nuova in ${table.name}`, ...rows, go, ' ', cancel));
+    editor.append(el('div', { className: 'fsql-edit' }, `New row in ${table.name}`, ...rows, go, ' ', cancel));
   }
 
   /**
-   * Anteprima della query (modificabile) con i parametri, poi "Esegui":
-   * richiesta SQL al demone, eseguita nel guest da SQLite come il
-   * proprietario del database (ADR 0021). `expect`: righe che devono
-   * cambiare (null = qualsiasi; se il testo cambia non vale più).
+   * Preview of the query (editable) with the parameters, then "Run": an SQL
+   * request to the daemon, run in the guest by SQLite as the owner of the
+   * database (ADR 0021). `expect`: rows that must change (null = any; if
+   * the text changes it no longer applies).
    */
   #sqlPreview(editor, { sql, params }, expect) {
     editor.textContent = '';
     const area = el('textarea', { className: 'fsql-query', value: sql, spellcheck: false, rows: 3 });
     const shown = params.map((p, k) => `?${k + 1} = ${paramString(p)}`).join('   ');
-    const run = el('button', { type: 'button', className: 'fsmall fsql-run', textContent: 'Esegui nel guest' });
-    const cancel = el('button', { type: 'button', className: 'fsmall', textContent: 'Annulla' });
+    const run = el('button', { type: 'button', className: 'fsmall fsql-run', textContent: 'Run in the guest' });
+    const cancel = el('button', { type: 'button', className: 'fsmall', textContent: 'Cancel' });
     cancel.addEventListener('click', () => (editor.textContent = ''));
     run.addEventListener('click', () => {
       const text = area.value;
@@ -971,9 +972,9 @@ export class FilePanel {
           editor.textContent = '';
           if (r.columns.length) editor.append(resultTable(r));
         })
-        .catch((e) => this.#message(`non eseguito: ${e.message}`, true));
+        .catch((e) => this.#message(`not run: ${e.message}`, true));
     });
-    editor.append(el('div', { className: 'fsql-edit' }, el('div', { className: 'fnote', textContent: `Anteprima${expect !== null ? ` (deve cambiare ${expect} riga, altrimenti si annulla)` : ''}:` }), area, shown ? el('div', { className: 'fsql-params', textContent: shown }) : '', run, ' ', cancel));
+    editor.append(el('div', { className: 'fsql-edit' }, el('div', { className: 'fnote', textContent: `Preview${expect !== null ? ` (must change ${expect} row, otherwise it is rolled back)` : ''}:` }), area, shown ? el('div', { className: 'fsql-params', textContent: shown }) : '', run, ' ', cancel));
   }
 
   async #runSql(sql, params, expect) {
@@ -981,7 +982,7 @@ export class FilePanel {
     this.sqlBusy = true;
     try {
       const r = await this.rpc('sql', { path: c.path, sql, params, expect });
-      this.#message(`eseguito nel guest: ${r.changes} righe cambiate${r.columns.length ? `, ${r.rows.length} righe lette` : ''}`);
+      this.#message(`run in the guest: ${r.changes} rows changed${r.columns.length ? `, ${r.rows.length} rows read` : ''}`);
       await this.openFile(c.path, { quiet: null });
       return r;
     } finally {
@@ -989,19 +990,19 @@ export class FilePanel {
     }
   }
 
-  /** Salva il contenuto del visualizzatore nel guest (scrittura atomica). */
+  /** Saves the content of the viewer into the guest (atomic write). */
   async save() {
     const c = this.current;
     const area = this.els.content.querySelector('textarea.fedit');
     if (!c || !area) return;
-    if (c.invalid) throw new Error('ci sono valori non validi nella tabella');
+    if (c.invalid) throw new Error('there are invalid values in the table');
     let bytes;
     if (c.view === 'hex') bytes = parseHex(area.value);
     else {
       if (c.view === 'json') JSON.parse(area.value);
       if (c.view === 'xml') {
         const err = xmlError(area.value);
-        if (err) throw new Error(`XML non valido: ${err}`);
+        if (err) throw new Error(`invalid XML: ${err}`);
       }
       bytes = new TextEncoder().encode(area.value);
     }
@@ -1013,9 +1014,9 @@ export class FilePanel {
       c.dirty = false;
       this.els.save.disabled = true;
       this.#info();
-      this.#message(`salvato nel guest: ${bytes.length} byte, ${modeString(stat.kind, stat.mode)} ${stat.uid}:${stat.gid}`);
+      this.#message(`saved in the guest: ${bytes.length} bytes, ${modeString(stat.kind, stat.mode)} ${stat.uid}:${stat.gid}`);
     } finally {
-      // Gli eventi della propria scrittura arrivano poco dopo.
+      // The events of our own write arrive shortly after.
       setTimeout(() => (this.saving = false), 500);
     }
   }

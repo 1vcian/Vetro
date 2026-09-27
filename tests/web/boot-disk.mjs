@@ -1,20 +1,20 @@
 #!/usr/bin/env node
-// M5: disco virtio-blk via HTTP Range, in Node senza browser.
+// M5: virtio-blk disk over HTTP Range, in Node without a browser.
 //
-// Il kernel guest di M3 legge e scrive un disco raw di prova (/dev/vda):
-// `md5sum /dev/vda`, poi 13 byte scritti a metà disco, cache svuotata,
-// riletti, e di nuovo `md5sum`. Tre avvii identici:
-//   A. disco locale in memoria (vetro_disk_add_mem, sempre pronto);
-//   B. lo stesso file servito da un server HTTP locale con Range (blocchi
-//      da 64 KiB, cache in memoria vuota): la macchina si ferma a ogni
-//      blocco mancante (`Blocked`) e il DiskFeeder lo scarica;
-//   C. come B ma con la cache di B già piena (il riavvio con OPFS): nessuna
-//      lettura dalla rete;
-//   D. HTTP con blocchi da 4 KiB e lettura anticipata di 8 blocchi (blocchi
-//      contigui uniti in una richiesta), senza cache.
-// Istruzioni e log devono coincidere byte per byte; le somme MD5 lette dal
-// guest devono essere quelle del file (prima e dopo la scrittura), e il
-// file sul server resta intatto (le scritture stanno nel copy-on-write).
+// The M3 guest kernel reads and writes a raw test disk (/dev/vda):
+// `md5sum /dev/vda`, then 13 bytes written halfway through the disk, cache dropped,
+// reread, and `md5sum` again. Three identical boots:
+//   A. local in-memory disk (vetro_disk_add_mem, always ready);
+//   B. the same file served by a local HTTP server with Range (64 KiB
+//      blocks, empty in-memory cache): the machine stops at every
+//      missing block (`Blocked`) and the DiskFeeder downloads it;
+//   C. like B but with B's cache already full (the restart with OPFS): no
+//      reads from the network;
+//   D. HTTP with 4 KiB blocks and read-ahead of 8 blocks (contiguous
+//      blocks merged into one request), without a cache.
+// Instructions and log must match byte for byte; the MD5 sums read by the
+// guest must be those of the file (before and after the write), and the
+// file on the server stays intact (the writes are in the copy-on-write).
 //
 //   node tests/web/boot-disk.mjs [--no-jit]
 
@@ -28,8 +28,8 @@ import { check, compareNative, guestKernel, loadVetro, root, run, Session, SHELL
 
 const jit = !process.argv.includes('--no-jit');
 const BLOCK = 64 * 1024;
-// 3 MiB + 5 settori + una coda non allineata: l'ultimo blocco è corto e la
-// dimensione vista dal guest è arrotondata a 512 (come QEMU per i raw).
+// 3 MiB + 5 sectors + an unaligned tail: the last block is short and the
+// size seen by the guest is rounded to 512 (like QEMU for raw disks).
 const SIZE = 3 * 1024 * 1024 + 5 * 512 + 100;
 const WRITE_AT = 1_000_000;
 const WRITTEN = 'VETRO-SCRITTO';
@@ -82,9 +82,9 @@ run(async () => {
   const requests = [];
   const srv = await serve({ mounts: [['/disk.img', file]], onRequest: (r) => requests.push(r) });
   try {
-    // A: disco locale.
+    // A: local disk.
     const A = await session(x, kernel, (s) => s.m.addDiskMem(img));
-    // B: HTTP Range, cache vuota.
+    // B: HTTP Range, empty cache.
     const cache = new MemoryCache();
     const srcB = await new RangeSource(`${srv.url}/disk.img`).open();
     let feederB;
@@ -93,14 +93,14 @@ run(async () => {
       feederB.add(srcB, { cache, blockSize: BLOCK });
     });
     const statsB = B.disk;
-    // C: HTTP Range, cache piena (riavvio).
+    // C: HTTP Range, full cache (restart).
     const srcC = await new RangeSource(`${srv.url}/disk.img`).open();
     let feederC;
     const C = await session(x, kernel, (s) => {
       s.feeder = feederC = new DiskFeeder(s.m);
       feederC.add(srcC, { cache, blockSize: BLOCK });
     });
-    // D: blocchi piccoli, lettura anticipata, senza cache.
+    // D: small blocks, read-ahead, no cache.
     const srcD = await new RangeSource(`${srv.url}/disk.img`).open();
     let feederD;
     const D = await session(x, kernel, (s) => {
@@ -109,33 +109,33 @@ run(async () => {
     });
 
     for (const [name, r] of [['A', A], ['B', B], ['C', C], ['D', D]]) {
-      console.log(`${name}: ${r.steps} istruzioni, ${(r.ms / 1000).toFixed(2)} s, ${r.s.blocked} arresti Blocked`);
+      console.log(`${name}: ${r.steps} instructions, ${(r.ms / 1000).toFixed(2)} s, ${r.s.blocked} Blocked stops`);
     }
     console.log(`B: ${JSON.stringify(feederB.stats)}; HTTP ${JSON.stringify(srcB.stats)}; disco ${JSON.stringify(statsB)}`);
     console.log(`C: ${JSON.stringify(feederC.stats)}; HTTP ${JSON.stringify(srcC.stats)}`);
     console.log(`D: ${JSON.stringify(feederD.stats)}; HTTP ${JSON.stringify(srcD.stats)}`);
 
-    check(A.first.includes(`${before}  /dev/vda`), `md5sum del guest diverso dal file (${before}):\n${A.first}`);
-    // Il messaggio del kernel su drop_caches può arrivare subito dopo il testo.
-    check(A.second.includes(`\n${WRITTEN}`), `byte scritti non riletti:\n${A.second}`);
-    check(A.second.includes(`${after}  /dev/vda`), `md5sum dopo la scrittura diverso (${after}):\n${A.second}`);
-    check(A.s.blocked === 0, 'il disco locale non deve mai fermare la macchina');
-    check(B.s.blocked > 0 && feederB.stats.fromSource > 0, 'il disco HTTP doveva scaricare blocchi');
-    check(srcB.stats.requests > 1, 'nessuna richiesta Range dopo la prima');
-    check(statsB.dirtyClusters > 0, 'le scritture del guest dovevano finire nel copy-on-write');
+    check(A.first.includes(`${before}  /dev/vda`), `guest md5sum differs from the file (${before}):\n${A.first}`);
+    // The kernel's message about drop_caches may arrive right after the text.
+    check(A.second.includes(`\n${WRITTEN}`), `written bytes not read back:\n${A.second}`);
+    check(A.second.includes(`${after}  /dev/vda`), `md5sum after the write differs (${after}):\n${A.second}`);
+    check(A.s.blocked === 0, 'the local disk must never stop the machine');
+    check(B.s.blocked > 0 && feederB.stats.fromSource > 0, 'the HTTP disk should have downloaded blocks');
+    check(srcB.stats.requests > 1, 'no Range request after the first');
+    check(statsB.dirtyClusters > 0, "the guest's writes should have ended up in the copy-on-write");
     check(srcC.stats.requests === 1 && feederC.stats.fromSource === 0 && feederC.stats.fromCache > 0,
-      `al riavvio i blocchi dovevano venire dalla cache: ${JSON.stringify(feederC.stats)}, HTTP ${JSON.stringify(srcC.stats)}`);
-    check(requests.every((r) => r.status === 206), `risposte non 206: ${JSON.stringify(requests.filter((r) => r.status !== 206))}`);
+      `at restart the blocks should have come from the cache: ${JSON.stringify(feederC.stats)}, HTTP ${JSON.stringify(srcC.stats)}`);
+    check(requests.every((r) => r.status === 206), `non-206 responses: ${JSON.stringify(requests.filter((r) => r.status !== 206))}`);
     check(feederD.stats.readahead > 0 && srcD.stats.requests - 1 < feederD.stats.fromSource,
-      `D: la lettura anticipata doveva unire blocchi: ${JSON.stringify(feederD.stats)}, HTTP ${JSON.stringify(srcD.stats)}`);
+      `D: read-ahead should have merged blocks: ${JSON.stringify(feederD.stats)}, HTTP ${JSON.stringify(srcD.stats)}`);
     for (const [name, r] of [['B', B], ['C', C], ['D', D]]) {
-      check(r.steps === A.steps, `${name}: ${r.steps} istruzioni, disco locale ${A.steps}: il tempo del guest non deve dipendere dalla rete`);
-      check(r.log === A.log, `${name}: log diverso da quello col disco locale`);
+      check(r.steps === A.steps, `${name}: ${r.steps} instructions, local disk ${A.steps}: guest time must not depend on the network`);
+      check(r.log === A.log, `${name}: log differs from the one with the local disk`);
     }
-    check(md5(readFileSync(file)) === md5(img), 'il file sul server è cambiato');
+    check(md5(readFileSync(file)) === md5(img), 'the file on the server changed');
     writeFileSync(join(dir, 'boot-disk.log'), A.log, 'latin1');
     compareNative('disk', B.steps, B.raw);
-    console.log(`disco via HTTP Range: ok (stesse ${A.steps} istruzioni e stesso log del disco locale; md5 ${before} -> ${after})`);
+    console.log(`disk over HTTP Range: ok (same ${A.steps} instructions and same log as the local disk; md5 ${before} -> ${after})`);
   } finally {
     await srv.close();
   }

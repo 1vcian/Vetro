@@ -172,7 +172,7 @@ jobs:
         run: |
           set -o pipefail
           tools/wasm-boot.sh --jit 2>&1 | tee wasm-boot.log
-          grep -A4 '^==> tempi' wasm-boot.log | sed 's/^/::notice title=tempi di avvio::/'
+          grep -A4 '^==> timings' wasm-boot.log | sed 's/^/::notice title=boot timings::/'
       # M5: the web app and the vetro-wasm device API in Node: disk
       # via HTTP Range (same instructions and same log as a local disk),
       # framebuffer and inputs; the app in headless Chrome if the runner has it.

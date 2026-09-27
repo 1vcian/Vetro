@@ -120,8 +120,8 @@ main {
   image-rendering: pixelated;
 }
 
-/* Scanout spento: spiegazione e pulsante del motivo di prova. Il riquadro
-   lascia passare mouse e tocchi al canvas, il pulsante no. */
+/* Scanout off: explanation and test pattern button. The box
+   lets mouse and touches through to the canvas, the button doesn't. */
 #screen-off {
   position: absolute;
   inset: 0;
@@ -274,7 +274,7 @@ main {
   word-break: break-all;
 }
 
-/* Gestore dei file (M8) */
+/* File manager (M8) */
 #files-box {
   flex: 1 1 380px;
   min-width: 0;
@@ -447,7 +447,7 @@ main {
   font-weight: 400;
 }
 
-/* Ispettore di rete, timeline, registrazione (M7, M10) */
+/* Network inspector, timeline, recording (M7, M10) */
 #analysis-box {
   flex: 1 1 100%;
   min-width: 0;
@@ -791,7 +791,7 @@ a.tl-label {
   color: #ff7b72;
 }
 
-/* Modifica di SQLite e delle SharedPreferences (ADR 0021). */
+/* SQLite and SharedPreferences editing (ADR 0021). */
 .fsql td[data-r] {
   cursor: pointer;
 }

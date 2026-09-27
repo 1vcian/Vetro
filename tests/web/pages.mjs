@@ -88,12 +88,12 @@ run(async () => {
     check(req.method === 'GET' && req.path === '/prova' && req.status === 200, `inspector: ${JSON.stringify(req)}`);
     // The sinkhole's response is empty (Content-Length: 0, no Content-Type):
     // "0 B" in the list for both bodies, type from the content (the
-    // inspector's own label, "vuoto").
+    // inspector's own label, "empty").
     const cells = await page.waitFor('row in the table', () => page.eval(`(() => {
       const r = document.querySelector('#net-table tr[data-i="${req.i}"]');
       return r ? [...r.cells].slice(6, 9).map((c) => c.textContent) : null;
     })()`), 10_000);
-    check(JSON.stringify(cells) === JSON.stringify(['0 B', '0 B', 'vuoto']), `request, response, type cells: ${JSON.stringify(cells)}`);
+    check(JSON.stringify(cells) === JSON.stringify(['0 B', '0 B', 'empty']), `request, response, type cells: ${JSON.stringify(cells)}`);
     console.log(`site under /Vetro/ without COOP/COEP: shell in ${(ms / 1000).toFixed(2)} s, the console answers, the inspector sees the network (empty bodies: 0 B)`);
   } finally {
     await srv.close();

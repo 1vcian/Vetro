@@ -1,8 +1,8 @@
-// Terminale semplice per la console seriale (PL011): testo a righe con il
-// cursore sull'ultima riga, le sequenze di controllo che usano la shell e
-// il kernel (CR, LF, BS, TAB, CSI K/J/C/D/m) e la risposta a ESC[6n (la
-// shell di BusyBox chiede la posizione del cursore dopo il prompt). Senza
-// DOM: la pagina mostra `text()`.
+// Simple terminal for the serial console (PL011): line-based text with the
+// cursor on the last line, the control sequences that the shell and
+// the kernel use (CR, LF, BS, TAB, CSI K/J/C/D/m) and the reply to ESC[6n (the
+// BusyBox shell asks for the cursor position after the prompt). No
+// DOM: the page shows `text()`.
 
 export class Terminal {
   lines = [''];
@@ -12,8 +12,8 @@ export class Terminal {
   #decoder = new TextDecoder('utf-8');
 
   /**
-   * maxLines: righe tenute (le più vecchie si scartano); onReply(stringa):
-   * byte da rimandare al guest (risposte del terminale).
+   * maxLines: lines kept (the oldest are discarded); onReply(string):
+   * bytes to send back to the guest (terminal replies).
    */
   constructor({ maxLines = 5000, visibleRows = 24, onReply = () => {} } = {}) {
     this.maxLines = maxLines;
@@ -21,7 +21,7 @@ export class Terminal {
     this.onReply = onReply;
   }
 
-  /** Byte dal guest (Uint8Array), UTF-8 anche spezzato fra due chiamate. */
+  /** Bytes from the guest (Uint8Array), UTF-8 even when split across two calls. */
   feed(bytes) {
     for (const ch of this.#decoder.decode(bytes, { stream: true })) this.#char(ch);
   }
@@ -81,7 +81,7 @@ export class Terminal {
         this.col = Math.max(0, (args[1] || 1) - 1);
         break;
       default:
-        // Colori (m), modi (h/l) e il resto: ignorati.
+        // Colours (m), modes (h/l) and the rest: ignored.
         break;
     }
   }
@@ -123,7 +123,7 @@ export class Terminal {
   }
 }
 
-/** I byte che un terminale manda per un tasto premuto, o null. */
+/** The bytes a terminal sends for a pressed key, or null. */
 export function keyToBytes(e) {
   const special = {
     Enter: '\r', Backspace: '\x7f', Tab: '\t', Escape: '\x1b',
@@ -138,7 +138,7 @@ export function keyToBytes(e) {
     return null;
   }
   if (Object.hasOwn(special, e.key)) return special[e.key];
-  // Alt+tasto: il carattere che il sistema ha già composto (macOS: Opzione).
+  // Alt+key: the character the system has already composed (macOS: Option).
   if ([...e.key].length === 1) return e.key;
   return null;
 }

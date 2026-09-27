@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-# Genera tests/web/testdata/prova.sqlite, il database di prova del lettore
-# SQLite del gestore dei file (web/app/sqlite.mjs, M8). Il file è nel
-# repository: questo script serve solo a rifarlo (python3 con il modulo
-# sqlite3 della libreria standard).
+# Generates tests/web/testdata/prova.sqlite, the test database of the file
+# manager's SQLite reader (web/app/sqlite.mjs, M8). The file is in the
+# repository: this script is only needed to regenerate it (python3 with the
+# standard library's sqlite3 module).
 #
-# Dentro: pagine da 1024 byte (b-tree a più livelli), una tabella con alias
-# del rowid e tutti i tipi di valore (NULL, interi piccoli e a 8 byte,
-# reali, 0 e 1, testo, BLOB), 600 righe (pagine interne), un testo da
-# 5000 byte (pagine di overflow), una tabella WITHOUT ROWID con chiave
-# composta, una tabella senza alias del rowid e con nomi fra virgolette.
+# Inside: 1024-byte pages (multi-level b-tree), a table with a rowid
+# alias and all value types (NULL, small and 8-byte integers,
+# reals, 0 and 1, text, BLOB), 600 rows (interior pages), a 5000-byte
+# text (overflow pages), a WITHOUT ROWID table with a composite
+# key, a table without a rowid alias and with quoted names.
 #
-# Poi wal.sqlite e wal.sqlite-wal (ADR 0021): un database in WAL copiato con
-# la connessione ancora aperta, quindi con transazioni solo nel -wal (una
-# riga cambiata, una aggiunta, una tolta, una tabella nuova che fa crescere
-# il file) e in coda un frame rovinato, che non conta.
+# Then wal.sqlite and wal.sqlite-wal (ADR 0021): a WAL database copied with
+# the connection still open, hence with transactions only in the -wal (a
+# row changed, one added, one removed, a new table that grows
+# the file) and at the end a damaged frame, which doesn't count.
 import os
 import shutil
 import sqlite3
@@ -63,8 +63,8 @@ db.execute("INSERT INTO t VALUES (6, 'nuova')")
 db.execute("DELETE FROM t WHERE id = 5")
 db.execute("CREATE TABLE altra (x)")
 db.executemany("INSERT INTO altra VALUES (?)", [("A" * 900,) for _ in range(4)])
-# Copia con la connessione aperta: alla chiusura SQLite farebbe il
-# checkpoint e toglierebbe il -wal.
+# Copy with the connection open: on close SQLite would do the
+# checkpoint and remove the -wal.
 shutil.copyfile(wal, wal + ".copia")
 shutil.copyfile(wal + "-wal", wal + "-wal.copia")
 db.close()
@@ -75,8 +75,8 @@ if os.path.exists(wal + "-shm"):
 with open(wal + "-wal", "r+b") as f:
     data = f.read()
     frame = bytearray(data[32 : 32 + 24 + 1024])
-    # Un frame di "commit" in coda con i salt giusti e checksum che non
-    # tornano (una scrittura interrotta): il lettore deve ignorarlo.
+    # A "commit" frame at the end with the right salts and checksums that don't
+    # add up (an interrupted write): the reader must ignore it.
     frame[4:8] = (99).to_bytes(4, "big")
     f.write(frame)
 print(wal, os.path.getsize(wal), "byte +", os.path.getsize(wal + "-wal"), "byte di WAL")

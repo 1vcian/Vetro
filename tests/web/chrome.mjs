@@ -1,5 +1,5 @@
-// Chrome headless pilotato col protocollo DevTools (WebSocket di Node 22,
-// nessuna dipendenza npm), comune ai test nel browser (browser.mjs, pages.mjs).
+// Headless Chrome driven with the DevTools protocol (Node 22 WebSocket,
+// no npm dependencies), shared by the browser tests (browser.mjs, pages.mjs).
 
 import { spawn } from 'node:child_process';
 import { existsSync, rmSync } from 'node:fs';
@@ -23,7 +23,7 @@ export class Cdp {
     const ws = new WebSocket(url);
     await new Promise((ok, ko) => {
       ws.onopen = ok;
-      ws.onerror = () => ko(new Fail(`DevTools: connessione a ${url} fallita`));
+      ws.onerror = () => ko(new Fail(`DevTools: connection to ${url} failed`));
     });
     return new Cdp(ws);
   }
@@ -59,7 +59,7 @@ export class Page {
 
   async eval(expr) {
     const r = await this.cdp.send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true }, this.s);
-    if (r.exceptionDetails) throw new Fail(`nella pagina: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
+    if (r.exceptionDetails) throw new Fail(`in the page: ${r.exceptionDetails.exception?.description ?? r.exceptionDetails.text}`);
     return r.result.value;
   }
 
@@ -75,7 +75,7 @@ export class Page {
       if (Date.now() - t0 > ms) {
         const status = await this.eval("document.getElementById('status').textContent");
         const tail = (await this.consoleText()).split('\n').slice(-15).join('\n');
-        throw new Fail(`${what}: non arrivato in ${ms / 1000} s (stato: ${status})\n${tail}`);
+        throw new Fail(`${what}: did not arrive in ${ms / 1000} s (state: ${status})\n${tail}`);
       }
       await new Promise((ok) => setTimeout(ok, 200));
     }
@@ -100,7 +100,7 @@ export class Page {
     await this.cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base }, this.s);
   }
 
-  /** Scrive una riga nella console della pagina, tasto per tasto. */
+  /** Types a line into the page console, key by key. */
   async type(line) {
     await this.eval("document.getElementById('console').focus()");
     for (const ch of line) await this.key(ch, '', ch);
@@ -119,7 +119,7 @@ export async function launch(chrome, profile) {
   ], { stdio: ['ignore', 'ignore', 'pipe'], detached: true });
   const url = await new Promise((ok, ko) => {
     let err = '';
-    const t = setTimeout(() => ko(new Fail(`Chrome non risponde:\n${err}`)), 30_000);
+    const t = setTimeout(() => ko(new Fail(`Chrome does not answer:\n${err}`)), 30_000);
     proc.stderr.on('data', (d) => {
       err += d;
       const m = /DevTools listening on (ws:\/\/\S+)/.exec(err);
@@ -128,7 +128,7 @@ export async function launch(chrome, profile) {
         ok(m[1]);
       }
     });
-    proc.on('exit', (c) => ko(new Fail(`Chrome uscito (${c}):\n${err}`)));
+    proc.on('exit', (c) => ko(new Fail(`Chrome exited (${c}):\n${err}`)));
   });
   return { proc, cdp: await Cdp.connect(url) };
 }
@@ -143,11 +143,11 @@ export async function openPage(cdp, url) {
 }
 
 /**
- * Chiude Chrome e cancella il profilo. Prima Browser.close dal protocollo,
- * poi SIGKILL all'intero gruppo di processi (Chrome è lanciato `detached`:
- * i processi figli, che possono ancora scrivere nel profilo, sono nel suo
- * gruppo). La cancellazione del profilo è pulizia: se fallisce lo si dice,
- * ma il test non diventa rosso per questo.
+ * Closes Chrome and deletes the profile. First Browser.close from the protocol,
+ * then SIGKILL to the whole process group (Chrome is launched `detached`:
+ * the child processes, which may still write to the profile, are in its
+ * group). Deleting the profile is cleanup: if it fails we say so,
+ * but the test doesn't turn red because of it.
  */
 export async function closeChrome(proc, cdp, profile) {
   const exited = proc.exitCode !== null ? Promise.resolve() : new Promise((ok) => proc.once('exit', ok));
@@ -157,13 +157,13 @@ export async function closeChrome(proc, cdp, profile) {
   try {
     process.kill(-proc.pid, 'SIGKILL');
   } catch {
-    // gruppo già finito
+    // group already finished
   }
   await exited;
   await new Promise((ok) => setTimeout(ok, 300));
   try {
     rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   } catch (e) {
-    console.log(`avviso: profilo di Chrome non cancellato (${profile}): ${e.message}`);
+    console.log(`warning: Chrome profile not deleted (${profile}): ${e.message}`);
   }
 }
