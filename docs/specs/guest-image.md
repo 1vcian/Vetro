@@ -156,6 +156,38 @@ Docker has no vsock.
 | `ro.product.system.*` | `PRODUCT_SYSTEM_*` = Vetro / vetro_arm64 / "Vetro arm64" |
 | still AOSP | translations of "Phone is starting…", "Android version" in Settings, "Android System" (translated into ~80 languages) |
 
+## Accelerated graphics (ADR 0037)
+The image already contains gfxstream's guest GLES (`libEGL_emulation`,
+`libGLESv2_emulation`, `lib_renderControl_enc`) and Vulkan (`vulkan.ranchu`);
+the choice is made at boot. The host adds
+`vetro_machine::android::GFXSTREAM_PARAMS` (`egl=emulation`,
+`gltransport=virtio-gpu-pipe`, `hwcomposer.mode=client`,
+`opengles.version=196608`) when its GPU offers virgl; the vendor bootconfig
+keeps SwiftShader as the default and the fallback. No image change is needed
+for the first slice.
+
+## Idle guest and the low-RAM "Go" profile (ADR 0037)
+Base image (next build): `BOARD_HAVE_BLUETOOTH := false` (Cuttlefish's HAL
+needs the host's rootcanal; the stack crash-looped with crash_dump64 every
+few seconds), `vm.compaction_proactiveness=0` and
+`vm.watermark_boost_factor=0` at `on boot` (kcompactd took ~23% of the idle
+home screen).
+Go profile, two switchable parts:
+- boot time, on the regular image: `androidboot.vetro.profile=go`
+  (`go/init.vetro-go.rc`, installed on every product) sets Android Go's
+  low-RAM defaults before zygote (`ro.config.low_ram`, lmkd pressure
+  thresholds, Dalvik heap 128/256 MiB, `pm.dexopt.downgrade_after_inactive_days`)
+  and, after `sys.boot_completed`, takes microG out of the power-save
+  exemption, forbids it background runs and puts it in the "restricted"
+  standby bucket;
+- build time: product `vetro_arm64_go` (`vetro_arm64_go-bp1a-userdebug`,
+  `vetro_arm64_go.mk` + `go/go.mk`): `go_defaults_common.mk` (the same
+  properties in build.prop, speed-profile for system_server, the Go
+  handheld feature list) and `VetroGoRemovals` (`overrides` of BasicDreams,
+  PhotoTable, EasterEgg, Traceur, ThreadNetworkDemoApp, DeviceAsWebcam,
+  Music, Calendar). Published as its own version, never as the site's
+  default.
+
 ## R2
 `aosp/<version>/` with `<version>` = `<tag>-<BUILD_ID>-<vetro_rev>`: the five
 images, `build-info.txt`, `SHA256SUMS`, `manifest.json` (`version`,

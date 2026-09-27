@@ -239,6 +239,26 @@ RAM does not go through the MMIO bus: the CPU/MMU memory handles it.
   Default resolution 1280x800, QEMU's, because the boot test
   compares modes with QEMU; Android will choose its own with `GpuConfig`
   (e.g. 1080x1920 portrait) and `set_display`.
+- **virtio-gpu 3D** (ADR 0037, only with `GpuConfig::virgl`, off by default):
+  feature VIRGL; `num_capsets` and GET_CAPSET_INFO/GET_CAPSET from the
+  `Renderer3d` (index or id/version out of range: ERR_INVALID_PARAMETER);
+  CTX_CREATE (id 0 or taken: ERR_INVALID_CONTEXT_ID), CTX_DESTROY,
+  CTX_ATTACH/DETACH_RESOURCE (unknown context: ERR_INVALID_CONTEXT_ID,
+  unknown or 2D resource: ERR_INVALID_RESOURCE_ID), RESOURCE_CREATE_3D (ids
+  shared with 2D resources; size reported by the renderer counted in
+  `max_hostmem`), TRANSFER_TO/FROM_HOST_3D (the renderer reads or writes the
+  backing through `Backing`; no backing: ERR_UNSPEC), SUBMIT_3D (size beyond
+  the command: ERR_INVALID_PARAMETER), 3D resources as scanouts without
+  backing (the renderer presents them on RESOURCE_FLUSH; the display
+  backend's `update_3d` hears about it), UNREF of a shown 3D resource turns
+  the scanout off. With virgl but no renderer the 3D commands answer
+  ERR_UNSPEC. `Renderer3d` (`gpu/renderer.rs`): `capsets`,
+  `context_create/destroy/attach/detach`, `resource_create/destroy`,
+  `transfer_to_host/from_host`, `submit`, `scanout`, `flush`, `reset`,
+  `save_state/restore_state`; `VirtioGpu::set_renderer`,
+  `renderer_as[_mut]`, `scanout_3d`, `resource_3d_count`, `context_count`.
+  Snapshots add the 3D part only with virgl; `GpuConfig`'s `Debug` omits
+  `virgl` when off, so 2D machines keep their snapshot key.
 - **EDID**: generator equivalent to QEMU's hw/display/edid-generate.c
   (manufacturer RHT, "QEMU Monitor", standard/established/CTA modes, detailed
   descriptor with proportional timings and 75 Hz, DisplayID beyond 4096 pixels);
