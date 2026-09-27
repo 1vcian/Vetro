@@ -1,4 +1,4 @@
-# JIT to WASM: ABI and interfaces (ADR 0012, ADR 0013, ADR 0024, ADR 0026)
+# JIT to WASM: ABI and interfaces (ADR 0012, ADR 0013, ADR 0024, ADR 0026, ADR 0036)
 
 ## Regions
 The unit of translation is the **region** (ADR 0024): the basic blocks of a
@@ -66,7 +66,10 @@ exits without rewriting them.
 
 `size` with the `SIZE_PART_OF_MISALIGNED` bit (0x80): half of a 16-byte
 access not aligned to 16; the host treats it as unaligned (SCTLR_EL1.A,
-Device memory), as the interpreter treats the whole access.
+Device memory), as the interpreter treats the whole access. `size` with the
+`SIZE_UNPRIV` bit (0x100, system mode, from `rt.ld_slow`/`rt.st_slow`):
+LDTR/STTR at EL1, checked with the permissions of EL0 and never entered in
+the software TLB.
 
 ### The dispatcher (system mode)
 A separate module imports `env.mem`, `env.tbl` (a `funcref` table of
@@ -121,7 +124,9 @@ chosen by the host (`state` is the absolute address in the `env.mem` memory):
 | 968 | `time_base` | u64: (system mode) machine instructions at the start of the run: the CNTPCT of an instruction is `counter(time_base + steps + index)` |
 | 976 | `cntvoff` | u64: CNTVCT = CNTPCT - `cntvoff` |
 | 984 | `time_ok` | u32: 1 if `time_base` and `cntvoff` are valid for the run (otherwise MRS of the counter exits) |
-| 988 | — | padding up to 992 |
+| 988 | — | padding |
+| 992 | `ttbr0`, `ttbr1`, `contextidr` | 3 × u64: (system mode) TTBR0_EL1, TTBR1_EL1, CONTEXTIDR_EL1 (MRS/MSR at EL1; an MSR of a TTBR exits with `YIELD`) |
+| 1016 | — | padding up to 1024 |
 
 The fields from 284 on (except `ctx`, `limit`, the monitor, `entry`,
 `v_valid`, `fk`, `fpcr`, `fpsr`, `v`, `fa`, `fb`, `fr`, also used in
@@ -156,9 +161,17 @@ memory is `(va + addend) mod 2³²`. `tag = 0x800` is an empty entry. An
 entry of the unaligned TLB exists only after a successful unaligned access
 (Normal memory, SCTLR_EL1.A = 0). Total area: 197632 bytes.
 
-`ctx` = epoch << 7 | region parameters (EL, TBI0, TBI1, SPSel, FP and,
-at EL0, CNTKCTL_EL1.EL0PCTEN/EL0VCTEN): a jump cache entry is valid
-only for the same parameters. In user mode (`JitCpu`, ADR 0026) the
+`ctx` = context number << 7 | region parameters (EL, TBI0, TBI1, SPSel,
+FP and, at EL0, CNTKCTL_EL1.EL0PCTEN/EL0VCTEN): a jump cache entry is valid
+only for the same parameters. The context number (ADR 0036) is one per
+(EL, TTBR0 base, TTBR1 base) since the last new epoch (SCTLR/TCR/MAIR
+changed, a TLBI other than by VA, a code invalidation); it stays the same
+when the regime comes back to the same table bases, so entries survive the
+TTBR0 switches of every kernel entry and exit. A TLBI by VA removes only the
+jump cache and software TLB entries within the 1 GiB around the address
+(`Tlb::invalidations_since`). The software TLB entries are grouped per (EL,
+half of the address space) with the table base they were filled under; a
+group is emptied when its base changes. In user mode (`JitCpu`, ADR 0026) the
 same jump cache and the same dispatcher, with `ctx` = the context of the
 address space, new at every invalidation of its pages.
 
@@ -264,10 +277,15 @@ Translated:
   EL1); at EL1 also MRS/MSR of DAIF, ELR_EL1, SPSR_EL1, MRS of ESR_EL1 and
   FAR_EL1, MSR DAIFSet/DAIFClr.
 
+- system mode (ADR 0036): LDTR/STTR (at EL1 through the host with the
+  permissions of EL0), MRS FPCR/FPSR and MSR FPSR (FP enabled), at EL1 MRS
+  TTBR0/TTBR1/CONTEXTIDR/MIDR, MSR CONTEXTIDR, MSR TTBR0/TTBR1 (exit with
+  `YIELD` after the instruction).
+
 Left to the interpreter: literal LDR of V registers, interleaved single
 structures (single-lane LD2..LD4, LD2R..LD4R), the other system
-registers (FPCR/FPSR included), SVC/BRK/HVC, ERET, and in system mode also
-WFI, LDTR/STTR and cache maintenance at EL0. Coverage grows only with parity tests.
+registers (MSR FPCR included), SVC/BRK/HVC, ERET, and in system mode also
+WFI and cache maintenance at EL0. Coverage grows only with parity tests.
 
 ## Implementation notes
 - **Imported memory.** `env.mem` is declared according to the configuration

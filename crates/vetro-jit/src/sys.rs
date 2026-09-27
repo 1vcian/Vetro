@@ -922,7 +922,7 @@ impl<E: Engine> SysJit<E> {
         }
     }
 
-    /// The translation regime of this run (ADR 0035). SCTLR, TCR or MAIR
+    /// The translation regime of this run (ADR 0036). SCTLR, TCR or MAIR
     /// changed, or a TLBI: new epoch and empty software TLB. The table bases
     /// (TTBR0 and TTBR1 without the ASID) only select, per half of the
     /// address space, the context numbers ([`Cache::ctx`]) and the TLB

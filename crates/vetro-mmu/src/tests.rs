@@ -1183,7 +1183,7 @@ fn tlb_nello_snapshot() {
     assert!(Mmu::new(48).restore(&mut Reader::new(&bytes)).is_err());
 }
 
-/// The invalidation log for copies outside the TLB (ADR 0035): by-VA TLBIs
+/// The invalidation log for copies outside the TLB (ADR 0036): by-VA TLBIs
 /// give their page, the others `All`; beyond the log, `None`.
 #[test]
 fn invalidations_since_remembers_the_last_ones() {

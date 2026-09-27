@@ -102,7 +102,7 @@ pub struct Tlb {
 const LOG: usize = 64;
 
 /// What an invalidation covered, for whoever keeps copies of translations
-/// outside the TLB (the JIT, ADR 0035).
+/// outside the TLB (the JIT, ADR 0036).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Inval {
     /// Possibly any entry (VMALLE1, ASIDE1, restore).

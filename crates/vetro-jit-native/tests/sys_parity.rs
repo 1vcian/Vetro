@@ -742,7 +742,7 @@ fn daifclr_esce_dopo_l_istruzione() {
     assert_eq!(jit.stats().yields, 1);
 }
 
-/// Table bases per half of the address space (ADR 0035): kernel code in
+/// Table bases per half of the address space (ADR 0036): kernel code in
 /// TTBR1, and two TTBR0 tables (different ASIDs) that map the same user
 /// addresses to different code and data. The kernel switches TTBR0 at
 /// every SVC, like Linux's software PAN switches it at every entry and
@@ -897,7 +897,7 @@ fn ttbr0_switches_keep_code_and_data_apart() {
     }
 }
 
-/// TLBI by VA (ADR 0035): the JIT forgets only the software TLB and jump
+/// TLBI by VA (ADR 0036): the JIT forgets only the software TLB and jump
 /// cache entries within the 1 GiB around the address, not everything. Here
 /// the kernel swaps a 2 MiB block descriptor between two physical blocks
 /// (different data and code) and invalidates only the block's first page:
