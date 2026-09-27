@@ -158,7 +158,7 @@ jobs:
         run: |
           set -o pipefail
           cargo test --release -p vetro-boot-tests --test vetro -- --nocapture 2>&1 | tee boot-jit.log
-          grep -E '^(interprete|JIT \(soglia)' boot-jit.log | sed 's/^/::notice title=JIT nativo::/'
+          grep -E '^(interpreter|JIT \(threshold)' boot-jit.log | sed 's/^/::notice title=native JIT::/'
         env:
           VETRO_JIT: "1"
       # M4: the same machine compiled to wasm32, in Node (V8), with
