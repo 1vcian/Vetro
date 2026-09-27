@@ -40,7 +40,7 @@ mobile Safari; any mandatory cloud component.
 | M7 Network and timeline | **in progress** (capture, pcapng, HTTP, decoders, HAR on the BusyBox guest, ADR 0016; network inspector and input→effects timeline in the web app on the Linux guest, ADR 0023; guest introspection from the outside, ADR 0027; TLS hooks and Binder+privacy decoder from the outside, ADR 0029; missing: the TLS endpoint and the test on Android from a snapshot) | 10 apps with HTTPS in clear text and tied to the action, HAR reopenable |
 | M8 Binder and privacy | **in progress** (file manager on the Linux guest: daemon over vsock, client, web panel, ADR 0020; editing SQLite rows with SQL in the guest, WAL, SharedPreferences as a table, non-UTF-8 names, ADR 0021) | test app: every access detected, decoy identifier tracked, app files visible and editable live |
 | M9 Code tracing and scripting | — | method hook, dynamic dex saved, adapted Frida script |
-| M10 Record & replay, 1.0 | **in progress** (core: record & replay and jump to a machine instruction, ADR 0019; in the browser: record, downloadable and reloadable log, keyframes in OPFS, identical replay, jump with registers and memory, ADR 0023) | identical replay, 30 apps, 1.0 criteria |
+| M10 Record & replay, 1.0 | **in progress** (core: record & replay and jump to a machine instruction, ADR 0019; in the browser: record, downloadable and reloadable log, keyframes in OPFS, identical replay, jump with registers and memory, ADR 0023; device profiles without an AOSP rebuild (screen, density, RAM, serial, SKU, time zone, device name; app and `vetro boot`), ADR 0035; user guide in `docs/user`, on the site under `docs/`) | identical replay, 30 apps, 1.0 criteria |
 
 ## Milestones
 

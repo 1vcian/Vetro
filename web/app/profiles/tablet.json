@@ -1,0 +1,11 @@
+{
+  "vetroProfile": 1,
+  "id": "tablet",
+  "name": "Tablet",
+  "description": "A 10-inch tablet in landscape: 1280 x 800 at 213 dpi (961 x 600 dp, so apps pick their tablet layouts), 2 GiB of RAM.",
+  "screen": { "width": 1280, "height": 800, "density": 213 },
+  "ramMiB": 2048,
+  "locale": "en-US",
+  "timezone": "UTC",
+  "device": { "name": "Vetro Tablet", "serial": "VETROTABLET1", "sku": "tablet" }
+}

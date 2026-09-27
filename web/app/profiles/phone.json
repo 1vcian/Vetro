@@ -1,0 +1,11 @@
+{
+  "vetroProfile": 1,
+  "id": "phone",
+  "name": "Phone",
+  "description": "A 5-inch phone in portrait: 720 x 1280 at 320 dpi (360 x 640 dp), 2 GiB of RAM.",
+  "screen": { "width": 720, "height": 1280, "density": 320 },
+  "ramMiB": 2048,
+  "locale": "en-US",
+  "timezone": "UTC",
+  "device": { "name": "Vetro Phone", "serial": "VETROPHONE01", "sku": "phone" }
+}

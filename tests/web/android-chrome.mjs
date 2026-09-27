@@ -32,6 +32,10 @@
 // (M6: under 15 s), adb.
 //
 // The times go to stdout and to target/aosp/chrome-measurements.json.
+//
+// VETRO_SCREENSHOTS=DIR with the prebuilt run also saves page screenshots
+// (JPEG) for docs/user/: the setup form, the home screen, the test app, the
+// adb panel, the analysis tabs and the file manager.
 
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -61,6 +65,25 @@ async function screenshot(page, name) {
   console.log(`screenshot: target/aosp/${name}`);
 }
 
+/**
+ * VETRO_SCREENSHOTS=DIR (prebuilt run): screenshots of the whole page for the
+ * user documentation (docs/user/images), as JPEG: the setup form, the phone at
+ * the home screen, the test app, the analysis tabs and the file manager.
+ */
+const SHOTS = process.env.VETRO_SCREENSHOTS ?? null;
+
+/** The page (or the element with id `element`) as a JPEG in SHOTS. */
+async function pageShot(page, name, element = null) {
+  if (!SHOTS) return;
+  mkdirSync(SHOTS, { recursive: true });
+  await page.cdp.send('Emulation.setDeviceMetricsOverride', { width: 1400, height: 1000, deviceScaleFactor: 1, mobile: false }, page.s);
+  const clip = element && await page.eval(`(() => { const b = document.getElementById(${JSON.stringify(element)}).getBoundingClientRect();
+    return { x: b.left + scrollX, y: b.top + scrollY, width: b.width, height: b.height, scale: 1 }; })()`);
+  const r = await page.cdp.send('Page.captureScreenshot', { format: 'jpeg', quality: 80, captureBeyondViewport: true, ...(clip ? { clip } : {}) }, page.s);
+  writeFileSync(join(SHOTS, `${name}.jpg`), Buffer.from(r.data, 'base64'));
+  console.log(`page screenshot: ${join(SHOTS, `${name}.jpg`)}`);
+}
+
 /** Pixel at the centre of the canvas and image variety (distinct colours on a grid). */
 const SCREEN = `(() => {
   const c = document.getElementById('screen');
@@ -77,6 +100,13 @@ const ARANCIONE = [0xef, 0x6c, 0x00];
 async function session(chrome, profile, url, kind) {
   const { proc, cdp } = await launch(chrome, profile);
   try {
+    if (SHOTS && kind === 'prebuilt') {
+      // The setup form, before anything starts (the phone profile selected).
+      const { page: form, targetId } = await openPage(cdp, url.replace('autostart=1', 'profile=phone'));
+      await form.waitFor('device profiles in the form', () => form.eval("document.querySelector('select[name=profile]')?.options.length >= 4"), 30_000);
+      await pageShot(form, 'setup');
+      await cdp.send('Target.closeTarget', { targetId });
+    }
     const t0 = Date.now();
     const { page } = await openPage(cdp, url);
     if (kind === 'cold') {
@@ -142,6 +172,7 @@ async function session(chrome, profile, url, kind) {
     await new Promise((ok) => setTimeout(ok, 3000));
     const shot = prebuilt ? 'chrome-home-prebuilt.png' : 'chrome-home-2.png';
     await screenshot(page, shot);
+    if (prebuilt) await pageShot(page, 'home');
     const screen = await page.eval(SCREEN);
     misure[prebuilt ? 'home_prebuilt' : 'home_2'] = screen;
     if (kind === 'second') {
@@ -180,6 +211,22 @@ async function session(chrome, profile, url, kind) {
     misure.tocco_ms = Date.now() - tt;
     console.log(`touch received by the app: the centre is orange after ${secs(misure.tocco_ms)} s`);
     await screenshot(page, 'chrome-app-2.png');
+    if (SHOTS) {
+      await pageShot(page, 'app');
+      // The adb line, then the analysis tabs and the file manager.
+      await page.eval("window.vetroAndroid.shell('getprop ro.product.model')");
+      await page.eval("document.getElementById('adb-cmd').value = 'getprop ro.build.version.release'; document.getElementById('adb-shell').requestSubmit()");
+      await new Promise((ok) => setTimeout(ok, 3000));
+      await pageShot(page, 'adb', 'android-box');
+      for (const tab of ['net', 'timeline', 'replay']) {
+        await page.eval(`document.querySelector('[data-tab=${tab}]').click()`);
+        await new Promise((ok) => setTimeout(ok, 1500));
+        await pageShot(page, `tab-${tab}`, 'analysis-box');
+      }
+      await page.eval("window.vetroFiles.setRoots(['/data/local/tmp', '/sdcard/Download'])");
+      await new Promise((ok) => setTimeout(ok, 5000));
+      await pageShot(page, 'files', 'files-box');
+    }
     const top = await page.eval("window.vetroAndroid.shell('dumpsys window | grep -m1 mCurrentFocus')");
     check(top.stdout.includes('it.vetro.tocco'), `focused window: ${top.stdout}`);
     misure.snapshot_app = await page.waitFor('snapshot after the install', async () => (await page.state())?.snapshots.find((x) => x.why === 'app installed'), 10 * 60_000);

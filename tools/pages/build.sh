@@ -9,8 +9,10 @@
 # the BusyBox sources and the prebuilt Android snapshot lookup. Builds
 # vetro-wasm in release. Layout:
 #
-#   index.html, .nojekyll      landing page (links to app/)
+#   index.html, .nojekyll      landing page (links to app/ and docs/)
 #   app/, node/                web/app and web/node (the app imports ../node/)
+#   docs/                      the user guide, docs/user/*.md as HTML
+#                              (tools/pages/markdown.mjs), with its images
 #   app/android-prebuilt.json  the prebuilt Android snapshot for this
 #                              vetro-wasm, if R2 has it (ADR 0031)
 #   wasm/vetro_wasm.wasm       the machine
@@ -70,6 +72,10 @@ touch "$out/.nojekyll"
 echo "==> prebuilt Android snapshot"
 node "$root/tools/aosp/prebuilt-key.mjs" --wasm="$out/wasm/vetro_wasm.wasm" --write="$out/app/android-prebuilt.json" \
   ${VETRO_REQUIRE_PREBUILT:+--require}
+
+echo "==> user guide"
+# docs/user/*.md as HTML pages (tools/pages/markdown.mjs), with their images.
+node "$root/tools/pages/markdown.mjs" "$root/docs/user" "$out/docs"
 
 echo "==> GPL sources"
 src=$out/sources
@@ -133,7 +139,8 @@ cat > "$out/index.html" <<'EOF'
   <meta property="og:image" content="app/icons/icon-512.png">
   <style>
     body { font: 16px/1.5 system-ui, sans-serif; max-width: 42rem; margin: 3rem auto; padding: 0 1rem; color: #1b1b1b; background: #fafafa; }
-    a.button { display: inline-block; padding: .6rem 1.2rem; background: #1b1b1b; color: #fff; border-radius: .4rem; text-decoration: none; }
+    a.button { display: inline-block; padding: .6rem 1.2rem; margin: 0 .4rem .4rem 0; background: #1b1b1b; color: #fff; border-radius: .4rem; text-decoration: none; }
+    a.button.secondary { background: #fff; color: #1b1b1b; border: 1px solid #1b1b1b; }
     small { color: #555; }
   </style>
 </head>
@@ -145,7 +152,13 @@ cat > "$out/index.html" <<'EOF'
   <p>This demo boots a small Linux 6.18 guest with a BusyBox shell. Nothing
   leaves your browser: disk writes and snapshots stay in its private storage
   (OPFS).</p>
-  <p><a class="button" href="app/?autostart=1&amp;cmdline=console%3DttyAMA0%20vetro.noautotest">Launch the demo</a></p>
+  <p><a class="button" href="app/?autostart=1&amp;cmdline=console%3DttyAMA0%20vetro.noautotest">Launch the demo</a>
+  <a class="button secondary" href="app/">Open the app</a>
+  <a class="button secondary" href="docs/">User guide</a></p>
+  <p>The app also runs Vetro's own AOSP 15 image with microG: choose it under
+  <em>System</em>. The <a href="docs/">user guide</a> explains the first
+  visit, using the phone, the network inspector, the file manager, record and
+  replay, device profiles and privacy.</p>
   <p><small>Chrome or Edge desktop recommended.
   Source code: <a href="https://github.com/1vcian/Vetro">github.com/1vcian/Vetro</a>
   (PolyForm Noncommercial 1.0.0).

@@ -30,6 +30,11 @@
       <label>manifest.json
         <input name="manifestUrl" spellcheck="false">
       </label>
+      <label title="What the machine shows to the system: screen size and density, RAM, time zone, device name (ADR 0035)">Device profile
+        <select name="profile"></select>
+      </label>
+      <label class="file-button" title="A device profile JSON file (docs/specs/device-profiles.md)">load a profile file <input name="profileFile" type="file" accept=".json,application/json"></label>
+      <p id="profile-note" class="dim"></p>
       <p id="prebuilt-note" class="dim">First start: the home screen is downloaded as a ready-made snapshot of the machine
         (about 500 MiB, kept in the browser's private storage, OPFS), then it resumes in seconds; from the second start nothing is downloaded again.
         The disk is read in pieces with HTTP Range as the system needs it.</p>

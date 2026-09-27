@@ -1,0 +1,10 @@
+{
+  "vetroProfile": 1,
+  "id": "default",
+  "name": "Default (landscape)",
+  "description": "The machine the ready-made home screen snapshot is made on: 1280 x 800 in landscape at 240 dpi (853 x 533 dp), 2 GiB of RAM. The only profile with a fast first start today.",
+  "screen": { "width": 1280, "height": 800, "density": 240 },
+  "ramMiB": 2048,
+  "locale": "en-US",
+  "device": { "serial": "VETRO00001" }
+}

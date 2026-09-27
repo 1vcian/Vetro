@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [args...]
-//! vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=LINE] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORT-:GUEST_PORT]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=INSTRUCTIONS:FILE]... [--save-on=TEXT:FILE [--save-delay=S] [--exit-after-save]] [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=INSTRUCTION [--dump=VA:BYTES]]] [--vsock] [--files-ls=PATH]... [--files-cat=PATH]... [--files-put=PATH:FILE]... [--kernel-profile=FILE [--system-map=FILE] [--kernel-btf=FILE]] [--tls] [--binder-log=FILE]
+//! vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=LINE] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORT-:GUEST_PORT]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=INSTRUCTIONS:FILE]... [--save-on=TEXT:FILE [--save-delay=S] [--exit-after-save]] [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=INSTRUCTION [--dump=VA:BYTES]]] [--vsock] [--files-ls=PATH]... [--files-cat=PATH]... [--files-put=PATH:FILE]... [--kernel-profile=FILE [--system-map=FILE] [--kernel-btf=FILE]] [--tls] [--binder-log=FILE] [--profile=NAME|FILE]
 //! ```
 //!
 //! `boot` starts the virt machine (M3) with the PL011 console on stdin/stdout.
@@ -91,6 +91,14 @@
 //! `--binder-log=FILE` writes the decoded Binder calls (AIDL interface
 //! and method, sender and recipient) as JSON (`.json`) or as lines of
 //! text, and prints the sensitive accesses to stderr (privacy inspector).
+//!
+//! Device profiles (M10, ADR 0035, `vetro_machine::profile`):
+//! `--profile=NAME` (a starter profile: `default`, `phone`, `small-phone`,
+//! `tablet`) or `--profile=FILE` (a profile JSON file) sets the RAM (an
+//! explicit `--mem` wins), the scanout size of the virtio-gpu and, with
+//! `--boot-img`, adds the profile's `androidboot.*` parameters after
+//! `--append`. The settings applied through adb after the boot (time zone,
+//! device name, locale) are printed to stderr as `adb shell` commands.
 
 use std::process::ExitCode;
 use vetro_cli::linux::{ClockMode, Config, Exit};
@@ -114,7 +122,7 @@ fn usage() -> ExitCode {
         "usage: vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [args...]"
     );
     eprintln!(
-        "       vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=LINE] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORT-:GUEST_PORT]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=INSTRUCTIONS:FILE]... [--save-on=TEXT:FILE [--save-delay=S] [--exit-after-save]] [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=INSTRUCTION [--dump=VA:BYTES]]] [--vsock] [--files-ls=PATH]... [--files-cat=PATH]... [--files-put=PATH:FILE]... [--kernel-profile=FILE [--system-map=FILE] [--kernel-btf=FILE]] [--tls] [--binder-log=FILE]"
+        "       vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=LINE] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORT-:GUEST_PORT]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=INSTRUCTIONS:FILE]... [--save-on=TEXT:FILE [--save-delay=S] [--exit-after-save]] [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=INSTRUCTION [--dump=VA:BYTES]]] [--vsock] [--files-ls=PATH]... [--files-cat=PATH]... [--files-put=PATH:FILE]... [--kernel-profile=FILE [--system-map=FILE] [--kernel-btf=FILE]] [--tls] [--binder-log=FILE] [--profile=NAME|FILE]"
     );
     ExitCode::from(2)
 }
@@ -214,6 +222,7 @@ fn boot(args: &[String]) -> ExitCode {
     let (mut recovery, mut android_dump) = (false, None::<String>);
     let mut cfg = MachineConfig::default();
     let mut devices = Devices::default();
+    let (mut profile, mut mem_set) = (None::<vetro_machine::profile::Profile>, false);
     // (image, overlay).
     let mut disks: Vec<(String, Option<String>)> = Vec::new();
     let mut guest_ns = u64::MAX;
@@ -349,10 +358,49 @@ fn boot(args: &[String]) -> ExitCode {
             Some(("--init-boot", v)) => init_boot = Some(v.to_string()),
             Some(("--android-dump", v)) => android_dump = Some(v.to_string()),
             Some(("--mem", v)) => match v.parse::<u64>() {
-                Ok(m) => cfg.ram_size = m << 20,
+                Ok(m) => {
+                    cfg.ram_size = m << 20;
+                    mem_set = true;
+                }
                 Err(_) => return usage(),
             },
+            Some(("--profile", v)) => match vetro_machine::profile::load(v) {
+                Ok(p) => profile = Some(p),
+                Err(e) => {
+                    eprintln!("vetro: {e}");
+                    return ExitCode::from(2);
+                }
+            },
             _ => return usage(),
+        }
+    }
+    // Device profile (ADR 0035): RAM (an explicit --mem wins), scanout size,
+    // and with Android images the androidboot.* parameters after --append.
+    if let Some(p) = &profile {
+        if !mem_set {
+            cfg.ram_size = u64::from(p.ram_mib) << 20;
+        }
+        if let Some(gpu) = devices.gpu.as_mut() {
+            p.apply_gpu(gpu);
+        }
+        let params = p.android_params();
+        if boot_img.is_some() && !params.is_empty() {
+            append = Some(match append.take() {
+                Some(a) if !a.trim().is_empty() => format!("{} {params}", a.trim()),
+                _ => params,
+            });
+        }
+        eprintln!(
+            "vetro: profile {} ({}x{} at {} dpi, {} MiB){}",
+            p.id,
+            p.width,
+            p.height,
+            p.density,
+            cfg.ram_size >> 20,
+            if p.adb_commands().is_empty() { String::new() } else { ", after the boot:".to_string() }
+        );
+        for c in p.adb_commands() {
+            eprintln!("vetro:   adb shell \"{c}\"");
         }
     }
     let android = boot_img.is_some();
@@ -898,6 +946,7 @@ const BOOT_VALUE_OPTIONS: &[&str] = &[
     "--system-map",
     "--kernel-btf",
     "--binder-log",
+    "--profile",
 ];
 
 fn join_values(args: &[String]) -> Vec<String> {

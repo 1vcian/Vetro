@@ -536,6 +536,9 @@ function androidTick() {
     adb.connect().then(async (banner) => {
       // A virtual machine in the page: the screen stays on.
       await adb.shell(ANDROID_WAKE);
+      // The device profile's settings kept in /data (ADR 0035): idempotent,
+      // so they run again after every connection.
+      for (const c of cfg.android.setup ?? []) await adb.shell(c);
       a.adbReady = true;
       const devices = await adb.devices();
       post({ type: 'adb-status', state: 'ready', banner, devices });

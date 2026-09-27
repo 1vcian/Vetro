@@ -44,6 +44,7 @@ pub mod hooks;
 pub mod introspect;
 mod machine;
 pub mod net;
+pub mod profile;
 mod psci;
 pub mod record;
 pub mod tls;

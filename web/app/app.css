@@ -98,6 +98,7 @@ main {
 
 #screen-wrap {
   position: relative;
+  margin: 0 auto;
   background: #000;
   line-height: 0;
 }

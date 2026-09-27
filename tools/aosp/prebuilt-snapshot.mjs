@@ -20,6 +20,16 @@
 //                    instead of booting: to try compaction or compression
 //   --wasm=FILE      vetro-wasm (default target/wasm32-unknown-unknown/release)
 //   --guest-limit=S  gives up after S seconds of guest time (default 4000)
+//   --profile=P      a device profile (ADR 0035): a starter id (web/app/profiles)
+//                    or a JSON file. The machine and boot parameters become
+//                    the profile's (profileMachine, profileBootParams), its adb
+//                    commands run after the connection, and at the home screen
+//                    the guest is asked what it reports (screen size, density,
+//                    serial, SKU, time zone, device name): a mismatch fails.
+//                    Without it: ANDROID_MACHINE and ANDROID_PARAMS (the same
+//                    as the default profile).
+//
+// Also writes <out>/<key>.png, the scanout at the home screen.
 //
 // Writes <out>/<key>.snap (the snapshot, as the app stores it in OPFS) and
 // <out>/<key>.json: the key and its parts (androidKeyParts), size, sha256,
@@ -40,6 +50,10 @@ import {
 } from '../../web/node/android.mjs';
 import { toBase64 } from '../../web/node/persist.mjs';
 import { androidSnapshotKey, PREBUILT_CHUNK, PREBUILT_FORMAT } from '../../web/node/prebuilt.mjs';
+import {
+  parseProfile, parseProfileReport, PROFILE_REPORT, profileAdbCommands, profileBootParams, profileMachine, profileMismatches, STARTER_PROFILES,
+} from '../../web/node/profiles.mjs';
+import { crc32, deflateSync } from 'node:zlib';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const arg = (name, def) => {
@@ -54,6 +68,32 @@ const wasmPath = arg('wasm', join(root, 'target/wasm32-unknown-unknown/release/v
 const guestLimit = Number(arg('guest-limit', 4000));
 const level = arg('level', 'small');
 const CONSOLE_TAIL = 64 * 1024;
+const profileArg = arg('profile', null);
+const profile = profileArg === null ? null
+  : parseProfile(readFileSync(STARTER_PROFILES.includes(profileArg) ? join(root, 'web/app/profiles', `${profileArg}.json`) : profileArg, 'utf8'));
+const machine = profile ? profileMachine(profile) : ANDROID_MACHINE;
+const params = profile ? profileBootParams(profile) : ANDROID_PARAMS;
+const setup = profile ? profileAdbCommands(profile) : [];
+
+/** RGBA pixels as a PNG file. */
+function writePng(path, px, w, h) {
+  const raw = Buffer.alloc((w * 4 + 1) * h);
+  for (let y = 0; y < h; y++) Buffer.from(px.buffer, px.byteOffset + y * w * 4, w * 4).copy(raw, y * (w * 4 + 1) + 1);
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const td = Buffer.concat([Buffer.from(type), data]);
+    const c = Buffer.alloc(4);
+    c.writeUInt32BE(crc32(td));
+    return Buffer.concat([len, td, c]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  writeFileSync(path, Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]));
+}
 
 const mib = (n) => (n / 2 ** 20).toFixed(0);
 const t0 = performance.now();
@@ -80,13 +120,14 @@ async function main() {
   };
   const images = ['boot.img', 'vendor_boot.img', 'init_boot.img'].map(file);
   const { exports } = await instantiate(readFileSync(wasmPath));
-  const M = ANDROID_MACHINE;
+  const M = machine;
+  if (profile) log(`profile ${profile.id}: ${M.width}x${M.height} at ${profile.screen.density} dpi, ${M.ramMiB} MiB, parameters "${params}"`);
   const devices = machineDevices(DEV, M);
   const m = new Machine(exports, { ramSize: BigInt(M.ramMiB) << 20n, devices, width: M.width, height: M.height });
   const feeder = new DiskFeeder(m);
   const layout = await new LayoutSource(new URL('web/disk.json', manifestUrl).href).open();
   feeder.add(layout, { cache: new MemoryCache(), ...ANDROID_DISK });
-  const { key, parts } = await androidSnapshotKey(m, { machine: M, devices, manifest, images, params: ANDROID_PARAMS, layout });
+  const { key, parts } = await androidSnapshotKey(m, { machine: M, devices, manifest, images, params, layout });
   log(`key ${key}: ${JSON.stringify(parts)}`);
 
   const progress = new BootProgress();
@@ -115,7 +156,7 @@ async function main() {
       if (got !== f.sha256) throw new Error(`${f.path}: sha256 ${got}, the manifest says ${f.sha256}`);
       bytes.push(b);
     }
-    const desc = m.loadAndroid({ boot: bytes[0], vendorBoot: bytes[1], initBoot: bytes[2], params: ANDROID_PARAMS });
+    const desc = m.loadAndroid({ boot: bytes[0], vendorBoot: bytes[1], initBoot: bytes[2], params });
     log(`vetro: ${desc.split(';')[0]}`);
   }
   m.setJit();
@@ -153,6 +194,10 @@ async function main() {
       st.adb = adb;
       adb.connect().then(async () => {
         await adb.shell(ANDROID_WAKE);
+        for (const c of setup) {
+          const r = await adb.shell(c);
+          log(`profile: adb shell ${c}: ${JSON.stringify(`${r.stdout}${r.stderr}`.trim())}`);
+        }
         st.ready = true;
         log('adb connected, screen kept on');
       }).catch(() => {
@@ -185,7 +230,37 @@ async function main() {
         log(`home screen drawn at ${guestSecs.toFixed(0)} s of guest time (${colors} colours)`);
       }
     }
-    if (st.homeNs !== null && m.guestNs - st.homeNs >= ANDROID_HOME_NS && st.ready && !st.busy && !st.query) {
+    const settled = st.homeNs !== null && m.guestNs - st.homeNs >= ANDROID_HOME_NS && st.ready && !st.busy && !st.query;
+    if (settled && !st.shot) {
+      st.shot = true;
+      const size = m.displaySize();
+      const px = size && m.displayPixels();
+      if (px) {
+        mkdirSync(outDir, { recursive: true });
+        writePng(join(outDir, `${key}.png`), px, size.width, size.height);
+        measures.screen = { width: size.width, height: size.height };
+        log(`scanout ${size.width}x${size.height}: ${join(outDir, `${key}.png`)}`);
+      }
+    }
+    if (settled && profile && !st.checked) {
+      // What the guest reports for the profile, before the compaction.
+      st.busy = true;
+      st.adb.shell(PROFILE_REPORT).then((r) => {
+        const report = parseProfileReport(r.stdout);
+        const bad = profileMismatches(profile, report);
+        if (measures.screen && (measures.screen.width !== M.width || measures.screen.height !== M.height)) {
+          bad.push(`scanout ${measures.screen.width}x${measures.screen.height} instead of ${M.width}x${M.height}`);
+        }
+        measures.profile = { id: profile.id, params, report, mismatches: bad };
+        log(`profile ${profile.id}: the guest reports ${JSON.stringify(report)}${bad.length ? `; MISMATCH: ${bad.join('; ')}` : ': as the profile says'}`);
+        if (bad.length) st.error = new Error(`profile ${profile.id}: ${bad.join('; ')}`);
+      }, (e) => {
+        st.error = e;
+      }).finally(() => {
+        st.checked = true;
+        st.busy = false;
+      });
+    } else if (settled) {
       if (!compact || st.done) break;
       st.busy = true;
       const tc = performance.now();

@@ -14,4 +14,5 @@ Existing specs: `cpu.md`, `mmu.md`, `platform.md`, `net.md`, `jit.md`,
 `replay.md` (M10: host inputs, recording, replay and seeking, ADR 0019),
 `files.md` (M8: file manager, `vetro-files` daemon over vsock, protocol and
 client, ADR 0020; SQL in the guest, WAL, SharedPreferences and non-UTF-8 names,
-ADR 0021).
+ADR 0021), `device-profiles.md` (M10: device profile format, boot parameters
+and adb settings, ADR 0035).

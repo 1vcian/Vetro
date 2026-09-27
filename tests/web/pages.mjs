@@ -5,7 +5,8 @@
 // and the console answers, the network inspector sees a guest request (empty
 // bodies as "0 B"); the GPL sources are there and the kernel tarball put back
 // together from its pieces has the declared sha256; the prebuilt Android
-// snapshot the site announces, if any, is the one for its vetro-wasm.
+// snapshot the site announces, if any, is the one for its vetro-wasm; the
+// user guide (docs/user as HTML in docs/) is there and linked.
 //
 //   node tests/web/pages.mjs [target/pages]
 //
@@ -40,6 +41,18 @@ run(async () => {
   for (const f of ['README', 'defconfig', 'vetro.config', 'VERSIONS', 'index.html']) check(files.includes(f), `sources/${f} missing`);
   check(files.some((f) => /^busybox-.*\.tar\.bz2$/.test(f)), 'sources/: BusyBox sources missing');
   console.log(`GPL sources: ${name} in ${parts.length} pieces (right sha256), BusyBox and Alpine's patches`);
+
+  // The user guide: every page of docs/user as HTML, linked from the landing page.
+  const guide = join(site, 'docs');
+  const pagesMd = readdirSync(join(root, 'docs/user')).filter((f) => f.endsWith('.md'));
+  for (const f of pagesMd) {
+    const html = f === 'README.md' ? 'index.html' : f.replace(/\.md$/, '.html');
+    check(existsSync(join(guide, html)), `docs/${html} missing (from docs/user/${f})`);
+  }
+  check(/href="docs\/"/.test(readFileSync(join(site, 'index.html'), 'utf8')), 'the landing page does not link the user guide');
+  const index = readFileSync(join(guide, 'index.html'), 'utf8');
+  check(index.includes('<title>Vetro user guide</title>') && index.includes('href="getting-started.html"'), 'docs/index.html: title or links');
+  console.log(`user guide: ${pagesMd.length} pages in docs/, linked from the landing page`);
 
   // The prebuilt Android snapshot (ADR 0031): if the site announces one, it
   // is the one for the site's own vetro-wasm (same key) and R2 has it with

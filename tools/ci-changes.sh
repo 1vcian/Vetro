@@ -14,7 +14,8 @@
 #   kernel  guest configuration/initramfs         -> kselftest inside boot
 #   web     web app, vetro-wasm, web tests        -> reduced boot (web tests only)
 #   site    whatever ends up on GitHub Pages      -> pages, deploy
-# Documents only (docs/, *.md): no heavy job.
+# Documents only (docs/, *.md): no heavy job, except the user guide
+# (docs/user/), which is on the site and link-checked by the web unit tests.
 set -euo pipefail
 
 all() {
@@ -46,5 +47,5 @@ echo "rust=$(match '^(crates/|tests/[^/]+/(Cargo\.toml|src/|tests/|c/|[^/]+\.rs$
 echo "linux=$(match '^(crates/vetro-(cpu|mmu|jit|jit-native|cli)/|tests/(linux|diff|isa)/|tools/(ltp|risu|guest-bins|oracle)/|Cargo\.lock$|rust-toolchain\.toml$)')"
 echo "boot=$(match '^(crates/|tests/boot/|guest/kernel/|tools/(guest-kernel|guest-bins|analysis)/|tools/wasm-boot\.sh$|Cargo\.lock$|rust-toolchain\.toml$)')"
 echo "kernel=$(match '^(guest/kernel/(config|initramfs|kselftest)/|tools/guest-kernel/|tools/guest-bins/)')"
-echo "web=$(match '^(web/|tests/web/|crates/vetro-(wasm|analysis|machine)/|tools/(web-test\.sh|web-serve\.mjs|pages/))')"
-echo "site=$(match '^(web/|crates/|guest/kernel/|tools/(pages|guest-kernel)/|tests/web/(pages|chrome|lib)\.mjs$|Cargo\.lock$)')"
+echo "web=$(match '^(web/|docs/user/|tests/web/|crates/vetro-(wasm|analysis|machine)/|tools/(web-test\.sh|web-serve\.mjs|pages/))')"
+echo "site=$(match '^(web/|docs/user/|crates/|guest/kernel/|tools/(pages|guest-kernel)/|tests/web/(pages|chrome|lib)\.mjs$|Cargo\.lock$)')"

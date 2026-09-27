@@ -15,6 +15,11 @@ detect.
 the current milestone — a small Linux guest with a BusyBox shell — in your
 browser (Chrome or Edge desktop). Android arrives with milestone M5.
 
+**User guide:** [docs/user](docs/user/README.md) (also on the site, under
+[docs/](https://1vcian.github.io/Vetro/docs/)): getting started, using the
+phone, the network inspector and timeline, the file manager, record and
+replay, snapshots, device profiles, troubleshooting, privacy and FAQ.
+
 > Vetro is an independent project. It is not affiliated with or endorsed by
 > Google. Android is a trademark of Google LLC.
 

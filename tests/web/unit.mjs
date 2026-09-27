@@ -15,14 +15,19 @@
 //   node tests/web/unit.mjs
 
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { inline, linkTarget, markdownToHtml, slug } from '../../tools/pages/markdown.mjs';
 import { join } from 'node:path';
 import { BlobSource, composePlan, composeRead, DiskFeeder, LayoutSource, MemoryCache, parseLayout, RangeSource } from '../../web/node/disk.mjs';
-import { ANDROID_VERSIONS, BootProgress, colorSeen, DEFAULT_MANIFEST, gridColors, isHome, PHASES } from '../../web/node/android.mjs';
+import { ANDROID_MACHINE, ANDROID_PARAMS, ANDROID_VERSIONS, BootProgress, colorSeen, DEFAULT_MANIFEST, gridColors, isHome, PHASES } from '../../web/node/android.mjs';
 import { apkIcon, apkInfo, parseArsc, parseAxml, resolveResource, zipEntries } from '../../web/node/apk.mjs';
 import {
   CATALOG_FORMAT, downloadApk, imageRelease, imageSatisfies, initialState, nextState, parseCatalog, parseEntry, parsePackages, sizeText, STATES, verifyApk,
 } from '../../web/node/catalog.mjs';
+import {
+  DEFAULT_PROFILE, parseProfile, parseProfileReport, PROFILE_REPORT, profileAdbCommands, profileAndroidParams, profileBootParams, ProfileError,
+  profileMachine, profileMismatches, profileUrl, STARTER_PROFILES,
+} from '../../web/node/profiles.mjs';
 import { parseRange, serve } from '../../tools/web-serve.mjs';
 import { absAxis, BUTTONS, evdevCode } from '../../web/app/keymap.mjs';
 import { keyToBytes, Terminal } from '../../web/app/terminal.mjs';
@@ -555,6 +560,119 @@ test('Android image versions and app colours (ADR 0032)', () => {
   check(colorSeen([0x15, 0x65, 0xc0], blue) && colorSeen([0x1a, 0x60, 0xc6], blue), 'blue, also within the tolerance');
   check(!colorSeen([0xc0, 0x65, 0x15], blue), 'red and blue swapped is not the app colour any more');
   check(!colorSeen(null, blue) && !colorSeen([0x15, 0x65, 0xd0], blue), 'no pixel, or too far');
+});
+
+test('device profiles: starters, boot parameters, adb commands, rejections (ADR 0035)', () => {
+  const load = (id) => parseProfile(readFileSync(join(root, 'web/app/profiles', `${id}.json`), 'utf8'));
+  // The same strings as the Rust twin (vetro_machine::profile tests, EXPECTED).
+  const expected = {
+    default: '',
+    phone: 'androidboot.lcd_density=320 androidboot.serialno=VETROPHONE01 androidboot.hardware.sku=phone',
+    'small-phone': 'androidboot.serialno=VETROSMALL01 androidboot.hardware.sku=small-phone',
+    tablet: 'androidboot.lcd_density=213 androidboot.serialno=VETROTABLET1 androidboot.hardware.sku=tablet',
+  };
+  eq(STARTER_PROFILES, Object.keys(expected), 'starter list');
+  eq(DEFAULT_PROFILE, 'default', 'default profile');
+  for (const id of STARTER_PROFILES) {
+    const p = load(id);
+    eq(p.id, id, `${id}: id`);
+    eq(profileAndroidParams(p), expected[id], `${id}: androidboot parameters`);
+    eq(profileBootParams(p), [ANDROID_PARAMS, expected[id]].filter(Boolean).join(' '), `${id}: bootloader parameters`);
+  }
+  // The default profile keeps the prebuilt snapshot's key (ADR 0031): same machine, same parameters, no adb commands.
+  const def = load('default');
+  eq(profileMachine(def), ANDROID_MACHINE, 'default machine');
+  eq(profileBootParams(def), ANDROID_PARAMS, 'default parameters');
+  eq(profileAdbCommands(def), [], 'default adb commands');
+  const phone = load('phone');
+  eq(profileMachine(phone), { ...ANDROID_MACHINE, ramMiB: 2048, width: 720, height: 1280 }, 'phone machine');
+  eq(profileAdbCommands(phone), ['cmd alarm set-timezone UTC', "settings put global device_name 'Vetro Phone'"], 'phone adb commands');
+  eq(profileMachine(load('small-phone')).ramMiB, 1536, 'small phone RAM');
+  // What the guest reports, read back.
+  const report = parseProfileReport('size=720x1280\ndensity=320\nserial=VETROPHONE01\nsku=phone\ntimezone=UTC\ndeviceName=Vetro Phone\n');
+  eq(profileMismatches(phone, report), [], 'matching report');
+  eq(profileMismatches(phone, { ...report, size: '1280x800' }), ['size: "1280x800" instead of "720x1280"'], 'wrong size');
+  check(PROFILE_REPORT.includes('wm size') && PROFILE_REPORT.includes('ro.sf.lcd_density'), 'report command');
+  // Defaults, locale and time zone.
+  const minimal = { vetroProfile: 1, id: 'x', name: 'X', screen: { width: 720, height: 1280, density: 320 }, ramMiB: 2048 };
+  const m = parseProfile(JSON.stringify(minimal));
+  eq([m.locale, m.timezone, m.device], ['en-US', null, { name: null, serial: 'VETRO00001', sku: null }], 'image defaults');
+  eq(profileAndroidParams(m), 'androidboot.lcd_density=320', 'only the density');
+  eq(profileAdbCommands(parseProfile({ ...minimal, locale: 'it-IT', timezone: 'Europe/Rome' })),
+    ['cmd alarm set-timezone Europe/Rome', 'su 0 setprop persist.sys.locale it-IT'], 'locale and time zone');
+  for (const ok of ['en', 'en-US', 'zh-Hant-TW', 'es-419', 'sr-Latn']) parseProfile({ ...minimal, locale: ok });
+  for (const ok of ['UTC', 'Europe/Rome', 'America/Argentina/Buenos_Aires', 'Etc/GMT+3']) parseProfile({ ...minimal, timezone: ok });
+  // Rejections: the field of the error (the same cases as the Rust tests).
+  const error = (x) => {
+    try {
+      parseProfile(x);
+    } catch (e) {
+      check(e instanceof ProfileError, `not a ProfileError: ${e}`);
+      return e;
+    }
+    return { field: 'accepted', message: '' };
+  };
+  const field = (x) => error(x).field;
+  const v2 = error({ ...minimal, vetroProfile: 2 });
+  eq(v2.field, 'vetroProfile', 'newer version');
+  check(/needs a newer Vetro/.test(v2.message), `newer version message: ${v2.message}`);
+  const { vetroProfile, ...noVersion } = minimal;
+  check(vetroProfile === 1, 'minimal version');
+  const cases = [
+    ['[1]', '(file)'], ['{', '(file)'], [noVersion, 'vetroProfile'], [{ ...minimal, vetroProfile: '1' }, 'vetroProfile'], [{ ...minimal, vetroProfile: 0 }, 'vetroProfile'],
+    [{ ...minimal, colour: 1 }, 'colour'], [{ ...minimal, screen: { ...minimal.screen, dpi: 1 } }, 'screen.dpi'],
+    [{ ...minimal, id: 'Phone' }, 'id'], [{ ...minimal, id: undefined }, 'id'], [{ ...minimal, name: "it's" }, 'name'],
+    [{ ...minimal, screen: { ...minimal.screen, width: 721 } }, 'screen.width'], [{ ...minimal, screen: { ...minimal.screen, width: 100 } }, 'screen.width'],
+    [{ ...minimal, screen: { ...minimal.screen, height: 1280.5 } }, 'screen.height'], [{ ...minimal, screen: { width: 720, density: 320 } }, 'screen.height'],
+    [{ ...minimal, screen: { ...minimal.screen, density: 1000 } }, 'screen.density'],
+    [{ ...minimal, ramMiB: 2000 }, 'ramMiB'], [{ ...minimal, ramMiB: 8192 }, 'ramMiB'], [{ ...minimal, ramMiB: '2048' }, 'ramMiB'],
+    [{ ...minimal, locale: 'english' }, 'locale'], [{ ...minimal, timezone: 'Rome' }, 'timezone'], [{ ...minimal, timezone: 'Europe/Rome; reboot' }, 'timezone'],
+    [{ ...minimal, device: { serial: 'VETRO 1' } }, 'device.serial'], [{ ...minimal, device: { sku: 'a b' } }, 'device.sku'],
+    [{ ...minimal, device: { name: '$(reboot)' } }, 'device.name'], [{ ...minimal, device: { model: 'x' } }, 'device.model'],
+  ];
+  for (const [x, f] of cases) eq(field(typeof x === 'string' ? x : JSON.stringify(x)), f, `rejected ${typeof x === 'string' ? x : JSON.stringify(x)}`);
+  eq(profileUrl('phone', 'https://example.org/app/'), 'https://example.org/app/profiles/phone.json', 'starter URL');
+});
+
+test('user guide Markdown (tools/pages/markdown.mjs)', () => {
+  eq(inline('**bold**, _it_, *em*, `a<b>` and [x](phone.md#touch) ![alt](images/a.jpg) snake_case_name'),
+    '<strong>bold</strong>, <em>it</em>, <em>em</em>, <code>a&lt;b&gt;</code> and <a href="phone.html#touch">x</a> <img src="images/a.jpg" alt="alt" loading="lazy"> snake_case_name', 'inline');
+  eq([linkTarget('README.md'), linkTarget('faq.md#memory'), linkTarget('https://x.org/a.md'), linkTarget('#top'), linkTarget('../x/README.md#a')],
+    ['index.html', 'faq.html#memory', 'https://x.org/a.md', '#top', '../x/index.html#a'], 'link targets');
+  eq(slug("What's in the browser? (OPFS)"), 'whats-in-the-browser-opfs', 'slug');
+  const md = [
+    '# Getting started', '', 'One line', 'and two.', '', '## A `code` heading', '',
+    '- one', '- two', '  continued', '  - nested', '- three', '', '1. first', '2. second', '',
+    '> **Note:** quoted', '', '| a | b |', '|---|---|', '| 1 | `x|` |', '', '```sh', 'echo <hi>', '```', '', '---',
+  ].join('\n');
+  const { html, title } = markdownToHtml(md);
+  eq(title, 'Getting started', 'title');
+  eq(html.split('\n'), [
+    '<h1 id="getting-started">Getting started</h1>',
+    '<p>One line and two.</p>',
+    '<h2 id="a-code-heading">A <code>code</code> heading</h2>',
+    '<ul><li>one</li><li>two continued<ul><li>nested</li></ul></li><li>three</li></ul>',
+    '<ol><li>first</li><li>second</li></ol>',
+    '<blockquote><p><strong>Note:</strong> quoted</p></blockquote>',
+    '<div class="table"><table><thead><tr><th>a</th><th>b</th></tr></thead><tbody><tr><td>1</td><td><code>x|</code></td></tr></tbody></table></div>',
+    '<pre><code class="language-sh">echo &lt;hi&gt;</code></pre>',
+    '<hr>',
+  ], 'blocks');
+  // Every page of the guide converts, and every relative link points at a page or image that exists.
+  const dir = join(root, 'docs/user');
+  const pages = readdirSync(dir).filter((f) => f.endsWith('.md'));
+  check(pages.includes('README.md') && pages.length >= 10, `docs/user: ${pages}`);
+  const guide = new Map(pages.map((f) => [linkTarget(f), markdownToHtml(readFileSync(join(dir, f), 'utf8'))]));
+  const ids = (name) => new Set([...guide.get(name).html.matchAll(/ id="([^"]+)"/g)].map((m) => m[1]));
+  for (const [name, { html: h, title: t }] of guide) {
+    check(t, `${name}: no level-1 heading`);
+    for (const [, href, anchor] of h.matchAll(/(?:href|src)="([^"#]*)(?:#([^"]*))?"/g)) {
+      if (/^[a-z]+:/.test(href) || href.startsWith('../')) continue;
+      const target = href || name;
+      check(guide.has(target) || existsSync(join(dir, target)), `${name}: broken link ${href}`);
+      if (anchor) check(ids(target).has(anchor), `${name}: no #${anchor} in ${target}`);
+    }
+  }
 });
 
 test('APK: ZIP and binary manifest (testdata/tocco-manifest.axml)', async () => {

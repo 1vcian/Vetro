@@ -1,0 +1,11 @@
+{
+  "vetroProfile": 1,
+  "id": "small-phone",
+  "name": "Small phone",
+  "description": "A small, low-memory phone in portrait: 480 x 800 at 240 dpi (320 x 533 dp), 1.5 GiB of RAM.",
+  "screen": { "width": 480, "height": 800, "density": 240 },
+  "ramMiB": 1536,
+  "locale": "en-US",
+  "timezone": "UTC",
+  "device": { "name": "Vetro Small Phone", "serial": "VETROSMALL01", "sku": "small-phone" }
+}

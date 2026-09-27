@@ -661,6 +661,13 @@ R2; `tools/web-serve.mjs` also serves `target/aosp/out` at `/aosp/`) and
   Install -> verified download -> the same `install` request (`open: false`)
   -> Open; hidden if the catalog can't be loaded; `window.vetroCatalog`
   (`state`, `install`, `open`, `refresh`) for tests.
+- Device profiles (M10, ADR 0035, `docs/specs/device-profiles.md`,
+  `web/node/profiles.mjs`, starters in `web/app/profiles/`): a "Device
+  profile" menu, a profile file, or `profile=<id>` fill screen and RAM; the
+  Worker gets `config.android.params` (`profileBootParams`) and
+  `config.android.setup` (adb commands run after `ANDROID_WAKE` on every
+  connection). The default profile is `ANDROID_MACHINE` with
+  `ANDROID_PARAMS`. A portrait scanout is fitted to the window height.
 - Shared with the tools (`web/node/android.mjs`): `ANDROID_MACHINE` (2048 MiB,
   1280x800, touchscreen, network, vsock), `ANDROID_DISK`, `machineDevices`,
   `ANDROID_WAKE`, `ANDROID_COMPACT`, the home screen timings,

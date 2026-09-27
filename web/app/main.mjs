@@ -40,6 +40,11 @@
 // can't be loaded) with Install -> download and SHA-256 check -> adb install
 // (the same path as a drop, without opening) -> Open. `window.vetroCatalog`
 // for tests.
+//
+// Device profiles (M10, ADR 0035): `&profile=phone` (or the "Device profile"
+// menu, or a profile JSON file) fills screen and RAM and gives the Worker the
+// profile's bootloader parameters and after-boot adb commands
+// (web/node/profiles.mjs, starters in web/app/profiles/).
 
 import { absAxis, BUTTONS, evdevCode } from './keymap.mjs';
 import { keyToBytes, Terminal } from './terminal.mjs';
@@ -49,6 +54,7 @@ import { AnalysisPanels } from './analysis.mjs';
 import { ANDROID_MACHINE, ANDROID_VERSIONS, DEFAULT_MANIFEST, PHASES } from '../node/android.mjs';
 import { CatalogPanel } from './catalog.mjs';
 import { CATALOG_URL } from '../node/catalog.mjs';
+import { DEFAULT_PROFILE, parseProfile, profileAdbCommands, profileBootParams, profileUrl, STARTER_PROFILES } from '../node/profiles.mjs';
 
 const $ = (id) => document.getElementById(id);
 const form = $('setup');
@@ -167,6 +173,8 @@ function onFrame(msg) {
   if (msg.width !== fb.width || msg.height !== fb.height) {
     fb = { width: msg.width, height: msg.height };
     renderer.resize(fb.width, fb.height);
+    // A portrait screen (device profiles, ADR 0035) fits the window's height.
+    $('screen-wrap').style.maxWidth = fb.height > fb.width ? `calc(85vh * ${fb.width / fb.height})` : '';
     placeCursor();
   }
   renderer.draw(msg.rect, msg.pixels);
@@ -312,13 +320,86 @@ function fmtStats(s) {
 
 const osValue = () => form.elements.os.value;
 
+// ---- Device profiles (ADR 0035) ----------------------------------------------
+
+/** Starter profiles (web/app/profiles), parsed, by id; a loaded file goes under its own id. */
+const profiles = new Map();
+const profileSelect = form.elements.profile;
+
+/** The selected profile, or null while the starters are loading. */
+const selectedProfile = () => profiles.get(profileSelect.value) ?? null;
+
+/** Fills screen, RAM and the note from the selected profile. */
+function applyProfile() {
+  const p = selectedProfile();
+  if (!p) return;
+  const el = form.elements;
+  el.width.value = String(p.screen.width);
+  el.height.value = String(p.screen.height);
+  el.ramMiB.value = String(p.ramMiB);
+  // The ready-made snapshot note is about the default machine.
+  $('prebuilt-note').hidden = p.id !== DEFAULT_PROFILE;
+  $('profile-note').textContent = `${p.description || p.name} ` + (p.id === DEFAULT_PROFILE ? ''
+    : 'Ready-made snapshots are published for the default profile: with this one the first start is usually a cold boot ' +
+      '(about 45 minutes), then later starts resume in seconds from the snapshot saved in the browser.');
+}
+
+function addProfile(p, selected = false) {
+  profiles.set(p.id, p);
+  let opt = [...profileSelect.options].find((o) => o.value === p.id);
+  if (!opt) {
+    opt = document.createElement('option');
+    opt.value = p.id;
+    profileSelect.append(opt);
+  }
+  opt.textContent = `${p.name} (${p.screen.width} x ${p.screen.height}, ${p.screen.density} dpi, ${p.ramMiB} MiB)`;
+  if (selected) profileSelect.value = p.id;
+}
+
+/** Loads the starter profiles; `wanted` is the id to select (URL `profile=`). */
+async function loadProfiles(wanted) {
+  for (const id of STARTER_PROFILES) {
+    try {
+      const r = await fetch(profileUrl(id, location.href));
+      if (!r.ok) throw new Error(`status ${r.status}`);
+      addProfile(parseProfile(await r.text()), id === (wanted ?? DEFAULT_PROFILE));
+    } catch (e) {
+      setStatus(`device profile ${id}: ${e.message ?? e}`);
+    }
+  }
+  if (wanted && !profiles.has(wanted)) setStatus(`unknown device profile ${wanted}: using ${DEFAULT_PROFILE}`);
+  if (osValue() === 'android') {
+    applyProfile();
+    // An explicit `ram=` in the URL wins over the profile's RAM.
+    const ram = new URLSearchParams(location.search).get('ram');
+    if (ram) form.elements.ramMiB.value = ram;
+  }
+}
+
+profileSelect.addEventListener('change', applyProfile);
+form.elements.profileFile.addEventListener('change', async (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  try {
+    addProfile(parseProfile(await f.text()), true);
+    applyProfile();
+    setStatus(`device profile ${profileSelect.value} loaded from ${f.name}`);
+  } catch (err) {
+    setStatus(`${f.name}: ${err.message ?? err}`);
+  }
+});
+
 function showOs() {
   const android = osValue() === 'android';
   $('android-fields').hidden = !android;
   $('linux-fields').hidden = android;
   const el = form.elements;
   if (android) {
+    // The default machine until the profiles are loaded (loadProfiles applies the selected one).
     el.ramMiB.value = String(ANDROID_MACHINE.ramMiB);
+    el.width.value = String(ANDROID_MACHINE.width);
+    el.height.value = String(ANDROID_MACHINE.height);
+    applyProfile();
     el.pointer.value = 'multitouch';
     el.net.checked = true;
     if (!el.manifestUrl.value) el.manifestUrl.value = DEFAULT_MANIFEST;
@@ -327,6 +408,8 @@ function showOs() {
     showPrebuiltHint();
   } else {
     el.ramMiB.value = '1024';
+    el.width.value = '1280';
+    el.height.value = '800';
     el.pointer.value = 'tablet';
     if (!rootsFromUrl) pendingRoots = DEFAULT_ROOTS;
   }
@@ -605,6 +688,8 @@ $('adb-shell').addEventListener('submit', async (e) => {
 async function start() {
   const el = form.elements;
   const android = osValue() === 'android';
+  // The profile fills screen and RAM: wait for the starters (autostart).
+  if (android) await profilesLoaded;
   const kernel = android ? null : source('kernelUrl', 'kernelFile');
   if (!kernel && !android) return setStatus('kernel missing');
   const disk = android ? null : source('diskUrl', 'diskFile');
@@ -630,6 +715,13 @@ async function start() {
   if (android) {
     config.net = true;
     config.pointer = 'multitouch';
+    const p = selectedProfile();
+    if (p) {
+      config.android.profile = p.id;
+      config.android.params = profileBootParams(p);
+      config.android.setup = profileAdbCommands(p);
+      androidState.profile = { id: p.id, params: config.android.params, setup: config.android.setup, width: config.width, height: config.height, ramMiB: config.ramMiB };
+    }
   }
   pointerKind = config.pointer;
   renderer = (el.webgpu.checked && (await WebGpuRenderer.create(screen).catch(() => null))) || new Canvas2DRenderer(screen);
@@ -768,6 +860,7 @@ form.addEventListener('submit', (e) => {
 
 // URL parameters.
 const q = new URLSearchParams(location.search);
+const profilesLoaded = loadProfiles(q.get('profile'));
 if (q.get('os') === 'android') {
   form.elements.os.value = 'android';
   showOs();
