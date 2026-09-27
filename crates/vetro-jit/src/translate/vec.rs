@@ -470,25 +470,24 @@ impl Tx {
             (_, 0b10100) | (true, 0b10010) if size <= 1 => {
                 // SQXTN(2) (u=0, 10100), SQXTUN(2) (u=1, 10010): from 2*esize
                 // with saturation (WASM's narrow, which reads the input as
-                // signed); UQXTN (u=1, 10100) no. QC if the result
-                // differs from the truncation.
-                let narrow = match (u, opcode, size) {
-                    (false, 0b10100, 0) => v::I8X16_NARROW_I16X8_S,
-                    (true, 0b10010, 0) => v::I8X16_NARROW_I16X8_U,
-                    (false, 0b10100, _) => v::I16X8_NARROW_I32X4_S,
-                    (true, 0b10010, _) => v::I16X8_NARROW_I32X4_U,
+                // signed); UQXTN (u=1, 10100) no. QC if the result, widened
+                // back (sign-extended for SQXTN, zero-extended for SQXTUN),
+                // differs from the input: a saturated result can equal the
+                // truncation (0x017f -> 0x7f), so that comparison is not enough.
+                let (narrow, widen) = match (u, opcode, size) {
+                    (false, 0b10100, 0) => (v::I8X16_NARROW_I16X8_S, v::I16X8_EXTEND_LOW_I8X16_S),
+                    (true, 0b10010, 0) => (v::I8X16_NARROW_I16X8_U, v::I16X8_EXTEND_LOW_I8X16_U),
+                    (false, 0b10100, _) => (v::I16X8_NARROW_I32X4_S, v::I32X4_EXTEND_LOW_I16X8_S),
+                    (true, 0b10010, _) => (v::I16X8_NARROW_I32X4_U, v::I32X4_EXTEND_LOW_I16X8_U),
                     _ => return false,
                 };
-                let eb = 1usize << size;
-                let trunc = lanes(8 / eb, eb, |e| 2 * e);
-                // Result (low 8 bytes) in L_V0, truncation next to it.
+                // Result (low 8 bytes) in L_V0.
                 self.vld(rn);
                 self.vld(rn);
                 self.f.v(narrow).local_tee(L_V0);
+                self.f.v(widen);
                 self.vld(rn);
-                self.vld(rn);
-                self.f.shuffle(trunc);
-                self.qc_if_differ(false);
+                self.qc_if_differ(true);
                 self.vst_begin();
                 if q {
                     // XTN2: low half of Vd, then the result.

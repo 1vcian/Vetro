@@ -592,3 +592,101 @@ fn concatenamento_dopo_invalidazione() {
     assert_eq!(jit.run(&mut cpu, &mut mem, 100), (100, Ok(())));
     assert_eq!(cpu.x[0], 2, "A's old region no longer runs");
 }
+
+/// FPSR.QC of the saturating integer SIMD instructions translated inline
+/// (ADR 0026): SQXTN(2)/SQXTUN(2) at both sizes and [SU]Q{ADD,SUB} at 8 and 16
+/// bits, on lanes at and around the saturation limits, including inputs whose
+/// saturated result equals the truncation (0x017f -> 0x7f for SQXTN), where
+/// the JIT once missed QC (found by the nightly `tests/diff` run, seed
+/// 3000056). V registers and FPSR must equal the interpreter's, and every
+/// instruction must set QC in some cases. Fails if QC is computed from the
+/// truncation again (tried).
+#[test]
+fn saturating_simd_sets_qc_like_the_interpreter() {
+    // Encodings from tools/a64asm.sh.
+    let insns: [(u32, &str); 10] = [
+        (0x0e214841, "sqxtn v1.8b, v2.8h"),
+        (0x4e214841, "sqxtn2 v1.16b, v2.8h"),
+        (0x2e612841, "sqxtun v1.4h, v2.4s"),
+        (0x6e612841, "sqxtun2 v1.8h, v2.4s"),
+        (0x0e614841, "sqxtn v1.4h, v2.4s"),
+        (0x2e212841, "sqxtun v1.8b, v2.8h"),
+        (0x6e230c41, "uqadd v1.16b, v2.16b, v3.16b"),
+        (0x4e632c41, "sqsub v1.8h, v2.8h, v3.8h"),
+        (0x2e232c41, "uqsub v1.8b, v2.8b, v3.8b"),
+        (0x0e630c41, "sqadd v1.4h, v2.4h, v3.4h"),
+    ];
+    const B: u32 = 0x14000000; // b .
+    let h16: [u16; 16] = [
+        0, 1, 0x7f, 0x80, 0xff, 0x100, 0x17f, 0x1ff, 0x27f, 0x7fff, 0x8000, 0xff80, 0xff7f, 0xfe7f, 0xfeff,
+        0xffff,
+    ];
+    let w32: [u32; 12] = [
+        0x7fff,
+        0x8000,
+        0xffff,
+        0x1_0000,
+        0x1_7fff,
+        0x1_ffff,
+        0xffff_8000,
+        0xffff_7fff,
+        0xfffe_7fff,
+        0xfffe_ffff,
+        1,
+        0,
+    ];
+    let mut rng = Rng(0x5a7);
+    for (w, name) in insns {
+        let mut code = Vec::new();
+        for x in [w, B] {
+            code.extend_from_slice(&x.to_le_bytes());
+        }
+        let mut jit =
+            JitCpu::new(NativeEngine::new(), JitConfig { hot_threshold: 0, ..JitConfig::default() });
+        let mut with_qc = 0;
+        for case in 0..400 {
+            let mut v = [0u128; 3];
+            for r in v.iter_mut() {
+                for k in 0..4 {
+                    let word = if rng.below(2) == 0 {
+                        let a = h16[rng.below(16) as usize] as u32;
+                        let b = h16[rng.below(16) as usize] as u32;
+                        a | b << 16
+                    } else if rng.below(4) == 0 {
+                        rng.next() as u32
+                    } else {
+                        w32[rng.below(12) as usize]
+                    };
+                    *r |= (word as u128) << (32 * k);
+                }
+            }
+            let mut cpu = Cpu::new();
+            cpu.pc = CODE;
+            cpu.v[1] = v[0];
+            cpu.v[2] = v[1];
+            cpu.v[3] = v[2];
+            cpu.fpsr = if case % 7 == 0 { 1 << 27 } else { 0 };
+            let mut mem = UserMemory::new();
+            mem.map(CODE, code.clone(), Perm::RX).unwrap();
+            let mut want = cpu.clone();
+            let mut wmem = UserMemory::new();
+            wmem.map(CODE, code.clone(), Perm::RX).unwrap();
+            for _ in 0..2 {
+                want.step(&mut wmem).unwrap();
+            }
+            let (n, r) = jit.run(&mut cpu, &mut mem, 2);
+            assert_eq!((n, r), (2, Ok(())));
+            assert_eq!(
+                (cpu.v, cpu.fpsr),
+                (want.v, want.fpsr),
+                "{name}: V2 {:#034x}, V3 {:#034x}, FPSR {:#x} before",
+                v[1],
+                v[2],
+                if case % 7 == 0 { 1u32 << 27 } else { 0 }
+            );
+            with_qc += u32::from(case % 7 != 0 && want.fpsr & 1 << 27 != 0);
+        }
+        assert!(jit.stats.jit_steps >= 400, "{name}: not run by the JIT: {:?}", jit.stats);
+        assert!(with_qc > 20, "{name}: QC set in only {with_qc} cases: test too weak");
+    }
+}
