@@ -160,8 +160,16 @@ impl Machine {
     /// nulla: si può chiamare fra due [`Machine::run`] qualsiasi, e due
     /// salvataggi nello stesso punto danno gli stessi byte.
     pub fn save(&self) -> Vec<u8> {
+        self.save_with(vetro_snapshot::Level::Fast)
+    }
+
+    /// [`Machine::save`] with the large data compressed at `level` (ADR 0031):
+    /// [`Level::Small`](vetro_snapshot::Level::Small) for snapshots that are
+    /// downloaded. Restoring accepts either.
+    pub fn save_with(&self, level: vetro_snapshot::Level) -> Vec<u8> {
         let ram = self.board.borrow().ram.size() as usize;
         let mut w = Writer::with_capacity((1 << 20) + ram / 32);
+        w.set_level(level);
         // The file is written in place: first the room for the header, filled
         // in at the end.
         w.raw(&[0; vetro_snapshot::HEADER_LEN]);
@@ -189,11 +197,22 @@ impl Machine {
         reserve: usize,
         sink: &mut dyn FnMut(&[u8]),
     ) -> [u8; vetro_snapshot::HEADER_LEN] {
+        self.save_stream_with(vetro_snapshot::Level::Fast, reserve, sink)
+    }
+
+    /// [`Machine::save_stream`] at `level` (see [`Machine::save_with`]).
+    pub fn save_stream_with(
+        &self,
+        level: vetro_snapshot::Level,
+        reserve: usize,
+        sink: &mut dyn FnMut(&[u8]),
+    ) -> [u8; vetro_snapshot::HEADER_LEN] {
         let mut w = Writer::with_capacity(reserve.max(1 << 20));
+        w.set_level(level);
         self.save_head(&mut w);
         let b = self.board.borrow();
         let mut ram_len = 0u64;
-        b.ram.save_chunks(&mut |c| ram_len += c.len() as u64);
+        b.ram.save_chunks(level, &mut |c| ram_len += c.len() as u64);
         let total = w.len() as u64 + 12 + ram_len;
         let mut h = Hash64::new(total);
         h.update(w.as_bytes());
@@ -205,7 +224,7 @@ impl Machine {
         h.update(&sec);
         sink(&sec);
         let mut again = 0u64;
-        b.ram.save_chunks(&mut |c| {
+        b.ram.save_chunks(level, &mut |c| {
             again += c.len() as u64;
             h.update(c);
             sink(c);
@@ -673,6 +692,83 @@ pub(super) mod tests {
             k
         });
         assert!(matches!(r, Err(Error::Truncated)), "{r:?}");
+    }
+
+    /// The small level (ADR 0031, the prebuilt Android snapshot): smaller than
+    /// the fast one on RAM with text, repeated and incompressible pages; the
+    /// same file whole and chunked; restored whole or in chunks it gives the
+    /// same machine as the fast snapshot, and the probe continues exactly as
+    /// without the cut. A restored machine saves at the fast level again.
+    #[test]
+    fn small_level_restores_the_same_state() {
+        use vetro_snapshot::Level;
+        let r = reference();
+        let mut m = probe();
+        let mut out = Vec::new();
+        run_to(&mut m, 66_666, 5_000, &mut out);
+        // Pages for the larger machine below: text, a repeated page, noise.
+        let mut k = 777u32;
+        let noise: Vec<u8> = (0..4096)
+            .map(|_| {
+                k ^= k << 13;
+                k ^= k >> 17;
+                k ^= k << 5;
+                k as u8
+            })
+            .collect();
+        let text: Vec<u8> = b"page cache of a guest file. ".iter().cycle().take(4096).copied().collect();
+        let fast = m.save();
+        let small = m.save_with(Level::Small);
+        let mut body = Vec::new();
+        let head = m.save_stream_with(Level::Small, 0, &mut |c| body.extend_from_slice(c));
+        assert_eq!(head.as_slice(), &small[..vetro_snapshot::HEADER_LEN]);
+        assert!(body == small[vetro_snapshot::HEADER_LEN..], "chunked small file differs");
+        let n = Machine::restore(&cfg(), &Devices::none(), &small).unwrap();
+        assert!(n.save() == fast, "restored from small: different state");
+        let mut at = vetro_snapshot::HEADER_LEN;
+        while &small[at..at + 4] != b"RAM " {
+            at += 12 + u64::from_le_bytes(small[at + 4..at + 12].try_into().unwrap()) as usize;
+        }
+        for piece in [1usize, 4096] {
+            let mut n = probe();
+            let mut pos = at + 12;
+            n.load_state_stream(&small[..at + 12], &mut |buf: &mut [u8]| {
+                let k = buf.len().min(piece).min(small.len() - pos);
+                buf[..k].copy_from_slice(&small[pos..pos + k]);
+                pos += k;
+                k
+            })
+            .unwrap();
+            assert!(n.save() == fast, "small in chunks of {piece}: different state");
+        }
+        let mut n = Machine::restore(&cfg(), &Devices::none(), &small).unwrap();
+        out.extend(n.console_output());
+        run_to(&mut n, END, 3_001, &mut out);
+        assert_eq!(n.steps, r.2.steps, "instructions");
+        assert!(out == r.0, "console");
+        assert!(n.save() == r.1, "final state");
+        // Larger RAM with many kinds of pages: the small level wins clearly.
+        let m = Machine::with_devices(&MachineConfig { ram_size: 8 << 20, ..cfg() }, &Devices::none());
+        for p in 0..600u64 {
+            let page = match p % 3 {
+                0 => &text,
+                1 => &noise,
+                _ => &text[..],
+            };
+            let mut page = page.to_vec();
+            page[0] = (p % 5) as u8;
+            assert!(
+                m.board.borrow_mut().ram.write(vetro_platform::map::RAM_BASE + 0x8_0000 + p * 4096, &page)
+            );
+        }
+        let (fast, small) = (m.save(), m.save_with(Level::Small));
+        assert!(small.len() * 10 < fast.len() * 9, "small {} vs fast {}", small.len(), fast.len());
+        let n = Machine::restore(&cfg_8m(), &Devices::none(), &small).unwrap();
+        assert!(n.save() == fast);
+    }
+
+    fn cfg_8m() -> MachineConfig {
+        MachineConfig { ram_size: 8 << 20, ..cfg() }
     }
 
     /// Il ripristino in una macchina che ha già girato (stato diverso

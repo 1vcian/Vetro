@@ -20,8 +20,12 @@
 //! Niente tabelle hash, niente orologi, niente puntatori nel formato.
 //! Specifica in `docs/specs/snapshot.md`.
 
+pub mod blocks;
 pub mod lz;
+pub mod lzh;
 pub mod overlay;
+
+pub use blocks::Level;
 
 use core::fmt;
 
@@ -36,7 +40,9 @@ pub const MAGIC: [u8; 8] = *b"VETROSNP";
 /// - 2: M5, inoltro di porte (connessioni dell'host nello stack di rete).
 /// - 3: M10, i frame dell'host verso il guest in coda nel collegamento di
 ///   rete di `vetro-machine` (`NetLink`, ADR 0019).
-pub const FORMAT_VERSION: u32 = 3;
+/// - 4: M6, blocks equal to an earlier one and frames of blocks compressed
+///   with LZ77 and Huffman codes ([`blocks`], ADR 0031).
+pub const FORMAT_VERSION: u32 = 4;
 
 /// Byte dell'intestazione: magia, versione, hash della configurazione,
 /// lunghezza del contenuto, somma di controllo del contenuto.
@@ -125,6 +131,7 @@ pub trait Snapshot {
 #[derive(Clone, Debug, Default)]
 pub struct Writer {
     buf: Vec<u8>,
+    level: Level,
 }
 
 impl Writer {
@@ -133,7 +140,16 @@ impl Writer {
     }
 
     pub fn with_capacity(n: usize) -> Self {
-        Writer { buf: Vec::with_capacity(n) }
+        Writer { buf: Vec::with_capacity(n), level: Level::Fast }
+    }
+
+    /// How [`compress`] compresses in this writer (default [`Level::Fast`]).
+    pub fn set_level(&mut self, level: Level) {
+        self.level = level;
+    }
+
+    pub fn level(&self) -> Level {
+        self.level
     }
 
     pub fn len(&self) -> usize {
@@ -447,69 +463,20 @@ pub fn decode_container<'a>(magic: &[u8; 8], version: u32, bytes: &'a [u8]) -> R
 
 // ---- Dati grandi a blocchi --------------------------------------------------
 
-/// Scrive `data` a blocchi da [`BLOCK`] byte: la lunghezza, poi per ogni
-/// blocco non tutto a zero il suo indice, la codifica (0 = byte crudi, 1 =
-/// [`lz`]) e il contenuto. I blocchi a zero non occupano nulla.
+/// Writes `data` in blocks of [`BLOCK`] bytes ([`blocks`]): zero blocks take
+/// nothing, the others are compressed at the writer's [`Level`].
 pub fn compress(w: &mut Writer, data: &[u8]) {
-    w.len_of(data.len());
-    let at = w.len();
-    w.u64(0);
-    let mut count = 0u64;
-    let mut scratch = Vec::with_capacity(BLOCK + BLOCK / 8);
-    let mut table = lz::Table::new();
-    for (i, block) in data.chunks(BLOCK).enumerate() {
-        if is_zero(block) {
-            continue;
-        }
-        count += 1;
-        w.u64(i as u64);
-        scratch.clear();
-        lz::compress(block, &mut scratch, &mut table);
-        if scratch.len() < block.len() {
-            w.u8(1);
-            w.u32(scratch.len() as u32);
-            w.raw(&scratch);
-        } else {
-            w.u8(0);
-            w.raw(block);
-        }
-    }
-    w.buf[at..at + 8].copy_from_slice(&count.to_le_bytes());
+    let level = w.level;
+    blocks::encode(data.len(), level, &|i| &data[i * BLOCK..(i * BLOCK + BLOCK).min(data.len())], &mut |c| {
+        w.raw(c)
+    });
 }
 
-/// Legge dati scritti con [`compress`] in `out`, che deve avere la stessa
-/// lunghezza; `out` va passato già a zero (i blocchi a zero non si
-/// scrivono). `visit(indice)` si chiama per ogni blocco scritto.
+/// Reads data written with [`compress`] into `out`, which must have the same
+/// length and be zero already (zero blocks are not written). `visit(index)`
+/// is called for every block written.
 pub fn decompress_into(r: &mut Reader<'_>, out: &mut [u8], mut visit: impl FnMut(usize)) -> Result<()> {
-    let len = r.u64()?;
-    if len != out.len() as u64 {
-        return Err(Error::invalid(format!("dati di {len} byte, attesi {}", out.len())));
-    }
-    let count = r.u64()?;
-    let blocks = out.len().div_ceil(BLOCK) as u64;
-    if count > blocks {
-        return Err(Error::invalid("più blocchi dei dati"));
-    }
-    let mut last: Option<u64> = None;
-    for _ in 0..count {
-        let i = r.u64()?;
-        if i >= blocks || last.is_some_and(|l| i <= l) {
-            return Err(Error::invalid(format!("blocco {i} fuori posto")));
-        }
-        last = Some(i);
-        let start = i as usize * BLOCK;
-        let dst = &mut out[start..(start + BLOCK).min(len as usize)];
-        match r.u8()? {
-            0 => dst.copy_from_slice(r.raw(dst.len())?),
-            1 => {
-                let n = r.u32()? as usize;
-                lz::decompress(r.raw(n)?, dst)?;
-            }
-            v => return Err(Error::invalid(format!("codifica di blocco {v}"))),
-        }
-        visit(i as usize);
-    }
-    Ok(())
+    blocks::decode(r, out.len(), &mut blocks::Slice(out), &mut visit)
 }
 
 /// Come [`decompress_into`], in un vettore nuovo.

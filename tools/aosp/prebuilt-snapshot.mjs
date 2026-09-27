@@ -15,6 +15,7 @@
 //                    otherwise the app's DEFAULT_MANIFEST on R2)
 //   --out=DIR        output directory (default target/aosp/prebuilt)
 //   --no-compact     no in-guest compaction before the snapshot
+//   --level=L        snapshot compression: small (default) or fast
 //   --restore=FILE   resumes from a snapshot made by this tool (same machine)
 //                    instead of booting: to try compaction or compression
 //   --wasm=FILE      vetro-wasm (default target/wasm32-unknown-unknown/release)
@@ -51,6 +52,7 @@ const compact = !flag('no-compact');
 const restorePath = arg('restore', null);
 const wasmPath = arg('wasm', join(root, 'target/wasm32-unknown-unknown/release/vetro_wasm.wasm'));
 const guestLimit = Number(arg('guest-limit', 4000));
+const level = arg('level', 'small');
 const CONSOLE_TAIL = 64 * 1024;
 
 const mib = (n) => (n / 2 ** 20).toFixed(0);
@@ -95,7 +97,7 @@ async function main() {
     tailLen += b.length;
     while (tailLen - tail[0].length >= CONSOLE_TAIL) tailLen -= tail.shift().length;
   };
-  const measures = { manifest: manifestUrl, compact };
+  const measures = { manifest: manifestUrl, compact, level };
   if (restorePath) {
     const bytes = readFileSync(restorePath);
     const meta = JSON.parse(readFileSync(restorePath.replace(/\.snap$/, '.json'), 'utf8')).meta;
@@ -208,6 +210,7 @@ async function main() {
   const hash = createHash('sha256');
   const chunks = [];
   const ts = performance.now();
+  m.snapshotLevel = level;
   const fh = openSync(snapPath, 'w');
   // The chunks arrive in order except the header (written at offset 0 last):
   // the hashes are computed from the file afterwards.

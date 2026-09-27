@@ -170,44 +170,19 @@ impl Ram {
         h ^ (h >> 31)
     }
 
-    /// The content of a snapshot's `RAM ` section ([`vetro_snapshot::compress`]
-    /// format) in chunks of at most 1 MiB, in order: no buffer as large as the
-    /// snapshot (ADR 0028). Two calls give the same bytes.
-    pub fn save_chunks(&self, emit: &mut dyn FnMut(&[u8])) {
+    /// The content of a snapshot's `RAM ` section ([`vetro_snapshot::blocks`]
+    /// format, as [`vetro_snapshot::compress`] at `level`) in chunks of about
+    /// 1 MiB, in order: no buffer as large as the snapshot (ADR 0028). Two
+    /// calls give the same bytes.
+    pub fn save_chunks(&self, level: vetro_snapshot::Level, emit: &mut dyn FnMut(&[u8])) {
         const PAGE: usize = vetro_snapshot::BLOCK;
-        const FLUSH: usize = 1 << 20;
         let len = self.bytes.len;
-        let page = |i: usize| self.bytes.get(i * PAGE, (len - i * PAGE).min(PAGE));
-        let present: Vec<u32> = (0..len.div_ceil(PAGE))
-            .filter(|&i| !vetro_snapshot::is_zero(page(i)))
-            .map(|i| i as u32)
-            .collect();
-        let mut out = Vec::with_capacity(FLUSH + 2 * PAGE);
-        out.extend_from_slice(&(len as u64).to_le_bytes());
-        out.extend_from_slice(&(present.len() as u64).to_le_bytes());
-        let mut scratch = Vec::with_capacity(PAGE + PAGE / 8);
-        let mut table = vetro_snapshot::lz::Table::new();
-        for i in present {
-            let block = page(i as usize);
-            out.extend_from_slice(&u64::from(i).to_le_bytes());
-            scratch.clear();
-            vetro_snapshot::lz::compress(block, &mut scratch, &mut table);
-            if scratch.len() < block.len() {
-                out.push(1);
-                out.extend_from_slice(&(scratch.len() as u32).to_le_bytes());
-                out.extend_from_slice(&scratch);
-            } else {
-                out.push(0);
-                out.extend_from_slice(block);
-            }
-            if out.len() >= FLUSH {
-                emit(&out);
-                out.clear();
-            }
-        }
-        if !out.is_empty() {
-            emit(&out);
-        }
+        vetro_snapshot::blocks::encode(
+            len,
+            level,
+            &|i| self.bytes.get(i * PAGE, (len - i * PAGE).min(PAGE)),
+            emit,
+        );
     }
 
     /// True if the two RAMs have the same bytes.
@@ -307,7 +282,8 @@ impl vetro_snapshot::Snapshot for Ram {
     /// The same format as [`vetro_snapshot::compress`] on the whole RAM,
     /// written page by page ([`Ram::save_chunks`]).
     fn save(&self, w: &mut vetro_snapshot::Writer) {
-        self.save_chunks(&mut |c| w.raw(c));
+        let level = w.level();
+        self.save_chunks(level, &mut |c| w.raw(c));
     }
 
     /// Like [`vetro_snapshot::decompress_into`] on the whole RAM. Absent pages
@@ -333,47 +309,31 @@ impl RamSource for vetro_snapshot::Reader<'_> {
     }
 }
 
-fn take_u64(r: &mut dyn RamSource) -> vetro_snapshot::Result<u64> {
-    Ok(u64::from_le_bytes(r.take(8)?.try_into().expect("8 byte")))
-}
-
 impl Ram {
     /// Restores the RAM from the content of the `RAM ` section (see
     /// [`vetro_snapshot::Snapshot::restore`] for [`Ram`]), from any
     /// [`RamSource`].
     pub fn restore_from(&mut self, r: &mut dyn RamSource) -> vetro_snapshot::Result<()> {
-        use vetro_snapshot::Error;
         const PAGE: usize = vetro_snapshot::BLOCK;
+        struct Src<'a>(&'a mut dyn RamSource);
+        impl vetro_snapshot::blocks::Source for Src<'_> {
+            fn take(&mut self, n: usize) -> vetro_snapshot::Result<&[u8]> {
+                self.0.take(n)
+            }
+        }
+        struct Dst<'a>(&'a mut Ram);
+        impl vetro_snapshot::blocks::Target for Dst<'_> {
+            fn block_mut(&mut self, i: usize) -> &mut [u8] {
+                let len = self.0.bytes.len;
+                self.0.bytes.get_mut(i * PAGE, (len - i * PAGE).min(PAGE))
+            }
+        }
         let len = self.bytes.len;
-        let found = take_u64(r)?;
-        if found != len as u64 {
-            return Err(Error::invalid(format!("data of {found} bytes, expected {len}")));
-        }
         let pages = len.div_ceil(PAGE);
-        let count = take_u64(r)?;
-        if count > pages as u64 {
-            return Err(Error::invalid("more blocks than the data"));
-        }
         let mut present = vec![0u64; pages.div_ceil(64)];
-        let mut last: Option<u64> = None;
-        for _ in 0..count {
-            let i = take_u64(r)?;
-            if i >= pages as u64 || last.is_some_and(|l| i <= l) {
-                return Err(Error::invalid(format!("block {i} out of place")));
-            }
-            last = Some(i);
-            let i = i as usize;
-            let dst = self.bytes.get_mut(i * PAGE, (len - i * PAGE).min(PAGE));
-            match r.take(1)?[0] {
-                0 => dst.copy_from_slice(r.take(dst.len())?),
-                1 => {
-                    let n = u32::from_le_bytes(r.take(4)?.try_into().expect("4 byte")) as usize;
-                    vetro_snapshot::lz::decompress(r.take(n)?, dst)?;
-                }
-                v => return Err(Error::invalid(format!("block encoding {v}"))),
-            }
-            present[i / 64] |= 1 << (i % 64);
-        }
+        vetro_snapshot::blocks::decode(&mut Src(r), len, &mut Dst(self), &mut |i| {
+            present[i / 64] |= 1 << (i % 64)
+        })?;
         for i in 0..pages {
             if present[i / 64] & 1 << (i % 64) == 0 {
                 let p = self.bytes.get_mut(i * PAGE, (len - i * PAGE).min(PAGE));

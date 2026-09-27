@@ -141,6 +141,8 @@ pub mod load {
 /// Una macchina con i buffer di contorno per JS.
 pub struct Vm {
     m: Machine,
+    /// Compression level of the snapshots (ABI 13, ADR 0031).
+    snapshot_level: vetro_machine::vetro_snapshot::Level,
     /// Uscita della console già tolta alla UART e non ancora letta da JS.
     out: Vec<u8>,
     out_pos: usize,
@@ -266,6 +268,7 @@ impl Vm {
             timeline: Default::default(),
             describer: Default::default(),
             log: None,
+            snapshot_level: vetro_machine::vetro_snapshot::Level::Fast,
             kf_sizes: Vec::new(),
             replay_active: false,
         };
@@ -524,7 +527,7 @@ impl Vm {
     /// tolta alla UART e non ancora letta da JS non ne fa parte: si salva
     /// dopo aver letto la console.
     pub fn save_state(&self) -> Vec<u8> {
-        self.m.save()
+        self.m.save_with(self.snapshot_level)
     }
 
     /// Chunked snapshot ([`Machine::save_stream`]): the content goes to
@@ -535,7 +538,7 @@ impl Vm {
         sink: &mut dyn FnMut(&[u8]),
     ) -> [u8; vetro_machine::vetro_snapshot::HEADER_LEN] {
         let cow: usize = (0..self.disks.len() as u32).map(|i| self.disk_dirty_clusters(i)).sum();
-        self.m.save_stream(cow * (4096 + 13) + (16 << 20), sink)
+        self.m.save_stream_with(self.snapshot_level, cow * (4096 + 13) + (16 << 20), sink)
     }
 
     /// Ripristina uno snapshot su questa macchina, che dev'essere
@@ -1238,6 +1241,23 @@ pub unsafe extern "C" fn vetro_snapshot_config_hash(vm: *mut Vm) -> u64 {
     vm.machine().config_hash()
 }
 
+/// ABI 13 (ADR 0031): how the next snapshots compress RAM and disks: 0 =
+/// fast (the default, for snapshots saved while the guest waits), 1 = small
+/// (frames with LZ77 and Huffman codes: several times slower to save, about a
+/// third smaller; for snapshots that are downloaded). Restoring accepts both.
+/// Returns 0, or 1 for an unknown level (nothing changes).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_snapshot_set_level(vm: *mut Vm, level: u32) -> u32 {
+    // SAFETY: `vm` comes from `vetro_machine_new`.
+    let vm = unsafe { &mut *vm };
+    vm.snapshot_level = match level {
+        0 => vetro_machine::vetro_snapshot::Level::Fast,
+        1 => vetro_machine::vetro_snapshot::Level::Small,
+        _ => return 1,
+    };
+    0
+}
+
 /// Salva la macchina in un buffer interno e ne restituisce la lunghezza;
 /// i byte si leggono da [`vetro_snapshot_ptr`] (validi fino al prossimo
 /// salvataggio, a [`vetro_snapshot_clear`] o alla distruzione della
@@ -1663,6 +1683,26 @@ mod tests {
                 assert_eq!(vetro_run(vm, 5000), stop::BUDGET);
             }
             assert!((&*a).save_state() == (&*b).save_state());
+
+            // ABI 13: the configuration hash is the one in the header, and a
+            // small snapshot restores the same machine.
+            assert_eq!(vetro_snapshot_config_hash(b).to_le_bytes(), snap[12..20]);
+            assert_eq!(vetro_snapshot_set_level(a, 7), 1, "unknown level");
+            assert_eq!(vetro_snapshot_set_level(a, 1), 0);
+            let n_small = vetro_snapshot_save(a);
+            let small = bytes(vetro_snapshot_ptr(a), n_small).to_vec();
+            vetro_snapshot_clear(a);
+            assert_eq!(vetro_snapshot_save_stream(a) as usize, n_small);
+            assert!(
+                bytes(vetro_snapshot_ptr(a), n_small) == small.as_slice(),
+                "chunked small snapshot differs"
+            );
+            vetro_snapshot_clear(a);
+            assert_eq!(vetro_snapshot_set_level(a, 0), 0);
+            let e = new();
+            assert_eq!(vetro_snapshot_restore(e, small.as_ptr(), small.len()), restore::OK);
+            assert!((&*a).save_state() == (&*e).save_state(), "restored from the small snapshot");
+            vetro_machine_free(e);
 
             let mut other = snap.clone();
             other[8] ^= 0x7f;

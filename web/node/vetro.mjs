@@ -457,6 +457,16 @@ export class Machine {
    * Configuration hash carried by this machine's snapshots (ABI 13, ADR
    * 0031), a BigInt: read after the disks are added, for snapshot keys.
    */
+  /**
+   * Compression of the next snapshots (ABI 13, ADR 0031): 'fast' (default)
+   * or 'small' (for snapshots that are downloaded: slower to save, about a
+   * third smaller). Restoring accepts both.
+   */
+  set snapshotLevel(level) {
+    const code = { fast: 0, small: 1 }[level];
+    if (code === undefined || this.#x.vetro_snapshot_set_level(this.#vm, code) !== 0) throw new Error(`snapshot level ${level}`);
+  }
+
   get snapshotConfigHash() {
     return BigInt.asUintN(64, this.#x.vetro_snapshot_config_hash(this.#vm));
   }
