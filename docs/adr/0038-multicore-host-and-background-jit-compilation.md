@@ -29,7 +29,17 @@ The same image under `qemu-system-aarch64` (TCG, `-cpu cortex-a53`, 3 GiB,
 same devices as `tools/aosp/qemu.sh`), in-guest `/proc/pressure/cpu`,
 `/proc/loadavg` and `/proc/stat` read with adb:
 
-TBD-QEMU-TABLE
+| Configuration | host threads | sys.boot_completed | vs `-smp 1` | notes |
+|---|---|---|---|---|
+| `-smp 1` | 1 | 1420 s | 1.00 | launcher focused at 2738 s |
+| `-smp 2`, `thread=single` (round robin) | 1 | 1391 s | 1.02 | rebooted later with `vold-failed` |
+| `-smp 2`, `thread=multi` (MTTCG) | 2 | 815 s | **1.74** | launcher focused before 2240 s |
+| `-smp 4`, `thread=multi` (MTTCG) | 4 | 515 s | **2.76** | QEMU got ~2.1 of its 4 threads (VM load 12–14) |
+
+(boot_completed from the kernel timestamp of init's "processing action
+(sys.boot_completed=1)", which under TCG without icount is wall time.)
+With 4 vCPUs the guest still shows CPU pressure "some" 73% (avg300) and 7%
+idle time: 4 vCPUs are not enough to drain Android's run queue.
 
 - With one vCPU, CPU pressure "some" (at least one runnable task waiting
   for the CPU) is **94% of the whole boot** (1362 of 1442 s up to
@@ -118,7 +128,11 @@ What it needs, by area:
   need determinism) but the timeline is best effort.
 - **Gain.** Bounded by the guest's parallelism (plenty, above) and by
   contention (device lock, shootdowns, invalidations, atomics). QEMU's MTTCG
-  on the same image: TBD-MTTCG-GAIN.
+  on the same image: 1.74x with 2 vCPUs, 2.76x with 4 (on a VM where it
+  got about 2.1 host threads of the 4), with guest code under TCG costing
+  roughly what it costs under our JIT. Expect less for Vetro at first (the
+  device lock, shootdowns and an atomic poll per back-edge), but the
+  guest's parallelism is not the limit.
 - **Cost.** Very high and permanent: the interpreter and the JIT (barriers,
   atomics, polled limits), the MMU (shootdown), the machine (per-CPU state,
   the lock), the platform (GIC, PSCI, timers, FDT), vetro-wasm (threads
@@ -201,10 +215,79 @@ thread=single`). **Maintenance burden: 3/5** (the SMP machine model).
   reproducible run to run with the flag on.
 
 ### Results of the prototype
-TBD-RESULTS
+**Node 22 / V8** (`tools/aosp/android-perf.mjs`, the prebuilt snapshot, both
+runs at the same time on the build VM at load 10–14; same vetro-wasm; wall /
+CPU of all the process's threads):
+
+| Phase | guest | instructions | sync wall / CPU | Worker wall / CPU |
+|---|---|---|---|---|
+| adb ready | 42.5 s | 4251 M | 243.4 / 244.1 s | 240.3 / 252.6 s |
+| launcher idle | 20 s | 2001 M | 196.7 / 187.3 s | 197.0 / 198.0 s |
+| `adb push` | 1.8 s | 178 M | 9.6 / 9.8 s | 9.6 / 10.2 s |
+| `pm install` | 91.3 s | 9132 M | 389.8 / 395.7 s | 389.6 / 415.3 s |
+| resolve-activity | 1.6 s | 162 M | 13.0 / 12.9 s | 13.3 / 14.2 s |
+| `am start -W` | 45.4 s | 4535 M | 422.0 / 392.2 s | 407.4 / 425.0 s |
+| focused | 5.2 s | 518 M | 46.6 / 40.6 s | 40.9 / 40.7 s |
+| app idle | 20 s | 2001 M | 252.6 / 226.6 s | 245.6 / 257.7 s |
+| **total** | | | **1586 s** | **1556 s (-1.9%)** |
+
+- Every phase ran the same instructions (the host's actions depend only on
+  the guest, so this is the guest-visible parity check on the real workload).
+- The machine thread no longer compiles: 91.4 s of `new WebAssembly.Module`
+  + `Instance` (5.8% of the run: 67 thousand modules, 850 MB of WASM, 8 code
+  budget resets) became 9.4 s of instantiation. The Worker spent 245 s: it
+  compiles every region eagerly, where lazy compilation skipped the entries
+  never taken.
+- The gain in wall time is smaller than the time removed (-1.9% against
+  -5.2% of the thread's work): while a module is in the Worker its regions
+  run in the interpreter (interpreted steps 1.5x, e.g. 178 M against 116 M in
+  `pm install`), the module arrives only at the next quantum boundary (1 M
+  instructions, ~50 ms at these speeds), and on this oversubscribed VM the
+  Worker competes with the machine thread for a core.
+
+**Headless Chrome** (`tools/aosp/chrome-jit-bg.mjs`: the app resumes the
+prebuilt snapshot from OPFS, both variants at the same time, guest time
+executed in the first 240 s of wall time after the restore):
+
+| Round | sync | Worker | ratio |
+|---|---|---|---|
+| 1 | 32.8 s guest (13.7 MIPS) | 34.2 s guest (14.2 MIPS) | 1.041 |
+| 2 | 50.3 s guest (20.9 MIPS) | 51.0 s guest (21.2 MIPS) | 1.014 |
+TBD-CHROME2
+
+**Guest kernel boot in Node** (Mac, 3 interleaved runs, all code new, the
+worst case): sync 1.63–1.94 s, Worker 1.89–2.22 s (+5–20%): in a two-second
+boot almost every region is freshly compiled, so the time it spends in the
+interpreter waiting for its module outweighs the compilation saved. The
+M4 threshold keeps being measured with the synchronous JIT.
+
+In short: correct, cheap to keep, 1–4% on Android in steady state, a loss on
+compile-bound short runs. It stays behind the flag.
 
 ### The recommendation for the big lever
-TBD-RECOMMENDATION
+The lever is **(a), in fast mode, built in three steps**, each useful and
+verifiable on its own:
+1. **Threads build and isolation** (burden low): vetro-wasm with atomics and
+   a shared memory, COOP/COEP on our own host (`vetro.lol`; the shim only for
+   Pages), still one vCPU. Measure the single-thread cost of the shared
+   build on the Android workload (expected small: V8 emits the same plain
+   loads and stores). The background compiler of this ADR then moves the
+   Rust translator too (it can read guest RAM from the shared memory).
+2. **SMP machine model, deterministic** (option b): N vCPUs round-robin on
+   one thread, GIC redistributors, PSCI CPU_ON, per-CPU timers, snapshot
+   format with N CPUs. Checked against QEMU `-smp 2 -accel tcg,thread=single`
+   (same boot log) and with record & replay identical. No speedup yet; the
+   deterministic mode stays the default forever.
+3. **Parallel vCPUs (fast mode)**: one Worker per vCPU, atomics for
+   barriers/exclusives/LSE, polled exit requests, TLB shootdown, the device
+   lock; opt-in, replay off, litmus tests as the differential suite. QEMU's
+   numbers on this image (1.74x at 2 vCPUs, 2.76x at 4) are the target to
+   approach.
+
+Everything in (c) other than the JIT prototype is either already off the
+machine thread (I/O, ADR 0037's presentation) or a UX gain (parallel
+snapshot compression, worth doing after step 1, when RAM pages can be read
+from the shared memory by Workers without a copy).
 
 ## Verification
 - `vetro-jit-native` `background_compilation_keeps_the_execution`: 200 random

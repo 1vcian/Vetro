@@ -92,7 +92,8 @@ run(async () => {
       console.log(`prebuilt restored in ${(boot.ms / 1000).toFixed(1)} s`);
       // Let the app finish writing the snapshot into OPFS.
       await sleep(20_000);
-      await closeChrome(proc, cdp, null);
+      // closeChrome deletes the profile it is given: not the template.
+      await closeChrome(proc, cdp, join(dir, 'chrome-none'));
     }
     for (let i = 0; i < ROUNDS; i++) {
       const [sync, bg] = await Promise.all([measure(chrome, 'sync', url), measure(chrome, 'bg', `${url}&jitbg=1`)]);
