@@ -983,3 +983,59 @@ fn tlbi_by_va_forgets_the_whole_block() {
         assert!(s.jit_steps > 500 && s.tlbi_partial > 50, "seed {seed}: test too weak: {s:?}");
     }
 }
+
+/// LDTR/STTR at EL1 in regions (M4): through the host with the permissions
+/// of EL0, never through the software TLB. On a page EL0 may use they
+/// succeed; on an EL1-only page they fault (a permission fault the
+/// interpreter takes), a store to a read-only page too. Same exceptions,
+/// state and RAM as the interpreter, with the instructions really run in
+/// regions. Fails if the host checks them with the permissions of EL1
+/// (tried).
+#[test]
+fn ldtr_sttr_at_el1_use_el0_permissions() {
+    let l3 = TABLES + 0x2000;
+    let pte = |ram: &[u8], i: u64| {
+        let o = (l3 + 8 * i - RAM_BASE) as usize;
+        u64::from_le_bytes(ram[o..o + 8].try_into().unwrap())
+    };
+    let kind = |d: u64, ap: u64| d & 3 == VALID_PAGE && d & (1 << 2) == ATTR_NORMAL && d & (0b11 << 6) == ap;
+    let mut checked = 0;
+    for seed in 0..400 {
+        let (mut cpu, mut ram) = setup(seed);
+        if cpu.sys.el != 1 {
+            continue;
+        }
+        let find = |ap: u64| (0..512).find(|&i| kind(pte(&ram, i), ap)).map(|i| DATA + i * 0x1000);
+        let (Some(all), Some(el1), Some(ro)) = (find(AP_RW_ALL), find(AP_RW_EL1), find(AP_RO_ALL)) else {
+            continue;
+        };
+        let prog = [
+            0xf8400820u32, // ldtr x0, [x1]
+            0xf8400862,    // ldtr x2, [x3]
+            0xf80008a4,    // sttr x4, [x5]
+            0xf8000864,    // sttr x4, [x3]
+            0x38403826,    // ldtrb w6, [x1, #0x3]
+            0x91000484,    // add x4, x4, #0x1
+            0x17fffffa,    // b 0x0
+        ];
+        let o = (START - RAM_BASE) as usize;
+        for (k, w) in prog.iter().enumerate() {
+            ram[o + 4 * k..o + 4 * k + 4].copy_from_slice(&w.to_le_bytes());
+        }
+        cpu.sys.sctlr_el1 &= !(sctlr::A | sctlr::SA);
+        cpu.x[1] = all + 0x40;
+        // EL1-only, then read-only for the store to x5.
+        cpu.x[3] = el1 + 0x80;
+        cpu.x[5] = if seed % 2 == 0 { ro + 0x10 } else { all + 0x10 };
+        let want = run_interp(cpu.clone(), ram.clone());
+        assert!(want.events.len() > 100, "seed {seed}: the EL1-only accesses must fault");
+        let (got, s) = run_jit(cpu, &ram, seed);
+        assert_eq!(got, want, "seed {seed}: interpreter and JIT differ ({s:?})");
+        assert!(s.jit_steps > 500 && s.faults > 50, "seed {seed}: not run in regions: {s:?}");
+        checked += 1;
+        if checked == 8 {
+            break;
+        }
+    }
+    assert!(checked >= 4, "only {checked} suitable cases");
+}

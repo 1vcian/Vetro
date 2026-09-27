@@ -19,8 +19,10 @@
 //   --idle=S         guest seconds of launcher (and app) idle (default 20)
 //   --profile        interpreter instruction classes (VETRO_JIT_PROFILE=1 does the same)
 //   --no-jit         interpreter only
+//   --threshold=N    JIT hot threshold (default 64, the app's)
 //   --cold=S         cold boot for S guest seconds instead of the restore
 //   --restore-only   stops after the restore (to profile it)
+//   --stop-after=P   stops after phase P (e.g. "adb ready")
 //   --diag           after the launcher idle: `top` in the guest (changes the guest's work)
 //   --out=FILE       measurements as JSON (default target/aosp/perf.json)
 //
@@ -163,7 +165,7 @@ async function main() {
     writeFileSync(outPath, `${JSON.stringify(res, null, 1)}\n`);
     return;
   }
-  if (jit) m.setJit(64, 16, { profile: profile && !!exports.vetro_machine_set_jit_with });
+  if (jit) m.setJit(Number(arg('threshold', 64)), 16, { profile: profile && !!exports.vetro_machine_set_jit_with });
 
   // Phase accounting.
   let mark = null;
@@ -192,6 +194,7 @@ async function main() {
     const cpuMs = p.wallMs - p.diskWaitMs;
     p.mips = cpuMs > 0 ? +(ran / cpuMs / 1000).toFixed(1) : null;
     res.phases.push(p);
+    if (arg('stop-after', null) === name) stopNow = true;
     const j = p.jit;
     log(`== ${name}: ${(p.wallMs / 1000).toFixed(1)} s wall, ${(p.cpuMs / 1000).toFixed(1)} s CPU (disk wait ${(p.diskWaitMs / 1000).toFixed(1)} s), ${p.guestSecs.toFixed(1)} s guest, ` +
       `${(ran / 1e6).toFixed(0)} M executed (${p.mips} MIPS), interp ${((p.perf?.interpSteps ?? 0) / 1e6).toFixed(1)} M, WFI skip ${((p.perf?.wfiSteps ?? 0) / 1e6).toFixed(0)} M` +
@@ -202,6 +205,7 @@ async function main() {
   };
 
   // The loop: quanta of 1 M instructions, disks served, host flow between quanta.
+  let stopNow = false;
   let flow = null;
   let flowDone = false;
   let flowError = null;
@@ -286,7 +290,7 @@ async function main() {
     end(`cold boot ${cold} s`);
   } else {
     flow = script().then(() => (flowDone = true), (e) => (flowError = e));
-    while (!flowDone) {
+    while (!flowDone && !stopNow) {
       if (flowError) throw flowError;
       await step();
       adb?.pump();

@@ -208,7 +208,7 @@ impl SysTarget {
 pub fn kind_in(insn: &Insn, sys: Option<SysTarget>) -> Kind {
     if let Some(s) = sys {
         match *insn {
-            Insn::Wfi | Insn::LdSt { unpriv: true, .. } => return Kind::Unsupported,
+            Insn::Wfi => return Kind::Unsupported,
             // CPACR_EL1.FPEN trap: to the interpreter.
             Insn::Simd(_) if !s.fp => return Kind::Unsupported,
             Insn::CacheMaint if s.el == 0 => return Kind::Unsupported,
@@ -611,6 +611,11 @@ fn n_rt() -> u32 {
 /// aligned to 16. The host treats the half as unaligned (SCTLR_EL1.A,
 /// Device memory), as the interpreter treats the whole access.
 pub const SIZE_PART_OF_MISALIGNED: u32 = 0x80;
+
+/// Bit of `size` for `env.ld`/`env.st` (system mode): LDTR/STTR at EL1, an
+/// access with the permissions of EL0 (alignment and endianness still those
+/// of EL1, like `SysMem::read_unpriv`). Never through the software TLB.
+pub const SIZE_UNPRIV: u32 = 0x100;
 
 fn f_tlb(base: u32, el: u8, bytes: u32) -> u32 {
     base + el as u32 * 4 + bytes.trailing_zeros()
@@ -1870,6 +1875,28 @@ impl Tx {
         self.f.end();
     }
 
+    /// Load through the host with `size` (bytes and flag bits such as
+    /// [`SIZE_UNPRIV`]): the value on the stack, FAULT exit on a fault.
+    fn ld_slow(&mut self, addr: u32, size: u32) {
+        self.f.local_get(L_STATE).local_get(addr);
+        self.f.i32_const(size as i32);
+        self.slow_args();
+        self.f.call(F_LD_SLOW);
+        self.f.if_(BLOCK_EMPTY);
+        self.exit_fault_saved();
+        self.f.end();
+    }
+
+    /// Store through the host with `size` (bytes and flag bits), like
+    /// [`st`](Self::st) for the rest.
+    fn st_slow(&mut self, addr: u32, size: u32, val: u32, stop: Option<u32>) {
+        self.f.local_get(L_STATE).local_get(addr);
+        self.f.i32_const(size as i32).local_get(val);
+        self.slow_args();
+        self.f.call(F_ST_SLOW);
+        self.st_result(stop);
+    }
+
     /// Store of `bytes` bytes of the value in `val` at the address in `addr`
     /// (DC ZVA with `bytes` = [`ZVA_BYTES`], always through the host); if it is a
     /// fault it exits with FAULT. A write to watched code (STOP): with
@@ -2880,10 +2907,13 @@ impl Tx {
                 // Device memory like `zero_block`.
                 self.st(t64(4), ZVA_BYTES, t64(7), None);
             }
-            Insn::LdSt { size, op: mop, addr, rt, rn, unpriv: _ } => {
+            Insn::LdSt { size, op: mop, addr, rt, rn, unpriv } => {
                 if mop == MemOp::Prefetch {
                     return;
                 }
+                // LDTR/STTR at EL1: EL0 permissions, always through the host.
+                // At EL0 they are ordinary accesses.
+                let unpriv = unpriv && self.sys.is_some_and(|s| s.el == 1);
                 self.sp_check(rn);
                 let was_ok = self.sp_ok;
                 let wb_off = if let AddrMode::Imm { offset, .. } = addr { offset } else { 0 };
@@ -2922,7 +2952,10 @@ impl Tx {
                     MemOp::Store => {
                         self.get_x(rt);
                         self.f.local_set(t64(7));
-                        if writeback {
+                        if unpriv {
+                            debug_assert!(!writeback, "LDTR/STTR have no writeback");
+                            self.st_slow(t64(4), bytes | SIZE_UNPRIV, t64(7), None);
+                        } else if writeback {
                             self.st(t64(4), bytes, t64(7), Some(0));
                             self.f.local_get(t64(6));
                             self.set_xsp(rn);
@@ -2933,7 +2966,11 @@ impl Tx {
                         }
                     }
                     MemOp::Load { .. } => {
-                        self.ld(t64(4), bytes);
+                        if unpriv {
+                            self.ld_slow(t64(4), bytes | SIZE_UNPRIV);
+                        } else {
+                            self.ld(t64(4), bytes);
+                        }
                         self.extend_load(size, mop);
                         self.set_x(rt);
                         if writeback {
@@ -3456,8 +3493,9 @@ mod tests {
         assert_eq!(s(true, true).branch_addr(t), 0x0000_0000_0040_1000);
     }
 
-    /// In system mode WFI, LDTR/STTR and cache maintenance at
-    /// EL0 stay with the interpreter.
+    /// In system mode WFI and cache maintenance at EL0 stay with the
+    /// interpreter; LDTR/STTR are translated (at EL1 through the host with
+    /// the permissions of EL0, `SIZE_UNPRIV`).
     #[test]
     fn interpreter_only_insns_in_system_mode() {
         let el0 = Some(SysTarget { el: 0, tbi0: false, tbi1: false, spsel: false, fp: true, cntk: 0 });
@@ -3469,7 +3507,8 @@ mod tests {
         let ldtr = decode(0xf8400820); // ldtr x0, [x1]
         assert!(matches!(ldtr, Insn::LdSt { unpriv: true, .. }), "{ldtr:?}");
         assert_eq!(kind_in(&ldtr, None), Kind::Linear);
-        assert_eq!(kind_in(&ldtr, el1), Kind::Unsupported);
+        assert_eq!(kind_in(&ldtr, el1), Kind::Linear);
+        assert_eq!(kind_in(&ldtr, el0), Kind::Linear);
     }
 
     /// Size of the generated code (ADR 0024): compilation in V8 weighs

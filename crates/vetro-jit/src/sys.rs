@@ -582,7 +582,9 @@ impl<M> SysHost<'_, M> {
         // Half of a 16-byte access not aligned to 16 (`SIZE_PART_OF_MISALIGNED`):
         // the permissions and alignment are those of the whole access.
         let part = size & translate::SIZE_PART_OF_MISALIGNED != 0;
-        let size = size & !translate::SIZE_PART_OF_MISALIGNED;
+        // LDTR/STTR at EL1: the permissions of EL0.
+        let el = if size & translate::SIZE_UNPRIV != 0 { 0 } else { self.el };
+        let size = size & !(translate::SIZE_PART_OF_MISALIGNED | translate::SIZE_UNPRIV);
         let zva = size == ZVA_BYTES;
         let aligned = !zva && !part && va & (size as u64 - 1) == 0;
         // Like `SysMem::access`: big-endian not implemented, alignment
@@ -597,7 +599,7 @@ impl<M> SysHost<'_, M> {
         }
         let mut ram = RamOnly(&mut *self.phys);
         let mut bus = MmuBus::new(&mut *self.mmu, &mut ram);
-        let pa = bus.translate(&self.regs, va, AccessReq { access, el: self.el, aligned }).map_err(|_| ())?;
+        let pa = bus.translate(&self.regs, va, AccessReq { access, el, aligned }).map_err(|_| ())?;
         Ok((pa, aligned))
     }
 
@@ -629,19 +631,24 @@ impl<M> Host for SysHost<'_, M> {
     fn ld(&mut self, mem: &mut [u8], va: u64, size: u32) -> Result<u64, ()> {
         self.cache.stats.host_lds += 1;
         let (pa, aligned) = self.translate(va, size, Access::Read)?;
-        let size = size & !translate::SIZE_PART_OF_MISALIGNED;
+        let unpriv = size & translate::SIZE_UNPRIV != 0;
+        let size = size & !(translate::SIZE_PART_OF_MISALIGNED | translate::SIZE_UNPRIV);
         let mut b = [0u8; 8];
         if !self.phys.ram_read(pa, &mut b[..size as usize]) {
             return Err(());
         }
-        self.fill(mem, va, pa, false, aligned);
+        // Checked with the permissions of EL0: not an entry for this EL.
+        if !unpriv {
+            self.fill(mem, va, pa, false, aligned);
+        }
         Ok(u64::from_le_bytes(b))
     }
 
     fn st(&mut self, mem: &mut [u8], va: u64, size: u32, value: u64) -> Result<bool, ()> {
         self.cache.stats.host_sts += 1;
         let (pa, aligned) = self.translate(va, size, Access::Write)?;
-        let size = size & !translate::SIZE_PART_OF_MISALIGNED;
+        let unpriv = size & translate::SIZE_UNPRIV != 0;
+        let size = size & !(translate::SIZE_PART_OF_MISALIGNED | translate::SIZE_UNPRIV);
         if size == ZVA_BYTES {
             return self.phys.ram_write(pa, &[0u8; ZVA_BYTES as usize]).ok_or(());
         }
@@ -649,7 +656,9 @@ impl<M> Host for SysHost<'_, M> {
             None => Err(()),
             Some(true) => Ok(true),
             Some(false) => {
-                self.fill(mem, va, pa, true, aligned);
+                if !unpriv {
+                    self.fill(mem, va, pa, true, aligned);
+                }
                 Ok(false)
             }
         }
