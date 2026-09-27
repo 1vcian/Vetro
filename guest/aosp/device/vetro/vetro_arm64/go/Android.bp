@@ -1,0 +1,31 @@
+// Vetro "Go" profile (ADR 0037, low-RAM profile). In the vetro_arm64 Soong
+// namespace (the directory above).
+
+// Boot-time switch, installed on every Vetro product: with
+// androidboot.vetro.profile=go the low-RAM defaults apply to the regular
+// image too (see init.vetro-go.rc).
+prebuilt_etc {
+    name: "init.vetro-go.rc",
+    src: "init.vetro-go.rc",
+    sub_dir: "init",
+    vendor: true,
+}
+
+// The vetro_arm64_go product only: apps it does not install. A file module
+// whose `overrides` drops them from the inherited PRODUCT_PACKAGES (the same
+// mechanism as VetroFrameworkOverlay with QuickSearchBox, ADR 0030).
+prebuilt_etc {
+    name: "VetroGoRemovals",
+    src: "go-removals.txt",
+    product_specific: true,
+    overrides: [
+        "BasicDreams",
+        "PhotoTable",
+        "EasterEgg",
+        "Traceur",
+        "ThreadNetworkDemoApp",
+        "DeviceAsWebcam",
+        "Music",
+        "Calendar",
+    ],
+}

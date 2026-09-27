@@ -1,0 +1,19 @@
+# Vetro "Go" profile, boot-time part (ADR 0037): on the regular image,
+# androidboot.vetro.profile=go (from the host's bootloader parameters) turns
+# on Android Go's low-RAM defaults before zygote starts. The values are those
+# of build/make/target/board/go_defaults_common.prop and
+# go_defaults_common.mk. ro.* properties can be set here only because the
+# regular image does not define them; the vetro_arm64_go product defines them
+# at build time instead (and removes apps, which a boot switch cannot do).
+
+on early-init && property:ro.boot.vetro.profile=go
+    setprop ro.config.low_ram true
+    setprop ro.lmk.critical_upgrade true
+    setprop ro.lmk.upgrade_pressure 40
+    setprop ro.lmk.downgrade_pressure 60
+    setprop ro.lmk.kill_heaviest_task false
+    setprop dalvik.vm.heapgrowthlimit 128m
+    setprop dalvik.vm.heapsize 256m
+    setprop pm.dexopt.downgrade_after_inactive_days 10
+    setprop ro.vetro.profile go
+    write /dev/kmsg "VETRO: low-RAM (go) profile"

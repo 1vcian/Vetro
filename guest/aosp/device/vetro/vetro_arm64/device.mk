@@ -15,6 +15,10 @@ PRODUCT_PACKAGES += \
 PRODUCT_COPY_FILES += \
     device/vetro/vetro_arm64/init.vetro.rc:$(TARGET_COPY_OUT_VENDOR)/etc/init/init.vetro.rc
 
+# Low-RAM "Go" defaults switchable at boot (androidboot.vetro.profile=go,
+# ADR 0037); the vetro_arm64_go product sets them at build time.
+PRODUCT_PACKAGES += init.vetro-go.rc
+
 # Network: eth0 stays eth0 and EthernetService manages it with DHCP (Vetro's
 # stack or QEMU's slirp). Cuttlefish renames it and goes through the
 # simulated Wi-Fi towards an OpenWRT on the host, which isn't there.
