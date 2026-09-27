@@ -66,7 +66,7 @@ use std::rc::Rc;
 
 use vetro_cpu::sys::{AccessReq, SysBus, TranslationRegs, cntkctl, cpacr, sctlr};
 use vetro_cpu::{Access, Cpu};
-use vetro_mmu::{BusError, Mmu, MmuBus, PhysMemory, tcr};
+use vetro_mmu::{BusError, Inval, Mmu, MmuBus, PhysMemory, tcr};
 
 use crate::engine::{Engine, Host, TABLE_SIZE};
 use crate::profile::Profile;
@@ -188,6 +188,21 @@ pub struct SysJitStats {
     pub tlb_fills: u64,
     /// Engine resets.
     pub resets: u64,
+    /// Accesses that reached the host (`env.ld`/`env.st`: software TLB miss,
+    /// fault, MMIO).
+    pub host_lds: u64,
+    pub host_sts: u64,
+    /// Why the epoch changed: translation registers, TLBI, code
+    /// invalidation.
+    pub epochs_regs: u64,
+    pub epochs_tlbi: u64,
+    pub epochs_code: u64,
+    /// Changes of the table bases (TTBR0/TTBR1 without the ASID) between runs.
+    pub base_switches: u64,
+    /// TLBIs by VA handled without a new epoch (runs that saw some).
+    pub tlbi_partial: u64,
+    /// Bytes of WebAssembly compiled (modules and dispatcher).
+    pub wasm_bytes: u64,
 }
 
 /// Outcome of [`SysJit::run`].
@@ -245,6 +260,48 @@ fn flags(sys: SysTarget) -> u8 {
         | (sys.spsel as u8) << 3
         | (sys.fp as u8) << 4
         | (sys.cntk & 3) << 5
+}
+
+/// VA[55:30]: the 1 GiB region (the largest block with 4 KiB granules)
+/// that a TLBI by VA may have changed.
+const RANGE: u64 = ((1 << 56) - 1) & !((1 << 30) - 1);
+
+/// ASID field of TTBR0_EL1/TTBR1_EL1.
+const TTBR_ASID: u64 = 0xffff << 48;
+
+/// Half of the address space of `va`: 1 for TTBR1 (bit 55, which selects
+/// the table with and without TBI; with TBI off an address whose top bits
+/// differ from bit 55 does not translate at all).
+fn half(va: u64) -> u8 {
+    (va >> 55 & 1) as u8
+}
+
+/// Software TLB entries filled for one (EL, half of the address space),
+/// with the table base they were filled under.
+#[derive(Default)]
+struct TlbGroup {
+    key: Option<u64>,
+    /// Offsets in the engine's memory of the entries filled.
+    filled: Vec<u32>,
+    /// Too many to track: flush by scanning.
+    overflow: bool,
+}
+
+impl TlbGroup {
+    /// Entries tracked at most before flushing by scanning.
+    const MAX: usize = 1024;
+
+    fn note(&mut self, e: u32) {
+        if self.overflow {
+            return;
+        }
+        if self.filled.len() >= Self::MAX {
+            self.overflow = true;
+            self.filled = Vec::new();
+        } else {
+            self.filled.push(e);
+        }
+    }
 }
 
 /// Bits of the region parameters in the context (`ctx = epoch << CTX_SHIFT
@@ -340,7 +397,17 @@ struct Cache<M> {
     /// Block requests pending since the last compilation.
     pending_hits: usize,
     next_slot: u32,
-    epoch: u32,
+    /// Context numbers of the jump cache: one per (EL, TTBR0 base, TTBR1
+    /// base) since the last [`SysJit::new_epoch`], which clears them (ADR
+    /// 0035).
+    ids: FastMap<(u8, u64, u64), u32>,
+    /// Last context number handed out.
+    next_id: u32,
+    /// Table bases (TTBR0/TTBR1 without the ASID) of the current regime.
+    lo: u64,
+    hi: u64,
+    /// Software TLB groups, index `el * 2 + half`.
+    groups: [TlbGroup; 4],
     hot_threshold: u32,
     /// Address of `JitState` in the engine's memory.
     at: usize,
@@ -348,11 +415,21 @@ struct Cache<M> {
 }
 
 impl<M> Cache<M> {
-    /// Context of the jump cache entries valid now for `el`.
     /// Context of the jump cache entries valid now for the
-    /// parameters `fl` ([`flags`]: EL, TBI, SPSel, FP).
-    fn ctx(&self, fl: u8) -> u32 {
-        self.epoch << CTX_SHIFT | fl as u32
+    /// parameters `fl` ([`flags`]: EL, TBI, SPSel, FP). The fetch
+    /// translation depends on the table bases and on what
+    /// [`SysJit::sync_regime`] compares: the number is the same whenever the
+    /// regime comes back to the same bases, so the entries survive the
+    /// TTBR0 switches of every kernel entry and exit (Linux's software PAN:
+    /// the kernel runs with the reserved TTBR0, user code with its own).
+    fn ctx(&mut self, fl: u8) -> u32 {
+        let key = (fl & 1, self.lo, self.hi);
+        let next = &mut self.next_id;
+        let id = *self.ids.entry(key).or_insert_with(|| {
+            *next += 1;
+            *next
+        });
+        id << CTX_SHIFT | fl as u32
     }
 
     /// Looks up the block of `pc` for the physical page the CPU would
@@ -457,7 +534,8 @@ pub struct SysJit<E: Engine> {
     cfg: SysJitConfig,
     dispatcher: Option<E::Module>,
     cache: Cache<E::Module>,
-    regs: Option<TranslationRegs>,
+    /// SCTLR, TCR and MAIR of the last run: a change invalidates everything.
+    common: Option<(u64, u64, u64)>,
     flushes: u64,
     /// RAM as seen by the engine: (start pa, address in `env.mem`, bytes).
     ram: Option<(u64, u32, u64)>,
@@ -536,10 +614,12 @@ impl<M> SysHost<'_, M> {
         let vpage = va & !0xfff;
         let idx = ((va >> 12) & (area::TLB_ENTRIES as u64 - 1)) as usize * 16;
         let tables = [Some(area::tlb(self.el, write)), (!aligned).then(|| area::tlb_u(self.el, write))];
+        let g = &mut self.cache.groups[(self.el * 2 + half(va)) as usize];
         for t in tables.into_iter().flatten() {
             let e = self.cache.at + t as usize + idx;
             mem[e..e + 8].copy_from_slice(&vpage.to_le_bytes());
             mem[e + 8..e + 16].copy_from_slice(&host.wrapping_sub(vpage).to_le_bytes());
+            g.note(e as u32);
         }
         self.cache.stats.tlb_fills += 1;
     }
@@ -547,6 +627,7 @@ impl<M> SysHost<'_, M> {
 
 impl<M> Host for SysHost<'_, M> {
     fn ld(&mut self, mem: &mut [u8], va: u64, size: u32) -> Result<u64, ()> {
+        self.cache.stats.host_lds += 1;
         let (pa, aligned) = self.translate(va, size, Access::Read)?;
         let size = size & !translate::SIZE_PART_OF_MISALIGNED;
         let mut b = [0u8; 8];
@@ -558,6 +639,7 @@ impl<M> Host for SysHost<'_, M> {
     }
 
     fn st(&mut self, mem: &mut [u8], va: u64, size: u32, value: u64) -> Result<bool, ()> {
+        self.cache.stats.host_sts += 1;
         let (pa, aligned) = self.translate(va, size, Access::Write)?;
         let size = size & !translate::SIZE_PART_OF_MISALIGNED;
         if size == ZVA_BYTES {
@@ -612,12 +694,16 @@ impl<E: Engine> SysJit<E> {
                 pending: Vec::new(),
                 pending_hits: 0,
                 next_slot: 0,
-                epoch: 1,
+                ids: FastMap::default(),
+                next_id: 0,
+                lo: 0,
+                hi: 0,
+                groups: Default::default(),
                 hot_threshold: cfg.hot_threshold,
                 at: cfg.state_addr as usize,
                 stats: SysJitStats::default(),
             },
-            regs: None,
+            common: None,
             flushes: 0,
             ram: None,
             ram_key: None,
@@ -700,37 +786,94 @@ impl<E: Engine> SysJit<E> {
         let at = self.cache.at;
         let m = self.engine.memory();
         m[at..at + area::SIZE as usize].fill(0);
-        self.flush_tlb(false);
-    }
-
-    /// Flushes the software TLB (only the write tables if `writes_only`).
-    fn flush_tlb(&mut self, writes_only: bool) {
-        let at = self.cache.at;
-        let m = self.engine.memory();
-        for el in 0..2u8 {
-            for write in [false, true] {
-                if writes_only && !write {
-                    continue;
-                }
-                for table in [area::tlb(el, write), area::tlb_u(el, write)] {
-                    let t = at + table as usize;
-                    for i in 0..area::TLB_ENTRIES as usize {
-                        m[t + i * 16..t + i * 16 + 8].copy_from_slice(&area::TLB_INVALID.to_le_bytes());
-                    }
-                }
-            }
+        for i in 0..8 * area::TLB_ENTRIES as usize {
+            let e = at + area::TLB as usize + i * 16;
+            m[e..e + 8].copy_from_slice(&area::TLB_INVALID.to_le_bytes());
+        }
+        for g in &mut self.cache.groups {
+            *g = TlbGroup::default();
         }
         self.cache.stats.tlb_flushes += 1;
     }
 
+    /// Flushes the software TLB (only the write tables if `writes_only`).
+    fn flush_tlb(&mut self, writes_only: bool) {
+        for g in 0..4 {
+            self.flush_group(g, writes_only);
+        }
+        self.cache.stats.tlb_flushes += 1;
+    }
+
+    /// Empties TLB group `g` (`el * 2 + half`): the entries it filled, or,
+    /// if it lost count, every entry of its EL whose page is in its half.
+    fn flush_group(&mut self, g: usize, writes_only: bool) {
+        let at = self.cache.at;
+        let group = std::mem::take(&mut self.cache.groups[g]);
+        let m = self.engine.memory();
+        let is_write = |e: usize| ((e - at - area::TLB as usize) / area::TLB_SIZE as usize) & 1 == 1;
+        let invalid = area::TLB_INVALID.to_le_bytes();
+        let mut kept = TlbGroup { key: group.key, ..TlbGroup::default() };
+        if group.overflow {
+            let (el, h) = ((g / 2) as u8, (g % 2) as u8);
+            for write in [false, true] {
+                if writes_only && !write {
+                    continue;
+                }
+                for t in [area::tlb(el, write), area::tlb_u(el, write)] {
+                    for i in 0..area::TLB_ENTRIES as usize {
+                        let e = at + t as usize + i * 16;
+                        let tag = state::read_u64(m, e, 0);
+                        if tag != area::TLB_INVALID && half(tag) == h {
+                            m[e..e + 8].copy_from_slice(&invalid);
+                        }
+                    }
+                }
+            }
+            // The read tables were not looked at: the count stays lost.
+            kept.overflow = writes_only;
+        } else {
+            for &e in &group.filled {
+                let e = e as usize;
+                if writes_only && !is_write(e) {
+                    kept.filled.push(e as u32);
+                } else {
+                    m[e..e + 8].copy_from_slice(&invalid);
+                }
+            }
+        }
+        self.cache.groups[g] = kept;
+    }
+
+    /// After TLBIs by VA: forgets the software TLB entries and the jump cache
+    /// entries whose page is in one of `ranges` (VA[55:0] & [`RANGE`]).
+    fn invalidate_ranges(&mut self, ranges: &[u64]) {
+        let at = self.cache.at;
+        let m = self.engine.memory();
+        let hit = |va: u64| ranges.contains(&(va & RANGE));
+        for i in 0..8 * area::TLB_ENTRIES as usize {
+            let e = at + area::TLB as usize + i * 16;
+            let tag = state::read_u64(m, e, 0);
+            if tag != area::TLB_INVALID && hit(tag) {
+                m[e..e + 8].copy_from_slice(&area::TLB_INVALID.to_le_bytes());
+            }
+        }
+        for i in 0..area::JC_ENTRIES as usize {
+            let e = at + area::JC as usize + i * 16;
+            // Context 0 is never handed out: a zeroed entry matches nothing.
+            if state::read_u32(m, e, 8) != 0 && hit(state::read_u64(m, e, 0)) {
+                m[e..e + 16].fill(0);
+            }
+        }
+    }
+
     /// New epoch: the jump cache entries are no longer valid.
     fn new_epoch(&mut self) {
-        self.cache.epoch += 1;
+        self.cache.ids.clear();
         self.cache.stats.epochs += 1;
-        if self.cache.epoch >= 1 << (32 - CTX_SHIFT) {
+        if self.cache.next_id >= (1 << (32 - CTX_SHIFT)) - 1024 {
             let at = self.cache.at + area::JC as usize;
             self.engine.memory()[at..at + area::JC_ENTRIES as usize * 16].fill(0);
-            self.cache.epoch = 1;
+            self.cache.next_id = 0;
         }
     }
 
@@ -756,20 +899,68 @@ impl<E: Engine> SysJit<E> {
         }
         self.dirty.clear();
         if any {
+            self.cache.stats.epochs_code += 1;
             self.new_epoch();
         }
     }
 
-    /// Translation registers changed or TLBI: new epoch and empty
-    /// software TLB.
+    /// The translation regime of this run (ADR 0035). SCTLR, TCR or MAIR
+    /// changed, or a TLBI: new epoch and empty software TLB. The table bases
+    /// (TTBR0 and TTBR1 without the ASID) only select, per half of the
+    /// address space, the context numbers ([`Cache::ctx`]) and the TLB
+    /// entries that are valid: the TLB groups of the current EL filled
+    /// with another base are emptied. The ASID does not change what a walk
+    /// from the same tables gives; like the MMU's TLB, entries become stale
+    /// only if the guest changes the tables without a TLBI.
     fn sync_regime(&mut self, cpu: &Cpu, mmu: &Mmu) {
         let r = translation_regs(cpu);
         let f = mmu.tlb().flushes();
-        if self.regs != Some(r) || self.flushes != f {
-            self.regs = Some(r);
+        let common = (r.sctlr, r.tcr, r.mair);
+        if self.common == Some(common) && self.flushes != f {
+            // Only TLBIs by VA: what they may have changed is within the
+            // largest block around each address (1 GiB with 4 KiB granules).
+            let granule_4k = r.tcr >> 14 & 3 == 0 && r.tcr >> 30 & 3 == 0b10;
+            let ranges: Option<Vec<u64>> =
+                mmu.tlb().invalidations_since(self.flushes).filter(|_| granule_4k).and_then(|it| {
+                    it.map(|i| match i {
+                        Inval::Va(va) => Some(va & RANGE),
+                        Inval::All => None,
+                    })
+                    .collect()
+                });
+            if let Some(mut ranges) = ranges {
+                ranges.sort_unstable();
+                ranges.dedup();
+                self.invalidate_ranges(&ranges);
+                self.cache.stats.tlbi_partial += 1;
+                self.flushes = f;
+            }
+        }
+        if self.common != Some(common) || self.flushes != f {
+            if self.common != Some(common) {
+                self.cache.stats.epochs_regs += 1;
+            } else {
+                self.cache.stats.epochs_tlbi += 1;
+            }
+            self.common = Some(common);
             self.flushes = f;
             self.new_epoch();
             self.flush_tlb(false);
+        }
+        let (lo, hi) = (r.ttbr0 & !TTBR_ASID, r.ttbr1 & !TTBR_ASID);
+        if (lo, hi) != (self.cache.lo, self.cache.hi) {
+            self.cache.stats.base_switches += 1;
+            self.cache.lo = lo;
+            self.cache.hi = hi;
+        }
+        let el = cpu.sys.el.min(1) as usize;
+        for h in 0..2 {
+            let g = el * 2 + h;
+            let key = if h == 0 { lo } else { hi };
+            if self.cache.groups[g].key != Some(key) {
+                self.flush_group(g, false);
+                self.cache.groups[g].key = Some(key);
+            }
         }
     }
 
@@ -974,6 +1165,7 @@ impl<E: Engine> SysJit<E> {
         }
         let blocks: Vec<Region> = self.cache.pending.iter().map(|p| p.block.clone()).collect();
         let wasm = translate::module(&blocks, self.cfg.memory);
+        self.cache.stats.wasm_bytes += wasm.len() as u64;
         let module = match self.engine.compile(&wasm) {
             Ok(m) => m,
             Err(_) => {

@@ -32,5 +32,5 @@ pub use bus::MmuBus;
 pub use fault::{Fault, FaultKind, ec};
 pub use mmu::Mmu;
 pub use regs::{MmuRegs, PAGE_SIZE, sctlr, tcr};
-pub use tlb::{Tlb, TlbiOp};
+pub use tlb::{Inval, Tlb, TlbiOp};
 pub use walk::{BusError, Perms, PhysMemory, Translation};

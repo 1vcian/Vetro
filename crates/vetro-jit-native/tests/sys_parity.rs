@@ -732,3 +732,254 @@ fn daifclr_esce_dopo_l_istruzione() {
     assert_eq!(cpu.x[0], x0.wrapping_add(2));
     assert_eq!(jit.stats().yields, 1);
 }
+
+/// Table bases per half of the address space (ADR 0035): kernel code in
+/// TTBR1, and two TTBR0 tables (different ASIDs) that map the same user
+/// addresses to different code and data. The kernel switches TTBR0 at
+/// every SVC, like Linux's software PAN switches it at every entry and
+/// exit. Jump cache entries and software TLB entries made under one table
+/// must not be used under the other (the user region at `x24` is reached
+/// by chaining from the dispatcher; the loads go through the TLB at EL0 and
+/// at EL1), and the kernel's entries survive the switches. Fails if the
+/// context ignores a table base (TTBR0 for EL0 or for EL1 code in TTBR0),
+/// or if the TLB groups are not emptied on a base change (all tried).
+#[test]
+fn ttbr0_switches_keep_code_and_data_apart() {
+    const K: u64 = 0xffff_ff80_0000_0000;
+    const U: u64 = 0x20_0000;
+    const NG: u64 = 1 << 11;
+    let (l1a, l2a, l3a) = (TABLES, TABLES + 0x1000, TABLES + 0x2000);
+    let (l1b, l2b, l3b) = (TABLES + 0x3000, TABLES + 0x4000, TABLES + 0x5000);
+    let (l1k, l2k) = (TABLES + 0x6000, TABLES + 0x7000);
+    let (ua, da, ub, db) = (DATA, DATA + 0x1000, DATA + 0x2000, DATA + 0x3000);
+    let mut ram = vec![0u8; RAM_LEN];
+    let put = |ram: &mut [u8], pa: u64, bytes: &[u8]| {
+        let o = (pa - RAM_BASE) as usize;
+        ram[o..o + bytes.len()].copy_from_slice(bytes);
+    };
+    let words = |ws: &[u32]| ws.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>();
+    let handler = words(&HANDLER);
+    for off in (0..0x800).step_by(0x80) {
+        put(&mut ram, VBAR + off, &handler);
+    }
+    // Synchronous exception from EL0 (the SVC): switch table, back to EL0.
+    put(
+        &mut ram,
+        VBAR + 0x400,
+        &words(&[
+            0x10000059, // adr x25, 0x8
+            0xd61f0340, // br x26 (EL1 code in TTBR0, different per table)
+            0xf94002e4, // ldr x4, [x23]
+            0x8b0400a5, // add x5, x5, x4
+            0xd1000673, // sub x19, x19, #0x1
+            0xb4000133, // cbz x19, 0x30
+            0x36000073, // tbz w19, #0x0, 0x1c
+            0xd5182015, // msr TTBR0_EL1, x21
+            0x14000002, // b 0x20
+            0xd5182014, // msr TTBR0_EL1, x20
+            0xd5033fdf, // isb
+            0xd5184036, // msr ELR_EL1, x22
+            0xd518401f, // msr SPSR_EL1, xzr
+            0xd69f03e0, // eret
+            0x14000000, // b 0x30
+        ]),
+    );
+    // Kernel entry: table A, to EL0.
+    put(
+        &mut ram,
+        START,
+        &words(&[
+            0xd5182014, // msr TTBR0_EL1, x20
+            0xd5033fdf, // isb
+            0xd5184036, // msr ELR_EL1, x22
+            0xd518401f, // msr SPSR_EL1, xzr
+            0xd69f03e0, // eret
+        ]),
+    );
+    // User code: the same first part, a second part (at U + 0x40) that
+    // differs between the two tables.
+    let first = words(&[
+        0xf94002e1, // ldr x1, [x23]
+        0xd61f0300, // br x24
+    ]);
+    put(&mut ram, ua, &first);
+    put(&mut ram, ub, &first);
+    put(
+        &mut ram,
+        ua + 0x40,
+        &words(&[
+            0x8b010042, // add x2, x2, x1
+            0x91000442, // add x2, x2, #0x1
+            0xf9000ae2, // str x2, [x23, #0x10]
+            0xd4000001, // svc #0
+        ]),
+    );
+    put(
+        &mut ram,
+        ub + 0x40,
+        &words(&[
+            0xca010042, // eor x2, x2, x1
+            0x91000c42, // add x2, x2, #0x3
+            0xf9000ee2, // str x2, [x23, #0x18]
+            0xd4000001, // svc #0
+        ]),
+    );
+    // EL1 code in TTBR0 (like the identity map): it must follow the table too.
+    let (ka, kb) = (DATA + 0x4000, DATA + 0x5000);
+    put(&mut ram, ka, &words(&[0x910004c6, 0xd61f0320])); // add x6, x6, #0x1; br x25
+    put(&mut ram, kb, &words(&[0x910014c6, 0xd61f0320])); // add x6, x6, #0x5; br x25
+    put(&mut ram, da, &0x1111u64.to_le_bytes());
+    put(&mut ram, db, &0x2_2222_0000u64.to_le_bytes());
+    let block = |pa: u64, ap: u64| pa | VALID_BLOCK | AF | SH_INNER | ap | ATTR_NORMAL;
+    let page = |pa: u64| pa | VALID_PAGE | AF | SH_INNER | AP_RW_ALL | ATTR_NORMAL | NG;
+    let kpage = |pa: u64| pa | VALID_PAGE | AF | SH_INNER | AP_RW_EL1 | ATTR_NORMAL | NG;
+    for (l1, l2, l3, code, data, kcode) in [(l1a, l2a, l3a, ua, da, ka), (l1b, l2b, l3b, ub, db, kb)] {
+        put(&mut ram, l3 + 16, &kpage(kcode).to_le_bytes());
+        put(&mut ram, l1, &(l2 | VALID_TABLE).to_le_bytes());
+        put(&mut ram, l2 + 8, &(l3 | VALID_TABLE).to_le_bytes());
+        put(&mut ram, l3, &page(code).to_le_bytes());
+        put(&mut ram, l3 + 8, &page(data).to_le_bytes());
+    }
+    put(&mut ram, l1k, &(l2k | VALID_TABLE).to_le_bytes());
+    put(&mut ram, l2k, &block(RAM_BASE, AP_RW_EL1).to_le_bytes());
+    put(&mut ram, l2k + 8 * 3, &block(CODE, AP_RW_EL1).to_le_bytes());
+
+    let mut cpu = Cpu::new();
+    cpu.reset_system(SysConfig::default());
+    let s = &mut cpu.sys;
+    s.vbar_el1 = K + (VBAR - RAM_BASE);
+    s.mair_el1 = 0x00ff;
+    // T0SZ = T1SZ = 25, 4 KiB granules, 40-bit IPS, ASID from TTBR0 (A1 = 0).
+    s.tcr_el1 = 25
+        | 0b01 << 8
+        | 0b01 << 10
+        | 0b11 << 12
+        | 25 << 16
+        | 0b01 << 24
+        | 0b01 << 26
+        | 0b11 << 28
+        | 0b10 << 30
+        | 0b010 << 32;
+    s.ttbr0_el1 = l1a | 1 << 48;
+    s.ttbr1_el1 = l1k;
+    s.sctlr_el1 |= sctlr::M;
+    s.daif = 0;
+    s.cpacr_el1 = 0b11 << 20;
+    cpu.sys.el = 1;
+    cpu.sys.spsel = true;
+    cpu.pc = K + (START - RAM_BASE);
+    cpu.x[19] = 1000;
+    cpu.x[20] = l1a | 1 << 48;
+    cpu.x[21] = l1b | 2 << 48;
+    cpu.x[22] = U;
+    cpu.x[23] = U + 0x1000;
+    cpu.x[24] = U + 0x40;
+    cpu.x[26] = U + 0x2000;
+
+    let want = run_interp(cpu.clone(), ram.clone());
+    assert!(want.events.len() > 100, "too few SVCs: {:?}", &want.events[..want.events.len().min(4)]);
+    for seed in 0..24 {
+        let (got, s) = run_jit(cpu.clone(), &ram, seed);
+        assert_eq!(got, want, "seed {seed}: interpreter and JIT differ ({s:?})");
+        assert!(
+            s.jit_steps > 500 && s.base_switches > 50 && s.resolves > 0,
+            "seed {seed}: test too weak: {s:?}"
+        );
+    }
+}
+
+/// TLBI by VA (ADR 0035): the JIT forgets only the software TLB and jump
+/// cache entries within the 1 GiB around the address, not everything. Here
+/// the kernel swaps a 2 MiB block descriptor between two physical blocks
+/// (different data and code) and invalidates only the block's first page:
+/// an entry covers the whole block, so the other pages of the block (the
+/// data at +0x5000, the code at +0x6000 reached by chaining) must follow.
+/// Fails if only the invalidated page is forgotten, or nothing (both tried).
+#[test]
+fn tlbi_by_va_forgets_the_whole_block() {
+    const K: u64 = 0xffff_ff80_0000_0000;
+    const D: u64 = 0x4000_0000;
+    let (l1, l2d, l1k, l2k) = (TABLES, TABLES + 0x1000, TABLES + 0x2000, TABLES + 0x3000);
+    let (x1, x2) = (DATA, DATA + 0x20_0000);
+    let mut ram = vec![0u8; RAM_LEN];
+    let put = |ram: &mut [u8], pa: u64, bytes: &[u8]| {
+        let o = (pa - RAM_BASE) as usize;
+        ram[o..o + bytes.len()].copy_from_slice(bytes);
+    };
+    let words = |ws: &[u32]| ws.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>();
+    let handler = words(&HANDLER);
+    for off in (0..0x800).step_by(0x80) {
+        put(&mut ram, VBAR + off, &handler);
+    }
+    put(
+        &mut ram,
+        START,
+        &words(&[
+            0xf94002e1, // ldr x1, [x23]
+            0x8b010042, // add x2, x2, x1
+            0x10000059, // adr x25, 0x10
+            0xd61f0300, // br x24
+            0x36000073, // tbz w19, #0x0, 0x1c
+            0xf9000354, // str x20, [x26]
+            0x14000002, // b 0x20
+            0xf9000355, // str x21, [x26]
+            0xd5033b9f, // dsb ish
+            0xd5088736, // tlbi vae1, x22
+            0xd5033b9f, // dsb ish
+            0xd5033fdf, // isb
+            0xd1000673, // sub x19, x19, #0x1
+            0xb5fffe73, // cbnz x19, 0x0
+            0x14000000, // b .
+        ]),
+    );
+    put(&mut ram, x1 + 0x5000, &0x1111u64.to_le_bytes());
+    put(&mut ram, x2 + 0x5000, &0x2_2222_0000u64.to_le_bytes());
+    put(&mut ram, x1 + 0x6000, &words(&[0x91000463, 0xd61f0320])); // add x3, x3, #0x1; br x25
+    put(&mut ram, x2 + 0x6000, &words(&[0x91001c63, 0xd61f0320])); // add x3, x3, #0x7; br x25
+    let block = |pa: u64| pa | VALID_BLOCK | AF | SH_INNER | AP_RW_EL1 | ATTR_NORMAL;
+    put(&mut ram, l1 + 8, &(l2d | VALID_TABLE).to_le_bytes());
+    put(&mut ram, l2d, &block(x1).to_le_bytes());
+    put(&mut ram, l1k, &(l2k | VALID_TABLE).to_le_bytes());
+    put(&mut ram, l2k, &block(RAM_BASE).to_le_bytes());
+    put(&mut ram, l2k + 8 * 2, &block(RAM_BASE + 0x40_0000).to_le_bytes());
+    put(&mut ram, l2k + 8 * 3, &block(CODE).to_le_bytes());
+
+    let mut cpu = Cpu::new();
+    cpu.reset_system(SysConfig::default());
+    let s = &mut cpu.sys;
+    s.vbar_el1 = K + (VBAR - RAM_BASE);
+    s.mair_el1 = 0x00ff;
+    s.tcr_el1 = 25
+        | 0b01 << 8
+        | 0b01 << 10
+        | 0b11 << 12
+        | 25 << 16
+        | 0b01 << 24
+        | 0b01 << 26
+        | 0b11 << 28
+        | 0b10 << 30
+        | 0b010 << 32;
+    s.ttbr0_el1 = l1;
+    s.ttbr1_el1 = l1k;
+    s.sctlr_el1 |= sctlr::M;
+    s.daif = 0;
+    cpu.sys.el = 1;
+    cpu.sys.spsel = true;
+    cpu.pc = K + (START - RAM_BASE);
+    cpu.x[19] = 1000;
+    cpu.x[20] = block(x1);
+    cpu.x[21] = block(x2);
+    cpu.x[22] = D >> 12;
+    cpu.x[23] = D + 0x5000;
+    cpu.x[24] = D + 0x6000;
+    cpu.x[26] = K + (l2d - RAM_BASE);
+
+    let want = run_interp(cpu.clone(), ram.clone());
+    assert!(want.events.is_empty(), "no exception expected: {:?}", &want.events[..want.events.len().min(4)]);
+    assert!(want.cpu.x[19] < 900, "too few iterations: {}", want.cpu.x[19]);
+    for seed in 0..24 {
+        let (got, s) = run_jit(cpu.clone(), &ram, seed);
+        assert_eq!(got, want, "seed {seed}: interpreter and JIT differ ({s:?})");
+        assert!(s.jit_steps > 500 && s.tlbi_partial > 50, "seed {seed}: test too weak: {s:?}");
+    }
+}

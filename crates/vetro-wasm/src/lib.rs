@@ -431,9 +431,16 @@ impl Vm {
     /// Turns on the system-mode JIT on the JS engine, with threshold
     /// `hot_threshold` and `batch` blocks per module.
     pub fn set_jit(&mut self, hot_threshold: u32, batch: u32) {
+        self.set_jit_with(hot_threshold, batch, false);
+    }
+
+    /// Like [`Vm::set_jit`]; `profile` also counts the interpreter's
+    /// instructions per class (measurements only, slower).
+    pub fn set_jit_with(&mut self, hot_threshold: u32, batch: u32, profile: bool) {
         let cfg = vetro_jit::SysJitConfig {
             hot_threshold,
             batch: batch.max(1) as usize,
+            profile,
             ..vetro_jit::SysJitConfig::default()
         };
         self.m.set_jit(Some(Box::new(vetro_jit::SysJit::new(jit::JsEngine::default(), cfg))));
@@ -766,7 +773,52 @@ pub unsafe extern "C" fn vetro_jit_stats(vm: *const Vm, out: *mut u64, cap: usiz
         s.tlb_fills,
         s.resets,
         s.yields,
+        s.host_lds,
+        s.host_sts,
+        s.epochs_regs,
+        s.epochs_tlbi,
+        s.epochs_code,
+        s.wasm_bytes,
     ];
+    let n = v.len().min(cap);
+    if n > 0 {
+        unsafe { core::slice::from_raw_parts_mut(out, n) }.copy_from_slice(&v[..n]);
+    }
+    n
+}
+
+/// Turns on the JIT like [`vetro_machine_set_jit`]; `flags` bit 0 also
+/// counts the interpreter's instructions per class ([`vetro_jit_profile`]).
+/// Measurements only: the result of execution doesn't change.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_machine_set_jit_with(vm: *mut Vm, hot_threshold: u32, batch: u32, flags: u32) {
+    // SAFETY: `vm` comes from `vetro_machine_new`.
+    unsafe { &mut *vm }.set_jit_with(hot_threshold, batch, flags & 1 != 0);
+}
+
+/// Report of the `n` most frequent instruction classes executed by the
+/// interpreter with the JIT active, then those executed by `env.simd`, as text
+/// in the result buffer; 0 without profile.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_jit_profile(vm: *mut Vm, n: u32) -> usize {
+    // SAFETY: `vm` comes from `vetro_machine_new`.
+    let vm = unsafe { &mut *vm };
+    let Some(p) = vm.m.jit_profile() else { return 0 };
+    let mut s = p.report(n as usize);
+    if let Some(h) = vetro_jit::helper::profile_report(n as usize) {
+        s.push_str("env.simd: ");
+        s.push_str(&h);
+    }
+    vm.set_result(s.into_bytes())
+}
+
+/// Machine measurement counters (`vetro_machine::Perf`, in field order) in
+/// `out`, at most `cap`; returns how many it wrote.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_perf(vm: *const Vm, out: *mut u64, cap: usize) -> usize {
+    // SAFETY: `vm` comes from `vetro_machine_new`, `out` is valid for `cap` values.
+    let p = unsafe { &*vm }.m.perf();
+    let v = [p.interp_steps, p.wfi_steps, p.wfis, p.syncs, p.services];
     let n = v.len().min(cap);
     if n > 0 {
         unsafe { core::slice::from_raw_parts_mut(out, n) }.copy_from_slice(&v[..n]);

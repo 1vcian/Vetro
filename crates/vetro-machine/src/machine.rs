@@ -162,6 +162,22 @@ pub struct Machine {
     replay_status: Option<crate::record::ReplayStatus>,
     /// Introspection hook points (ADR 0027).
     hooks: Hooks,
+    /// Counters for measurements (not in snapshots, no effect on execution).
+    perf: Perf,
+}
+
+/// Where the machine's steps go, for measurements ([`Machine::perf`]).
+/// Not part of the state: not saved, not compared.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Perf {
+    /// Instructions executed by the interpreter.
+    pub interp_steps: u64,
+    /// Steps skipped by WFI (time jumped to the next deadline) and WFIs.
+    pub wfi_steps: u64,
+    pub wfis: u64,
+    /// Calls to `sync_irqs` and virtio services.
+    pub syncs: u64,
+    pub services: u64,
 }
 
 /// CNTPCT after `steps` instructions: 62.5 MHz over a nominal 100 MHz.
@@ -232,6 +248,7 @@ impl Machine {
             rr: record::Rr::Off,
             replay_status: None,
             hooks: Hooks::default(),
+            perf: Perf::default(),
         }
     }
 
@@ -301,6 +318,11 @@ impl Machine {
     pub fn with_guest<R>(&self, f: impl FnOnce(&GuestView<'_>) -> R) -> R {
         let b = self.board.borrow();
         f(&GuestView { cpu: &self.cpu, ram: &b.ram, steps: self.steps })
+    }
+
+    /// Measurement counters ([`Perf`]).
+    pub fn perf(&self) -> Perf {
+        self.perf
     }
 
     /// JIT counters, if active.
@@ -531,6 +553,7 @@ impl Machine {
     }
 
     fn sync_irqs(&mut self) {
+        self.perf.syncs += 1;
         let mut b = self.board.borrow_mut();
         b.cntpct = counter(self.steps);
         let net_due = self.net_deadline.is_some_and(|d| b.cntpct >= d);
@@ -554,6 +577,7 @@ impl Machine {
         }
         let serviced = b.virtio_dirty;
         if serviced {
+            self.perf.services += 1;
             b.service_virtio();
         }
         if let Some(slot) = self.slots.net
@@ -678,6 +702,7 @@ impl Machine {
                 self.cpu.step_system(&mut bus, &mut env)
             };
             self.steps += 1;
+            self.perf.interp_steps += 1;
             // Only the steps of interest: a breakpoint at the PC, or an
             // EL change (SVC from EL0, ERET to EL0).
             if hooked && (pre.is_some() || old_el != self.cpu.sys.el) {
@@ -739,7 +764,10 @@ impl Machine {
         }
         match self.timer_deadline {
             Some(d) => {
-                self.steps = self.steps.max(steps_for(d));
+                let to = self.steps.max(steps_for(d));
+                self.perf.wfis += 1;
+                self.perf.wfi_steps += to - self.steps;
+                self.steps = to;
                 self.sync_irqs();
                 None
             }

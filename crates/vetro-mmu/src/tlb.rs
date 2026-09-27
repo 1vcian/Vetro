@@ -93,6 +93,23 @@ pub struct Tlb {
     /// keeps copies of translations outside the TLB (the JIT's software TLB)
     /// discards them when this changes.
     flushes: u64,
+    /// The last [`LOG`] invalidations, invalidation `n` at `n % LOG`
+    /// ([`Tlb::invalidations_since`]). Not saved.
+    log: [Inval; LOG],
+}
+
+/// How many invalidations [`Tlb::invalidations_since`] remembers.
+const LOG: usize = 64;
+
+/// What an invalidation covered, for whoever keeps copies of translations
+/// outside the TLB (the JIT, ADR 0035).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Inval {
+    /// Possibly any entry (VMALLE1, ASIDE1, restore).
+    All,
+    /// The entries containing this VA (VA[55:12], TLBI by VA of any ASID):
+    /// with blocks, an entry can cover up to the whole block around it.
+    Va(u64),
 }
 
 impl Default for Tlb {
@@ -103,7 +120,7 @@ impl Default for Tlb {
 
 impl Tlb {
     pub fn new() -> Self {
-        Tlb { entries: vec![None; ENTRIES], gens: Box::new([0; ENTRIES]), flushes: 0 }
+        Tlb { entries: vec![None; ENTRIES], gens: Box::new([0; ENTRIES]), flushes: 0, log: [Inval::All; LOG] }
     }
 
     #[inline]
@@ -133,6 +150,18 @@ impl Tlb {
         self.flushes
     }
 
+    /// The invalidations since [`flushes`](Self::flushes) was `from`, in
+    /// order; `None` if they are no longer all remembered.
+    pub fn invalidations_since(&self, from: u64) -> Option<impl Iterator<Item = Inval> + '_> {
+        let n = self.flushes.checked_sub(from)?;
+        (n <= LOG as u64).then(|| (from..self.flushes).map(|i| self.log[i as usize % LOG]))
+    }
+
+    fn note(&mut self, i: Inval) {
+        self.log[self.flushes as usize % LOG] = i;
+        self.flushes += 1;
+    }
+
     /// Number of valid entries.
     pub fn len(&self) -> usize {
         self.entries.iter().filter(|e| e.is_some()).count()
@@ -153,7 +182,7 @@ impl Tlb {
 
     /// Flushes everything (VMALLE1).
     pub fn flush_all(&mut self) {
-        self.flushes += 1;
+        self.note(Inval::All);
         self.entries.fill(None);
         for g in self.gens.iter_mut() {
             *g += 1;
@@ -183,7 +212,10 @@ impl Tlb {
     /// act here like the local ones.
     pub fn tlbi(&mut self, op: TlbiOp, xt: u64) {
         use TlbiOp::*;
-        self.flushes += 1;
+        self.note(match op {
+            Vae1 | Vae1is | Vale1 | Vale1is | Vaae1 | Vaae1is | Vaale1 | Vaale1is => Inval::Va(tlbi_va(xt)),
+            _ => Inval::All,
+        });
         match op {
             Vmalle1 | Vmalle1is => self.flush_all(),
             Vae1 | Vae1is | Vale1 | Vale1is => self.flush_va(tlbi_va(xt), tlbi_asid(xt)),
@@ -255,7 +287,7 @@ impl vetro_snapshot::Snapshot for Tlb {
         for g in self.gens.iter_mut() {
             *g += 1;
         }
-        self.flushes += 1;
+        self.note(Inval::All);
         Ok(())
     }
 }

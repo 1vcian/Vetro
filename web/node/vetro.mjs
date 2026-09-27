@@ -946,15 +946,28 @@ export class Machine {
    * before translating a block, `batch` blocks per module. The result
    * doesn't change, only the speed.
    */
-  setJit(threshold = 64, batch = 16) {
-    this.#x.vetro_machine_set_jit(this.#vm, threshold, batch);
+  setJit(threshold = 64, batch = 16, { profile = false } = {}) {
+    if (profile) this.#x.vetro_machine_set_jit_with(this.#vm, threshold, batch, 1);
+    else this.#x.vetro_machine_set_jit(this.#vm, threshold, batch);
+  }
+
+  /** With `setJit(..., { profile: true })`: the report of the interpreter's instruction classes (text), or null. */
+  jitProfile(n = 40) {
+    const len = this.#x.vetro_jit_profile(this.#vm, n);
+    return len ? utf8.decode(this.#result(len)) : null;
+  }
+
+  /** Machine measurement counters: where the steps go (interpreter, WFI), device services. */
+  perf() {
+    return this.#u64s(this.#x.vetro_perf, ['interpSteps', 'wfiSteps', 'wfis', 'syncs', 'services']);
   }
 
   /** JIT counters (`SysJitStats`), or null without JIT. */
   jitStats() {
     const x = this.#x;
     const names = ['jitSteps', 'runs', 'resolves', 'calls', 'blocks', 'modules', 'reused', 'invalidatedPages', 'faults',
-      'svcs', 'stops', 'epochs', 'tlbFlushes', 'tlbFills', 'resets', 'yields'];
+      'svcs', 'stops', 'epochs', 'tlbFlushes', 'tlbFills', 'resets', 'yields', 'hostLds', 'hostSts', 'epochsRegs', 'epochsTlbi',
+      'epochsCode', 'wasmBytes'];
     const p = x.vetro_alloc(8 * names.length) >>> 0;
     const n = x.vetro_jit_stats(this.#vm, p, names.length);
     const v = new BigUint64Array(x.memory.buffer, p, names.length);

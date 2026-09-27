@@ -1182,3 +1182,21 @@ fn tlb_nello_snapshot() {
     // An MMU with a different PARange does not accept the snapshot.
     assert!(Mmu::new(48).restore(&mut Reader::new(&bytes)).is_err());
 }
+
+/// The invalidation log for copies outside the TLB (ADR 0035): by-VA TLBIs
+/// give their page, the others `All`; beyond the log, `None`.
+#[test]
+fn invalidations_since_remembers_the_last_ones() {
+    let mut t = Tlb::new();
+    let f0 = t.flushes();
+    t.tlbi(TlbiOp::Vae1is, tlbi_xt(0xffff_0000_1234_5000, 7));
+    t.tlbi(TlbiOp::Aside1, tlbi_xt(0, 7));
+    t.tlbi(TlbiOp::Vaale1, tlbi_xt(0x7f_0000_2000, 0));
+    let got: Vec<Inval> = t.invalidations_since(f0).expect("remembered").collect();
+    assert_eq!(got, [Inval::Va(0x00ff_0000_1234_5000), Inval::All, Inval::Va(0x7f_0000_2000)]);
+    assert_eq!(t.invalidations_since(t.flushes()).expect("nothing new").count(), 0);
+    for _ in 0..100 {
+        t.flush_all();
+    }
+    assert!(t.invalidations_since(f0).is_none(), "too old: the caller must drop everything");
+}
