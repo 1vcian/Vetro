@@ -36,8 +36,17 @@ Snapshot at the home screen, image bd09e2f, 2 GiB, the app's machine
   1476 MiB (Cached 648 MiB after: the rest of the page cache is in use);
   RAM at the small level 377 MiB. Whole snapshot with format 3: 1020 MiB
   (-21%).
-- **Result**: the prebuilt snapshot (small level, compacted) is about
-  750 MiB instead of 1297 (final numbers in `docs/progress/M6.md`).
+- **Result**: the prebuilt snapshot (format 4, small level, compacted) is
+  **761 MiB** (797 873 752 bytes) instead of 1297 (-41%), saved in 143 s
+  (small level, compressed twice, machine at load 90-140). The same boot gave
+  the same guest times (launcher focused at 1388 s, home drawn at 1450 s).
+- **In Chrome** (`tests/web/android-chrome.mjs` with
+  `VETRO_ANDROID_PREBUILT=1`, empty profile): from R2, 761 MiB downloaded and
+  verified in 17.6 s (45 MB/s), **home screen ready 22.3 s after the page
+  opened** (restore 4.2 s); from a local server 2.0–3.6 s and 7.3–9.7 s. Then
+  adb, the APK installed and opened (179–261 s), the click seen (22–41 s), the
+  "app installed" snapshot (1000–1009 MiB, fast level, 20–36 s), second start
+  ready in 3.7–5.4 s.
 
 ## Decision
 
@@ -151,8 +160,9 @@ box (`&cold=1`) for advanced users.
   since that layer is now half of the snapshot.
 
 ## Consequences
-- A first-time visitor downloads about 0.75 GiB (about 30 s at 25 MB/s)
-  instead of waiting 45 minutes; the app's own snapshots get about 8% smaller
+- A first-time visitor downloads 761 MiB (18 s at the 45 MB/s measured from
+  R2, about 32 s at 25 MB/s) and has the home screen in about 22 s instead of
+  45 minutes; the app's own snapshots get about 8% smaller
   (repeated pages) at the same speed.
 - Format 4 invalidates every format 3 snapshot, local ones included: one
   prebuilt download (or cold boot) per user.
