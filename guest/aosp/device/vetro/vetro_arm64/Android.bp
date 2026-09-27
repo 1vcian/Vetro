@@ -63,3 +63,11 @@ runtime_resource_overlay {
     manifest: "overlay/browser/AndroidManifest.xml",
     resource_dirs: ["overlay/browser/res"],
 }
+
+runtime_resource_overlay {
+    // FallbackHome without the animated progress bar (ADR 0032).
+    name: "VetroSettingsOverlay",
+    product_specific: true,
+    manifest: "overlay/settings/AndroidManifest.xml",
+    resource_dirs: ["overlay/settings/res"],
+}

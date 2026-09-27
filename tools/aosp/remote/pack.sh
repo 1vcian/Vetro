@@ -29,7 +29,7 @@ case "$info" in
 esac
 [ -f "$p/system/etc/security/cacerts/$ca" ] || fail "$ca is not in /system/etc/security/cacerts"
 # Trademarks: overlays installed, no QuickSearchBox, wallpaper and its property.
-for f in product/overlay/VetroFrameworkOverlay.apk product/overlay/VetroPackageInstallerOverlay.apk product/overlay/VetroBrowserOverlay.apk product/media/wallpaper/vetro.png; do
+for f in product/overlay/VetroFrameworkOverlay.apk product/overlay/VetroPackageInstallerOverlay.apk product/overlay/VetroBrowserOverlay.apk product/overlay/VetroSettingsOverlay.apk product/media/wallpaper/vetro.png; do
   [ -f "$p/$f" ] || fail "/$f missing"
 done
 [ ! -e "$p/product/app/QuickSearchBox" ] || fail "QuickSearchBox is still in /product/app"
@@ -40,15 +40,19 @@ grep -qx 'ro.product.system.brand=Vetro' "$p/system/build.prop" || fail "ro.prod
 for a in SystemUI Launcher3QuickStep Settings; do
   odex="$p/system_ext/priv-app/$a/oat/arm64/$a.odex"
   [ -f "$odex" ] || fail "$odex missing"
-  filter="$(strings -n 3 "$odex" | grep -A1 -m1 '^compiler-filter$' | tail -n1)"
+  # The odex key-value store has "compiler-filter\0<filter>". strings in a
+  # group with || true: with pipefail awk's early exit (SIGPIPE) would fail.
+  filter="$({ strings -n 3 "$odex" || true; } | awk 'f { print; exit } /^compiler-filter$/ { f = 1 }')"
   [ "$filter" = speed ] || fail "$a.odex compiled with '$filter', not speed"
 done
 grep -qx 'pm.dexopt.first-boot=skip' "$p/system/build.prop" || fail "pm.dexopt.first-boot is not skip"
 if ls "$p"/system/apex/*.capex >/dev/null 2>&1; then fail "compressed APEXes in /system/apex"; fi
 # HWC: BGRA framebuffer (guest/aosp/patches/device/generic/goldfish-opengl).
-grep -q 'androidboot.hardware.hwcomposer.display_framebuffer_format=bgra' "$p/vendor_bootconfig.txt" 2>/dev/null ||
-  strings -a "$p/vendor_boot.img" | grep -q 'hwcomposer.display_framebuffer_format=bgra' ||
-  fail "display_framebuffer_format is not bgra in vendor_boot"
+bootconfig="$(strings -a "$p/vendor_boot.img")"
+case "$bootconfig" in
+  *androidboot.hardware.hwcomposer.display_framebuffer_format=bgra*) ;;
+  *) fail "display_framebuffer_format is not bgra in vendor_boot" ;;
+esac
 rm -rf "$o"
 mkdir -p "$o/props"
 for f in boot.img vendor_boot.img init_boot.img super.img userdata.img; do

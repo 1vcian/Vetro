@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Static overlay of Settings (ADR 0032): FallbackHome, the placeholder home
+     shown from the end of boot until the user is unlocked and Launcher3 is
+     drawn, shows its text without the indeterminate progress bar. On one
+     slow emulated CPU that animation redraws for many minutes (Settings'
+     RenderThread, SurfaceFlinger, the composer) and takes CPU time from the
+     user unlock, SystemUI and Launcher3. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="vetro.overlay.settings">
+    <application android:hasCode="false" />
+    <overlay
+        android:targetPackage="com.android.settings"
+        android:isStatic="true"
+        android:priority="10" />
+</manifest>

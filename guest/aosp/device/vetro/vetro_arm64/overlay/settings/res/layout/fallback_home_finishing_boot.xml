@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Settings' fallback_home_finishing_boot (AOSP 15) without the ProgressBar:
+     a still screen, so nothing redraws while the system finishes booting
+     (ADR 0032). The title is the framework's android_start_title, which
+     VetroFrameworkOverlay makes "Vetro is starting…". -->
+<FrameLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#80000000"
+    android:forceHasOverlappingRendering="false">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="16dp"
+        android:textSize="20sp"
+        android:textColor="?android:attr/textColorPrimary"
+        android:text="@*android:string/android_start_title" />
+</FrameLayout>

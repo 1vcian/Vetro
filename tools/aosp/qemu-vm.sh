@@ -14,7 +14,8 @@
 #   tools/aosp/qemu-vm.sh screendump F.png  the scanout as QEMU shows it (monitor)
 #   tools/aosp/qemu-vm.sh screencap F.png   SurfaceFlinger's picture (adb screencap)
 # VETRO_QEMU_NAME (default aosp), VETRO_ADB_PORT (5565), VETRO_QEMU_MONITOR
-# (4454), VETRO_AOSP_APPEND (more kernel/bootconfig parameters, e.g.
+# (4454), VETRO_VM_IMAGES (images on the VM, default ~/$WORK/out; the local
+# VETRO_AOSP_IMAGES must be the same image, for the bootloader's files), VETRO_AOSP_APPEND (more kernel/bootconfig parameters, e.g.
 # androidboot.* for Vetro's bootloader), VETRO_QEMU_EXTRA: see remote/qemu.sh.
 set -eu
 . "$(cd "$(dirname "$0")" && pwd)/common.sh"
@@ -23,6 +24,9 @@ port="${VETRO_ADB_PORT:-5565}"
 mon="${VETRO_QEMU_MONITOR:-4454}"
 rd="$VETRO_AOSP_WORK/qemu/$name"
 env="VETRO_AOSP_WORK=$VETRO_AOSP_WORK VETRO_AOSP_TREE=$VETRO_AOSP_TREE VETRO_QEMU_NAME=$name VETRO_ADB_PORT=$port VETRO_QEMU_MONITOR=$mon"
+# Another image already on the VM (a directory with super.img and
+# userdata.img, relative to the home), e.g. a previous version from R2.
+[ -n "${VETRO_VM_IMAGES:-}" ] && env="$env VETRO_AOSP_IMAGES=\$HOME/$VETRO_VM_IMAGES"
 adb_vm="$VETRO_AOSP_TREE/out/host/linux-x86/bin/adb"
 case "${1:-status}" in
   start)

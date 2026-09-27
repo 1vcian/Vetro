@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Framework strings shown at boot (ADR 0030, 0032): the product never
+     presents itself as a phone or as "Android". Only the default (English)
+     value is replaced; the translations stay AOSP's. -->
+<resources>
+    <!-- FallbackHome ("Phone is starting…") and the boot message dialog. -->
+    <string name="android_start_title">Vetro is starting…</string>
+</resources>
