@@ -18,7 +18,7 @@ fn boot_con_pcap_e_har() {
         return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "boot under Vetro only in release");
     }
     let Some((image, initrd)) = guest_kernel() else {
-        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "target/guest-kernel mancante");
+        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "target/guest-kernel missing");
     };
     let dir = repo_root().join("target/guest-kernel");
     let (pcap, har) = (dir.join("cli.pcapng"), dir.join("cli.har"));
@@ -59,14 +59,14 @@ fn boot_con_pcap_e_har() {
     );
     assert!(log.contains("vetro: har: 1 requests in"), "{log}");
 
-    let file = pcapng::read(&std::fs::read(&pcap).expect("pcapng scritto")).expect("pcapng valido");
+    let file = pcapng::read(&std::fs::read(&pcap).expect("pcapng written")).expect("valid pcapng");
     assert!(log.contains(&format!("vetro: pcapng: {} frame in", file.frames.len())), "{log}");
     let a = NetworkAnalysis::from_frames(&file.frames);
     assert_eq!(a.http.len(), 1);
     assert_eq!(a.http[0].url, "http://cli.example/pagina?a=1");
     assert!(a.dns.iter().any(|d| d.name == "cli.example"));
 
-    let v = json::parse(&std::fs::read(&har).expect("HAR scritto")).expect("HAR JSON");
+    let v = json::parse(&std::fs::read(&har).expect("HAR written")).expect("HAR JSON");
     let Some(Value::Array(e)) = v.get("log").and_then(|l| l.get("entries")) else { panic!() };
     assert_eq!(e.len(), 1);
     assert_eq!(

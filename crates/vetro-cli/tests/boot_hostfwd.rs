@@ -27,7 +27,7 @@ fn hostfwd_con_un_socket_vero() {
         return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "boot under Vetro only in release");
     }
     let Some((image, initrd)) = guest_kernel() else {
-        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "target/guest-kernel mancante");
+        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "target/guest-kernel missing");
     };
     let mut cmd = Command::new("sh");
     cmd.arg("-c")
@@ -56,7 +56,7 @@ fn hostfwd_con_un_socket_vero() {
     // Echo of 200 KB: a thread writes and closes its direction, here we read
     // to the end of the stream.
     let data = payload();
-    let mut s = TcpStream::connect(&addr).expect("connessione a --hostfwd");
+    let mut s = TcpStream::connect(&addr).expect("connection to --hostfwd");
     s.set_read_timeout(Some(limit)).unwrap();
     let mut w = s.try_clone().unwrap();
     let out = data.clone();
@@ -65,7 +65,7 @@ fn hostfwd_con_un_socket_vero() {
         w.shutdown(std::net::Shutdown::Write).unwrap();
     });
     let mut echo = Vec::new();
-    s.read_to_end(&mut echo).expect("eco");
+    s.read_to_end(&mut echo).expect("echo");
     writer.join().unwrap();
     assert_eq!(echo.len(), data.len(), "echo bytes");
     assert!(echo == data, "200 KB echo differs");
@@ -75,7 +75,7 @@ fn hostfwd_con_un_socket_vero() {
     let at = c.wait_for(SHELL_PROMPT, at, limit).unwrap_or_else(|| panic!("nc did not exit:\n{}", c.log()));
 
     // No service: the guest answers RST, the client sees the close.
-    let mut s = TcpStream::connect(&addr).expect("connessione");
+    let mut s = TcpStream::connect(&addr).expect("connection");
     s.set_read_timeout(Some(limit)).unwrap();
     let mut buf = [0u8; 16];
     assert!(matches!(s.read(&mut buf), Ok(0) | Err(_)), "connection closed without a service");
@@ -84,7 +84,7 @@ fn hostfwd_con_un_socket_vero() {
     c.send("nc -n -v -l -p 5555 -e cat\n");
     let at =
         c.wait_for("listening on", at, limit).unwrap_or_else(|| panic!("nc not listening:\n{}", c.log()));
-    let mut s = TcpStream::connect(&addr).expect("connessione");
+    let mut s = TcpStream::connect(&addr).expect("connection");
     s.set_read_timeout(Some(limit)).unwrap();
     s.write_all(b"prima\n").unwrap();
     let mut got = [0u8; 6];
@@ -100,7 +100,7 @@ fn hostfwd_con_un_socket_vero() {
     assert!(c.finish(Duration::from_secs(60)), "poweroff -f did not stop vetro:\n{}", c.log());
 }
 
-/// SO_LINGER a zero: la chiusura manda RST.
+/// SO_LINGER at zero: closing sends RST.
 fn rst(s: &TcpStream) {
     use std::os::fd::AsRawFd;
     let l = libc::linger { l_onoff: 1, l_linger: 0 };

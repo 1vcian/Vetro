@@ -146,7 +146,7 @@ fn chiusura_completa_del_guest_riceve_rst() {
     send(&mut d, sh, &[]);
     assert_eq!(ops(&rx(&mut d, &mut bufs)), [OP_RST]);
     assert_eq!(vs(&mut d).state(c), Some(VsockState::Closed));
-    assert_eq!(vs(&mut d).recv(c, 100), b"ultimi", "i dati restano leggibili");
+    assert_eq!(vs(&mut d).recv(c, 100), b"ultimi", "the data remains readable");
     assert!(vs(&mut d).eof(c));
     // The same pair of ports can be reopened.
     send(&mut d, g(40, 5, OP_REQUEST), &[]);
@@ -200,7 +200,7 @@ fn l_host_si_collega_e_rispetta_il_credito() {
     assert_eq!(vs(&mut d).state(c), Some(VsockState::Connecting));
     vs(&mut d).send(c, &[7u8; 300]).unwrap();
     let p = rx(&mut d, &mut bufs);
-    assert_eq!(ops(&p), [OP_REQUEST], "i dati aspettano la RESPONSE");
+    assert_eq!(ops(&p), [OP_REQUEST], "the data waits for the RESPONSE");
     assert_eq!((p[0].0.src_port, p[0].0.dst_port), (FIRST_HOST_PORT, 5555));
     // The guest accepts with a 100-byte buffer.
     let mut r = g(5555, FIRST_HOST_PORT, OP_RESPONSE);
@@ -363,5 +363,5 @@ fn deterministico() {
     };
     let (x, y) = (run(), run());
     assert_eq!(x, y);
-    assert_eq!(x.len(), 3 + 2 * 2, "REQUEST x2, RESPONSE, poi 200 byte a pezzi da 128 per connessione");
+    assert_eq!(x.len(), 3 + 2 * 2, "REQUEST x2, RESPONSE, then 200 bytes in chunks of 128 per connection");
 }

@@ -499,8 +499,8 @@ fn permessi_ap() {
                 false
             }
         };
-        assert_eq!(esito(e.tr(va, Access::Read, el)), r, "lettura, AP {:#b} EL{el}", ap >> 6);
-        assert_eq!(esito(e.tr(va, Access::Write, el)), w, "scrittura, AP {:#b} EL{el}", ap >> 6);
+        assert_eq!(esito(e.tr(va, Access::Read, el)), r, "read, AP {:#b} EL{el}", ap >> 6);
+        assert_eq!(esito(e.tr(va, Access::Write, el)), w, "write, AP {:#b} EL{el}", ap >> 6);
     }
 }
 
@@ -1119,7 +1119,7 @@ fn equivalenza_con_seme(seed: u64, steps: usize) -> u64 {
                 slow.regs = r;
             }
         }
-        assert_eq!(e.mmu.tlb().len(), slow.tlb().len(), "seme {seed:#x} passo {step}: TLB diversi");
+        assert_eq!(e.mmu.tlb().len(), slow.tlb().len(), "seed {seed:#x} step {step}: TLBs differ");
     }
     e.mmu.recent_hits
 }

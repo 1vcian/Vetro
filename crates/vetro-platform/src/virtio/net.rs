@@ -105,7 +105,7 @@ impl VirtioNet {
         }
     }
 
-    /// Offre o no VIRTIO_NET_F_MRG_RXBUF.
+    /// Offers VIRTIO_NET_F_MRG_RXBUF or not.
     pub fn with_mrg_rxbuf(mut self, offer: bool) -> Self {
         self.offer_mrg = offer;
         self
@@ -161,7 +161,7 @@ impl VirtioNet {
     fn transmit(&mut self, q: &mut Virtqueue, ram: &mut dyn GuestRam) -> Result<(), QueueError> {
         while let Some(c) = q.pop(ram)? {
             if c.readable_len() < NET_HDR_LEN as u64 {
-                return Err(QueueError::Malformed("intestazione virtio-net incompleta"));
+                return Err(QueueError::Malformed("incomplete virtio-net header"));
             }
             if c.readable_len() > (NET_HDR_LEN + MAX_FRAME) as u64 {
                 return Err(QueueError::Malformed("virtio-net frame over 64 KiB"));

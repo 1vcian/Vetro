@@ -123,7 +123,7 @@ impl Kind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stat {
     pub kind: Kind,
-    /// `st_mode` intero (tipo e permessi).
+    /// Full `st_mode` (type and permissions).
     pub mode: u32,
     pub uid: u32,
     pub gid: u32,
@@ -292,7 +292,7 @@ impl fmt::Display for ProtoError {
     }
 }
 
-// ---- Scrittura ---------------------------------------------------------------
+// ---- Writing -----------------------------------------------------------------
 
 struct W(Vec<u8>);
 
@@ -556,7 +556,7 @@ fn put_stat(w: &mut W, s: &Stat) {
     w.str(s.selinux.as_bytes());
 }
 
-// ---- Lettura -----------------------------------------------------------------
+// ---- Reading -----------------------------------------------------------------
 
 struct R<'a> {
     b: &'a [u8],
@@ -964,20 +964,20 @@ mod tests {
     fn frame_rovinati() {
         let mut d = Decoder::default();
         d.push(&[4, 0, 0, 0, 0x81, 0, 0, 0]);
-        assert!(d.next_frame().unwrap().is_err(), "lunghezza < 5");
+        assert!(d.next_frame().unwrap().is_err(), "length < 5");
         let mut d = Decoder::default();
         d.push(&encode_reply(1, 0, &[]).iter().map(|_| 0xffu8).collect::<Vec<_>>());
-        assert!(d.next_frame().unwrap().is_err(), "lunghezza enorme");
+        assert!(d.next_frame().unwrap().is_err(), "huge length");
         let mut bad = encode_hello(&Hello { version: 1, flags: 0, max_chunk: 1 });
         bad[9] ^= 1;
         let mut d = Decoder::default();
         d.push(&bad);
-        assert!(d.next_frame().unwrap().is_err(), "magia sbagliata");
-        assert!(parse_list(&[255, 255, 255, 255]).is_err(), "conteggio impossibile");
-        assert!(parse_read(&encode_read(1, b"x")[..11]).is_err(), "corpo corto");
+        assert!(d.next_frame().unwrap().is_err(), "wrong magic");
+        assert!(parse_list(&[255, 255, 255, 255]).is_err(), "impossible count");
+        assert!(parse_read(&encode_read(1, b"x")[..11]).is_err(), "short body");
         assert!(parse_watch(&[1, 0, 0, 0, 0]).is_err(), "extra bytes");
         assert_eq!(errno_name(2), "ENOENT");
-        assert!(parse_sql(&encode_sql_err(1, "x")[..6]).is_err(), "messaggio corto");
+        assert!(parse_sql(&encode_sql_err(1, "x")[..6]).is_err(), "short message");
         let mut ok = encode_sql_ok(&SqlResult {
             columns: vec!["a".into()],
             rows: vec![vec![SqlValue::Int(1)]],

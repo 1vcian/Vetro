@@ -71,7 +71,7 @@ struct Run {
     pending: Vec<(u64, Cut)>,
     marks: BTreeMap<&'static str, (u64, Cut)>,
     jit: bool,
-    /// Tagli eseguiti (istruzioni, tipo).
+    /// Cuts performed (instructions, kind).
     done: Vec<(u64, Cut)>,
 }
 
@@ -110,7 +110,7 @@ impl Run {
         match cut {
             Cut::Swap { jit } => {
                 let mut n = (self.fresh)();
-                n.load_state(&snap).expect("ripristino");
+                n.load_state(&snap).expect("restore");
                 assert!(n.save() == snap, "the restored machine does not save the same bytes again");
                 if jit {
                     n.set_jit(Some(vetro_jit_native::system_jit(JIT_THRESHOLD)));
@@ -229,7 +229,7 @@ struct Outcome {
 /// `run` matches `reference` (without cuts and without JIT).
 fn same(what: &str, reference: &Outcome, run: &Outcome) {
     assert!(!run.cuts.is_empty(), "{what}: no cut performed");
-    eprintln!("{what}: tagli {:?}", run.cuts);
+    eprintln!("{what}: cuts {:?}", run.cuts);
     if run.log != reference.log {
         let (a, b) = (String::from_utf8_lossy(&reference.log), String::from_utf8_lossy(&run.log));
         let (a, b): (Vec<&str>, Vec<&str>) = (a.lines().collect(), b.lines().collect());
@@ -241,7 +241,7 @@ fn same(what: &str, reference: &Outcome, run: &Outcome) {
             b.get(i)
         );
     }
-    assert_eq!(run.steps, reference.steps, "{what}: istruzioni");
+    assert_eq!(run.steps, reference.steps, "{what}: instructions");
     assert_eq!(run.cpu, reference.cpu, "{what}: CPU");
     assert_eq!(run.ram, reference.ram, "{what}: RAM");
     assert_eq!(run.platform, reference.platform, "{what}: device state");
@@ -258,7 +258,7 @@ fn kernel() -> Option<(Vec<u8>, Vec<u8>)> {
     let Some((image, initrd)) = guest_kernel() else {
         skip_or_fail(
             "VETRO_REQUIRE_GUEST_KERNEL",
-            "target/guest-kernel mancante: esegui tools/guest-kernel/build.sh",
+            "target/guest-kernel missing: run tools/guest-kernel/build.sh",
         );
         return None;
     };
@@ -747,7 +747,7 @@ fn files_script(image: &[u8], initrd: &[u8], plan: &Plan) -> (Outcome, String) {
     r.mark("files-lettura");
     let op = fc.read_file("/tmp/f/grande");
     let Ok(FilesOutcome::Data { data, .. }) = files_wait(&mut r, &mut fc, &mut seen, op) else { panic!() };
-    assert!(data == big, "lettura a pezzi diversa ({} byte)", data.len());
+    assert!(data == big, "chunked read differs ({} bytes)", data.len());
     let op = fc.watch("/tmp/f");
     files_wait(&mut r, &mut fc, &mut seen, op).expect("watch");
     r.m.console_input(b"echo dal-guest > /tmp/f/g.txt\n");
@@ -764,7 +764,7 @@ fn files_script(image: &[u8], initrd: &[u8], plan: &Plan) -> (Outcome, String) {
     let at = r.until(SHELL_PROMPT, at);
     r.mark("files-scrittura");
     let op = fc.write_file("/tmp/f/copia", &big, 0o644);
-    files_wait(&mut r, &mut fc, &mut seen, op).expect("scrittura");
+    files_wait(&mut r, &mut fc, &mut seen, op).expect("write");
     r.m.console_input(b"cmp /tmp/f/grande /tmp/f/copia && echo COPIA-\"\"UGUALE\n");
     r.until("COPIA-UGUALE", at);
     r.poweroff();

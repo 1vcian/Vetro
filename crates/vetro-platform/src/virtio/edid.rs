@@ -29,7 +29,7 @@ pub struct EdidInfo {
     /// Physical size; 0 = derived from 100 DPI.
     pub width_mm: u16,
     pub height_mm: u16,
-    /// Modo preferito.
+    /// Preferred mode.
     pub prefx: u32,
     pub prefy: u32,
     /// Maximum resolution of the listed modes (0 = no limit).
@@ -72,14 +72,14 @@ const fn m(x: u32, y: u32, established: Option<(usize, u8)>, xtra3: Option<(usiz
 
 /// The table of modes, in the order QEMU declares them.
 const MODES: &[Mode] = &[
-    // Modi CTA a 50 Hz.
+    // CTA modes at 50 Hz.
     m(5120, 2160, None, None, 125),
     m(4096, 2160, None, None, 101),
     m(3840, 2160, None, None, 96),
     m(2560, 1080, None, None, 89),
     m(2048, 1152, None, None, 0),
     m(1920, 1080, None, None, 31),
-    // Modi CTA a 60 Hz.
+    // CTA modes at 60 Hz.
     m(3840, 2160, None, None, 97),
     // Standard timings 3 (60 Hz).
     m(1920, 1200, None, Some((10, 0)), 0),
@@ -94,7 +94,7 @@ const MODES: &[Mode] = &[
     m(1792, 1344, None, Some((10, 5)), 0),
     m(1440, 1050, None, Some((8, 1)), 0),
     m(1360, 768, None, Some((8, 7)), 0),
-    // Modi stabiliti (60 Hz).
+    // Established modes (60 Hz).
     m(1024, 768, Some((36, 3)), None, 0),
     m(800, 600, Some((35, 0)), None, 0),
     m(640, 480, Some((35, 5)), None, 0),

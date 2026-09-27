@@ -20,9 +20,9 @@ use crate::{ConnId, Flow, VirtualTime, dns};
 pub enum RelayMessage {
     /// Host → relay: open a TCP connection to `dst`.
     TcpConnect { id: ConnId, dst: SocketAddrV4 },
-    /// Relay → host: connessione aperta.
+    /// Relay → host: connection open.
     TcpConnected { id: ConnId },
-    /// Relay → host: connessione rifiutata o irraggiungibile.
+    /// Relay → host: connection refused or unreachable.
     TcpRefused { id: ConnId },
     /// In both directions: bytes of the connection.
     TcpData { id: ConnId, data: Vec<u8> },
@@ -34,7 +34,7 @@ pub enum RelayMessage {
     UdpSend { id: ConnId, dst: SocketAddrV4, data: Vec<u8> },
     /// Relay → host: response datagram on flow `id`.
     UdpRecv { id: ConnId, data: Vec<u8> },
-    /// Host → relay: flusso UDP scaduto.
+    /// Host → relay: UDP flow expired.
     UdpClose { id: ConnId },
 }
 

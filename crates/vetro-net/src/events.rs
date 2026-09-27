@@ -39,7 +39,7 @@ pub enum CloseReason {
     Idle,
 }
 
-/// Messaggi DHCP registrati.
+/// DHCP messages recorded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DhcpMessage {
     Offer,
@@ -77,7 +77,7 @@ pub enum EventKind {
         id: ConnId,
         flow: Flow,
     },
-    /// Handshake completato.
+    /// Handshake completed.
     TcpEstablished {
         id: ConnId,
     },

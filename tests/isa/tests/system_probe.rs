@@ -185,7 +185,7 @@ fn sonda_di_sistema_uguale_a_qemu() {
     let (got, steps) = run_probe(false);
     check(&got);
     let (jit, jit_steps) = run_probe(true);
-    assert_eq!(jit_steps, steps, "istruzioni diverse col JIT");
+    assert_eq!(jit_steps, steps, "instructions differ with the JIT");
     check(&jit);
 }
 
@@ -193,7 +193,7 @@ fn check(got: &str) {
     let ours: Vec<&str> = got.lines().collect();
     for (i, (g, w)) in ours.iter().zip(EXPECTED.lines()).enumerate() {
         let ctx = ours[i.saturating_sub(3)..(i + 6).min(ours.len())].join("\n");
-        assert_eq!(*g, w, "riga {}: Vetro e QEMU divergono; Vetro:\n{ctx}", i + 1);
+        assert_eq!(*g, w, "line {}: Vetro and QEMU diverge; Vetro:\n{ctx}", i + 1);
     }
     assert_eq!(got.lines().count(), EXPECTED.lines().count(), "different number of lines");
 }

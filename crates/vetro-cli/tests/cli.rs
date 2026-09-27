@@ -8,9 +8,9 @@ fn busybox() -> Option<std::path::PathBuf> {
         return Some(p);
     }
     if std::env::var("VETRO_REQUIRE_GUEST_BINS").is_ok_and(|v| v == "1") {
-        panic!("target/guest-bins/busybox mancante (tools/guest-bins/build.sh)");
+        panic!("target/guest-bins/busybox missing (tools/guest-bins/build.sh)");
     }
-    eprintln!("SKIP: target/guest-bins/busybox mancante");
+    eprintln!("SKIP: target/guest-bins/busybox missing");
     None
 }
 

@@ -134,7 +134,7 @@ pub(crate) struct TcpConn {
     dup_acks: u32,
     connect_deadline: VirtualTime,
     time_wait_deadline: VirtualTime,
-    // Contatori.
+    // Counters.
     pub bytes_to_remote: u64,
     pub bytes_to_guest: u64,
     /// Reason for the close, when the connection is `Closed`.
@@ -490,7 +490,7 @@ impl TcpConn {
             }
         }
 
-        // Dati.
+        // Data.
         let mut complete = true;
         if !payload.is_empty() && matches!(self.state, State::Established | State::FinWait1 | State::FinWait2)
         {
@@ -860,15 +860,15 @@ mod tests {
     #[test]
     fn rto_follows_rfc6298() {
         let mut c = conn();
-        assert_eq!((c.rto, c.mss), (1_000_000, 536), "RTO iniziale 1 s, MSS predefinito 536");
-        // Primo campione R: SRTT = R, RTTVAR = R/2, RTO = SRTT + 4·RTTVAR.
+        assert_eq!((c.rto, c.mss), (1_000_000, 536), "initial RTO 1 s, default MSS 536");
+        // First sample R: SRTT = R, RTTVAR = R/2, RTO = SRTT + 4·RTTVAR.
         c.rtt_update(100_000);
         assert_eq!((c.srtt, c.rttvar, c.rto), (Some(100_000), 50_000, 300_000));
         // Then RTTVAR = 3/4·RTTVAR + 1/4·|SRTT - R|, SRTT = 7/8·SRTT + 1/8·R.
         c.rtt_update(200_000);
         assert_eq!((c.srtt, c.rttvar), (Some(112_500), 62_500));
         assert_eq!(c.rto, 362_500);
-        // Minimo 200 ms.
+        // Minimum 200 ms.
         for _ in 0..50 {
             c.rtt_update(10);
         }

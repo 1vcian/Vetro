@@ -164,7 +164,7 @@ pub struct Vm {
     files_queue: std::collections::VecDeque<Vec<u8>>,
     /// The last message taken (`vetro_files_take`).
     files_msg: Vec<u8>,
-    /// Ultimo risultato (JSON, HAR, pcapng, log, keyframe, registri) per
+    /// Last result (JSON, HAR, pcapng, log, keyframe, registers) for
     /// `vetro_result_ptr`.
     result: Vec<u8>,
     /// Network capture (ABI 8): on, frames, bytes, discarded, generation.
@@ -227,7 +227,7 @@ impl<B: BlockBackend> CowLayer for CowBackend<B> {
 pub mod overlay_open {
     /// Overlay read: its clusters are in the disk.
     pub const LOADED: u32 = 0;
-    /// File vuoto: overlay nuovo.
+    /// Empty file: new overlay.
     pub const NEW: u32 = 1;
     /// Overlay of another base image (or size): discarded, the file
     /// is rewritten from scratch with the next `vetro_overlay_take`.
@@ -379,7 +379,7 @@ impl Vm {
                 let code = if bytes.is_empty() { overlay_open::NEW } else { overlay_open::LOADED };
                 let ok = self
                     .with_cow(index, |c| l.clusters.iter().all(|&(k, d)| c.load(k, d)))
-                    .expect("disco appena trovato");
+                    .expect("disk just found");
                 debug_assert!(ok, "overlay clusters checked by Overlay::load");
                 (l.overlay, code)
             }
@@ -836,7 +836,7 @@ pub unsafe extern "C" fn vetro_unimplemented_raw(vm: *const Vm) -> u32 {
     unsafe { &*vm }.unimpl.1
 }
 
-// ---- Dispositivi (ABI 3) ----------------------------------------------------
+// ---- Devices (ABI 3) ---------------------------------------------------------
 
 /// `Devices` from the bits of [`dev`] and from the initial GPU resolution (0 =
 /// the default one, 1280x800).
@@ -1073,7 +1073,7 @@ pub extern "C" fn vetro_power_key_line() -> u32 {
     vetro_platform::pl061::POWER_KEY_LINE
 }
 
-// ---- Dischi (ABI 3) ---------------------------------------------------------
+// ---- Disks (ABI 3) -----------------------------------------------------------
 
 /// Adds a virtio-blk disk of `size` bytes with the data from JS in blocks
 /// of `block_size` bytes (a power of two, at least 512), at most `max_blocks`
@@ -1093,7 +1093,7 @@ pub unsafe extern "C" fn vetro_disk_add(
     let d = match HostDisk::new(size, block_size, max_blocks as usize) {
         Ok(d) => d,
         Err(e) => {
-            vm.message = format!("disco rifiutato: {e:?}");
+            vm.message = format!("disk refused: {e:?}");
             return -1;
         }
     };
@@ -1326,7 +1326,7 @@ pub mod restore {
     pub const BAD_MAGIC: u32 = 1;
     /// Format of another version (`vetro_snapshot_version`).
     pub const VERSION: u32 = 2;
-    /// Macchina configurata diversamente (RAM, dispositivi, dischi, seme).
+    /// Machine configured differently (RAM, devices, disks, seed).
     pub const CONFIG: u32 = 3;
     /// Damaged or inconsistent snapshot: the machine must be discarded.
     pub const CORRUPT: u32 = 4;
@@ -1588,13 +1588,13 @@ mod tests {
             assert_eq!(vetro_disk_stats(vm, 0, st.as_mut_ptr(), 8), 8);
             assert_eq!(st[..2], [1 << 20, 65536]);
             assert_eq!(vetro_disk_stats(vm, 1, st.as_mut_ptr(), 8), 8);
-            assert_eq!(st[0], 512, "arrotondato per difetto a 512");
+            assert_eq!(st[0], 512, "rounded down to 512");
             assert_eq!(vetro_disk_stats(vm, 2, st.as_mut_ptr(), 8), 0);
             let blk = vec![1u8; 65536];
             assert_eq!(vetro_disk_fill(vm, 0, 3, blk.as_ptr(), blk.len()), 0);
             assert_eq!(vetro_disk_fill(vm, 0, 16, blk.as_ptr(), blk.len()), 2);
             assert_eq!(vetro_disk_fill(vm, 0, 2, blk.as_ptr(), 512), 3);
-            assert_eq!(vetro_disk_fill(vm, 1, 0, blk.as_ptr(), 512), 1, "disco in memoria");
+            assert_eq!(vetro_disk_fill(vm, 1, 0, blk.as_ptr(), 512), 1, "in-memory disk");
             assert_eq!(vetro_disk_fill(vm, 5, 0, blk.as_ptr(), 512), 1);
             let mut w = [0u64; 4];
             assert_eq!(vetro_disk_wanted(vm, w.as_mut_ptr(), 2), 0);

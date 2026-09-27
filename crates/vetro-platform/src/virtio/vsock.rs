@@ -145,7 +145,7 @@ pub enum VsockState {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VsockError {
-    /// Connessione inesistente.
+    /// Nonexistent connection.
     NotFound,
     /// The host has already closed the transmit side, or the connection is
     /// closed.

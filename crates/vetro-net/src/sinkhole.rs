@@ -49,7 +49,7 @@ pub struct SinkholeConfig {
     pub udp_reply: Option<Vec<u8>>,
     /// The virtual DNS server (must match `NetConfig::dns_ip`).
     pub dns_server: SocketAddrV4,
-    /// Primo indirizzo finto assegnato ai nomi.
+    /// First fake address assigned to names.
     pub fake_base: Ipv4Addr,
     pub dns_ttl: u32,
     /// Answers ICMP echoes to any external address.
@@ -165,7 +165,7 @@ impl Sinkhole {
         self.addrs.get(&addr).map(String::as_str)
     }
 
-    /// Indirizzo finto dato a un nome (in minuscolo).
+    /// Fake address given to a name (in lower case).
     pub fn fake_addr(&self, name: &str) -> Option<Ipv4Addr> {
         self.names.get(name).copied()
     }

@@ -84,7 +84,7 @@ impl Run {
     }
 
     fn state(&self, id: ConnId) -> HostConnState {
-        self.m.net_view(|s| s.host_conn(id).expect("connessione").state).unwrap()
+        self.m.net_view(|s| s.host_conn(id).expect("connection").state).unwrap()
     }
 
     fn tail(&self) -> String {
@@ -181,7 +181,7 @@ fn session(image: &[u8], initrd: &[u8]) -> Session {
     r.m.console_input(format!("{ECHO_SERVER}\n").as_bytes());
     r.until(LISTENING, at);
     let mut t = r.m.net(|s| Transfer::new(s, MESSAGE.to_vec(), MESSAGE.len())).unwrap();
-    r.pump("eco breve", |s| t.turn(s));
+    r.pump("short echo", |s| t.turn(s));
     assert_eq!(r.state(t.id), HostConnState::Closed(CloseReason::Normal));
     let (at, out) = {
         let at = r.until(SHELL_PROMPT, at);
@@ -278,7 +278,7 @@ fn inoltro_di_porte_verso_il_guest() {
     let Some((image, initrd)) = guest_kernel() else {
         return skip_or_fail(
             "VETRO_REQUIRE_GUEST_KERNEL",
-            "target/guest-kernel mancante: esegui tools/guest-kernel/build.sh",
+            "target/guest-kernel missing: run tools/guest-kernel/build.sh",
         );
     };
     let (image_path, initrd_path) = (image, initrd);
@@ -358,7 +358,7 @@ fn qemu_hostfwd(image: &std::path::Path, initrd: &std::path::Path) -> Option<(St
         assert!(out.status.success(), "client in the container: {}", String::from_utf8_lossy(&out.stderr));
         out.stdout
     } else {
-        let mut s = std::net::TcpStream::connect(("127.0.0.1", host_port)).expect("connessione a hostfwd");
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", host_port)).expect("connection to hostfwd");
         s.set_read_timeout(Some(limit)).unwrap();
         s.write_all(MESSAGE).unwrap();
         let mut got = vec![0u8; MESSAGE.len()];

@@ -865,7 +865,7 @@ mod tests {
         g.dist_write(GICD_CTLR, 4, u64::from(GICD_CTLR_ENABLE_GRP1));
         g.write_igrpen1(0);
         assert!(!g.irq_line());
-        assert_eq!(g.read_hppir1(), 40, "HPPIR ignora IGRPEN1 e PMR");
+        assert_eq!(g.read_hppir1(), 40, "HPPIR ignores IGRPEN1 and PMR");
     }
 
     #[test]

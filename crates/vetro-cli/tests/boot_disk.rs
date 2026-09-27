@@ -18,7 +18,7 @@ fn boot_con_disco_da_file() {
         return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "boot under Vetro only in release");
     }
     let Some((image, initrd)) = guest_kernel() else {
-        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "target/guest-kernel mancante");
+        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "target/guest-kernel missing");
     };
     let dir = std::env::temp_dir().join(format!("vetro-boot-disk-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -48,7 +48,7 @@ fn boot_con_disco_da_file() {
         "echo \"D\"OPO=$(dd if=/dev/vda bs=512 skip=5 count=1 2>/dev/null | head -c 7); poweroff -f\n"
     ));
     let (_, dim) = c.wait_line("DIM=", at, limit).unwrap_or_else(|| panic!("no DIM:\n{}", c.log()));
-    assert_eq!(dim, "DIM=2048 DEV=virtio0", "1 MiB = 2048 settori, primo dispositivo virtio");
+    assert_eq!(dim, "DIM=2048 DEV=virtio0", "1 MiB = 2048 sectors, first virtio device");
     let (_, primo) = c.wait_line("PRIMO=", at, limit).unwrap_or_else(|| panic!("no PRIMO:\n{}", c.log()));
     assert_eq!(primo, "PRIMO=VETRO-DISCO-7 SETTOR");
     let (_, dopo) = c.wait_line("DOPO=", at, limit).unwrap_or_else(|| panic!("no DOPO:\n{}", c.log()));

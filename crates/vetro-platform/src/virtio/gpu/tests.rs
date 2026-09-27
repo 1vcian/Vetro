@@ -40,7 +40,7 @@ fn ctrl(d: &mut Driver<VirtioMmio>, c: &[u8], resp_len: u32) -> Vec<u8> {
     let head = d.add(CTRLQ, &[(a, c.len() as u32, false), (r, resp_len, true)]);
     d.service();
     assert_eq!(d.irq() & INT_VRING, INT_VRING);
-    let (h, len) = d.pop_used(CTRLQ).expect("risposta");
+    let (h, len) = d.pop_used(CTRLQ).expect("response");
     assert_eq!(h, head);
     d.mem(r, len as usize)
 }
@@ -51,7 +51,7 @@ fn resp_type(r: &[u8]) -> u32 {
 
 fn ok(d: &mut Driver<VirtioMmio>, c: &[u8]) {
     let r = ctrl(d, c, 24);
-    assert_eq!(resp_type(&r), RESP_OK_NODATA, "comando {:#x}", le32(c, 0));
+    assert_eq!(resp_type(&r), RESP_OK_NODATA, "command {:#x}", le32(c, 0));
 }
 
 fn err(d: &mut Driver<VirtioMmio>, c: &[u8]) -> u32 {
@@ -242,7 +242,7 @@ fn errori_come_qemu() {
     assert_eq!(e(&mut d, CMD_RESOURCE_ATTACH_BACKING, &[1, 2]), RESP_ERR_UNSPEC);
     attach(&mut d, 1, 32 * 32 * 4, 1);
     assert_eq!(e(&mut d, CMD_RESOURCE_ATTACH_BACKING, &[1, 0]), RESP_ERR_UNSPEC, "already attached");
-    // Rettangoli.
+    // Rectangles.
     for r in [rect(1, 0, 32, 4), rect(0, 29, 4, 4), rect(33, 0, 0, 0), rect(0, 0, 33, 1)] {
         let mut w = r.to_vec();
         w.extend([0, 0, 1, 0]);
@@ -259,7 +259,7 @@ fn errori_come_qemu() {
     assert_eq!(e(&mut d, CMD_RESOURCE_ASSIGN_UUID, &[1, 0]), RESP_ERR_UNSPEC);
     assert_eq!(e(&mut d, CMD_RESOURCE_CREATE_BLOB, &[0; 8]), RESP_ERR_INVALID_PARAMETER);
     assert_eq!(e(&mut d, 0x1234, &[]), RESP_ERR_UNSPEC);
-    // Comando corto.
+    // Short command.
     assert_eq!(e(&mut d, CMD_RESOURCE_CREATE_2D, &[2, 1]), RESP_ERR_INVALID_PARAMETER);
     assert_eq!(resp_type(&ctrl(&mut d, &[1, 1, 0, 0], 24)), RESP_ERR_INVALID_PARAMETER);
     assert!(d.t.last_error().is_none(), "no queue error");
@@ -319,7 +319,7 @@ fn cursore() {
     let mv = cmd(CMD_MOVE_CURSOR, &[0, 7, 8, 0, 0, 0, 0, 0]);
     let a = d.buf(&mv);
     d.add(CURSORQ, &[(a, 56, false)]);
-    // Scanout inesistente e comando corto: ignorati, buffer restituito.
+    // Nonexistent scanout and short command: ignored, buffer returned.
     let bad = d.buf(&cmd(CMD_MOVE_CURSOR, &[3, 1, 1, 0, 0, 0, 0, 0]));
     d.add(CURSORQ, &[(bad, 56, false)]);
     d.add(CURSORQ, &[(bad, 20, false)]);
@@ -348,7 +348,7 @@ fn cambio_di_risoluzione_dall_host() {
     assert_eq!(&r[32..], &edid::generate(&info, 1024)[..]);
     d.t.cfg_wr(4, 4, u64::from(EVENT_DISPLAY));
     assert_eq!(d.t.cfg(0, 4), 0, "events_clear");
-    // Display spento: enabled = 0.
+    // Display off: enabled = 0.
     gpu(&mut d).set_display(0, 0, 0);
     let r = ctrl(&mut d, &hdr(CMD_GET_DISPLAY_INFO), 408);
     assert!(r[24..48].iter().all(|&b| b == 0));

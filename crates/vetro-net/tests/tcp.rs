@@ -20,7 +20,7 @@ fn stack_with(cfg: SinkholeConfig) -> Stack<Sinkhole> {
 }
 
 fn one(out: Vec<Out>) -> TcpSeg {
-    assert_eq!(out.len(), 1, "atteso un segmento: {out:?}");
+    assert_eq!(out.len(), 1, "expected one segment: {out:?}");
     out.into_iter().next().unwrap().tcp()
 }
 
@@ -500,7 +500,7 @@ fn same_scenario_is_deterministic_and_seed_changes_isn() {
     let b = run(7);
     assert_eq!(a, b);
     let c = run(8);
-    assert_ne!(a.0[0], c.0[0], "seme diverso, ISN diverso");
+    assert_ne!(a.0[0], c.0[0], "different seed, different ISN");
     assert_eq!(a.1.len(), c.1.len());
 }
 
@@ -522,7 +522,7 @@ fn many_parallel_connections_to_same_port() {
     assert_eq!(s.tcp_connections(), 20);
 }
 
-/// Generatore xorshift64 seminato, per perdere frame in modo riproducibile.
+/// Seeded xorshift64 generator, to lose frames reproducibly.
 const LOSS: u64 = 20;
 struct Rng(u64);
 
@@ -663,7 +663,7 @@ fn lossy_transfer(seed: u64) {
             bytes_to_remote: upload.len() as u64,
             bytes_to_guest: download.len() as u64
         },
-        "seme {seed}"
+        "seed {seed}"
     );
 }
 

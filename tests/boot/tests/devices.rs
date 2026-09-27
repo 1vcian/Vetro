@@ -89,7 +89,7 @@ fn session(image: &[u8], initrd: &[u8]) -> (String, u64) {
     let devices = Devices { vsock_cid: Some(GUEST_CID), ..Devices::default() };
     let mut m = Machine::with_devices(&MachineConfig::default(), &devices);
     m.load_linux(image, Some(initrd), "console=ttyAMA0 vetro.noautotest").expect("loading the kernel");
-    m.vsock(|v| v.listen(1234).unwrap()).expect("vsock montato");
+    m.vsock(|v| v.listen(1234).unwrap()).expect("vsock present");
     let mut r = Run { m, log: Vec::new() };
     let mut at = r.until(SHELL_PROMPT, 0);
 
@@ -106,7 +106,7 @@ fn session(image: &[u8], initrd: &[u8]) -> (String, u64) {
                 .count();
             (w, h, bad)
         })
-        .expect("gpu montata");
+        .expect("gpu present");
     assert_eq!((w, h, bad), (1280, 800, 0), "scanout different from the guest's pattern");
     let cursor = r.m.gpu(|g| g.cursor(0).unwrap().clone()).unwrap();
     assert_ne!(cursor.resource_id, 0);

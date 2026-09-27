@@ -159,7 +159,7 @@ mod tests {
             tid: 4250,
             process: "com.vetro.probe".into(),
             package: Some("com.vetro.probe".into()),
-            library: "libssl (sistema)".into(),
+            library: "libssl (system)".into(),
             messages: vec![
                 TlsMessage {
                     at_us: 1000,

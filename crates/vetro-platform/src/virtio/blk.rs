@@ -51,7 +51,7 @@ pub enum BlockError {
     Io,
     /// Sectors past the end of the disk.
     OutOfRange,
-    /// Scrittura su un backend in sola lettura.
+    /// Write to a read-only backend.
     ReadOnly,
     /// Data not available yet: retry later.
     NotReady,
@@ -89,7 +89,7 @@ fn byte_range(size: u64, sector: u64, len: usize) -> Result<core::ops::Range<usi
     Ok(start as usize..end as usize)
 }
 
-/// Disco in memoria.
+/// In-memory disk.
 #[derive(Clone, Debug, Default)]
 pub struct MemBackend {
     data: Vec<u8>,
@@ -282,7 +282,7 @@ impl<B: BlockBackend> BlockBackend for CowBackend<B> {
                 }
                 self.clusters.insert(c, fresh);
             }
-            let cl = self.clusters.get_mut(&c).expect("cluster appena inserito");
+            let cl = self.clusters.get_mut(&c).expect("cluster just inserted");
             cl[off..off + (b - a)].copy_from_slice(&data[a..b]);
             self.dirty.insert(c);
             Ok(())
@@ -329,9 +329,9 @@ impl<B: BlockBackend> BlockBackend for CowBackend<B> {
 pub struct VirtioBlkConfig {
     /// Queue size (QEMU: 256).
     pub queue_size: u16,
-    /// Segmenti dati massimi per richiesta (QEMU: queue_size - 2).
+    /// Maximum data segments per request (QEMU: queue_size - 2).
     pub seg_max: u32,
-    /// Byte massimi per segmento.
+    /// Maximum bytes per segment.
     pub size_max: u32,
     /// Logical block size announced to the driver.
     pub blk_size: u32,
@@ -417,7 +417,7 @@ impl VirtioBlk {
     fn handle(&mut self, c: &DescChain, ram: &mut dyn GuestRam) -> Result<Outcome, QueueError> {
         let mut hdr = [0u8; 16];
         if c.read(ram, 0, &mut hdr)? < hdr.len() {
-            return Err(QueueError::Malformed("intestazione virtio-blk incompleta"));
+            return Err(QueueError::Malformed("incomplete virtio-blk header"));
         }
         let Some(status_at) = c.writable_len().checked_sub(1) else {
             return Err(QueueError::Malformed("virtio-blk status byte missing"));

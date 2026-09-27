@@ -36,7 +36,7 @@ pub const OPT_RENEWAL_TIME: u8 = 58;
 pub const OPT_REBINDING_TIME: u8 = 59;
 pub const OPT_END: u8 = 255;
 
-/// Messaggio DHCP analizzato.
+/// Parsed DHCP message.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Packet {
     /// 1 = BOOTREQUEST, 2 = BOOTREPLY.

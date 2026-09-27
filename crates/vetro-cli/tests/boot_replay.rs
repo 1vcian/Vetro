@@ -30,7 +30,7 @@ fn registra_rifa_e_salta() {
         return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "boot under Vetro only in release");
     }
     let Some((image, initrd)) = guest_kernel() else {
-        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "target/guest-kernel mancante");
+        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "target/guest-kernel missing");
     };
     let dir = std::env::temp_dir().join(format!("vetro-boot-replay-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -55,10 +55,10 @@ fn registra_rifa_e_salta() {
     c.send("poweroff -f\n");
     assert!(c.finish(Duration::from_secs(120)), "poweroff -f did not stop vetro:\n{}", c.log());
     let recorded = c.log();
-    let log = Log::decode(&std::fs::read(&rec).expect("log scritto")).expect("log valido");
+    let log = Log::decode(&std::fs::read(&rec).expect("log written")).expect("valid log");
     assert!(
         !log.events.is_empty() && log.keyframes.len() >= 2,
-        "{} eventi, {:?}",
+        "{} events, {:?}",
         log.events.len(),
         log.keyframes
     );
@@ -78,7 +78,7 @@ fn registra_rifa_e_salta() {
         assert_eq!(out.status.code(), Some(0), "{what}: {err}");
         assert!(err.contains("replay identical"), "{what}: {err}");
         let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(stdout == recorded, "{what}: uscita diversa:\n{}", normalize(&stdout));
+        assert!(stdout == recorded, "{what}: output differs:\n{}", normalize(&stdout));
     }
 
     // Jump to an instruction: the same registers as the jump in the process.

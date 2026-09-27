@@ -186,7 +186,7 @@ impl M {
         assert_eq!(self.cpu.sys.esr_el1, want);
         assert_eq!(self.cpu.sys.elr_el1, pc, "{insn:#010x}: ELR");
         let group = if from_el == 0 { 0x400 } else { 0x200 };
-        assert_eq!(self.cpu.pc, VBAR + group, "{insn:#010x}: vettore");
+        assert_eq!(self.cpu.pc, VBAR + group, "{insn:#010x}: vector");
         assert_eq!(self.cpu.sys.el, 1);
     }
 }
@@ -404,7 +404,7 @@ fn accessi_permessi_da_el0() {
     m.bus.ram[0x5000..0x5040].fill(0xaa);
     m.env.values.push((EnvReg::CntfrqEl0, 62_500_000));
     for i in 0..10 {
-        assert_eq!(m.step(), SysEvent::Executed, "istruzione {i}");
+        assert_eq!(m.step(), SysEvent::Executed, "instruction {i}");
     }
     assert_eq!(m.cpu.x[0], 0x8444_8004);
     assert_eq!(m.cpu.x[1], 4, "DZE = 1: DZP = 0");
@@ -725,7 +725,7 @@ fn registri_con_maschere_di_qemu() {
         ],
     );
     for i in 0..13 {
-        assert_eq!(m.step(), SysEvent::Executed, "istruzione {i}");
+        assert_eq!(m.step(), SysEvent::Executed, "instruction {i}");
     }
     let x = m.cpu.x;
     assert_eq!((x[1], x[3], x[4], x[6]), (0x3c0, 0xf000_0000, 0, 0));
@@ -782,7 +782,7 @@ fn registri_di_debug_come_qemu() {
     m.cpu.x[..10].fill(0x55);
     m.bus.put(RAM, &code);
     for i in 0..code.len() {
-        assert_eq!(m.step(), SysEvent::Executed, "istruzione {i}");
+        assert_eq!(m.step(), SysEvent::Executed, "instruction {i}");
     }
     let x = m.cpu.x;
     assert_eq!(&x[..6], &[0; 6], "OSDTR*, OSECCR, MDCCSR, DBGDTR*: RAZ/WI");

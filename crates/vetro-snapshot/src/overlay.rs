@@ -204,7 +204,7 @@ impl Overlay {
         let found_id = &h[44..44 + id_len];
         if found_id != ov.identity.as_slice() {
             return Err(LoadError::Mismatch(format!(
-                "base {:?}, attesa {:?}",
+                "base {:?}, expected {:?}",
                 String::from_utf8_lossy(found_id),
                 String::from_utf8_lossy(&ov.identity)
             )));

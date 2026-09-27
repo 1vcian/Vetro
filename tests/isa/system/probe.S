@@ -72,7 +72,7 @@ _start:
     bl puthex
 .endm
 
-// Scrittura di \val (in x1) e rilettura, con titolo.
+// Write of \val (in x1) and read back, with a title.
 .macro SW name, enc, val
     T \name
     ldr x1, =\val
@@ -92,7 +92,7 @@ _start:
 92:
 .endm
 
-// Stampa un registro generale.
+// Prints a general-purpose register.
 .macro PX reg
     mov x0, \reg
     bl puthex
@@ -108,7 +108,7 @@ _start:
     bl puthex
 .endm
 
-// AT su un indirizzo in x1 e stampa di PAR_EL1.
+// AT on an address in x1 and print of PAR_EL1.
 .macro ATX name, op
     T \name
     at \op, x1
@@ -128,7 +128,7 @@ _start:
     str x4, [x2, x1, lsl #3]
 .endm
 
-    // --- Identificazione e reset (MMU spenta, EL1h) ---
+    // --- Identification and reset (MMU off, EL1h) ---
     PR MIDR, midr_el1
     PR MPIDR, mpidr_el1
     PR REVIDR, revidr_el1
@@ -586,7 +586,7 @@ puthex:
     strb w10, [x9]
     ret
 
-// Gestore comune: x0 = indice del vettore; x0/x1 originali in [sp].
+// Common handler: x0 = vector index; original x0/x1 in [sp].
 common:
     stp x2, x3, [sp, #16]
     stp x4, x5, [sp, #32]

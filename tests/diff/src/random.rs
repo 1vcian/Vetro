@@ -54,7 +54,7 @@ pub enum Class {
     Branch,
     /// SIMD/FP data-processing class: index into `SIMD_CLASSES`.
     Simd(usize),
-    /// Load/store SIMD con base x28.
+    /// SIMD load/store with base x28.
     SimdMem,
 }
 
@@ -141,10 +141,10 @@ const DP_CLASSES: &[(u32, u32)] = &[
     (0x5FE0_0000, 0x5AC0_0000), // dp 1-source
     (0x1F00_0000, 0x1B00_0000), // dp 3-source
     (0x3F20_0000, 0x3800_0000), // ld/st imm9
-    (0x3F20_0000, 0x3820_0000), // ld/st registro
+    (0x3F20_0000, 0x3820_0000), // ld/st register
     (0x3F00_0000, 0x3900_0000), // ld/st unsigned
-    (0x3E00_0000, 0x2800_0000), // ld/st coppia
-    (0x3F00_0000, 0x0800_0000), // esclusive
+    (0x3E00_0000, 0x2800_0000), // ld/st pair
+    (0x3F00_0000, 0x0800_0000), // exclusives
 ];
 
 /// Unit of the body: branches land only at the start of a unit.
@@ -181,7 +181,7 @@ fn get(w: u32, hi: u32, lo: u32) -> u32 {
     (w >> lo) & (u32::MAX >> (31 - (hi - lo)))
 }
 
-/// Registro di destinazione ammesso: tutti tranne x27 e x28.
+/// Allowed destination register: all except x27 and x28.
 fn dest_reg(rng: &mut Rng) -> u32 {
     loop {
         let r = rng.below(32) as u32;
@@ -202,7 +202,7 @@ fn accepted(w: u32) -> bool {
 
 struct Gen<'a> {
     rng: &'a mut Rng,
-    /// Includere le classi SIMD/FP.
+    /// Include the SIMD/FP classes.
     simd: bool,
 }
 
@@ -323,12 +323,12 @@ impl Gen<'_> {
         fix_rd(w, self.rng)
     }
 
-    /// Registro di trasferimento per un load/store: tutti tranne x27/x28.
+    /// Transfer register for a load/store: all except x27/x28.
     fn rt(&mut self) -> u32 {
         dest_reg(self.rng)
     }
 
-    /// Copia di x28 in un registro visibile, poi ripristino di x28.
+    /// Copy of x28 into a visible register, then restore of x28.
     fn capture_and_restore(&mut self, out: &mut Vec<u32>) {
         let visible = dest_reg(self.rng) % 31;
         out.push(crate::a64::mov_reg(visible, BASE_REG));
@@ -514,7 +514,7 @@ impl Gen<'_> {
         }
     }
 
-    /// Load/store SIMD con base x28 e indirizzi dentro il blocco di memoria.
+    /// SIMD load/store with base x28 and addresses inside the memory block.
     fn simd_mem(&mut self) -> Vec<u32> {
         loop {
             let mut writeback = false;
@@ -552,7 +552,7 @@ impl Gen<'_> {
                     w
                 }
                 _ => {
-                    // Struttura singola / replica
+                    // Single structure / replicate
                     let mut w = self.raw(0xBF80_0000, 0x0D00_0000);
                     if self.rng.chance(1, 2) {
                         w |= 1 << 23;

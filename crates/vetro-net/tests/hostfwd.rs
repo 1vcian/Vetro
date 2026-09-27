@@ -29,7 +29,7 @@ fn segs(s: &mut Stack<Sinkhole>) -> Vec<TcpSeg> {
 
 fn one(s: &mut Stack<Sinkhole>) -> TcpSeg {
     let mut v = segs(s);
-    assert_eq!(v.len(), 1, "atteso un segmento: {v:?}");
+    assert_eq!(v.len(), 1, "expected one segment: {v:?}");
     v.remove(0)
 }
 
@@ -40,7 +40,7 @@ fn state(s: &Stack<Sinkhole>, id: ConnId) -> HostConnState {
 /// The guest's service: a `Client` of the fake guest with the service port
 /// as source and the gateway as destination.
 fn server_for(syn: &TcpSeg) -> Client {
-    assert!(syn.syn && syn.ack.is_none() && !syn.rst, "atteso SYN: {syn:?}");
+    assert!(syn.syn && syn.ack.is_none() && !syn.rst, "expected SYN: {syn:?}");
     let mut c = Client::new(syn.dst.port(), syn.src);
     c.seq = 7_000_000;
     c.ack = syn.seq.wrapping_add(1);
@@ -107,7 +107,7 @@ fn handshake_dal_gateway_come_qemu() {
         [(t(5), EventKind::TcpConnect { id, flow }), (t(6), EventKind::TcpEstablished { id })]
     );
     assert_eq!(s.events()[0].to_string(), "[     0.005000] tcp 1 from host 10.0.2.2:49152 -> 10.0.2.15:5555");
-    // La seconda connessione prende la porta effimera successiva.
+    // The second connection takes the next ephemeral port.
     s.host_connect(PORT).unwrap();
     s.poll(t(7));
     assert_eq!(one(&mut s).src.port(), 49153);
@@ -122,7 +122,7 @@ fn eco_di_200_kb_oltre_la_finestra() {
     let mut buf = vec![0u8; 70_000];
     while echoed.len() < data.len() {
         now += 1;
-        assert!(now < 10_000, "eco ferma a {} byte", echoed.len());
+        assert!(now < 10_000, "echo stuck at {} bytes", echoed.len());
         sent += s.host_send(id, &data[sent..]);
         s.poll(t(now));
         // The guest receives (at most one MSS-sized segment at a time, within
@@ -137,7 +137,7 @@ fn eco_di_200_kb_oltre_la_finestra() {
         let n = s.host_recv(id, &mut buf);
         echoed.extend_from_slice(&buf[..n]);
     }
-    assert_eq!(echoed, data, "eco byte per byte");
+    assert_eq!(echoed, data, "echo byte for byte");
     let to_guest: usize = s
         .events()
         .iter()
@@ -170,7 +170,7 @@ fn contropressione_verso_l_host() {
         }
     }
     let accepted = g.seq.wrapping_sub(start) as usize;
-    assert_eq!(last_window, 0, "finestra chiusa");
+    assert_eq!(last_window, 0, "window closed");
     let info = s.host_conn(id).unwrap();
     assert_eq!(info.readable, HOST_BUFFER);
     assert_eq!(accepted, HOST_BUFFER + 65_535, "host queue plus maximum window");
@@ -263,11 +263,11 @@ fn syn_ritrasmesso_poi_timeout() {
     let id = s.host_connect(PORT).unwrap();
     s.poll(t(0));
     let first = one(&mut s);
-    assert_eq!(s.next_deadline(), Some(t(1000)), "RTO iniziale 1 s");
+    assert_eq!(s.next_deadline(), Some(t(1000)), "initial RTO 1 s");
     s.poll(t(1000));
     let again = one(&mut s);
     assert_eq!((again.seq, again.syn), (first.seq, true));
-    assert_eq!(s.next_deadline(), Some(t(3000)), "RTO raddoppiato");
+    assert_eq!(s.next_deadline(), Some(t(3000)), "RTO doubled");
     // No answer for 75 s: give up without RST.
     let mut now = 3000;
     while state(&s, id) == HostConnState::Connecting {

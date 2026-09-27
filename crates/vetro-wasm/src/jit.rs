@@ -216,7 +216,7 @@ pub unsafe extern "C" fn vetro_jit_simd(state: usize, word: u32, x: u64, nzcv: u
 
 unsafe fn set_exit_detail(state: usize, v: u32) {
     let p = (state + off::EXIT_DETAIL as usize) as *mut u32;
-    // SAFETY: `state` punta a un `JitState` allineato a 16 (contratto).
+    // SAFETY: `state` points to a 16-aligned `JitState` (contract).
     unsafe { p.write(v) }
 }
 

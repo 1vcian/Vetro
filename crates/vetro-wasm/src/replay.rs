@@ -478,7 +478,7 @@ mod tests {
             assert_eq!(code, rr::IDLE);
             // Keyframes at the end of the quanta, right after 500 instructions since the
             // previous one: 1000, 1600, 2300, 2800, 3400, 4000.
-            assert_eq!(v[1..], [3, 6, 1000, 4000, 1], "3 ingressi, 6 keyframe");
+            assert_eq!(v[1..], [3, 6, 1000, 4000, 1], "3 inputs, 6 keyframes");
 
             // Timeline: the console line and the key (not the release).
             let n = vetro_timeline_json(a, 0);
@@ -519,7 +519,7 @@ mod tests {
             assert_eq!(vetro_log_keyframe_for(b, 0), -1);
             assert_eq!(vetro_log_keyframe_for(b, 2600), 2);
             assert_eq!(vetro_replay_start(b, 0), replay_start::KEYFRAME_MISSING);
-            assert_eq!(vetro_log_keyframe_put(b, 0, kfs[0].as_ptr(), kfs[0].len() - 1), 0, "lunghezza");
+            assert_eq!(vetro_log_keyframe_put(b, 0, kfs[0].as_ptr(), kfs[0].len() - 1), 0, "length");
             assert_eq!(vetro_log_keyframe_put(b, 0, kfs[0].as_ptr(), kfs[0].len()), 1);
             assert_eq!(vetro_replay_start(b, 0), replay_start::OK);
             assert_eq!((*b).m.steps, 1000);
@@ -560,7 +560,7 @@ mod tests {
             assert_eq!(vetro_log_load(d, file.as_ptr(), file.len()), 0);
             let mut info = [0u64; 8];
             vetro_log_info(d, info.as_mut_ptr(), 8);
-            assert_eq!(info[6], 0, "configurazione diversa");
+            assert_eq!(info[6], 0, "different configuration");
             assert_eq!(vetro_replay_start(d, 0), replay_start::REFUSED);
             assert!((*d).message.contains("configured differently"), "{}", (*d).message);
             let e = new(64 << 20);

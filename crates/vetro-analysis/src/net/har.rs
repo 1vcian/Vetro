@@ -128,7 +128,7 @@ fn query_string(url: &str) -> String {
 fn decoded_comment(d: &Decoded) -> Option<String> {
     match d {
         Decoded::Json(_) | Decoded::Form(_) | Decoded::Multipart(_) | Decoded::Protobuf(_) => {
-            Some(format!("vetro: corpo decodificato ({})\n{}", d.kind(), d.to_text()))
+            Some(format!("vetro: decoded body ({})\n{}", d.kind(), d.to_text()))
         }
         Decoded::Binary { note: Some(_), .. } => Some(format!("vetro: {}", d.to_text())),
         _ => None,

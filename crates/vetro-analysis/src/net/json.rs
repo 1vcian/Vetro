@@ -161,7 +161,7 @@ impl Parser<'_> {
                             self.pos += 1;
                             return Ok(Value::Array(v));
                         }
-                        _ => return self.err("atteso ',' o ']'"),
+                        _ => return self.err("expected ',' or ']'"),
                     }
                 }
             }
@@ -181,7 +181,7 @@ impl Parser<'_> {
                     let k = self.string()?;
                     self.ws();
                     if self.s.get(self.pos) != Some(&b':') {
-                        return self.err("atteso ':'");
+                        return self.err("expected ':'");
                     }
                     self.pos += 1;
                     v.push((k, self.value(depth + 1)?));
@@ -192,7 +192,7 @@ impl Parser<'_> {
                             self.pos += 1;
                             return Ok(Value::Object(v));
                         }
-                        _ => return self.err("atteso ',' o '}'"),
+                        _ => return self.err("expected ',' or '}'"),
                     }
                 }
             }

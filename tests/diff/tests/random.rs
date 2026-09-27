@@ -134,7 +134,7 @@ fn run_with(name: &str, prefix: &str, cases: u64, make: impl Fn(u64) -> Case + S
         let seeds: Vec<u64> = failures.iter().map(|f| f.0).take(20).collect();
         let mut report = String::new();
         for (seed, diff, _) in failures.iter().take(5) {
-            report += &format!("seme {seed}:\n{diff}\n");
+            report += &format!("seed {seed}:\n{diff}\n");
         }
         panic!(
             "{} programs different from QEMU (seeds {seeds:?}...)\n\n{report}body of the first:\n{body}",

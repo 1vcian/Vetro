@@ -122,13 +122,13 @@ fn andata_e_ritorno_con_gzip_e_lz4_di_sistema() {
     for level in ["-1", "-6", "-9"] {
         match compress_with("gzip", &["-n", level, "-c"], &data) {
             Some(gz) => assert_eq!(decompress::gunzip(&gz).unwrap(), data, "gzip {level}"),
-            None => eprintln!("SKIP: gzip assente"),
+            None => eprintln!("SKIP: gzip missing"),
         }
     }
     for args in [&["-l", "-9", "-c"][..], &["-1", "-c"], &["-BD", "-B4", "-c"], &["-BX", "-c"]] {
         match compress_with("lz4", args, &data) {
             Some(lz) => assert_eq!(&*decompress::decompress(&lz).unwrap(), &data[..], "lz4 {args:?}"),
-            None => eprintln!("SKIP: lz4 assente"),
+            None => eprintln!("SKIP: lz4 missing"),
         }
     }
 }
@@ -139,7 +139,7 @@ fn andata_e_ritorno_con_gzip_e_lz4_di_sistema() {
 fn initramfs_vero_del_kernel_guest() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/guest-kernel/initramfs.cpio.gz");
     let Ok(gz) = std::fs::read(path) else {
-        eprintln!("SKIP initramfs_vero_del_kernel_guest: esegui tools/guest-kernel/build.sh");
+        eprintln!("SKIP initramfs_vero_del_kernel_guest: run tools/guest-kernel/build.sh");
         return;
     };
     let cpio = decompress::gunzip(&gz).unwrap();
@@ -207,7 +207,7 @@ fn boot_v2(kernel: &[u8], ramdisk: &[u8], cmdline: &str, page: usize) -> Vec<u8>
     v
 }
 
-/// vendor_boot v4: (dati, tipo, nome) per ogni ramdisk.
+/// vendor_boot v4: (data, type, name) for every ramdisk.
 fn vendor_v4(ramdisks: &[(&[u8], u32, &str)], cmdline: &str, bootconfig: &[u8], page: usize) -> Vec<u8> {
     let total: usize = ramdisks.iter().map(|r| r.0.len()).sum();
     let mut v = vec![0u8; VENDOR_V4_HEADER];
@@ -260,7 +260,7 @@ fn vendor_v3(ramdisk: &[u8], cmdline: &str, page: usize) -> Vec<u8> {
     v
 }
 
-/// Un `Image` finto: header valido, 8 KiB.
+/// A fake `Image`: valid header, 8 KiB.
 fn fake_image() -> Vec<u8> {
     let mut v = vec![0u8; 8192];
     v[16..24].copy_from_slice(&0x10000u64.to_le_bytes());
@@ -413,8 +413,8 @@ fn errori_delle_immagini() {
     put32(&mut odd, 36, 3000);
     assert_eq!(BootImage::parse(&odd), Err(AndroidError::BadPageSize(Which::Boot, 3000)));
     // init_boot with a kernel.
-    assert_eq!(BootImage::parse_init_boot(&boot), Err(AndroidError::BadInitBoot("contiene un kernel")));
-    // vendor_boot con un boot.img v2.
+    assert_eq!(BootImage::parse_init_boot(&boot), Err(AndroidError::BadInitBoot("contains a kernel")));
+    // vendor_boot with a v2 boot.img.
     let v2 = boot_v2(&kernel, b"", "", 2048);
     let vendor = vendor_v3(b"x", "", 4096);
     assert!(matches!(
@@ -426,7 +426,7 @@ fn errori_delle_immagini() {
     let table = 4096 * 3;
     put32(&mut vendor, table, 5);
     assert!(matches!(VendorBoot::parse(&vendor), Err(AndroidError::BadRamdiskTable(_))));
-    // Kernel mancante o in un formato sconosciuto.
+    // Kernel missing or in an unknown format.
     let empty = boot_v4(b"", b"R", "");
     assert_eq!(
         AndroidBoot::from_images(&empty, None, None, &BootOptions::default()),

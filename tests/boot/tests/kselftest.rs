@@ -57,7 +57,7 @@ fn kselftest_come_sotto_qemu() {
         );
     }
     let Some(qemu) = qemu_system() else {
-        return skip_or_fail("VETRO_REQUIRE_SYSTEM_ORACLE", "qemu-system-aarch64 assente");
+        return skip_or_fail("VETRO_REQUIRE_SYSTEM_ORACLE", "qemu-system-aarch64 missing");
     };
     let expected: usize = std::fs::read_to_string(dir.join("kselftest-list.txt"))
         .map(|t| t.lines().filter(|l| !l.trim().is_empty()).count())
@@ -84,7 +84,7 @@ fn kselftest_come_sotto_qemu() {
     if let Some(t) = jit_threshold() {
         let (jlog, jsteps) = run_vetro(&image, &initrd, Some(t));
         std::fs::write(dir.join("vetro-kselftest-jit.log"), normalize(&jlog)).unwrap();
-        assert_eq!(jsteps, steps, "istruzioni diverse col JIT");
+        assert_eq!(jsteps, steps, "instructions differ with the JIT");
         assert!(jlog == vlog, "kselftest log different with the JIT (vetro-kselftest-jit.log)");
         eprintln!("kselftest with the JIT (threshold {t}): same log, {jsteps} instructions");
     }

@@ -278,7 +278,7 @@ fn check_guest_view(who: &str, log: &str) {
     // final marker.
     let start = log
         .rfind(&format!("\n{CMDLINE}\n"))
-        .unwrap_or_else(|| panic!("{who}: /proc/cmdline diverso:\n{log}"));
+        .unwrap_or_else(|| panic!("{who}: /proc/cmdline differs:\n{log}"));
     let end = log.rfind(END).unwrap();
     let out = &log[start + 1..end];
     let want = format!(
@@ -299,7 +299,7 @@ fn android_boot_images_like_qemu() {
     let Some((image_path, initrd_path)) = guest_kernel() else {
         return skip_or_fail(
             "VETRO_REQUIRE_GUEST_KERNEL",
-            "target/guest-kernel mancante: esegui tools/guest-kernel/build.sh",
+            "target/guest-kernel missing: run tools/guest-kernel/build.sh",
         );
     };
     let (image, initramfs) = (std::fs::read(&image_path).unwrap(), std::fs::read(&initrd_path).unwrap());
@@ -315,7 +315,7 @@ fn android_boot_images_like_qemu() {
     };
 
     let opts = BootOptions { params: PARAMS.into(), recovery: false };
-    let a = AndroidBoot::from_images(&boot, Some(&vendor), Some(&init), &opts).expect("immagini Android");
+    let a = AndroidBoot::from_images(&boot, Some(&vendor), Some(&init), &opts).expect("Android images");
     assert_eq!(a.kernel_format, decompress::Format::Gzip);
     assert_eq!(a.kernel, image, "the decompressed kernel is not the original Image");
     assert_eq!(a.cmdline, CMDLINE);
@@ -336,7 +336,7 @@ fn android_boot_images_like_qemu() {
     let Some(qemu) = qemu_system() else {
         return skip_or_fail(
             "VETRO_REQUIRE_SYSTEM_ORACLE",
-            "qemu-system-aarch64 assente (su macOS: VETRO_QEMU_SYSTEM_AARCH64=tools/guest-kernel/qemu-system-aarch64-docker.sh)",
+            "qemu-system-aarch64 missing (on macOS: VETRO_QEMU_SYSTEM_AARCH64=tools/guest-kernel/qemu-system-aarch64-docker.sh)",
         );
     };
     // The same unpacking as files for -kernel and -initrd.

@@ -201,7 +201,7 @@ fn body(s: &[u8], at: usize, framing: Framing, headers: &Headers, eof: bool) -> 
             }
             Err(e) => {
                 b.decode_error =
-                    Some(format!("{c}: {e}{}", if complete { "" } else { " (corpo incompleto)" }));
+                    Some(format!("{c}: {e}{}", if complete { "" } else { " (incomplete body)" }));
                 break;
             }
         }

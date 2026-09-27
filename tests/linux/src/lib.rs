@@ -204,7 +204,7 @@ impl Case {
         let theirs = self.run_qemu(&q);
         let mut diff = String::new();
         if ours.status != theirs.status {
-            diff += &format!("  esito: vetro={:?} qemu={:?}\n", ours.status, theirs.status);
+            diff += &format!("  outcome: vetro={:?} qemu={:?}\n", ours.status, theirs.status);
         }
         if ours.stdout != theirs.stdout {
             diff += &format!(
@@ -228,11 +228,11 @@ impl Case {
             );
             for (k, v) in &ours.files {
                 if theirs.files.get(k) != Some(v) {
-                    diff += &format!("    diverso: {k}\n");
+                    diff += &format!("    differs: {k}\n");
                 }
             }
         }
-        assert!(diff.is_empty(), "{}: Vetro e QEMU divergono\n{diff}", self.name);
+        assert!(diff.is_empty(), "{}: Vetro and QEMU diverge\n{diff}", self.name);
         ours
     }
 }

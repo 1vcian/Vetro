@@ -44,7 +44,7 @@ use super::*;
 pub const F_VIRGL: u64 = 1 << 0;
 pub const F_EDID: u64 = 1 << 1;
 
-// Comandi (enum virtio_gpu_ctrl_type).
+// Commands (enum virtio_gpu_ctrl_type).
 pub const CMD_GET_DISPLAY_INFO: u32 = 0x0100;
 pub const CMD_RESOURCE_CREATE_2D: u32 = 0x0101;
 pub const CMD_RESOURCE_UNREF: u32 = 0x0102;
@@ -62,7 +62,7 @@ pub const CMD_SET_SCANOUT_BLOB: u32 = 0x010d;
 pub const CMD_UPDATE_CURSOR: u32 = 0x0300;
 pub const CMD_MOVE_CURSOR: u32 = 0x0301;
 
-// Risposte.
+// Responses.
 pub const RESP_OK_NODATA: u32 = 0x1100;
 pub const RESP_OK_DISPLAY_INFO: u32 = 0x1101;
 pub const RESP_OK_EDID: u32 = 0x1104;
@@ -141,7 +141,7 @@ impl PixelFormat {
     }
 }
 
-/// Rettangolo (`struct virtio_gpu_rect`).
+/// Rectangle (`struct virtio_gpu_rect`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Rect {
     pub x: u32,
@@ -221,17 +221,17 @@ pub trait DisplayBackend: Any {
     fn update(&mut self, scanout: u32, frame: &Frame<'_>, dirty: Rect);
     /// The scanout no longer shows anything.
     fn disable(&mut self, scanout: u32);
-    /// Cursore definito (UPDATE_CURSOR) o spostato (MOVE_CURSOR).
+    /// Cursor defined (UPDATE_CURSOR) or moved (MOVE_CURSOR).
     fn cursor(&mut self, _scanout: u32, _cursor: &Cursor) {}
 }
 
 /// In-memory backend: the last image of every scanout, in RGBA.
 #[derive(Clone, Debug, Default)]
 pub struct MemDisplay {
-    /// Per scanout: (larghezza, altezza, pixel RGBA riga per riga).
+    /// Per scanout: (width, height, RGBA pixels row by row).
     pub screens: BTreeMap<u32, (u32, u32, Vec<u8>)>,
     pub cursors: BTreeMap<u32, Cursor>,
-    /// Aggiornamenti ricevuti.
+    /// Updates received.
     pub updates: u64,
 }
 
@@ -279,7 +279,7 @@ pub struct GpuConfig {
     /// Initial resolution of scanout 0 (QEMU's: 1280x800).
     pub width: u32,
     pub height: u32,
-    /// Offre VIRTIO_GPU_F_EDID.
+    /// Offers VIRTIO_GPU_F_EDID.
     pub edid: bool,
     /// Monitor described by the EDID (the preferred dimensions are taken
     /// from the scanout resolution).
@@ -421,12 +421,12 @@ impl VirtioGpu {
         self.scanouts.get(scanout as usize).map(|s| &s.cursor)
     }
 
-    /// Risorse 2D esistenti.
+    /// Existing 2D resources.
     pub fn resource_count(&self) -> usize {
         self.resources.len()
     }
 
-    /// Memoria occupata dalle risorse.
+    /// Memory taken by the resources.
     pub fn hostmem(&self) -> u64 {
         self.hostmem
     }

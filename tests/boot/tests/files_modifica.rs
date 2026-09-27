@@ -51,7 +51,7 @@ impl Script {
             self.fc.pump(&mut self.m);
         }
         while let Some(e) = self.fc.take_event() {
-            self.seen.push(format!("evento {e:?}"));
+            self.seen.push(format!("event {e:?}"));
         }
         s
     }
@@ -76,7 +76,7 @@ impl Script {
         let end = self.until("VETRO-OUT-FINE", from);
         self.until(SHELL_PROMPT, end);
         let out = normalize(&String::from_utf8_lossy(&self.log[from..end]));
-        let start = out.find("VETRO-OUT-INIZIO\n").expect("marcatore") + "VETRO-OUT-INIZIO\n".len();
+        let start = out.find("VETRO-OUT-INIZIO\n").expect("marker") + "VETRO-OUT-INIZIO\n".len();
         out[start..out.len() - "VETRO-OUT-FINE".len()].trim_end_matches('\n').to_string()
     }
 
@@ -99,7 +99,7 @@ impl Script {
     }
 
     fn ok(&mut self, op: u32) -> Outcome {
-        self.wait(op).unwrap_or_else(|e| panic!("operazione {op}: {e}\n{}", self.tail()))
+        self.wait(op).unwrap_or_else(|e| panic!("operation {op}: {e}\n{}", self.tail()))
     }
 
     fn sql(
@@ -243,7 +243,7 @@ fn session(image: &[u8], initrd: &[u8]) -> (Vec<u8>, u64, Vec<String>) {
         ]
     );
     let op = s.fc.sql(DB, "DELETE FROM t", vec![], None, true);
-    assert!(matches!(s.wait(op), Err(FilesError::Sql { code: 8, .. })), "sola lettura");
+    assert!(matches!(s.wait(op), Err(FilesError::Sql { code: 8, .. })), "read-only");
     let op = s.fc.sql("/tmp/app/databases/manca.db", "SELECT 1", vec![], None, true);
     assert_eq!(s.wait(op), Err(FilesError::Errno(2)));
     let op = s.fc.sql("/tmp/app/databases", "SELECT 1", vec![], None, true);
@@ -268,7 +268,7 @@ fn session(image: &[u8], initrd: &[u8]) -> (Vec<u8>, u64, Vec<String>) {
     s.command("mkdir /tmp/solo-root && sqlite3 /tmp/solo-root/x.db 'CREATE TABLE k (a)' && chown 1234:1234 /tmp/solo-root/x.db");
     let op = s.fc.sql("/tmp/solo-root/x.db", "INSERT INTO k VALUES (1)", vec![], Some(1), false);
     let e = s.wait(op);
-    assert!(matches!(&e, Err(FilesError::Sql { code: 8, .. })), "SQLITE_READONLY atteso: {e:?}");
+    assert!(matches!(&e, Err(FilesError::Sql { code: 8, .. })), "SQLITE_READONLY expected: {e:?}");
     assert_eq!(
         s.command(
             "ls /tmp/solo-root | cat; sqlite3 -batch -list /tmp/solo-root/x.db 'SELECT count(*) FROM k'"
@@ -332,7 +332,7 @@ fn modifica_sqlite_preferenze_e_nomi_nel_guest() {
     let Some((image, initrd)) = guest_kernel() else {
         skip_or_fail(
             "VETRO_REQUIRE_GUEST_KERNEL",
-            "target/guest-kernel mancante: esegui tools/guest-kernel/build.sh",
+            "target/guest-kernel missing: run tools/guest-kernel/build.sh",
         );
         return;
     };

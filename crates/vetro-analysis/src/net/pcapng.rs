@@ -167,7 +167,7 @@ pub fn read(data: &[u8]) -> Result<PcapngFile, PcapngError> {
         let body = &data[pos + 8..pos + len - 4];
         match kind {
             IDB => {
-                let linktype = u16_at(le, body, 0).ok_or_else(|| PcapngError("IDB corto".into()))?;
+                let linktype = u16_at(le, body, 0).ok_or_else(|| PcapngError("short IDB".into()))?;
                 let mut iface = Interface { linktype, units_per_sec: 1_000_000, name: None };
                 for (code, v) in options(le, body.get(8..).unwrap_or_default())? {
                     match (code, v) {
@@ -186,7 +186,7 @@ pub fn read(data: &[u8]) -> Result<PcapngFile, PcapngError> {
                 out.interfaces.push(iface);
             }
             EPB => {
-                let field = |i: usize| u32_at(le, body, i).ok_or_else(|| PcapngError("EPB corto".into()));
+                let field = |i: usize| u32_at(le, body, i).ok_or_else(|| PcapngError("short EPB".into()));
                 let iface = field(0)? as usize;
                 let ts = (u64::from(field(4)?) << 32) | u64::from(field(8)?);
                 let caplen = field(12)? as usize;

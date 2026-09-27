@@ -30,12 +30,12 @@ fn offer(d: &mut Driver<VirtioMmio>, n: usize) -> Vec<(u16, u64)> {
         .collect()
 }
 
-/// Eventi restituiti nello used ring, in ordine.
+/// Events returned in the used ring, in order.
 fn received(d: &mut Driver<VirtioMmio>, bufs: &[(u16, u64)]) -> Vec<InputEvent> {
     let mut out = Vec::new();
     while let Some((head, len)) = d.pop_used(EVENTQ) {
         assert_eq!(len, 8);
-        let &(_, a) = bufs.iter().find(|b| b.0 == head).expect("testa sconosciuta");
+        let &(_, a) = bufs.iter().find(|b| b.0 == head).expect("unknown head");
         out.push(InputEvent::from_bytes(&d.mem(a, 8).try_into().unwrap()));
     }
     out

@@ -49,7 +49,7 @@ fn dhcp_client(message_type: DhcpMessageType, requested: Option<Ipv4Addr>, broad
 }
 
 fn expect_dhcp(out: &Out, want: DhcpMessageType, eth_dst: Mac) -> (Ipv4Addr, Vec<u8>) {
-    let Out::Udp { eth_dst: d, src, dst, payload } = out else { panic!("atteso UDP: {out:?}") };
+    let Out::Udp { eth_dst: d, src, dst, payload } = out else { panic!("expected UDP: {out:?}") };
     assert_eq!(*d, eth_dst);
     assert_eq!(*src, SocketAddrV4::new(GW_IP, 67));
     assert_eq!(*dst, SocketAddrV4::new(Ipv4Addr::BROADCAST, 68));
@@ -85,7 +85,7 @@ fn dhcp_discover_offer_request_ack() {
     let (yiaddr, _) = expect_dhcp(&out[0], DhcpMessageType::Ack, Mac::BROADCAST);
     assert_eq!(yiaddr, GUEST_IP);
 
-    // Indirizzo sbagliato: NAK in broadcast.
+    // Wrong address: NAK in broadcast.
     s.receive(t(20), &dhcp_client(DhcpMessageType::Request, Some(Ipv4Addr::new(10, 0, 2, 99)), false));
     let out = drain(&mut s);
     expect_dhcp(&out[0], DhcpMessageType::Nak, Mac::BROADCAST);
@@ -354,7 +354,7 @@ fn bad_checksums_and_unsupported_frames_are_dropped() {
     s.receive(t(0), &wire::build_eth(GW_MAC, GUEST_MAC, wire::ETHERTYPE_IPV6, &[0x60; 40]));
     s.receive(t(0), &[0u8; 10]);
     s.receive(t(0), &wire::build_eth(Mac([2, 0, 0, 0, 0, 1]), GUEST_MAC, wire::ETHERTYPE_ARP, &[0; 28]));
-    // Frammento IPv4 (MF impostato).
+    // IPv4 fragment (MF set).
     let mut f = Guest::udp(1, SocketAddrV4::new(Ipv4Addr::new(1, 1, 1, 1), 53), b"x");
     f[14 + 6] = 0x20;
     f[14 + 10..14 + 12].copy_from_slice(&[0, 0]);

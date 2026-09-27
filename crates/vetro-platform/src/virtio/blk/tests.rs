@@ -196,9 +196,9 @@ fn errori_di_io() {
     assert_eq!(request(&mut d, T_IN, 0, &[], 100).0, S_IOERR, "not a multiple of 512");
     assert_eq!(request(&mut d, T_OUT, 0, &[1; 300], 0).0, S_IOERR);
     let (st, len, _) = request(&mut d, T_IN, 7, &[], 512);
-    assert_eq!((st, len), (S_OK, 513), "ultimo settore");
+    assert_eq!((st, len), (S_OK, 513), "last sector");
     let mut d = driver(MemBackend::new(4096), VirtioBlkConfig { read_only: true, ..Default::default() });
-    assert_eq!(request(&mut d, T_OUT, 0, &[1; 512], 0).0, S_IOERR, "sola lettura");
+    assert_eq!(request(&mut d, T_OUT, 0, &[1; 512], 0).0, S_IOERR, "read-only");
     assert_eq!(request(&mut d, T_IN, 0, &[], 512).0, S_OK);
 }
 
@@ -258,7 +258,7 @@ fn event_idx_e_notifiche() {
     }
     submit(&mut d, T_IN, 0, &[], 512, false);
     d.service();
-    assert_eq!(d.irq(), INT_VRING, "used.idx supera used_event");
+    assert_eq!(d.irq(), INT_VRING, "used.idx passes used_event");
     assert_eq!(d.avail_event(0), 4);
 }
 

@@ -79,7 +79,7 @@ impl Out {
     pub fn tcp(self) -> TcpSeg {
         match self {
             Out::Tcp(s) => s,
-            other => panic!("atteso TCP, arrivato {other:?}"),
+            other => panic!("expected TCP, got {other:?}"),
         }
     }
 }
@@ -92,11 +92,11 @@ fn mac(a: EthernetAddress) -> Mac {
 /// recomputed here. Panics on any inconsistency.
 pub fn validate(frame: &[u8]) -> Out {
     let caps = ChecksumCapabilities::default();
-    let eth = EthernetFrame::new_checked(frame).expect("Ethernet valido");
+    let eth = EthernetFrame::new_checked(frame).expect("valid Ethernet");
     assert_eq!(mac(eth.src_addr()), GW_MAC, "Ethernet source of the gateway");
     match eth.ethertype() {
         EthernetProtocol::Arp => {
-            let p = ArpPacket::new_checked(eth.payload()).expect("ARP valido");
+            let p = ArpPacket::new_checked(eth.payload()).expect("valid ARP");
             let ArpRepr::EthernetIpv4 {
                 operation,
                 source_hardware_addr,
@@ -122,7 +122,7 @@ pub fn validate(frame: &[u8]) -> Out {
             }
         }
         EthernetProtocol::Ipv4 => {
-            let ip = Ipv4Packet::new_checked(eth.payload()).expect("IPv4 valido");
+            let ip = Ipv4Packet::new_checked(eth.payload()).expect("valid IPv4");
             assert!(ip.verify_checksum(), "checksum IPv4 (smoltcp)");
             let hl = usize::from(ip.header_len());
             assert_eq!(inet_sum(&[&eth.payload()[..hl]]), 0, "checksum IPv4 (ricalcolato)");
@@ -134,7 +134,7 @@ pub fn validate(frame: &[u8]) -> Out {
             let payload = ip.payload();
             match ip.next_header() {
                 IpProtocol::Tcp => {
-                    let p = TcpPacket::new_checked(payload).expect("TCP valido");
+                    let p = TcpPacket::new_checked(payload).expect("valid TCP");
                     assert!(p.verify_checksum(&isrc, &idst), "checksum TCP (smoltcp)");
                     assert_eq!(
                         inet_sum(&[&pseudo(src, dst, 6, payload.len()), payload]),
@@ -157,9 +157,9 @@ pub fn validate(frame: &[u8]) -> Out {
                     })
                 }
                 IpProtocol::Udp => {
-                    let p = UdpPacket::new_checked(payload).expect("UDP valido");
+                    let p = UdpPacket::new_checked(payload).expect("valid UDP");
                     assert!(p.verify_checksum(&isrc, &idst), "checksum UDP (smoltcp)");
-                    assert_ne!(p.checksum(), 0, "checksum UDP presente");
+                    assert_ne!(p.checksum(), 0, "UDP checksum present");
                     assert_eq!(
                         inet_sum(&[&pseudo(src, dst, 17, payload.len()), payload]),
                         0,
@@ -173,7 +173,7 @@ pub fn validate(frame: &[u8]) -> Out {
                     }
                 }
                 IpProtocol::Icmp => {
-                    let p = Icmpv4Packet::new_checked(payload).expect("ICMP valido");
+                    let p = Icmpv4Packet::new_checked(payload).expect("valid ICMP");
                     assert!(p.verify_checksum(), "checksum ICMP (smoltcp)");
                     assert_eq!(inet_sum(&[payload]), 0, "checksum ICMP (ricalcolato)");
                     Out::Icmp {
@@ -185,7 +185,7 @@ pub fn validate(frame: &[u8]) -> Out {
                         data: payload[8..].to_vec(),
                     }
                 }
-                other => panic!("protocollo IP inatteso {other:?}"),
+                other => panic!("unexpected IP protocol {other:?}"),
             }
         }
         other => panic!("ethertype inatteso {other:?}"),
@@ -237,7 +237,7 @@ pub struct Client {
     pub dst: SocketAddrV4,
     /// Next sequence number to send.
     pub seq: u32,
-    /// Prossimo byte atteso dallo stack.
+    /// Next byte expected by the stack.
     pub ack: u32,
     pub window: u16,
     pub mss: u16,
@@ -276,7 +276,7 @@ impl Client {
 
     /// Accepts the SYN-ACK and returns the final ACK of the handshake.
     pub fn on_syn_ack(&mut self, s: &TcpSeg) -> Vec<u8> {
-        assert!(s.syn && !s.rst, "atteso SYN-ACK: {s:?}");
+        assert!(s.syn && !s.rst, "expected SYN-ACK: {s:?}");
         assert_eq!(s.ack, Some(self.seq.wrapping_add(1)));
         self.seq = self.seq.wrapping_add(1);
         self.ack = s.seq.wrapping_add(1);

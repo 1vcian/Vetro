@@ -222,7 +222,7 @@ fn run_vetro_with(image: &[u8], jit: bool) -> Run {
     let cfg = Config { max_steps: 1_000_000, jit, jit_threshold: 0, ..Config::default() };
     let out = match vetro_cli::run_elf(image, &["test"], &[], "/test", cfg) {
         Ok(o) => o,
-        Err(e) => return Run::Other(format!("caricamento: {e}")),
+        Err(e) => return Run::Other(format!("load: {e}")),
     };
     match out.exit {
         Exit::Code(0) => match Dump::parse(&out.stdout) {
@@ -238,7 +238,7 @@ fn run_vetro_with(image: &[u8], jit: bool) -> Run {
 pub fn run_qemu(qemu: &std::path::Path, name: &str, image: &[u8]) -> Run {
     let path = match crate::qemu::write_temp_elf(name, image) {
         Ok(p) => p,
-        Err(e) => return Run::Other(format!("scrittura ELF: {e}")),
+        Err(e) => return Run::Other(format!("ELF write: {e}")),
     };
     let out = match crate::qemu::run(qemu, &path, crate::qemu::DEFAULT_TIMEOUT) {
         Ok(o) => o,
@@ -270,7 +270,7 @@ pub fn compare(vetro: &Run, qemu: &Run) -> String {
 fn summary(r: &Run) -> String {
     match r {
         Run::Dump(_) => "regular exit with dump".into(),
-        Run::Signal(s) => format!("segnale {s}"),
+        Run::Signal(s) => format!("signal {s}"),
         Run::Other(s) => s.clone(),
     }
 }

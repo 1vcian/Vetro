@@ -43,14 +43,14 @@ pub enum DecompressError {
 impl fmt::Display for DecompressError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            DecompressError::Truncated => write!(f, "dati compressi troncati"),
+            DecompressError::Truncated => write!(f, "truncated compressed data"),
             DecompressError::BadHeader(w) => write!(f, "invalid header: {w}"),
             DecompressError::BadData(w) => write!(f, "invalid compressed data: {w}"),
             DecompressError::Crc { expected, actual } => {
-                write!(f, "CRC32 sbagliato: atteso {expected:#010x}, calcolato {actual:#010x}")
+                write!(f, "wrong CRC32: expected {expected:#010x}, computed {actual:#010x}")
             }
             DecompressError::Length { expected, actual } => {
-                write!(f, "lunghezza sbagliata: attesa {expected}, ottenuta {actual}")
+                write!(f, "wrong length: expected {expected}, got {actual}")
             }
             DecompressError::TooLarge => write!(f, "output over {} MiB", MAX_OUTPUT >> 20),
         }
@@ -77,7 +77,7 @@ impl fmt::Display for Format {
             Format::Gzip => "gzip",
             Format::Lz4Legacy => "lz4 legacy",
             Format::Lz4Frame => "lz4 frame",
-            Format::Unknown => "sconosciuto",
+            Format::Unknown => "unknown",
         })
     }
 }
@@ -283,7 +283,7 @@ fn fixed_tables() -> (Huffman, Huffman) {
     lit[256..280].fill(7);
     lit[280..].fill(8);
     let dist = [5u8; 30];
-    (Huffman::new(&lit).expect("tabella fissa"), Huffman::new(&dist).expect("tabella fissa"))
+    (Huffman::new(&lit).expect("fixed table"), Huffman::new(&dist).expect("fixed table"))
 }
 
 fn dynamic_tables(br: &mut Bits) -> Result<(Huffman, Huffman), DecompressError> {

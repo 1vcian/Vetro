@@ -158,7 +158,7 @@ fn arm(m: &mut Machine, k: &Kernel, a: &Addrs) -> [u32; 3] {
 }
 
 fn tracer(m: &mut Machine) -> &mut SyscallTracer {
-    m.tracer_mut::<SyscallTracer>().expect("tracciatore")
+    m.tracer_mut::<SyscallTracer>().expect("tracer")
 }
 
 fn session(image: &[u8], initrd: &[u8], k: &Kernel, a: &Addrs, mode: Mode) -> Session {
@@ -197,7 +197,7 @@ fn session(image: &[u8], initrd: &[u8], k: &Kernel, a: &Addrs, mode: Mode) -> Se
     let (at, out) = s.command("vetro-dev input", at);
     assert!(out.contains("event1"), "{out}");
     if mode.checks {
-        let bps = bps.expect("agganci");
+        let bps = bps.expect("hooks");
         let t = tracer(&mut s.m);
         check_breakpoints(&t.records[from_rec..], &t.hits[from_hit..], bps, "vetro-dev");
     }
@@ -208,7 +208,7 @@ fn session(image: &[u8], initrd: &[u8], k: &Kernel, a: &Addrs, mode: Mode) -> Se
     let (at, version) = s.command("head -n 1 /proc/version", at);
     assert!(version.starts_with("Linux version 6.18"), "{version}");
     if mode.checks {
-        let bps = bps.expect("agganci");
+        let bps = bps.expect("hooks");
         let t = tracer(&mut s.m);
         let entries: Vec<_> = t.hits[from_hit..].iter().filter(|h| h.id == bps[2]).collect();
         assert_eq!(entries.len(), 1, "one BusyBox exec (head): {entries:?}");
@@ -267,19 +267,19 @@ fn check_ps(m: &Machine, k: &Kernel, ps: &str) {
         match ours.get(pid) {
             // Workqueue workers: /proc adds "-<work>" to the name.
             Some(o) if o.0 == g.0 && o.1 == g.1 && (o.2 == g.2 || g.2.starts_with(&format!("{}-", o.2))) => {}
-            o => diff.push(format!("pid {pid}: ps {g:?}, memoria {o:?}")),
+            o => diff.push(format!("pid {pid}: ps {g:?}, memory {o:?}")),
         }
     }
     for pid in ours.keys().filter(|p| !guest.contains_key(p)) {
         diff.push(format!("pid {pid}: only in memory {:?}", ours[pid]));
     }
-    assert!(diff.is_empty(), "ps e memoria diversi:\n{}\n\nps:\n{ps}", diff.join("\n"));
-    eprintln!("ps: {} processi uguali", guest.len());
+    assert!(diff.is_empty(), "ps and memory differ:\n{}\n\nps:\n{ps}", diff.join("\n"));
+    eprintln!("ps: {} processes equal", guest.len());
 }
 
 fn check_process(m: &Machine, k: &Kernel, a: &Addrs, pid: i32, maps: &str, fds: &str) {
     m.linux(k, |lx| {
-        let t = lx.processes().into_iter().find(|t| t.pid == pid).expect("processo in memoria");
+        let t = lx.processes().into_iter().find(|t| t.pid == pid).expect("process in memory");
         assert_eq!(t.comm, "vetro-dev");
         assert_eq!(lx.threads(t.addr).iter().map(|x| x.pid).collect::<Vec<_>>(), [pid]);
         let ours = lx.maps(&t);
@@ -288,7 +288,7 @@ fn check_process(m: &Machine, k: &Kernel, a: &Addrs, pid: i32, maps: &str, fds: 
             maps.contains("[stack]") && maps.contains("[vdso]") && maps.contains("/bin/vetro-dev"),
             "{maps}"
         );
-        // ls -l: "... N -> destinazione".
+        // ls -l: "... N -> target".
         let guest: BTreeMap<u32, String> = fds
             .lines()
             .filter_map(|l| {
@@ -312,7 +312,7 @@ fn check_process(m: &Machine, k: &Kernel, a: &Addrs, pid: i32, maps: &str, fds: 
             Some(host.as_slice()),
             "file from the page cache"
         );
-        eprintln!("processo {pid}: {} regioni, {} file, simboli e file uguali", ours.len(), guest.len());
+        eprintln!("process {pid}: {} regions, {} files, symbols and files equal", ours.len(), guest.len());
     });
 }
 
@@ -340,7 +340,7 @@ fn check_breakpoints(records: &[SyscallRecord], hits: &[BreakpointHit], bps: [u3
         assert_eq!(
             (h.args[0], h.args[1] as u32, h.args[2]),
             (r.args[0], r.args[1] as u32, r.args[2]),
-            "ioctl: stessi argomenti"
+            "ioctl: same arguments"
         );
         assert_eq!(r.args[1], h.args[1] as u32 as i32 as i64 as u64);
     }
@@ -397,7 +397,7 @@ fn check_oracle(records: &[SyscallRecord]) {
         })
         .collect();
     assert_eq!(ours, theirs, "cat syscalls: Vetro (traced from outside) and qemu-aarch64 -strace\n{text}");
-    eprintln!("oracolo: {} syscall uguali a qemu-aarch64 -strace", ours.len());
+    eprintln!("oracle: {} syscalls equal to qemu-aarch64 -strace", ours.len());
 }
 
 fn same_log(what: &str, a: &[u8], b: &[u8]) {
@@ -450,7 +450,7 @@ fn introspezione_dall_esterno() {
 
     // Replay of the session without hooks with the JIT (the other engine) and with
     // the hooks from boot: same events, identical replay.
-    let log = plain.recording.expect("registrazione");
+    let log = plain.recording.expect("recording");
     let mut m = booted(&image, &initrd);
     m.set_jit(Some(vetro_jit_native::system_jit(JIT_THRESHOLD)));
     arm(&mut m, &k, &a);
@@ -521,11 +521,11 @@ fn profili_dei_kernel() {
     let pairs: std::collections::BTreeSet<(u64, &str)> =
         map.iter().map(|s| (s.addr, s.name.as_str())).collect();
     let ks = kallsyms::extract(&image).expect("kallsyms of the test kernel");
-    assert!(ks.len() > 10_000, "{} simboli", ks.len());
+    assert!(ks.len() > 10_000, "{} symbols", ks.len());
     let wrong: Vec<_> = ks.iter().filter(|s| !pairs.contains(&(s.addr, s.name.as_str()))).take(5).collect();
     assert!(wrong.is_empty(), "symbols different from System.map: {wrong:?}");
     assert_eq!(kernel().layout.task_comm_len, 16);
-    eprintln!("6.18: {} simboli uguali a System.map", ks.len());
+    eprintln!("6.18: {} symbols equal to System.map", ks.len());
 
     let Ok(img) = std::fs::read(repo_root().join("target/aosp/out/boot.img")) else {
         skip_or_fail("VETRO_REQUIRE_ANDROID", "missing target/aosp/out/boot.img (artifacts from R2)");
@@ -542,5 +542,5 @@ fn profili_dei_kernel() {
     for s in ["binder_proc", "binder_thread", "binder_transaction", "binder_node"] {
         assert!(btf.struct_size(s).is_some(), "{s} in the GKI BTF");
     }
-    eprintln!("GKI: {} simboli, {} tipi BTF", syms.len(), btf.len());
+    eprintln!("GKI: {} symbols, {} BTF types", syms.len(), btf.len());
 }

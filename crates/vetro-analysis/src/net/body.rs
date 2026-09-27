@@ -7,7 +7,7 @@ use std::fmt::Write as _;
 
 use super::json;
 
-/// Un corpo decodificato.
+/// A decoded body.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Decoded {
     Empty,
@@ -38,7 +38,7 @@ pub struct Part {
     pub decoded: Box<Decoded>,
 }
 
-/// Un campo protobuf.
+/// A protobuf field.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Field {
     pub number: u64,
@@ -56,7 +56,7 @@ pub enum Wire {
     /// Length-delimited in UTF-8 (and not a message).
     String(String),
     Bytes(Vec<u8>),
-    /// Gruppo (tipi 3/4, deprecati).
+    /// Group (types 3/4, deprecated).
     Group(Vec<Field>),
 }
 
@@ -445,7 +445,7 @@ impl Decoded {
             Decoded::Text(t) => t.clone(),
             Decoded::Binary { len, note } => match note {
                 Some(n) => format!("({len} bytes not decoded: {n})"),
-                None => format!("({len} byte binari)"),
+                None => format!("({len} binary bytes)"),
             },
         }
     }

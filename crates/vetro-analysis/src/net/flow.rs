@@ -24,7 +24,7 @@ const MAX_PENDING: usize = 16 << 20;
 /// One direction of a TCP flow.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Stream {
-    /// Byte ricostruiti, in ordine.
+    /// Reconstructed bytes, in order.
     pub bytes: Vec<u8>,
     /// (offset, instant): from `offset` on the bytes arrived at
     /// `instant` (up to the next mark).
@@ -105,7 +105,7 @@ impl Stream {
             if off > next {
                 break;
             }
-            let (_, d) = self.pending.pop_first().expect("appena visto");
+            let (_, d) = self.pending.pop_first().expect("just seen");
             self.pending_len -= d.len();
             let end = off + d.len() as u64;
             if end > next {
@@ -125,7 +125,7 @@ impl Stream {
     }
 }
 
-/// Un flusso TCP.
+/// A TCP flow.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TcpFlow {
     /// Index in the list of flows (order of opening).
@@ -182,7 +182,7 @@ pub struct Datagram {
     pub data: Vec<u8>,
 }
 
-/// Un flusso UDP.
+/// A UDP flow.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UdpFlow {
     pub index: usize,
@@ -361,7 +361,7 @@ mod tests {
         let seq = |o: usize| 0xffff_fff1u32.wrapping_add(o as u32);
         v.c(3, seq(32), 0, ACK, &data[32..48]); // out of order
         v.c(4, seq(0), 0, ACK, &data[0..16]);
-        v.c(5, seq(0), 0, ACK, &data[0..16]); // ritrasmissione
+        v.c(5, seq(0), 0, ACK, &data[0..16]); // retransmission
         v.c(6, seq(8), 0, ACK, &data[8..40]); // overlapping: fills the hole
         v.c(7, seq(48), 0, ACK | FIN, &data[48..64]);
         let f = Flows::from_frames(&v.frames);

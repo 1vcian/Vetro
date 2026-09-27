@@ -18,7 +18,7 @@ pub const IPV4_HEADER_LEN: usize = 20;
 pub const UDP_HEADER_LEN: usize = 8;
 pub const TCP_HEADER_LEN: usize = 20;
 
-/// Indirizzo MAC.
+/// MAC address.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Mac(pub [u8; 6]);
 

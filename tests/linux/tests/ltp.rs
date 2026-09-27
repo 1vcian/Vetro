@@ -120,7 +120,7 @@ fn run_vetro(bin: &Path, name: &str, host: &Host) -> Esito {
     let out = vetro_cli::run_elf(&image, &[name], &envp, &bin.to_string_lossy(), cfg).unwrap();
     let status = match out.exit {
         Exit::Code(c) => format!("exit {c}"),
-        Exit::Signal { signo, .. } => format!("segnale {signo}"),
+        Exit::Signal { signo, .. } => format!("signal {signo}"),
         other => format!("{other:?}"),
     };
     let text = String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
@@ -156,14 +156,14 @@ fn run_qemu(q: &Path, bin: &Path, name: &str) -> Esito {
             // 128+N from the Docker wrapper).
             let status = match (o.exit_code, o.signal()) {
                 (Some(c), _) if c < 128 => format!("exit {c}"),
-                (_, Some(s)) => format!("segnale {s}"),
+                (_, Some(s)) => format!("signal {s}"),
                 (Some(c), None) => format!("exit {c}"),
                 (None, None) => "?".into(),
             };
             let text = String::from_utf8_lossy(&o.stdout).into_owned() + &String::from_utf8_lossy(&o.stderr);
             conta(&text, status)
         }
-        Err(e) => Esito { status: format!("errore {e}"), pass: 0, fail: 0, brok: 0, conf: 0 },
+        Err(e) => Esito { status: format!("error {e}"), pass: 0, fail: 0, brok: 0, conf: 0 },
     }
 }
 
@@ -197,7 +197,7 @@ fn run_native(bin: &Path, name: &str) -> Esito {
         .spawn()
     {
         Ok(c) => c,
-        Err(e) => return Esito { status: format!("errore {e}"), pass: 0, fail: 0, brok: 0, conf: 0 },
+        Err(e) => return Esito { status: format!("error {e}"), pass: 0, fail: 0, brok: 0, conf: 0 },
     };
     let (mut out, mut err) = (child.stdout.take().unwrap(), child.stderr.take().unwrap());
     let t_out = std::thread::spawn(move || {
@@ -225,7 +225,7 @@ fn run_native(bin: &Path, name: &str) -> Esito {
     let text = String::from_utf8_lossy(&t_out.join().unwrap()).into_owned()
         + &String::from_utf8_lossy(&t_err.join().unwrap());
     let st = match (status.signal(), status.code()) {
-        (Some(s), _) => format!("segnale {s}"),
+        (Some(s), _) => format!("signal {s}"),
         (None, Some(c)) => format!("exit {c}"),
         _ => "?".into(),
     };
@@ -239,7 +239,7 @@ fn ltp_matches_qemu() {
         if std::env::var("VETRO_REQUIRE_GUEST_BINS").is_ok_and(|v| v == "1") {
             panic!("target/ltp/bin missing: run tools/ltp/build.sh");
         }
-        eprintln!("SKIP ltp_matches_qemu: esegui tools/ltp/build.sh");
+        eprintln!("SKIP ltp_matches_qemu: run tools/ltp/build.sh");
         return;
     }
     let Some(q) = qemu::locate_or_skip("ltp_matches_qemu") else { return };
@@ -270,7 +270,7 @@ fn ltp_matches_qemu() {
     // SAFETY: the test is the only thread touching the environment at this point.
     unsafe { std::env::set_var("VETRO_ORACLE_NOFILE", nofile.to_string()) };
     let host = oracle_host(&q);
-    eprintln!("oracolo: kernel {}, {} CPU", host.release, host.cpus);
+    eprintln!("oracle: kernel {}, {} CPU", host.release, host.cpus);
     let skip = skip_list();
     let divergent = divergent_list();
     if !native_oracle() && !divergent.is_empty() {
@@ -334,7 +334,7 @@ fn ltp_matches_qemu() {
         if ours == theirs {
             ok_pass += ours.pass;
         } else {
-            let who = if divergent.contains(name) { "nativo" } else { "qemu  " };
+            let who = if divergent.contains(name) { "native" } else { "qemu  " };
             diff.push(format!("  {name}: vetro ={ours:?}\n  {:>w$}  {who}={theirs:?}", "", w = name.len()));
         }
     }

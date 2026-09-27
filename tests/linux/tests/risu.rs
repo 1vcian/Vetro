@@ -14,7 +14,7 @@ fn risu_traces_match_qemu() {
         if std::env::var("VETRO_REQUIRE_GUEST_BINS").is_ok_and(|v| v == "1") {
             panic!("target/risu missing: run tools/risu/build.sh");
         }
-        eprintln!("SKIP risu_traces_match_qemu: esegui tools/risu/build.sh");
+        eprintln!("SKIP risu_traces_match_qemu: run tools/risu/build.sh");
         return;
     }
     let image = std::fs::read(&risu).unwrap();
@@ -43,7 +43,7 @@ fn risu_traces_match_qemu() {
                 .join("\n");
             failures.push(format!("{name}: {:?}\n{mismatch}", out.exit));
         } else {
-            eprintln!("RISU {name}: traccia identica");
+            eprintln!("RISU {name}: identical trace");
         }
     }
     assert!(failures.is_empty(), "RISU diverges from QEMU:\n{}", failures.join("\n\n"));

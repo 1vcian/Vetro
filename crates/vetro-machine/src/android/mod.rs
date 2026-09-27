@@ -84,7 +84,7 @@ pub enum AndroidError {
     BadRamdiskTable(&'static str),
     /// `init_boot.img` with a kernel or with a header older than v4.
     BadInitBoot(&'static str),
-    /// `vendor_boot` insieme a un `boot.img` v0–v2, o `init_boot` senza v4.
+    /// `vendor_boot` together with a v0–v2 `boot.img`, or `init_boot` without v4.
     Mismatch(&'static str),
     /// `boot.img` without a kernel.
     NoKernel,
@@ -99,13 +99,13 @@ impl fmt::Display for AndroidError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AndroidError::Truncated(w) => write!(f, "{w}: shorter than the header"),
-            AndroidError::BadMagic(w) => write!(f, "{w}: magic sbagliato"),
+            AndroidError::BadMagic(w) => write!(f, "{w}: wrong magic"),
             AndroidError::UnsupportedVersion(w, v) => write!(f, "{w}: header version {v} not supported"),
             AndroidError::BadPageSize(w, p) => write!(f, "{w}: invalid page size {p}"),
             AndroidError::OutOfBounds(w, s) => write!(f, "{w}: section {s} goes past the end of the image"),
             AndroidError::BadRamdiskTable(m) => write!(f, "vendor_boot.img: ramdisk table: {m}"),
             AndroidError::BadInitBoot(m) => write!(f, "init_boot.img: {m}"),
-            AndroidError::Mismatch(m) => write!(f, "immagini incompatibili: {m}"),
+            AndroidError::Mismatch(m) => write!(f, "incompatible images: {m}"),
             AndroidError::NoKernel => write!(f, "boot.img: no kernel"),
             AndroidError::Kernel(fmt_, e) => write!(f, "kernel ({fmt_}): {e}"),
             AndroidError::Bootconfig(m) => write!(f, "bootconfig: {m}"),
@@ -192,7 +192,7 @@ impl OsVersion {
     }
 }
 
-/// `boot.img` o `init_boot.img` letta.
+/// `boot.img` or `init_boot.img` as read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BootImage<'a> {
     pub header_version: u32,
@@ -200,16 +200,16 @@ pub struct BootImage<'a> {
     pub page_size: u32,
     pub kernel: &'a [u8],
     pub ramdisk: &'a [u8],
-    /// v0–v2 (ignorato).
+    /// v0–v2 (ignored).
     pub second: &'a [u8],
-    /// v1–v2 (ignorato).
+    /// v1–v2 (ignored).
     pub recovery_dtbo: &'a [u8],
-    /// v2 (ignorato: Vetro genera il suo DTB).
+    /// v2 (ignored: Vetro generates its own DTB).
     pub dtb: &'a [u8],
     /// Command line; v0–v2: `cmdline` followed by `extra_cmdline`, with no
     /// separator (mkbootimg splits a long line at 511 bytes).
     pub cmdline: String,
-    /// Nome del prodotto (v0–v2).
+    /// Product name (v0–v2).
     pub name: String,
     pub os_version: OsVersion,
     /// v4 GKI signature (ignored).
@@ -228,7 +228,7 @@ impl<'a> BootImage<'a> {
             return Err(AndroidError::BadInitBoot("header older than version 4"));
         }
         if !b.kernel.is_empty() {
-            return Err(AndroidError::BadInitBoot("contiene un kernel"));
+            return Err(AndroidError::BadInitBoot("contains a kernel"));
         }
         Ok(b)
     }
@@ -350,7 +350,7 @@ pub struct VendorRamdisk<'a> {
     pub data: &'a [u8],
 }
 
-/// `vendor_boot.img` letta.
+/// `vendor_boot.img` as read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VendorBoot<'a> {
     pub header_version: u32,
@@ -363,7 +363,7 @@ pub struct VendorBoot<'a> {
     pub ramdisks: Vec<VendorRamdisk<'a>>,
     /// Ignored: Vetro generates its own DTB.
     pub dtb: &'a [u8],
-    /// Sezione bootconfig (v4), testo `chiave=valore` una riga per parametro.
+    /// Bootconfig section (v4), `key=value` text one line per parameter.
     pub bootconfig: &'a [u8],
 }
 
@@ -493,7 +493,7 @@ fn ramdisk_label(r: &VendorRamdisk) -> String {
         RamdiskType::Platform => "platform".to_string(),
         RamdiskType::Recovery => "recovery".to_string(),
         RamdiskType::Dlkm => "dlkm".to_string(),
-        RamdiskType::Other(v) => format!("tipo {v}"),
+        RamdiskType::Other(v) => format!("type {v}"),
     };
     let name = if r.name.is_empty() { "vendor" } else { &r.name };
     format!("{name} ({kind}, {} byte)", r.data.len())
@@ -507,10 +507,10 @@ pub fn assemble(
     opts: &BootOptions,
 ) -> Result<AndroidBoot, AndroidError> {
     if vendor.is_some() && boot.header_version < 3 {
-        return Err(AndroidError::Mismatch("vendor_boot vuole boot.img v3 o v4"));
+        return Err(AndroidError::Mismatch("vendor_boot wants boot.img v3 or v4"));
     }
     if init_boot.is_some() && boot.header_version < 4 {
-        return Err(AndroidError::Mismatch("init_boot vuole boot.img v4"));
+        return Err(AndroidError::Mismatch("init_boot wants boot.img v4"));
     }
     if boot.kernel.is_empty() {
         return Err(AndroidError::NoKernel);
@@ -535,7 +535,7 @@ pub fn assemble(
     };
     if !generic.is_empty() {
         initrd.extend_from_slice(generic);
-        ramdisks.push(format!("generico da {from} ({} byte)", generic.len()));
+        ramdisks.push(format!("generic from {from} ({} bytes)", generic.len()));
     }
 
     // Bootloader parameters: androidboot.* into the bootconfig if there is one.
@@ -546,7 +546,7 @@ pub fn assemble(
         if has_bootconfig && p.starts_with("androidboot.") {
             let key = bootconfig::key_value(p).0;
             if params.iter().any(|(k, _)| *k == key) {
-                return Err(AndroidError::Bootconfig(format!("{key} ripetuto nei parametri")));
+                return Err(AndroidError::Bootconfig(format!("{key} repeated in the parameters")));
             }
             params.push((key, bootconfig::param_line(p).map_err(AndroidError::Bootconfig)?));
         } else {

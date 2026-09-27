@@ -202,7 +202,7 @@ impl InputConfig {
         self
     }
 
-    /// Identificativi (ID_DEVIDS).
+    /// Identifiers (ID_DEVIDS).
     pub fn devids(mut self, bustype: u16, vendor: u16, product: u16, version: u16) -> Self {
         let mut d = Vec::with_capacity(8);
         for v in [bustype, vendor, product, version] {

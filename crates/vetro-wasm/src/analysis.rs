@@ -80,7 +80,7 @@ impl Describer {
                 Some((InputKind::Power, "power button".into(), false))
             }
             Input::Display { width, height, .. } => {
-                Some((InputKind::Display, format!("schermo {width}x{height}"), true))
+                Some((InputKind::Display, format!("screen {width}x{height}"), true))
             }
             _ => None,
         }
@@ -189,7 +189,7 @@ impl Vm {
         if self.analysis.as_ref().is_none_or(|(k, _)| *k != n) {
             self.analysis = Some((n, NetworkAnalysis::from_frames(self.capture.frames())));
         }
-        &self.analysis.as_ref().expect("appena calcolata").1
+        &self.analysis.as_ref().expect("just computed").1
     }
 
     /// The timeline in JSON with the network effects of the capture.
@@ -228,7 +228,7 @@ pub(crate) unsafe fn vm_ref<'a>(p: *mut Vm) -> &'a mut Vm {
     unsafe { &mut *p }
 }
 
-// ---- Cattura e ispettore -----------------------------------------------------
+// ---- Capture and inspector ----------------------------------------------------
 
 /// Turns on (`on` = 1) or off the capture of the virtio-net frames. 1 done,
 /// 0 the machine has no network. It doesn't change execution.
@@ -237,7 +237,7 @@ pub unsafe extern "C" fn vetro_capture_set(vm: *mut Vm, on: u32) -> u32 {
     unsafe { vm_ref(vm) }.capture_set(on != 0) as u32
 }
 
-/// Svuota la cattura (frame e analisi).
+/// Clears the capture (frames and analysis).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_capture_clear(vm: *mut Vm) {
     unsafe { vm_ref(vm) }.capture_clear();
@@ -338,7 +338,7 @@ pub unsafe extern "C" fn vetro_timeline_version(vm: *mut Vm) -> u64 {
     vm.timeline.version + vm.capture.len() as u64 + vm.capture_gen
 }
 
-/// Svuota la timeline.
+/// Clears the timeline.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_timeline_clear(vm: *mut Vm) {
     let vm = unsafe { vm_ref(vm) };
@@ -373,9 +373,9 @@ mod tests {
             d.describe(&p(Input::touch_events(1, Some((0, 32767))))),
             Some((InputKind::Touch, "tocco 1 (0%, 100%)".into(), false))
         );
-        assert_eq!(d.describe(&p(Input::touch_events(1, Some((10, 10))))), None, "trascinamento");
+        assert_eq!(d.describe(&p(Input::touch_events(1, Some((10, 10))))), None, "drag");
         assert_eq!(d.describe(&p(Input::touch_events(1, None))), None);
-        assert!(d.describe(&p(Input::touch_events(1, Some((10, 10))))).is_some(), "nuovo tocco");
+        assert!(d.describe(&p(Input::touch_events(1, Some((10, 10))))).is_some(), "new touch");
         let power = vetro_platform::pl061::POWER_KEY_LINE;
         assert_eq!(
             d.describe(&Input::Gpio { line: power, level: true }),
@@ -384,7 +384,7 @@ mod tests {
         assert_eq!(d.describe(&Input::Gpio { line: power, level: false }), None);
         assert_eq!(
             d.describe(&Input::Display { scanout: 0, width: 800, height: 600 }),
-            Some((InputKind::Display, "schermo 800x600".into(), true))
+            Some((InputKind::Display, "screen 800x600".into(), true))
         );
         assert_eq!(d.describe(&Input::NetLink(true)), None);
     }

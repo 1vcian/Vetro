@@ -47,7 +47,7 @@ pub struct HostConnInfo {
     pub flow: Flow,
     /// Guest bytes ready for `Stack::host_recv`.
     pub readable: usize,
-    /// Spazio per `Stack::host_send`.
+    /// Room for `Stack::host_send`.
     pub writable: usize,
     /// The guest has closed its direction (FIN) and the host has read everything.
     pub guest_eof: bool,

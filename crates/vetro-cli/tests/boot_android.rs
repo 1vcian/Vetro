@@ -49,7 +49,7 @@ fn boot_da_boot_img_e_vendor_boot() {
         return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "boot under Vetro only in release");
     }
     let Some((image, initrd)) = guest_kernel() else {
-        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "target/guest-kernel mancante");
+        return skip_or_fail("VETRO_REQUIRE_GUEST_KERNEL", "target/guest-kernel missing");
     };
     let dir = std::env::temp_dir().join(format!("vetro-boot-android-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -89,7 +89,7 @@ fn boot_da_boot_img_e_vendor_boot() {
         Ok(o) if o.status.success() => {}
         Ok(o) => panic!("mkbootimg.py: {}", String::from_utf8_lossy(&o.stderr)),
         Err(_) => {
-            return skip_or_fail("VETRO_REQUIRE_ORACLE", "python3 assente (tools/mkbootimg/mkbootimg.py)");
+            return skip_or_fail("VETRO_REQUIRE_ORACLE", "python3 missing (tools/mkbootimg/mkbootimg.py)");
         }
     }
 

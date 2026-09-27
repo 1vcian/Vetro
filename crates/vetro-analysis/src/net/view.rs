@@ -353,7 +353,7 @@ mod tests {
     #[test]
     fn lista_e_dettaglio_in_json() {
         let a = NetworkAnalysis::from_frames(&session());
-        let list = json::parse(requests_json(&a).as_bytes()).expect("lista JSON");
+        let list = json::parse(requests_json(&a).as_bytes()).expect("JSON list");
         let Some(Value::Array(reqs)) = list.get("requests") else { panic!("{list:?}") };
         assert_eq!(reqs.len(), 2);
         let r0 = &reqs[0];
@@ -369,7 +369,7 @@ mod tests {
         assert_eq!(dns[0].get("name").and_then(Value::as_str), Some("api.example"));
         assert_eq!(dns[0].get("addrs"), Some(&Value::Array(vec![Value::String("198.18.0.1".into())])));
 
-        let d = json::parse(exchange_json(&a.http[0]).as_bytes()).expect("dettaglio JSON");
+        let d = json::parse(exchange_json(&a.http[0]).as_bytes()).expect("JSON detail");
         let resp = d.get("response").unwrap();
         let body = resp.get("body").unwrap();
         assert_eq!(body.get("kind").and_then(Value::as_str), Some("json"));

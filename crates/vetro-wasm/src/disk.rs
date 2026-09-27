@@ -35,7 +35,7 @@ pub struct DiskStats {
 pub struct HostDisk {
     size: u64,
     block: u64,
-    /// Blocchi presenti.
+    /// Blocks present.
     cache: BTreeMap<u64, Box<[u8]>>,
     /// Order of arrival, to evict the oldest beyond `max_blocks`.
     order: VecDeque<u64>,

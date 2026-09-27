@@ -16,7 +16,7 @@
 //! opening it; the block is used only if the command line contains `bootconfig`
 //! (or with `CONFIG_BOOT_CONFIG_FORCE`).
 
-/// Magic finale.
+/// Final magic.
 pub const MAGIC: &[u8; 12] = b"#BOOTCONFIG\n";
 /// The kernel's `XBC_DATA_MAX`: maximum size of text and padding.
 pub const MAX_SIZE: usize = 32767;

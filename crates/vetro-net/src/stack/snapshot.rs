@@ -203,7 +203,7 @@ fn get_event(r: &mut Reader<'_>) -> Result<NetEvent> {
                 2 => DhcpMessage::Nak,
                 3 => DhcpMessage::Release,
                 4 => DhcpMessage::Decline,
-                v => return Err(Error::invalid(format!("messaggio DHCP {v}"))),
+                v => return Err(Error::invalid(format!("DHCP message {v}"))),
             },
             mac: Mac(r.raw(6)?.try_into().expect("6 byte")),
             ip: get_ip(r)?,
@@ -402,7 +402,7 @@ mod tests {
         let ip = wire::build_ipv4(cfg.guest_ip, remote, wire::PROTO_TCP, 1, &seg);
         let syn = wire::build_eth(cfg.gateway_mac, guest, wire::ETHERTYPE_IPV4, &ip);
         a.receive(t0, &syn);
-        assert!(a.pending_frames() > 0, "SYN-ACK in uscita");
+        assert!(a.pending_frames() > 0, "SYN-ACK outgoing");
         assert_eq!(a.tcp_connections(), 1);
         assert!(matches!(a.events()[0].kind, EventKind::TcpOpen { .. }));
 
@@ -429,7 +429,7 @@ mod tests {
         while let Some(f) = b.pop_frame() {
             fb.push(f);
         }
-        assert!(fa.len() >= 2, "SYN-ACK e ritrasmissione");
+        assert!(fa.len() >= 2, "SYN-ACK and retransmission");
         assert_eq!(fa, fb);
         assert_eq!(a.events(), b.events());
     }

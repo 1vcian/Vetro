@@ -31,7 +31,7 @@ impl Bits<'_> {
     fn need(&mut self, n: u32) -> Result<u32> {
         let mut v = self.bit;
         while self.nbits < n {
-            let b = *self.data.get(self.pos).ok_or(InflateError("dati DEFLATE troncati"))?;
+            let b = *self.data.get(self.pos).ok_or(InflateError("truncated DEFLATE data"))?;
             self.pos += 1;
             v |= u32::from(b) << self.nbits;
             self.nbits += 8;
@@ -188,7 +188,7 @@ pub fn inflate_raw(data: &[u8]) -> Result<(Vec<u8>, usize)> {
                 let ndist = b.need(5)? as usize + 1;
                 let ncode = b.need(4)? as usize + 4;
                 if nlen > 286 || ndist > 30 {
-                    return Err(InflateError("troppe lunghezze"));
+                    return Err(InflateError("too many lengths"));
                 }
                 const ORDER: [usize; 19] = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15];
                 let mut cl = [0u8; 19];
@@ -212,7 +212,7 @@ pub fn inflate_raw(data: &[u8]) -> Result<(Vec<u8>, usize)> {
                         _ => (0, 11 + b.need(7)? as usize),
                     };
                     if i + rep > lengths.len() {
-                        return Err(InflateError("troppe lunghezze"));
+                        return Err(InflateError("too many lengths"));
                     }
                     lengths[i..i + rep].fill(val);
                     i += rep;
@@ -267,7 +267,7 @@ pub fn gunzip(mut data: &[u8]) -> Result<Vec<u8>> {
         let flg = data[3];
         let mut pos = 10;
         if flg & 4 != 0 {
-            let x = data.get(pos..pos + 2).ok_or(InflateError("gzip troncato"))?;
+            let x = data.get(pos..pos + 2).ok_or(InflateError("truncated gzip"))?;
             pos += 2 + usize::from(u16::from_le_bytes([x[0], x[1]]));
         }
         for bit in [8u8, 16] {
@@ -275,20 +275,20 @@ pub fn gunzip(mut data: &[u8]) -> Result<Vec<u8>> {
                 let z = data
                     .get(pos..)
                     .and_then(|d| d.iter().position(|&c| c == 0))
-                    .ok_or(InflateError("gzip troncato"))?;
+                    .ok_or(InflateError("truncated gzip"))?;
                 pos += z + 1;
             }
         }
         if flg & 2 != 0 {
             pos += 2;
         }
-        let (d, used) = inflate_raw(data.get(pos..).ok_or(InflateError("gzip troncato"))?)?;
-        let t = data.get(pos + used..pos + used + 8).ok_or(InflateError("coda gzip mancante"))?;
+        let (d, used) = inflate_raw(data.get(pos..).ok_or(InflateError("truncated gzip"))?)?;
+        let t = data.get(pos + used..pos + used + 8).ok_or(InflateError("missing gzip trailer"))?;
         if u32::from_le_bytes([t[0], t[1], t[2], t[3]]) != crc32(&d) {
-            return Err(InflateError("CRC gzip errato"));
+            return Err(InflateError("wrong gzip CRC"));
         }
         if u32::from_le_bytes([t[4], t[5], t[6], t[7]]) != d.len() as u32 {
-            return Err(InflateError("lunghezza gzip errata"));
+            return Err(InflateError("wrong gzip length"));
         }
         if out.len() + d.len() > MAX_OUTPUT {
             return Err(InflateError("output over the limit"));
@@ -312,9 +312,9 @@ pub fn zlib_or_raw(data: &[u8]) -> Result<Vec<u8>> {
         && data[1] & 0x20 == 0
     {
         let (d, used) = inflate_raw(&data[2..])?;
-        let t = data.get(2 + used..6 + used).ok_or(InflateError("coda zlib mancante"))?;
+        let t = data.get(2 + used..6 + used).ok_or(InflateError("missing zlib trailer"))?;
         if u32::from_be_bytes([t[0], t[1], t[2], t[3]]) != adler32(&d) {
-            return Err(InflateError("Adler-32 errato"));
+            return Err(InflateError("wrong Adler-32"));
         }
         return Ok(d);
     }
@@ -341,9 +341,9 @@ mod tests {
         // `seq 1 2000 | gzip -9 -n`: block with dynamic codes.
         let expect: Vec<u8> = (1..=2000).flat_map(|i| format!("{i}\n").into_bytes()).collect();
         let gz = include_bytes!("testdata/seq2000.gz");
-        assert_eq!((gz[10] >> 1) & 3, 2, "primo blocco a codici dinamici");
+        assert_eq!((gz[10] >> 1) & 3, 2, "first block with dynamic codes");
         assert_eq!(gunzip(gz).unwrap(), expect);
-        // Due membri concatenati.
+        // Two concatenated members.
         let mut two = GZ_SHORT.to_vec();
         two.extend_from_slice(gz);
         let mut e2 = b"ciao ciao ciao vetro\n".to_vec();
@@ -358,7 +358,7 @@ mod tests {
         z.extend(b"hello");
         z.extend(adler32(b"hello").to_be_bytes());
         assert_eq!(zlib_or_raw(&z).unwrap(), b"hello");
-        assert_eq!(zlib_or_raw(&z[2..z.len() - 4]).unwrap(), b"hello", "DEFLATE grezzo");
+        assert_eq!(zlib_or_raw(&z[2..z.len() - 4]).unwrap(), b"hello", "raw DEFLATE");
         let mut bad = z.clone();
         *bad.last_mut().unwrap() ^= 1;
         assert!(zlib_or_raw(&bad).is_err());

@@ -67,7 +67,7 @@ impl Script {
             self.fc.pump(&mut self.m);
         }
         while let Some(e) = self.fc.take_event() {
-            self.seen.push(format!("evento {e:?}"));
+            self.seen.push(format!("event {e:?}"));
             self.events.push((self.m.guest_ns(), e));
         }
         s
@@ -94,7 +94,7 @@ impl Script {
         let end = self.until("VETRO-OUT-FINE", from);
         self.until(SHELL_PROMPT, end);
         let out = normalize(&String::from_utf8_lossy(&self.log[from..end]));
-        let start = out.find("VETRO-OUT-INIZIO\n").expect("marcatore") + "VETRO-OUT-INIZIO\n".len();
+        let start = out.find("VETRO-OUT-INIZIO\n").expect("marker") + "VETRO-OUT-INIZIO\n".len();
         out[start..out.len() - "VETRO-OUT-FINE".len()].trim_end_matches('\n').to_string()
     }
 
@@ -118,7 +118,7 @@ impl Script {
     }
 
     fn ok(&mut self, op: u32) -> Outcome {
-        self.wait(op).unwrap_or_else(|e| panic!("operazione {op}: {e}\n{}", self.tail()))
+        self.wait(op).unwrap_or_else(|e| panic!("operation {op}: {e}\n{}", self.tail()))
     }
 
     fn tail(&self) -> String {
@@ -156,7 +156,7 @@ fn session(image: &[u8], initrd: &[u8], record: bool) -> Outcome2 {
          && vetro-dev xattr-set /tmp/f/a.txt user.vetro valore",
     );
 
-    // ---- Collegamento e letture --------------------------------------------
+    // ---- Connection and reads ----------------------------------------------
     let list = s.fc.list("/tmp/f");
     let Outcome::List(entries) = s.ok(list) else { panic!() };
     assert!(matches!(s.fc.state(), LinkState::Ready(h) if h.max_chunk >= 256 << 10));
@@ -176,7 +176,7 @@ fn session(image: &[u8], initrd: &[u8], record: bool) -> Outcome2 {
     let r = s.fc.read_file("/tmp/f/grande");
     let Outcome::Data { size, data } = s.ok(r) else { panic!() };
     assert_eq!(size, big.len() as u64);
-    assert!(data == big, "file grande letto a pezzi diverso ({} byte)", data.len());
+    assert!(data == big, "large file read in chunks differs ({} bytes)", data.len());
     let r = s.fc.read("/tmp/f/grande", 700_000, 10);
     assert_eq!(s.ok(r), Outcome::Data { size: big.len() as u64, data: big[700_000..700_010].to_vec() });
     let r = s.fc.read_file("/tmp/f/manca");
@@ -206,15 +206,11 @@ fn session(image: &[u8], initrd: &[u8], record: bool) -> Outcome2 {
     assert!(s.events.iter().any(|(_, e)| e.name == b"g.txt" && e.mask & mask::CREATE != 0));
     s.until(SHELL_PROMPT, 0);
 
-    // ---- Scritture -------------------------------------------------------
+    // ---- Writes ----------------------------------------------------------
     let w = s.fc.write_file("/tmp/f/a.txt", b"nuovo contenuto\n", 0o600);
     let Outcome::Written(st) = s.ok(w) else { panic!() };
-    assert_eq!(
-        (st.mode, st.uid, st.gid, st.size),
-        (0o100640, 1234, 5678, 16),
-        "modo e proprietario conservati"
-    );
-    assert_eq!(st.selinux, "u:object_r:app_data_file:s0:c1", "contesto SELinux conservato");
+    assert_eq!((st.mode, st.uid, st.gid, st.size), (0o100640, 1234, 5678, 16), "mode and owner preserved");
+    assert_eq!(st.selinux, "u:object_r:app_data_file:s0:c1", "SELinux context preserved");
     let out = s.command(
         "cat /tmp/f/a.txt; stat -c '%a %u %g %s' /tmp/f/a.txt; vetro-dev xattr-get /tmp/f/a.txt user.vetro; \
          vetro-dev xattr-get /tmp/f/a.txt security.selinux",
@@ -233,7 +229,7 @@ fn session(image: &[u8], initrd: &[u8], record: bool) -> Outcome2 {
     let w = s.fc.write_file("/tmp/f/nuovo.txt", b"creato dall'host\n", 0o604);
     let Outcome::Written(st) = s.ok(w) else { panic!() };
     assert_eq!((st.mode, st.uid, st.gid), (0o100604, 4321, 8765));
-    assert_eq!(st.selinux, "u:object_r:app_data_file:s0:c57", "contesto della cartella");
+    assert_eq!(st.selinux, "u:object_r:app_data_file:s0:c57", "context of the folder");
     // Large, in chunks: the guest compares it with its own.
     let w = s.fc.write_file("/tmp/f/copia", &big, 0o644);
     s.ok(w);
@@ -299,7 +295,7 @@ fn kernel() -> Option<(Vec<u8>, Vec<u8>)> {
     let Some((image, initrd)) = guest_kernel() else {
         skip_or_fail(
             "VETRO_REQUIRE_GUEST_KERNEL",
-            "target/guest-kernel mancante: esegui tools/guest-kernel/build.sh",
+            "target/guest-kernel missing: run tools/guest-kernel/build.sh",
         );
         return None;
     };
@@ -328,7 +324,7 @@ fn gestore_dei_file_registrato_e_rigiocato() {
         .iter()
         .filter(|e| matches!(e.kind, vetro_machine::record::EventKind::Input(Input::Vsock(_))))
         .count();
-    assert!(vsock > 20, "{vsock} ingressi vsock registrati");
+    assert!(vsock > 20, "{vsock} vsock inputs recorded");
     assert!(
         log.events.iter().all(|e| matches!(e.kind, vetro_machine::record::EventKind::Input(_))),
         "no opaque event"

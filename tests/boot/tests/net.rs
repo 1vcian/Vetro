@@ -185,7 +185,7 @@ fn check_host_view(m: &Machine) -> String {
             assert!(
                 ev.iter().any(|k| matches!(k, EventKind::Dhcp { message, mac, ip, .. }
                     if *message == msg && *mac == guest_mac && *ip == guest)),
-                "DHCP {msg:?} mancante: {ev:#?}"
+                "DHCP {msg:?} missing: {ev:#?}"
             );
         }
         let answers: Vec<(&str, &[Ipv4Addr])> = ev
@@ -200,7 +200,7 @@ fn check_host_view(m: &Machine) -> String {
         {
             assert!(
                 answers.iter().any(|(n, a)| *n == name && *a == [addr]),
-                "risposta DNS per {name}: {answers:?}"
+                "DNS answer for {name}: {answers:?}"
             );
         }
         let pings: Vec<(Ipv4Addr, bool)> = ev
@@ -267,7 +267,7 @@ fn check_host_view(m: &Machine) -> String {
         );
         format!("{:?}", s.events())
     })
-    .expect("virtio-net montato")
+    .expect("virtio-net present")
 }
 
 #[test]

@@ -70,7 +70,7 @@ impl<T: Transport> Driver<T> {
     pub fn alloc(&mut self, len: u64, align: u64) -> u64 {
         let a = self.next.next_multiple_of(align);
         self.next = a + len.max(1);
-        assert!(self.next <= RAM_BASE + RAM_SIZE as u64, "RAM finta esaurita");
+        assert!(self.next <= RAM_BASE + RAM_SIZE as u64, "fake RAM exhausted");
         a
     }
 
@@ -117,7 +117,7 @@ impl<T: Transport> Driver<T> {
     /// Full negotiation, queues (at most `qsize` entries) and DRIVER_OK.
     pub fn init(&mut self, wanted: u64, qsize: u16) -> u64 {
         let st = self.negotiate(wanted);
-        assert_ne!(st & STATUS_FEATURES_OK, 0, "FEATURES_OK rifiutato");
+        assert_ne!(st & STATUS_FEATURES_OK, 0, "FEATURES_OK refused");
         self.queues.clear();
         for i in 0.. {
             self.t.wr(QUEUE_SEL, i);
@@ -179,7 +179,7 @@ impl<T: Transport> Driver<T> {
     /// Chain of direct descriptors.
     pub fn add(&mut self, qi: usize, bufs: &[B]) -> u16 {
         let q = &mut self.queues[qi];
-        let ids: Vec<u16> = (0..bufs.len()).map(|_| q.free.pop().expect("coda piena")).collect();
+        let ids: Vec<u16> = (0..bufs.len()).map(|_| q.free.pop().expect("queue full")).collect();
         let table = q.desc;
         for (k, &(addr, len, w)) in bufs.iter().enumerate() {
             let mut flags = if w { DESC_F_WRITE } else { 0 };
@@ -205,7 +205,7 @@ impl<T: Transport> Driver<T> {
             self.put_desc(table, k as u16, addr, len, flags, k as u16 + 1);
         }
         let q = &mut self.queues[qi];
-        let head = q.free.pop().expect("coda piena");
+        let head = q.free.pop().expect("queue full");
         let desc = q.desc;
         self.put_desc(desc, head, table, 16 * bufs.len() as u32, DESC_F_INDIRECT, 0);
         self.queues[qi].chains.insert(head, vec![head]);
@@ -227,7 +227,7 @@ impl<T: Transport> Driver<T> {
         let id = self.ram.read_u32(e).unwrap() as u16;
         let len = self.ram.read_u32(e + 4).unwrap();
         q.last_used = q.last_used.wrapping_add(1);
-        let ids = q.chains.remove(&id).expect("id restituito due volte");
+        let ids = q.chains.remove(&id).expect("id returned twice");
         q.free.extend(ids);
         if event_idx {
             let at = q.avail + 4 + 2 * u64::from(q.size);

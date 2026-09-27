@@ -20,7 +20,7 @@
 //!
 //! Interface: `docs/specs/introspection.md`.
 //!
-//! Interfaccia: `docs/specs/introspection.md`.
+//! Interface: `docs/specs/introspection.md`.
 
 pub mod aidl;
 pub mod binder;

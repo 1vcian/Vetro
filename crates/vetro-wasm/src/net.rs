@@ -191,7 +191,7 @@ mod tests {
             assert_eq!(st, [reason::NONE, 0, 256 * 1024, 0, 0]);
             assert_eq!(vetro_net_send(vm, c, b"ciao".as_ptr(), 4), 4);
             assert_eq!(vetro_net_state(vm, c, st.as_mut_ptr(), 5), state::CONNECTING);
-            assert_eq!(st[4], 4, "in coda");
+            assert_eq!(st[4], 4, "queued");
             let mut buf = [0u8; 8];
             assert_eq!(vetro_net_recv(vm, c, buf.as_mut_ptr(), 8), 0);
             assert_eq!(vetro_net_abort(vm, c), 1);

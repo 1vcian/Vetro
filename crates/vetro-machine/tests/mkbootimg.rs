@@ -72,7 +72,7 @@ fn blob(tag: u8, n: usize) -> Vec<u8> {
     (0..n).map(|i| tag ^ (i as u8).wrapping_mul(31)).collect()
 }
 
-/// Un `Image` arm64 finto (header valido).
+/// A fake arm64 `Image` (valid header).
 fn image(n: usize) -> Vec<u8> {
     let mut v = blob(0x4b, n);
     v[8..16].fill(0);

@@ -229,7 +229,7 @@ fn check_analysis(a: &NetworkAnalysis) {
     assert_eq!(got, want);
     for (x, name) in a.http.iter().zip(["api", "gz", "post", "form", "multi", "pb", "zip"]) {
         let name = format!("{name}.example");
-        assert!(x.request.complete && x.response.as_ref().unwrap().complete, "{name}: messaggi completi");
+        assert!(x.request.complete && x.response.as_ref().unwrap().complete, "{name}: complete messages");
         assert_eq!(x.resolved_name.as_deref(), Some(name.as_str()), "name from the sinkhole's DNS");
         let t = &x.timings;
         assert!(t.dns_us.is_some() && t.connect_us.is_some(), "{name}: {t:?}");
@@ -277,7 +277,7 @@ fn check_analysis(a: &NetworkAnalysis) {
 }
 
 fn check_har(har: &str) {
-    let v = json::parse(har.as_bytes()).expect("HAR JSON valido");
+    let v = json::parse(har.as_bytes()).expect("valid HAR JSON");
     let Some(Value::Array(entries)) = v.get("log").and_then(|l| l.get("entries")) else { panic!() };
     assert_eq!(entries.len(), 7);
     for (e, (m, u, s)) in entries.iter().zip(expected()) {
@@ -345,7 +345,7 @@ fn pcapng_e_har_dal_traffico_del_guest() {
     let (image, initrd) = (std::fs::read(image).unwrap(), std::fs::read(initrd).unwrap());
     let cap = session(&image, &initrd);
     let pcap = pcapng::write(cap.frames(), &PcapngOptions::default());
-    assert_eq!(pcapng::read(&pcap).expect("pcapng rileggibile").frames, cap.frames(), "nostro lettore");
+    assert_eq!(pcapng::read(&pcap).expect("readable pcapng").frames, cap.frames(), "our reader");
     let a = NetworkAnalysis::from_frames(cap.frames());
     check_analysis(&a);
     let har = a.to_har(&HarOptions::default());
@@ -366,6 +366,6 @@ fn pcapng_e_har_dal_traffico_del_guest() {
     );
     assert!(
         NetworkAnalysis::from_frames(again.frames()).to_har(&HarOptions::default()) == har,
-        "HAR diverso"
+        "HAR differs"
     );
 }

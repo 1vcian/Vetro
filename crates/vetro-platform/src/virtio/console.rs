@@ -24,7 +24,7 @@ pub const CFG_EMERG_WR: u64 = 8;
 
 const RXQ: usize = 0;
 const TXQ: usize = 1;
-/// Byte massimi per catena in ricezione e per pezzo in trasmissione.
+/// Maximum bytes per chain on receive and per chunk on transmit.
 const CHUNK: u64 = 64 * 1024;
 
 /// Byte stream of the port, as seen by the device.

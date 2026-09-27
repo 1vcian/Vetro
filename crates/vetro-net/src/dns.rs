@@ -105,7 +105,7 @@ pub fn parse_query(msg: &[u8]) -> Option<Query> {
     })
 }
 
-/// Risposta DNS analizzata.
+/// Parsed DNS answer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Response {
     pub id: u16,
@@ -157,7 +157,7 @@ pub fn parse_response(msg: &[u8]) -> Option<Response> {
 pub fn build_response(q: &Query, rcode: u8, addrs: &[Ipv4Addr], ttl: u32) -> Vec<u8> {
     let mut m = Vec::with_capacity(HEADER_LEN + q.question.len() + addrs.len() * 16);
     m.extend_from_slice(&q.id.to_be_bytes());
-    // QR=1, opcode copiato, AA=1, RD copiato, RA=1.
+    // QR=1, opcode copied, AA=1, RD copied, RA=1.
     let flags: u16 = 0x8000
         | (u16::from(q.opcode) << 11)
         | 0x0400

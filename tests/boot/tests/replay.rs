@@ -98,9 +98,9 @@ fn icmp_echo_request() -> Vec<u8> {
 /// `InEchos` in the output of `grep Icmp: /proc/net/snmp`.
 fn in_echos(out: &str) -> u64 {
     let lines: Vec<&str> = out.lines().filter(|l| l.starts_with("Icmp: ")).collect();
-    let header = lines.iter().find(|l| l.contains("InEchos")).expect("intestazione Icmp");
+    let header = lines.iter().find(|l| l.contains("InEchos")).expect("Icmp header");
     let values =
-        lines.iter().find(|l| l[6..].starts_with(|c: char| c.is_ascii_digit())).expect("valori Icmp");
+        lines.iter().find(|l| l[6..].starts_with(|c: char| c.is_ascii_digit())).expect("Icmp values");
     let i = header.split_whitespace().position(|w| w == "InEchos").unwrap();
     values.split_whitespace().nth(i).unwrap().parse().unwrap()
 }
@@ -216,7 +216,7 @@ fn session(image: &[u8], initrd: &[u8], record: Option<RecordOptions>) -> Sessio
     let (at, out) = s.command("grep Icmp: /proc/net/snmp", at);
     assert_eq!(in_echos(&out), 1, "the host's frame did not arrive:\n{out}");
 
-    // Tastiera virtio-input (event1).
+    // virtio-input keyboard (event1).
     s.input(Input::Console(b"vetro-dev input-read /dev/input/event1 4\n".to_vec()));
     let ready = s.until("VETRO-INPUT-PRONTO", at);
     s.input(Input::Keyboard(Input::key_events(30, true)));
@@ -317,7 +317,7 @@ fn kernel() -> Option<(Vec<u8>, Vec<u8>)> {
     let Some((image, initrd)) = guest_kernel() else {
         skip_or_fail(
             "VETRO_REQUIRE_GUEST_KERNEL",
-            "target/guest-kernel mancante: esegui tools/guest-kernel/build.sh",
+            "target/guest-kernel missing: run tools/guest-kernel/build.sh",
         );
         return None;
     };
@@ -328,11 +328,11 @@ fn kernel() -> Option<(Vec<u8>, Vec<u8>)> {
 fn sessione_registrata_e_riprodotta() {
     let Some((image, initrd)) = kernel() else { return };
     let rec = session(&image, &initrd, Some(RecordOptions { keyframe_every: KEYFRAME_EVERY }));
-    let log = rec.recording.clone().expect("registrazione");
+    let log = rec.recording.clone().expect("recording");
     let bytes = log.encode();
     let log = Log::decode(&bytes).expect("the log reads back");
     let inputs = log.events.len();
-    assert!(inputs > 40, "{inputs} eventi");
+    assert!(inputs > 40, "{inputs} events");
     assert!(log.events.iter().all(|e| matches!(e.kind, vetro_machine::record::EventKind::Input(_))));
     assert_eq!(log.end, rec.end);
     assert_eq!(log.end.steps, rec.steps);
@@ -372,10 +372,10 @@ fn sessione_registrata_e_riprodotta() {
     // kernel loaded.
     let mut m = machine();
     m.set_jit(jit());
-    m.replay_from(&log, 0).expect("keyframe iniziale");
+    m.replay_from(&log, 0).expect("initial keyframe");
     let out = replay(&mut m, QUANTUM);
-    assert_eq!(m.replay_status(), Some(&ReplayStatus::Finished), "replay col JIT");
-    same_log("replay col JIT", &rec.log, &out);
+    assert_eq!(m.replay_status(), Some(&ReplayStatus::Finished), "replay with the JIT");
+    same_log("replay with the JIT", &rec.log, &out);
     let end = m.digest();
     assert_eq!(end.diff(&rec.end, false), None, "final state with the JIT (without TLB)");
     assert!(m.jit_stats().unwrap().jit_steps > 0, "the JIT did some work");
@@ -388,7 +388,7 @@ fn sessione_registrata_e_riprodotta() {
         }
         for (steps, regs, ram) in rec.marks.iter().rev() {
             assert_eq!(m.goto(&log, *steps).unwrap(), *steps);
-            assert_eq!(m.registers_text(), *regs, "registri a {steps} (JIT {with_jit})");
+            assert_eq!(m.registers_text(), *regs, "registers at {steps} (JIT {with_jit})");
             assert_eq!(hash64(m.board.borrow().ram.bytes()), *ram, "RAM a {steps} (JIT {with_jit})");
         }
     }

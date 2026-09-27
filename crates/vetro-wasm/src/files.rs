@@ -34,13 +34,13 @@ pub mod op {
     pub const READ: u32 = 3;
     /// `b` = contents, `x` = permissions if the file is new.
     pub const WRITE: u32 = 4;
-    /// `x` = permessi.
+    /// `x` = permissions.
     pub const MKDIR: u32 = 5;
-    /// `x` = permessi.
+    /// `x` = permissions.
     pub const CREATE: u32 = 6;
     /// `x` = 1 to delete a folder with all its contents.
     pub const DELETE: u32 = 7;
-    /// `b` = nuovo percorso (UTF-8).
+    /// `b` = new path (UTF-8).
     pub const RENAME: u32 = 8;
     pub const WATCH: u32 = 9;
     /// `x` = id of the watch.

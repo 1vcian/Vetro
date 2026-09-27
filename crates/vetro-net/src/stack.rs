@@ -61,7 +61,7 @@ impl Default for NetConfig {
 pub struct Stats {
     pub frames_in: u64,
     pub frames_out: u64,
-    /// Frame o pacchetti troncati o incoerenti.
+    /// Truncated or inconsistent frames or packets.
     pub malformed: u64,
     pub bad_checksum: u64,
     /// Destination that is neither the gateway nor an external address.
@@ -70,7 +70,7 @@ pub struct Stats {
     pub ipv6: u64,
     /// IPv4 fragments: they are not reassembled.
     pub fragments: u64,
-    /// Protocolli o messaggi ignorati.
+    /// Ignored protocols or messages.
     pub ignored: u64,
     /// UDP responses too large for the MTU or for flows already closed.
     pub udp_dropped: u64,
@@ -244,12 +244,12 @@ impl<U: Upstream> Stack<U> {
             });
         }
 
-        // Risposte UDP.
+        // UDP responses.
         while let Some((id, data)) = self.upstream.udp_recv(now) {
             self.udp_to_guest(now, id, &data);
         }
 
-        // Flussi UDP scaduti.
+        // Expired UDP flows.
         let timeout = self.config.udp_idle_timeout_us;
         let expired: Vec<ConnId> = self
             .udp
@@ -275,7 +275,7 @@ impl<U: Upstream> Stack<U> {
     }
 
     // -----------------------------------------------------------------------
-    // Uscita
+    // Output
     // -----------------------------------------------------------------------
 
     fn send_eth(&mut self, dst: Mac, ethertype: u16, payload: &[u8]) {
@@ -490,7 +490,7 @@ impl<U: Upstream> Stack<U> {
     }
 
     // -----------------------------------------------------------------------
-    // Ingresso
+    // Input
     // -----------------------------------------------------------------------
 
     fn is_gateway_addr(&self, ip: Ipv4Addr) -> bool {

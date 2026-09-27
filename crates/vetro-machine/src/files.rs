@@ -97,7 +97,7 @@ impl fmt::Display for FilesError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             FilesError::Errno(e) => write!(f, "{} ({e})", proto::errno_name(*e)),
-            FilesError::Protocol(m) => write!(f, "protocollo: {m}"),
+            FilesError::Protocol(m) => write!(f, "protocol: {m}"),
             FilesError::Disconnected => f.write_str("connection with vetro-files dropped"),
             FilesError::Sql { code, message } => write!(f, "SQLite {code}: {message}"),
         }
@@ -118,7 +118,7 @@ pub enum LinkState {
     Idle,
     /// Connection request sent, greeting not arrived yet.
     Connecting,
-    /// Saluto ricevuto: le richieste partono.
+    /// Greeting received: the requests leave.
     Ready(Hello),
     /// Nobody listening (or connection dropped): new attempt at the indicated
     /// guest time.
@@ -233,7 +233,7 @@ impl FilesClient {
         self.roots = roots;
     }
 
-    // ---- Operazioni ------------------------------------------------------------
+    // ---- Operations ------------------------------------------------------------
 
     fn push(&mut self, work: Work) -> u32 {
         let id = self.next_op;
@@ -331,7 +331,7 @@ impl FilesClient {
         }))
     }
 
-    /// La prossima operazione finita.
+    /// The next finished operation.
     pub fn take_completion(&mut self) -> Option<Completion> {
         self.done.pop_front()
     }
@@ -431,7 +431,7 @@ impl FilesClient {
     }
 
     fn on_reply(&mut self, id: u32, status: u32, body: &[u8]) -> Result<(), String> {
-        let mut op = self.ops.remove(&id).ok_or("operazione sconosciuta")?;
+        let mut op = self.ops.remove(&id).ok_or("unknown operation")?;
         match self.advance(id, &mut op, status, body) {
             Ok(None) => {
                 self.ops.insert(id, op);
@@ -480,7 +480,7 @@ impl FilesClient {
                 let (sz, got) = proto::parse_read(body).map_err(|e| e.0)?;
                 let asked = (*left).min(chunk);
                 if got.len() as u64 > asked {
-                    return Err(format!("{} byte letti, chiesti {asked}", got.len()));
+                    return Err(format!("{} bytes read, {asked} requested", got.len()));
                 }
                 let size = *size.get_or_insert(sz);
                 *offset += got.len() as u64;
@@ -583,7 +583,7 @@ impl FilesClient {
         }
     }
 
-    /// Chiude la connessione (le operazioni partite falliscono).
+    /// Closes the connection (the operations already sent fail).
     pub fn close(&mut self, m: &mut Machine) {
         if let Some(c) = self.conn {
             Self::input(m, VsockOp::Release(c));
@@ -601,7 +601,7 @@ mod tests {
     use super::proto::*;
     use super::*;
 
-    /// Un file system finto: percorso → contenuto.
+    /// A fake file system: path → contents.
     struct Fake {
         files: BTreeMap<Vec<u8>, Vec<u8>>,
         handles: BTreeMap<u32, (Vec<u8>, Vec<u8>)>,
@@ -658,7 +658,7 @@ mod tests {
                         None => (9, vec![]),
                         Some((_, buf)) => {
                             assert!(data.len() <= self.max_chunk as usize);
-                            assert_eq!(offset as usize, buf.len(), "pezzi in ordine");
+                            assert_eq!(offset as usize, buf.len(), "chunks in order");
                             buf.extend(data);
                             (0, vec![])
                         }
@@ -797,21 +797,21 @@ mod tests {
         let mut rep = encode_reply(ids[0], 13, &[]);
         rep.extend(encode_reply(ids[1], 9, &[]));
         c.on_bytes(&rep).unwrap();
-        assert!(c.take_completion().is_none(), "aspetta WCOMMIT");
+        assert!(c.take_completion().is_none(), "waits for WCOMMIT");
         c.on_bytes(&encode_reply(ids[2], 9, &[])).unwrap();
         assert_eq!(c.take_completion(), Some(Completion { op: w, result: Err(FilesError::Errno(13)) }));
         assert_eq!(c.pending(), 0);
     }
 
-    /// Eventi, risposte sconosciute, versioni diverse, connessione caduta.
+    /// Events, unknown responses, different versions, dropped connection.
     #[test]
     fn eventi_ed_errori() {
         let mut c = connecting();
         let mut bad = encode_hello(&Hello { version: VERSION + 1, flags: 0, max_chunk: 1 });
-        assert!(c.on_bytes(&bad).is_err(), "versione diversa");
+        assert!(c.on_bytes(&bad).is_err(), "different version");
         let mut c = connecting();
         bad = encode_hello(&Hello { version: 0, flags: 0, max_chunk: 1 });
-        assert!(c.on_bytes(&bad).is_err(), "versione 0");
+        assert!(c.on_bytes(&bad).is_err(), "version 0");
         let mut c = connecting();
         c.on_bytes(&encode_hello(&Hello { version: MIN_VERSION, flags: 0, max_chunk: 1 << 20 })).unwrap();
         assert!(c.is_ready(), "a version 1 daemon is fine (without SQL)");
@@ -821,7 +821,7 @@ mod tests {
         let mut c = connecting();
         c.on_bytes(&hello(1 << 20)).unwrap();
         bad = encode_reply(99, 0, &[]);
-        assert!(c.on_bytes(&bad).is_err(), "risposta sconosciuta");
+        assert!(c.on_bytes(&bad).is_err(), "unknown response");
 
         let mut c = connecting();
         c.on_bytes(&hello(1 << 20)).unwrap();

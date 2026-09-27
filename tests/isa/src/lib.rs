@@ -147,7 +147,7 @@ impl Case {
                 self.name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
             let theirs = run_qemu(&q, &format!("isa-{slug}"), &image);
             let diff = compare(&ours, &theirs);
-            assert!(diff.is_empty(), "{}: Vetro e QEMU divergono\n{diff}", self.name);
+            assert!(diff.is_empty(), "{}: Vetro and QEMU diverge\n{diff}", self.name);
         }
     }
 
@@ -162,23 +162,23 @@ impl Case {
             other => panic!("{name}: expected a dump, got {other:?}"),
         };
         for &(r, v) in &self.want_x {
-            assert_eq!(d.x[r], v, "{name}: x{r} = {:#x}, atteso {v:#x}", d.x[r]);
+            assert_eq!(d.x[r], v, "{name}: x{r} = {:#x}, expected {v:#x}", d.x[r]);
         }
         if let Some(sp) = self.want_sp {
-            assert_eq!(d.sp, sp, "{name}: sp = {:#x}, atteso {sp:#x}", d.sp);
+            assert_eq!(d.sp, sp, "{name}: sp = {:#x}, expected {sp:#x}", d.sp);
         }
         if let Some(f) = self.want_flags {
-            assert_eq!(d.nzcv >> 28, f, "{name}: NZCV = {:04b}, atteso {f:04b}", d.nzcv >> 28);
+            assert_eq!(d.nzcv >> 28, f, "{name}: NZCV = {:04b}, expected {f:04b}", d.nzcv >> 28);
         }
         for &(r, v) in &self.want_v {
-            assert_eq!(d.v[r], v, "{name}: v{r} = {:#034x}, atteso {v:#034x}", d.v[r]);
+            assert_eq!(d.v[r], v, "{name}: v{r} = {:#034x}, expected {v:#034x}", d.v[r]);
         }
         if let Some(f) = self.want_fpsr {
-            assert_eq!(d.fpsr, f, "{name}: FPSR = {:#x}, atteso {f:#x}", d.fpsr);
+            assert_eq!(d.fpsr, f, "{name}: FPSR = {:#x}, expected {f:#x}", d.fpsr);
         }
         for (off, bytes) in &self.want_mem {
             let i = mem_index(*off, bytes.len());
-            assert_eq!(&d.mem[i..i + bytes.len()], &bytes[..], "{name}: memoria a x28{off:+}");
+            assert_eq!(&d.mem[i..i + bytes.len()], &bytes[..], "{name}: memory at x28{off:+}");
         }
         assert_eq!(d.x[28], BASE_PTR, "{name}: the body left x28 modified");
     }

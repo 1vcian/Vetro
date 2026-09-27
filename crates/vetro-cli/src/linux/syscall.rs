@@ -338,7 +338,7 @@ impl Kernel {
                 let c = |p: &str| std::ffi::CString::new(p).map_err(|_| EINVAL);
                 let (co, cn) = (c(&old)?, c(&new)?);
                 let follow = if a[4] & 0x400 != 0 { libc::AT_SYMLINK_FOLLOW } else { 0 };
-                // SAFETY: percorsi C validi.
+                // SAFETY: valid C paths.
                 let r =
                     unsafe { libc::linkat(libc::AT_FDCWD, co.as_ptr(), libc::AT_FDCWD, cn.as_ptr(), follow) };
                 if r < 0 {
@@ -372,7 +372,7 @@ impl Kernel {
                     .map_err(|e| host_errno(&e))?;
                 ret(0)
             }
-            54 | 55 => ret(0), // fchownat/fchown: proprietari invariati (siamo "root" per finta)
+            54 | 55 => ret(0), // fchownat/fchown: owners unchanged (we are "root" by pretence)
             88 => self.sys_utimensat(t, a[0], a[1], a[2], a[3]),
             33 => {
                 // mknodat: FIFOs and regular files; devices only with privileges.
@@ -382,7 +382,7 @@ impl Kernel {
                 }
                 let mode = (a[2] as u32 & !self.tasks[t].umask) as libc::mode_t;
                 let cpath = std::ffi::CString::new(p.clone()).map_err(|_| EINVAL)?;
-                // SAFETY: percorso C valido.
+                // SAFETY: valid C path.
                 let r = match a[2] as u32 & S_IFMT {
                     0 | S_IFREG => unsafe {
                         libc::open(
@@ -514,7 +514,7 @@ impl Kernel {
                 ret(old as i64)
             }
 
-            // --- memoria ---
+            // --- memory ---
             214 => ret(self.mem(t).borrow_mut().sys_brk(a[0])),
             222 => self.sys_mmap(t, a),
             215 => {
@@ -530,7 +530,7 @@ impl Kernel {
                 ret(0)
             }
 
-            // --- processi ---
+            // --- processes ---
             93 => {
                 let status = ((a[0] & 0xff) << 8) as i32;
                 self.exit_thread(t, status);
@@ -748,7 +748,7 @@ impl Kernel {
                 ret(ticks as i64)
             }
 
-            // --- sistema ---
+            // --- system ---
             160 => {
                 let mut b = vec![0u8; 65 * 6];
                 // UNAME26: the version as override_release rewrites it.
@@ -780,7 +780,7 @@ impl Kernel {
                 ret(0)
             }
             278 => {
-                // GRND_NONBLOCK | GRND_RANDOM | GRND_INSECURE; RANDOM e INSECURE insieme no.
+                // GRND_NONBLOCK | GRND_RANDOM | GRND_INSECURE; RANDOM and INSECURE together no.
                 if a[2] & !7 != 0 || a[2] & 6 == 6 {
                     return Err(EINVAL);
                 }
@@ -1241,7 +1241,7 @@ impl Kernel {
                 }
                 ret(0)
             }
-            // F_SETOWN / F_GETOWN: pid > 0 processo, < 0 gruppo.
+            // F_SETOWN / F_GETOWN: pid > 0 process, < 0 group.
             8 => {
                 let who = arg as i32;
                 drop(files);
@@ -1625,7 +1625,7 @@ impl Kernel {
         if len == 0 {
             return Err(EINVAL);
         }
-        // Tipo: MAP_SHARED (1), MAP_PRIVATE (2) o MAP_SHARED_VALIDATE (3).
+        // Type: MAP_SHARED (1), MAP_PRIVATE (2) or MAP_SHARED_VALIDATE (3).
         let ty = flags & 0xf;
         if !(1..=3).contains(&ty) {
             return Err(EINVAL);
@@ -1793,7 +1793,7 @@ impl Kernel {
                     let s = read_u64(&mut mm.borrow_mut().mem, a[3])?;
                     let n = read_u64(&mut mm.borrow_mut().mem, a[3] + 8)?;
                     let d = timespec_ns(s, n)?;
-                    // FUTEX_WAIT: relativo; WAIT_BITSET: assoluto (monotono o realtime)
+                    // FUTEX_WAIT: relative; WAIT_BITSET: absolute (monotonic or realtime)
                     let until = if op == FUTEX_WAIT {
                         self.now().saturating_add(d)
                     } else if a[1] & 256 != 0 {
