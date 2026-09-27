@@ -913,6 +913,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "vetro-gfxstream"
+version = "0.0.0"
+dependencies = [
+ "vetro-platform",
+ "vetro-snapshot",
+]
+
+[[package]]
 name = "vetro-isa-tests"
 version = "0.0.0"
 dependencies = [

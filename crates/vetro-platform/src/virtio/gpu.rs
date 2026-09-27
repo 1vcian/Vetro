@@ -34,12 +34,26 @@
 //! The display: `set_display` changes the requested resolution of a
 //! scanout (VIRTIO_GPU_EVENT_DISPLAY event with a configuration
 //! interrupt, like resizing a window in QEMU).
+//!
+//! 3D (ADR 0036), only with [`GpuConfig::virgl`]: feature VIRGL, capsets from
+//! the [`Renderer3d`], CTX_CREATE/DESTROY/ATTACH_RESOURCE/DETACH_RESOURCE,
+//! RESOURCE_CREATE_3D, TRANSFER_TO_HOST_3D/FROM_HOST_3D and SUBMIT_3D. 3D
+//! resources share the id space of 2D ones and take backing the same way;
+//! their content belongs to the renderer, which also presents them when they
+//! are scanouts (the [`DisplayBackend`] only hears that a 3D frame changed).
+//! Without a renderer the 3D commands answer ERR_UNSPEC. Errors like QEMU's
+//! virgl path (hw/display/virtio-gpu-virgl.c): unknown or duplicate resource
+//! ERR_INVALID_RESOURCE_ID, unknown context ERR_INVALID_CONTEXT_ID, capset
+//! index or id out of range ERR_INVALID_PARAMETER.
 
 use core::any::Any;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::edid::{self, EdidInfo};
 use super::*;
+
+pub mod renderer;
+pub use renderer::{Backing, Box3d, Capset, Create3d, Renderer3d, Transfer3d};
 
 pub const F_VIRGL: u64 = 1 << 0;
 pub const F_EDID: u64 = 1 << 1;
@@ -59,12 +73,22 @@ pub const CMD_GET_EDID: u32 = 0x010a;
 pub const CMD_RESOURCE_ASSIGN_UUID: u32 = 0x010b;
 pub const CMD_RESOURCE_CREATE_BLOB: u32 = 0x010c;
 pub const CMD_SET_SCANOUT_BLOB: u32 = 0x010d;
+pub const CMD_CTX_CREATE: u32 = 0x0200;
+pub const CMD_CTX_DESTROY: u32 = 0x0201;
+pub const CMD_CTX_ATTACH_RESOURCE: u32 = 0x0202;
+pub const CMD_CTX_DETACH_RESOURCE: u32 = 0x0203;
+pub const CMD_RESOURCE_CREATE_3D: u32 = 0x0204;
+pub const CMD_TRANSFER_TO_HOST_3D: u32 = 0x0205;
+pub const CMD_TRANSFER_FROM_HOST_3D: u32 = 0x0206;
+pub const CMD_SUBMIT_3D: u32 = 0x0207;
 pub const CMD_UPDATE_CURSOR: u32 = 0x0300;
 pub const CMD_MOVE_CURSOR: u32 = 0x0301;
 
 // Responses.
 pub const RESP_OK_NODATA: u32 = 0x1100;
 pub const RESP_OK_DISPLAY_INFO: u32 = 0x1101;
+pub const RESP_OK_CAPSET_INFO: u32 = 0x1102;
+pub const RESP_OK_CAPSET: u32 = 0x1103;
 pub const RESP_OK_EDID: u32 = 0x1104;
 pub const RESP_ERR_UNSPEC: u32 = 0x1200;
 pub const RESP_ERR_OUT_OF_MEMORY: u32 = 0x1201;
@@ -223,6 +247,11 @@ pub trait DisplayBackend: Any {
     fn disable(&mut self, scanout: u32);
     /// Cursor defined (UPDATE_CURSOR) or moved (MOVE_CURSOR).
     fn cursor(&mut self, _scanout: u32, _cursor: &Cursor) {}
+    /// The scanout shows a 3D resource (`width`x`height`, the scanout
+    /// rectangle) whose `dirty` part changed: the pixels are the renderer's,
+    /// which presents them itself. After SET_SCANOUT it arrives with the
+    /// whole scanout.
+    fn update_3d(&mut self, _scanout: u32, _width: u32, _height: u32, _dirty: Rect) {}
 }
 
 /// In-memory backend: the last image of every scanout, in RGBA.
@@ -233,6 +262,9 @@ pub struct MemDisplay {
     pub cursors: BTreeMap<u32, Cursor>,
     /// Updates received.
     pub updates: u64,
+    /// 3D updates received and the last one: (scanout, width, height, dirty).
+    pub updates_3d: u64,
+    pub last_3d: Option<(u32, u32, u32, Rect)>,
 }
 
 impl MemDisplay {
@@ -269,6 +301,11 @@ impl DisplayBackend for MemDisplay {
     fn cursor(&mut self, scanout: u32, cursor: &Cursor) {
         self.cursors.insert(scanout, cursor.clone());
     }
+
+    fn update_3d(&mut self, scanout: u32, width: u32, height: u32, dirty: Rect) {
+        self.updates_3d += 1;
+        self.last_3d = Some((scanout, width, height, dirty));
+    }
 }
 
 /// Device configuration.
@@ -286,6 +323,9 @@ pub struct GpuConfig {
     pub monitor: EdidInfo,
     /// Maximum resource memory (like QEMU's `max_hostmem`).
     pub max_hostmem: u64,
+    /// Offers VIRTIO_GPU_F_VIRGL: 3D commands go to the [`Renderer3d`]
+    /// installed with [`VirtioGpu::set_renderer`] (ADR 0036).
+    pub virgl: bool,
 }
 
 impl Default for GpuConfig {
@@ -297,6 +337,7 @@ impl Default for GpuConfig {
             edid: true,
             monitor: EdidInfo::default(),
             max_hostmem: 256 << 20,
+            virgl: false,
         }
     }
 }
@@ -317,6 +358,16 @@ impl Resource {
     fn stride(&self) -> u32 {
         self.width * 4
     }
+}
+
+/// A 3D resource: the device keeps its arguments, backing and scanouts; the
+/// content is the renderer's.
+struct Res3d {
+    args: Create3d,
+    backing: Option<Vec<(u64, u32)>>,
+    scanouts: u32,
+    /// Host memory reported by the renderer.
+    hostmem: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -342,6 +393,9 @@ pub struct VirtioGpu {
     config: GpuConfig,
     backend: Box<dyn DisplayBackend>,
     resources: BTreeMap<u32, Resource>,
+    res3d: BTreeMap<u32, Res3d>,
+    contexts: BTreeSet<u32>,
+    renderer: Option<Box<dyn Renderer3d>>,
     hostmem: u64,
     scanouts: Vec<Scanout>,
     events_read: u32,
@@ -360,6 +414,9 @@ impl VirtioGpu {
             config,
             backend,
             resources: BTreeMap::new(),
+            res3d: BTreeMap::new(),
+            contexts: BTreeSet::new(),
+            renderer: None,
             hostmem: 0,
             scanouts,
             events_read: 0,
@@ -373,14 +430,47 @@ impl VirtioGpu {
     pub fn set_backend(&mut self, backend: Box<dyn DisplayBackend>) {
         self.backend = backend;
         for (i, s) in self.scanouts.iter().enumerate() {
+            let full = Rect::new(0, 0, s.rect.width, s.rect.height);
             if let Some(r) = self.resources.get(&s.resource_id) {
-                let full = Rect::new(0, 0, s.rect.width, s.rect.height);
                 self.backend.update(i as u32, &Self::frame_of(r, s.rect), full);
+            } else if self.res3d.contains_key(&s.resource_id) {
+                self.backend.update_3d(i as u32, s.rect.width, s.rect.height, full);
             }
             if s.cursor != Cursor::default() {
                 self.backend.cursor(i as u32, &s.cursor);
             }
         }
+    }
+
+    /// Installs the 3D renderer (used only with [`GpuConfig::virgl`]).
+    pub fn set_renderer(&mut self, renderer: Box<dyn Renderer3d>) {
+        self.renderer = Some(renderer);
+    }
+
+    /// Typed access to the renderer.
+    pub fn renderer_as_mut<T: Renderer3d>(&mut self) -> Option<&mut T> {
+        let r: &mut dyn Any = self.renderer.as_mut()?.as_mut();
+        r.downcast_mut()
+    }
+
+    pub fn renderer_as<T: Renderer3d>(&self) -> Option<&T> {
+        let r: &dyn Any = self.renderer.as_ref()?.as_ref();
+        r.downcast_ref()
+    }
+
+    /// The 3D resource shown on `scanout` and its rectangle, if any.
+    pub fn scanout_3d(&self, scanout: u32) -> Option<(u32, Rect)> {
+        let s = self.scanouts.get(scanout as usize)?;
+        self.res3d.contains_key(&s.resource_id).then_some((s.resource_id, s.rect))
+    }
+
+    /// Existing 3D resources and contexts.
+    pub fn resource_3d_count(&self) -> usize {
+        self.res3d.len()
+    }
+
+    pub fn context_count(&self) -> usize {
+        self.contexts.len()
     }
 
     pub fn backend_mut(&mut self) -> &mut dyn DisplayBackend {
@@ -441,7 +531,7 @@ impl VirtioGpu {
         let mut c = [0u8; 16];
         c[0..4].copy_from_slice(&self.events_read.to_le_bytes());
         c[8..12].copy_from_slice(&(self.scanouts.len() as u32).to_le_bytes());
-        // num_capsets = 0: no 3D.
+        c[12..16].copy_from_slice(&(self.capsets().len() as u32).to_le_bytes());
         c
     }
 
@@ -470,10 +560,22 @@ impl VirtioGpu {
         Ok(r)
     }
 
+    /// Capsets offered: the renderer's, only with 3D.
+    fn capsets(&self) -> Vec<Capset> {
+        match &self.renderer {
+            Some(r) if self.config.virgl => r.capsets(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn id_used(&self, id: u32) -> bool {
+        id == 0 || self.resources.contains_key(&id) || self.res3d.contains_key(&id)
+    }
+
     fn create_2d(&mut self, cmd: &[u8]) -> Result<(), u32> {
         let (id, format, width, height) =
             (le32(cmd, HDR_LEN), le32(cmd, HDR_LEN + 4), le32(cmd, HDR_LEN + 8), le32(cmd, HDR_LEN + 12));
-        if id == 0 || self.resources.contains_key(&id) {
+        if self.id_used(id) {
             return Err(RESP_ERR_INVALID_RESOURCE_ID);
         }
         let format = PixelFormat::from_virtio(format).ok_or(RESP_ERR_INVALID_PARAMETER)?;
@@ -495,25 +597,42 @@ impl VirtioGpu {
         if let Some(r) = self.resources.get_mut(&s.resource_id) {
             r.scanouts &= !(1 << i);
         }
+        if let Some(r) = self.res3d.get_mut(&s.resource_id) {
+            r.scanouts &= !(1 << i);
+            if let Some(rd) = self.renderer.as_mut() {
+                rd.scanout(i as u32, None);
+            }
+        }
         s.resource_id = 0;
         s.rect = Rect::default();
         self.backend.disable(i as u32);
     }
 
     fn destroy(&mut self, id: u32) {
-        let Some(mask) = self.resources.get(&id).map(|r| r.scanouts) else { return };
+        let mask = match (self.resources.get(&id), self.res3d.get(&id)) {
+            (Some(r), _) => r.scanouts,
+            (_, Some(r)) => r.scanouts,
+            _ => return,
+        };
         for i in 0..self.scanouts.len() {
             if mask & (1 << i) != 0 {
                 self.disable_scanout(i);
             }
         }
-        let r = self.resources.remove(&id).unwrap();
-        self.hostmem -= r.data.len() as u64;
+        if let Some(r) = self.resources.remove(&id) {
+            self.hostmem -= r.data.len() as u64;
+        }
+        if let Some(r) = self.res3d.remove(&id) {
+            self.hostmem -= r.hostmem;
+            if let Some(rd) = self.renderer.as_mut() {
+                rd.resource_destroy(id);
+            }
+        }
     }
 
     fn unref(&mut self, cmd: &[u8]) -> Result<(), u32> {
         let id = le32(cmd, HDR_LEN);
-        if !self.resources.contains_key(&id) {
+        if !self.resources.contains_key(&id) && !self.res3d.contains_key(&id) {
             return Err(RESP_ERR_INVALID_RESOURCE_ID);
         }
         self.destroy(id);
@@ -541,6 +660,9 @@ impl VirtioGpu {
             self.disable_scanout(i);
             return Ok(());
         }
+        if self.res3d.contains_key(&id) {
+            return self.set_scanout_3d(i, id, rect);
+        }
         let r = self.with_backing(id)?;
         if rect.width < 16 || rect.height < 16 || !rect.within(r.width, r.height) {
             return Err(RESP_ERR_INVALID_PARAMETER);
@@ -561,9 +683,61 @@ impl VirtioGpu {
         Ok(())
     }
 
+    /// SET_SCANOUT of a 3D resource: no backing needed (the pixels are the
+    /// renderer's), same rectangle checks.
+    fn set_scanout_3d(&mut self, i: usize, id: u32, rect: Rect) -> Result<(), u32> {
+        let r = &self.res3d[&id];
+        if rect.width < 16 || rect.height < 16 || !rect.within(r.args.width, r.args.height) {
+            return Err(RESP_ERR_INVALID_PARAMETER);
+        }
+        let old = self.scanouts[i].resource_id;
+        if old != id {
+            if let Some(o) = self.resources.get_mut(&old) {
+                o.scanouts &= !(1 << i);
+            }
+            if let Some(o) = self.res3d.get_mut(&old) {
+                o.scanouts &= !(1 << i);
+            }
+        }
+        self.res3d.get_mut(&id).unwrap().scanouts |= 1 << i;
+        let s = &mut self.scanouts[i];
+        s.resource_id = id;
+        s.rect = rect;
+        if let Some(rd) = self.renderer.as_mut() {
+            rd.scanout(i as u32, Some((id, rect)));
+        }
+        let full = Rect::new(0, 0, rect.width, rect.height);
+        self.backend.update_3d(i as u32, rect.width, rect.height, full);
+        Ok(())
+    }
+
+    fn flush_3d(&mut self, id: u32, rect: Rect) -> Result<(), u32> {
+        let r = &self.res3d[&id];
+        if !rect.within(r.args.width, r.args.height) {
+            return Err(RESP_ERR_INVALID_PARAMETER);
+        }
+        let mask = r.scanouts;
+        for (i, s) in self.scanouts.iter().enumerate() {
+            if mask & (1 << i) == 0 {
+                continue;
+            }
+            if let Some(d) = rect.intersect(&s.rect) {
+                let dirty = Rect::new(d.x - s.rect.x, d.y - s.rect.y, d.width, d.height);
+                if let Some(rd) = self.renderer.as_mut() {
+                    rd.flush(i as u32, id, dirty);
+                }
+                self.backend.update_3d(i as u32, s.rect.width, s.rect.height, dirty);
+            }
+        }
+        Ok(())
+    }
+
     fn flush(&mut self, cmd: &[u8]) -> Result<(), u32> {
         let rect = Rect::parse(&cmd[HDR_LEN..]);
         let id = le32(cmd, HDR_LEN + 16);
+        if self.res3d.contains_key(&id) {
+            return self.flush_3d(id, rect);
+        }
         let r = self.resources.get(&id).ok_or(RESP_ERR_INVALID_RESOURCE_ID)?;
         if !rect.within(r.width, r.height) {
             return Err(RESP_ERR_INVALID_PARAMETER);
@@ -609,8 +783,12 @@ impl VirtioGpu {
 
     fn attach_backing(&mut self, c: &DescChain, cmd: &[u8], ram: &dyn GuestRam) -> Result<(), u32> {
         let (id, n) = (le32(cmd, HDR_LEN), le32(cmd, HDR_LEN + 4));
-        let r = self.resources.get_mut(&id).ok_or(RESP_ERR_INVALID_RESOURCE_ID)?;
-        if r.backing.is_some() || n > MAX_BACKING_ENTRIES {
+        let slot = match (self.resources.get_mut(&id), self.res3d.get_mut(&id)) {
+            (Some(r), _) => &mut r.backing,
+            (_, Some(r)) => &mut r.backing,
+            _ => return Err(RESP_ERR_INVALID_RESOURCE_ID),
+        };
+        if slot.is_some() || n > MAX_BACKING_ENTRIES {
             return Err(RESP_ERR_UNSPEC);
         }
         let mut ents = vec![0u8; 16 * n as usize];
@@ -628,18 +806,148 @@ impl VirtioGpu {
             }
             backing.push((addr, len));
         }
-        r.backing = Some(backing);
+        *slot = Some(backing);
         Ok(())
     }
 
     fn detach_backing(&mut self, cmd: &[u8]) -> Result<(), u32> {
         let id = le32(cmd, HDR_LEN);
+        if let Some(r) = self.res3d.get_mut(&id) {
+            if r.backing.take().is_none() {
+                return Err(RESP_ERR_UNSPEC);
+            }
+            return Ok(());
+        }
         self.with_backing(id)?.backing = None;
         Ok(())
     }
 
+    fn renderer(&mut self) -> Result<&mut Box<dyn Renderer3d>, u32> {
+        self.renderer.as_mut().ok_or(RESP_ERR_UNSPEC)
+    }
+
+    fn capset_info(&self, cmd: &[u8]) -> Result<Vec<u8>, u32> {
+        let index = le32(cmd, HDR_LEN) as usize;
+        let caps = self.capsets();
+        let c = caps.get(index).ok_or(RESP_ERR_INVALID_PARAMETER)?;
+        let mut r = vec![0u8; HDR_LEN + 16];
+        r[0..4].copy_from_slice(&RESP_OK_CAPSET_INFO.to_le_bytes());
+        r[HDR_LEN..HDR_LEN + 4].copy_from_slice(&c.id.to_le_bytes());
+        r[HDR_LEN + 4..HDR_LEN + 8].copy_from_slice(&c.max_version.to_le_bytes());
+        r[HDR_LEN + 8..HDR_LEN + 12].copy_from_slice(&(c.data.len() as u32).to_le_bytes());
+        Ok(r)
+    }
+
+    fn capset(&self, cmd: &[u8]) -> Result<Vec<u8>, u32> {
+        let (id, version) = (le32(cmd, HDR_LEN), le32(cmd, HDR_LEN + 4));
+        let caps = self.capsets();
+        let c =
+            caps.iter().find(|c| c.id == id && version <= c.max_version).ok_or(RESP_ERR_INVALID_PARAMETER)?;
+        let mut r = vec![0u8; HDR_LEN];
+        r[0..4].copy_from_slice(&RESP_OK_CAPSET.to_le_bytes());
+        r.extend_from_slice(&c.data);
+        Ok(r)
+    }
+
+    fn ctx_create(&mut self, cmd: &[u8]) -> Result<(), u32> {
+        let ctx = le32(cmd, 16);
+        let (nlen, context_init) = (le32(cmd, HDR_LEN) as usize, le32(cmd, HDR_LEN + 4));
+        let name = &cmd[HDR_LEN + 8..HDR_LEN + 8 + nlen.min(64)];
+        if ctx == 0 || self.contexts.contains(&ctx) {
+            return Err(RESP_ERR_INVALID_CONTEXT_ID);
+        }
+        self.renderer()?.context_create(ctx, context_init, name)?;
+        self.contexts.insert(ctx);
+        Ok(())
+    }
+
+    fn ctx_of(&self, cmd: &[u8]) -> Result<u32, u32> {
+        let ctx = le32(cmd, 16);
+        if self.contexts.contains(&ctx) { Ok(ctx) } else { Err(RESP_ERR_INVALID_CONTEXT_ID) }
+    }
+
+    fn ctx_destroy(&mut self, cmd: &[u8]) -> Result<(), u32> {
+        let ctx = self.ctx_of(cmd)?;
+        self.contexts.remove(&ctx);
+        self.renderer()?.context_destroy(ctx);
+        Ok(())
+    }
+
+    fn ctx_resource(&mut self, cmd: &[u8], attach: bool) -> Result<(), u32> {
+        let ctx = self.ctx_of(cmd)?;
+        let id = le32(cmd, HDR_LEN);
+        if !self.res3d.contains_key(&id) {
+            return Err(RESP_ERR_INVALID_RESOURCE_ID);
+        }
+        let rd = self.renderer()?;
+        if attach {
+            rd.context_attach(ctx, id);
+        } else {
+            rd.context_detach(ctx, id);
+        }
+        Ok(())
+    }
+
+    fn create_3d(&mut self, cmd: &[u8]) -> Result<(), u32> {
+        let w = |k: usize| le32(cmd, HDR_LEN + 4 * k);
+        let id = w(0);
+        let args = Create3d {
+            target: w(1),
+            format: w(2),
+            bind: w(3),
+            width: w(4),
+            height: w(5),
+            depth: w(6),
+            array_size: w(7),
+            last_level: w(8),
+            nr_samples: w(9),
+            flags: w(10),
+        };
+        if self.id_used(id) {
+            return Err(RESP_ERR_INVALID_RESOURCE_ID);
+        }
+        let (max, used) = (self.config.max_hostmem, self.hostmem);
+        let size = self.renderer()?.resource_create(id, &args)?;
+        if size + used >= max {
+            self.renderer()?.resource_destroy(id);
+            return Err(RESP_ERR_OUT_OF_MEMORY);
+        }
+        self.hostmem += size;
+        self.res3d.insert(id, Res3d { args, backing: None, scanouts: 0, hostmem: size });
+        Ok(())
+    }
+
+    fn transfer_3d(&mut self, cmd: &[u8], ram: &mut dyn GuestRam, to_host: bool) -> Result<(), u32> {
+        let ctx = le32(cmd, 16);
+        let w = |k: usize| le32(cmd, HDR_LEN + 4 * k);
+        let t = Transfer3d {
+            bx: Box3d { x: w(0), y: w(1), z: w(2), w: w(3), h: w(4), d: w(5) },
+            offset: le64(cmd, HDR_LEN + 24),
+            level: w(9),
+            stride: w(10),
+            layer_stride: w(11),
+        };
+        let id = w(8);
+        let r = self.res3d.get(&id).ok_or(RESP_ERR_INVALID_RESOURCE_ID)?;
+        let ents = r.backing.clone().ok_or(RESP_ERR_UNSPEC)?;
+        let rd = self.renderer.as_mut().ok_or(RESP_ERR_UNSPEC)?;
+        let mut backing = Backing::new(ram, &ents);
+        if to_host {
+            rd.transfer_to_host(ctx, id, &t, &mut backing)
+        } else {
+            rd.transfer_from_host(ctx, id, &t, &mut backing)
+        }
+    }
+
+    fn submit_3d(&mut self, cmd: &[u8]) -> Result<(), u32> {
+        let ctx = self.ctx_of(cmd)?;
+        let size = le32(cmd, HDR_LEN) as usize;
+        let body = cmd.get(HDR_LEN + 8..HDR_LEN + 8 + size).ok_or(RESP_ERR_INVALID_PARAMETER)?;
+        self.renderer()?.submit(ctx, body)
+    }
+
     /// Executes a command of the control queue; returns the response.
-    fn command(&mut self, c: &DescChain, ram: &dyn GuestRam) -> Vec<u8> {
+    fn command(&mut self, c: &DescChain, ram: &mut dyn GuestRam) -> Vec<u8> {
         let cmd = c.read_to_vec(ram, 0).unwrap_or_default();
         let mut hdr = [0u8; HDR_LEN];
         let n = cmd.len().min(HDR_LEN);
@@ -668,10 +976,17 @@ impl VirtioGpu {
         ty: u32,
         c: &DescChain,
         cmd: &[u8],
-        ram: &dyn GuestRam,
+        ram: &mut dyn GuestRam,
     ) -> Result<Option<Vec<u8>>, u32> {
+        let virgl = self.config.virgl;
         // Length of every command (struct virtio_gpu_*).
         let need = match ty {
+            CMD_GET_CAPSET_INFO | CMD_GET_CAPSET if virgl => HDR_LEN + 8,
+            CMD_CTX_CREATE if virgl => HDR_LEN + 72,
+            CMD_CTX_ATTACH_RESOURCE | CMD_CTX_DETACH_RESOURCE if virgl => HDR_LEN + 8,
+            CMD_RESOURCE_CREATE_3D if virgl => HDR_LEN + 48,
+            CMD_TRANSFER_TO_HOST_3D | CMD_TRANSFER_FROM_HOST_3D if virgl => HDR_LEN + 48,
+            CMD_SUBMIT_3D if virgl => HDR_LEN + 8,
             CMD_GET_DISPLAY_INFO => HDR_LEN,
             CMD_GET_EDID => HDR_LEN + 8,
             CMD_RESOURCE_CREATE_2D => HDR_LEN + 16,
@@ -694,6 +1009,16 @@ impl VirtioGpu {
             CMD_TRANSFER_TO_HOST_2D => self.transfer(cmd, ram).map(|_| None),
             CMD_RESOURCE_ATTACH_BACKING => self.attach_backing(c, cmd, ram).map(|_| None),
             CMD_RESOURCE_DETACH_BACKING => self.detach_backing(cmd).map(|_| None),
+            CMD_GET_CAPSET_INFO if virgl => self.capset_info(cmd).map(Some),
+            CMD_GET_CAPSET if virgl => self.capset(cmd).map(Some),
+            CMD_CTX_CREATE if virgl => self.ctx_create(cmd).map(|_| None),
+            CMD_CTX_DESTROY if virgl => self.ctx_destroy(cmd).map(|_| None),
+            CMD_CTX_ATTACH_RESOURCE if virgl => self.ctx_resource(cmd, true).map(|_| None),
+            CMD_CTX_DETACH_RESOURCE if virgl => self.ctx_resource(cmd, false).map(|_| None),
+            CMD_RESOURCE_CREATE_3D if virgl => self.create_3d(cmd).map(|_| None),
+            CMD_TRANSFER_TO_HOST_3D if virgl => self.transfer_3d(cmd, ram, true).map(|_| None),
+            CMD_TRANSFER_FROM_HOST_3D if virgl => self.transfer_3d(cmd, ram, false).map(|_| None),
+            CMD_SUBMIT_3D if virgl => self.submit_3d(cmd).map(|_| None),
             CMD_RESOURCE_CREATE_BLOB | CMD_SET_SCANOUT_BLOB => Err(RESP_ERR_INVALID_PARAMETER),
             // GET_EDID without the feature, capset, 3D, UUID: like QEMU's
             // default.
@@ -755,7 +1080,11 @@ impl VirtioDevice for VirtioGpu {
     }
 
     fn features(&self) -> u64 {
-        if self.config.edid { F_EDID } else { 0 }
+        let mut f = if self.config.edid { F_EDID } else { 0 };
+        if self.config.virgl {
+            f |= F_VIRGL;
+        }
+        f
     }
 
     fn queue_max_sizes(&self) -> &[u16] {
@@ -778,9 +1107,13 @@ impl VirtioDevice for VirtioGpu {
     }
 
     fn reset(&mut self) {
-        let ids: Vec<u32> = self.resources.keys().copied().collect();
+        let ids: Vec<u32> = self.resources.keys().chain(self.res3d.keys()).copied().collect();
         for id in ids {
             self.destroy(id);
+        }
+        self.contexts.clear();
+        if let Some(rd) = self.renderer.as_mut() {
+            rd.reset();
         }
         for s in &mut self.scanouts {
             s.cursor = Cursor::default();
@@ -829,6 +1162,37 @@ impl VirtioDevice for VirtioGpu {
             });
             w.u32(r.scanouts);
         });
+        // 3D only with virgl (the configuration is part of the snapshot key):
+        // 2D-only snapshots keep their format.
+        if self.config.virgl {
+            w.seq(&self.res3d, |w, (&id, r)| {
+                w.u32(id);
+                let a = &r.args;
+                for v in [
+                    a.target,
+                    a.format,
+                    a.bind,
+                    a.width,
+                    a.height,
+                    a.depth,
+                    a.array_size,
+                    a.last_level,
+                    a.nr_samples,
+                    a.flags,
+                ] {
+                    w.u32(v);
+                }
+                w.opt(r.backing.as_ref(), |w, b| {
+                    w.seq(b, |w, &(addr, len)| {
+                        w.u64(addr);
+                        w.u32(len);
+                    })
+                });
+                w.u32(r.scanouts);
+                w.u64(r.hostmem);
+            });
+            w.seq(&self.contexts, |w, &c| w.u32(c));
+        }
         w.u64(self.hostmem);
         for s in &self.scanouts {
             w.u32(s.req_width);
@@ -845,6 +1209,9 @@ impl VirtioDevice for VirtioGpu {
         }
         w.u32(self.events_read);
         w.bool(self.display_changed);
+        if self.config.virgl {
+            w.opt(self.renderer.as_ref(), |w, rd| rd.save_state(w));
+        }
     }
 
     fn restore_state(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
@@ -866,6 +1233,40 @@ impl VirtioDevice for VirtioGpu {
             resources.insert(id, Resource { width, height, format, data, backing, scanouts });
         }
         self.resources = resources;
+        self.res3d.clear();
+        self.contexts.clear();
+        if self.config.virgl {
+            let n = r.len_of(4 * 11 + 1 + 4 + 8)?;
+            for _ in 0..n {
+                let id = r.u32()?;
+                let mut v = [0u32; 10];
+                for x in &mut v {
+                    *x = r.u32()?;
+                }
+                let args = Create3d {
+                    target: v[0],
+                    format: v[1],
+                    bind: v[2],
+                    width: v[3],
+                    height: v[4],
+                    depth: v[5],
+                    array_size: v[6],
+                    last_level: v[7],
+                    nr_samples: v[8],
+                    flags: v[9],
+                };
+                let backing = r.opt(|r| r.seq(12, |r| Ok((r.u64()?, r.u32()?))))?;
+                let (scanouts, hostmem) = (r.u32()?, r.u64()?);
+                if id == 0 || self.resources.contains_key(&id) {
+                    return Err(Error::invalid(format!("GPU 3D resource {id}")));
+                }
+                self.res3d.insert(id, Res3d { args, backing, scanouts, hostmem });
+            }
+            let n = r.len_of(4)?;
+            for _ in 0..n {
+                self.contexts.insert(r.u32()?);
+            }
+        }
         self.hostmem = r.u64()?;
         for s in &mut self.scanouts {
             s.req_width = r.u32()?;
@@ -873,10 +1274,11 @@ impl VirtioDevice for VirtioGpu {
             s.resource_id = r.u32()?;
             s.rect = Rect::new(r.u32()?, r.u32()?, r.u32()?, r.u32()?);
             if s.resource_id != 0 {
-                let ok = self
-                    .resources
-                    .get(&s.resource_id)
-                    .is_some_and(|res| s.rect.within(res.width, res.height));
+                let ok = match (self.resources.get(&s.resource_id), self.res3d.get(&s.resource_id)) {
+                    (Some(res), _) => s.rect.within(res.width, res.height),
+                    (_, Some(res)) => s.rect.within(res.args.width, res.args.height),
+                    _ => false,
+                };
                 if !ok {
                     return Err(Error::invalid(format!("scanout on resource {}", s.resource_id)));
                 }
@@ -892,12 +1294,25 @@ impl VirtioDevice for VirtioGpu {
         }
         self.events_read = r.u32()?;
         self.display_changed = r.bool()?;
+        if self.config.virgl {
+            let present = r.bool()?;
+            match (present, self.renderer.as_mut()) {
+                (true, Some(rd)) => rd.restore_state(r)?,
+                (false, _) => {}
+                (true, None) => {
+                    return Err(Error::invalid("GPU snapshot with a 3D renderer, none installed"));
+                }
+            }
+        }
         // The attached display shows the restored state.
         for (i, s) in self.scanouts.iter().enumerate() {
+            let full = Rect::new(0, 0, s.rect.width, s.rect.height);
             match self.resources.get(&s.resource_id) {
                 Some(res) => {
-                    let full = Rect::new(0, 0, s.rect.width, s.rect.height);
                     self.backend.update(i as u32, &Self::frame_of(res, s.rect), full);
+                }
+                None if self.res3d.contains_key(&s.resource_id) => {
+                    self.backend.update_3d(i as u32, s.rect.width, s.rect.height, full);
                 }
                 None => self.backend.disable(i as u32),
             }
@@ -911,3 +1326,5 @@ impl VirtioDevice for VirtioGpu {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests3d;
