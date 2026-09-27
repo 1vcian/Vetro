@@ -195,12 +195,13 @@ function rest(ms) {
 
 // A task boundary without setTimeout's clamp (at least 4 ms once timeouts
 // nest, a quarter of every 12 ms slice): the page's messages get in, and the
-// machine goes on at once. The browser's own scheduler.yield() where there is
-// one (Chrome), else a message to ourselves.
+// machine goes on at once. A message to ourselves queues behind the page's
+// messages; scheduler.yield() is not used: its continuation runs ahead of
+// other tasks, so it could keep the page's inputs waiting.
 const yieldChannel = new MessageChannel();
 const yieldQueue = [];
 yieldChannel.port1.onmessage = () => yieldQueue.shift()?.();
-const yieldToEvents = globalThis.scheduler?.yield ? () => globalThis.scheduler.yield() : () => new Promise((ok) => {
+const yieldToEvents = () => new Promise((ok) => {
   yieldQueue.push(ok);
   yieldChannel.port2.postMessage(0);
 });
