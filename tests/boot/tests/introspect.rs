@@ -481,9 +481,9 @@ fn introspezione_dall_esterno() {
         plain_secs = plain_secs.min(p.secs);
     }
     let text = format!(
-        "sessione ({}): {} istruzioni, {} syscall, {} punti d'arresto\n\
-         tempo: senza agganci {:.3} s, con syscall e punti d'arresto {:.3} s ({:+.1}%)\n",
-        if jit { "JIT" } else { "interprete" },
+        "session ({}): {} instructions, {} syscalls, {} breakpoints\n\
+         time: without hooks {:.3} s, with syscalls and breakpoints {:.3} s ({:+.1}%)\n",
+        if jit { "JIT" } else { "interpreter" },
         traced.end.steps,
         traced.records.len(),
         traced.hits.len(),

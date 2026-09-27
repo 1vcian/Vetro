@@ -155,7 +155,7 @@ fn vetro_boots_guest_kernel_to_shell() {
             j.steps,
             interp_time.as_secs_f64()
         );
-        assert_eq!(j.steps, b.steps, "istruzioni diverse col JIT");
+        assert_eq!(j.steps, b.steps, "instructions differ with the JIT");
         assert_eq!((j.t_boot, j.t_end), (b.t_boot, b.t_end), "guest times different with the JIT");
         if j.log != log {
             let (a, c): (Vec<&str>, Vec<&str>) = (log.lines().collect(), j.log.lines().collect());

@@ -345,7 +345,7 @@ fn snapshot_a_meta_connessione() {
         r.finish().unwrap();
         let mut w2 = Writer::new();
         n.save(&mut w2);
-        assert_eq!(w2.into_bytes(), bytes, "risalvataggio");
+        assert_eq!(w2.into_bytes(), bytes, "saved again");
         n
     }
     let mut a = stack();

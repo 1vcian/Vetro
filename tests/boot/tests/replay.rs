@@ -393,13 +393,13 @@ fn sessione_registrata_e_riprodotta() {
         }
     }
 
-    // Misure.
+    // Measurements.
     let kf: usize = log.keyframes.iter().map(|k| k.snapshot.len()).sum();
     let text = format!(
-        "sessione: {} istruzioni, {} eventi, {} keyframe\n\
-         log: {} byte in tutto, {} byte senza keyframe, keyframe {} byte\n\
-         tempo: senza registrazione {:.3} s, registrata senza keyframe {:.3} s ({:+.1}%), \
-         con keyframe {:.3} s ({:+.1}%), replay {:.3} s\n",
+        "session: {} instructions, {} events, {} keyframes\n\
+         log: {} bytes in total, {} bytes without keyframes, keyframes {} bytes\n\
+         time: without recording {:.3} s, recorded without keyframes {:.3} s ({:+.1}%), \
+         with keyframes {:.3} s ({:+.1}%), replay {:.3} s\n",
         rec.steps,
         inputs,
         log.keyframes.len(),

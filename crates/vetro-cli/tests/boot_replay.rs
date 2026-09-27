@@ -97,7 +97,7 @@ fn registra_rifa_e_salta() {
         let out = vetro(&args);
         assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
         let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(stdout.starts_with(&regs), "--goto (JIT {jit}):\n{stdout}\natteso:\n{regs}");
+        assert!(stdout.starts_with(&regs), "--goto (JIT {jit}):\n{stdout}\nexpected:\n{regs}");
         let hex: Vec<String> = code[..16].iter().map(|b| format!("{b:02x}")).collect();
         assert!(stdout.contains(&hex.join(" ")), "--dump (JIT {jit}):\n{stdout}");
     }

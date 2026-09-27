@@ -78,7 +78,7 @@ impl Run {
             if self.m.net(&mut host).expect("virtio-net") {
                 return;
             }
-            assert!(self.m.steps < limit, "{what}: tempo scaduto:\n{}", self.tail());
+            assert!(self.m.steps < limit, "{what}: time is up:\n{}", self.tail());
             self.step(what);
         }
     }

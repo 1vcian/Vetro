@@ -30,7 +30,7 @@ fn qemu_boots_guest_kernel_to_shell() {
     let Some(qemu) = qemu_system() else {
         return skip_or_fail(
             "VETRO_REQUIRE_SYSTEM_ORACLE",
-            "qemu-system-aarch64 assente (su macOS: VETRO_QEMU_SYSTEM_AARCH64=tools/guest-kernel/qemu-system-aarch64-docker.sh)",
+            "qemu-system-aarch64 missing (on macOS: VETRO_QEMU_SYSTEM_AARCH64=tools/guest-kernel/qemu-system-aarch64-docker.sh)",
         );
     };
     let mut cmd = Command::new(qemu);

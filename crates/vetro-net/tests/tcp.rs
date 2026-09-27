@@ -572,7 +572,7 @@ fn lossy_transfer(seed: u64) {
             if rng.chance(LOSS) {
                 continue;
             }
-            assert!(!seg.rst, "RST inatteso: {seg:?}");
+            assert!(!seg.rst, "unexpected RST: {seg:?}");
             if let Some(a) = seg.ack
                 && seq_lt(acked, a)
             {

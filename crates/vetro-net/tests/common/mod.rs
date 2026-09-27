@@ -188,7 +188,7 @@ pub fn validate(frame: &[u8]) -> Out {
                 other => panic!("unexpected IP protocol {other:?}"),
             }
         }
-        other => panic!("ethertype inatteso {other:?}"),
+        other => panic!("unexpected ethertype {other:?}"),
     }
 }
 

@@ -350,8 +350,8 @@ fn misure_alla_shell() {
     let restore = t.elapsed();
     let nonzero = m.board.borrow().ram.bytes().chunks(4096).filter(|p| p.iter().any(|&b| b != 0)).count();
     let text = format!(
-        "snapshot alla shell ({} istruzioni, RAM 1 GiB, {} pagine non a zero = {:.1} MiB): \
-         {} byte ({:.1} MiB); salvataggio {:.0} ms, macchina nuova {:.0} ms, ripristino {:.0} ms\n",
+        "snapshot at the shell ({} instructions, 1 GiB of RAM, {} non-zero pages = {:.1} MiB): \
+         {} bytes ({:.1} MiB); save {:.0} ms, new machine {:.0} ms, restore {:.0} ms\n",
         m.steps,
         nonzero,
         nonzero as f64 * 4096.0 / (1 << 20) as f64,

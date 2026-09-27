@@ -196,7 +196,7 @@ fn riferimento_nativo_dei_test_web() {
     let v = devices_session(&image, &initrd);
     let r = ram3g_session(&image, &initrd);
     eprintln!(
-        "riferimento nativo: disco {d} istruzioni, dispositivi {v} istruzioni, 3 GiB of RAM {r} instructions \
+        "native reference: disk {d} instructions, devices {v} instructions, 3 GiB of RAM {r} instructions \
          (target/web-test/native-*)"
     );
 }
