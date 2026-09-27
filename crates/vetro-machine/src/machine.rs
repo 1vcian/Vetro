@@ -652,7 +652,7 @@ impl Machine {
             return Stop::Blocked;
         }
         if core::mem::take(&mut self.wfi_pending)
-            && let Some(stop) = self.wait_for_interrupt()
+            && let Some(stop) = self.wait_for_interrupt(end)
         {
             return stop;
         }
@@ -721,7 +721,7 @@ impl Machine {
             match ev {
                 SysEvent::Executed | SysEvent::Exception { .. } => {}
                 SysEvent::WaitForInterrupt => {
-                    if let Some(stop) = self.wait_for_interrupt() {
+                    if let Some(stop) = self.wait_for_interrupt(end) {
                         return stop;
                     }
                 }
@@ -731,7 +731,7 @@ impl Machine {
                         Call::Ret(v) => self.cpu.x[0] = v as u64,
                         Call::Suspend => {
                             self.cpu.x[0] = 0;
-                            if let Some(stop) = self.wait_for_interrupt() {
+                            if let Some(stop) = self.wait_for_interrupt(end) {
                                 return stop;
                             }
                         }
@@ -750,8 +750,13 @@ impl Machine {
 
     /// WFI: if no interrupt is ready, time jumps to the next deadline
     /// (timer or network stack); with no deadlines the machine is
-    /// idle.
-    fn wait_for_interrupt(&mut self) -> Option<Stop> {
+    /// idle. A deadline beyond `end`, the end of the quantum, stops time
+    /// there instead (`Stop::Budget`) and the WFI goes on in the next quantum:
+    /// an input the host gives in between wakes the guest at that instruction
+    /// instead of at the deadline, and the host's clock (the browser's real
+    /// time) is never overtaken by more than a quantum. The guest sees the
+    /// same thing either way: nothing happens during a WFI but interrupts.
+    fn wait_for_interrupt(&mut self, end: u64) -> Option<Stop> {
         self.sync_irqs();
         if self.blocked() {
             self.wfi_pending = true;
@@ -763,6 +768,11 @@ impl Machine {
             return None;
         }
         match self.timer_deadline {
+            Some(d) if steps_for(d) > end => {
+                self.steps = self.steps.max(end);
+                self.wfi_pending = true;
+                Some(Stop::Budget)
+            }
             Some(d) => {
                 let to = self.steps.max(steps_for(d));
                 self.perf.wfis += 1;
@@ -803,6 +813,49 @@ mod tests {
         m.console_input(b"x");
         assert_eq!(m.run(1_000_000), Stop::Idle);
         assert!(m.steps < 10, "stops right away, does not use up the quantum");
+    }
+
+    /// A WFI whose timer deadline is past the end of the quantum stops time at
+    /// the end of the quantum (not at the deadline) and goes on in the next
+    /// one; in small quanta or in one large quantum the guest ends up in the
+    /// same state at the same instruction.
+    #[test]
+    fn wfi_stops_at_the_end_of_the_quantum() {
+        // printf '...' | tools/a64asm.sh
+        let code = [
+            0xd51be340u32, // msr CNTV_CVAL_EL0, x0
+            0xd2800021,    // mov x1, #0x1
+            0xd51be321,    // msr CNTV_CTL_EL0, x1
+            0xd503207f,    // wfi
+            0x91000442,    // add x2, x2, #0x1
+            0x14000000,    // b .
+        ];
+        let machine = || {
+            let mut m = Machine::new(&MachineConfig { ram_size: 1 << 20, ..MachineConfig::default() });
+            {
+                let mut b = m.board.borrow_mut();
+                for (i, w) in code.iter().enumerate() {
+                    assert!(b.ram.write(map::RAM_BASE + 4 * i as u64, &w.to_le_bytes()));
+                }
+            }
+            m.cpu.pc = map::RAM_BASE;
+            // Deadline at CNTVCT 625 000: 1 000 000 instructions.
+            m.cpu.x[0] = 625_000;
+            m
+        };
+        let deadline = steps_for(625_000);
+        let mut small = machine();
+        assert_eq!(small.run(10_000), Stop::Budget);
+        assert_eq!(small.steps, 10_000, "time stops at the end of the quantum, not at the deadline");
+        assert_eq!(small.cpu.x[2], 0, "still in the WFI");
+        while small.steps < deadline + 100 {
+            assert_eq!(small.run(10_000.min(deadline + 100 - small.steps)), Stop::Budget);
+        }
+        let mut large = machine();
+        assert_eq!(large.run(deadline + 100), Stop::Budget);
+        assert_eq!(small.steps, large.steps);
+        assert_eq!(small.cpu.x[2], 1, "woken at the deadline");
+        assert_eq!((small.cpu.pc, small.cpu.x), (large.cpu.pc, large.cpu.x));
     }
 
     /// Devices in the slots of QEMU's `-device`s, in the same order

@@ -401,9 +401,9 @@ impl Machine {
         Ok(())
     }
 
-    /// Brings the machine to instruction `step` of the recording (at the first
-    /// boundary between quanta with at least `step` instructions: a WFI can
-    /// jump past it), restarting from the nearest keyframe and redoing the inputs.
+    /// Brings the machine to instruction `step` of the recording (a WFI stops
+    /// there too, at the end of its quantum), restarting from the nearest
+    /// keyframe and redoing the inputs.
     /// Returns the instruction count reached; from there registers
     /// (`Machine::cpu`) and memory ([`Machine::read_phys`],
     /// [`Machine::read_virt`]) can be read, and the replay can continue with `run`.
