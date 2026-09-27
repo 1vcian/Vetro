@@ -20,6 +20,7 @@
 //   --profile        interpreter instruction classes (VETRO_JIT_PROFILE=1 does the same)
 //   --no-jit         interpreter only
 //   --cold=S         cold boot for S guest seconds instead of the restore
+//   --restore-only   stops after the restore (to profile it)
 //   --diag           after the launcher idle: `top` in the guest (changes the guest's work)
 //   --out=FILE       measurements as JSON (default target/aosp/perf.json)
 //
@@ -157,6 +158,10 @@ async function main() {
     res.restoreMs = performance.now() - tr;
     res.restoreCpuMs = cpu() - cr;
     log(`restored ${mib(bytes.length)} MiB in ${res.restoreMs.toFixed(0)} ms (${res.restoreCpuMs.toFixed(0)} ms CPU), at ${m.steps} instructions`);
+  }
+  if (flag('restore-only')) {
+    writeFileSync(outPath, `${JSON.stringify(res, null, 1)}\n`);
+    return;
   }
   if (jit) m.setJit(64, 16, { profile: profile && !!exports.vetro_machine_set_jit_with });
 
