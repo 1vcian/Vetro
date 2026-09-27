@@ -6,3 +6,4 @@ dist/
 .DS_Store
 /plan.docx
 .claude/worktrees/
+__pycache__/
