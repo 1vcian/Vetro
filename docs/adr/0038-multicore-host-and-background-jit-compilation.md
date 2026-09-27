@@ -253,7 +253,10 @@ executed in the first 240 s of wall time after the restore):
 |---|---|---|---|
 | 1 | 32.8 s guest (13.7 MIPS) | 34.2 s guest (14.2 MIPS) | 1.041 |
 | 2 | 50.3 s guest (20.9 MIPS) | 51.0 s guest (21.2 MIPS) | 1.014 |
-TBD-CHROME2
+
+The two rounds differ by 50% in absolute speed (other agents' load on the
+VM); only the ratio within a round is meaningful. More rounds were not run
+(session limit).
 
 **Guest kernel boot in Node** (Mac, 3 interleaved runs, all code new, the
 worst case): sync 1.63–1.94 s, Worker 1.89–2.22 s (+5–20%): in a two-second
