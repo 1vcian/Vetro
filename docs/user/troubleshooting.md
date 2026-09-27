@@ -71,7 +71,11 @@ all the work.
 - Keep the tab in the foreground: browsers slow down background tabs.
 - The first time an app opens, its files are still arriving: the second
   time is faster.
-- Smaller screens are cheaper to draw (see [Device profiles](device-profiles.md)).
+- Smaller screens are cheaper to draw: the default **Light** profile draws
+  960 x 600 (see [Device profiles](device-profiles.md)).
+- Window animations are off and app animations run at half length by
+  default; **full animations and blurs** in the setup form brings Android's
+  own back, at the cost of more frames to draw.
 
 ## The screen stays black
 
@@ -84,6 +88,13 @@ all the work.
 
 ## Keys or clicks do nothing
 
+- A white ripple shows where you touched: the press arrived. The phone can
+  take a few seconds to redraw, especially right after a start, while the
+  system is still busy.
+- While the machine saves its state (a note at the bottom of the screen
+  says so) the phone is stopped; your touch is handled when it is done. The
+  automatic save after an install waits until you stop touching the screen
+  for a few seconds.
 - Click the screen first, so it has the keyboard (a coloured outline shows
   it).
 - During a replay, your inputs are ignored on purpose: wait for the replay
