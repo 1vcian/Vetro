@@ -53,7 +53,7 @@ impl GlExecutor for JsExecutor {
 pub fn enable(gpu: &mut VirtioGpu) -> bool {
     match gpu.renderer_as_mut::<Gfxstream>() {
         Some(r) => {
-            r.gl.exec = Box::new(JsExecutor);
+            r.gl.set_executor(Box::new(JsExecutor));
             true
         }
         None => false,

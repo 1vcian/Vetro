@@ -16,7 +16,7 @@ fn main() {
     let mut gu = Guest::new(Box::new(Recorder::new(NullExecutor::default())));
     scene(&mut gu);
     gu.gfx.flush_ops();
-    let exec = std::mem::replace(&mut gu.gfx.gl.exec, Box::new(NullExecutor::default()));
+    let exec = gu.gfx.gl.set_executor(Box::new(NullExecutor::default()));
     let any: Box<dyn std::any::Any> = exec;
     let rec = any.downcast::<Recorder<NullExecutor>>().expect("the recorder");
     let _: &dyn GlExecutor = &*rec;

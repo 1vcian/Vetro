@@ -167,6 +167,19 @@ codes! {
     /// tex, width, height: draws a texture onto the canvas and hands the
     /// frame to the page.
     Present,
+    // Snapshots (ADR 0037).
+    /// Deletes every object and puts the context back in its initial state
+    /// (before a restore).
+    ResetAll,
+    /// Initial bindings, program, vertex array and pixel store (after a
+    /// restore).
+    ResetState,
+    /// tex, image target, level, width, height, bytes → `out` as RGBA8.
+    ReadTextureLevel,
+    /// buffer, element (1 = an ELEMENT_ARRAY buffer), size → `out`.
+    ReadBufferData,
+    /// buffer, element, usage, blob: the buffer's whole content.
+    BufferUpload,
 }
 
 /// Object kinds of [`Code::Create`] / [`Code::Delete`].
@@ -304,6 +317,41 @@ impl OpBuf {
     pub fn op_read(&mut self, code: Code, args: &[u32], n: usize) {
         self.op(code, args);
         self.out_len += n;
+    }
+}
+
+/// The decoder's batch, usable through `&self` (snapshots save through a
+/// shared reference and must still run readbacks): [`OpBuf`] in a `RefCell`.
+#[derive(Default)]
+pub struct Ops(core::cell::RefCell<OpBuf>);
+
+impl Ops {
+    pub fn op(&self, code: Code, args: &[u32]) {
+        self.0.borrow_mut().op(code, args);
+    }
+    pub fn op_blob(&self, code: Code, args: &[u32], data: &[u8]) {
+        self.0.borrow_mut().op_blob(code, args, data);
+    }
+    pub fn op_blob_then(&self, code: Code, args: &[u32], data: &[u8], tail: &[u32]) {
+        self.0.borrow_mut().op_blob_then(code, args, data, tail);
+    }
+    pub fn op_read(&self, code: Code, args: &[u32], n: usize) {
+        self.0.borrow_mut().op_read(code, args, n);
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.borrow().is_empty()
+    }
+    /// Words and blob bytes queued.
+    pub fn size(&self) -> (usize, usize) {
+        let b = self.0.borrow();
+        (b.words.len(), b.blob.len())
+    }
+    pub fn buf(&self) -> core::cell::RefMut<'_, OpBuf> {
+        self.0.borrow_mut()
+    }
+    /// The batch, leaving an empty one.
+    pub fn take(&self) -> OpBuf {
+        core::mem::take(&mut *self.0.borrow_mut())
     }
 }
 

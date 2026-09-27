@@ -20,6 +20,7 @@ pub mod gl;
 pub mod glsl;
 #[doc(hidden)]
 pub mod guest;
+mod snapshot;
 pub mod state;
 pub mod tables;
 pub mod wire;
@@ -135,13 +136,24 @@ impl Gfxstream {
     }
 
     fn maybe_flush(&mut self) {
-        if self.gl.ops.words.len() > FLUSH_WORDS || self.gl.ops.blob.len() > FLUSH_BLOB {
+        let (w, b) = self.gl.ops.size();
+        if w > FLUSH_WORDS || b > FLUSH_BLOB {
             self.gl.flush();
         }
     }
 
     /// Bytes written by the guest into context `ctx`'s pipe.
     fn pipe_write(&mut self, ctx: u32, data: &[u8]) {
+        if self.gl.trace {
+            let state = match self.ctxs.get(&ctx).map(|v| &v.pipe) {
+                Some(Pipe::Connecting(_)) => "connecting",
+                Some(Pipe::Process { .. }) => "process",
+                Some(Pipe::Render { .. }) => "render",
+                Some(Pipe::Unknown) => "unknown",
+                None => "no context",
+            };
+            self.gl.trace_line(format!("ctx {ctx}: write {} bytes ({state})", data.len()));
+        }
         let Some(v) = self.ctxs.get_mut(&ctx) else { return };
         let mut data = data.to_vec();
         loop {
@@ -155,11 +167,12 @@ impl Gfxstream {
                         name.extend_from_slice(&data[..n]);
                         let service = String::from_utf8_lossy(name).into_owned();
                         data.drain(..=n);
+                        self.gl.trace_line(format!("ctx {ctx}: service {service:?}"));
                         v.pipe = match service.as_str() {
                             "pipe:opengles" => Pipe::Render {
                                 input: Vec::new(),
                                 flags_read: false,
-                                thread: gl::Thread::default(),
+                                thread: gl::Thread { id: ctx, ..gl::Thread::default() },
                             },
                             "pipe:GLProcessPipe" => Pipe::Process { input: Vec::new(), puid: None },
                             _ => {
@@ -202,6 +215,13 @@ impl Gfxstream {
                     let mut reply = Vec::new();
                     let used = self.gl.decode(thread, input, &mut reply);
                     input.drain(..used);
+                    if self.gl.trace {
+                        let pending = input.len();
+                        self.gl.trace_line(format!(
+                            "ctx {ctx}: reply {} bytes, {pending} input bytes pending",
+                            reply.len()
+                        ));
+                    }
                     v.out.extend(reply);
                     self.maybe_flush();
                     return;
@@ -343,6 +363,9 @@ impl Renderer3d for Gfxstream {
                 let v = self.ctxs.get_mut(&ctx).ok_or(ERR_UNSPEC)?;
                 let n = (t.bx.w as usize).min(v.out.len());
                 let bytes: Vec<u8> = v.out.drain(..n).collect();
+                if self.gl.trace {
+                    self.gl.trace_line(format!("ctx {ctx} res {res}: read {} bytes, {n} available", t.bx.w));
+                }
                 if n < t.bx.w as usize {
                     self.gl.warn(format!("pipe read of {} bytes with {n} available", t.bx.w));
                 }
@@ -399,14 +422,11 @@ impl Renderer3d for Gfxstream {
     }
 
     fn save_state(&self, w: &mut vetro_snapshot::Writer) {
-        // Snapshots of the GPU path are not implemented yet: the marker
-        // makes a restore fail cleanly instead of resuming a broken guest.
-        w.u32(0);
+        self.save(w);
     }
 
     fn restore_state(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()> {
-        let _ = r.u32()?;
-        Err(vetro_snapshot::Error::invalid("snapshots of the accelerated GPU path are not supported yet"))
+        self.restore(r)
     }
 }
 

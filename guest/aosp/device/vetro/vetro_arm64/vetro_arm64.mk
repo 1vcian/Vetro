@@ -36,6 +36,12 @@ $(call inherit-product, $(SRC_TARGET_DIR)/product/aosp_product.mk)
 # shared/device.mk's switches (they apply before the inherit).
 LOCAL_ENABLE_LIGHT := false
 LOCAL_ENABLE_OEMLOCK := false
+# No Bluetooth: Cuttlefish's HAL (com.google.cf.bt) talks to the host's
+# rootcanal over /dev/hvc5, which isn't there; the Bluetooth stack then crashes
+# in a loop (crash_dump64 every few seconds, measured on the idle home screen,
+# ADR 0037). With false, shared/bluetooth/device_vendor.mk installs no HAL and
+# excludes the Bluetooth features, so system_server starts no Bluetooth service.
+BOARD_HAVE_BLUETOOTH := false
 $(call inherit-product, device/google/cuttlefish/shared/phone/device_vendor.mk)
 $(call inherit-product, device/google/cuttlefish/vsoc_arm64/bootloader.mk)
 

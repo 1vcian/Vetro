@@ -336,3 +336,55 @@ fn synthetic_scene_binds_the_cpu_buffer_as_external_texture() {
     assert!(o.iter().any(|(c, a)| *c == Code::ReadTexture && a[1..5] == [0, 0, 64, 64]));
     assert!(gu.gfx.gl.log.is_empty(), "{:?}", gu.gfx.gl.log);
 }
+
+/// Save after the scene, restore into a new renderer: the executor gets the
+/// objects back with their ids and the read-back contents, and the guest's
+/// render thread goes on with its context, program and pipe.
+#[test]
+fn snapshot_rebuilds_objects_and_the_guest_goes_on() {
+    let (mut gu, log) = guest();
+    crate::guest::scene(&mut gu);
+    // A buffer object with content, to see it come back.
+    let mut s = call(g::glGenBuffers, &[V::S(1), V::O(4)]);
+    s.extend(call(g::glFinishRoundTrip, &[]));
+    gu.send(1, &s);
+    let r = gu.recv(1, 8);
+    let buf = u32::from_le_bytes(r[..4].try_into().unwrap());
+    let mut s = call(g::glBindBuffer, &[V::S(0x8892), V::S(u64::from(buf))]);
+    s.extend(call(g::glBufferData, &[V::S(0x8892), V::S(12), V::B(&[1; 12]), V::S(0x88E4)]));
+    gu.send(1, &s);
+    let cb7 = gu.gfx.gl.cbs[&7].id;
+    let prog_ids: Vec<u32> =
+        gu.gfx.gl.shares.values().flat_map(|s| s.programs.values().map(|p| p.id)).collect();
+
+    let mut w = vetro_snapshot::Writer::new();
+    gu.gfx.save_state(&mut w);
+    let bytes = w.into_bytes();
+    let saves = log.borrow().batches.len();
+
+    let (mut other, log2) = guest();
+    other.gfx.restore_state(&mut vetro_snapshot::Reader::new(&bytes)).unwrap();
+    let o = ops(&log2);
+    assert_eq!(o[0].0, Code::ResetAll);
+    assert_eq!(o.last().unwrap().0, Code::ResetState);
+    // ColorBuffer 7 with the bytes the save read back (the fake executor's
+    // 0, 1, 2… pattern, whose position depends on the batch layout).
+    let up = o.iter().find(|(c, a)| *c == Code::TexUpload && a[0] == cb7).expect("ColorBuffer 7 uploaded");
+    assert_eq!(&up.1[1..5], &[0, 0, 64, 64]);
+    for id in &prog_ids {
+        assert!(o.iter().any(|(c, a)| *c == Code::LinkProgram && a == &[*id]), "program {id} relinked");
+    }
+    assert!(o.iter().any(|(c, a)| *c == Code::BufferUpload && a[2] == 0x88E4), "buffer content back");
+    assert!(o.iter().any(|(c, _)| *c == Code::SurfaceAttach));
+    assert!(saves > 0);
+
+    // The guest goes on: same pipe (context 1), same GL context and names.
+    let mut s = call(g::glClear, &[V::S(0x4000)]);
+    s.extend(call(g::glFinishRoundTrip, &[]));
+    other.send(1, &s);
+    assert_eq!(other.recv(1, 4), [0, 0, 0, 0]);
+    let o = ops(&log2);
+    let n = o.len();
+    assert!(o[n - 3..].iter().any(|(c, _)| *c == Code::Clear), "{:?}", &o[n - 6..]);
+    assert!(other.gfx.gl.log.is_empty(), "{:?}", other.gfx.gl.log);
+}

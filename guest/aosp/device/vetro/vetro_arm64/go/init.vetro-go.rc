@@ -17,3 +17,13 @@ on early-init && property:ro.boot.vetro.profile=go
     setprop pm.dexopt.downgrade_after_inactive_days 10
     setprop ro.vetro.profile go
     write /dev/kmsg "VETRO: low-RAM (go) profile"
+
+# microG without Google accounts has nothing to sync, yet it kept ~27% of the
+# CPU busy on the idle home screen (ADR 0037): in the Go profile it loses the
+# battery-saving exemption the regular image grants it, runs nothing in the
+# background, and sits in the "restricted" standby bucket (jobs and alarms
+# deferred). It still works when an app calls it.
+on property:sys.boot_completed=1 && property:ro.vetro.profile=go
+    exec_background - system system -- /system/bin/cmd deviceidle whitelist -com.google.android.gms
+    exec_background - system system -- /system/bin/cmd appops set com.google.android.gms RUN_ANY_IN_BACKGROUND ignore
+    exec_background - system system -- /system/bin/am set-standby-bucket com.google.android.gms restricted

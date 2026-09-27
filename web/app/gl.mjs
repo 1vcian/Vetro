@@ -421,12 +421,117 @@ export class WebGlExecutor {
           }
           case O.SurfaceAttach: this.#surfaceAttach(...w.subarray(a, a + 5)); break;
           case O.Present: this.#present(w[a], w[a + 1], w[a + 2]); break;
+          case O.ResetAll: this.#resetAll(); break;
+          case O.ResetState: this.#resetState(); break;
+          case O.ReadTextureLevel: {
+            const [tex, image, level, wd, ht, len] = w.subarray(a, a + 6);
+            this.#readLevel(tex, image, level, wd, ht, out.subarray(o, o + len));
+            o += len;
+            break;
+          }
+          case O.ReadBufferData: {
+            const [id, element, len] = w.subarray(a, a + 3);
+            this.#withBuffer(id, element, (t) => gl.getBufferSubData(t, 0, out.subarray(o, o + len)));
+            o += len;
+            break;
+          }
+          case O.BufferUpload: {
+            const [id, element, usage, off, len] = w.subarray(a, a + 5);
+            this.#withBuffer(id, element, (t) => gl.bufferData(t, bytes(off, len), usage));
+            break;
+          }
           default: this.#warn(`unknown op ${code}`);
         }
       } catch (e) {
         this.#warn(`op ${code}: ${e.message}`);
       }
       i += n;
+    }
+  }
+
+  /** Deletes every object and resets the context (before a snapshot restore). */
+  #resetAll() {
+    const gl = this.gl;
+    for (let id = 1; id < this.objs.length; id++) {
+      const x = this.objs[id];
+      if (!x) continue;
+      for (const del of ['deleteTexture', 'deleteBuffer', 'deleteFramebuffer', 'deleteRenderbuffer', 'deleteShader',
+        'deleteProgram', 'deleteVertexArray', 'deleteSampler', 'deleteQuery', 'deleteTransformFeedback']) {
+        // The right one is the one whose type matches; the others only warn
+        // (INVALID_OPERATION), so test the type first.
+        const is = { deleteTexture: gl.isTexture, deleteBuffer: gl.isBuffer, deleteFramebuffer: gl.isFramebuffer,
+          deleteRenderbuffer: gl.isRenderbuffer, deleteShader: gl.isShader, deleteProgram: gl.isProgram,
+          deleteVertexArray: gl.isVertexArray, deleteSampler: gl.isSampler, deleteQuery: gl.isQuery,
+          deleteTransformFeedback: gl.isTransformFeedback }[del];
+        if (is.call(gl, x)) { gl[del](x); break; }
+      }
+    }
+    this.objs = [null];
+    this.programs.clear();
+    this.program = 0;
+    this.rbSizes.clear();
+    this.#resetState();
+  }
+
+  /** The context's initial bindings, program and pixel store. */
+  #resetState() {
+    const gl = this.gl;
+    const units = gl.getParameter(gl.MAX_COMBINED_TEXTURE_IMAGE_UNITS);
+    for (let u = 0; u < units; u++) {
+      gl.activeTexture(GL.TEXTURE0 + u);
+      for (const t of [GL.TEXTURE_2D, 0x8513, 0x806F, 0x8C1A]) gl.bindTexture(t, null);
+      gl.bindSampler(u, null);
+    }
+    gl.activeTexture(GL.TEXTURE0);
+    gl.useProgram(null);
+    this.program = 0;
+    gl.bindVertexArray(null);
+    for (const t of [GL.ARRAY_BUFFER, 0x8F36, 0x8F37, GL.PIXEL_PACK_BUFFER, GL.PIXEL_UNPACK_BUFFER, 0x8A11, 0x8C8E]) gl.bindBuffer(t, null);
+    gl.bindFramebuffer(GL.FRAMEBUFFER, null);
+    gl.bindRenderbuffer(GL.RENDERBUFFER, null);
+    gl.bindTransformFeedback(0x8E22, null);
+    for (const [k, v] of [[GL.UNPACK_ALIGNMENT, 4], [GL.PACK_ALIGNMENT, 4], [GL.UNPACK_ROW_LENGTH, 0], [GL.UNPACK_SKIP_ROWS, 0],
+      [GL.UNPACK_SKIP_PIXELS, 0], [0x806E, 0], [0x806D, 0], [GL.PACK_ROW_LENGTH, 0], [GL.PACK_SKIP_ROWS, 0], [GL.PACK_SKIP_PIXELS, 0]]) {
+      gl.pixelStorei(k, v);
+    }
+  }
+
+  /** A texture level read back as RGBA8 (snapshots). */
+  #readLevel(tex, image, level, width, height, dst) {
+    const gl = this.gl;
+    const prevFb = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING);
+    const pbo = gl.getParameter(gl.PIXEL_PACK_BUFFER_BINDING);
+    const keys = [GL.PACK_ALIGNMENT, GL.PACK_ROW_LENGTH, GL.PACK_SKIP_ROWS, GL.PACK_SKIP_PIXELS];
+    const saved = keys.map((k) => gl.getParameter(k));
+    if (pbo) gl.bindBuffer(GL.PIXEL_PACK_BUFFER, null);
+    gl.pixelStorei(GL.PACK_ALIGNMENT, 1);
+    for (const k of keys.slice(1)) gl.pixelStorei(k, 0);
+    gl.bindFramebuffer(GL.READ_FRAMEBUFFER, this.readFbo);
+    gl.framebufferTexture2D(GL.READ_FRAMEBUFFER, GL.COLOR_ATTACHMENT0, image, this.objs[tex], level);
+    if (gl.checkFramebufferStatus(GL.READ_FRAMEBUFFER) === 0x8CD5) gl.readPixels(0, 0, width, height, GL.RGBA, GL.UNSIGNED_BYTE, dst);
+    gl.framebufferTexture2D(GL.READ_FRAMEBUFFER, GL.COLOR_ATTACHMENT0, GL.TEXTURE_2D, null, 0);
+    gl.bindFramebuffer(GL.READ_FRAMEBUFFER, prevFb);
+    keys.forEach((k, i) => gl.pixelStorei(k, saved[i]));
+    if (pbo) gl.bindBuffer(GL.PIXEL_PACK_BUFFER, pbo);
+  }
+
+  /** Runs `f(target)` with buffer `id` bound (element buffers through a scratch vertex array, WebGL keeps them there). */
+  #withBuffer(id, element, f) {
+    const gl = this.gl;
+    const x = this.objs[id];
+    if (element) {
+      const prev = gl.getParameter(gl.VERTEX_ARRAY_BINDING);
+      this.scratchVao ??= gl.createVertexArray();
+      gl.bindVertexArray(this.scratchVao);
+      gl.bindBuffer(GL.ELEMENT_ARRAY_BUFFER, x);
+      f(GL.ELEMENT_ARRAY_BUFFER);
+      gl.bindBuffer(GL.ELEMENT_ARRAY_BUFFER, null);
+      gl.bindVertexArray(prev);
+    } else {
+      const prev = gl.getParameter(gl.COPY_WRITE_BUFFER_BINDING);
+      gl.bindBuffer(0x8F37, x);
+      f(0x8F37);
+      gl.bindBuffer(0x8F37, prev);
     }
   }
 

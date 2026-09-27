@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::exec::{Code, GlExecutor, Kind, OpBuf, fw};
+use crate::exec::{Code, GlExecutor, Kind, Ops, fw};
 use crate::formats::{self, Tex};
 use crate::glsl;
 use crate::state::{self, GlState};
@@ -46,6 +46,16 @@ impl Names {
         }
         self.map.iter().find(|(_, v)| **v == id).map_or(0, |(k, _)| *k)
     }
+    pub fn next_value(&self) -> u32 {
+        self.next
+    }
+    /// (guest name, host id) pairs.
+    pub fn pairs(&self) -> Vec<(u32, u32)> {
+        self.map.iter().map(|(&k, &v)| (k, v)).collect()
+    }
+    pub fn from_parts(next: u32, pairs: Vec<(u32, u32)>) -> Self {
+        Self { map: pairs.into_iter().collect(), next }
+    }
     fn ids(&self) -> Vec<u32> {
         self.map.values().copied().collect()
     }
@@ -82,6 +92,8 @@ pub struct ProgramObj {
     /// Uniform values by virtual location (snapshots, glGetUniform*).
     pub values: BTreeMap<i32, Vec<u32>>,
     pub delete_pending: bool,
+    /// glUniformBlockBinding: block index → binding.
+    pub block_bindings: BTreeMap<u32, u32>,
 }
 
 impl ProgramObj {
@@ -135,6 +147,71 @@ pub struct Share {
     /// Renderbuffers backed by a ColorBuffer (rcBindRenderbuffer): host
     /// renderbuffer id → ColorBuffer texture.
     pub rb_tex: BTreeMap<u32, u32>,
+    /// What snapshots need to rebuild the objects (ADR 0037, "Snapshots").
+    pub tex_info: BTreeMap<u32, TexInfo>,
+    /// Renderbuffer storage: internal format, width, height, samples.
+    pub rb_info: BTreeMap<u32, [u32; 4]>,
+    pub sampler_params: BTreeMap<u32, BTreeMap<u32, (bool, u32)>>,
+    /// Buffers ever bound to ELEMENT_ARRAY_BUFFER (WebGL keeps them there).
+    pub element_buffers: BTreeSet<u32>,
+    pub buffer_usage: BTreeMap<u32, u32>,
+}
+
+/// A texture as snapshots rebuild it.
+#[derive(Clone, Debug, Default)]
+pub struct TexInfo {
+    /// The bind target of its first use (TEXTURE_2D, CUBE_MAP…).
+    pub target: u32,
+    /// (image target, level) → the level's specification.
+    pub levels: BTreeMap<(u32, u32), LevelSpec>,
+    pub params: BTreeMap<u32, (bool, u32)>,
+    /// glTexStorage: levels, internal format, width, height, depth.
+    pub storage: Option<[u32; 5]>,
+    pub mipmap: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LevelSpec {
+    pub ifmt: u32,
+    pub w: u32,
+    pub h: u32,
+    pub d: u32,
+    pub fmt: u32,
+    pub ty: u32,
+    /// Compressed data (it cannot be read back).
+    pub compressed: Option<Vec<u8>>,
+}
+
+/// A vertex attribute of a vertex array, as snapshots rebuild it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AttribPtr {
+    pub enabled: bool,
+    pub size: u32,
+    pub ty: u32,
+    pub norm: bool,
+    pub stride: u32,
+    pub offset: u32,
+    pub buffer: u32,
+    pub integer: bool,
+    pub divisor: u32,
+    /// Client-side data (resent before every draw: nothing to rebuild).
+    pub client: bool,
+}
+
+/// Format and type that go with an unsized (or sized) internal format for
+/// an upload of no data.
+pub fn unsized_of(ifmt: u32) -> (u32, u32) {
+    use crate::formats::*;
+    match ifmt {
+        GL_RGB | GL_RGB8 => (GL_RGB, GL_UNSIGNED_BYTE),
+        GL_RGB565 => (GL_RGB, GL_UNSIGNED_SHORT_5_6_5),
+        GL_R8 | GL_RED => (GL_RED, GL_UNSIGNED_BYTE),
+        GL_RG8 | GL_RG => (GL_RG, GL_UNSIGNED_BYTE),
+        0x1906 => (0x1906, GL_UNSIGNED_BYTE), // ALPHA
+        0x1909 => (0x1909, GL_UNSIGNED_BYTE), // LUMINANCE
+        0x190A => (0x190A, GL_UNSIGNED_BYTE), // LUMINANCE_ALPHA
+        _ => (GL_RGBA, GL_UNSIGNED_BYTE),
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -162,6 +239,10 @@ pub struct Ctx {
     /// Attachments of the guest's framebuffers: (host fbo, attachment) →
     /// (object type, guest name, level).
     pub attachments: BTreeMap<(u32, u32), (u32, u32, i32)>,
+    /// The attach op of each (host framebuffer, attachment), for snapshots.
+    pub fb_ops: BTreeMap<(u32, u32), (Code, Vec<u32>)>,
+    /// Vertex attributes of each host vertex array, for snapshots.
+    pub vao_attribs: BTreeMap<u32, [AttribPtr; state::ATTRIBS]>,
 }
 
 #[derive(Clone, Debug)]
@@ -190,6 +271,8 @@ pub struct ColorBuffer {
 /// Per render thread (one per guest GL thread, one per pipe).
 #[derive(Clone, Debug, Default)]
 pub struct Thread {
+    /// The virtio-gpu context of its pipe (for traces).
+    pub id: u32,
     pub ctx: u32,
     pub draw: u32,
     pub read: u32,
@@ -209,11 +292,13 @@ pub struct Stats {
 const HANDLE_BASE: u32 = 0x4000_0000;
 
 pub struct Gl {
-    pub ops: OpBuf,
-    pub exec: Box<dyn GlExecutor>,
-    next_id: u32,
-    next_handle: u32,
-    next_sync: u64,
+    pub ops: Ops,
+    /// Behind a `RefCell` so that snapshots (saved through `&self`) can run
+    /// their readbacks.
+    pub exec: core::cell::RefCell<Box<dyn GlExecutor>>,
+    pub(crate) next_id: u32,
+    pub(crate) next_handle: u32,
+    pub(crate) next_sync: u64,
     pub shares: BTreeMap<u32, Share>,
     pub ctxs: BTreeMap<u32, Ctx>,
     pub surfaces: BTreeMap<u32, Surface>,
@@ -229,6 +314,8 @@ pub struct Gl {
     pub stats: Stats,
     /// Host log (unhandled calls, bad arguments), bounded.
     pub log: Vec<String>,
+    /// Every call and pipe event goes to the log (`--gl-trace`), bounded.
+    pub trace: bool,
     warned: BTreeSet<String>,
     scratch: Vec<u8>,
 }
@@ -245,8 +332,8 @@ const GL_VERTEX_SHADER: u32 = 0x8B31;
 impl Gl {
     pub fn new(exec: Box<dyn GlExecutor>, display: (u32, u32)) -> Self {
         Self {
-            ops: OpBuf::default(),
-            exec,
+            ops: Ops::default(),
+            exec: core::cell::RefCell::new(exec),
             next_id: 0,
             next_handle: HANDLE_BASE,
             next_sync: 0,
@@ -261,8 +348,16 @@ impl Gl {
             display,
             stats: Stats::default(),
             log: Vec::new(),
+            trace: false,
             warned: BTreeSet::new(),
             scratch: Vec::new(),
+        }
+    }
+
+    /// A trace line (only with `trace`), up to 200 000 lines.
+    pub fn trace_line(&mut self, what: String) {
+        if self.trace && self.log.len() < 200_000 {
+            self.log.push(what);
         }
     }
 
@@ -301,15 +396,28 @@ impl Gl {
 
     /// Runs the queued ops; returns what the read ops produced.
     pub fn flush(&mut self) -> Vec<u8> {
-        if self.ops.is_empty() {
-            return Vec::new();
+        let out = self.run_ops();
+        if let Some(out) = &out {
+            self.stats.batches += 1;
+            self.stats.readback_bytes += out.len() as u64;
         }
-        let mut out = vec![0u8; self.ops.out_len];
-        self.exec.execute(&self.ops.words, &self.ops.blob, &mut out);
-        self.stats.batches += 1;
-        self.stats.readback_bytes += out.len() as u64;
-        self.ops.clear();
-        out
+        out.unwrap_or_default()
+    }
+
+    /// Runs the queued ops (also through `&self`); `None` if there were none.
+    pub fn run_ops(&self) -> Option<Vec<u8>> {
+        if self.ops.is_empty() {
+            return None;
+        }
+        let b = self.ops.take();
+        let mut out = vec![0u8; b.out_len];
+        self.exec.borrow_mut().execute(&b.words, &b.blob, &mut out);
+        Some(out)
+    }
+
+    /// Replaces the executor (returns the previous one).
+    pub fn set_executor(&self, exec: Box<dyn GlExecutor>) -> Box<dyn GlExecutor> {
+        self.exec.replace(exec)
     }
 
     // ---- ColorBuffers ----
@@ -391,7 +499,7 @@ impl Gl {
         }
         if self.active != t.ctx {
             let to = self.ctxs[&t.ctx].state.clone();
-            state::transition(&mut self.ops, &self.applied, &to);
+            state::transition(&mut self.ops.buf(), &self.applied, &to);
             self.applied = to;
             self.active = t.ctx;
         }
@@ -824,6 +932,8 @@ impl Gl {
                 read_default: true,
                 sized: false,
                 attachments: BTreeMap::new(),
+                fb_ops: BTreeMap::new(),
+                vao_attribs: BTreeMap::new(),
             },
         );
         h
@@ -937,7 +1047,7 @@ impl Gl {
             // The WebGL context already reflects this context: bring it up to
             // date with the new surfaces.
             let to = self.ctxs[&ctx].state.clone();
-            state::transition(&mut self.ops, &self.applied, &to);
+            state::transition(&mut self.ops.buf(), &self.applied, &to);
             self.applied = to;
         }
         true
@@ -998,6 +1108,12 @@ impl Gl {
             if let Some(c) = self.ctxs.get_mut(&t.ctx) {
                 let vao = c.state.vao;
                 c.vao_elements.insert(vao, id);
+                let share = c.share;
+                if id != 0
+                    && let Some(s) = self.shares.get_mut(&share)
+                {
+                    s.element_buffers.insert(id);
+                }
             }
             self.ops.op(Code::BindBuffer, &[target, id]);
             return;
@@ -1271,6 +1387,7 @@ impl Gl {
             return;
         }
         self.stats.calls += 1;
+        self.track_attrib_pointer(t, op, a);
         match op {
             // ---- context state ----
             g::glActiveTexture => {
@@ -1813,6 +1930,9 @@ impl Gl {
                 r.ret = u64::from(idx);
             }
             g::glUniformBlockBinding => {
+                if let Some(p) = self.program_mut(t, a.u(0)) {
+                    p.block_bindings.insert(a.u(1), a.u(2));
+                }
                 if let Some(pid) = self.share_of(t).and_then(|s| s.programs.get(&a.u(0))).map(|p| p.id) {
                     self.ops.op(Code::UniformBlockBinding, &[pid, a.u(1), a.u(2)]);
                 }
@@ -1931,11 +2051,13 @@ impl Gl {
                 let (target, size, usage) = (a.u(0), a.i(1), a.u(3));
                 let data = a.bytes(2);
                 self.note_buffer_size(t, target, i64::from(size));
+                self.note_buffer_usage(t, target, usage);
                 self.ops.op_blob_then(Code::BufferData, &[target, size as u32], data, &[usage]);
             }
             g::glBufferDataSyncAEMU => {
                 let (target, size, usage) = (a.u(0), a.i(1), a.u(3));
                 self.note_buffer_size(t, target, i64::from(size));
+                self.note_buffer_usage(t, target, usage);
                 self.ops.op_blob_then(Code::BufferData, &[target, size as u32], a.bytes(2), &[usage]);
                 r.ret = 1;
             }
@@ -1974,6 +2096,7 @@ impl Gl {
             g::glTexImage2D => {
                 let (target, level, ifmt, w, h, border, fmt, ty) =
                     (a.u(0), a.u(1), a.u(2), a.u(3), a.u(4), a.u(5), a.u(6), a.u(7));
+                self.track_level(t, target, level, LevelSpec { ifmt, w, h, d: 1, fmt, ty, compressed: None });
                 self.ops.op_blob(
                     Code::TexImage2D,
                     &[target, level, ifmt, w, h, border, fmt, ty, 0],
@@ -1982,6 +2105,9 @@ impl Gl {
             }
             g::glTexImage2DOffsetAEMU => {
                 let v: Vec<u32> = (0..9).map(|k| a.u(k)).collect();
+                let spec =
+                    LevelSpec { ifmt: v[2], w: v[3], h: v[4], d: 1, fmt: v[6], ty: v[7], compressed: None };
+                self.track_level(t, v[0], v[1], spec);
                 self.ops.op_blob(
                     Code::TexImage2D,
                     &[v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], 1 + v[8]],
@@ -2006,6 +2132,16 @@ impl Gl {
             }
             g::glTexImage3D | g::glTexImage3DOES => {
                 let v: Vec<u32> = (0..9).map(|k| a.u(k)).collect();
+                let spec = LevelSpec {
+                    ifmt: v[2],
+                    w: v[3],
+                    h: v[4],
+                    d: v[5],
+                    fmt: v[7],
+                    ty: v[8],
+                    compressed: None,
+                };
+                self.track_level(t, v[0], v[1], spec);
                 self.ops.op_blob(
                     Code::TexImage3D,
                     &[v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], 0],
@@ -2014,6 +2150,16 @@ impl Gl {
             }
             g::glTexImage3DOffsetAEMU => {
                 let v: Vec<u32> = (0..10).map(|k| a.u(k)).collect();
+                let spec = LevelSpec {
+                    ifmt: v[2],
+                    w: v[3],
+                    h: v[4],
+                    d: v[5],
+                    fmt: v[7],
+                    ty: v[8],
+                    compressed: None,
+                };
+                self.track_level(t, v[0], v[1], spec);
                 self.ops.op_blob(
                     Code::TexImage3D,
                     &[v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], 1 + v[9]],
@@ -2038,6 +2184,16 @@ impl Gl {
             }
             g::glCompressedTexImage2D => {
                 let v: Vec<u32> = (0..7).map(|k| a.u(k)).collect();
+                let spec = LevelSpec {
+                    ifmt: v[2],
+                    w: v[3],
+                    h: v[4],
+                    d: 1,
+                    fmt: 0,
+                    ty: 0,
+                    compressed: Some(a.bytes(7).to_vec()),
+                };
+                self.track_level(t, v[0], v[1], spec);
                 self.ops.op_blob(
                     Code::CompressedTexImage2D,
                     &[v[0], v[1], v[2], v[3], v[4], v[5]],
@@ -2054,6 +2210,13 @@ impl Gl {
             }
             g::glCopyTexImage2D => {
                 let v: Vec<u32> = (0..8).map(|k| a.u(k)).collect();
+                let (fmt, ty) = unsized_of(v[2]);
+                self.track_level(
+                    t,
+                    v[0],
+                    v[1],
+                    LevelSpec { ifmt: v[2], w: v[5], h: v[6], d: 1, fmt, ty, compressed: None },
+                );
                 self.ops.op(Code::CopyTexImage2D, &v);
             }
             g::glCopyTexSubImage2D => {
@@ -2067,21 +2230,34 @@ impl Gl {
             g::glTexParameteri | g::glTexParameterf => {
                 let target = if a.u(0) == 0x8D65 { GL_TEXTURE_2D } else { a.u(0) };
                 let code = if op == g::glTexParameteri { Code::TexParameteri } else { Code::TexParameterf };
+                self.track_tex_param(t, target, a.u(1), op == g::glTexParameterf, a.u(2));
                 self.ops.op(code, &[target, a.u(1), a.u(2)]);
             }
             g::glTexParameteriv | g::glTexParameterfv => {
                 let target = if a.u(0) == 0x8D65 { GL_TEXTURE_2D } else { a.u(0) };
                 let v = a.u32s(2).first().copied().unwrap_or(0);
                 let code = if op == g::glTexParameteriv { Code::TexParameteri } else { Code::TexParameterf };
+                self.track_tex_param(t, target, a.u(1), op == g::glTexParameterfv, v);
                 self.ops.op(code, &[target, a.u(1), v]);
             }
-            g::glGenerateMipmap => self.ops.op(Code::GenerateMipmap, &[a.u(0)]),
+            g::glGenerateMipmap => {
+                if let Some(ti) = self.tex_info_mut(t, a.u(0)) {
+                    ti.mipmap = true;
+                }
+                self.ops.op(Code::GenerateMipmap, &[a.u(0)]);
+            }
             g::glTexStorage2D => {
                 let v: Vec<u32> = (0..5).map(|k| a.u(k)).collect();
+                if let Some(ti) = self.tex_info_mut(t, v[0]) {
+                    ti.storage = Some([v[1], v[2], v[3], v[4], 1]);
+                }
                 self.ops.op(Code::TexStorage2D, &v);
             }
             g::glTexStorage3D => {
                 let v: Vec<u32> = (0..6).map(|k| a.u(k)).collect();
+                if let Some(ti) = self.tex_info_mut(t, v[0]) {
+                    ti.storage = Some([v[1], v[2], v[3], v[4], v[5]]);
+                }
                 self.ops.op(Code::TexStorage3D, &v);
             }
             g::glSamplerParameteri
@@ -2094,11 +2270,11 @@ impl Gl {
                 } else {
                     a.u32s(2).first().copied().unwrap_or(0)
                 };
-                let code = if op == g::glSamplerParameteri || op == g::glSamplerParameteriv {
-                    Code::SamplerParameteri
-                } else {
-                    Code::SamplerParameterf
-                };
+                let int = op == g::glSamplerParameteri || op == g::glSamplerParameteriv;
+                let code = if int { Code::SamplerParameteri } else { Code::SamplerParameterf };
+                if let Some(s) = self.share_of(t) {
+                    s.sampler_params.entry(id).or_default().insert(a.u(1), (!int, v));
+                }
                 self.ops.op(code, &[id, a.u(1), v]);
             }
             g::glEGLImageTargetTexture2DOES => {
@@ -2121,9 +2297,11 @@ impl Gl {
             g::glEGLImageTargetRenderbufferStorageOES => {}
             // ---- renderbuffers and framebuffers ----
             g::glRenderbufferStorage => {
+                self.track_rb(t, [a.u(1), a.u(2), a.u(3), 0]);
                 self.ops.op(Code::RenderbufferStorage, &[a.u(1), a.u(2), a.u(3)]);
             }
             g::glRenderbufferStorageMultisample => {
+                self.track_rb(t, [a.u(2), a.u(3), a.u(4), a.u(1)]);
                 self.ops.op(Code::RenderbufferStorageMultisample, &[a.u(1), a.u(2), a.u(3), a.u(4)]);
             }
             g::glFramebufferTexture2D => {
@@ -2131,6 +2309,13 @@ impl Gl {
                 let id = self.texture(t, name);
                 let textarget = if textarget == 0x8D65 { GL_TEXTURE_2D } else { textarget };
                 self.note_attachment(t, target, attach, GL_TEXTURE, name, level);
+                self.rec_attach(
+                    t,
+                    target,
+                    attach,
+                    Code::FramebufferTexture2D,
+                    &[attach, textarget, id, level as u32],
+                );
                 self.ops.op(Code::FramebufferTexture2D, &[target, attach, textarget, id, level as u32]);
             }
             g::glFramebufferRenderbuffer => {
@@ -2140,9 +2325,23 @@ impl Gl {
                 let backing = self.share_of(t).and_then(|s| s.rb_tex.get(&id).copied());
                 match backing {
                     Some(tex) => {
+                        self.rec_attach(
+                            t,
+                            target,
+                            attach,
+                            Code::FramebufferTexture2D,
+                            &[attach, GL_TEXTURE_2D, tex, 0],
+                        );
                         self.ops.op(Code::FramebufferTexture2D, &[target, attach, GL_TEXTURE_2D, tex, 0])
                     }
                     None => {
+                        self.rec_attach(
+                            t,
+                            target,
+                            attach,
+                            Code::FramebufferRenderbuffer,
+                            &[attach, GL_RENDERBUFFER, id],
+                        );
                         self.ops.op(Code::FramebufferRenderbuffer, &[target, attach, GL_RENDERBUFFER, id])
                     }
                 }
@@ -2150,6 +2349,13 @@ impl Gl {
             g::glFramebufferTextureLayer => {
                 let id = self.texture(t, a.u(2));
                 self.note_attachment(t, a.u(0), a.u(1), GL_TEXTURE, a.u(2), a.i(3));
+                self.rec_attach(
+                    t,
+                    a.u(0),
+                    a.u(1),
+                    Code::FramebufferTextureLayer,
+                    &[a.u(1), id, a.u(3), a.u(4)],
+                );
                 self.ops.op(Code::FramebufferTextureLayer, &[a.u(0), a.u(1), id, a.u(3), a.u(4)]);
             }
             g::glCheckFramebufferStatus => r.ret = 0x8CD5, // FRAMEBUFFER_COMPLETE
@@ -2220,9 +2426,19 @@ impl Gl {
                 r.out_i32s(0, &v);
             }
             // ---- vertex arrays and drawing ----
-            g::glEnableVertexAttribArray => self.ops.op(Code::EnableVertexAttribArray, &[a.u(0)]),
-            g::glDisableVertexAttribArray => self.ops.op(Code::DisableVertexAttribArray, &[a.u(0)]),
-            g::glVertexAttribDivisor => self.ops.op(Code::VertexAttribDivisor, &[a.u(0), a.u(1)]),
+            g::glEnableVertexAttribArray => {
+                self.track_attrib(t, a.u(0), |p| p.enabled = true);
+                self.ops.op(Code::EnableVertexAttribArray, &[a.u(0)]);
+            }
+            g::glDisableVertexAttribArray => {
+                self.track_attrib(t, a.u(0), |p| p.enabled = false);
+                self.ops.op(Code::DisableVertexAttribArray, &[a.u(0)]);
+            }
+            g::glVertexAttribDivisor => {
+                let d = a.u(1);
+                self.track_attrib(t, a.u(0), |p| p.divisor = d);
+                self.ops.op(Code::VertexAttribDivisor, &[a.u(0), a.u(1)]);
+            }
             g::glVertexAttribPointerOffset => {
                 self.ops.op(Code::VertexAttribPointer, &[a.u(0), a.u(1), a.u(2), a.u(3), a.u(4), a.u(5)]);
             }
@@ -2480,6 +2696,106 @@ impl Gl {
         if target == GL_READ_FRAMEBUFFER { c.state.read_fbo } else { c.state.draw_fbo }
     }
 
+    fn note_buffer_usage(&mut self, t: &Thread, target: u32, usage: u32) {
+        let id = self.bound_buffer(t, target);
+        if id != 0
+            && let Some(s) = self.share_of(t)
+        {
+            s.buffer_usage.insert(id, usage);
+        }
+    }
+
+    /// The texture bound on the active unit to `target` (cube faces: the cube).
+    fn bound_texture(&self, t: &Thread, target: u32) -> u32 {
+        let Some(c) = self.ctx(t) else { return 0 };
+        let slot = match target {
+            0x8515..=0x851A => Some(1),
+            other => state::tex_slot(other),
+        };
+        slot.map_or(0, |s| c.state.textures[c.state.active_texture as usize][s])
+    }
+
+    fn tex_info_mut(&mut self, t: &Thread, target: u32) -> Option<&mut TexInfo> {
+        let id = self.bound_texture(t, target);
+        if id == 0 {
+            return None;
+        }
+        let bind = match target {
+            0x8515..=0x851A => 0x8513,
+            0x8D65 => GL_TEXTURE_2D,
+            other => other,
+        };
+        let ti = self.share_of(t)?.tex_info.entry(id).or_default();
+        if ti.target == 0 {
+            ti.target = bind;
+        }
+        Some(ti)
+    }
+
+    fn track_level(&mut self, t: &Thread, target: u32, level: u32, spec: LevelSpec) {
+        let target = if target == 0x8D65 { GL_TEXTURE_2D } else { target };
+        if let Some(ti) = self.tex_info_mut(t, target) {
+            ti.levels.insert((target, level), spec);
+        }
+    }
+
+    fn track_tex_param(&mut self, t: &Thread, target: u32, pname: u32, float: bool, v: u32) {
+        if let Some(ti) = self.tex_info_mut(t, target) {
+            ti.params.insert(pname, (float, v));
+        }
+    }
+
+    fn track_rb(&mut self, t: &Thread, spec: [u32; 4]) {
+        let Some(rb) = self.ctx(t).map(|c| c.state.renderbuffer).filter(|&r| r != 0) else { return };
+        if let Some(s) = self.share_of(t) {
+            s.rb_info.insert(rb, spec);
+        }
+    }
+
+    fn rec_attach(&mut self, t: &Thread, target: u32, attach: u32, code: Code, args: &[u32]) {
+        let fbo = self.bound_fbo(t, target);
+        if let Some(c) = self.ctxs.get_mut(&t.ctx) {
+            let mut v = vec![GL_DRAW_FRAMEBUFFER];
+            v.extend_from_slice(args);
+            c.fb_ops.insert((fbo, attach), (code, v));
+        }
+    }
+
+    fn track_attrib(&mut self, t: &Thread, index: u32, f: impl FnOnce(&mut AttribPtr)) {
+        let i = index as usize;
+        if i >= state::ATTRIBS {
+            return;
+        }
+        if let Some(c) = self.ctxs.get_mut(&t.ctx) {
+            let vao = c.state.vao;
+            f(&mut c.vao_attribs.entry(vao).or_insert([AttribPtr::default(); state::ATTRIBS])[i]);
+        }
+    }
+
+    /// Vertex attribute pointers (all four wire forms) into the vertex
+    /// array's record.
+    fn track_attrib_pointer(&mut self, t: &Thread, op: u32, a: &Args<'_, '_>) {
+        let (int, client) = match op {
+            g::glVertexAttribPointerOffset => (false, false),
+            g::glVertexAttribIPointerOffsetAEMU => (true, false),
+            g::glVertexAttribPointerData => (false, true),
+            g::glVertexAttribIPointerDataAEMU => (true, true),
+            _ => return,
+        };
+        let buf = self.ctx(t).map_or(0, |c| c.state.buffers[0]);
+        let (size, ty) = (a.u(1), a.u(2));
+        let (norm, stride, offset) = match op {
+            g::glVertexAttribPointerOffset => (a.b(3), a.u(4), a.u(5)),
+            g::glVertexAttribIPointerOffsetAEMU => (false, a.u(3), a.u(4)),
+            g::glVertexAttribPointerData => (a.b(3), 0, 0),
+            _ => (false, 0, 0),
+        };
+        let buffer = if client { 0 } else { buf };
+        self.track_attrib(t, a.u(0), |p| {
+            *p = AttribPtr { size, ty, norm, stride, offset, buffer, integer: int, client, ..*p }
+        });
+    }
+
     fn note_buffer_size(&mut self, t: &Thread, target: u32, size: i64) {
         let id = self.bound_buffer(t, target);
         if id != 0
@@ -2686,7 +3002,7 @@ impl Gl {
         fix(&mut mirror, dv, (0, 0));
         self.applied = mirror;
         let to = self.ctxs[&active].state.clone();
-        state::transition(&mut self.ops, &self.applied, &to);
+        state::transition(&mut self.ops.buf(), &self.applied, &to);
         self.applied = to;
     }
 
@@ -2729,6 +3045,9 @@ impl Gl {
                 self.rc(t, op, &a, &mut r);
             } else {
                 self.gles(t, op, &a, &mut r);
+            }
+            if self.trace {
+                self.trace_line(format!("ctx {} gl ctx {:#x}: {} ({len} bytes)", t.id, t.ctx, spec.name));
             }
             let has_reply = spec.ret > 0 || spec.params.contains(&wire::P::Out);
             if has_reply {

@@ -248,7 +248,7 @@ fn boot(args: &[String]) -> ExitCode {
     let mut vsock = false;
     let mut file_cmds: Vec<FileCmd> = Vec::new();
     let mut analysis = vetro_cli::analysis::AnalysisOptions::default();
-    let (mut gfxstream, mut gl_record) = (false, None::<String>);
+    let (mut gfxstream, mut gl_record, mut gl_trace) = (false, None::<String>, false);
     for a in &join_values(&vetro_cli::netcap::join_values(args)) {
         if analysis.parse(a) {
             continue;
@@ -368,6 +368,7 @@ fn boot(args: &[String]) -> ExitCode {
             Some(("--android-dump", v)) => android_dump = Some(v.to_string()),
             Some(("--gpu", "gfxstream")) => gfxstream = true,
             Some(("--gl-record", v)) => gl_record = Some(v.to_string()),
+            Some(("--gl-trace", "1")) => gl_trace = true,
             Some(("--mem", v)) => match v.parse::<u64>() {
                 Ok(m) => {
                     cfg.ram_size = m << 20;
@@ -553,11 +554,15 @@ fn boot(args: &[String]) -> ExitCode {
         return ExitCode::from(2);
     }
     let mut m = Machine::with_devices(&cfg, &devices);
+    if gl_trace {
+        use vetro_machine::vetro_gfxstream::Gfxstream;
+        m.gpu(|g| g.renderer_as_mut::<Gfxstream>().map(|r| r.gl.trace = true));
+    }
     if gl_record.is_some() {
         use vetro_machine::vetro_gfxstream::{Gfxstream, NullExecutor, Recorder};
         m.gpu(|g| {
             if let Some(r) = g.renderer_as_mut::<Gfxstream>() {
-                r.gl.exec = Box::new(Recorder::new(NullExecutor::default()));
+                r.gl.set_executor(Box::new(Recorder::new(NullExecutor::default())));
             }
         });
     }
@@ -960,7 +965,7 @@ fn boot(args: &[String]) -> ExitCode {
             let r = g.renderer_as_mut::<Gfxstream>()?;
             r.flush_ops();
             let stats = r.gl.stats.clone();
-            let exec = std::mem::replace(&mut r.gl.exec, Box::new(NullExecutor::default()));
+            let exec = r.gl.set_executor(Box::new(NullExecutor::default()));
             Some((stats, exec))
         });
         if let Some(Some((s, exec))) = taken {

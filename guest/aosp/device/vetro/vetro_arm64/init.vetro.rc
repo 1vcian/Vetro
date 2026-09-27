@@ -4,6 +4,13 @@ on early-init
     # For boot logs comparable with QEMU (tools/aosp/compare).
     write /dev/kmsg "VETRO: vetro_arm64 board init"
 
+on boot
+    # No proactive memory compaction and no watermark boosting: on one
+    # emulated CPU kcompactd took ~23% of the idle home screen's CPU
+    # (ADR 0037). Compaction still runs when an allocation needs it.
+    write /proc/sys/vm/compaction_proactiveness 0
+    write /proc/sys/vm/watermark_boost_factor 0
+
 on property:sys.boot_completed=1
     # Level 2: after boot the console prints only messages below 4.
     write /dev/kmsg "<2>VETRO: sys.boot_completed=1"
