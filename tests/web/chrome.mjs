@@ -64,7 +64,8 @@ export class Page {
   }
 
   consoleText() {
-    return this.eval("document.getElementById('console').textContent");
+    // '' while the page is still loading (after a navigation the element may not exist yet).
+    return this.eval("document.getElementById('console')?.textContent ?? ''");
   }
 
   async waitFor(what, pred, ms = 120_000) {
@@ -73,7 +74,7 @@ export class Page {
       const v = await pred();
       if (v) return v;
       if (Date.now() - t0 > ms) {
-        const status = await this.eval("document.getElementById('status').textContent");
+        const status = await this.eval("document.getElementById('status')?.textContent ?? '(no status)'");
         const tail = (await this.consoleText()).split('\n').slice(-15).join('\n');
         throw new Fail(`${what}: non arrivato in ${ms / 1000} s (stato: ${status})\n${tail}`);
       }
