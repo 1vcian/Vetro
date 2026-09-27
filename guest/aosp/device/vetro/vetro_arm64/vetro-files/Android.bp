@@ -6,6 +6,10 @@ cc_binary {
     name: "vetro-files",
     srcs: ["vetro-files.c"],
     vendor: true,
+    // SQL on the guest's databases (ADR 0021): the initramfs build links the
+    // official amalgamation statically; here AOSP's libsqlite (vendor
+    // variant, without ICU) provides sqlite3.h and the engine.
+    shared_libs: ["libsqlite"],
     cflags: [
         "-Wall",
         "-Werror",
