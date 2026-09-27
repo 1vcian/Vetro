@@ -169,6 +169,13 @@ fn sys_mrs(reg: SysReg, s: SysTarget) -> Option<MrsSrc> {
         SysReg::SpsrEl1 if el1 => MrsSrc::State(off::SPSR_EL1),
         SysReg::EsrEl1 if el1 => MrsSrc::State(off::ESR_EL1),
         SysReg::FarEl1 if el1 => MrsSrc::State(off::FAR_EL1),
+        SysReg::Ttbr0El1 if el1 => MrsSrc::State(off::TTBR0),
+        SysReg::Ttbr1El1 if el1 => MrsSrc::State(off::TTBR1),
+        SysReg::ContextidrEl1 if el1 => MrsSrc::State(off::CONTEXTIDR),
+        SysReg::MidrEl1 if el1 => MrsSrc::Const(vetro_cpu::sys::id::MIDR_EL1),
+        // FPCR/FPSR: the FP trap (CPACR_EL1.FPEN) is the region parameter.
+        SysReg::Fpcr if s.fp => MrsSrc::State32(off::FPCR),
+        SysReg::Fpsr if s.fp => MrsSrc::State32(off::FPSR),
         _ => return None,
     })
 }
@@ -186,6 +193,12 @@ fn sys_msr(reg: SysReg, s: SysTarget) -> Option<u32> {
         SysReg::SpsrEl1 if el1 => off::SPSR_EL1,
         // MSR DAIF: separately (it may unmask interrupts).
         SysReg::Daif if el1 => off::DAIF,
+        // TTBRs: separately (they change the regime: YIELD after them).
+        SysReg::Ttbr0El1 if el1 => off::TTBR0,
+        SysReg::Ttbr1El1 if el1 => off::TTBR1,
+        SysReg::ContextidrEl1 if el1 => off::CONTEXTIDR,
+        // FPSR: 32 bits with its mask, separately.
+        SysReg::Fpsr if s.fp => off::FPSR,
         _ => return None,
     })
 }
@@ -2870,6 +2883,21 @@ impl Tx {
                     self.f.op(op::I32_WRAP_I64).i32_const(DAIF_ALL as i32).op(op::I32_AND).local_set(t32(1));
                     self.f.local_get(L_STATE).local_get(t32(1)).i32_store(off::DAIF);
                     self.f.local_get(t32(0)).local_get(t32(1)).i32_const(-1).op(op::I32_XOR).op(op::I32_AND);
+                    self.yield_if();
+                } else if reg == SysReg::Fpsr {
+                    // Like `sysreg_write`: FPSR = Xt & FPSR_MASK.
+                    self.f.local_get(L_STATE);
+                    self.get_x(rt);
+                    self.f.op(op::I32_WRAP_I64).i32_const(vetro_cpu::state::FPSR_MASK as i32).op(op::I32_AND);
+                    self.f.i32_store(o);
+                } else if matches!(reg, SysReg::Ttbr0El1 | SysReg::Ttbr1El1) {
+                    // The translation regime changes: the run ends right after
+                    // (YIELD), and the host starts the next one in the new
+                    // regime (contexts, software TLB).
+                    self.f.local_get(L_STATE);
+                    self.get_x(rt);
+                    self.f.i64_store(o);
+                    self.f.i32_const(1);
                     self.yield_if();
                 } else {
                     self.f.local_get(L_STATE);

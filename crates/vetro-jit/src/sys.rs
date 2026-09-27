@@ -201,6 +201,8 @@ pub struct SysJitStats {
     pub base_switches: u64,
     /// TLBIs by VA handled without a new epoch (runs that saw some).
     pub tlbi_partial: u64,
+    /// Entries from the host found in the jump cache (no lookup).
+    pub jc_probes: u64,
     /// Bytes of WebAssembly compiled (modules and dispatcher).
     pub wasm_bytes: u64,
 }
@@ -489,6 +491,13 @@ impl<M> Cache<M> {
             e.seen = e.seen.saturating_add(1);
         }
         if e.seen < threshold { Look::Cold } else { Look::Translate(pa) }
+    }
+
+    /// Maximum steps of the jump cache entry of `pc`, if it is valid for `ctx`.
+    fn probe_jc(&self, mem: &[u8], pc: u64, ctx: u32) -> Option<u8> {
+        let e = self.at + area::JC as usize + ((pc >> 2) & (area::JC_ENTRIES as u64 - 1)) as usize * 16;
+        let hit = state::read_u64(mem, e, 0) == pc && state::read_u32(mem, e, 8) == ctx;
+        hit.then(|| state::read_u32(mem, e, 12) as u8)
     }
 
     /// Jump cache entry: `pc` → block, valid for `ctx`.
@@ -1005,6 +1014,41 @@ impl<E: Engine> SysJit<E> {
             if done >= budget {
                 break Next::Jit;
             }
+            // A valid jump cache entry for `pc` names the region the lookup
+            // would find (same guarantee the dispatcher relies on): no
+            // lookup, no fetch translation.
+            if self.dispatcher.is_some() {
+                let ctx = self.cache.ctx(fl);
+                if let Some(max) = self.cache.probe_jc(self.engine.memory(), pc, ctx) {
+                    if max as u64 > budget - done {
+                        break Next::One;
+                    }
+                    let m = self.engine.memory();
+                    if !in_jit {
+                        let mut s = JitState::from_cpu_sys(cpu);
+                        s.ctx = ctx;
+                        s.limit = budget - done;
+                        s.store(m, at);
+                        in_jit = true;
+                    } else {
+                        state::write_u64(m, at, off::STEPS, 0);
+                        state::write_u64(m, at, off::LIMIT, budget - done);
+                        state::write_u32(m, at, off::CTX, ctx);
+                        state::write_u32(m, at, off::EXIT_DETAIL, 0);
+                    }
+                    self.cache.stats.jc_probes += 1;
+                    match self.dispatch(cpu, mmu, phys, &regs, el, fl, time, done, &mut pc) {
+                        (steps, None) => {
+                            done += steps;
+                            continue;
+                        }
+                        (steps, Some(n)) => {
+                            done += steps;
+                            break n;
+                        }
+                    }
+                }
+            }
             let c = match self.cache.lookup(pc, fl, &regs, el, mmu, phys, true) {
                 Look::Hot(c) => c,
                 Look::One => break Next::One,
@@ -1048,54 +1092,81 @@ impl<E: Engine> SysJit<E> {
                 state::write_u32(m, at, off::CTX, ctx);
                 state::write_u32(m, at, off::EXIT_DETAIL, 0);
             }
-            // Clock: `steps` of JitState restarts from 0 on every run.
-            match time {
-                Some(c) => {
-                    state::write_u64(m, at, off::TIME_BASE, c.steps + done);
-                    state::write_u64(m, at, off::CNTVOFF, c.cntvoff);
-                    state::write_u32(m, at, off::TIME_OK, 1);
+            match self.dispatch(cpu, mmu, phys, &regs, el, fl, time, done, &mut pc) {
+                (steps, None) => done += steps,
+                (steps, Some(n)) => {
+                    done += steps;
+                    break n;
                 }
-                None => state::write_u32(m, at, off::TIME_OK, 0),
-            }
-            let code = {
-                let v = &cpu.v;
-                let mut host = SysHost { cache: &mut self.cache, mmu, phys, v, regs, el, fl, ram: self.ram };
-                let d = self.dispatcher.as_ref().expect("dispatcher compiled");
-                self.engine.run(d, 0, self.cfg.state_addr, &mut host)
-            };
-            self.cache.stats.runs += 1;
-            let m = self.engine.memory();
-            let steps = state::read_u64(m, at, off::STEPS);
-            pc = state::read_u64(m, at, off::PC);
-            debug_assert!(steps <= budget - done);
-            done += steps;
-            self.cache.stats.jit_steps += steps;
-            match code {
-                NEXT => {}
-                STOP => {
-                    self.cache.stats.stops += 1;
-                    self.drain(phys);
-                }
-                FAULT => {
-                    self.cache.stats.faults += 1;
-                    break Next::One;
-                }
-                SVC => {
-                    self.cache.stats.svcs += 1;
-                    break Next::One;
-                }
-                YIELD => {
-                    // Interrupts unmasked: the caller decides (`jit_budget`).
-                    self.cache.stats.yields += 1;
-                    break Next::Jit;
-                }
-                other => panic!("unknown dispatcher exit code: {other}"),
             }
         };
         if in_jit {
             JitState::load(self.engine.memory(), at).to_cpu_sys(cpu);
         }
         SysRun { steps: done, next }
+    }
+
+    /// Runs the dispatcher from `pc` (the jump cache entry and `JitState` are
+    /// ready): the steps it executed and, if the run must end, what comes next.
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch(
+        &mut self,
+        cpu: &mut Cpu,
+        mmu: &mut Mmu,
+        phys: &mut dyn SysPhys,
+        regs: &TranslationRegs,
+        el: u8,
+        fl: u8,
+        time: Option<Clock>,
+        done: u64,
+        pc: &mut u64,
+    ) -> (u64, Option<Next>) {
+        let at = self.cache.at;
+        let m = self.engine.memory();
+        // Clock: `steps` of JitState restarts from 0 on every run.
+        match time {
+            Some(c) => {
+                state::write_u64(m, at, off::TIME_BASE, c.steps + done);
+                state::write_u64(m, at, off::CNTVOFF, c.cntvoff);
+                state::write_u32(m, at, off::TIME_OK, 1);
+            }
+            None => state::write_u32(m, at, off::TIME_OK, 0),
+        }
+        let code = {
+            let v = &cpu.v;
+            let mut host =
+                SysHost { cache: &mut self.cache, mmu, phys, v, regs: *regs, el, fl, ram: self.ram };
+            let d = self.dispatcher.as_ref().expect("dispatcher compiled");
+            self.engine.run(d, 0, self.cfg.state_addr, &mut host)
+        };
+        self.cache.stats.runs += 1;
+        let m = self.engine.memory();
+        let steps = state::read_u64(m, at, off::STEPS);
+        *pc = state::read_u64(m, at, off::PC);
+        self.cache.stats.jit_steps += steps;
+        let next = match code {
+            NEXT => None,
+            STOP => {
+                self.cache.stats.stops += 1;
+                self.drain(phys);
+                None
+            }
+            FAULT => {
+                self.cache.stats.faults += 1;
+                Some(Next::One)
+            }
+            SVC => {
+                self.cache.stats.svcs += 1;
+                Some(Next::One)
+            }
+            YIELD => {
+                // Interrupts unmasked: the caller decides (`jit_budget`).
+                self.cache.stats.yields += 1;
+                Some(Next::Jit)
+            }
+            other => panic!("unknown dispatcher exit code: {other}"),
+        };
+        (steps, next)
     }
 
     /// Reads and translates the block of `pc` at the physical page of `pa`;

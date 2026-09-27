@@ -56,7 +56,7 @@ const HANDLER: [u32; 4] = [
 
 /// System instructions (registers Rt = x0, Rn = x1, Rs = w2, Rt2 = x3:
 /// the generator changes them at random).
-const SYSTEM: [u32; 42] = [
+const SYSTEM: [u32; 50] = [
     0xd53be040, // mrs x0, CNTVCT_EL0 (ADR 0026)
     0xd53be020, // mrs x0, CNTPCT_EL0
     0xd53bd040, // mrs x0, TPIDR_EL0
@@ -100,6 +100,15 @@ const SYSTEM: [u32; 42] = [
     0xd5184000, // msr SPSR_EL1, x0
     0xd5385200, // mrs x0, ESR_EL1
     0xd5386000, // mrs x0, FAR_EL1
+    // M4: FPCR/FPSR, TTBRs (read), CONTEXTIDR, MIDR in the regions.
+    0xd53b4400, // mrs x0, FPCR
+    0xd53b4420, // mrs x0, FPSR
+    0xd51b4420, // msr FPSR, x0
+    0xd5382020, // mrs x0, TTBR1_EL1
+    0xd5382000, // mrs x0, TTBR0_EL1
+    0xd538d020, // mrs x0, CONTEXTIDR_EL1
+    0xd518d020, // msr CONTEXTIDR_EL1, x0
+    0xd5380000, // mrs x0, MIDR_EL1
 ];
 
 /// Exclusive pairs with the same address in x1 (so that the store can
@@ -1038,4 +1047,92 @@ fn ldtr_sttr_at_el1_use_el0_permissions() {
         }
     }
     assert!(checked >= 4, "only {checked} suitable cases");
+}
+
+/// MSR TTBR0_EL1 inside a region (M4): the region exits right after it
+/// (YIELD) and the host starts the next run in the new regime. Here EL1
+/// code in TTBR1 loads the same TTBR0 address under two tables in one loop:
+/// a software TLB entry filled under the first table must not serve the
+/// load after the switch. Fails if the MSR does not end the run (tried).
+#[test]
+fn msr_ttbr0_in_a_region_ends_the_run() {
+    const K: u64 = 0xffff_ff80_0000_0000;
+    const U: u64 = 0x20_0000;
+    let (l1a, l2a, l3a) = (TABLES, TABLES + 0x1000, TABLES + 0x2000);
+    let (l1b, l2b, l3b) = (TABLES + 0x3000, TABLES + 0x4000, TABLES + 0x5000);
+    let (l1k, l2k) = (TABLES + 0x6000, TABLES + 0x7000);
+    let (da, db) = (DATA, DATA + 0x1000);
+    let mut ram = vec![0u8; RAM_LEN];
+    let put = |ram: &mut [u8], pa: u64, bytes: &[u8]| {
+        let o = (pa - RAM_BASE) as usize;
+        ram[o..o + bytes.len()].copy_from_slice(bytes);
+    };
+    let words = |ws: &[u32]| ws.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>();
+    let handler = words(&HANDLER);
+    for off in (0..0x800).step_by(0x80) {
+        put(&mut ram, VBAR + off, &handler);
+    }
+    put(
+        &mut ram,
+        START,
+        &words(&[
+            0xf94002e1, // ldr x1, [x23]
+            0x8b0100a5, // add x5, x5, x1
+            0xd5182015, // msr TTBR0_EL1, x21
+            0xf94002e2, // ldr x2, [x23]
+            0x8b0200c6, // add x6, x6, x2
+            0xd5182014, // msr TTBR0_EL1, x20
+            0xd1000673, // sub x19, x19, #0x1
+            0xb5ffff33, // cbnz x19, 0x0
+            0x14000000, // b .
+        ]),
+    );
+    put(&mut ram, da, &0x1111u64.to_le_bytes());
+    put(&mut ram, db, &0x2_2222_0000u64.to_le_bytes());
+    let block = |pa: u64| pa | VALID_BLOCK | AF | SH_INNER | AP_RW_EL1 | ATTR_NORMAL;
+    let page = |pa: u64| pa | VALID_PAGE | AF | SH_INNER | AP_RW_EL1 | ATTR_NORMAL | (1 << 11);
+    for (l1, l2, l3, data) in [(l1a, l2a, l3a, da), (l1b, l2b, l3b, db)] {
+        put(&mut ram, l1, &(l2 | VALID_TABLE).to_le_bytes());
+        put(&mut ram, l2 + 8, &(l3 | VALID_TABLE).to_le_bytes());
+        put(&mut ram, l3, &page(data).to_le_bytes());
+    }
+    put(&mut ram, l1k, &(l2k | VALID_TABLE).to_le_bytes());
+    put(&mut ram, l2k, &block(RAM_BASE).to_le_bytes());
+    put(&mut ram, l2k + 8 * 3, &block(CODE).to_le_bytes());
+
+    let mut cpu = Cpu::new();
+    cpu.reset_system(SysConfig::default());
+    let s = &mut cpu.sys;
+    s.vbar_el1 = K + (VBAR - RAM_BASE);
+    s.mair_el1 = 0x00ff;
+    s.tcr_el1 = 25
+        | 0b01 << 8
+        | 0b01 << 10
+        | 0b11 << 12
+        | 25 << 16
+        | 0b01 << 24
+        | 0b01 << 26
+        | 0b11 << 28
+        | 0b10 << 30
+        | 0b010 << 32;
+    s.ttbr0_el1 = l1a | 1 << 48;
+    s.ttbr1_el1 = l1k;
+    s.sctlr_el1 |= sctlr::M;
+    s.daif = 0;
+    cpu.sys.el = 1;
+    cpu.sys.spsel = true;
+    cpu.pc = K + (START - RAM_BASE);
+    cpu.x[19] = 300;
+    cpu.x[20] = l1a | 1 << 48;
+    cpu.x[21] = l1b | 2 << 48;
+    cpu.x[23] = U;
+
+    let want = run_interp(cpu.clone(), ram.clone());
+    assert!(want.events.is_empty() && want.cpu.x[19] == 0, "the loop must finish: {}", want.cpu.x[19]);
+    assert_eq!(want.cpu.x[6], 300 * 0x2_2222_0000, "the second load reads the second table");
+    for seed in 0..24 {
+        let (got, s) = run_jit(cpu.clone(), &ram, seed);
+        assert_eq!(got, want, "seed {seed}: interpreter and JIT differ ({s:?})");
+        assert!(s.jit_steps > 500 && s.yields > 50, "seed {seed}: not run in regions: {s:?}");
+    }
 }

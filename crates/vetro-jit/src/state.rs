@@ -83,6 +83,13 @@ pub struct JitState {
     /// MRS CNTPCT/CNTVCT exits and the interpreter does it.
     pub time_ok: u32,
     pub _pad2: u32,
+    /// System mode (M4): TTBR0_EL1, TTBR1_EL1 and CONTEXTIDR_EL1 (MRS/MSR at
+    /// EL1; an MSR of a TTBR ends the run with YIELD, the host resyncs the
+    /// regime).
+    pub ttbr0: u64,
+    pub ttbr1: u64,
+    pub contextidr: u64,
+    pub _pad3: u64,
 }
 
 /// Field offsets (bytes from the start of the structure).
@@ -125,8 +132,11 @@ pub mod off {
     pub const TIME_BASE: u32 = 968;
     pub const CNTVOFF: u32 = 976;
     pub const TIME_OK: u32 = 984;
+    pub const TTBR0: u32 = 992;
+    pub const TTBR1: u32 = 1000;
+    pub const CONTEXTIDR: u32 = 1008;
     /// Total size.
-    pub const SIZE: usize = 992;
+    pub const SIZE: usize = 1024;
 }
 
 /// JIT area in system mode, starting at `JitState` (offsets from
@@ -223,6 +233,9 @@ impl JitState {
             spsr_el1: s.spsr_el1,
             esr_el1: s.esr_el1,
             far_el1: s.far_el1,
+            ttbr0: s.ttbr0_el1,
+            ttbr1: s.ttbr1_el1,
+            contextidr: s.contextidr_el1,
             ..Self::from_cpu(cpu)
         }
     }
@@ -238,6 +251,9 @@ impl JitState {
         cpu.sys.daif = self.daif;
         cpu.sys.elr_el1 = self.elr_el1;
         cpu.sys.spsr_el1 = self.spsr_el1;
+        cpu.sys.ttbr0_el1 = self.ttbr0;
+        cpu.sys.ttbr1_el1 = self.ttbr1;
+        cpu.sys.contextidr_el1 = self.contextidr;
         if cpu.sys.el == 1 && cpu.sys.spsel {
             cpu.sys.sp_el[0] = self.sp_el0;
         }
@@ -299,6 +315,10 @@ impl JitState {
         w(976, &self.cntvoff.to_le_bytes());
         w(984, &self.time_ok.to_le_bytes());
         w(988, &[0; 4]);
+        w(992, &self.ttbr0.to_le_bytes());
+        w(1000, &self.ttbr1.to_le_bytes());
+        w(1008, &self.contextidr.to_le_bytes());
+        w(1016, &[0; 8]);
         for (i, r) in self.v.iter().enumerate() {
             w(432 + 16 * i, &r[0].to_le_bytes());
             w(440 + 16 * i, &r[1].to_le_bytes());
@@ -357,6 +377,10 @@ impl JitState {
             cntvoff: q(976),
             time_ok: d(984),
             _pad2: 0,
+            ttbr0: q(992),
+            ttbr1: q(1000),
+            contextidr: q(1008),
+            _pad3: 0,
         }
     }
 }
@@ -474,7 +498,12 @@ mod tests {
         assert_eq!(offset_of!(JitState, time_ok), off::TIME_OK as usize);
         // No implicit padding (`store` copies the bytes of the structure).
         assert_eq!(offset_of!(JitState, fpsr) + 4, off::V as usize);
-        assert_eq!(offset_of!(JitState, _pad2) + 4, off::SIZE);
+        assert_eq!(offset_of!(JitState, ttbr0), off::TTBR0 as usize);
+        assert_eq!(offset_of!(JitState, ttbr1), off::TTBR1 as usize);
+        assert_eq!(offset_of!(JitState, contextidr), off::CONTEXTIDR as usize);
+        assert_eq!(offset_of!(JitState, _pad2) + 4, off::TTBR0 as usize);
+        assert_eq!(offset_of!(JitState, _pad3) + 8, off::SIZE);
+        assert!(off::SIZE <= super::area::JC as usize, "the system area follows JitState");
         assert_eq!(size_of::<JitState>(), off::SIZE);
         assert_eq!(align_of::<JitState>(), 16);
     }
