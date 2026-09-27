@@ -894,6 +894,15 @@ fn rebuild(
     for s in gl.shares.values() {
         for (_, id) in s.textures.pairs() {
             if s.aliases.contains(&id) {
+                // A ColorBuffer's texture (rebuilt above): only the sampling
+                // parameters the guest set through its alias.
+                if let Some(ti) = s.tex_info.get(&id) {
+                    o.op(Code::BindTexture, &[0x0DE1, id]);
+                    for (&p, &(float, v)) in &ti.params {
+                        o.op(if float { Code::TexParameterf } else { Code::TexParameteri }, &[0x0DE1, p, v]);
+                    }
+                    o.op(Code::BindTexture, &[0x0DE1, 0]);
+                }
                 continue;
             }
             create(Kind::Texture, id, 0);

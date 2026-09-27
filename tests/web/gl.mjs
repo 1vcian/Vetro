@@ -111,6 +111,42 @@ run(async () => {
     check(r.bad === 0, `scene differs from the expected image in ${r.bad} bytes (first: ${JSON.stringify(r.first)}); see target/gl/scene.png`);
     console.log('synthetic scene: identical to the expected image (clears, scissor, BGRA buffer as external texture, client-side arrays)');
 
+    // Snapshot with GPU resources: phase A in WebGL gives the read-back
+    // contents, phase B (Rust) saves with them and restores into a new
+    // renderer, which the guest then uses to redraw; replayed on a fresh
+    // WebGL2 context, the window must be the expected one.
+    execFileSync('cargo', ['run', '-q', '-p', 'vetro-gfxstream', '--example', 'snapshot', '--', 'save', out], { cwd: root, stdio: 'inherit' });
+    const outs = await page.eval(`(async () => {
+      const { WebGlExecutor, replayRecording } = await import('/app/gl.mjs');
+      const exec = new WebGlExecutor(new OffscreenCanvas(64, 64), (b) => b.close());
+      const bytes = new Uint8Array(await (await fetch('/data/snap-a.bin')).arrayBuffer());
+      let last = null;
+      replayRecording(exec, bytes, { onBatch: (o) => { last = o.slice(); } });
+      exec.gl.getExtension('WEBGL_lose_context')?.loseContext();
+      return { bytes: Array.from(last ?? []), log: exec.log };
+    })()`);
+    check(outs.log.length === 0, `executor errors in phase A: ${outs.log.join('\n')}`);
+    writeFileSync(join(out, 'snap-outs.bin'), Uint8Array.from(outs.bytes));
+    execFileSync('cargo', ['run', '-q', '-p', 'vetro-gfxstream', '--example', 'snapshot', '--', 'restore', out, join(out, 'snap-outs.bin')], { cwd: root, stdio: 'inherit' });
+    const s = await page.eval(`(async () => {
+      const { WebGlExecutor, replayRecording } = await import('/app/gl.mjs');
+      let frames = 0;
+      const exec = new WebGlExecutor(new OffscreenCanvas(64, 64), (b) => { frames++; b.close(); });
+      const bytes = new Uint8Array(await (await fetch('/data/snap-b.bin')).arrayBuffer());
+      const expected = new Uint8Array(await (await fetch('/data/snap-expected.rgba')).arrayBuffer());
+      let last = null;
+      replayRecording(exec, bytes, { onBatch: (o) => { if (o.length) last = o.slice(); } });
+      let bad = 0, first = null;
+      for (let i = 0; i < expected.length; i++) {
+        if (Math.abs(expected[i] - (last?.[i] ?? -99)) > 2) { bad++; if (first === null) first = { i, want: expected[i], got: last?.[i] }; }
+      }
+      return { bad, first, frames, log: exec.log, got: last ? Array.from(last) : null };
+    })()`);
+    if (s.got) writeFileSync(join(out, 'snap.png'), png(64, 64, Uint8Array.from(s.got)));
+    check(s.log.length === 0, `executor errors after the restore: ${s.log.join('\n')}`);
+    check(s.bad === 0, `after snapshot and restore the redraw differs in ${s.bad} bytes (first: ${JSON.stringify(s.first)}); see target/gl/snap.png`);
+    console.log(`snapshot with GPU resources: ${outs.bytes.length} bytes read back, restored on a fresh WebGL2 context, the guest redraws with its program and textures: identical`);
+
     if (recording) {
       const name = recording.split('/').pop();
       const rr = await page.eval(`(async () => {

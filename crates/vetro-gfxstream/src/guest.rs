@@ -286,3 +286,40 @@ pub fn scene_expected() -> Vec<u8> {
     }
     v
 }
+
+/// After [`scene`] (possibly across a snapshot): the same render thread
+/// clears the window to black and draws the textured quad again with the
+/// program, external texture and vertex array it already had, then reads the
+/// window back. Checks that programs, uniforms, texture aliases and state
+/// survive.
+pub fn scene_redraw(gu: &mut Guest) -> Vec<u8> {
+    let n = SCENE_SIZE;
+    let c = |x: f32| V::S(u64::from(x.to_bits()));
+    let quad: Vec<u8> =
+        [0.0f32, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0].iter().flat_map(|x| x.to_bits().to_le_bytes()).collect();
+    let mut s = Vec::new();
+    s.extend(call(g::glClearColor, &[c(0.0), c(0.0), c(0.0), c(1.0)]));
+    s.extend(call(g::glClear, &[V::S(0x4000)]));
+    s.extend(call(
+        g::glVertexAttribPointerData,
+        &[V::S(0), V::S(2), V::S(0x1406), V::S(0), V::S(8), V::B(&quad), V::S(32)],
+    ));
+    s.extend(call(g::glDrawArrays, &[V::S(5), V::S(0), V::S(4)]));
+    gu.send(1, &s);
+    Renderer3d::flush(&mut gu.gfx, 0, 7, Rect::new(0, 0, n, n));
+    gu.download(7, n, n, 4)
+}
+
+/// The image of [`scene_redraw`]: black, with the quad on the top-right
+/// quadrant.
+pub fn scene_redraw_expected() -> Vec<u8> {
+    let n = SCENE_SIZE;
+    scene_expected()
+        .chunks_exact(4)
+        .enumerate()
+        .flat_map(|(i, p)| {
+            let (x, y) = (i as u32 % n, i as u32 / n);
+            if x >= n / 2 && y >= n / 2 { p.to_vec() } else { vec![0, 0, 0, 255] }
+        })
+        .collect()
+}
