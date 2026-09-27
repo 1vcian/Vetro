@@ -149,11 +149,252 @@ export async function apkInfo(bytes) {
       if (filter.main && filter.launcher && !launcher) launcher = current.startsWith('.') ? pkg + current : current.includes('.') ? current : `${pkg}.${current}`;
     }
   }
+  const sdk = els.find((e) => e.name === 'uses-sdk');
+  const abis = new Set();
+  for (const name of entries.keys()) {
+    const m = /^lib\/([^/]+)\//.exec(name);
+    if (m) abis.add(m[1]);
+  }
   return {
     package: pkg,
     versionName: manifest.attrs.versionName ?? null,
     versionCode: manifest.attrs.versionCode ?? null,
     label: typeof app?.attrs.label === 'string' ? app.attrs.label : null,
     launcher,
+    minSdk: typeof sdk?.attrs.minSdkVersion === 'number' ? sdk.attrs.minSdkVersion : null,
+    targetSdk: typeof sdk?.attrs.targetSdkVersion === 'number' ? sdk.attrs.targetSdkVersion : null,
+    /** Resource id (number) or path (string) of the application icon, or null. */
+    icon: app?.attrs.icon ?? null,
+    /** ABIs with native code (`lib/<abi>/`), sorted; empty for pure Java/Kotlin apps. */
+    abis: [...abis].sort(),
   };
+}
+
+// ---- resources.arsc (M6, app catalog, ADR 0033) ------------------------------------
+
+const RES_STRING_POOL = 0x0001;
+const RES_TABLE = 0x0002;
+const RES_TABLE_PACKAGE = 0x0200;
+const RES_TABLE_TYPE = 0x0201;
+const TYPE_REFERENCE = 0x01;
+const TYPE_STRING = 0x03;
+
+/**
+ * The compiled resource table (`resources.arsc`): { strings, packages }, with
+ * `packages` a Map id -> Map typeId -> [{ density, chunk offset, flags,
+ * entryCount, entriesStart, headerSize }]. Enough to resolve an id to its
+ * values per configuration (the icon, the label).
+ */
+export function parseArsc(bytes) {
+  const v = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (v.getUint16(0, true) !== RES_TABLE) throw new Error('resources.arsc: not a resource table');
+  let strings = [];
+  const packages = new Map();
+  let at = v.getUint16(2, true);
+  while (at + 8 <= bytes.length) {
+    const type = v.getUint16(at, true);
+    const size = v.getUint32(at + 4, true);
+    if (size < 8 || at + size > bytes.length) throw new Error('resources.arsc: damaged chunk');
+    if (type === RES_STRING_POOL) strings = stringPool(bytes, v, at);
+    else if (type === RES_TABLE_PACKAGE) packages.set(v.getUint32(at + 8, true), arscPackage(bytes, v, at, size));
+    at += size;
+  }
+  return { strings, packages, bytes, v };
+}
+
+function arscPackage(bytes, v, start, size) {
+  const types = new Map();
+  let at = start + v.getUint16(start + 2, true);
+  while (at + 8 <= start + size) {
+    const type = v.getUint16(at, true);
+    const csize = v.getUint32(at + 4, true);
+    if (csize < 8 || at + csize > start + size) throw new Error('resources.arsc: damaged package chunk');
+    if (type === RES_TABLE_TYPE) {
+      const id = v.getUint8(at + 8);
+      const config = at + 20;
+      const configSize = v.getUint32(config, true);
+      // ResTable_config: size, imsi (4), locale (4), screenType (orientation,
+      // touchscreen, density u16).
+      const density = configSize >= 16 ? v.getUint16(config + 14, true) : 0;
+      if (!types.has(id)) types.set(id, []);
+      types.get(id).push({ at, flags: v.getUint8(at + 9), entryCount: v.getUint32(at + 12, true), entriesStart: v.getUint32(at + 16, true), headerSize: v.getUint16(at + 2, true), density });
+    }
+    at += csize;
+  }
+  return types;
+}
+
+/** The entry offset of index `e` in a type chunk (dense, sparse or 16-bit offsets), or -1. */
+function entryOffset(v, t, e) {
+  const table = t.at + t.headerSize;
+  if (t.flags & 0x01) {
+    // FLAG_SPARSE: sorted (index u16, offset / 4 u16) pairs.
+    for (let i = 0; i < t.entryCount; i++) {
+      const idx = v.getUint16(table + 4 * i, true);
+      if (idx === e) return v.getUint16(table + 4 * i + 2, true) * 4;
+      if (idx > e) break;
+    }
+    return -1;
+  }
+  if (e >= t.entryCount) return -1;
+  if (t.flags & 0x02) {
+    // FLAG_OFFSET16: offset / 4 as u16, 0xffff = none.
+    const o = v.getUint16(table + 2 * e, true);
+    return o === 0xffff ? -1 : o * 4;
+  }
+  const o = v.getUint32(table + 4 * e, true);
+  return o === 0xffffffff ? -1 : o;
+}
+
+/**
+ * The values of resource `id` in every configuration: [{ density, dataType,
+ * data, string }], `string` for string values (a file path for drawables).
+ * References are followed (at most 8 levels).
+ */
+export function resolveResource(table, id, depth = 0) {
+  const { v } = table;
+  const types = table.packages.get(id >>> 24);
+  const out = [];
+  for (const t of types?.get((id >>> 16) & 0xff) ?? []) {
+    const off = entryOffset(v, t, id & 0xffff);
+    if (off < 0) continue;
+    const e = t.at + t.entriesStart + off;
+    const flags = v.getUint16(e + 2, true);
+    let dataType;
+    let data;
+    if (flags & 0x0008) {
+      // FLAG_COMPACT (Android 14): the type in the flags' high byte, the data after the key.
+      dataType = flags >>> 8;
+      data = v.getUint32(e + 4, true);
+    } else if (flags & 0x0001) continue; // a map (style, array): not a single value
+    else {
+      const value = e + v.getUint16(e, true);
+      dataType = v.getUint8(value + 3);
+      data = v.getUint32(value + 4, true);
+    }
+    if (dataType === TYPE_REFERENCE && depth < 8 && data !== id) {
+      for (const r of resolveResource(table, data, depth + 1)) out.push({ ...r, density: r.density || t.density });
+      continue;
+    }
+    out.push({ density: t.density, dataType, data, string: dataType === TYPE_STRING ? table.strings[data] ?? null : null });
+  }
+  return out;
+}
+
+/** The image type of `b` from its first bytes (PNG, WebP, JPEG), or null. */
+export function rasterType(b) {
+  if (b.length >= 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'image/png';
+  if (b.length >= 12 && String.fromCharCode(...b.subarray(0, 4)) === 'RIFF' && String.fromCharCode(...b.subarray(8, 12)) === 'WEBP') return 'image/webp';
+  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
+  return null;
+}
+
+/** Whether `b` is a binary XML (compiled drawable, adaptive icon). */
+const isAxml = (b) => b.length >= 8 && b[0] === 0x03 && b[1] === 0x00 && b[2] === 0x08 && b[3] === 0x00;
+
+/**
+ * The application icon as an image: { path, bytes, type, density }. The
+ * highest-density PNG/WebP/JPEG among the icon's configurations (recognised
+ * by content: shrunk APKs drop the file extensions); else an adaptive icon
+ * whose foreground is a raster (with a colour or raster background) becomes
+ * an SVG with the layers inside, cropped to the visible 72 of 108 dp and
+ * rounded like a launcher mask; null for vector icons, which would need a
+ * renderer. For the app catalog's tool (tools/catalog).
+ */
+export async function apkIcon(bytes, info = null) {
+  info ??= await apkInfo(bytes);
+  const entries = zipEntries(bytes);
+  let table = null;
+  let paths = [];
+  if (typeof info.icon === 'string') paths = [{ path: info.icon, density: 0 }];
+  else if (typeof info.icon === 'number') {
+    const arsc = entries.get('resources.arsc');
+    if (!arsc) return null;
+    table = parseArsc(await zipRead(bytes, arsc));
+    paths = resolveResource(table, info.icon).filter((r) => r.string).map((r) => ({ path: r.string, density: r.density === 0xffff ? 0 : r.density }));
+  }
+  const best = await densestRaster(bytes, entries, paths);
+  if (best || !table) return best;
+  for (const p of paths) {
+    if (!entries.has(p.path)) continue;
+    const xml = await zipRead(bytes, entries.get(p.path));
+    if (!isAxml(xml)) continue;
+    const svg = await adaptiveSvg(bytes, entries, table, parseAxml(xml));
+    if (svg) return { path: p.path, bytes: new TextEncoder().encode(svg), type: 'image/svg+xml', density: 0 };
+  }
+  return null;
+}
+
+/** The densest PNG/WebP/JPEG among [{ path, density }] present in the ZIP, or null. */
+async function densestRaster(bytes, entries, paths) {
+  // density 0 = default (mdpi-like); 0xfffe = anydpi (vectors: XML, skipped by content).
+  const sorted = paths.filter((p) => entries.has(p.path) && !p.path.toLowerCase().endsWith('.xml')).sort((a, b) => b.density - a.density);
+  for (const p of sorted) {
+    const b = await zipRead(bytes, entries.get(p.path));
+    const type = rasterType(b);
+    if (type) return { path: p.path, bytes: b, type, density: p.density };
+  }
+  return null;
+}
+
+/** Framework colours an adaptive icon background may name (android.R.color). */
+const FRAMEWORK_COLORS = { 0x01060000: '#aaaaaa', 0x0106000b: '#ffffff', 0x0106000c: '#000000', 0x0106000d: '#00000000' };
+
+const TYPE_COLOR_FIRST = 0x1c;
+const TYPE_COLOR_LAST = 0x1f;
+const colorCss = (argb) => `#${((argb >>> 0) & 0xffffff).toString(16).padStart(6, '0')}${(argb >>> 24) === 0xff ? '' : (argb >>> 24).toString(16).padStart(2, '0')}`;
+
+/**
+ * An adaptive icon layer (`drawable` attribute value): { raster } or
+ * { color } or null. Follows references, `inset` wrappers and `shape`/`solid`
+ * colours; a number that is no resource of the APK is a colour literal.
+ */
+async function iconLayer(bytes, entries, table, value, depth = 0) {
+  if (typeof value !== 'number' || depth > 4) return null;
+  if (value >>> 24 === 0x01) return { color: FRAMEWORK_COLORS[value] ?? '#ffffff' };
+  const values = value >>> 24 === 0x7f ? resolveResource(table, value) : [];
+  if (!values.length) return { color: colorCss(value) };
+  const colors = values.filter((r) => r.dataType >= TYPE_COLOR_FIRST && r.dataType <= TYPE_COLOR_LAST);
+  if (colors.length) return { color: colorCss(colors[0].data) };
+  const files = values.filter((r) => r.string).map((r) => ({ path: r.string, density: r.density === 0xffff ? 0 : r.density }));
+  const raster = await densestRaster(bytes, entries, files);
+  if (raster) return { raster };
+  for (const f of files) {
+    if (!entries.has(f.path)) continue;
+    const xml = await zipRead(bytes, entries.get(f.path));
+    if (!isAxml(xml)) continue;
+    const els = parseAxml(xml);
+    const root = els[0];
+    if (root?.name === 'inset' || root?.name === 'bitmap') {
+      const inner = await iconLayer(bytes, entries, table, root.attrs.drawable ?? root.attrs.src, depth + 1);
+      if (inner) return inner;
+    }
+    if (root?.name === 'shape') {
+      const solid = els.find((e) => e.name === 'solid');
+      if (solid && solid.attrs.color !== undefined) return iconLayer(bytes, entries, table, solid.attrs.color, depth + 1);
+    }
+    if (root?.name === 'color' && root.attrs.color !== undefined) return iconLayer(bytes, entries, table, root.attrs.color, depth + 1);
+  }
+  return null;
+}
+
+async function adaptiveSvg(bytes, entries, table, els) {
+  if (els[0]?.name !== 'adaptive-icon') return null;
+  const layer = async (name) => {
+    const e = els.find((x) => x.name === name && x.depth === 1);
+    return e ? iconLayer(bytes, entries, table, e.attrs.drawable) : null;
+  };
+  const fg = await layer('foreground');
+  if (!fg?.raster) return null;
+  const bg = await layer('background');
+  const b64 = (u8) => {
+    let s = '';
+    for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000));
+    return btoa(s);
+  };
+  const img = (r) => `<image href="data:${r.type};base64,${b64(r.bytes)}" width="108" height="108" preserveAspectRatio="none"/>`;
+  const back = bg?.raster ? img(bg.raster) : `<rect width="108" height="108" fill="${bg?.color ?? '#ffffff'}"/>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="18 18 72 72" width="192" height="192">` +
+    `<clipPath id="m"><rect x="18" y="18" width="72" height="72" rx="16"/></clipPath>` +
+    `<g clip-path="url(#m)">${back}${img(fg.raster)}</g></svg>`;
 }

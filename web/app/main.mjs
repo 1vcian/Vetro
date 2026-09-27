@@ -33,6 +33,12 @@
 // `adb shell` line. `window.vetroAndroid` for tests. The first start
 // downloads the prebuilt snapshot at the home screen (ADR 0031) with a
 // progress bar; `&cold=1` (or the "cold boot" box) boots from scratch.
+//
+// App catalog (M6, ADR 0033): in the Android panel, the suggested apps of
+// catalog/v1.json on R2 (`&catalog=URL` to use another one; hidden if it
+// can't be loaded) with Install -> download and SHA-256 check -> adb install
+// (the same path as a drop, without opening) -> Open. `window.vetroCatalog`
+// for tests.
 
 import { absAxis, BUTTONS, evdevCode } from './keymap.mjs';
 import { keyToBytes, Terminal } from './terminal.mjs';
@@ -40,6 +46,8 @@ import { Canvas2DRenderer, WebGpuRenderer } from './display.mjs';
 import { FilePanel } from './files.mjs';
 import { AnalysisPanels } from './analysis.mjs';
 import { ANDROID_MACHINE, DEFAULT_MANIFEST, PHASES } from '../node/android.mjs';
+import { CatalogPanel } from './catalog.mjs';
+import { CATALOG_URL } from '../node/catalog.mjs';
 
 const $ = (id) => document.getElementById(id);
 const form = $('setup');
@@ -357,14 +365,55 @@ const androidState = { phases: [], booted: null, adb: { state: 'none' }, install
 let adbId = 0;
 const adbPending = new Map();
 
-/** An ADB request to the Worker: a Promise of the result. */
-function adbRequest(op, args = {}, transfer = []) {
+/**
+ * An ADB request to the Worker: a Promise of the result. `onProgress(msg)`
+ * receives the request's `adb-progress` messages ({ text, fraction? }).
+ */
+function adbRequest(op, args = {}, transfer = [], onProgress = null) {
   return new Promise((ok, ko) => {
     if (!worker) return ko(new Error('machine off'));
     const id = ++adbId;
-    adbPending.set(id, { ok, ko, op });
+    adbPending.set(id, { ok, ko, op, onProgress });
     worker.postMessage({ type: 'adb', id, op, ...args }, transfer);
   });
+}
+
+// ---- App catalog (ADR 0033) -------------------------------------------------------
+
+const catalog = new CatalogPanel({
+  box: $('catalog-box'),
+  list: $('catalog-list'),
+  advancedBox: $('catalog-advanced'),
+  advancedList: $('catalog-advanced-list'),
+  note: $('catalog-note'),
+}, {
+  // The same Worker path as a dropped APK, without opening it (the card offers Open).
+  install: async (bytes, name, onProgress) => {
+    const buf = bytes.buffer.byteLength === bytes.byteLength ? bytes.buffer : bytes.slice().buffer;
+    const t0 = performance.now();
+    const r = await adbRequest('install', { bytes: buf, name, open: false }, [buf], onProgress);
+    androidState.installs.push({ name, source: 'catalog', ...r, ms: performance.now() - t0 });
+    return r;
+  },
+  open: (pkg, launcher) => adbRequest('open', { package: pkg, launcher }),
+  shell: (cmd) => adbRequest('shell', { cmd }),
+});
+window.vetroCatalog = {
+  state: () => catalog.snapshot(),
+  install: (id) => catalog.install(id),
+  open: (id) => catalog.open(id),
+  refresh: () => catalog.refresh(),
+};
+
+/** The catalog for the running image (its version from the image manifest). */
+async function loadCatalogPanel(manifestUrl, catalogUrl) {
+  let version = null;
+  try {
+    const r = await fetch(manifestUrl);
+    if (r.ok) version = (await r.json()).version ?? null;
+  } catch {}
+  await catalog.load(catalogUrl, version);
+  if (androidState.adb.state === 'ready') await catalog.refresh();
 }
 
 async function installApk(bytes, name = 'app.apk') {
@@ -470,15 +519,21 @@ function onAndroidMessage(msg) {
       setStatus('boot finished: waiting for the home screen ("Phone is starting" comes first)');
       return true;
     case 'adb-status': {
+      const wasReady = androidState.adb.state === 'ready';
       androidState.adb = { state: msg.state, devices: msg.devices, error: msg.error };
+      // Installed apps are read again whenever adb (re)connects (also after a restore).
+      if (msg.state === 'ready' && !wasReady) catalog.refresh();
       const d = msg.devices?.[0];
       $('adb-status').textContent = msg.state === 'ready' ? `connected: ${d?.serial ?? '?'} (${d?.model ?? ''}, ${msg.banner?.props?.['ro.product.name'] ?? ''})`
         : msg.state === 'connecting' ? 'connecting to adbd…' : `waiting for adbd${msg.error ? ` (${msg.error})` : ''}`;
       return true;
     }
-    case 'adb-progress':
-      $('apk-status').textContent = msg.text;
+    case 'adb-progress': {
+      const p = adbPending.get(msg.id);
+      if (p?.onProgress) p.onProgress(msg);
+      else $('apk-status').textContent = msg.text;
       return true;
+    }
     case 'adb-reply': {
       const p = adbPending.get(msg.id);
       adbPending.delete(msg.id);
@@ -564,7 +619,10 @@ async function start() {
   $('android-box').hidden = !android;
   $('screen-demo').hidden = android;
   $('screen-android').hidden = !android;
-  if (android) renderPhases();
+  if (android) {
+    renderPhases();
+    loadCatalogPanel(config.android.manifest, new URL(q.get('catalog') || CATALOG_URL, location.href).href);
+  }
   startedAt = performance.now();
   worker = new Worker(new URL('./worker.mjs', import.meta.url), { type: 'module' });
   worker.onmessage = (e) => {

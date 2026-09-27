@@ -70,7 +70,9 @@
 //   adbd (TCP 5555 in the guest, GuestSocket), keeps the screen on, watches
 //   for the home screen (launcher focused and drawn on the scanout) and
 //   serves the page's requests (`adb`: shell, devices, install of a dropped
-//   APK and opening it); the requests are inputs (recorded in `inputLog`);
+//   APK or of an app from the catalog, with push progress, and `open` of an
+//   installed package, ADR 0033); the requests are inputs (recorded in
+//   `inputLog`);
 // - the snapshot is saved ANDROID_HOME_NS of guest time after the home screen
 //   is drawn, after an APK install and on request; no console idle heuristic
 //   (Android always writes). The snapshot is the unit of persistence: it
@@ -593,7 +595,7 @@ function androidTick() {
 function runAdbOp(msg) {
   const a = android;
   a.busy = true;
-  inputLog.push([Number(m.steps), { type: 'adb', op: msg.op, name: msg.name, cmd: msg.cmd }]);
+  inputLog.push([Number(m.steps), { type: 'adb', op: msg.op, name: msg.name, cmd: msg.cmd, package: msg.package }]);
   const reply = (r) => post({ type: 'adb-reply', id: msg.id, ...r });
   const t0 = performance.now();
   let p;
@@ -608,6 +610,9 @@ function runAdbOp(msg) {
     case 'install':
       p = adbInstall(new Uint8Array(msg.bytes), msg);
       break;
+    case 'open':
+      p = adbOpen(msg.package, msg.launcher ?? null, msg);
+      break;
     default:
       p = Promise.reject(new Error(`unknown adb operation ${msg.op}`));
   }
@@ -615,31 +620,50 @@ function runAdbOp(msg) {
     .finally(() => (a.busy = false));
 }
 
-/** Installs an APK with adb (push + pm install) and opens its main activity. */
+/**
+ * Installs an APK with adb (push + pm install) and opens its main activity
+ * (unless `msg.open === false`, as the app catalog does: it offers Open
+ * after). Progress: `adb-progress` messages with the text and, while the APK
+ * is pushed, `fraction`.
+ */
 async function adbInstall(bytes, msg) {
   const adb = android.adb;
   const info = await apkInfo(bytes);
   m.timelineInput(TIMELINE_INPUT.OTHER, `install ${info.package}`);
-  post({ type: 'adb-progress', id: msg.id, text: `installing ${info.package} (${(bytes.length / 1024).toFixed(0)} KiB)` });
+  const kib = (bytes.length / 1024).toFixed(0);
+  post({ type: 'adb-progress', id: msg.id, text: `installing ${info.package} (${kib} KiB)`, fraction: 0 });
   const t0 = performance.now();
-  const output = await adb.install(bytes, { name: `${info.package}.apk` });
+  const onProgress = (sent, total) => post({ type: 'adb-progress', id: msg.id, text: sent < total ? `sending ${info.package} to the device (${(sent / 1024).toFixed(0)} of ${kib} KiB)` : `pm install ${info.package}`, fraction: sent / total });
+  const output = await adb.install(bytes, { name: `${info.package}.apk`, onProgress });
   const installMs = performance.now() - t0;
-  let component = info.launcher ? `${info.package}/${info.launcher}` : null;
-  if (!component) {
-    const r = await adb.shell(`cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER ${info.package} | tail -n 1`);
-    component = r.stdout.trim().includes('/') ? r.stdout.trim() : null;
-  }
+  let component = null;
   let start = null;
-  if (component && msg.open !== false) {
-    post({ type: 'adb-progress', id: msg.id, text: `opening ${component}` });
-    const r = await adb.shell(`am start -W -n ${component}`);
-    start = `${r.stdout}${r.stderr}`.trim();
-  }
+  if (msg.open !== false) ({ component, start } = await adbOpen(info.package, info.launcher, msg));
+  else if (info.launcher) component = `${info.package}/${info.launcher}`;
   if (store && msg.save !== false) {
     saveRequested = true;
     saveWhy = 'app installed';
   }
   return { info, output, component, start, installMs, openMs: performance.now() - t0 - installMs };
+}
+
+/**
+ * Opens an installed package: its launcher activity (`launcher`, a full
+ * class name, if known, else asked to the package manager) with `am start -W`.
+ */
+async function adbOpen(pkg, launcher, msg) {
+  if (!/^[A-Za-z0-9_.]+$/.test(pkg ?? '')) throw new Error(`not a package name: ${pkg}`);
+  const adb = android.adb;
+  let component = launcher && /^[A-Za-z0-9_.$]+$/.test(launcher) ? `${pkg}/${launcher}` : null;
+  if (!component) {
+    const r = await adb.shell(`cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER ${pkg} | tail -n 1`);
+    component = r.stdout.trim().includes('/') ? r.stdout.trim() : null;
+  }
+  if (!component) throw new Error(`${pkg} has no launcher activity`);
+  m.timelineInput(TIMELINE_INPUT.OTHER, `open ${pkg}`);
+  post({ type: 'adb-progress', id: msg.id, text: `opening ${component}` });
+  const r = await adb.shell(`am start -W -n '${component}'`);
+  return { component, start: `${r.stdout}${r.stderr}`.trim() };
 }
 
 function apply(msg) {

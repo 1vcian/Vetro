@@ -54,7 +54,13 @@
 #      reference; chunked snapshot and restore on a new 3 GiB machine; a tiny
 #      JIT code limit with the same execution;
 #  14. ADB client against a fake adbd (tests/web/adb.mjs): CNXN, AUTH,
-#      shell v2, push, install, devices.
+#      shell v2, push (with progress), install, devices;
+#  15. the app catalog against the fake adbd (tests/web/catalog.mjs, M6,
+#      ADR 0033): catalog over HTTP, verified download, install, installed
+#      packages, tampered APKs rejected before the device;
+#  16. the catalog panel in headless Chrome (tests/web/browser-catalog.mjs):
+#      cards, icon under COEP, Install -> downloading -> installing -> Open,
+#      Retry after a tampered APK, Update, hidden without a catalog.
 #
 #   tools/web-test.sh [--no-jit]
 #
@@ -118,8 +124,14 @@ node tests/web/android-boot.mjs "$@"
 echo "==> ADB client against a fake adbd (M5)"
 node tests/web/adb.mjs
 
+echo "==> app catalog against a fake adbd (M6)"
+node tests/web/catalog.mjs
+
 echo "==> app in headless Chrome"
 node tests/web/browser.mjs
 
 echo "==> inspector, timeline and record & replay in the app in Chrome"
 node tests/web/browser-analysis.mjs
+
+echo "==> app catalog panel in Chrome (M6)"
+node tests/web/browser-catalog.mjs

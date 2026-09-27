@@ -531,8 +531,9 @@ cross-origin`. URL parameters:
 plus `snapshot=0` (no snapshot cache), `persist=0` (non-persistent
 disks), `files=/a,/b` (file manager roots), `nofiles=1`
 (no file manager and no vsock), plus `ram=MiB` and, for Vetro's AOSP
-image, `os=android` and `manifest=URL` (default: the version published on
-R2; `tools/web-serve.mjs` also serves `target/aosp/out` at `/aosp/`).
+image, `os=android`, `manifest=URL` (default: the version published on
+R2; `tools/web-serve.mjs` also serves `target/aosp/out` at `/aosp/`) and
+`catalog=URL` (the app catalog, default catalog/v1.json on R2, ADR 0033).
 
 - `main.mjs` (page thread): chooses kernel, initramfs and disk (URL
   or local file), options (RAM, resolution, tablet or touchscreen, 64 KiB
@@ -618,10 +619,20 @@ R2; `tools/web-serve.mjs` also serves `target/aosp/out` at `/aosp/`).
 - `web/node/adb.mjs`: ADB client over a transport with `send`/`recv`/
   `state` (the `GuestSocket` to port 5555 of the guest): `connect` (CNXN;
   AUTH with an RSA `AdbKey` if the device asks), `open`, `shell` (shell v2
-  with stdout, stderr and exit code), `push` (sync), `install` (push to
+  with stdout, stderr and exit code), `push` (sync; optional
+  `onProgress(sent, total)` every 1 MiB), `install` (push to
   /data/local/tmp + `pm install -r`), `devices`; `pump()` between quanta.
-- `web/node/apk.mjs`: `apkInfo(bytes)` = package, version, label and main
-  activity from the ZIP's binary manifest.
+- `web/node/apk.mjs`: `apkInfo(bytes)` = package, version, label, main
+  activity, SDK levels, icon resource and native ABIs from the ZIP's binary
+  manifest; `parseArsc`/`resolveResource` (resources.arsc) and `apkIcon`
+  (densest raster icon, or an SVG made from an adaptive icon with a raster
+  foreground) for the catalog tool.
+- `web/node/catalog.mjs` (ADR 0033): the app catalog without the DOM:
+  `parseCatalog`/`parseEntry` (catalog/v1.json, format 1), `loadCatalog`,
+  `imageRelease`/`imageSatisfies` (minimum image version by AOSP release),
+  `verifyApk` and `downloadApk` (size and SHA-256, progress), `nextState`
+  (card states absent/downloading/installing/installed/failed),
+  `parsePackages` (`pm list packages --show-versioncode`).
 - `web/node/disk.mjs`: `LayoutSource(url)`, the disk rebuilt from a map
   (`tools/aosp/web-disk.mjs`): extents into the published sparse files
   (`super.img`, `userdata.img`) read with HTTP Range, fills and holes;
@@ -634,14 +645,20 @@ R2; `tools/web-serve.mjs` also serves `target/aosp/out` at `/aosp/`).
   `sys.boot_completed` it connects the ADB client (`adb-status`), keeps the
   screen on, watches for the home screen, and serves the page's `adb`
   requests (`shell`, `devices`, `install` opening the app with
-  `am start -W -n`); the snapshot is saved 5 s of guest time after the home
+  `am start -W -n` unless `open: false`, with `adb-progress` messages carrying
+  `fraction` during the push, `open` of an installed package by its launcher
+  activity); the snapshot is saved 5 s of guest time after the home
   screen is drawn, after an install and on request; no separate overlay (the
   snapshot already contains the copy-on-write layer). Snapshots are written
   to and read from OPFS in chunks.
 - Page: "System" selector, a panel with the phases and their times, adb
   status, APK dropped on the panel or on the screen (or chosen), an
   `adb shell` line; `window.vetroAndroid` (`state`, `install`, `shell`,
-  `devices`) for tests.
+  `devices`) for tests. The app catalog panel (`web/app/catalog.mjs`,
+  ADR 0033): cards from catalog/v1.json on R2 (`&catalog=URL` for another),
+  Install -> verified download -> the same `install` request (`open: false`)
+  -> Open; hidden if the catalog can't be loaded; `window.vetroCatalog`
+  (`state`, `install`, `open`, `refresh`) for tests.
 - Shared with the tools (`web/node/android.mjs`): `ANDROID_MACHINE` (2048 MiB,
   1280x800, touchscreen, network, vsock), `ANDROID_DISK`, `machineDevices`,
   `ANDROID_WAKE`, `ANDROID_COMPACT`, the home screen timings,
@@ -751,9 +768,13 @@ R2; `tools/web-serve.mjs` also serves `target/aosp/out` at `/aosp/`).
   the whole one; chunked restore on a new 3 GiB machine (region reused) with
   the same continuation; a tiny JIT code limit (260 resets) with the same
   execution;
-- `tests/web/adb.mjs`: the ADB client against a fake adbd (one WRTE in
-  flight per stream, sync, shell v2 and raw, AUTH with a signature and with
-  the public key); `tests/web/adb-tcp.mjs HOST:PORT [APK]` against a real
+- `tests/web/adb.mjs`: the ADB client against a fake adbd
+  (`tests/web/fake-adbd.mjs`: one WRTE in flight per stream, sync, shell v2
+  and raw, AUTH with a signature and with the public key, push progress);
+  `tests/web/catalog.mjs`: the app catalog over HTTP against the same fake
+  adbd (verified download, install, installed packages, tampered APKs never
+  pushed); `tests/web/browser-catalog.mjs`: the catalog panel in Chrome with
+  fake adb requests; `tests/web/adb-tcp.mjs HOST:PORT [APK]` against a real
   adbd (manual test);
 - long, only with `VETRO_ANDROID=1`: `tests/web/android.mjs` (Android in
   Node from a cold boot or a snapshot, phases, memory, snapshot, adb over
@@ -762,7 +783,10 @@ R2; `tools/web-serve.mjs` also serves `target/aosp/out` at `/aosp/`).
   screen, snapshot, second start from the snapshot measured, APK installed
   from the page, a click on the canvas; with `VETRO_ANDROID_PREBUILT=1` the
   first start downloads and restores the prebuilt snapshot instead, ADR 0031;
-  measurements in `target/aosp/chrome-measurements.json`). In CI: the
+  measurements in `target/aosp/chrome-measurements.json`) and
+  `tests/web/android-catalog.mjs` (a catalog app installed on the prebuilt
+  snapshot through the card, opened, found installed again after a restore
+  from OPFS; `target/aosp/catalog-measurements.json`). In CI: the
   prebuilt form every night, the cold boot weekly
   (`.github/workflows/nightly.yml`);
 - `tests/web/unit.mjs` also covers the prebuilt snapshot download (lookup,

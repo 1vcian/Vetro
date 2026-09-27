@@ -164,3 +164,50 @@ export function compareNative(name, steps, rawLog) {
   check(nLog === rawLog, `${name}: log differs from the native one (target/web-test/native-${name}.log)`);
   console.log(`${name}: equal to native (${steps} instructions, log byte for byte)`);
 }
+
+/** A minimal ZIP: [name, data, method, uncompressed length]. */
+export function makeZip(files) {
+  const parts = [];
+  const central = [];
+  let at = 0;
+  const enc = new TextEncoder();
+  for (const [name, data, method, size = data.length] of files) {
+    const n = enc.encode(name);
+    const h = new Uint8Array(30 + n.length);
+    const v = new DataView(h.buffer);
+    v.setUint32(0, 0x04034b50, true);
+    v.setUint16(8, method, true);
+    v.setUint32(18, data.length, true);
+    v.setUint32(22, size, true);
+    v.setUint16(26, n.length, true);
+    h.set(n, 30);
+    const c = new Uint8Array(46 + n.length);
+    const cv = new DataView(c.buffer);
+    cv.setUint32(0, 0x02014b50, true);
+    cv.setUint16(10, method, true);
+    cv.setUint32(20, data.length, true);
+    cv.setUint32(24, size, true);
+    cv.setUint16(28, n.length, true);
+    cv.setUint32(42, at, true);
+    c.set(n, 46);
+    parts.push(h, data);
+    central.push(c);
+    at += h.length + data.length;
+  }
+  const cdSize = central.reduce((s, c) => s + c.length, 0);
+  const e = new Uint8Array(22);
+  const ev = new DataView(e.buffer);
+  ev.setUint32(0, 0x06054b50, true);
+  ev.setUint16(8, files.length, true);
+  ev.setUint16(10, files.length, true);
+  ev.setUint32(12, cdSize, true);
+  ev.setUint32(16, at, true);
+  const all = [...parts, ...central, e];
+  const out = new Uint8Array(all.reduce((s, x) => s + x.length, 0));
+  let o = 0;
+  for (const x of all) {
+    out.set(x, o);
+    o += x.length;
+  }
+  return out;
+}

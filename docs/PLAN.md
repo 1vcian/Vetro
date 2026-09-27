@@ -173,6 +173,16 @@ in-page ADB client (the same path as drag and drop), with a progress bar.
   heavy ones). The table above lists the catalog's first entries.
 - Plans: Free gets the basic catalog; Pro gets curated analysis sets.
 
+**Done (2026-09-27, ADR 0033):** the Apps panel in the Android mode and
+`tools/catalog/add.mjs` (fetch from the official origin, verify, read
+package/version/icon, upload to R2, update `catalog/v1.json`). First
+entries on R2: Jenny 0.11.0 (AGPL-3.0-only, unmodified release, source tag
+linked; its trademark policy allows the name for unmodified builds, never
+implying endorsement), Flowit 4.3 (GPL-3.0-only) and Minesweeper 1.2.3
+(Privacy Friendly, GPL-3.0-or-later) from F-Droid with the exact source
+tarball linked, and Chromium 155.0.8059.0 (BSD-3-Clause, snapshot 1697569
+at the 155 stable branch point, 364 MiB, "advanced").
+
 ## Product track: open core, server and plans (decided 2026-09-26)
 
 The owner's direction: this repository becomes **private** (the full

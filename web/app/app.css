@@ -257,6 +257,82 @@ main {
   outline: 2px dashed var(--accent);
 }
 
+/* App catalog (M6, ADR 0033) */
+.app-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.app-card {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px;
+}
+
+.app-card[data-state="failed"] {
+  border-color: #ff7b72;
+}
+
+.app-icon {
+  flex: 0 0 48px;
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+  object-fit: contain;
+}
+
+.app-icon.missing {
+  visibility: hidden;
+}
+
+.app-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.app-desc,
+.app-meta {
+  margin: 2px 0;
+}
+
+.app-badge {
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.app-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.app-progress {
+  flex: 1 1 120px;
+  height: 0.8rem;
+}
+
+.app-status {
+  overflow-wrap: anywhere;
+}
+
+#catalog-advanced summary {
+  cursor: pointer;
+  margin: 4px 0;
+}
+
 #adb-shell {
   display: flex;
   gap: 6px;

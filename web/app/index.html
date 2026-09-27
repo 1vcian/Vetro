@@ -115,6 +115,15 @@
         it is installed with adb and opened.
       </div>
       <p id="apk-status" class="dim"></p>
+      <div id="catalog-box" hidden>
+        <h3>Apps</h3>
+        <ul id="catalog-list" class="app-list"></ul>
+        <details id="catalog-advanced" hidden>
+          <summary>Advanced apps (large downloads, heavy in the emulator)</summary>
+          <ul id="catalog-advanced-list" class="app-list"></ul>
+        </details>
+        <p id="catalog-note" class="dim"></p>
+      </div>
       <form id="adb-shell">
         <input id="adb-cmd" placeholder="adb shell command, e.g. getprop ro.build.version.release" spellcheck="false">
         <button type="submit">Run</button>

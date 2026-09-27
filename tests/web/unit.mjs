@@ -8,7 +8,9 @@
 // non-UTF-8 names and SQL arguments of vetro.mjs (ADR 0021),
 // formats of the analysis panels (web/app/analysis.mjs, M7/M10), the disk
 // rebuilt from a map, Android boot phases and APK manifests
-// (web/node/disk.mjs, android.mjs, apk.mjs, M5/M6).
+// (web/node/disk.mjs, android.mjs, apk.mjs, M5/M6), the resource table and
+// icon of an APK, the app catalog's parsing, minimum image version, SHA-256
+// check, download and install states (web/node/catalog.mjs, ADR 0033).
 //
 //   node tests/web/unit.mjs
 
@@ -17,7 +19,10 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { BlobSource, composePlan, composeRead, DiskFeeder, LayoutSource, MemoryCache, parseLayout, RangeSource } from '../../web/node/disk.mjs';
 import { BootProgress, gridColors, isHome, PHASES } from '../../web/node/android.mjs';
-import { apkInfo, parseAxml, zipEntries } from '../../web/node/apk.mjs';
+import { apkIcon, apkInfo, parseArsc, parseAxml, resolveResource, zipEntries } from '../../web/node/apk.mjs';
+import {
+  CATALOG_FORMAT, downloadApk, imageRelease, imageSatisfies, initialState, nextState, parseCatalog, parseEntry, parsePackages, sizeText, STATES, verifyApk,
+} from '../../web/node/catalog.mjs';
 import { parseRange, serve } from '../../tools/web-serve.mjs';
 import { absAxis, BUTTONS, evdevCode } from '../../web/app/keymap.mjs';
 import { keyToBytes, Terminal } from '../../web/app/terminal.mjs';
@@ -29,7 +34,7 @@ import {
 } from '../../web/app/files.mjs';
 import { encodeSqlArgs, pathBytes, pathString, sqlValue } from '../../web/node/vetro.mjs';
 import { bodyCell, duration, fromB64, guestTime, hexdump, typeText } from '../../web/app/analysis.mjs';
-import { check, root, run } from './lib.mjs';
+import { check, makeZip, root, run } from './lib.mjs';
 import { downloadPrebuilt, findPrebuilt, PREBUILT_CHUNK, PREBUILT_FORMAT, prebuiltInfoUrl, prebuiltProblem, prebuiltSnapUrl } from '../../web/node/prebuilt.mjs';
 
 const eq = (a, b, what) => check(JSON.stringify(a) === JSON.stringify(b), `${what}: ${JSON.stringify(a)} instead of ${JSON.stringify(b)}`);
@@ -550,7 +555,9 @@ test('APK: ZIP and binary manifest (testdata/tocco-manifest.axml)', async () => 
   const deflated = new Uint8Array(await new Response(new Blob([axml]).stream().pipeThrough(new CompressionStream('deflate-raw'))).arrayBuffer());
   const zip = makeZip([['classes.dex', new TextEncoder().encode('dex\n035'), 0], ['AndroidManifest.xml', deflated, 8, axml.length]]);
   eq([...zipEntries(zip).keys()], ['classes.dex', 'AndroidManifest.xml'], 'ZIP files');
-  eq(await apkInfo(zip), { package: 'it.vetro.tocco', versionName: '1.0', versionCode: 1, label: 'Tocco', launcher: 'it.vetro.tocco.Main' }, 'information');
+  eq(await apkInfo(zip), { package: 'it.vetro.tocco', versionName: '1.0', versionCode: 1, label: 'Tocco', launcher: 'it.vetro.tocco.Main', minSdk: 21, targetSdk: 35, icon: null, abis: [] }, 'information');
+  const withLib = makeZip([['AndroidManifest.xml', axml, 0], ['lib/arm64-v8a/libx.so', new Uint8Array(4), 0], ['lib/armeabi-v7a/libx.so', new Uint8Array(4), 0]]);
+  eq((await apkInfo(withLib)).abis, ['arm64-v8a', 'armeabi-v7a'], 'native code ABIs');
   let threw = false;
   try {
     await apkInfo(new Uint8Array(100));
@@ -558,6 +565,346 @@ test('APK: ZIP and binary manifest (testdata/tocco-manifest.axml)', async () => 
     threw = true;
   }
   check(threw, 'not a ZIP: rejected');
+});
+
+/**
+ * A synthetic resources.arsc: package 0x7f with type 1 (four configurations:
+ * dense, 16-bit offsets, sparse, and one without the entry) and type 2 whose
+ * entry 0 is a reference to 0x7f010000 and entry 1 a compact entry.
+ */
+const u8 = (n) => new Uint8Array(n);
+const joinBytes = (parts) => {
+  const out = u8(parts.reduce((a, p) => a + p.length, 0));
+  let o = 0;
+  for (const p of parts) {
+    out.set(p, o);
+    o += p.length;
+  }
+  return out;
+};
+
+/** A UTF-8 string pool chunk (resources.arsc and binary XML). */
+function stringPoolChunk(strings) {
+  const enc = new TextEncoder();
+  const data = [];
+  const offsets = [];
+  let at = 0;
+  for (const str of strings) {
+    const b = enc.encode(str);
+    const e = joinBytes([new Uint8Array([str.length, b.length]), b, u8(1)]);
+    offsets.push(at);
+    data.push(e);
+    at += e.length;
+  }
+  let body = joinBytes(data);
+  if (body.length % 4) body = joinBytes([body, u8(4 - (body.length % 4))]);
+  const pool = u8(28 + 4 * strings.length + body.length);
+  const pv = new DataView(pool.buffer);
+  pv.setUint16(0, 0x0001, true);
+  pv.setUint16(2, 28, true);
+  pv.setUint32(4, pool.length, true);
+  pv.setUint32(8, strings.length, true);
+  pv.setUint32(16, 0x100, true);
+  pv.setUint32(20, 28 + 4 * strings.length, true);
+  offsets.forEach((o, i) => pv.setUint32(28 + 4 * i, o, true));
+  pool.set(body, 28 + 4 * strings.length);
+  return pool;
+}
+
+/**
+ * A binary XML (AXML): `tree` is [name, { attr: [dataType, data] }, children].
+ * Attribute values are typed (no raw strings), like compiled resources.
+ */
+function makeAxml(tree) {
+  const strings = [];
+  const str = (x) => (strings.includes(x) ? strings.indexOf(x) : strings.push(x) - 1);
+  const chunks = [];
+  const walk = ([name, attrs, children = []]) => {
+    const list = Object.entries(attrs);
+    const c = u8(36 + 20 * list.length);
+    const v = new DataView(c.buffer);
+    v.setUint16(0, 0x0102, true);
+    v.setUint16(2, 16, true);
+    v.setUint32(4, c.length, true);
+    v.setUint32(12, 0xffffffff, true);
+    v.setUint32(16, 0xffffffff, true);
+    v.setUint32(20, str(name), true);
+    v.setUint16(24, 20, true);
+    v.setUint16(26, 20, true);
+    v.setUint16(28, list.length, true);
+    list.forEach(([k, [type, data]], i) => {
+      const a = 36 + 20 * i;
+      v.setUint32(a, 0xffffffff, true);
+      v.setUint32(a + 4, str(k), true);
+      v.setUint32(a + 8, 0xffffffff, true);
+      v.setUint16(a + 12, 8, true);
+      v.setUint8(a + 15, type);
+      v.setUint32(a + 16, data >>> 0, true);
+    });
+    chunks.push(c);
+    for (const ch of children) walk(ch);
+    const e = u8(24);
+    const ev = new DataView(e.buffer);
+    ev.setUint16(0, 0x0103, true);
+    ev.setUint16(2, 16, true);
+    ev.setUint32(4, 24, true);
+    ev.setUint32(16, 0xffffffff, true);
+    ev.setUint32(20, str(name), true);
+    chunks.push(e);
+  };
+  walk(tree);
+  const body = joinBytes([stringPoolChunk(strings), ...chunks]);
+  const head = u8(8);
+  const hv = new DataView(head.buffer);
+  hv.setUint16(0, 0x0003, true);
+  hv.setUint16(2, 8, true);
+  hv.setUint32(4, 8 + body.length, true);
+  return joinBytes([head, body]);
+}
+
+function makeArsc() {
+  const strings = ['res/mdpi.png', 'res/xxxhdpi.webp', 'res/anydpi.xml', 'res/hdpi.png', 'res/compact.png'];
+  const join = joinBytes;
+  const pool = stringPoolChunk(strings);
+  // A type chunk: entries [dataType, data] or ['compact', dataType, data] (null = no entry).
+  const typeChunk = (id, density, entries, flags = 0) => {
+    const HS = 20 + 64;
+    const count = entries.length;
+    const present = entries.map((e, i) => [i, e]).filter(([, e]) => e);
+    const table = flags & 1 ? 4 * present.length : flags & 2 ? 2 * count : 4 * count;
+    const start = HS + ((table + 3) & ~3);
+    const size = start + 16 * present.length;
+    const b = u8(size);
+    const v = new DataView(b.buffer);
+    v.setUint16(0, 0x0201, true);
+    v.setUint16(2, HS, true);
+    v.setUint32(4, size, true);
+    v.setUint8(8, id);
+    v.setUint8(9, flags);
+    v.setUint32(12, flags & 1 ? present.length : count, true);
+    v.setUint32(16, start, true);
+    v.setUint32(20, 64, true);
+    v.setUint16(20 + 14, density, true);
+    let k = 0;
+    entries.forEach((e, i) => {
+      const off = e ? 16 * present.findIndex(([j]) => j === i) : -1;
+      if (flags & 1) {
+        if (e) {
+          v.setUint16(HS + 4 * k, i, true);
+          v.setUint16(HS + 4 * k + 2, off / 4, true);
+          k++;
+        }
+      } else if (flags & 2) v.setUint16(HS + 2 * i, e ? off / 4 : 0xffff, true);
+      else v.setUint32(HS + 4 * i, e ? off : 0xffffffff, true);
+      if (!e) return;
+      const p = start + off;
+      if (e[0] === 'compact') {
+        v.setUint16(p, 0, true);
+        v.setUint16(p + 2, 0x0008 | (e[1] << 8), true);
+        v.setUint32(p + 4, e[2], true);
+      } else {
+        v.setUint16(p, 8, true);
+        v.setUint16(p + 8, 8, true);
+        v.setUint8(p + 11, e[0]);
+        v.setUint32(p + 12, e[1], true);
+      }
+    });
+    return b;
+  };
+  const types = join([
+    typeChunk(1, 160, [[3, 0], [3, 2]]),
+    typeChunk(1, 640, [[3, 1], null], 2),
+    typeChunk(1, 240, [null, [3, 3]], 1),
+    typeChunk(1, 0xfffe, [[3, 2]]),
+    typeChunk(2, 0, [[1, 0x7f010000], ['compact', 3, 4]]),
+  ]);
+  const pkg = u8(288 + types.length);
+  const kv = new DataView(pkg.buffer);
+  kv.setUint16(0, 0x0200, true);
+  kv.setUint16(2, 288, true);
+  kv.setUint32(4, pkg.length, true);
+  kv.setUint32(8, 0x7f, true);
+  pkg.set(types, 288);
+  const all = u8(12 + pool.length + pkg.length);
+  const av = new DataView(all.buffer);
+  av.setUint16(0, 0x0002, true);
+  av.setUint16(2, 12, true);
+  av.setUint32(4, all.length, true);
+  av.setUint32(8, 1, true);
+  all.set(pool, 12);
+  all.set(pkg, 12 + pool.length);
+  return all;
+}
+
+test('APK: resources.arsc and the icon (catalog tool, ADR 0033)', async () => {
+  const arsc = makeArsc();
+  const table = parseArsc(arsc);
+  eq(table.strings.length, 5, 'global strings');
+  const icon = resolveResource(table, 0x7f010000).map((r) => [r.density, r.string]);
+  eq(icon, [[160, 'res/mdpi.png'], [640, 'res/xxxhdpi.webp'], [0xfffe, 'res/anydpi.xml']], 'id 0x7f010000: dense, 16-bit offsets, anydpi');
+  eq(resolveResource(table, 0x7f010001).map((r) => [r.density, r.string]), [[160, 'res/anydpi.xml'], [240, 'res/hdpi.png']], 'id 0x7f010001: missing in one config, sparse in another');
+  eq(resolveResource(table, 0x7f020000).map((r) => r.string), ['res/mdpi.png', 'res/xxxhdpi.webp', 'res/anydpi.xml'], 'a reference is followed');
+  eq(resolveResource(table, 0x7f020001).map((r) => r.string), ['res/compact.png'], 'compact entry (Android 14)');
+  eq(resolveResource(table, 0x7f030000), [], 'unknown type');
+  // The icon: the densest raster present in the ZIP, never the XML.
+  // Recognised by content, not by name (shrunk APKs have no extensions).
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const webp = new TextEncoder().encode('RIFF\x04\x00\x00\x00WEBP');
+  const zip = makeZip([['resources.arsc', arsc, 0], ['res/mdpi.png', png, 0], ['res/xxxhdpi.webp', webp, 0], ['res/anydpi.xml', new Uint8Array(2), 0]]);
+  const got = await apkIcon(zip, { icon: 0x7f010000 });
+  eq([got.path, got.type, got.density, [...got.bytes]], ['res/xxxhdpi.webp', 'image/webp', 640, [...webp]], 'icon: highest density raster');
+  const notImage = makeZip([['resources.arsc', arsc, 0], ['res/mdpi.png', png, 0], ['res/xxxhdpi.webp', new Uint8Array(12), 0]]);
+  eq((await apkIcon(notImage, { icon: 0x7f010000 })).path, 'res/mdpi.png', 'icon: a file that is no image is skipped');
+  const onlyMdpi = makeZip([['resources.arsc', arsc, 0], ['res/mdpi.png', png, 0]]);
+  eq((await apkIcon(onlyMdpi, { icon: 0x7f010000 })).path, 'res/mdpi.png', 'icon: files missing from the ZIP are skipped');
+  eq(await apkIcon(makeZip([['resources.arsc', arsc, 0]]), { icon: 0x7f010000 }), null, 'icon: no raster, null');
+  eq(await apkIcon(zip, { icon: null }), null, 'icon: none in the manifest');
+  // Adaptive icon (id 0x7f010001 = res/anydpi.xml, its raster res/hdpi.png
+  // absent): a colour background and a raster foreground (0x7f010000) become an SVG.
+  const adaptive = (bg) => makeAxml(['adaptive-icon', {}, [['background', { drawable: bg }], ['foreground', { drawable: [0x01, 0x7f010000] }]]]);
+  eq(parseAxml(adaptive([0x1c, 0xff112233]))[2].attrs.drawable, 0x7f010000, 'binary XML builder');
+  const zipA = (xml) => makeZip([['resources.arsc', arsc, 0], ['res/anydpi.xml', xml, 0], ['res/xxxhdpi.webp', webp, 0]]);
+  const svg = await apkIcon(zipA(adaptive([0x1c, 0xff112233])), { icon: 0x7f010001 });
+  const text = new TextDecoder().decode(svg.bytes);
+  eq([svg.type, svg.path], ['image/svg+xml', 'res/anydpi.xml'], 'adaptive icon: an SVG');
+  check(text.includes('fill="#112233"') && text.includes(`data:image/webp;base64,${btoa(String.fromCharCode(...webp))}`) && text.includes('viewBox="18 18 72 72"'), `adaptive icon SVG: ${text}`);
+  // A foreground that is itself XML without a raster (a vector): no icon.
+  const vector = makeAxml(['adaptive-icon', {}, [['foreground', { drawable: [0x01, 0x7f010001] }]]]);
+  eq(await apkIcon(zipA(vector), { icon: 0x7f010001 }), null, 'adaptive icon with a vector foreground: null');
+  const white = new TextDecoder().decode((await apkIcon(zipA(adaptive([0x01, 0x0106000b])), { icon: 0x7f010001 })).bytes);
+  check(white.includes('fill="#ffffff"'), 'adaptive icon: a framework colour (android:color/white) as background');
+});
+
+/** A valid catalog entry (the fields of catalog/v1.json). */
+const catalogEntry = (over = {}) => ({
+  id: 'flowit', name: 'Flowit', package: 'com.bytehamster.flowitgame', version: '4.3', versionCode: 403, apk: 'apks/flowit/flowit-403.apk',
+  size: 3135618, sha256: 'a'.repeat(64), license: 'GPL-3.0-only', source: 'https://f-droid.org/packages/com.bytehamster.flowitgame/',
+  icon: 'icons/flowit-403.png', description: 'Block puzzle', minImage: 'android-15.0.0_r36', advanced: false, ...over,
+});
+
+test('catalog: parsing and validation (ADR 0033)', () => {
+  const base = 'https://r2.example/catalog/v1.json';
+  const e = parseEntry(catalogEntry(), base);
+  eq([e.apk, e.icon, e.origin, e.advanced], ['https://r2.example/catalog/apks/flowit/flowit-403.apk', 'https://r2.example/catalog/icons/flowit-403.png', null, false], 'URLs resolved against the catalog');
+  const bad = [
+    [{ id: 'Flowit' }, 'id'], [{ package: 'flowit' }, 'package'], [{ size: 0 }, 'size'], [{ size: 1.5 }, 'size'], [{ sha256: 'xyz' }, 'sha256'],
+    [{ license: 'GPL 3' }, 'license'], [{ source: 'http://x.example/' }, 'source'], [{ apk: 'ftp://x/a.apk' }, 'apk'], [{ minImage: '15' }, 'minImage'],
+    [{ advanced: 'yes' }, 'advanced'], [{ name: '' }, 'name'], [{ description: undefined }, 'description'], [{ versionCode: '403' }, 'versionCode'],
+  ];
+  for (const [over, field] of bad) {
+    let msg = null;
+    try {
+      parseEntry(catalogEntry(over), base);
+    } catch (err) {
+      msg = err.message;
+    }
+    check(msg?.includes(field), `bad ${field} not rejected (${msg})`);
+  }
+  eq(parseEntry(catalogEntry({ license: 'MIT OR Apache-2.0', icon: null, minImage: null, sha256: 'A'.repeat(64) }), base).sha256, 'a'.repeat(64), 'SPDX expression, no icon, sha256 lowercased');
+  const apps = [catalogEntry(), catalogEntry({ id: 'x', sha256: '1' }), catalogEntry({ id: 'dup' }), catalogEntry({ id: 'two', package: 'org.example.two', advanced: true }), 7];
+  const c = parseCatalog(JSON.stringify({ format: CATALOG_FORMAT, updated: '2026-09-27', apps, extra: 1 }), base);
+  eq(c.apps.map((a) => a.id), ['flowit', 'two'], 'valid entries kept in order');
+  eq(c.problems.length, 3, 'bad, duplicate and non-object entries named');
+  for (const [json, what] of [[{ format: 2, apps: [] }, 'format'], [{ format: 1 }, 'app list'], ['null', 'not an object']]) {
+    let threw = false;
+    try {
+      parseCatalog(typeof json === 'string' ? json : JSON.stringify(json), base);
+    } catch {
+      threw = true;
+    }
+    check(threw, `catalog without ${what} accepted`);
+  }
+});
+
+test('catalog: minimum image version', () => {
+  eq(imageRelease('android-15.0.0_r36-BP1A.250505.005.D1-bd09e2f'), [15, 0, 0, 36], 'release of an image version');
+  eq(imageRelease('android-15.0.0_r36'), [15, 0, 0, 36], 'bare release');
+  eq(imageRelease('local-build'), null, 'not a release');
+  const img = 'android-15.0.0_r36-BP1A.250505.005.D1-bd09e2f';
+  const mins = [null, 'android-15.0.0_r36', 'android-15.0.0_r35', 'android-14.0.0_r50', 'android-15.0.0_r37', 'android-15.1.0_r1', 'android-16.0.0_r1'];
+  eq(mins.map((m) => imageSatisfies(m, img)), [true, true, true, true, false, false, false], 'comparison by release');
+  eq([imageSatisfies('android-16.0.0_r1', null), imageSatisfies('android-16.0.0_r1', 'my-image')], [true, true], 'unknown image version: pm decides');
+});
+
+test('catalog: SHA-256 check and verified download', async () => {
+  const apk = new TextEncoder().encode('PK\x03\x04 not really an APK, but bytes');
+  const entry = { id: 't', apk: 'https://r2.example/t.apk', size: apk.length, sha256: createHash('sha256').update(apk).digest('hex') };
+  await verifyApk(apk, entry);
+  const fails = async (p, what, text) => {
+    let msg = null;
+    try {
+      await p;
+    } catch (err) {
+      msg = err.message;
+    }
+    check(msg?.includes(text), `${what}: ${msg}`);
+  };
+  const other = apk.slice();
+  other[5] ^= 1;
+  await fails(verifyApk(other, entry), 'one byte changed', 'SHA-256');
+  await fails(verifyApk(apk.subarray(1), entry), 'shorter', 'bytes instead of');
+  // A fake fetch with a body in pieces.
+  const fakeFetch = (body, status = 200) => async () => new Response(new ReadableStream({
+    start(ctl) {
+      for (let at = 0; at < body.length; at += 7) ctl.enqueue(body.slice(at, at + 7));
+      ctl.close();
+    },
+  }), { status });
+  const seen = [];
+  const got = await downloadApk(entry, { fetch: fakeFetch(apk), onProgress: (p) => seen.push(p.loaded) });
+  eq([...got], [...apk], 'downloaded bytes');
+  check(seen[0] === 0 && seen.at(-1) === apk.length && seen.every((x, i) => i === 0 || x > seen[i - 1]), `progress: ${seen}`);
+  await fails(downloadApk(entry, { fetch: fakeFetch(other) }), 'tampered download', 'SHA-256');
+  await fails(downloadApk(entry, { fetch: fakeFetch(new Uint8Array(apk.length + 10)) }), 'longer download', 'longer');
+  await fails(downloadApk(entry, { fetch: fakeFetch(apk.subarray(3)) }), 'truncated download', 'bytes instead of');
+  await fails(downloadApk(entry, { fetch: fakeFetch(apk, 404) }), 'status 404', 'status 404');
+});
+
+test('catalog: install states and installed packages', () => {
+  eq(STATES, ['absent', 'downloading', 'installing', 'installed', 'failed'], 'states');
+  const e = { id: 'flowit', package: 'com.bytehamster.flowitgame', size: 1000, versionCode: 403 };
+  let st = initialState();
+  const step = (ev) => (st = nextState(st, ev, e));
+  const same = (ev, what) => {
+    const before = st;
+    check(nextState(st, ev, e) === before, `${what}: state changed`);
+  };
+  same({ type: 'progress', loaded: 5 }, 'progress while absent');
+  same({ type: 'installed' }, 'installed while absent');
+  same({ type: 'failed', error: 'x' }, 'failure while absent');
+  step({ type: 'download', total: 1000 });
+  eq([st.phase, st.fraction], ['downloading', 0], 'download started');
+  same({ type: 'download' }, 'second download while downloading');
+  same({ type: 'packages', packages: new Map() }, 'package list while busy');
+  step({ type: 'progress', loaded: 250 });
+  eq([st.loaded, st.fraction], [250, 0.25], 'progress');
+  step({ type: 'downloaded' });
+  eq([st.phase, st.fraction], ['installing', null], 'verified: installing');
+  step({ type: 'pushing', fraction: 0.5 });
+  eq(st.fraction, 0.5, 'push progress');
+  step({ type: 'installed', versionCode: 403 });
+  eq([st.phase, st.installedCode], ['installed', 403], 'installed');
+  step({ type: 'packages', packages: new Map() });
+  eq(st.phase, 'absent', 'removed from the device: absent again');
+  step({ type: 'download' });
+  step({ type: 'failed', error: 'SHA-256 differs' });
+  eq([st.phase, st.error], ['failed', 'SHA-256 differs'], 'failure while downloading');
+  step({ type: 'packages', packages: new Map() });
+  eq(st.phase, 'failed', 'a failure stays until retried');
+  step({ type: 'download' });
+  eq([st.phase, st.error], ['downloading', null], 'retry from failed');
+  step({ type: 'downloaded' });
+  step({ type: 'failed', error: 'INSTALL_FAILED' });
+  eq(st.phase, 'failed', 'failure while installing');
+  const pk = parsePackages('package:com.android.settings versionCode:35\npackage:com.bytehamster.flowitgame versionCode:402\r\npackage:org.old\nnoise\n');
+  eq([...pk], [['com.android.settings', 35], ['com.bytehamster.flowitgame', 402], ['org.old', null]], 'pm list packages');
+  st = nextState(initialState(), { type: 'packages', packages: pk }, e);
+  eq([st.phase, st.outdated, st.installedCode], ['absent', true, 402], 'older version installed: Update');
+  st = nextState(initialState(), { type: 'packages', packages: new Map([[e.package, 403]]) }, e);
+  eq(st.phase, 'installed', 'same version installed');
+  st = nextState(initialState(), { type: 'packages', packages: new Map([[e.package, null]]) }, e);
+  eq(st.phase, 'installed', 'installed, version unknown');
+  eq([sizeText(900), sizeText(1_468_006), sizeText(75_509_560), sizeText(381_736_755)], ['1 KiB', '1.4 MiB', '72 MiB', '364 MiB'], 'sizes');
 });
 
 test('snapshot cache: metadata and reading into a given buffer', async () => {
@@ -665,53 +1012,6 @@ test('prebuilt snapshot: lookup, verified download, retries, resume, damage (ADR
     await srv.close();
   }
 });
-
-/** A minimal ZIP: [name, data, method, uncompressed length]. */
-function makeZip(files) {
-  const parts = [];
-  const central = [];
-  let at = 0;
-  const enc = new TextEncoder();
-  for (const [name, data, method, size = data.length] of files) {
-    const n = enc.encode(name);
-    const h = new Uint8Array(30 + n.length);
-    const v = new DataView(h.buffer);
-    v.setUint32(0, 0x04034b50, true);
-    v.setUint16(8, method, true);
-    v.setUint32(18, data.length, true);
-    v.setUint32(22, size, true);
-    v.setUint16(26, n.length, true);
-    h.set(n, 30);
-    const c = new Uint8Array(46 + n.length);
-    const cv = new DataView(c.buffer);
-    cv.setUint32(0, 0x02014b50, true);
-    cv.setUint16(10, method, true);
-    cv.setUint32(20, data.length, true);
-    cv.setUint32(24, size, true);
-    cv.setUint16(28, n.length, true);
-    cv.setUint32(42, at, true);
-    c.set(n, 46);
-    parts.push(h, data);
-    central.push(c);
-    at += h.length + data.length;
-  }
-  const cdSize = central.reduce((s, c) => s + c.length, 0);
-  const e = new Uint8Array(22);
-  const ev = new DataView(e.buffer);
-  ev.setUint32(0, 0x06054b50, true);
-  ev.setUint16(8, files.length, true);
-  ev.setUint16(10, files.length, true);
-  ev.setUint32(12, cdSize, true);
-  ev.setUint32(16, at, true);
-  const all = [...parts, ...central, e];
-  const out = new Uint8Array(all.reduce((s, x) => s + x.length, 0));
-  let o = 0;
-  for (const x of all) {
-    out.set(x, o);
-    o += x.length;
-  }
-  return out;
-}
 
 run(async () => {
   for (const [name, f] of cases) {

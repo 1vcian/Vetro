@@ -33,6 +33,8 @@ const AUTH_SIGNATURE = 2;
 const AUTH_RSAPUBLICKEY = 3;
 /** Push data piece (sync's limit is 64 KiB). */
 const SYNC_CHUNK = 64 * 1024;
+/** With a push progress callback, bytes queued before waiting for the device (a multiple of SYNC_CHUNK). */
+const PROGRESS_BATCH = 1 << 20;
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -464,8 +466,12 @@ export class AdbClient {
     return { stdout: join(out), stderr: join(err), exitCode };
   }
 
-  /** Copies `bytes` to the device file `path` (sync service, SEND/DATA/DONE). */
-  async push(path, bytes, { mode = 0o644, mtime = 0 } = {}) {
+  /**
+   * Copies `bytes` to the device file `path` (sync service, SEND/DATA/DONE).
+   * `onProgress(sent, total)`: bytes taken by the device so far, after every
+   * PROGRESS_BATCH (the batch is queued, then drained).
+   */
+  async push(path, bytes, { mode = 0o644, mtime = 0, onProgress = null } = {}) {
     const s = await this.open('sync:');
     const req = (id, payload) => {
       const p = new Uint8Array(8 + payload.length);
@@ -475,7 +481,15 @@ export class AdbClient {
       return p;
     };
     s.write(req('SEND', enc.encode(`${path},${mode}`)));
-    for (let at = 0; at < bytes.length; at += SYNC_CHUNK) s.write(req('DATA', bytes.subarray(at, at + SYNC_CHUNK)));
+    for (let at = 0; at < bytes.length; at += SYNC_CHUNK) {
+      s.write(req('DATA', bytes.subarray(at, at + SYNC_CHUNK)));
+      const sent = Math.min(at + SYNC_CHUNK, bytes.length);
+      if (onProgress && (sent % PROGRESS_BATCH === 0 || sent === bytes.length)) {
+        await s.drain();
+        if (s.closed) break;
+        onProgress(sent, bytes.length);
+      }
+    }
     const done = new Uint8Array(8);
     done.set(enc.encode('DONE'));
     new DataView(done.buffer).setUint32(4, mtime >>> 0, true);
@@ -496,10 +510,11 @@ export class AdbClient {
   /**
    * Installs an APK: push to /data/local/tmp and `pm install -r`, then removes
    * the file. Returns pm's output; throws if it does not say Success.
+   * `onProgress(sent, total)`: see push.
    */
-  async install(apk, { name = 'vetro-install.apk', args = '-r' } = {}) {
+  async install(apk, { name = 'vetro-install.apk', args = '-r', onProgress = null } = {}) {
     const tmp = `/data/local/tmp/${name.replace(/[^A-Za-z0-9._-]/g, '_')}`;
-    await this.push(tmp, apk);
+    await this.push(tmp, apk, { onProgress });
     const r = await this.shell(`pm install ${args} ${tmp}; e=$?; rm -f ${tmp}; exit $e`);
     const text = `${r.stdout}${r.stderr}`.trim();
     if (!/\bSuccess\b/.test(text)) throw new Error(`adb install: ${text || `exit code ${r.exitCode}`}`);
