@@ -208,6 +208,11 @@ main {
   gap: 6px;
 }
 
+#prebuilt-bar {
+  width: 100%;
+  height: 0.9rem;
+}
+
 #android-box h3 {
   margin: 4px 0 0;
   font-size: 14px;

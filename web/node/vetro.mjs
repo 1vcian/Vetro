@@ -4,7 +4,7 @@
 
 import { JitEngine } from './jit-engine.mjs';
 
-export const ABI_VERSION = 12;
+export const ABI_VERSION = 13;
 /** Codici di vetro_run. */
 export const STOP = ['Budget', 'PowerOff', 'Reset', 'Idle', 'Unimplemented', 'Blocked'];
 
@@ -451,6 +451,14 @@ export class Machine {
   /** Versione del formato degli snapshot (da mettere nelle chiavi delle cache). */
   get snapshotVersion() {
     return this.#x.vetro_snapshot_version();
+  }
+
+  /**
+   * Configuration hash carried by this machine's snapshots (ABI 13, ADR
+   * 0031), a BigInt: read after the disks are added, for snapshot keys.
+   */
+  get snapshotConfigHash() {
+    return BigInt.asUintN(64, this.#x.vetro_snapshot_config_hash(this.#vm));
   }
 
   /**

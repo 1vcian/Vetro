@@ -86,8 +86,9 @@ import { Recording } from '../node/recording.mjs';
 import { BlobSource, DiskFeeder, LayoutSource, MemoryCache, OpfsCache, RangeSource } from '../node/disk.mjs';
 import { AdbClient } from '../node/adb.mjs';
 import { apkInfo } from '../node/apk.mjs';
-import { ANDROID_PARAMS, BootProgress, gridColors, HOME_MIN_COLORS, HOME_QUERY, isHome } from '../node/android.mjs';
+import { ANDROID_HOME_NS, ANDROID_PARAMS, ANDROID_WAKE, BootProgress, gridColors, HOME_DRAW_NS, HOME_MIN_COLORS, HOME_POLL_NS, HOME_QUERY, isHome, machineDevices } from '../node/android.mjs';
 import { DiskOverlay, fromBase64, opfsFile, sha256Hex, SnapshotStore, snapshotKey, staleReason, toBase64 } from '../node/persist.mjs';
+import { androidSnapshotKey, downloadPrebuilt, findPrebuilt, PREBUILT_CHUNK, prebuiltSnapUrl } from '../node/prebuilt.mjs';
 
 const QUANTUM = 1_000_000;
 const SLICE_MS = 12;
@@ -97,18 +98,10 @@ const PERSIST_MS = 1000;
 const REST_NS = 1_500_000_000n;
 /** Coda della console tenuta per lo snapshot (la pagina la rimostra). */
 const CONSOLE_TAIL = 64 * 1024;
-/** Guest time after the home screen is drawn before the Android snapshot. */
-const ANDROID_HOME_NS = 5_000_000_000n;
-/** At most this much guest time from the launcher being focused to the home screen drawn. */
-const HOME_DRAW_NS = 300_000_000_000n;
-/** How often (guest time) adb is asked whether the home screen is up. */
-const HOME_POLL_NS = 5_000_000_000n;
 /** If the home screen does not come within this long after sys.boot_completed, the snapshot is saved anyway. */
 const HOME_GIVE_UP_NS = 3000_000_000_000n;
 /** Wait (guest time) before trying to connect to adbd again. */
 const ADB_RETRY_NS = 5_000_000_000n;
-/** adb command that keeps the screen on and wakes it (after connecting). */
-const ANDROID_WAKE = 'svc power stayon true; settings put system screen_off_timeout 2147483647; input keyevent KEYCODE_WAKEUP; wm dismiss-keyguard';
 /** Android disk blocks kept in memory (64 MiB): the rest is in OPFS. */
 const ANDROID_MAX_BLOCKS = 64;
 const EV_SYN = 0;
@@ -205,13 +198,7 @@ async function openDisk(d, i, sources) {
   return index;
 }
 
-function devicesOf(c) {
-  let devices = DEV.GPU | DEV.KEYBOARD;
-  devices |= c.pointer === 'multitouch' ? DEV.MULTITOUCH : DEV.TABLET;
-  if (c.net) devices |= DEV.NET;
-  if (c.files) devices |= DEV.VSOCK;
-  return devices;
-}
+const devicesOf = (c) => machineDevices(DEV, c);
 
 /** Macchina nuova con i dischi (e i loro overlay). */
 async function build(c, sources) {
@@ -290,6 +277,7 @@ async function start(c) {
   const sources = [];
   await build(c, sources);
   let restored = null;
+  let prebuilt = false;
   if (c.snapshot && c.opfs) {
     try {
       store = await SnapshotStore.opfs();
@@ -302,13 +290,19 @@ async function start(c) {
         devices: devicesOf(c),
         disks: sources.map((s, i) => ({ identity: s.key, size: Math.floor(s.size / 512) * 512, readOnly: !!c.disks[i].readOnly })),
       };
-      snapKey = await snapshotKey(android
-        ? { ...common, android: android.manifest.version, images: android.images.map((f) => f.sha256), params: android.params }
-        : { ...common, kernel: await sha256Hex(kernel), initrd: initrd ? await sha256Hex(initrd) : null, cmdline: c.cmdline });
+      // Android: the key does not depend on where the image is served from,
+      // and is the prebuilt snapshot's key too (ADR 0031).
+      snapKey = android
+        ? (await androidSnapshotKey(m, { machine: c, devices: devicesOf(c), manifest: android.manifest, images: android.images, params: android.params, layout: sources[0] })).key
+        : await snapshotKey({ ...common, kernel: await sha256Hex(kernel), initrd: initrd ? await sha256Hex(initrd) : null, cmdline: c.cmdline });
       times.key = performance.now() - t1;
       const t2 = performance.now();
-      const meta = await store.loadMeta(snapKey);
+      let meta = await store.loadMeta(snapKey);
       times.read = performance.now() - t2;
+      if (!meta && android && c.android.prebuilt !== false) {
+        meta = await fetchPrebuilt(times);
+        if (meta) prebuilt = true;
+      }
       const stale = meta && staleReason(meta, overlays);
       if (meta && stale) status(`snapshot not used: ${stale}`);
       if (meta && !stale) {
@@ -330,7 +324,7 @@ async function start(c) {
           }
           times.readSnapshot = readMs;
           times.restore = performance.now() - t3 - readMs;
-          restored = { meta, size: meta.size };
+          restored = { meta, size: meta.size, prebuilt };
         } catch (e) {
           status(`snapshot non usato: ${e.message}`);
           // Con 'Corrupt' la macchina va scartata: si rifà da capo.
@@ -338,7 +332,8 @@ async function start(c) {
         }
       }
     } catch (e) {
-      status(`cache degli snapshot non disponibile (${e.message ?? e})`);
+      if (e.prebuilt) throw e;
+      status(`snapshot cache not available (${e.message ?? e})`);
       store = null;
     }
   }
@@ -354,9 +349,10 @@ async function start(c) {
       android.savedBoot = true;
     }
     times.total = performance.now() - t0;
-    post({ type: 'restored', steps: Number(m.steps), size: restored.size, times, savedAt: restored.meta.savedAt, console: tail,
+    post({ type: 'restored', steps: Number(m.steps), size: restored.size, times, savedAt: restored.meta.savedAt, console: tail, prebuilt: restored.prebuilt,
       progress: android?.progress.events ?? null, memory: m.memoryBytes }, [tail.buffer]);
   } else if (android) {
+    if (prebuilt) status('the prebuilt snapshot could not be restored: cold boot');
     const [boot, vendorBoot, initBoot] = await androidImages(android);
     times.images = performance.now() - t0 - times.wasm - times.files;
     const desc = m.loadAndroid({ boot, vendorBoot, initBoot, params: android.params });
@@ -410,6 +406,7 @@ async function prepareAndroid(c) {
   c.disks = [{ layout, blockSize: c.android.blockSize ?? 1 << 20, maxBlocks: ANDROID_MAX_BLOCKS, readOnly: false, readahead: 1 }];
   return {
     manifest,
+    manifestUrl: url,
     images,
     params: c.android.params ?? ANDROID_PARAMS,
     progress: new BootProgress(),
@@ -426,6 +423,52 @@ async function prepareAndroid(c) {
     ops: [],
     busy: false,
   };
+}
+
+/**
+ * The prebuilt snapshot at the home screen (ADR 0031), looked up by this
+ * machine's key next to the image and downloaded into the snapshot cache
+ * (verified chunk by chunk, resumed after an interruption). Returns the
+ * snapshot's metadata as the cache keeps it, or null if there is none for this
+ * vetro-wasm and image (cold boot). A download that fails stops the start:
+ * reloading the page resumes it.
+ */
+async function fetchPrebuilt(times) {
+  const t0 = performance.now();
+  const found = await findPrebuilt(android.manifestUrl, snapKey);
+  times.prebuiltLookup = performance.now() - t0;
+  if (!found.info) {
+    status(`cold boot: ${found.missing}`);
+    post({ type: 'prebuilt', state: 'missing', reason: found.missing });
+    return null;
+  }
+  const { info } = found;
+  const target = await store.downloadTarget(snapKey);
+  const resumed = target.resume?.sha256 === info.sha256 ? target.resume.verified * PREBUILT_CHUNK : 0;
+  post({ type: 'prebuilt', state: 'downloading', size: info.size, resumedFrom: resumed, key: snapKey });
+  status(`downloading the home-screen snapshot (${(info.size / 2 ** 20).toFixed(0)} MiB${resumed ? `, resuming at ${(resumed / 2 ** 20).toFixed(0)} MiB` : ''})`);
+  let last = 0;
+  try {
+    const r = await downloadPrebuilt(info, prebuiltSnapUrl(android.manifestUrl, snapKey), target.file, {
+      resume: target.resume,
+      saveResume: target.saveResume,
+      onProgress: (p) => {
+        const now = performance.now();
+        if (now - last < 250) return;
+        last = now;
+        post({ type: 'prebuilt', state: 'downloading', ...p, ms: now - t0 });
+      },
+    });
+    const meta = { ...info.meta };
+    meta.size = await target.finish(meta);
+    times.prebuilt = performance.now() - t0;
+    post({ type: 'prebuilt', state: 'done', size: info.size, bytes: r.bytes, ms: times.prebuilt, resumedFrom: r.resumedFrom, retries: r.retries });
+    return meta;
+  } catch (e) {
+    target.close();
+    post({ type: 'prebuilt', state: 'failed', error: String(e.message ?? e) });
+    throw Object.assign(new Error(`downloading the prebuilt snapshot failed (${e.message ?? e}): reload the page to resume the download, or choose a cold boot`), { prebuilt: true });
+  }
 }
 
 /** The three boot images: from OPFS if there, otherwise downloaded and checked. */

@@ -350,6 +350,48 @@ export class SnapshotStore {
     return size;
   }
 
+  /**
+   * Where a snapshot downloaded from elsewhere (the prebuilt one, ADR 0031)
+   * is written: `{ file, resume, saveResume(state), finish(meta), close() }`.
+   * `file` is the snapshot file itself; the metadata is removed first and
+   * written by `finish` (with `size`), so the cache sees the snapshot only
+   * when it is complete. `resume` is the last state given to `saveResume`
+   * (kept in `<key>.part.json`), for resuming an interrupted download.
+   */
+  async downloadTarget(key) {
+    const partName = `${key}.part.json`;
+    const raw = await this.#read(partName);
+    let resume = null;
+    try {
+      resume = raw ? JSON.parse(new TextDecoder().decode(raw)) : null;
+    } catch {}
+    await this.#remove(`${key}.json`);
+    let file;
+    if (this.#mem) {
+      const f = new MemFile(this.#mem.get(`${key}.snap`) ?? new Uint8Array());
+      const save = () => this.#mem.set(`${key}.snap`, f.bytes());
+      file = { getSize: () => f.getSize(), read: (d, o) => f.read(d, o), write: (b, o) => f.write(b, o), truncate: (n) => f.truncate(n), flush: save, close: save };
+    } else {
+      file = await opfsFile(this.#dir, `${key}.snap`);
+    }
+    // Without a resume state the file content is unknown: start over.
+    if (!resume) file.truncate(0);
+    return {
+      file,
+      resume,
+      saveResume: (state) => this.#write(partName, new TextEncoder().encode(JSON.stringify(state))),
+      finish: async (meta) => {
+        file.flush();
+        const size = file.getSize();
+        file.close();
+        await this.#write(`${key}.json`, new TextEncoder().encode(JSON.stringify({ ...meta, size })));
+        await this.#remove(partName);
+        return size;
+      },
+      close: () => file.close(),
+    };
+  }
+
   /** Salva i byte, poi i metadati (con `size`). */
   async save(key, meta, bytes) {
     await this.#remove(`${key}.json`);
@@ -360,6 +402,7 @@ export class SnapshotStore {
   async remove(key) {
     await this.#remove(`${key}.json`);
     await this.#remove(`${key}.snap`);
+    await this.#remove(`${key}.part.json`);
   }
 }
 

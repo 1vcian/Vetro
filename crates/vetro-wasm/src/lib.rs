@@ -79,7 +79,7 @@ use display::WebDisplay;
 /// 12: booting from Android images (`vetro_load_android`, ADR 0018 and
 /// 0028), chunked snapshots (`vetro_snapshot_save_stream`,
 /// `vetro_snapshot_restore_stream`, imports `vetro_host.snapshot_write/read`).
-pub const ABI_VERSION: u32 = 12;
+pub const ABI_VERSION: u32 = 13;
 
 /// Allineamento dei buffer di [`vetro_alloc`] (basta per `JitState`).
 const ALLOC_ALIGN: usize = 16;
@@ -1224,6 +1224,18 @@ pub unsafe extern "C" fn vetro_disk_stats(vm: *mut Vm, disk: u32, out: *mut u64,
 #[unsafe(no_mangle)]
 pub extern "C" fn vetro_snapshot_version() -> u32 {
     vetro_machine::vetro_snapshot::FORMAT_VERSION
+}
+
+/// ABI 13 (ADR 0031): the machine configuration hash that a snapshot of this
+/// machine carries in its header (`Machine::config_hash`: RAM, devices, disks
+/// and virtio slots). Read after the disks are added; JS puts it in snapshot
+/// keys, so that a prebuilt snapshot for another configuration is not even
+/// downloaded.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_snapshot_config_hash(vm: *mut Vm) -> u64 {
+    // SAFETY: `vm` comes from `vetro_machine_new`.
+    let vm = unsafe { &mut *vm };
+    vm.machine().config_hash()
 }
 
 /// Salva la macchina in un buffer interno e ne restituisce la lunghezza;

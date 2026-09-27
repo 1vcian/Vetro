@@ -214,6 +214,8 @@ export class LayoutSource {
     const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
     const hex = [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, '0')).join('');
     this.key = `layout:${this.url}|${this.size}|${hex}`;
+    /** SHA-256 of the map's text: the disk's identity wherever it is served from (snapshot keys, ADR 0031). */
+    this.sha256 = hex;
     this.sources = this.layout.files.map((f) => new RangeSource(new URL(f.path, this.url).href, { fetch: this.#fetch }));
     await Promise.all(this.sources.map(async (s, i) => {
       await s.open();

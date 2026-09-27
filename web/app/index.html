@@ -20,15 +20,18 @@
     <fieldset id="os-box">
       <legend>System</legend>
       <label title="The M3 Linux kernel and BusyBox shell: ready in a few seconds"><input type="radio" name="os" value="linux" checked> Test Linux</label>
-      <label title="Vetro's AOSP 15 image (ADR 0022): the first boot takes tens of minutes, from the second start it resumes from the snapshot saved in OPFS"><input type="radio" name="os" value="android"> Vetro's AOSP 15</label>
+      <label title="Vetro's AOSP 15 image (ADR 0022): the first start downloads a snapshot at the home screen (ADR 0031), later starts resume from the snapshot saved in OPFS"><input type="radio" name="os" value="android"> Vetro's AOSP 15</label>
     </fieldset>
     <fieldset id="android-fields" hidden>
       <legend>AOSP image</legend>
       <label>Version (manifest.json)
         <input name="manifestUrl" spellcheck="false">
       </label>
-      <p class="dim">Boot images (about 136 MiB, mostly zeros) and disk read in pieces with HTTP Range and kept in OPFS.
-        The first boot takes about 45 minutes; once the home screen is up the state is saved, and from the second start the home screen is back in about 5 seconds.</p>
+      <p id="prebuilt-note" class="dim">First start: the home screen is downloaded as a ready-made snapshot of the machine
+        (about 1 GiB, kept in the browser's private storage, OPFS), then it resumes in seconds; from the second start nothing is downloaded again.
+        The disk is read in pieces with HTTP Range as the system needs it.</p>
+      <label title="Boot the system from scratch instead of downloading the ready-made snapshot: about 45 minutes before the home screen, downloads only the boot images (about 136 MiB) and the disk blocks it reads">
+        <input name="coldBoot" type="checkbox"> cold boot (advanced: about 45 minutes, no snapshot download)</label>
     </fieldset>
     <fieldset id="linux-fields">
       <legend>Macchina</legend>
@@ -97,6 +100,11 @@
       </div>
     </section>
     <section id="android-box" hidden>
+      <div id="prebuilt-box" hidden>
+        <h3>Home screen snapshot</h3>
+        <progress id="prebuilt-bar" max="1" value="0"></progress>
+        <p id="prebuilt-text" class="dim"></p>
+      </div>
       <h3>Boot</h3>
       <ol id="phases"></ol>
       <p id="boot-info" class="dim"></p>

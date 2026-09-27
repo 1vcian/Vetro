@@ -23,11 +23,77 @@ export const PHASES = [
   ['home', 'home screen (launcher)', null],
 ];
 
+/** The version of Vetro's AOSP image the app uses by default, on R2 (ADR 0022, 0028, 0030). */
+export const DEFAULT_MANIFEST = 'https://pub-06e88fdd7f374fffb06844d60083f2ae.r2.dev/aosp/android-15.0.0_r36-BP1A.250505.005.D1-bd09e2f/manifest.json';
+
 /**
  * Bootloader parameters for Vetro's AOSP image (ADR 0028): `nokaslr` like
  * tools/aosp/vetro.sh.
  */
 export const ANDROID_PARAMS = 'nokaslr';
+
+/**
+ * The machine the app builds for Vetro's AOSP image (ADR 0028): the
+ * prebuilt snapshot (ADR 0031) is made with exactly this machine, and its key
+ * contains it. `files`: virtio-vsock for the file manager (on by default in
+ * the app).
+ */
+export const ANDROID_MACHINE = { ramMiB: 2048, width: 1280, height: 800, pointer: 'multitouch', net: true, files: true };
+
+/**
+ * vetro-wasm device bits for a machine configuration (`DEV` of vetro.mjs):
+ * the same function for the app's Worker and the prebuilt snapshot tool.
+ */
+export function machineDevices(DEV, c) {
+  let devices = DEV.GPU | DEV.KEYBOARD;
+  devices |= c.pointer === 'multitouch' ? DEV.MULTITOUCH : DEV.TABLET;
+  if (c.net) devices |= DEV.NET;
+  if (c.files) devices |= DEV.VSOCK;
+  return devices;
+}
+
+/** adb command that keeps the screen on and wakes it (after connecting). */
+export const ANDROID_WAKE = 'svc power stayon true; settings put system screen_off_timeout 2147483647; input keyevent KEYCODE_WAKEUP; wm dismiss-keyguard';
+
+/** Guest time after the home screen is drawn before the Android snapshot. */
+export const ANDROID_HOME_NS = 5_000_000_000n;
+/** At most this much guest time from the launcher being focused to the home screen drawn. */
+export const HOME_DRAW_NS = 300_000_000_000n;
+/** How often (guest time) adb is asked whether the home screen is up. */
+export const HOME_POLL_NS = 5_000_000_000n;
+
+/**
+ * In-guest compaction before a snapshot (ADR 0031): the clean page cache is
+ * dropped and free memory is filled with zeros (a file in /dev, which is
+ * tmpfs, then deleted), so those pages are zero in the snapshot. Keeps 96 MiB
+ * free for the file itself and lmkd. Prints MemFree and Cached after.
+ */
+export const ANDROID_COMPACT = "su 0 sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches; free=$(awk \"/MemFree/ {print int(\\$2/1024) - 96}\" /proc/meminfo); dd if=/dev/zero of=/dev/vetro-zeros bs=1M count=$free 2>&1 | tail -1; rm -f /dev/vetro-zeros; grep -E \"MemFree|^Cached\" /proc/meminfo'";
+
+/**
+ * What makes an Android snapshot applicable (ADR 0031), the same for the
+ * app's own snapshots in OPFS and for the prebuilt one on R2: snapshot format
+ * and machine configuration hash of vetro-wasm, the machine (RAM, screen,
+ * devices), the image version and the sha256 of its boot images, the
+ * bootloader parameters, and the disk map (sha256 of its text and size, not
+ * its URL: the same image from R2 or from a local server gives the same key).
+ * `snapshotKey` (persist.mjs) of this object is the key.
+ */
+export function androidKeyParts({ format, configHash, ramMiB, width, height, devices, version, images, params, disk }) {
+  return {
+    kind: 'android',
+    format,
+    config: configHash === null || configHash === undefined ? null : configHash.toString(16).padStart(16, '0'),
+    ramMiB,
+    width,
+    height,
+    devices,
+    android: version,
+    images,
+    params,
+    disk,
+  };
+}
 
 /**
  * An app colour as the scanout shows it. Today's image swaps red and blue

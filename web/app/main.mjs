@@ -30,19 +30,16 @@
 // panel next to the screen shows the boot phases read from the console and
 // the home screen, the adb status and the place to drop an APK (also on the
 // screen), which the Worker installs with the ADB client and opens; an
-// `adb shell` line. `window.vetroAndroid` for tests.
+// `adb shell` line. `window.vetroAndroid` for tests. The first start
+// downloads the prebuilt snapshot at the home screen (ADR 0031) with a
+// progress bar; `&cold=1` (or the "cold boot" box) boots from scratch.
 
 import { absAxis, BUTTONS, evdevCode } from './keymap.mjs';
 import { keyToBytes, Terminal } from './terminal.mjs';
 import { Canvas2DRenderer, WebGpuRenderer } from './display.mjs';
 import { FilePanel } from './files.mjs';
 import { AnalysisPanels } from './analysis.mjs';
-import { PHASES } from '../node/android.mjs';
-
-/** The version of Vetro's AOSP image published on R2 (ADR 0022, 0028, 0030). */
-export const DEFAULT_MANIFEST = 'https://pub-06e88fdd7f374fffb06844d60083f2ae.r2.dev/aosp/android-15.0.0_r36-BP1A.250505.005.D1-bd09e2f/manifest.json';
-/** Guest RAM with AOSP in the browser (ADR 0028). */
-export const ANDROID_RAM_MIB = 2048;
+import { ANDROID_MACHINE, DEFAULT_MANIFEST, PHASES } from '../node/android.mjs';
 
 const $ = (id) => document.getElementById(id);
 const form = $('setup');
@@ -312,11 +309,12 @@ function showOs() {
   $('linux-fields').hidden = android;
   const el = form.elements;
   if (android) {
-    el.ramMiB.value = String(ANDROID_RAM_MIB);
+    el.ramMiB.value = String(ANDROID_MACHINE.ramMiB);
     el.pointer.value = 'multitouch';
     el.net.checked = true;
     if (!el.manifestUrl.value) el.manifestUrl.value = DEFAULT_MANIFEST;
     if (!rootsFromUrl) pendingRoots = ANDROID_ROOTS;
+    showPrebuiltHint();
   } else {
     el.ramMiB.value = '1024';
     el.pointer.value = 'tablet';
@@ -325,8 +323,37 @@ function showOs() {
 }
 for (const r of form.elements.os) r.addEventListener('change', showOs);
 
+const mibText = (n) => `${(n / 2 ** 20).toFixed(0)} MiB`;
+/** Download time at a given rate (bytes/s), as text. */
+const etaText = (bytes, rate) => {
+  const s = bytes / rate;
+  return s < 90 ? `${Math.max(1, Math.round(s))} s` : `${(s / 60).toFixed(0)} min`;
+};
+
+/**
+ * The size of the prebuilt snapshot for the default image, from the hint the
+ * site build writes next to the app (`android-prebuilt.json`, ADR 0031): the
+ * Worker still looks it up by its own key, the hint only sets expectations.
+ */
+let prebuiltHint;
+async function showPrebuiltHint() {
+  if (prebuiltHint === undefined) {
+    prebuiltHint = null;
+    try {
+      const r = await fetch(new URL('android-prebuilt.json', location.href), { cache: 'no-cache' });
+      if (r.ok) prebuiltHint = await r.json();
+    } catch {}
+  }
+  const h = prebuiltHint;
+  const manifest = form.elements.manifestUrl.value.trim() || DEFAULT_MANIFEST;
+  if (!h?.size || new URL(h.manifest).href !== new URL(manifest, location.href).href) return;
+  $('prebuilt-note').textContent = `First start: the home screen is downloaded as a ready-made snapshot of the machine (${mibText(h.size)}: ` +
+    `about ${etaText(h.size, 25e6)} at 25 MB/s, ${etaText(h.size, 6e6)} at 6 MB/s), kept in the browser's private storage (OPFS), ` +
+    'then it resumes in seconds; later starts download nothing again. The disk is read in pieces with HTTP Range as the system needs it.';
+}
+
 /** AOSP state for tests: phases, home screen, adb, installs. */
-const androidState = { phases: [], booted: null, adb: { state: 'none' }, installs: [] };
+const androidState = { phases: [], booted: null, adb: { state: 'none' }, installs: [], prebuilt: null };
 let adbId = 0;
 const adbPending = new Map();
 
@@ -385,8 +412,49 @@ function renderPhases() {
   }
 }
 
+/** Download of the prebuilt snapshot (ADR 0031): progress bar and text. */
+function onPrebuilt(msg) {
+  const box = $('prebuilt-box');
+  const text = $('prebuilt-text');
+  const bar = $('prebuilt-bar');
+  const prev = androidState.prebuilt ?? {};
+  androidState.prebuilt = { ...prev, ...msg };
+  delete androidState.prebuilt.type;
+  switch (msg.state) {
+    case 'missing':
+      $('boot-info').textContent = `No ready-made snapshot for this version of Vetro and of the image (${msg.reason}): cold boot, about 45 minutes before the home screen.`;
+      break;
+    case 'downloading': {
+      box.hidden = false;
+      if (msg.loaded === undefined) {
+        bar.removeAttribute('value');
+        text.textContent = `Downloading ${mibText(msg.size)}${msg.resumedFrom ? ` (resuming at ${mibText(msg.resumedFrom)})` : ''}…`;
+        setStatus(text.textContent);
+        break;
+      }
+      bar.value = msg.loaded / msg.total;
+      const rate = (msg.loaded - msg.resumedFrom) / Math.max(msg.ms, 1) * 1000;
+      text.textContent = `${mibText(msg.loaded)} of ${mibText(msg.total)} · ${(rate / 1e6).toFixed(1)} MB/s` +
+        (rate > 0 ? ` · about ${etaText(msg.total - msg.loaded, rate)} left` : '') + (msg.resumedFrom ? ` · resumed at ${mibText(msg.resumedFrom)}` : '');
+      break;
+    }
+    case 'done':
+      bar.value = 1;
+      text.textContent = `Downloaded and verified: ${mibText(msg.size)} in ${(msg.ms / 1000).toFixed(0)} s${msg.retries ? ` (${msg.retries} retries)` : ''}. Restoring…`;
+      setStatus(text.textContent);
+      break;
+    case 'failed':
+      box.hidden = false;
+      text.textContent = `Download interrupted: ${msg.error}. Reload the page to resume it.`;
+      break;
+  }
+}
+
 function onAndroidMessage(msg) {
   switch (msg.type) {
+    case 'prebuilt':
+      onPrebuilt(msg);
+      return true;
     case 'progress':
       androidState.phases.push({ phase: msg.phase, label: msg.label, guestSecs: msg.guestSecs, wallMs: msg.wallMs });
       renderPhases();
@@ -482,7 +550,7 @@ async function start() {
     opfs: el.opfs.checked,
     snapshot: el.snapshot.checked,
     persist: el.persist.checked,
-    android: android ? { manifest: new URL(el.manifestUrl.value.trim() || DEFAULT_MANIFEST, location.href).href } : null,
+    android: android ? { manifest: new URL(el.manifestUrl.value.trim() || DEFAULT_MANIFEST, location.href).href, prebuilt: !el.coldBoot.checked } : null,
   };
   if (android) {
     config.net = true;
@@ -535,12 +603,14 @@ async function start() {
         vetroState.stats = msg;
         break;
       case 'restored': {
-        vetroState.boot = { mode: 'snapshot', ms: performance.now() - startedAt, steps: msg.steps, size: msg.size, times: msg.times, memory: msg.memory };
+        vetroState.boot = { mode: 'snapshot', ms: performance.now() - startedAt, steps: msg.steps, size: msg.size, times: msg.times, memory: msg.memory, prebuilt: !!msg.prebuilt };
         if (msg.progress) {
           androidState.phases = msg.progress.map((p) => ({ ...p, wallMs: undefined }));
           androidState.booted = { restored: true };
           renderPhases();
-          $('boot-info').textContent = 'resumed from the snapshot saved at the home screen';
+          $('boot-info').textContent = msg.prebuilt ? 'resumed from the ready-made snapshot at the home screen (downloaded once, now in OPFS)'
+            : 'resumed from the snapshot saved at the home screen';
+          if (msg.prebuilt) $('prebuilt-text').textContent += ` Restored in ${(msg.times.restore / 1000).toFixed(1)} s.`;
         }
         replaying = true;
         term.feed(msg.console);
@@ -625,10 +695,13 @@ if (q.get('os') === 'android') {
   showOs();
 }
 if (q.has('manifest')) form.elements.manifestUrl.value = q.get('manifest');
+if (osValue() === 'android') showPrebuiltHint();
+form.elements.manifestUrl.addEventListener('change', () => showPrebuiltHint());
 for (const [param, field] of [['kernel', 'kernelUrl'], ['initrd', 'initrdUrl'], ['disk', 'diskUrl'], ['cmdline', 'cmdline'], ['pointer', 'pointer'], ['ram', 'ramMiB']]) {
   if (q.has(param)) form.elements[field].value = q.get(param);
 }
 if (q.get('webgpu') === '1') form.elements.webgpu.checked = true;
+if (q.get('cold') === '1') form.elements.coldBoot.checked = true;
 if (q.get('snapshot') === '0') form.elements.snapshot.checked = false;
 if (q.get('persist') === '0') form.elements.persist.checked = false;
 if (q.get('nofiles') === '1') form.elements.files.checked = false;
