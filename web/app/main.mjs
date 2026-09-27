@@ -26,7 +26,8 @@
 // The state can also be read from `window.vetroState` (for browser tests).
 //
 // Vetro's AOSP image (M5/M6, ADR 0028): `?os=android` (or the "System"
-// selector) and `&manifest=URL` (default: the version published on R2). The
+// selector) and `&manifest=URL` (default: the newest version published on R2,
+// the others offered in the field, ANDROID_VERSIONS). The
 // panel next to the screen shows the boot phases read from the console and
 // the home screen, the adb status and the place to drop an APK (also on the
 // screen), which the Worker installs with the ADB client and opens; an
@@ -45,7 +46,7 @@ import { keyToBytes, Terminal } from './terminal.mjs';
 import { Canvas2DRenderer, WebGpuRenderer } from './display.mjs';
 import { FilePanel } from './files.mjs';
 import { AnalysisPanels } from './analysis.mjs';
-import { ANDROID_MACHINE, DEFAULT_MANIFEST, PHASES } from '../node/android.mjs';
+import { ANDROID_MACHINE, ANDROID_VERSIONS, DEFAULT_MANIFEST, PHASES } from '../node/android.mjs';
 import { CatalogPanel } from './catalog.mjs';
 import { CATALOG_URL } from '../node/catalog.mjs';
 
@@ -321,6 +322,7 @@ function showOs() {
     el.pointer.value = 'multitouch';
     el.net.checked = true;
     if (!el.manifestUrl.value) el.manifestUrl.value = DEFAULT_MANIFEST;
+    syncVersion();
     if (!rootsFromUrl) pendingRoots = ANDROID_ROOTS;
     showPrebuiltHint();
   } else {
@@ -330,6 +332,19 @@ function showOs() {
   }
 }
 for (const r of form.elements.os) r.addEventListener('change', showOs);
+// The published image versions (the first is the default) in a selector that
+// fills the manifest field; the field still takes any URL ("other").
+form.elements.androidVersion.prepend(...ANDROID_VERSIONS.map((v) => new Option(v.label, v.manifest)));
+const syncVersion = () => {
+  const url = form.elements.manifestUrl.value.trim();
+  form.elements.androidVersion.value = ANDROID_VERSIONS.some((v) => v.manifest === url) ? url : '';
+};
+form.elements.androidVersion.addEventListener('change', () => {
+  const v = form.elements.androidVersion.value;
+  if (!v) return;
+  form.elements.manifestUrl.value = v;
+  showPrebuiltHint();
+});
 
 const mibText = (n) => `${(n / 2 ** 20).toFixed(0)} MiB`;
 /** Download time at a given rate (bytes/s), as text. */
@@ -344,6 +359,7 @@ const etaText = (bytes, rate) => {
  * Worker still looks it up by its own key, the hint only sets expectations.
  */
 let prebuiltHint;
+let prebuiltNote; // the generic text, for versions without a hint
 async function showPrebuiltHint() {
   if (prebuiltHint === undefined) {
     prebuiltHint = null;
@@ -354,7 +370,11 @@ async function showPrebuiltHint() {
   }
   const h = prebuiltHint;
   const manifest = form.elements.manifestUrl.value.trim() || DEFAULT_MANIFEST;
-  if (!h?.size || new URL(h.manifest).href !== new URL(manifest, location.href).href) return;
+  prebuiltNote ??= $('prebuilt-note').textContent;
+  if (!h?.size || new URL(h.manifest).href !== new URL(manifest, location.href).href) {
+    $('prebuilt-note').textContent = prebuiltNote;
+    return;
+  }
   $('prebuilt-note').textContent = `First start: the home screen is downloaded as a ready-made snapshot of the machine (${mibText(h.size)}: ` +
     `about ${etaText(h.size, 25e6)} at 25 MB/s, ${etaText(h.size, 6e6)} at 6 MB/s), kept in the browser's private storage (OPFS), ` +
     'then it resumes in seconds; later starts download nothing again. The disk is read in pieces with HTTP Range as the system needs it.';
@@ -516,7 +536,7 @@ function onAndroidMessage(msg) {
     case 'booted':
       androidState.booted = { guestSecs: msg.guestSecs, wallMs: msg.wallMs };
       $('boot-info').textContent = `boot finished at ${msg.guestSecs.toFixed(0)} s of guest time, ${(msg.wallMs / 60000).toFixed(1)} min wall`;
-      setStatus('boot finished: waiting for the home screen ("Phone is starting" comes first)');
+      setStatus('boot finished: waiting for the home screen ("Vetro is starting…" comes first)');
       return true;
     case 'adb-status': {
       const wasReady = androidState.adb.state === 'ready';
@@ -752,9 +772,15 @@ if (q.get('os') === 'android') {
   form.elements.os.value = 'android';
   showOs();
 }
-if (q.has('manifest')) form.elements.manifestUrl.value = q.get('manifest');
+if (q.has('manifest')) {
+  form.elements.manifestUrl.value = q.get('manifest');
+  syncVersion();
+}
 if (osValue() === 'android') showPrebuiltHint();
-form.elements.manifestUrl.addEventListener('change', () => showPrebuiltHint());
+form.elements.manifestUrl.addEventListener('change', () => {
+  syncVersion();
+  showPrebuiltHint();
+});
 for (const [param, field] of [['kernel', 'kernelUrl'], ['initrd', 'initrdUrl'], ['disk', 'diskUrl'], ['cmdline', 'cmdline'], ['pointer', 'pointer'], ['ram', 'ramMiB']]) {
   if (q.has(param)) form.elements[field].value = q.get(param);
 }

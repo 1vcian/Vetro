@@ -24,11 +24,14 @@
     </fieldset>
     <fieldset id="android-fields" hidden>
       <legend>AOSP image</legend>
-      <label>Version (manifest.json)
+      <label>Version
+        <select name="androidVersion"><option value="">other (manifest.json URL below)</option></select>
+      </label>
+      <label>manifest.json
         <input name="manifestUrl" spellcheck="false">
       </label>
       <p id="prebuilt-note" class="dim">First start: the home screen is downloaded as a ready-made snapshot of the machine
-        (about 1 GiB, kept in the browser's private storage, OPFS), then it resumes in seconds; from the second start nothing is downloaded again.
+        (about 500 MiB, kept in the browser's private storage, OPFS), then it resumes in seconds; from the second start nothing is downloaded again.
         The disk is read in pieces with HTTP Range as the system needs it.</p>
       <label title="Boot the system from scratch instead of downloading the ready-made snapshot: about 45 minutes before the home screen, downloads only the boot images (about 136 MiB) and the disk blocks it reads">
         <input name="coldBoot" type="checkbox"> cold boot (advanced: about 45 minutes, no snapshot download)</label>

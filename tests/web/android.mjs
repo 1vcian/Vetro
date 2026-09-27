@@ -24,8 +24,8 @@
 // Prints the boot phases (guest and wall time), memory (WASM linear memory
 // and process RSS) and disk counters. With --until=home (the default), after
 // the boot: adb over GuestSocket (devices, shell, install of the test APK,
-// am start), the pixel at the centre of the screen becomes the app's (blue,
-// or with red and blue swapped), a touch on the touchscreen turns it orange.
+// am start), the pixel at the centre of the screen becomes the app's blue
+// (in RGB order, ADR 0032), a touch on the touchscreen turns it orange.
 
 import { open, stat, writeFile } from 'node:fs/promises';
 import { deflateSync } from 'node:zlib';
@@ -320,7 +320,7 @@ function homeFlow(m, t0, save) {
     const st = await adb.shell(`am start -W -n ${info.package}/${info.launcher}`);
     console.log(`am start: ${st.stdout.trim().split('\n').join(' | ')} (${((performance.now() - t) / 1000).toFixed(1)} s wall)`);
     await waitGuest('the app on screen (blue centre)', () => colorSeen(center(m), BLU), 300);
-    console.log(`app on screen: centre ${center(m)} (${colorSeen(center(m), BLU) === 'bgr' ? 'red and blue swapped by the scanout' : 'correct colours'})`);
+    console.log(`app on screen: centre ${center(m)}`);
     screenshot(m, 'node-app-1.png');
     const size = m.displaySize();
     m.touch(0, [16384, 16384]);

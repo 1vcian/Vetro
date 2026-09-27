@@ -615,7 +615,9 @@ R2; `tools/web-serve.mjs` also serves `target/aosp/out` at `/aosp/`) and
   system_server, boot finished = `sys-boot-completed-set`; the home screen
   is marked from outside with `mark`), `HOME_QUERY`/`isHome` (focused
   window via adb), `gridColors`/`HOME_MIN_COLORS` (home actually drawn),
-  `ANDROID_PARAMS`, `colorSeen` (a colour in RGB or BGR order).
+  `ANDROID_PARAMS`, `colorSeen` (an app colour in RGB order, ADR 0032),
+  `ANDROID_VERSIONS` (the published image versions, newest first: the app's
+  version selector; `DEFAULT_MANIFEST` is the first).
 - `web/node/adb.mjs`: ADB client over a transport with `send`/`recv`/
   `state` (the `GuestSocket` to port 5555 of the guest): `connect` (CNXN;
   AUTH with an RSA `AdbKey` if the device asks), `open`, `shell` (shell v2

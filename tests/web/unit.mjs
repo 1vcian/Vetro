@@ -18,7 +18,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { BlobSource, composePlan, composeRead, DiskFeeder, LayoutSource, MemoryCache, parseLayout, RangeSource } from '../../web/node/disk.mjs';
-import { BootProgress, gridColors, isHome, PHASES } from '../../web/node/android.mjs';
+import { ANDROID_VERSIONS, BootProgress, colorSeen, DEFAULT_MANIFEST, gridColors, isHome, PHASES } from '../../web/node/android.mjs';
 import { apkIcon, apkInfo, parseArsc, parseAxml, resolveResource, zipEntries } from '../../web/node/apk.mjs';
 import {
   CATALOG_FORMAT, downloadApk, imageRelease, imageSatisfies, initialState, nextState, parseCatalog, parseEntry, parsePackages, sizeText, STATES, verifyApk,
@@ -544,6 +544,17 @@ test('Android boot phases (BootProgress)', () => {
   eq(gridColors(img, 64, 32), 1, 'black screen: one colour');
   for (let i = 0; i < 64 * 32; i++) img.set([i & 255, (i >> 3) & 255, 7], i * 4);
   eq(gridColors(img, 64, 32), 8, '16-pixel grid: 4x2 samples');
+});
+
+test('Android image versions and app colours (ADR 0032)', () => {
+  eq(DEFAULT_MANIFEST, ANDROID_VERSIONS[0].manifest, 'the first version is the default');
+  check(DEFAULT_MANIFEST.endsWith('/aosp/android-15.0.0_r36-BP1A.250505.005.D1-64fcd35/manifest.json'), `default image 64fcd35: ${DEFAULT_MANIFEST}`);
+  check(ANDROID_VERSIONS.some((v) => v.version.endsWith('-bd09e2f') && v.manifest.endsWith(`/aosp/${v.version}/manifest.json`)), 'bd09e2f still selectable');
+  // The test app's blue: the right order only (the default image converts to BGRX).
+  const blue = [0x15, 0x65, 0xc0];
+  check(colorSeen([0x15, 0x65, 0xc0], blue) && colorSeen([0x1a, 0x60, 0xc6], blue), 'blue, also within the tolerance');
+  check(!colorSeen([0xc0, 0x65, 0x15], blue), 'red and blue swapped is not the app colour any more');
+  check(!colorSeen(null, blue) && !colorSeen([0x15, 0x65, 0xd0], blue), 'no pixel, or too far');
 });
 
 test('APK: ZIP and binary manifest (testdata/tocco-manifest.axml)', async () => {

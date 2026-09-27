@@ -19,12 +19,25 @@ export const PHASES = [
   // action of init.cutf_cvm.rc in Vetro's image).
   ['booted', 'boot finished', /\(sys\.boot_completed=1\)|sys-boot-completed-set/],
   // Not from the console: the focused window becomes the launcher (before it
-  // there is FallbackHome, "Phone is starting"). Whoever has adb calls `mark`.
+  // there is FallbackHome, "Vetro is starting…" since image 64fcd35). Whoever has adb calls `mark`.
   ['home', 'home screen (launcher)', null],
 ];
 
-/** The version of Vetro's AOSP image the app uses by default, on R2 (ADR 0022, 0028, 0030). */
-export const DEFAULT_MANIFEST = 'https://pub-06e88fdd7f374fffb06844d60083f2ae.r2.dev/aosp/android-15.0.0_r36-BP1A.250505.005.D1-bd09e2f/manifest.json';
+const R2_AOSP = 'https://pub-06e88fdd7f374fffb06844d60083f2ae.r2.dev/aosp';
+
+/**
+ * The versions of Vetro's AOSP image the app offers, on R2 (ADR 0022, 0028,
+ * 0030), newest first: the first is the default. `…-64fcd35` (ADR 0032) has
+ * the right colours in the scanout and a lighter first boot; `…-bd09e2f`
+ * stays selectable (red and blue swapped, ADR 0028).
+ */
+export const ANDROID_VERSIONS = [
+  { version: 'android-15.0.0_r36-BP1A.250505.005.D1-64fcd35', label: 'AOSP 15, image 64fcd35 (default)' },
+  { version: 'android-15.0.0_r36-BP1A.250505.005.D1-bd09e2f', label: 'AOSP 15, image bd09e2f (previous: red and blue swapped)' },
+].map((v) => ({ ...v, manifest: `${R2_AOSP}/${v.version}/manifest.json` }));
+
+/** The version of Vetro's AOSP image the app uses by default. */
+export const DEFAULT_MANIFEST = ANDROID_VERSIONS[0].manifest;
 
 /**
  * Bootloader parameters for Vetro's AOSP image (ADR 0028): `nokaslr` like
@@ -103,18 +116,14 @@ export function androidKeyParts({ format, configHash, ramMiB, width, height, dev
 }
 
 /**
- * An app colour as the scanout shows it. Today's image swaps red and blue
- * (the blue app 0x1565c0 arrives as (192, 101, 21): a buffer written as RGBA
- * presented by virtio-gpu as XRGB8888; `display_framebuffer_format=bgra`
- * changes nothing, ADR 0028): tests accept both orders and report which one
- * they saw.
+ * Whether pixel `px` shows app colour `rgb` (within `tol` per channel), in
+ * the right order: the default image (`…-64fcd35`, ADR 0032) converts its
+ * frame to the scanout's BGRX format. The previous image (`…-bd09e2f`)
+ * swapped red and blue, and tests accepted both orders until it was the
+ * default.
  */
 export function colorSeen(px, rgb, tol = 8) {
-  if (!px) return null;
-  const near = (c) => c.every((v, i) => Math.abs(v - px[i]) <= tol);
-  if (near(rgb)) return 'rgb';
-  if (near([rgb[2], rgb[1], rgb[0]])) return 'bgr';
-  return null;
+  return !!px && rgb.every((v, i) => Math.abs(v - px[i]) <= tol);
 }
 
 /** adb command for the focused window; the home screen is up if it contains "launcher". */
