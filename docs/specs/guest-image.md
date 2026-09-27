@@ -176,16 +176,16 @@ Go profile, two switchable parts:
 - boot time, on the regular image: `androidboot.vetro.profile=go`
   (`go/init.vetro-go.rc`, installed on every product) sets Android Go's
   low-RAM defaults before zygote (`ro.config.low_ram`, lmkd pressure
-  thresholds, Dalvik heap 128/256 MiB, `pm.dexopt.downgrade_after_inactive_days`)
-  and, after `sys.boot_completed`, takes microG out of the power-save
-  exemption, forbids it background runs and puts it in the "restricted"
-  standby bucket;
+  thresholds, Dalvik heap 128/256 MiB, `pm.dexopt.downgrade_after_inactive_days`;
+  set by vendor init, accepted because SELinux is permissive). It cannot
+  restrict microG: init has no domain transition to run `cmd`;
 - build time: product `vetro_arm64_go` (`vetro_arm64_go-bp1a-userdebug`,
   `vetro_arm64_go.mk` + `go/go.mk`): `go_defaults_common.mk` (the same
   properties in build.prop, speed-profile for system_server, the Go
   handheld feature list) and `VetroGoRemovals` (`overrides` of BasicDreams,
   PhotoTable, EasterEgg, Traceur, ThreadNetworkDemoApp, DeviceAsWebcam,
-  Music, Calendar). Published as its own version, never as the site's
+  Music, Calendar, and `sysconfig-vetro-microg.xml`: microG without its
+  power-save exemption). Published as its own version, never as the site's
   default.
 
 ## R2
