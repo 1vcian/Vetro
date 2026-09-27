@@ -48,17 +48,33 @@ VM, `android-15.0.0_r36`, `out/target/product/vetro_arm64`):
   the DRM plane: SET_SCANOUT of a 3D resource plus RESOURCE_FLUSH.
 
 ## Options
-| | virgl (Gallium) | Venus (Vulkan) | gfxstream GLES (pipe) | custom GLES forwarding |
-|---|---|---|---|---|
-| Guest side in this image | none: Mesa GL must be ported into the build | venus not built; needs blobs + host-visible memory | **present**, selected by bootconfig | new EGL/GLES/gralloc libraries to write |
-| Wire format | Gallium state + TGSI shaders | Vulkan commands + SPIR-V | GLES 1:1 (emugen), GLSL ES source passed through | ours |
-| Host translation | TGSI→GLSL ES + Gallium→GL (virglrenderer's vrend: ~40k lines of C, desktop-GL oriented) | Vulkan→WebGPU: SPIR-V→WGSL, descriptor model, persistent mapping WebGPU forbids | GLES 3.0→WebGL2 is nearly the identity; shaders compiled by the browser | same as gfxstream |
-| Browser API fit | WebGL2 lacks features vrend assumes (geometry/tess, texture buffers, GL 3.3 semantics) | WebGPU is not Vulkan; large impedance mismatch | WebGL2 = GLES 3.0: report GLES 3.0 and the fit is direct | direct |
-| Virtio needs | 3D + capsets | 3D + blobs + context init + shm region | **3D only** (pipe transport) | 3D only |
-| Effort to first frame | very high (guest port + vrend port) | very high | **medium** (virtio 3D, pipe, ~200 GLES/rc calls, WebGL executor) | high (guest drivers) |
+The owner's guidance for this choice: prefer standard protocols and
+existing, maintained upstream components over bespoke ones, use Chrome's
+native capabilities (WebGL2/WebGPU from an `OffscreenCanvas` in the Worker,
+WASM SIMD and threads where they help), score maintenance burden explicitly,
+and pick the least custom option that works in Chrome.
 
-Determinism, snapshots and security weigh the same on all four once the
-host decoder is ours (below); they do not change the ranking.
+| | A. virgl (Gallium) | B. Venus (Vulkan) | C. gfxstream: upstream host renderer compiled to WASM | D. gfxstream protocol, host decoder generated from upstream specs | E. custom GLES forwarding |
+|---|---|---|---|---|---|
+| Guest side in this image | none: Mesa GL must be ported into the build | venus not built; needs blobs + host-visible memory | **present** (upstream AOSP), selected by bootconfig | **present** (upstream AOSP), selected by bootconfig | new EGL/GLES/gralloc libraries to write |
+| Protocol | standard (virgl) | standard (Venus) | standard (gfxstream/emugen) | **standard (gfxstream/emugen)**, decoder tables generated from the upstream `.in/.attrib/.types` | ours |
+| Host code | virglrenderer's vrend (~40k lines of C) compiled to WASM: needs desktop GL 3.3 or GLES 3.1+ (texture buffers, geometry shaders…), one GL context per guest context with shared objects | Vulkan→WebGPU translation: no upstream component exists (SPIR-V→WGSL, descriptor model, persistent mapping WebGPU forbids) | gfxstream's FrameBuffer/RenderThread/GLES translator: one host thread per guest thread, many host contexts **sharing** textures (EGL share groups), EGL pbuffers, dlopen'd GL; WebGL has no shared contexts and a context lives on one thread, so it needs an invasive fork plus the Emscripten C++ toolchain next to our Rust wasm32 build | generic packet parser driven by generated tables (verified against the upstream generated decoders for all 509 opcodes), renderControl/EGL semantics as upstream's `RenderControl.cpp`, a thin GLES 3.0→WebGL2 executor in JS; ANGLE inside Chrome does the real translation | everything, both sides |
+| Chrome fit | WebGL2 below vrend's floor | WebGPU is not Vulkan | blocked by context sharing and threading | **direct**: guest reports GLES 3.0 = WebGL2; all guest contexts mapped onto one WebGL2 context of an `OffscreenCanvas` in the Worker | direct |
+| Virtio needs | 3D + capsets | 3D + blobs + context init + shm region | 3D (pipe) | **3D only** (pipe transport) | 3D only |
+| **Maintenance burden** (per AOSP/upstream update) | very high: Mesa Android build + vrend port on WebGL | very high: our own Vulkan→WebGPU layer | high: rebase an invasive fork of the host renderer, two toolchains | **medium-low**: guest untouched; protocol changes = rerun `tools/gfxstream/gen-tables.py` (CI checks the tables are current); our semantic layer follows `RenderControl.cpp`/`GLESv2Decoder.cpp` | very high: guest drivers to maintain forever |
+| Effort to first frame | very high | very high | high | **medium** | high |
+
+Compiling only upstream's *generated* decoders (`gles2_dec.cpp`,
+`renderControl_dec.cpp`) to WASM was also weighed under D: they only
+unpack parameters, which the table-driven parser reproduces exactly (checked
+opcode by opcode), while the parts that carry meaning (`GLESv2Decoder.cpp`'s
+custom calls, ColorBuffers, EGL objects) are entangled with the upstream
+translator and EGL; the C++ toolchain would buy no semantics.
+
+Determinism, snapshots and security weigh the same on every option once the
+host side runs inside Vetro (below); they do not change the ranking. **D is
+the least custom option that works in Chrome**: standard protocol, upstream
+guest drivers, upstream-derived tables, and Chrome's own ANGLE behind WebGL2.
 
 ## Decision
 1. **gfxstream GLES over virtio-gpu 3D with the pipe transport**, host side
@@ -80,7 +96,11 @@ host decoder is ours (below); they do not change the ranking.
    RESOURCE_CREATE_3D, TRANSFER_TO/FROM_HOST_3D, SUBMIT_3D, 3D resources as
    scanouts; the protocol lives behind a `Renderer3d` trait, so the device
    stays independent of gfxstream.
-4. **The decoder is Rust (`vetro-gfxstream`)**: pipe services
+4. **The decoder is Rust (`vetro-gfxstream`)**, as close to upstream as
+   possible: the wire tables are generated (never hand-written), the
+   renderControl and EGL behaviour follows upstream's host
+   (`RenderControl.cpp`, `FrameBuffer.cpp`, `GLESv2Decoder.cpp`), deviations
+   are listed in `docs/specs/gfxstream.md`. It handles the pipe services
    (`GLProcessPipe`, `opengles`), renderControl and GLES2/3 decoding from
    tables generated from gfxstream's emugen specs (Apache 2.0), EGL objects
    (contexts, surfaces, ColorBuffers = resource ids), guest→host object
@@ -93,6 +113,12 @@ host decoder is ours (below); they do not change the ranking.
    from the ColorBuffer's texture into its canvas and handed to the page as an
    `ImageBitmap` (transferable). The 2D path and its presenters stay as they
    are.
+6. **Chrome's native paths**: WebGL2 on an `OffscreenCanvas` owned by the
+   emulator Worker (the executor runs where the guest's commands are decoded,
+   so readbacks are synchronous without cross-thread hops; Chrome's GPU
+   process already runs ANGLE in parallel with the Worker); pixel format
+   conversions (BGRA↔RGBA, row flips) in Rust with WASM SIMD where the build
+   enables it; WebGPU is kept for the Vulkan slice.
 
 ### Determinism (ADR 0019)
 GPU output must not reach guest-visible state except where recorded:
@@ -160,7 +186,7 @@ includes the mode); the fallback path is unchanged.
   through gfxstream Vulkan instead, whose guest driver is already in the image.
 - **Custom GLES forwarding**: gfxstream already is that, with its guest side
   maintained upstream and installed in the image.
-- **gfxstream's own host renderer compiled to wasm**: it targets desktop GL
+- **gfxstream's own host renderer compiled to wasm (C)**: WebGL has no shared contexts and binds a context to one thread, while the renderer shares textures across many host contexts and threads; it also targets desktop GL
   or EGL/GLES 3.1 through its translator, keeps threads per guest thread and
   process-wide globals; its snapshot and determinism rules are not ours.
 - **Decoder in JS**: the device, its snapshot and the replay log live in
