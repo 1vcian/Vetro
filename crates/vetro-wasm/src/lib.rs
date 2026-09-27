@@ -79,7 +79,9 @@ use display::WebDisplay;
 /// 12: booting from Android images (`vetro_load_android`, ADR 0018 and
 /// 0028), chunked snapshots (`vetro_snapshot_save_stream`,
 /// `vetro_snapshot_restore_stream`, imports `vetro_host.snapshot_write/read`).
-pub const ABI_VERSION: u32 = 13;
+/// 13: snapshot configuration hash and compression level (ADR 0031).
+/// 14: import `vetro_jit.ready` (background JIT compilation, ADR 0038).
+pub const ABI_VERSION: u32 = 14;
 
 /// Alignment of the [`vetro_alloc`] buffers (enough for `JitState`).
 const ALLOC_ALIGN: usize = 16;

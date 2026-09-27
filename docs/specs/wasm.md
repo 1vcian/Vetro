@@ -400,6 +400,7 @@ JS provides them at instantiation (`web/node/vetro.mjs`):
 | `vetro_jit.entry` | `(module: i32, index: u32) -> u32` | puts the module's export `b<index>` in a new entry of `__indirect_function_table` and returns it: `JsEngine::run` calls it as a function pointer, without going through JS |
 | `vetro_jit.place` | `(module: i32, count: u32, base: u32)` | puts the module's `b0..b<count-1>` in the block table (the dispatcher's `env.tbl`) starting at entry `base` |
 | `vetro_jit.reset` | `()` | discards all instances and recreates the block table |
+| `vetro_jit.ready` | `(module: i32) -> u32` | ABI 14: 1 if the module can run, 0 while a Worker still compiles it (ADR 0038: `JitEngine.startBackground()`; the regions of a module that is not ready run in the interpreter and the module is placed in the block table when it arrives) |
 | `vetro_jit.drop` | `(module: i32)` | frees the module |
 
 ## The JIT engine in JavaScript
