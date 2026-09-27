@@ -84,6 +84,13 @@ impl Engine for JsEngine {
         if id < 0 { Err(format!("the JS engine refused the module ({id})")) } else { Ok(JsModule(id)) }
     }
 
+    /// ADR 0038: with background compilation (`JitEngine` in async mode) a
+    /// module may still be compiling in a Worker.
+    fn ready(&mut self, m: &JsModule) -> bool {
+        // SAFETY: JS import, no memory access.
+        unsafe { js::ready(m.0) != 0 }
+    }
+
     /// Runs block `b<index>` on the state at offset `state` of the
     /// shared memory; during execution `ld`/`st` call `host`.
     fn run(&mut self, m: &JsModule, index: u32, state: u32, host: &mut dyn Host) -> u32 {
@@ -240,6 +247,9 @@ mod js {
         pub fn place(module: i32, count: u32, base: u32);
         /// Discards all instances and recreates the block table.
         pub fn reset();
+        /// 1 if the module can run, 0 while a Worker still compiles it
+        /// (ADR 0038).
+        pub fn ready(module: i32) -> u32;
     }
 
     /// Calls the function at entry `entry` of the function table
@@ -274,6 +284,9 @@ mod js {
     pub unsafe fn drop_module(_module: i32) {}
     pub unsafe fn place(_module: i32, _count: u32, _base: u32) {}
     pub unsafe fn reset() {}
+    pub unsafe fn ready(_module: i32) -> u32 {
+        1
+    }
 }
 
 /// Flat test RAM for [`vetro_jit_selftest`]: 4 KiB from `SELFTEST_BASE`.

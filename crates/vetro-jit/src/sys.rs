@@ -60,6 +60,7 @@
 //! changes only for a guest that modifies the page tables without
 //! TLBI, which the architecture leaves unpredictable and Linux does not do.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::rc::Rc;
@@ -339,6 +340,9 @@ pub fn target(cpu: &Cpu) -> SysTarget {
 /// An entry of a compiled region.
 struct Compiled<M> {
     _module: Rc<M>,
+    /// False while the engine is still compiling the module
+    /// ([`Engine::ready`], ADR 0038): the region runs in the interpreter.
+    ready: Rc<Cell<bool>>,
     /// Table entry.
     slot: u32,
     /// Maximum steps of the base entry block.
@@ -483,7 +487,9 @@ impl<M> Cache<M> {
         };
         if let Some(v) = e.variants.iter().find(|v| v.pa == pa) {
             return match &v.block {
-                Some(c) => Look::Hot(c.clone()),
+                Some(c) if c.ready.get() => Look::Hot(c.clone()),
+                // Still compiling (ADR 0038): the interpreter runs it.
+                Some(_) => Look::Cold,
                 None => Look::One,
             };
         }
@@ -550,6 +556,8 @@ pub struct SysJit<E: Engine> {
     ram: Option<(u64, u32, u64)>,
     ram_key: Option<(u64, usize, usize)>,
     dirty: Vec<u64>,
+    /// Modules the engine is still compiling, with their flag (ADR 0038).
+    compiling: Vec<(Rc<E::Module>, Rc<Cell<bool>>)>,
     profile: Option<Profile>,
     /// Clock of the next run ([`SysJit::set_time`]).
     time: Option<Clock>,
@@ -726,6 +734,7 @@ impl<E: Engine> SysJit<E> {
             ram: None,
             ram_key: None,
             dirty: Vec::new(),
+            compiling: Vec::new(),
             time: None,
             stops: std::collections::BTreeSet::new(),
             profile: cfg.profile.then(|| {
@@ -999,6 +1008,7 @@ impl<E: Engine> SysJit<E> {
     /// contract).
     pub fn run(&mut self, cpu: &mut Cpu, mmu: &mut Mmu, phys: &mut dyn SysPhys, budget: u64) -> SysRun {
         self.cache.stats.calls += 1;
+        self.poll_compiling();
         self.drain(phys);
         self.sync_regime(cpu, mmu);
         self.sync_ram(phys);
@@ -1061,6 +1071,9 @@ impl<E: Engine> SysJit<E> {
                         in_jit = false;
                     }
                     match self.install(pc, fl, sys, pa, phys) {
+                        // Compiled in the background (ADR 0038): the
+                        // interpreter runs it until the module is ready.
+                        Ok(c) if !c.ready.get() => break Next::Cold,
                         Ok(c) => c,
                         Err(n) => break n,
                     }
@@ -1262,7 +1275,11 @@ impl<E: Engine> SysJit<E> {
         self.engine.place(&module, n, base);
         self.cache.next_slot += n;
         self.cache.stats.modules += 1;
+        let ready = Rc::new(Cell::new(self.engine.ready(&module)));
         let module = Rc::new(module);
+        if !ready.get() {
+            self.compiling.push((module.clone(), ready.clone()));
+        }
         let pending = std::mem::take(&mut self.cache.pending);
         for (i, p) in pending.into_iter().enumerate() {
             let slot = base + i as u32;
@@ -1272,7 +1289,13 @@ impl<E: Engine> SysJit<E> {
                 .entries()
                 .into_iter()
                 .map(|(epc, bb, max)| {
-                    let c = Compiled { _module: module.clone(), slot, max_steps: max as u8, bb: bb as u8 };
+                    let c = Compiled {
+                        _module: module.clone(),
+                        ready: ready.clone(),
+                        slot,
+                        max_steps: max as u8,
+                        bb: bb as u8,
+                    };
                     (epc, Rc::new(c))
                 })
                 .collect();
@@ -1283,6 +1306,24 @@ impl<E: Engine> SysJit<E> {
             self.cache.compiled.insert((p.key, p.words), es.clone());
             self.cache.record_entries(p.key, p.pa, &es);
         }
+    }
+
+    /// Marks the modules the engine finished compiling (ADR 0038). Readiness
+    /// only changes between runs, so no jump cache entry of the run can
+    /// name a module that is not ready.
+    fn poll_compiling(&mut self) {
+        if self.compiling.is_empty() {
+            return;
+        }
+        let engine = &mut self.engine;
+        self.compiling.retain(|(m, r)| {
+            if engine.ready(m) {
+                r.set(true);
+                false
+            } else {
+                true
+            }
+        });
     }
 
     fn compile_dispatcher(&mut self) {
@@ -1307,6 +1348,7 @@ impl<E: Engine> SysJit<E> {
         c.compiled.clear();
         c.next_slot = 0;
         c.stats.resets += 1;
+        self.compiling.clear();
         self.dispatcher = None;
         self.engine.reset();
         self.engine.reserve(self.cfg.state_addr as usize + area::SIZE as usize);

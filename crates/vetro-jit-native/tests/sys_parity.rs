@@ -24,7 +24,7 @@ use vetro_cpu::sys::{CpuEnv, SysEvent, sctlr};
 use vetro_cpu::sysreg::EnvReg;
 use vetro_cpu::{Cpu, Insn, SysConfig, decode};
 use vetro_jit::translate::{Kind, SysTarget, kind_in};
-use vetro_jit::{Next, SysJit, SysJitConfig, SysPhys};
+use vetro_jit::{Engine, Host, Next, SysJit, SysJitConfig, SysPhys};
 use vetro_jit_native::NativeEngine;
 use vetro_mmu::{BusError, Mmu, MmuBus, PhysMemory};
 
@@ -505,9 +505,19 @@ fn run_jit(cpu: Cpu, ram: &[u8], seed: u64) -> (Trace, vetro_jit::SysJitStats) {
 
 /// Like [`run_jit`] with `SysJit::set_stops(stops)`; also counts the
 /// interpreter steps done with the PC in `stops`.
-fn run_jit_stops(mut cpu: Cpu, ram: &[u8], seed: u64, stops: &[u64]) -> (Trace, vetro_jit::SysJitStats, u64) {
+fn run_jit_stops(cpu: Cpu, ram: &[u8], seed: u64, stops: &[u64]) -> (Trace, vetro_jit::SysJitStats, u64) {
+    run_jit_on(NativeEngine::new(), cpu, ram, seed, stops)
+}
+
+/// Like [`run_jit_stops`] on any engine.
+fn run_jit_on<E: Engine>(
+    mut engine: E,
+    mut cpu: Cpu,
+    ram: &[u8],
+    seed: u64,
+    stops: &[u64],
+) -> (Trace, vetro_jit::SysJitStats, u64) {
     let mut rng = Rng(seed ^ 0xb0d9e7);
-    let mut engine = NativeEngine::new();
     vetro_jit::Engine::reserve(&mut engine, RAM_IN_ENGINE + RAM_LEN);
     let cfg = SysJitConfig {
         hot_threshold: rng.below(3) as u32,
@@ -1135,4 +1145,99 @@ fn msr_ttbr0_in_a_region_ends_the_run() {
         assert_eq!(got, want, "seed {seed}: interpreter and JIT differ ({s:?})");
         assert!(s.jit_steps > 500 && s.yields > 50, "seed {seed}: not run in regions: {s:?}");
     }
+}
+
+/// An engine that compiles "in the background" (ADR 0038): every region
+/// module becomes ready only after a random number of `ready` polls, and
+/// its regions reach the block table only then (as in the browser, where
+/// the Worker's module is placed when it arrives). A region called before
+/// that would hit an empty table entry and trap.
+struct Delayed {
+    inner: NativeEngine,
+    rng: Rng,
+    /// Module id -> (polls left, placement).
+    waiting: std::collections::HashMap<u64, (u64, u32, u32)>,
+    next: u64,
+    not_ready: std::rc::Rc<std::cell::Cell<u64>>,
+}
+
+struct DelayedModule {
+    id: u64,
+    m: <NativeEngine as Engine>::Module,
+}
+
+impl Engine for Delayed {
+    type Module = DelayedModule;
+    fn runtime(&mut self, wasm: &[u8]) -> Result<(), String> {
+        self.inner.runtime(wasm)
+    }
+    fn compile(&mut self, wasm: &[u8]) -> Result<DelayedModule, String> {
+        self.next += 1;
+        Ok(DelayedModule { id: self.next, m: self.inner.compile(wasm)? })
+    }
+    fn ready(&mut self, m: &DelayedModule) -> bool {
+        let Some(w) = self.waiting.get_mut(&m.id) else { return true };
+        if w.0 > 0 {
+            w.0 -= 1;
+            self.not_ready.set(self.not_ready.get() + 1);
+            return false;
+        }
+        let (_, count, base) = self.waiting.remove(&m.id).expect("waiting");
+        self.inner.place(&m.m, count, base);
+        true
+    }
+    fn run(&mut self, m: &DelayedModule, index: u32, state: u32, host: &mut dyn Host) -> u32 {
+        self.inner.run(&m.m, index, state, host)
+    }
+    fn memory(&mut self) -> &mut [u8] {
+        self.inner.memory()
+    }
+    fn place(&mut self, m: &DelayedModule, count: u32, base: u32) {
+        let polls = self.rng.below(4);
+        if polls == 0 {
+            self.inner.place(&m.m, count, base);
+        } else {
+            self.waiting.insert(m.id, (polls, count, base));
+        }
+    }
+    fn reset(&mut self) {
+        self.waiting.clear();
+        self.inner.reset();
+    }
+    fn reserve(&mut self, bytes: usize) {
+        self.inner.reserve(bytes);
+    }
+    fn host_address(&mut self, p: *const u8, len: usize) -> Option<u32> {
+        self.inner.host_address(p, len)
+    }
+}
+
+/// Background compilation (ADR 0038): with modules that become ready late,
+/// execution stays identical to the interpreter (the regions of a module
+/// still compiling run in the interpreter). Red if `Cache::lookup` or
+/// `SysJit::run` hand out a region that is not ready (its table entry is
+/// empty: wasmtime traps).
+#[test]
+fn background_compilation_keeps_the_execution() {
+    let not_ready = std::rc::Rc::new(std::cell::Cell::new(0));
+    let mut jit_steps = 0;
+    for seed in 0..200u64 {
+        let (cpu, ram) = setup(seed);
+        let want = run_interp(cpu.clone(), ram.clone());
+        let engine = Delayed {
+            inner: NativeEngine::new(),
+            rng: Rng(seed ^ 0xa51c),
+            waiting: Default::default(),
+            next: 0,
+            not_ready: not_ready.clone(),
+        };
+        let (got, s, _) = run_jit_on(engine, cpu, &ram, seed, &[]);
+        assert_eq!(got, want, "seed {seed}: interpreter and JIT with background compilation");
+        jit_steps += s.jit_steps;
+    }
+    assert!(
+        not_ready.get() > 100 && jit_steps > 10_000,
+        "test too weak: {} not-ready polls, {jit_steps} steps in the JIT",
+        not_ready.get()
+    );
 }
