@@ -459,12 +459,22 @@ pub fn decompress(src: &[u8], dst: &mut [u8]) -> Result<()> {
     let end = dst.len();
     while o < end {
         r.refill();
-        let s = r.symbol(&ll)?;
-        if s < 256 {
+        let mut s = r.symbol(&ll)?;
+        // Runs of literals: one refill (56 bits) is enough for several
+        // codes of at most MAX_BITS.
+        while s < 256 {
             dst[o] = s as u8;
             o += 1;
-            continue;
+            if o == end {
+                return r.check();
+            }
+            if r.n < MAX_BITS {
+                r.refill();
+            }
+            s = r.symbol(&ll)?;
         }
+        // Length extra bits, distance code and extra bits: at most 56 bits.
+        r.refill();
         let code = s - 256;
         if code >= LEN_CODES {
             return Err(Error::invalid("frame: length code"));
@@ -480,6 +490,16 @@ pub fn decompress(src: &[u8], dst: &mut [u8]) -> Result<()> {
         if dist == 1 {
             let v = dst[o - 1];
             dst[o..o + len].fill(v);
+        } else if dist >= 8 && o + len + 8 <= end {
+            // 8 bytes at a time, forwards: every read is of bytes already
+            // written (dist >= 8). Up to 7 bytes past the match are
+            // overwritten, and written again by what follows.
+            let mut k = 0;
+            while k < len {
+                let w: [u8; 8] = dst[o + k - dist..o + k - dist + 8].try_into().expect("8 bytes");
+                dst[o + k..o + k + 8].copy_from_slice(&w);
+                k += 8;
+            }
         } else if dist >= len {
             dst.copy_within(o - dist..o - dist + len, o);
         } else {
@@ -591,6 +611,32 @@ mod tests {
             let mut x = c.clone();
             x[i] ^= 0x5a;
             let _ = decompress(&x, &mut d);
+        }
+    }
+
+    /// The decoder's copy paths (M4): 8 bytes at a time for distances of at
+    /// least 8 (overlapping the match's own output, lengths that are not
+    /// multiples of 8, matches ending right before the end of the frame, where
+    /// the wide copy must not be used), the fill for distance 1 and the byte
+    /// loop for short distances. Fails if the wide copy is allowed for
+    /// distances below 8 or up to the end of the frame (both tried).
+    #[test]
+    fn match_copies_of_every_distance() {
+        for dist in 1..=40usize {
+            for len_mod in 0..8 {
+                let pattern = noise(dist, (dist * 8 + len_mod) as u32);
+                let n = 4 * FRAME / 64 + len_mod;
+                let mut data: Vec<u8> = pattern.iter().cycle().take(n).copied().collect();
+                // A literal tail of every length up to 9: the last match ends
+                // at 0..9 bytes from the end.
+                for tail in 0..10 {
+                    let mut d = data.clone();
+                    d.extend(noise(tail, 99));
+                    roundtrip(&d);
+                }
+                data.truncate(n - len_mod);
+                roundtrip(&data);
+            }
         }
     }
 }

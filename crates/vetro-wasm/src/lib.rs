@@ -1421,6 +1421,7 @@ pub unsafe extern "C" fn vetro_snapshot_restore_stream(vm: *mut Vm, head: *const
     // SAFETY: `vm` comes from `vetro_machine_new`, `head` is valid for `head_len` bytes.
     let vm = unsafe { &mut *vm };
     let head = unsafe { bytes(head, head_len) };
+    reserve_heap(head_len);
     #[cfg(target_arch = "wasm32")]
     let mut pull = |buf: &mut [u8]| -> usize {
         // SAFETY: `vetro_host` import: writes at most `buf.len()` bytes into `buf`.
@@ -1440,6 +1441,19 @@ pub unsafe extern "C" fn vetro_snapshot_restore_stream(vm: *mut Vm, head: *const
             }
         }
     }
+}
+
+/// Grows the heap once by about `bytes` before a restore decodes that much
+/// state into many small allocations (the disk's copy-on-write clusters:
+/// hundreds of MiB for Android, 4 KiB each). Without it the allocator grows
+/// the linear memory 64 KiB at a time, and each `memory.grow` of a memory of
+/// gigabytes costs V8 about half a millisecond: 16% of an Android restore
+/// (M4). The block is freed at once and stays in the allocator's top chunk.
+fn reserve_heap(bytes: usize) {
+    let v = Vec::<u8>::with_capacity(bytes.saturating_add(bytes / 8));
+    // Not optimized away: the allocation is the point.
+    core::hint::black_box(v.as_ptr());
+    drop(v);
 }
 
 // ---- Persistent disk overlay (ABI 6, ADR 0017) -----------------------------
