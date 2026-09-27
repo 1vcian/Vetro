@@ -1,12 +1,12 @@
 #
-# Prodotto Vetro arm64 (telefono, solo 64 bit). Parte da
-# device/google/cuttlefish/vsoc_arm64_only/phone/aosp_cf.mk (AOSP 15) e ne
-# cambia solo ciò che la macchina di Vetro richiede: vedi
-# docs/adr/0022-vetro-aosp-image.md e docs/specs/guest-image.md.
+# Vetro arm64 product (phone, 64-bit only). Starts from
+# device/google/cuttlefish/vsoc_arm64_only/phone/aosp_cf.mk (AOSP 15) and
+# changes only what the Vetro machine requires: see
+# docs/adr/0022-vetro-aosp-image.md and docs/specs/guest-image.md.
 #
 
 #
-# Tutto ciò che va in system (come il GSI)
+# Everything that goes into system (like the GSI)
 #
 $(call inherit-product, $(SRC_TARGET_DIR)/product/core_64_bit_only.mk)
 $(call inherit-product, $(SRC_TARGET_DIR)/product/generic_system.mk)
@@ -25,24 +25,24 @@ $(call inherit-product, $(SRC_TARGET_DIR)/product/telephony_system_ext.mk)
 $(call inherit-product, $(SRC_TARGET_DIR)/product/aosp_product.mk)
 
 #
-# vendor: quello del telefono Cuttlefish (HAL virtuali, SwiftShader,
-# minigbm, HWC ranchu/drm_hwcomposer, KeyMint e Gatekeeper software).
-# Niente packages/modules/Virtualization: la virt di Vetro non ha KVM.
+# vendor: the one of the Cuttlefish phone (virtual HALs, SwiftShader,
+# minigbm, HWC ranchu/drm_hwcomposer, software KeyMint and Gatekeeper).
+# No packages/modules/Virtualization: Vetro's virt has no KVM.
 #
-# HAL di Cuttlefish che parlano con l'host (vsock o /dev/hvcN) e senza host
-# abortiscono a ciclo: le luci bloccano system_server (LightsService aspetta
-# ILights/default, dichiarato nella VINTF dall'APEX ma mai registrato), l'OEM
-# lock lo stesso per OemLockService. Si tolgono con gli interruttori di
-# shared/device.mk (valgono prima dell'inherit).
+# Cuttlefish HALs that talk to the host (vsock or /dev/hvcN) and, without a host,
+# abort in a loop: lights block system_server (LightsService waits for
+# ILights/default, declared in the VINTF by the APEX but never registered), the OEM
+# lock does the same for OemLockService. They are removed with the switches of
+# shared/device.mk (they apply before the inherit).
 LOCAL_ENABLE_LIGHT := false
 LOCAL_ENABLE_OEMLOCK := false
 $(call inherit-product, device/google/cuttlefish/shared/phone/device_vendor.mk)
 $(call inherit-product, device/google/cuttlefish/vsoc_arm64/bootloader.mk)
 
-# Parti nostre: fstab, init, microG.
+# Our parts: fstab, init, microG.
 $(call inherit-product, device/vetro/vetro_arm64/device.mk)
 
-# Esclude le funzioni non disponibili sui dispositivi AOSP.
+# Excludes features not available on AOSP devices.
 PRODUCT_COPY_FILES += \
     frameworks/native/data/etc/aosp_excluded_hardware.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/aosp_excluded_hardware.xml
 
@@ -53,8 +53,8 @@ PRODUCT_MANUFACTURER := Vetro
 PRODUCT_MODEL := Vetro arm64
 PRODUCT_MAX_PAGE_SIZE_SUPPORTED := 16384
 
-# ro.product.system.*: generic_system.mk mette Android/mainline/generic (per
-# il GSI); qui la partizione system è solo di Vetro (ADR 0030).
+# ro.product.system.*: generic_system.mk sets Android/mainline/generic (for
+# the GSI); here the system partition belongs to Vetro only (ADR 0030).
 PRODUCT_SYSTEM_NAME := vetro_arm64
 PRODUCT_SYSTEM_DEVICE := vetro_arm64
 PRODUCT_SYSTEM_BRAND := Vetro

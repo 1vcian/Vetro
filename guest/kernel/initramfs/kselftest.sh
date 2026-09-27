@@ -1,15 +1,15 @@
-# Esegue i kselftest di /kselftest (initramfs dei kselftest, M3) con la shell
-# di BusyBox: il runner del kernel (kselftest/runner.sh) usa costrutti che ash
-# non capisce. Per ogni test di kselftest-list.txt stampa l'uscita con "# "
-# davanti e l'esito nel formato TAP del kernel:
-#   ok N gruppo:test | ok N gruppo:test # SKIP | not ok N gruppo:test # exit=R
-# Il limite di tempo è in tempo del guest (timeout di BusyBox).
+# Runs the kselftests in /kselftest (kselftest initramfs, M3) with the BusyBox
+# shell: the kernel runner (kselftest/runner.sh) uses constructs that ash
+# does not understand. For each test in kselftest-list.txt prints the output
+# prefixed with "# " and the result in the kernel TAP format:
+#   ok N group:test | ok N group:test # SKIP | not ok N group:test # exit=R
+# The time limit is in guest time (BusyBox timeout).
 n=0
 while IFS=: read -r dir test; do
   [ -n "$dir" ] || continue
   n=$((n + 1))
   echo "# selftests: $dir:$test"
-  cd "/kselftest/$dir" || { echo "not ok $n $dir:$test # nessuna directory"; continue; }
+  cd "/kselftest/$dir" || { echo "not ok $n $dir:$test # no directory"; continue; }
   timeout -s KILL 300 "./$test" </dev/null >/tmp/kst.out 2>&1
   rc=$?
   sed 's/^/# /' /tmp/kst.out

@@ -1,34 +1,34 @@
 /*
- * vetro-dev: esercita dal guest i dispositivi virtio di M5 (virtio-gpu,
- * virtio-input, virtio-vsock) con le interfacce del kernel, senza librerie.
- * Stampa solo valori deterministici (niente puntatori né tempi), così lo
- * stesso comando dà lo stesso log sotto QEMU e sotto Vetro.
+ * vetro-dev: exercises the M5 virtio devices (virtio-gpu, virtio-input,
+ * virtio-vsock) from the guest through the kernel interfaces, with no libraries.
+ * Prints only deterministic values (no pointers or times), so the same
+ * command gives the same log under QEMU and under Vetro.
  *
- *   vetro-dev drm                 connettore, modi, modeset di un dumb buffer
- *                                 con un motivo noto, cursore
- *   vetro-dev drm-hold            come drm, poi aspetta una riga su stdin
- *                                 prima di chiudere (l'host guarda lo scanout)
- *   vetro-dev input               capacità di ogni /dev/input/event*
- *   vetro-dev input-read DEV N    stampa i prossimi N eventi di DEV
- *   vetro-dev led DEV CODICE V    scrive un evento EV_LED su DEV
- *   vetro-dev vsock-cid           CID locale
- *   vetro-dev vsock-connect PORTA MSG
- *                                 si collega all'host (CID 2), manda MSG,
- *                                 chiude in scrittura e stampa la risposta
- *   vetro-dev vsock-listen PORTA  accetta una connessione, rimanda in
- *                                 maiuscolo quello che riceve
- *   vetro-dev xattr-set FILE NOME VALORE
- *                                 imposta un xattr (M8: prove del gestore
- *                                 dei file; BusyBox non ha setfattr)
- *   vetro-dev xattr-get FILE NOME stampa il valore di un xattr
+ *   vetro-dev drm                 connector, modes, modeset of a dumb buffer
+ *                                 with a known pattern, cursor
+ *   vetro-dev drm-hold            like drm, then waits for a line on stdin
+ *                                 before closing (the host looks at the scanout)
+ *   vetro-dev input               capabilities of every /dev/input/event*
+ *   vetro-dev input-read DEV N    prints the next N events of DEV
+ *   vetro-dev led DEV CODE V      writes an EV_LED event to DEV
+ *   vetro-dev vsock-cid           local CID
+ *   vetro-dev vsock-connect PORT MSG
+ *                                 connects to the host (CID 2), sends MSG,
+ *                                 shuts down writing and prints the reply
+ *   vetro-dev vsock-listen PORT   accepts one connection, sends back in
+ *                                 upper case what it receives
+ *   vetro-dev xattr-set FILE NAME VALUE
+ *                                 sets an xattr (M8: file manager tests;
+ *                                 BusyBox has no setfattr)
+ *   vetro-dev xattr-get FILE NAME prints the value of an xattr
  *   vetro-dev run-as UID GID CMD [ARG...]
- *                                 esegue CMD con quell'uid e gid, senza
- *                                 gruppi supplementari (M8: un processo
- *                                 "dell'app" nelle prove del gestore dei
- *                                 file; BusyBox non ha setuidgid)
+ *                                 runs CMD with that uid and gid, with no
+ *                                 supplementary groups (M8: an "app"
+ *                                 process in the file manager tests;
+ *                                 BusyBox has no setuidgid)
  *
- * Compilato da tools/guest-kernel/build.sh con gli header UAPI del kernel
- * guest (drm/ non c'è negli header di Alpine).
+ * Built by tools/guest-kernel/build.sh with the UAPI headers of the guest
+ * kernel (drm/ is not in Alpine's headers).
  */
 #include <ctype.h>
 #include <dirent.h>
@@ -59,7 +59,7 @@ static int die(const char *what)
 
 /* ---- DRM ------------------------------------------------------------- */
 
-/* Colore del pixel (x, y) del motivo di prova, in XRGB8888. */
+/* Colour of pixel (x, y) of the test pattern, in XRGB8888. */
 static uint32_t pattern(uint32_t x, uint32_t y)
 {
 	return ((x & 0xff) << 16) | ((y & 0xff) << 8) | ((x ^ y) & 0xff);
@@ -83,7 +83,7 @@ static int drm(int hold)
 		return die("GETRESOURCES");
 	uint32_t crtcs[8], conns[8], encs[8], fbs[8];
 	if (res.count_crtcs > 8 || res.count_connectors > 8 || res.count_encoders > 8 || res.count_fbs > 8)
-		return die("troppi oggetti DRM");
+		return die("too many DRM objects");
 	res.crtc_id_ptr = (uintptr_t)crtcs;
 	res.connector_id_ptr = (uintptr_t)conns;
 	res.encoder_id_ptr = (uintptr_t)encs;
@@ -94,7 +94,7 @@ static int drm(int hold)
 	  res.count_connectors, res.count_encoders, res.min_width, res.min_height, res.max_width,
 	  res.max_height);
 	if (res.count_connectors < 1 || res.count_crtcs < 1)
-		return die("nessun connettore");
+		return die("no connector");
 
 	struct drm_mode_get_connector conn = {.connector_id = conns[0]};
 	if (ioctl(fd, DRM_IOCTL_MODE_GETCONNECTOR, &conn))
@@ -121,11 +121,11 @@ static int drm(int hold)
 			pref = (int)i;
 	}
 	if (pref < 0)
-		return die("nessun modo preferito");
+		return die("no preferred mode");
 	struct drm_mode_modeinfo mode = modes[pref];
 	uint32_t w = mode.hdisplay, h = mode.vdisplay;
 
-	/* Dumb buffer con il motivo, poi modeset. */
+	/* Dumb buffer with the pattern, then modeset. */
 	struct drm_mode_create_dumb cd = {.width = w, .height = h, .bpp = 32};
 	if (ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &cd))
 		return die("CREATE_DUMB");
@@ -139,7 +139,7 @@ static int drm(int hold)
 		return die("MAP_DUMB");
 	uint8_t *px = mmap(0, cd.size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, md.offset);
 	if (px == MAP_FAILED)
-		return die("mmap del dumb buffer");
+		return die("mmap of the dumb buffer");
 	for (uint32_t y = 0; y < h; y++)
 		for (uint32_t x = 0; x < w; x++)
 			*(uint32_t *)(px + y * cd.pitch + 4 * x) = pattern(x, y);
@@ -154,8 +154,8 @@ static int drm(int hold)
 		return die("SETCRTC");
 	P("drm modeset %ux%u ok\n", w, h);
 
-	/* Un rettangolo ridisegnato e segnalato con DIRTYFB (TRANSFER + FLUSH
-	 * di una parte sola). */
+	/* A rectangle redrawn and reported with DIRTYFB (TRANSFER + FLUSH
+	 * of one part only). */
 	for (uint32_t y = 16; y < 48; y++)
 		for (uint32_t x = 32; x < 96; x++)
 			*(uint32_t *)(px + y * cd.pitch + 4 * x) = 0x00ffffff;
@@ -166,16 +166,16 @@ static int drm(int hold)
 		return die("DIRTYFB");
 	P("drm dirtyfb ok\n");
 
-	/* Cursore 64x64 (coda cursor di virtio-gpu): definito, poi spostato. */
+	/* 64x64 cursor (virtio-gpu cursor queue): defined, then moved. */
 	struct drm_mode_create_dumb cc = {.width = 64, .height = 64, .bpp = 32};
 	if (ioctl(fd, DRM_IOCTL_MODE_CREATE_DUMB, &cc))
-		return die("CREATE_DUMB cursore");
+		return die("CREATE_DUMB cursor");
 	struct drm_mode_map_dumb cm = {.handle = cc.handle};
 	if (ioctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &cm))
-		return die("MAP_DUMB cursore");
+		return die("MAP_DUMB cursor");
 	uint8_t *cp = mmap(0, cc.size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, cm.offset);
 	if (cp == MAP_FAILED)
-		return die("mmap del cursore");
+		return die("mmap of the cursor");
 	for (uint32_t i = 0; i < 64 * 64; i++)
 		((uint32_t *)cp)[i] = 0xff000000u | i;
 	struct drm_mode_cursor cur = {.flags = DRM_MODE_CURSOR_BO, .crtc_id = crtc_id, .width = 64,
@@ -208,7 +208,7 @@ static int test_bit(const uint8_t *bits, int n)
 	return (bits[n / 8] >> (n % 8)) & 1;
 }
 
-/* Stampa i bit accesi come lista di numeri esadecimali. */
+/* Prints the set bits as a list of hexadecimal numbers. */
 static void print_bits(const char *what, const uint8_t *bits, int max)
 {
 	printf("vetro-dev:   %s:", what);
@@ -303,7 +303,7 @@ static int input_read(const char *path, int n)
 	for (int i = 0; i < n; i++) {
 		struct input_event e;
 		if (read(fd, &e, sizeof(e)) != sizeof(e))
-			return die("read evento");
+			return die("read event");
 		P("evento %u %u %d\n", e.type, e.code, e.value);
 	}
 	close(fd);
@@ -339,7 +339,7 @@ static int vsock_cid(void)
 	return 0;
 }
 
-/* Legge fino alla fine del flusso. */
+/* Reads until the end of the stream. */
 static ssize_t read_all(int s, char *buf, size_t cap)
 {
 	size_t n = 0;
@@ -472,8 +472,8 @@ int main(int argc, char **argv)
 		return xattr_get(argv[2], argv[3]);
 	if (!strcmp(cmd, "run-as") && argc >= 5)
 		return run_as((unsigned)atoi(argv[2]), (unsigned)atoi(argv[3]), argv + 4);
-	fprintf(stderr, "uso: vetro-dev drm|drm-hold|input|input-read DEV N|led DEV CODICE V|"
-			"vsock-cid|vsock-connect PORTA MSG|vsock-listen PORTA|xattr-set FILE NOME VALORE|"
-			"xattr-get FILE NOME|run-as UID GID CMD [ARG...]\n");
+	fprintf(stderr, "usage: vetro-dev drm|drm-hold|input|input-read DEV N|led DEV CODE V|"
+			"vsock-cid|vsock-connect PORT MSG|vsock-listen PORT|xattr-set FILE NAME VALUE|"
+			"xattr-get FILE NAME|run-as UID GID CMD [ARG...]\n");
 	return 2;
 }

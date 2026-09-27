@@ -1,6 +1,6 @@
 #!/bin/sh
-# Esegue in locale gli stessi controlli della CI a ogni push.
-# Su macOS, per l'oracolo: export VETRO_QEMU_AARCH64="$PWD/tools/oracle/qemu-aarch64-docker.sh"
+# Runs locally the same checks the CI runs on every push.
+# On macOS, for the oracle: export VETRO_QEMU_AARCH64="$PWD/tools/oracle/qemu-aarch64-docker.sh"
 set -eu
 cd "$(dirname "$0")/.."
 echo "==> fmt";    cargo fmt --all --check

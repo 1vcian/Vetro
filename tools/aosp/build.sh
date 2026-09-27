@@ -1,28 +1,28 @@
 #!/bin/sh
-# Build dell'immagine sulla VM, dal Mac.
-#   tools/aosp/build.sh start    sincronizza (sync.sh) e lancia la build staccata
-#                                (nohup + setsid: sopravvive alla chiusura di ssh)
-#   tools/aosp/build.sh status   stato (RUNNING/OK/FAIL) e ultime righe del log
-#   tools/aosp/build.sh wait     aspetta la fine, poi esce 0 se OK
-# La build è incrementale: dopo un arresto della VM basta `start`.
-# VETRO_AOSP_CCACHE=1 attiva ccache in out/.ccache (vedi remote/build.sh:
-# la prima volta ricompila tutto il C/C++).
+# Image build on the VM, from the Mac.
+#   tools/aosp/build.sh start    syncs (sync.sh) and launches the build detached
+#                                (nohup + setsid: survives the ssh session closing)
+#   tools/aosp/build.sh status   status (RUNNING/OK/FAIL) and last lines of the log
+#   tools/aosp/build.sh wait     waits for the end, then exits 0 if OK
+# The build is incremental: after the VM stops, `start` is enough.
+# VETRO_AOSP_CCACHE=1 enables ccache in out/.ccache (see remote/build.sh:
+# the first time it recompiles all the C/C++).
 set -eu
 . "$(cd "$(dirname "$0")" && pwd)/common.sh"
 env="VETRO_AOSP_TREE=$VETRO_AOSP_TREE VETRO_AOSP_WORK=$VETRO_AOSP_WORK VETRO_AOSP_LUNCH=$VETRO_AOSP_LUNCH VETRO_AOSP_CCACHE=${VETRO_AOSP_CCACHE:-0}"
 case "${1:-status}" in
   start)
-    # Prima il controllo, poi la sincronizzazione: mai toccare il tree sotto
-    # una build in corso.
+    # Check first, then sync: never touch the tree under
+    # a running build.
     if vm "p=\$(cat $VETRO_AOSP_WORK/build.pid 2>/dev/null) && grep -qs remote/build.sh /proc/\$p/cmdline"; then
-      echo "build già in corso su $VETRO_AOSP_HOST: niente sincronizzazione" >&2
+      echo "build already running on $VETRO_AOSP_HOST: no sync" >&2
       exit 1
     fi
     "$here/sync.sh"
     vm "$env nohup setsid bash $VETRO_AOSP_WORK/remote/build.sh </dev/null >/dev/null 2>&1 &"
-    echo "build lanciata su $VETRO_AOSP_HOST ($VETRO_AOSP_LUNCH, versione di Vetro $(vm "cat $VETRO_AOSP_WORK/sync.rev"))" ;;
+    echo "build launched on $VETRO_AOSP_HOST ($VETRO_AOSP_LUNCH, Vetro version $(vm "cat $VETRO_AOSP_WORK/sync.rev"))" ;;
   status)
-    vm "cat $VETRO_AOSP_WORK/build.status 2>/dev/null || echo 'nessuna build'; tail -n 5 $VETRO_AOSP_WORK/build.log 2>/dev/null" ;;
+    vm "cat $VETRO_AOSP_WORK/build.status 2>/dev/null || echo 'no build'; tail -n 5 $VETRO_AOSP_WORK/build.log 2>/dev/null" ;;
   wait)
     while :; do
       s="$(vm "cat $VETRO_AOSP_WORK/build.status 2>/dev/null" || echo UNREACHABLE)"
@@ -32,5 +32,5 @@ case "${1:-status}" in
       esac
       sleep 300
     done ;;
-  *) echo "uso: $0 start|status|wait" >&2; exit 2 ;;
+  *) echo "usage: $0 start|status|wait" >&2; exit 2 ;;
 esac

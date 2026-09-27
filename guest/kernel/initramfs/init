@@ -1,13 +1,15 @@
 #!/bin/busybox sh
-# /init dell'initramfs di Vetro (M3): monta i file system virtuali, stampa il
-# marcatore di avvio, esegue l'autotest e apre una shell sulla console.
-# Parametri dalla riga di comando del kernel:
-#   vetro.noautotest  salta l'autotest;
-#   vetro.poweroff    spegne la macchina (PSCI) dopo l'autotest, senza shell;
-#   vetro.kselftest   esegue i kselftest (/etc/kselftest.sh, initramfs dei
-#                     kselftest) e spegne la macchina.
-# Con un dispositivo virtio-vsock parte vetro-files, il demone del gestore dei
-# file (M8, ADR 0020): sotto QEMU (senza vsock) non parte e il log non cambia.
+# /init of the Vetro initramfs (M3): mounts the virtual file systems, prints the
+# boot marker, runs the autotest and opens a shell on the console.
+# Parameters from the kernel command line:
+#   vetro.noautotest  skips the autotest;
+#   vetro.poweroff    powers off the machine (PSCI) after the autotest, no shell;
+#   vetro.kselftest   runs the kselftests (/etc/kselftest.sh, kselftest
+#                     initramfs) and powers off the machine.
+# With a virtio-vsock device vetro-files starts, the file manager daemon
+# (M8, ADR 0020): under QEMU (no vsock) it does not start and the log is unchanged.
+# Console messages stay in Italian: they are compared with the reference log
+# guest/kernel/reference/qemu-boot.log.
 /bin/busybox --install -s
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 mount -t proc proc /proc
@@ -15,7 +17,7 @@ mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev
 mount -t tmpfs tmpfs /tmp
 echo "VETRO-BOOT-OK: /init avviato ($(uname -r))"
-# virtio-vsock ha l'id di dispositivo 19 (0x0013).
+# virtio-vsock has device id 19 (0x0013).
 if grep -qx 0x0013 /sys/bus/virtio/devices/*/device 2>/dev/null; then
   vetro-files </dev/null &
 fi
@@ -34,10 +36,10 @@ esac
 case " $cmdline " in
   *" vetro.poweroff "*) poweroff -f ;;
 esac
-# Shell interattiva con terminale di controllo sulla console vera
-# (/dev/console non può diventare terminale di controllo). La BusyBox di
-# Alpine non ha cttyhack: si apre direttamente la PL011. Se esce, se ne apre
-# un'altra.
+# Interactive shell with a controlling terminal on the real console
+# (/dev/console cannot become a controlling terminal). Alpine's BusyBox
+# has no cttyhack: the PL011 is opened directly. If it exits, another one
+# is opened.
 tty=/dev/ttyAMA0
 [ -c "$tty" ] || tty=/dev/console
 while true; do

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  microG in background: fuori dalle ottimizzazioni della batteria e dai
-  limiti dei servizi in background, come serve al servizio di notifiche.
+  microG in the background: exempt from battery optimisations and from
+  background service limits, as the notification service requires.
 -->
 <config>
     <allow-in-power-save package="com.google.android.gms"/>

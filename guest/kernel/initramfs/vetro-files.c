@@ -1,37 +1,37 @@
 /*
- * vetro-files: il demone del gestore dei file di Vetro nel guest (M8,
- * ADR 0020, protocollo in docs/specs/files.md).
+ * vetro-files: the daemon of Vetro's file manager in the guest (M8,
+ * ADR 0020, protocol in docs/specs/files.md).
  *
- * Ascolta su virtio-vsock (porta 5200, da qualsiasi CID) e serve all'host
- * letture e scritture sui file del guest passando dal kernel del guest:
- * niente accesso diretto all'immagine del disco, che con il guest acceso
- * corromperebbe il file system.
+ * Listens on virtio-vsock (port 5200, from any CID) and serves the host
+ * reads and writes of the guest's files through the guest kernel:
+ * no direct access to the disk image, which with the guest running
+ * would corrupt the file system.
  *
- *   list, stat (tipo, dimensione, mtime, modo, uid/gid, destinazione dei
- *   collegamenti, contesto SELinux dall'xattr security.selinux se c'è),
- *   lettura a pezzi, scrittura atomica (file temporaneo nella stessa
- *   cartella, poi rename: proprietario, modo e xattr del file che si
- *   sostituisce si conservano; i file nuovi prendono proprietario e
- *   contesto SELinux della cartella), create, mkdir, delete (anche
- *   ricorsivo), rename, watch con inotify (eventi dal vivo);
- *   SQL su un database SQLite (ADR 0021) con il motore SQLite vero, linkato
- *   staticamente, in un processo figlio con uid e gid del proprietario del
- *   database: lock, journal e WAL come quelli dell'app.
+ *   list, stat (type, size, mtime, mode, uid/gid, symlink target,
+ *   SELinux context from the security.selinux xattr if present),
+ *   chunked read, atomic write (temporary file in the same
+ *   directory, then rename: owner, mode and xattrs of the file being
+ *   replaced are kept; new files take the owner and SELinux context
+ *   of the directory), create, mkdir, delete (also
+ *   recursive), rename, watch with inotify (live events);
+ *   SQL on an SQLite database (ADR 0021) with the real SQLite engine, linked
+ *   statically, in a child process with the uid and gid of the database
+ *   owner: locks, journal and WAL like the app's.
  *
- * Un solo processo, un ciclo poll(): fino a MAX_CLIENTS connessioni, ognuna
- * con il suo inotify e un buffer d'uscita (scritture non bloccanti: un host
- * che non legge non ferma gli altri). Stampa solo in caso di errore fatale.
+ * One process, one poll() loop: up to MAX_CLIENTS connections, each
+ * with its own inotify and an output buffer (non-blocking writes: a host
+ * that doesn't read doesn't stall the others). Prints only on a fatal error.
  *
- * Compilato statico con musl da tools/guest-kernel/build.sh (come
- * vetro-dev) e avviato da /init se c'è un dispositivo virtio-vsock. In
- * futuro va nell'immagine Android (userdebug, root), con bionic: usa solo
- * POSIX e header UAPI di Linux.
+ * Built static with musl by tools/guest-kernel/build.sh (like
+ * vetro-dev) and started by /init if there is a virtio-vsock device. In
+ * the future it goes into the Android image (userdebug, root), with bionic: it
+ * uses only POSIX and Linux UAPI headers.
  *
- *   vetro-files [-p PORTA]
+ *   vetro-files [-p PORT]
  *
- * Programma multi-chiamata come BusyBox: con -DVETRO_SQLITE_SHELL e
- * argv[0] "sqlite3" parte la shell ufficiale di SQLite (shell.c dello stesso
- * sorgente), così nell'initramfs c'è una sola copia del motore.
+ * Multi-call program like BusyBox: with -DVETRO_SQLITE_SHELL and
+ * argv[0] "sqlite3" the official SQLite shell starts (shell.c from the same
+ * source), so the initramfs holds a single copy of the engine.
  */
 #define _GNU_SOURCE
 #include <dirent.h>
@@ -58,13 +58,13 @@
 #define DEFAULT_PORT 5200
 #define MAGIC 0x46525456u /* "VTRF" in little endian */
 #define VERSION 2
-/* Byte al più per READ e WDATA. */
+/* Maximum bytes for READ and WDATA. */
 #define MAX_CHUNK (1u << 20)
-/* Lunghezza al più di una richiesta (WDATA più il resto). */
+/* Maximum length of a request (WDATA plus the rest). */
 #define MAX_REQUEST (MAX_CHUNK + 16384u)
 #define MAX_CLIENTS 8
 #define MAX_HANDLES 16
-/* Oltre questi byte in uscita non si leggono altre richieste né eventi. */
+/* Beyond this many output bytes no further requests or events are read. */
 #define OUT_HIGH (8u << 20)
 #define TMP_PREFIX ".vetro-tmp."
 #define SELINUX_XATTR "security.selinux"
@@ -104,10 +104,10 @@ struct handle {
 	int used;
 	uint32_t id;
 	int fd;
-	int err; /* primo errore di una WDATA: la WCOMMIT fallisce */
+	int err; /* first error of a WDATA: the WCOMMIT fails */
 	int existed;
-	struct stat st; /* del file sostituito */
-	uint32_t mode;  /* per un file nuovo */
+	struct stat st; /* of the replaced file */
+	uint32_t mode;  /* for a new file */
 	char *tmp, *target;
 };
 
@@ -132,7 +132,7 @@ static void need(struct buf *b, size_t n)
 		cap *= 2;
 	uint8_t *p = realloc(b->p, cap);
 	if (!p) {
-		fprintf(stderr, "vetro-files: memoria esaurita\n");
+		fprintf(stderr, "vetro-files: out of memory\n");
 		exit(1);
 	}
 	b->p = p;
@@ -184,7 +184,7 @@ static void set_u32(struct buf *b, size_t at, uint32_t v)
 	b->p[at + 3] = (uint8_t)(v >> 24);
 }
 
-/* Inizio di un frame: lunghezza (da riempire), tipo, id. */
+/* Start of a frame: length (to be filled in), type, id. */
 static size_t frame_begin(struct buf *b, uint8_t type, uint32_t id)
 {
 	size_t at = b->len;
@@ -196,7 +196,7 @@ static size_t frame_begin(struct buf *b, uint8_t type, uint32_t id)
 
 static void frame_end(struct buf *b, size_t at) { set_u32(b, at, (uint32_t)(b->len - at - 4)); }
 
-/* ---- lettura delle richieste ---------------------------------------------- */
+/* ---- reading requests ------------------------------------------------------ */
 
 struct rd {
 	const uint8_t *p;
@@ -239,7 +239,7 @@ static uint64_t get_u64(struct rd *r)
 	return lo | (uint64_t)get_u32(r) << 32;
 }
 
-/* Un percorso: u16 lunghezza, byte senza NUL. Restituisce una copia con NUL. */
+/* A path: u16 length, bytes without NUL. Returns a NUL-terminated copy. */
 static char *get_path(struct rd *r)
 {
 	uint16_t n = get_u16(r);
@@ -277,7 +277,7 @@ static uint8_t kind_of(mode_t m)
 	return K_OTHER;
 }
 
-/* Contesto SELinux del file (senza seguire i collegamenti); 0 se non c'è. */
+/* SELinux context of the file (without following links); 0 if absent. */
 static ssize_t selinux_of(const char *path, char *out, size_t cap)
 {
 	ssize_t n = lgetxattr(path, SELINUX_XATTR, out, cap);
@@ -288,7 +288,7 @@ static ssize_t selinux_of(const char *path, char *out, size_t cap)
 	return n;
 }
 
-/* kind, mode, uid, gid, size, mtime (s, ns), nlink, destinazione, contesto. */
+/* kind, mode, uid, gid, size, mtime (s, ns), nlink, target, context. */
 static void put_stat(struct buf *b, const char *path, const struct stat *st)
 {
 	put_u8(b, kind_of(st->st_mode));
@@ -306,7 +306,7 @@ static void put_stat(struct buf *b, const char *path, const struct stat *st)
 	put_str(b, ctx, (size_t)selinux_of(path, ctx, sizeof(ctx)));
 }
 
-/* ---- operazioni ---------------------------------------------------------- */
+/* ---- operations ---------------------------------------------------------- */
 
 static int cmp_names(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
 
@@ -326,7 +326,7 @@ static int do_list(struct buf *o, const char *path)
 		names[n++] = strdup(e->d_name);
 	}
 	closedir(d);
-	/* Ordine fisso (strcmp), qualunque sia quello del file system. */
+	/* Fixed order (strcmp), whatever the file system's order is. */
 	qsort(names, n, sizeof(char *), cmp_names);
 	size_t count_at = o->len;
 	put_u32(o, 0);
@@ -391,7 +391,7 @@ static int do_read(struct buf *o, const char *path, uint64_t off, uint32_t len)
 	return 0;
 }
 
-/* Cartella e nome di un percorso (copie). */
+/* Directory and name of a path (copies). */
 static void split(const char *path, char **dir, char **base)
 {
 	const char *s = strrchr(path, '/');
@@ -408,9 +408,9 @@ static void split(const char *path, char **dir, char **base)
 }
 
 /*
- * Proprietario e contesto SELinux della cartella che contiene `path` su un
- * file nuovo (`fd` >= 0) o su `path` stesso: come fa Android per i file di
- * un'app, che hanno uid, gid e contesto della sua cartella dei dati.
+ * Owner and SELinux context of the directory containing `path`, applied to a
+ * new file (`fd` >= 0) or to `path` itself: as Android does for an app's
+ * files, which have the uid, gid and context of its data directory.
  */
 static int inherit_parent(const char *path, int fd)
 {
@@ -434,12 +434,12 @@ static int inherit_parent(const char *path, int fd)
 	return e;
 }
 
-/* Copia gli xattr di `src` su `fd`. security.selinux è obbligatorio. */
+/* Copies the xattrs of `src` to `fd`. security.selinux is mandatory. */
 static int copy_xattrs(const char *src, int fd)
 {
 	ssize_t n = llistxattr(src, NULL, 0);
 	if (n <= 0)
-		return 0; /* nessuno, o file system senza xattr */
+		return 0; /* none, or a file system without xattrs */
 	char *names = malloc((size_t)n);
 	n = llistxattr(src, names, (size_t)n);
 	int e = 0;
@@ -488,7 +488,7 @@ static int do_wopen(struct client *c, uint32_t id, const char *path, uint32_t mo
 			h = &c->h[i];
 	if (!h)
 		return EMFILE;
-	/* Un collegamento simbolico resta: si sostituisce il file a cui punta. */
+	/* A symbolic link stays: the file it points to is replaced. */
 	struct stat ls;
 	char *target = NULL;
 	if (lstat(path, &ls) == 0 && S_ISLNK(ls.st_mode)) {
@@ -517,7 +517,7 @@ static int do_wopen(struct client *c, uint32_t id, const char *path, uint32_t mo
 	split(target, &dir, &base);
 	size_t len = strlen(dir) + strlen(base) + 64;
 	char *tmp = malloc(len);
-	/* Nomi lunghi: senza il nome originale (NAME_MAX). */
+	/* Long names: without the original name (NAME_MAX). */
 	snprintf(tmp, len, "%s/%s%lu.%s", dir, TMP_PREFIX, ++tmp_counter, strlen(base) > 200 ? "x" : base);
 	free(dir);
 	free(base);
@@ -568,7 +568,7 @@ static int do_wcommit(struct client *c, struct buf *o, uint32_t id)
 		return EBADF;
 	int e = h->err;
 	if (!e && h->existed) {
-		/* chown prima di chmod: chown toglie setuid e setgid. */
+		/* chown before chmod: chown clears setuid and setgid. */
 		if (fchown(h->fd, h->st.st_uid, h->st.st_gid) || fchmod(h->fd, h->st.st_mode & 07777))
 			e = errno;
 		else
@@ -653,12 +653,12 @@ static int do_delete(const char *path, uint8_t flags)
 
 /* ---- SQL (ADR 0021) --------------------------------------------------------- */
 
-/* Tipi dei valori nel protocollo. */
+/* Value types in the protocol. */
 enum { V_NULL, V_INT, V_REAL, V_TEXT, V_BLOB };
 
 #define SQL_READONLY 1
 #define SQL_ANY_CHANGES 0xffffffffu
-/* Righe e byte al più restituiti. */
+/* Maximum rows and bytes returned. */
 #define SQL_MAX_ROWS 10000u
 #define SQL_MAX_BYTES (16u << 20)
 #define SQL_BUSY_MS 2000
@@ -669,11 +669,11 @@ struct sqlreq {
 	const uint8_t *sql;
 	uint32_t sql_len;
 	uint16_t nparams;
-	const uint8_t *params; /* valori codificati, già controllati */
+	const uint8_t *params; /* encoded values, already checked */
 	size_t params_len;
 };
 
-/* Salta (e controlla) un valore codificato. */
+/* Skips (and checks) an encoded value. */
 static void skip_value(struct rd *r)
 {
 	uint8_t t = get_u8(r);
@@ -693,7 +693,7 @@ static void skip_value(struct rd *r)
 	}
 }
 
-/* Lega il parametro `i` (da 1) al valore letto da `r`. */
+/* Binds parameter `i` (from 1) to the value read from `r`. */
 static int bind_value(sqlite3_stmt *st, int i, struct rd *r)
 {
 	uint8_t t = get_u8(r);
@@ -721,7 +721,7 @@ static int bind_value(sqlite3_stmt *st, int i, struct rd *r)
 	}
 }
 
-/* Lega i parametri 1..n dell'istruzione (quelli che mancano restano NULL). */
+/* Binds parameters 1..n of the statement (missing ones stay NULL). */
 static int bind_all(sqlite3_stmt *st, const struct sqlreq *q)
 {
 	struct rd r = {q->params, q->params_len, 0, 0};
@@ -787,9 +787,9 @@ static void set_msg(struct sqlres *res, const char *m)
 }
 
 /*
- * Esegue le istruzioni di `q` sul database aperto: tutte in una transazione
- * (tranne in sola lettura); righe e colonne dell'ultima istruzione che ne
- * restituisce. Restituisce il codice di SQLite.
+ * Runs the statements of `q` on the open database: all in one transaction
+ * (except read-only); rows and columns of the last statement that
+ * returns any. Returns the SQLite code.
  */
 static int sql_run(sqlite3 *db, const struct sqlreq *q, struct sqlres *res)
 {
@@ -809,11 +809,11 @@ static int sql_run(sqlite3 *db, const struct sqlreq *q, struct sqlres *res)
 		}
 		tail = next;
 		if (!st)
-			continue; /* spazi o commenti */
+			continue; /* whitespace or comments */
 		rc = bind_all(st, q);
 		int n = sqlite3_column_count(st);
 		if (rc == SQLITE_OK && n > 0) {
-			/* Un'istruzione con colonne: le sue righe sostituiscono le altre. */
+			/* A statement with columns: its rows replace the others. */
 			res->cols.len = res->rows.len = 0;
 			res->nrows = 0;
 			res->truncated = 0;
@@ -840,7 +840,7 @@ static int sql_run(sqlite3 *db, const struct sqlreq *q, struct sqlres *res)
 				put_value(&res->rows, st, c);
 			res->nrows++;
 		}
-		/* Righe cambiate dall'istruzione stessa (non dai trigger). */
+		/* Rows changed by the statement itself (not by triggers). */
 		if (rc == SQLITE_OK && sqlite3_total_changes64(db) != before)
 			res->changes += (uint64_t)sqlite3_changes64(db);
 		if (rc != SQLITE_OK)
@@ -867,8 +867,8 @@ static int sql_run(sqlite3 *db, const struct sqlreq *q, struct sqlres *res)
 }
 
 /*
- * Il figlio: diventa il proprietario del database, lo apre, esegue e scrive
- * nel pipe `u32 errno`, poi (se 0) il corpo della risposta SQL.
+ * The child: becomes the database owner, opens it, runs and writes
+ * `u32 errno` to the pipe, then (if 0) the body of the SQL reply.
  */
 static void sql_child(int out, const char *path, const struct stat *st, const struct sqlreq *q)
 {
@@ -916,8 +916,8 @@ static void sql_child(int out, const char *path, const struct stat *st, const st
 }
 
 /*
- * I file che SQLite tiene accanto al database (-wal, -shm, -journal)
- * prendono proprietario e contesto SELinux del database, se diversi.
+ * The files SQLite keeps next to the database (-wal, -shm, -journal)
+ * take the owner and SELinux context of the database, if different.
  */
 static void sql_fix_sidecars(const char *path, const struct stat *st)
 {
@@ -936,7 +936,7 @@ static void sql_fix_sidecars(const char *path, const struct stat *st)
 			ssize_t hn = lgetxattr(side, SELINUX_XATTR, have, sizeof(have));
 			if (cn > 0 && (hn != cn || memcmp(have, ctx, (size_t)cn)) &&
 			    lsetxattr(side, SELINUX_XATTR, ctx, (size_t)cn, 0))
-				fprintf(stderr, "vetro-files: contesto di %s: %s\n", side, strerror(errno));
+				fprintf(stderr, "vetro-files: context of %s: %s\n", side, strerror(errno));
 		}
 		free(side);
 	}
@@ -966,7 +966,7 @@ static int do_sql(struct buf *o, const char *path, const struct sqlreq *q)
 		sql_child(p[1], path, &st, q);
 	}
 	close(p[1]);
-	/* Il figlio scrive tutto ed esce: si legge fino alla fine, poi si aspetta. */
+	/* The child writes everything and exits: read to the end, then wait. */
 	size_t start = o->len;
 	uint8_t tmp[65536];
 	for (;;) {
@@ -990,7 +990,7 @@ static int do_sql(struct buf *o, const char *path, const struct sqlreq *q)
 	}
 	uint32_t e = (uint32_t)o->p[start] | (uint32_t)o->p[start + 1] << 8 | (uint32_t)o->p[start + 2] << 16 |
 		     (uint32_t)o->p[start + 3] << 24;
-	/* Il corpo è quello dopo l'errno del figlio. */
+	/* The body is what follows the child's errno. */
 	memmove(o->p + start, o->p + start + 4, got - 4);
 	o->len -= 4;
 	if (e) {
@@ -1000,7 +1000,7 @@ static int do_sql(struct buf *o, const char *path, const struct sqlreq *q)
 	return 0;
 }
 
-/* Legge il resto di una richiesta SQL (dopo il percorso). */
+/* Reads the rest of an SQL request (after the path). */
 static void get_sqlreq(struct rd *r, struct sqlreq *q)
 {
 	q->flags = get_u8(r);
@@ -1015,7 +1015,7 @@ static void get_sqlreq(struct rd *r, struct sqlreq *q)
 	q->params_len = r->pos - at;
 }
 
-/* ---- connessioni ---------------------------------------------------------- */
+/* ---- connections ----------------------------------------------------------- */
 
 static void reply_hello(struct client *c)
 {
@@ -1153,7 +1153,7 @@ static void handle_request(struct client *c, const uint8_t *p, size_t len)
 	free(path);
 	free(path2);
 	if (e)
-		o->len = body; /* niente corpo con un errore */
+		o->len = body; /* no body with an error */
 	set_u32(o, status_at, (uint32_t)e);
 	frame_end(o, at);
 }
@@ -1172,7 +1172,7 @@ static void drop_client(struct client *c)
 	c->fd = -1;
 }
 
-/* Scrive quanto il socket accetta. -1 se la connessione è persa. */
+/* Writes as much as the socket accepts. -1 if the connection is lost. */
 static int flush_out(struct client *c)
 {
 	while (c->out_off < c->out.len) {
@@ -1190,7 +1190,7 @@ static int flush_out(struct client *c)
 	return 0;
 }
 
-/* Legge dal socket e serve le richieste complete. -1 se la connessione è finita. */
+/* Reads from the socket and serves complete requests. -1 if the connection has ended. */
 static int serve_input(struct client *c)
 {
 	uint8_t tmp[65536];
@@ -1216,7 +1216,7 @@ static int serve_input(struct client *c)
 	return 0;
 }
 
-/* Eventi di inotify verso l'host, tranne quelli dei nostri file temporanei. */
+/* inotify events to the host, except those of our temporary files. */
 static int serve_events(struct client *c)
 {
 	char evbuf[65536] __attribute__((aligned(__alignof__(struct inotify_event))));
@@ -1240,7 +1240,7 @@ static int serve_events(struct client *c)
 }
 
 #ifdef VETRO_SQLITE_SHELL
-/* main di shell.c, compilato con -Dmain=sqlite3_shell_main. */
+/* main of shell.c, compiled with -Dmain=sqlite3_shell_main. */
 int sqlite3_shell_main(int argc, char **argv);
 #endif
 
@@ -1255,16 +1255,16 @@ int main(int argc, char **argv)
 	if (argc == 3 && !strcmp(argv[1], "-p"))
 		port = (unsigned)strtoul(argv[2], NULL, 10);
 	else if (argc != 1) {
-		fprintf(stderr, "uso: vetro-files [-p PORTA]\n");
+		fprintf(stderr, "usage: vetro-files [-p PORT]\n");
 		return 2;
 	}
 	signal(SIGPIPE, SIG_IGN);
-	/* I modi chiesti dall'host valgono così come sono. */
+	/* The modes requested by the host apply as they are. */
 	umask(0);
 	int ls = socket(AF_VSOCK, SOCK_STREAM | SOCK_CLOEXEC, 0);
 	struct sockaddr_vm a = {.svm_family = AF_VSOCK, .svm_cid = VMADDR_CID_ANY, .svm_port = port};
 	if (ls < 0 || bind(ls, (struct sockaddr *)&a, sizeof(a)) || listen(ls, MAX_CLIENTS)) {
-		fprintf(stderr, "vetro-files: vsock porta %u: %s\n", port, strerror(errno));
+		fprintf(stderr, "vetro-files: vsock port %u: %s\n", port, strerror(errno));
 		return 1;
 	}
 	for (int i = 0; i < MAX_CLIENTS; i++)
@@ -1307,7 +1307,7 @@ int main(int argc, char **argv)
 					close(fd);
 					continue;
 				}
-				/* Senza inotify nel kernel (-1) WATCH risponde con l'errore. */
+				/* Without inotify in the kernel (-1) WATCH replies with the error. */
 				int ino = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
 				memset(c, 0, sizeof(*c));
 				c->fd = fd;

@@ -1,6 +1,6 @@
-# Contenuto dell'initramfs (formato di usr/gen_init_cpio del kernel).
-# I percorsi sorgente sono relativi alla radice del repository. /dev/console
-# serve al kernel per aprire la console di /init prima di devtmpfs.
+# Contents of the initramfs (format of the kernel's usr/gen_init_cpio).
+# Source paths are relative to the repository root. /dev/console
+# is needed by the kernel to open /init's console before devtmpfs.
 dir /dev 0755 0 0
 nod /dev/console 0600 0 0 c 5 1
 dir /proc 0555 0 0

@@ -1,11 +1,11 @@
-// Moduli della scheda Vetro arm64 (docs/adr/0022-vetro-aosp-image.md).
+// Modules of the Vetro arm64 board (docs/adr/0022-vetro-aosp-image.md).
 
 soong_namespace {
 }
 
-// Codice e configurazione di Vetro: PolyForm Noncommercial 1.0.0
-// (LICENSE.md del repository, ADR 0004). Soong non ha un tipo SPDX per
-// questa licenza: legacy_notice con il testo accanto.
+// Vetro code and configuration: PolyForm Noncommercial 1.0.0
+// (LICENSE.md of the repository, ADR 0004). Soong has no SPDX kind for
+// this license: legacy_notice with the text alongside.
 package {
     default_applicable_licenses: ["device_vetro_license"],
 }
@@ -24,31 +24,31 @@ prebuilt_etc {
 }
 
 prebuilt_etc {
-    // Come fstab.cf.*.vendor_ramdisk di Cuttlefish (shared/config/Android.bp).
+    // Like Cuttlefish's fstab.cf.*.vendor_ramdisk (shared/config/Android.bp).
     name: "fstab.vetro.vendor_ramdisk",
     srcs: ["fstab.vetro"],
     dsts: ["fstab.vetro"],
     vendor_ramdisk: true,
 }
 
-// Marchi (ADR 0030): overlay statici in /product/overlay, solo risorse.
+// Branding (ADR 0030): static overlays in /product/overlay, resources only.
 
 runtime_resource_overlay {
-    // Icona predefinita delle app senza icona: niente robot.
+    // Default icon of apps without an icon: no robot.
     name: "VetroFrameworkOverlay",
     product_specific: true,
     manifest: "overlay/framework/AndroidManifest.xml",
     resource_dirs: ["overlay/framework/res"],
-    // QuickSearchBox è il widget di ricerca "Google" che Launcher3 mette
-    // sulla prima pagina (è l'attività di ricerca globale; il campo usa
-    // hint_google). Senza, Launcher3 mostra la sua barra neutra ("Search",
-    // qsb_default_view). overrides lo toglie dai PRODUCT_PACKAGES ereditati
-    // da handheld_product.mk (main.mk, module-overrides).
+    // QuickSearchBox is the "Google" search widget that Launcher3 puts
+    // on the first page (it is the global search activity; the field uses
+    // hint_google). Without it, Launcher3 shows its neutral bar ("Search",
+    // qsb_default_view). overrides removes it from the PRODUCT_PACKAGES inherited
+    // from handheld_product.mk (main.mk, module-overrides).
     overrides: ["QuickSearchBox"],
 }
 
 runtime_resource_overlay {
-    // Icona del programma di installazione: niente robot.
+    // Icon of the package installer: no robot.
     name: "VetroPackageInstallerOverlay",
     product_specific: true,
     manifest: "overlay/packageinstaller/AndroidManifest.xml",

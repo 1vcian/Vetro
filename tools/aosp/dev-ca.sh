@@ -1,27 +1,27 @@
 #!/bin/sh
-# CA di sviluppo di Vetro nel trust store di sistema dell'immagine AOSP
-# (ADR 0030). Serve all'endpoint TLS della sinkhole (hook TLS di M7/M8,
-# ADR 0029): i certificati che la sinkhole presenta sono firmati da questa CA,
-# e l'immagine di sviluppo se ne fida come di una CA di sistema.
+# Vetro development CA in the system trust store of the AOSP image
+# (ADR 0030). Used by the sinkhole's TLS endpoint (TLS hook of M7/M8,
+# ADR 0029): the certificates the sinkhole presents are signed by this CA,
+# and the development image trusts it like a system CA.
 #
-#   tools/aosp/dev-ca.sh [check]   controlla certificato, patch e (se c'è) chiave
-#   tools/aosp/dev-ca.sh patches   rigenera le patch dal certificato committato
-#   tools/aosp/dev-ca.sh new       nuova chiave e nuovo certificato (poi patch);
-#                                  rifiuta se la chiave esiste già (--force per
-#                                  sostituirla: poi va ricostruita l'immagine)
+#   tools/aosp/dev-ca.sh [check]   checks certificate, patches and (if present) key
+#   tools/aosp/dev-ca.sh patches   regenerates the patches from the committed certificate
+#   tools/aosp/dev-ca.sh new       new key and new certificate (then patches);
+#                                  refuses if the key already exists (--force to
+#                                  replace it: then the image must be rebuilt)
 #
-# Nel repository solo il certificato (pubblico):
+# Only the (public) certificate is in the repository:
 #   guest/aosp/vendor/vetro/dev-ca/vetro-dev-ca.pem
-#   guest/aosp/patches/external/conscrypt/0001-*.patch        (APEX: il trust
-#       store che AOSP 15 usa davvero, /apex/com.android.conscrypt/cacerts)
+#   guest/aosp/patches/external/conscrypt/0001-*.patch        (APEX: the trust
+#       store AOSP 15 actually uses, /apex/com.android.conscrypt/cacerts)
 #   guest/aosp/patches/system/ca-certificates/0001-*.patch    (/system/etc/
-#       security/cacerts: ripiego con system.certs.enabled=true, tenuto uguale)
-# La chiave privata sta fuori dal repository, in VETRO_DEV_CA_DIR
-# (predefinita ~/.config/vetro/dev-ca/): vetro-dev-ca.key (PKCS#8 PEM, 0600)
-# e una copia di vetro-dev-ca.pem. Se si perde: `new --force` e nuova build.
-# Chiave EC P-256 e firme ECDSA-SHA256 (supportate da BoringSSL/Conscrypt da
-# sempre); validità 10 anni; basicConstraints CA:TRUE, pathlen:0 (firma solo
-# certificati finali), keyUsage keyCertSign e cRLSign.
+#       security/cacerts: fallback with system.certs.enabled=true, kept identical)
+# The private key lives outside the repository, in VETRO_DEV_CA_DIR
+# (default ~/.config/vetro/dev-ca/): vetro-dev-ca.key (PKCS#8 PEM, 0600)
+# and a copy of vetro-dev-ca.pem. If it is lost: `new --force` and a new build.
+# EC P-256 key and ECDSA-SHA256 signatures (supported by BoringSSL/Conscrypt
+# forever); validity 10 years; basicConstraints CA:TRUE, pathlen:0 (signs only
+# end-entity certificates), keyUsage keyCertSign and cRLSign.
 set -eu
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
@@ -34,19 +34,19 @@ subject="/O=Vetro/OU=Vetro development builds/CN=Vetro Development CA (not for p
 
 die() { echo "dev-ca: $*" >&2; exit 1; }
 
-# Nome del file nel trust store di Android: <subject_hash_old>.0 (README.cacerts
-# di system/ca-certificates e di external/conscrypt/apex/ca-certificates).
+# File name in the Android trust store: <subject_hash_old>.0 (README.cacerts
+# in system/ca-certificates and in external/conscrypt/apex/ca-certificates).
 cahash() { openssl x509 -in "$pem" -noout -subject_hash_old; }
 
-# Contenuto nel formato dei file di AOSP: PEM, testo, impronta SHA-1 (senza
-# spazi in coda, che git apply segnalerebbe).
+# Contents in the AOSP file format: PEM, text, SHA-1 fingerprint (without
+# trailing whitespace, which git apply would flag).
 aosp_file() {
   openssl x509 -in "$pem" -outform PEM
   openssl x509 -in "$pem" -noout -text -fingerprint -sha1 | sed 's/[[:space:]]*$//'
 }
 
-# patch FILE PERCORSO_NEL_PROGETTO: patch che crea il file (prefissi a/ b/
-# relativi al progetto, come le altre di guest/aosp/patches).
+# patch FILE PATH_IN_PROJECT: patch that creates the file (a/ b/ prefixes
+# relative to the project, like the others in guest/aosp/patches).
 write_patch() {
   tmp="$(mktemp)"
   aosp_file > "$tmp"
@@ -59,7 +59,7 @@ write_patch() {
     sed 's/^/+/' "$tmp"
   } > "$1"
   rm -f "$tmp"
-  echo "scritta: ${1#"$root"/}"
+  echo "written: ${1#"$root"/}"
 }
 
 patches() {
@@ -69,32 +69,32 @@ patches() {
 }
 
 check() {
-  [ -f "$pem" ] || die "manca $pem (tools/aosp/dev-ca.sh new)"
-  openssl x509 -in "$pem" -noout -checkend 2592000 >/dev/null || die "il certificato scade entro 30 giorni: tools/aosp/dev-ca.sh new --force"
-  openssl x509 -in "$pem" -noout -ext basicConstraints | grep -q 'CA:TRUE' || die "il certificato non è una CA"
+  [ -f "$pem" ] || die "$pem missing (tools/aosp/dev-ca.sh new)"
+  openssl x509 -in "$pem" -noout -checkend 2592000 >/dev/null || die "the certificate expires within 30 days: tools/aosp/dev-ca.sh new --force"
+  openssl x509 -in "$pem" -noout -ext basicConstraints | grep -q 'CA:TRUE' || die "the certificate is not a CA"
   h="$(cahash)"
   cert="$(openssl x509 -in "$pem" -outform PEM)"
   for p in "$p_conscrypt" "$p_system"; do
-    [ -f "$p" ] || die "manca ${p#"$root"/} (tools/aosp/dev-ca.sh patches)"
-    grep -Eq "^\+\+\+ b/(.*/)?files/$h\.0\$" "$p" || die "${p#"$root"/} non crea $h.0"
-    # Il PEM dentro la patch deve essere quello committato.
+    [ -f "$p" ] || die "${p#"$root"/} missing (tools/aosp/dev-ca.sh patches)"
+    grep -Eq "^\+\+\+ b/(.*/)?files/$h\.0\$" "$p" || die "${p#"$root"/} does not create $h.0"
+    # The PEM inside the patch must be the committed one.
     got="$(sed -n 's/^+//p' "$p" | sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p')"
-    [ "$got" = "$cert" ] || die "${p#"$root"/} ha un certificato diverso da ${pem#"$root"/} (tools/aosp/dev-ca.sh patches)"
+    [ "$got" = "$cert" ] || die "${p#"$root"/} has a certificate different from ${pem#"$root"/} (tools/aosp/dev-ca.sh patches)"
   done
   if [ -f "$key" ]; then
     a="$(openssl pkey -in "$key" -pubout)"
     b="$(openssl x509 -in "$pem" -noout -pubkey)"
-    [ "$a" = "$b" ] || die "la chiave in $key non corrisponde al certificato committato"
-    echo "dev-ca: chiave in $key (corrisponde)"
+    [ "$a" = "$b" ] || die "the key in $key does not match the committed certificate"
+    echo "dev-ca: key in $key (matches)"
   else
-    echo "dev-ca: chiave privata assente ($key): l'immagine si costruisce lo stesso, la sinkhole TLS no"
+    echo "dev-ca: private key missing ($key): the image still builds, the TLS sinkhole does not"
   fi
-  echo "dev-ca: $h.0 = $(openssl x509 -in "$pem" -noout -subject | sed 's/^subject=//'), scade $(openssl x509 -in "$pem" -noout -enddate | sed 's/^notAfter=//')"
+  echo "dev-ca: $h.0 = $(openssl x509 -in "$pem" -noout -subject | sed 's/^subject=//'), expires $(openssl x509 -in "$pem" -noout -enddate | sed 's/^notAfter=//')"
 }
 
 new() {
   if [ -f "$key" ] && [ "${1:-}" != --force ]; then
-    die "la chiave esiste già ($key): --force per sostituirla (poi nuova build dell'immagine)"
+    die "the key already exists ($key): --force to replace it (then a new image build)"
   fi
   mkdir -p "$dir" "$(dirname "$pem")"
   chmod 700 "$dir"
@@ -116,8 +116,8 @@ EOF
   mv "$key.tmp" "$key"
   mv "$pem.tmp" "$pem"
   cp "$pem" "$dir/vetro-dev-ca.pem"
-  echo "chiave: $key (fuori dal repository, non committarla)"
-  echo "certificato: ${pem#"$root"/}"
+  echo "key: $key (outside the repository, do not commit it)"
+  echo "certificate: ${pem#"$root"/}"
   patches
 }
 
@@ -125,5 +125,5 @@ case "${1:-check}" in
   check) check ;;
   patches) patches; check ;;
   new) new "${2:-}"; check ;;
-  *) echo "uso: $0 [check|patches|new [--force]]" >&2; exit 2 ;;
+  *) echo "usage: $0 [check|patches|new [--force]]" >&2; exit 2 ;;
 esac

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Confronta due log seriali (QEMU e Vetro) senza i tempi.
+"""Compares two serial logs (QEMU and Vetro) without timestamps.
 
-Toglie il prefisso printk `[  t][ Tn]`, i numeri di durata ("took 12ms",
-"0.131 seconds", "duration=131") e le righe che dipendono solo dal tempo, poi
-stampa la prima divergenza in ordine e le righe presenti in un solo log
-(confronto per insieme, come tests/boot: l'ordine degli initcall asincroni e
-dei processi dipende dai tempi).
+Removes the printk prefix `[  t][ Tn]`, the duration numbers ("took 12ms",
+"0.131 seconds", "duration=131") and the lines that depend only on time, then
+prints the first divergence in order and the lines present in only one log
+(set comparison, like tests/boot: the order of asynchronous initcalls and
+of processes depends on timing).
 
-Uso: tools/android-emu/compare.py qemu.log vetro.log [righe di contesto]
+Usage: tools/android-emu/compare.py qemu.log vetro.log [context lines]
 """
 import re
 import sys
@@ -43,7 +43,7 @@ def main():
     ctx = int(sys.argv[3]) if len(sys.argv) > 3 else 3
     for i, (x, y) in enumerate(zip(a, b)):
         if x != y:
-            print(f"prima divergenza alla riga {i + 1}:")
+            print(f"first divergence at line {i + 1}:")
             for j in range(max(0, i - ctx), i):
                 print(f"   = {a[j]}")
             for j in range(i, min(len(a), i + ctx)):
@@ -52,11 +52,11 @@ def main():
                 print(f"  v> {b[j]}")
             break
     else:
-        print(f"nessuna divergenza nelle prime {min(len(a), len(b))} righe")
+        print(f"no divergence in the first {min(len(a), len(b))} lines")
     sa, sb = set(a), set(b)
     only_a = [x for x in a if x not in sb]
     only_b = [x for x in b if x not in sa]
-    print(f"\nrighe solo in QEMU: {len(only_a)}; solo in Vetro: {len(only_b)}")
+    print(f"\nlines only in QEMU: {len(only_a)}; only in Vetro: {len(only_b)}")
     for x in only_a[:int(sys.argv[4]) if len(sys.argv) > 4 else 40]:
         print(f"  q< {x}")
     for x in only_b[:int(sys.argv[4]) if len(sys.argv) > 4 else 40]:

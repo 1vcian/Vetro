@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Icona di Vetro (ADR 0030): lastra blu-verde con un riflesso e la V.
-     anydpi vince sulle PNG per densità di core/res, quindi l'overlay si
-     applica a ogni densità. -->
+<!-- Vetro icon (ADR 0030): blue-green pane with a reflection and the V.
+     anydpi wins over the per-density PNGs of core/res, so the overlay
+     applies to every density. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="48dp"
     android:height="48dp"

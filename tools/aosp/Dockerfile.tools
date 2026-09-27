@@ -1,5 +1,5 @@
-# Strumenti per comporre il disco dell'immagine AOSP di Vetro sul Mac
-# (tools/aosp/mkdisk.sh): sgdisk, mkfs.ext4, simg2img; fsck.erofs per estrarre file dalle partizioni (mappa AIDL).
+# Tools to assemble the disk of the Vetro AOSP image on the Mac
+# (tools/aosp/mkdisk.sh): sgdisk, mkfs.ext4, simg2img; fsck.erofs to extract files from the partitions (AIDL map).
 FROM debian:trixie-slim
 RUN apt-get update -qq \
  && apt-get install -y -qq --no-install-recommends gdisk e2fsprogs android-sdk-libsparse-utils erofs-utils \

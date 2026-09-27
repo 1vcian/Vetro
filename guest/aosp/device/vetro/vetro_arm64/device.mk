@@ -1,45 +1,45 @@
 #
-# Parti del prodotto proprie di Vetro, sopra il vendor di Cuttlefish.
+# Vetro-specific parts of the product, on top of the Cuttlefish vendor.
 #
 
 PRODUCT_SOONG_NAMESPACES += device/vetro/vetro_arm64
 
-# fstab della virt: in vendor (seconda fase) e nel vendor_ramdisk (prima
-# fase, first_stage_ramdisk/fstab.vetro). Scelto da androidboot.fstab_suffix.
+# fstab of the virt: in vendor (second stage) and in the vendor_ramdisk (first
+# stage, first_stage_ramdisk/fstab.vetro). Selected by androidboot.fstab_suffix.
 PRODUCT_PACKAGES += \
     fstab.vetro \
     fstab.vetro.vendor_ramdisk
 
-# init e ueventd della scheda.
+# init and ueventd of the board.
 PRODUCT_COPY_FILES += \
     device/vetro/vetro_arm64/init.vetro.rc:$(TARGET_COPY_OUT_VENDOR)/etc/init/init.vetro.rc
 
-# Rete: eth0 resta eth0 e la gestisce EthernetService con DHCP (lo stack
-# di Vetro o lo slirp di QEMU). Cuttlefish la rinomina e passa dal Wi-Fi
-# simulato verso un OpenWRT sull'host, che qui non c'è.
+# Network: eth0 stays eth0 and is managed by EthernetService with DHCP (Vetro's
+# stack or QEMU's slirp). Cuttlefish renames it and goes through simulated
+# Wi-Fi to an OpenWRT on the host, which does not exist here.
 PRODUCT_VENDOR_PROPERTIES += \
     ro.vendor.disable_rename_eth0=1
 
-# adbd su TCP 5555 senza autorizzazione: SOLO nella build di sviluppo
-# userdebug (Cuttlefish fa lo stesso: shared/device.mk mette già
-# persist.adb.tcp.port=5555 e ro.adb.secure=0). Una build per utenti deve
-# togliere ro.adb.secure=0 e usare le chiavi adb (ADR 0022).
+# adbd on TCP 5555 without authorisation: ONLY in the userdebug development
+# build (Cuttlefish does the same: shared/device.mk already sets
+# persist.adb.tcp.port=5555 and ro.adb.secure=0). A build for users must
+# drop ro.adb.secure=0 and use adb keys (ADR 0022).
 PRODUCT_SYSTEM_EXT_PROPERTIES += \
     ro.adb.secure=0
 
-# Niente schermata di blocco al primo avvio (LockSettingsService): si arriva
-# dritti alla home, come serve all'analisi.
+# No lock screen on first boot (LockSettingsService): it goes straight
+# to the home screen, as analysis requires.
 PRODUCT_PRODUCT_PROPERTIES += \
     ro.lockscreen.disable.default=true
 
-# ART: CPU di Vetro = Cortex-A53, ARMv8.0 + CRC32 + crypto (ADR 0005).
-# TARGET_CPU_VARIANT := cortex-a53 (BoardConfig di Cuttlefish) fa scrivere
-# alla build dalvik.vm.isa.arm64.variant=cortex-a53 e features=default in
-# vendor/build.prop; tools/aosp/fetch.sh lo controlla sugli artefatti. Con
-# varianti più nuove il JIT genererebbe LSE e FP16, che la CPU non ha.
+# ART: Vetro CPU = Cortex-A53, ARMv8.0 + CRC32 + crypto (ADR 0005).
+# TARGET_CPU_VARIANT := cortex-a53 (Cuttlefish's BoardConfig) makes the build
+# write dalvik.vm.isa.arm64.variant=cortex-a53 and features=default in
+# vendor/build.prop; tools/aosp/fetch.sh checks it on the artifacts. With
+# newer variants the JIT would generate LSE and FP16, which the CPU lacks.
 
-# microG (GmsCore e Companion) come app privilegiate, con lo spoofing della
-# firma limitato ai loro certificati (guest/aosp/patches/frameworks/base).
+# microG (GmsCore and Companion) as privileged apps, with signature
+# spoofing restricted to their certificates (guest/aosp/patches/frameworks/base).
 PRODUCT_PACKAGES += \
     VetroGmsCore \
     VetroGmsCompanion \
@@ -47,20 +47,20 @@ PRODUCT_PACKAGES += \
     default-permissions-vetro-microg.xml \
     sysconfig-vetro-microg.xml
 
-# CA di sviluppo di Vetro (ADR 0030): nessun modulo qui. Il certificato entra
-# nel trust store di sistema con due patch (guest/aosp/patches/external/
-# conscrypt e system/ca-certificates, tools/aosp/dev-ca.sh), perché AOSP 15
-# legge le CA da /apex/com.android.conscrypt/cacerts e l'APEX si costruisce
-# dal suo progetto.
+# Vetro development CA (ADR 0030): no module here. The certificate enters
+# the system trust store through two patches (guest/aosp/patches/external/
+# conscrypt and system/ca-certificates, tools/aosp/dev-ca.sh), because AOSP 15
+# reads the CAs from /apex/com.android.conscrypt/cacerts and the APEX is built
+# from its own project.
 
-# Marchi (ADR 0030): il prodotto non si presenta come "Android".
-# - overlay statici: icona predefinita delle app e del programma di
-#   installazione senza robot; VetroFrameworkOverlay toglie QuickSearchBox
-#   (widget "Google" sulla home di Launcher3);
-# - sfondo predefinito nostro (WallpaperManager.openDefaultWallpaper legge
-#   prima ro.config.wallpaper), generato da tools/aosp/wallpaper.py;
-# - ro.product.system.* come le altre partizioni (generic_system.mk mette
-#   Android/mainline/generic, pensato per il GSI).
+# Branding (ADR 0030): the product does not present itself as "Android".
+# - static overlays: default icon of apps and of the package
+#   installer without the robot; VetroFrameworkOverlay removes QuickSearchBox
+#   (the "Google" widget on the Launcher3 home screen);
+# - our own default wallpaper (WallpaperManager.openDefaultWallpaper reads
+#   ro.config.wallpaper first), generated by tools/aosp/wallpaper.py;
+# - ro.product.system.* like the other partitions (generic_system.mk sets
+#   Android/mainline/generic, meant for the GSI).
 PRODUCT_PACKAGES += \
     VetroFrameworkOverlay \
     VetroPackageInstallerOverlay
@@ -69,7 +69,7 @@ PRODUCT_COPY_FILES += \
 PRODUCT_PRODUCT_PROPERTIES += \
     ro.config.wallpaper=/product/media/wallpaper/vetro.png
 
-# Demone del gestore dei file (ADR 0020): vsock, porta 5200, solo nelle build
-# di sviluppo (vetro-files/vetro-files.rc). Il sorgente arriva da
-# guest/kernel/initramfs con tools/aosp/sync.sh.
+# File manager daemon (ADR 0020): vsock, port 5200, only in development
+# builds (vetro-files/vetro-files.rc). The source comes from
+# guest/kernel/initramfs via tools/aosp/sync.sh.
 PRODUCT_PACKAGES += vetro-files

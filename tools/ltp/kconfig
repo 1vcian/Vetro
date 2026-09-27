@@ -1,6 +1,6 @@
-# Configurazione del kernel dichiarata ai test LTP (KCONFIG_PATH), uguale
-# per Vetro e per QEMU: un kernel arm64 generico con le opzioni che i test
-# delle syscall interrogano.
+# Kernel configuration declared to the LTP tests (KCONFIG_PATH), the same
+# for Vetro and for QEMU: a generic arm64 kernel with the options that the
+# syscall tests query.
 CONFIG_ARM64=y
 CONFIG_64BIT=y
 CONFIG_MMU=y

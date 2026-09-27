@@ -1,6 +1,6 @@
-// microG per Vetro: GmsCore e Companion (Apache 2.0), release ufficiali
-// scaricate da tools/aosp/sync.sh con sha256 fissato (microg.lock) in
-// prebuilt/, che non si committa. Vedi docs/adr/0022-vetro-aosp-image.md.
+// microG for Vetro: GmsCore and Companion (Apache 2.0), official releases
+// downloaded by tools/aosp/sync.sh with a pinned sha256 (microg.lock) into
+// prebuilt/, which is not committed. See docs/adr/0022-vetro-aosp-image.md.
 
 package {
     default_applicable_licenses: ["vendor_vetro_microg_license"],
@@ -12,7 +12,7 @@ license {
     license_kinds: ["SPDX-license-identifier-Apache-2.0"],
 }
 
-// I file XML di configurazione sono di Vetro (PolyForm Noncommercial 1.0.0,
+// The XML configuration files belong to Vetro (PolyForm Noncommercial 1.0.0,
 // ADR 0004).
 license {
     name: "vendor_vetro_microg_config_license",
@@ -24,14 +24,14 @@ license {
 android_app_import {
     name: "VetroGmsCore",
     apk: "prebuilt/com.google.android.gms.apk",
-    // targetSdkVersion 29 e firma v1: la build scomprime dex e librerie JNI
-    // (priv-app) e toglie il blocco v2, e le app di sistema si verificano
-    // senza la protezione contro la rimozione di v2 (skipVerify per la
-    // partizione di sistema in InstallPackageHelper): la firma v1 basta.
+    // targetSdkVersion 29 and v1 signature: the build uncompresses dex and JNI
+    // libraries (priv-app) and strips the v2 block, and system apps are verified
+    // without the protection against v2 stripping (skipVerify for the system
+    // partition in InstallPackageHelper): the v1 signature is enough.
     presigned: true,
     privileged: true,
     product_specific: true,
-    // <uses-library> del manifest (aapt2 dump badging), controllati da Soong.
+    // <uses-library> entries of the manifest (aapt2 dump badging), checked by Soong.
     uses_libs: ["com.android.location.provider"],
     optional_uses_libs: [
         "org.apache.http.legacy",

@@ -1,22 +1,22 @@
-# init della scheda Vetro arm64, dopo init.cutf_cvm.rc di Cuttlefish.
+# init of the Vetro arm64 board, after Cuttlefish's init.cutf_cvm.rc.
 
 on early-init
-    # Per i log di avvio confrontabili con QEMU (tools/aosp/compare).
-    write /dev/kmsg "VETRO: init della scheda vetro_arm64"
+    # For boot logs comparable with QEMU (tools/aosp/compare).
+    write /dev/kmsg "VETRO: vetro_arm64 board init"
 
 on property:sys.boot_completed=1
-    # Livello 2: dopo l'avvio la console stampa solo i messaggi sotto il 4.
+    # Level 2: after boot the console prints only messages below 4.
     write /dev/kmsg "<2>VETRO: sys.boot_completed=1"
-    # Schermo sempre acceso (alimentazione "collegata"): su una CPU emulata
-    # lenta lo spegnimento per inattività arriva prima che la home sia
-    # disegnata, e l'analisi vuole lo schermo visibile.
+    # Screen always on (power "plugged in"): on a slow emulated CPU the
+    # inactivity screen-off arrives before the home screen is drawn, and
+    # analysis wants the screen visible.
     exec_background - system system -- /system/bin/settings put global stay_on_while_plugged_in 7
 
-# Servizi di Cuttlefish che senza il suo host (vsock, /dev/hvcN, simulatori)
-# escono o abortiscono subito e init riavvierebbe ogni 5 s, con un tombstone a
-# ogni crash (su una CPU emulata lenta si mangiano gran parte del tempo) e
-# flags_health_check a ogni giro. Al primo riavvio si fermano: restano
-# avviabili a richiesta (servicemanager) ma non girano più a ciclo.
+# Cuttlefish services that without its host (vsock, /dev/hvcN, simulators)
+# exit or abort immediately and that init would restart every 5 s, with a tombstone
+# on every crash (on a slow emulated CPU they eat up most of the time) and
+# flags_health_check on every round. On the first restart they are stopped: they
+# remain startable on demand (servicemanager) but no longer loop.
 on property:init.svc.vendor.uwb_hal=restarting
     stop vendor.uwb_hal
 

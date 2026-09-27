@@ -1,9 +1,9 @@
 #!/bin/sh
-# Rigenera la mappa AIDL (descrittore, codice -> metodo) dell'immagine AOSP
-# di Vetro: crates/vetro-analysis/src/introspect/aidl_aosp15.tsv (M8).
-# Serve target/aosp/out/super.img (tools/aosp/fetch.sh), Docker
-# (vetro-aosp-tools: simg2img, fsck.erofs) e dexdump dell'SDK Android
-# (DEXDUMP, predefinito build-tools 35.0.0).
+# Regenerates the AIDL map (descriptor, code -> method) of the Vetro AOSP
+# image: crates/vetro-analysis/src/introspect/aidl_aosp15.tsv (M8).
+# Needs target/aosp/out/super.img (tools/aosp/fetch.sh), Docker
+# (vetro-aosp-tools: simg2img, fsck.erofs) and dexdump from the Android SDK
+# (DEXDUMP, default build-tools 35.0.0).
 set -eu
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"

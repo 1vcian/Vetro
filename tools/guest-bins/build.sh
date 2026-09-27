@@ -1,9 +1,9 @@
 #!/bin/sh
-# Costruisce i binari guest di test (arm64, statici, musl) in target/guest-bins:
-# - tests/linux/c/*.c compilati con -static;
-# - busybox.static dal pacchetto Alpine.
-# Gira in un container Alpine arm64 (su macOS Apple Silicon e su runner arm64
-# è nativo). Uso: tools/guest-bins/build.sh
+# Builds the guest test binaries (arm64, static, musl) in target/guest-bins:
+# - tests/linux/c/*.c compiled with -static;
+# - busybox.static from the Alpine package.
+# Runs in an arm64 Alpine container (native on macOS Apple Silicon and on arm64
+# runners). Usage: tools/guest-bins/build.sh
 set -eu
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 IMAGE="${VETRO_GUEST_IMAGE:-vetro-guest-bins:latest}"

@@ -1,13 +1,13 @@
 #!/bin/sh
-# Compila i kselftest del kernel guest (gruppi in guest/kernel/kselftest/
-# targets.txt) e prepara target/guest-kernel/initramfs-kselftest.cpio.gz:
-# l'initramfs normale più /kselftest. Con `vetro.kselftest` sulla riga di
-# comando /init li esegue (run_kselftest.sh) e spegne la macchina.
+# Builds the guest kernel kselftests (groups in guest/kernel/kselftest/
+# targets.txt) and prepares target/guest-kernel/initramfs-kselftest.cpio.gz:
+# the normal initramfs plus /kselftest. With `vetro.kselftest` on the command
+# line /init runs them (run_kselftest.sh) and powers the machine off.
 #
-# I kselftest presuppongono glibc: si compilano in Debian arm64, statici
-# (--allow-multiple-definition per valid-adjtimex, che ridefinisce
-# clock_adjtime). Servono i sorgenti già estratti da tools/guest-kernel/build.sh
-# nel volume Docker.
+# The kselftests assume glibc: they are built in arm64 Debian, statically
+# (--allow-multiple-definition for valid-adjtimex, which redefines
+# clock_adjtime). They need the sources already extracted by tools/guest-kernel/build.sh
+# in the Docker volume.
 set -eu
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 KVER=6.18.53
@@ -22,8 +22,8 @@ docker run --rm --platform linux/arm64 -v "$VOLUME:/build" -e KVER="$KVER" -e TA
   vetro-kselftest:latest sh -euc '
   src=/build/linux-$KVER; obj=/build/obj-$KVER
   rm -rf /build/ks-obj /build/ks-install
-  # Header UAPI già installati da build.sh (dentro Alpine).
-  [ -f "$obj/usr/include/linux/types.h" ] || { echo "manca $obj/usr/include: esegui build.sh"; exit 1; }
+  # UAPI headers already installed by build.sh (inside Alpine).
+  [ -f "$obj/usr/include/linux/types.h" ] || { echo "missing $obj/usr/include: run build.sh"; exit 1; }
   echo "==> kselftest: $TARGETS"
   make -s -C "$src/tools/testing/selftests" TARGETS="$TARGETS" ARCH=arm64 \
     CC="gcc -static -Wl,--allow-multiple-definition" KHDR_INCLUDES="-isystem $obj/usr/include" \
@@ -32,8 +32,8 @@ docker run --rm --platform linux/arm64 -v "$VOLUME:/build" -e KVER="$KVER" -e TA
   gcc --version | head -n1 > /build/ks-install/VERSIONS
 '
 
-# Initramfs: la lista normale più ogni file di /kselftest (in ordine, con
-# permessi e link come nell'installazione).
+# Initramfs: the normal list plus every file of /kselftest (in order, with
+# permissions and links as in the installation).
 IMAGE="${VETRO_GUEST_KERNEL_IMAGE:-vetro-guest-kernel:latest}"
 docker run --rm --platform linux/arm64 -v "$ROOT:/src" -v "$VOLUME:/build" -e KVER="$KVER" "$IMAGE" sh -euc '
   out=/src/target/guest-kernel

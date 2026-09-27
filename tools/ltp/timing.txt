@@ -1,8 +1,8 @@
-# Test LTP che misurano tempi reali (libreria tst_timer_test): l'oracolo
-# (QEMU o il nativo) li sbaglia se l'host è carico, quindi l'harness li
-# esegue da soli, dopo la fase in parallelo. Vetro usa il tempo virtuale e
-# non ne risente. Nella VM di Docker Desktop (macOS) falliscono anche in
-# nativo, per la scarsa precisione dei timer: servono un host arm64 vero.
+# LTP tests that measure real time (tst_timer_test library): the oracle
+# (QEMU or native) gets them wrong if the host is loaded, so the harness
+# runs them alone, after the parallel phase. Vetro uses virtual time and
+# is not affected. In the Docker Desktop VM (macOS) they fail even
+# natively, because of the poor timer precision: a real arm64 host is needed.
 clock_nanosleep02
 futex_wait05
 nanosleep01

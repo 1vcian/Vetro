@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Permessi privilegiati di microG (release in microg.lock). Elenca tutti i
-  permessi android.permission.* che gli APK chiedono (aapt2 dump permissions):
-  con ro.control_privapp_permissions=enforce un permesso privilegiato che
-  manca da qui impedisce l'avvio di system_server; quelli non privilegiati
-  sono ignorati. Da rigenerare quando cambia la release.
+  Privileged permissions of microG (release in microg.lock). Lists all the
+  android.permission.* permissions the APKs request (aapt2 dump permissions):
+  with ro.control_privapp_permissions=enforce a privileged permission that is
+  missing from here prevents system_server from booting; non-privileged ones
+  are ignored. Regenerate when the release changes.
 -->
 <permissions>
     <privapp-permissions package="com.google.android.gms">
