@@ -144,7 +144,13 @@ async function session(chrome, profile, url, kind) {
     await screenshot(page, shot);
     const screen = await page.eval(SCREEN);
     misure[prebuilt ? 'home_prebuilt' : 'home_2'] = screen;
-    check(screen.colors > 20, `screen after the restore: almost uniform (${screen.colors} colours)`);
+    if (kind === 'second') {
+      // The last snapshot was saved right after the test app was opened: the
+      // app is on screen (blue, or orange if the click came first).
+      check(near(screen.center, BLU) || near(screen.center, ARANCIONE), `second start: the test app is not on screen (centre ${screen.center})`);
+    } else {
+      check(screen.colors > 20, `screen after the restore: almost uniform (${screen.colors} colours)`);
+    }
     // adb after the restore, then the APK.
     await page.waitFor('adb connected after the restore', async () => (await page.eval(ANDROID_STATE)).adb.state === 'ready', 10 * 60_000);
     const devices = await page.eval('window.vetroAndroid.devices()');
@@ -208,7 +214,7 @@ run(async () => {
   let ok = false;
   try {
     if (PREBUILT) {
-      await session(chrome, profile, url, 'prebuilt');
+      if (process.env.VETRO_ANDROID_SKIP_BOOT !== '1') await session(chrome, profile, url, 'prebuilt');
       await session(chrome, profile, url, 'second');
     } else {
       if (process.env.VETRO_ANDROID_SKIP_BOOT !== '1') await session(chrome, profile, url, 'cold');
