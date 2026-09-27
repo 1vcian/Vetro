@@ -566,13 +566,17 @@ test('device profiles: starters, boot parameters, adb commands, rejections (ADR 
   const load = (id) => parseProfile(readFileSync(join(root, 'web/app/profiles', `${id}.json`), 'utf8'));
   // The same strings as the Rust twin (vetro_machine::profile tests, EXPECTED).
   const expected = {
+    light: 'androidboot.lcd_density=180',
     default: '',
     phone: 'androidboot.lcd_density=320 androidboot.serialno=VETROPHONE01 androidboot.hardware.sku=phone',
     'small-phone': 'androidboot.serialno=VETROSMALL01 androidboot.hardware.sku=small-phone',
     tablet: 'androidboot.lcd_density=213 androidboot.serialno=VETROTABLET1 androidboot.hardware.sku=tablet',
   };
   eq(STARTER_PROFILES, Object.keys(expected), 'starter list');
-  eq(DEFAULT_PROFILE, 'default', 'default profile');
+  eq(DEFAULT_PROFILE, 'light', 'the app\'s default profile (ADR 0036)');
+  const light = load('light');
+  eq(profileMachine(light), { ...ANDROID_MACHINE, width: 960, height: 600 }, 'light machine');
+  eq(profileAdbCommands(light), [], 'light adb commands');
   for (const id of STARTER_PROFILES) {
     const p = load(id);
     eq(p.id, id, `${id}: id`);

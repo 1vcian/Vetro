@@ -1,0 +1,10 @@
+{
+  "vetroProfile": 1,
+  "id": "light",
+  "name": "Light (landscape)",
+  "description": "The app's default: 960 x 600 in landscape at 180 dpi, the same 853 x 533 dp layout as the full-resolution machine with 56% of its pixels to draw, 2 GiB of RAM. A ready-made home screen snapshot is published for it.",
+  "screen": { "width": 960, "height": 600, "density": 180 },
+  "ramMiB": 2048,
+  "locale": "en-US",
+  "device": { "serial": "VETRO00001" }
+}

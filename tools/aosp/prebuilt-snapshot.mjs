@@ -45,7 +45,7 @@ import { DEV, instantiate, Machine } from '../../web/node/vetro.mjs';
 import { AdbClient } from '../../web/node/adb.mjs';
 import { DiskFeeder, LayoutSource, MemoryCache } from '../../web/node/disk.mjs';
 import {
-  ANDROID_COMPACT, ANDROID_DISK, ANDROID_HOME_NS, ANDROID_MACHINE, ANDROID_PARAMS, ANDROID_WAKE, BootProgress, DEFAULT_MANIFEST,
+  ANDROID_COMPACT, ANDROID_DISK, ANDROID_HOME_NS, ANDROID_MACHINE, ANDROID_PARAMS, ANDROID_WAKE, ANDROID_GRAPHICS, BootProgress, DEFAULT_MANIFEST,
   gridColors, HOME_DRAW_NS, HOME_MIN_COLORS, HOME_POLL_NS, HOME_QUERY, isHome, machineDevices,
 } from '../../web/node/android.mjs';
 import { toBase64 } from '../../web/node/persist.mjs';
@@ -194,6 +194,8 @@ async function main() {
       st.adb = adb;
       adb.connect().then(async () => {
         await adb.shell(ANDROID_WAKE);
+        // The app's default graphics settings, already in the snapshot (ADR 0036).
+        await adb.shell(ANDROID_GRAPHICS.light);
         for (const c of setup) {
           const r = await adb.shell(c);
           log(`profile: adb shell ${c}: ${JSON.stringify(`${r.stdout}${r.stderr}`.trim())}`);
