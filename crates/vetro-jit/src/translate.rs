@@ -35,6 +35,7 @@ use vetro_cpu::sysreg::EnvReg;
 mod crypto;
 mod fp;
 mod vec;
+mod vec2;
 
 /// PSTATE.{D,A,I,F} in bits 9:6 (like `SysState::daif`).
 const DAIF_ALL: u32 = 0x3c0;
@@ -3178,7 +3179,7 @@ impl Tx {
                 rd,
             })) => self.pmull64(q, rm, rn, rd),
             Insn::Simd(SimdInsn::Crypto(c)) => self.crypto(c),
-            Insn::Simd(SimdInsn::Int(i)) if self.vec_int_inline(i) => {}
+            Insn::Simd(SimdInsn::Int(i)) if self.vec_int_inline(i) || self.vec_more(i) => {}
             Insn::Simd(SimdInsn::Fp(f)) if self.fp_inline(f) => {}
             Insn::Simd(s) => self.simd_helper(&s),
             other => unreachable!("untranslatable instruction: {other:?}"),

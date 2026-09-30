@@ -223,6 +223,14 @@ for (const [k, v] of [...areas].sort((a, b) => b[1].t - a[1].t).slice(0, top)) {
   const ins = nSamples ? ((100 * v.samples) / nSamples).toFixed(1) : '-';
   console.log(`${ms(v.t).padStart(11)} ${ms(v.self).padStart(8)} ${pct(v.t).padStart(6)} ${String(ins).padStart(7)}  ${k}`);
 }
+// The hottest regions themselves (--regions=N).
+const nRegions = Number(arg('regions', 0));
+if (nRegions) {
+  console.log(`\n== top ${nRegions} regions: time under the region (self), area`);
+  for (const e of [...under.values()].sort((a, b) => b.t - a.t).slice(0, nRegions)) {
+    console.log(`${ms(e.t).padStart(9)} ms (${ms(e.self).padStart(7)} self) ${pct(e.t).padStart(5)}%  r${e.el}_${e.pc.toString(16)}  ${area(e.el, e.pc)}`);
+  }
+}
 // Coarse: kernel vs user, and by library for user.
 const coarse = new Map();
 for (const [k, v] of areas) {

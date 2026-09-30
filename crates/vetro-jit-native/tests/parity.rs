@@ -772,3 +772,160 @@ fn crypto_matches_the_interpreter_without_env_simd() {
         assert_eq!(vetro_jit::helper::calls(), before, "{name}: called env.simd");
     }
 }
+
+/// The widening, narrowing, by-element, halving and saturating-doubling
+/// integer SIMD forms inline (ADR 0040): V registers and FPSR (QC) exactly as
+/// the interpreter, for every size and "2" form, with lanes at the limits
+/// (0, 1, the extremes of each width, around the rounding and saturation
+/// points) and random ones, without calling `env.simd`. Registers used as
+/// source and destination at once too. Breaking a rounding bit, a saturation
+/// clamp, a lane selection or the QC condition turns it red.
+#[test]
+fn more_integer_simd_matches_the_interpreter_without_env_simd() {
+    // Encodings from tools/a64asm.sh.
+    let insns: [(u32, &str); 66] = [
+        (0x0e230041, "saddl v1.8h, v2.8b, v3.8b"),
+        (0x6e630041, "uaddl2 v1.4s, v2.8h, v3.8h"),
+        (0x0ea31041, "saddw v1.2d, v2.2d, v3.2s"),
+        (0x6e231041, "uaddw2 v1.8h, v2.8h, v3.16b"),
+        (0x0e632041, "ssubl v1.4s, v2.4h, v3.4h"),
+        (0x6ea32041, "usubl2 v1.2d, v2.4s, v3.4s"),
+        (0x4e633041, "ssubw2 v1.4s, v2.4s, v3.8h"),
+        (0x2e233041, "usubw v1.8h, v2.8h, v3.8b"),
+        (0x0e235041, "sabal v1.8h, v2.8b, v3.8b"),
+        (0x6e635041, "uabal2 v1.4s, v2.8h, v3.8h"),
+        (0x4ea37041, "sabdl2 v1.2d, v2.4s, v3.4s"),
+        (0x2e237041, "uabdl v1.8h, v2.8b, v3.8b"),
+        (0x0e638041, "smlal v1.4s, v2.4h, v3.4h"),
+        (0x6e238041, "umlal2 v1.8h, v2.16b, v3.16b"),
+        (0x4ea3a041, "smlsl2 v1.2d, v2.4s, v3.4s"),
+        (0x2e63a041, "umlsl v1.4s, v2.4h, v3.4h"),
+        (0x0e23c041, "smull v1.8h, v2.8b, v3.8b"),
+        (0x6ea3c041, "umull2 v1.2d, v2.4s, v3.4s"),
+        (0x0e234041, "addhn v1.8b, v2.8h, v3.8h"),
+        (0x6e634041, "raddhn2 v1.8h, v2.4s, v3.4s"),
+        (0x4ea36041, "subhn2 v1.4s, v2.2d, v3.2d"),
+        (0x2e636041, "rsubhn v1.4h, v2.4s, v3.4s"),
+        (0x4f538841, "mul v1.8h, v2.8h, v3.h[5]"),
+        (0x2fa30841, "mla v1.2s, v2.2s, v3.s[3]"),
+        (0x6fa34041, "mls v1.4s, v2.4s, v3.s[1]"),
+        (0x0f73a841, "smull v1.4s, v2.4h, v3.h[7]"),
+        (0x6f83a841, "umull2 v1.2d, v2.4s, v3.s[2]"),
+        (0x4f432041, "smlal2 v1.4s, v2.8h, v3.h[0]"),
+        (0x2fa36041, "umlsl v1.2d, v2.2s, v3.s[1]"),
+        (0x4f73c041, "sqdmulh v1.8h, v2.8h, v3.h[3]"),
+        (0x0f63d841, "sqrdmulh v1.4h, v2.4h, v3.h[6]"),
+        (0x0fa3c041, "sqdmulh v1.2s, v2.2s, v3.s[1]"),
+        (0x4f83d041, "sqrdmulh v1.4s, v2.4s, v3.s[0]"),
+        (0x4e63b441, "sqdmulh v1.8h, v2.8h, v3.8h"),
+        (0x6ea3b441, "sqrdmulh v1.4s, v2.4s, v3.4s"),
+        (0x2e63b441, "sqrdmulh v1.4h, v2.4h, v3.4h"),
+        (0x0ea3b441, "sqdmulh v1.2s, v2.2s, v3.2s"),
+        (0x4e230441, "shadd v1.16b, v2.16b, v3.16b"),
+        (0x6ea30441, "uhadd v1.4s, v2.4s, v3.4s"),
+        (0x4e631441, "srhadd v1.8h, v2.8h, v3.8h"),
+        (0x2ea31441, "urhadd v1.2s, v2.2s, v3.2s"),
+        (0x4f0d2441, "srshr v1.16b, v2.16b, #0x3"),
+        (0x6f202441, "urshr v1.4s, v2.4s, #0x20"),
+        (0x4f402441, "srshr v1.2d, v2.2d, #0x40"),
+        (0x6f1f3441, "ursra v1.8h, v2.8h, #0x1"),
+        (0x0f393441, "srsra v1.2s, v2.2s, #0x7"),
+        (0x6f732441, "urshr v1.2d, v2.2d, #0xd"),
+        (0x6f084441, "sri v1.16b, v2.16b, #0x8"),
+        (0x6f3b4441, "sri v1.4s, v2.4s, #0x5"),
+        (0x6f105441, "sli v1.8h, v2.8h, #0x0"),
+        (0x6f7f5441, "sli v1.2d, v2.2d, #0x3f"),
+        (0x0f0d8c41, "rshrn v1.8b, v2.8h, #0x3"),
+        (0x4f108c41, "rshrn2 v1.8h, v2.4s, #0x10"),
+        (0x0f0f9441, "sqshrn v1.8b, v2.8h, #0x1"),
+        (0x4f179c41, "sqrshrn2 v1.8h, v2.4s, #0x9"),
+        (0x2f109441, "uqshrn v1.4h, v2.4s, #0x10"),
+        (0x6f0f9c41, "uqrshrn2 v1.16b, v2.8h, #0x1"),
+        (0x2f0b8441, "sqshrun v1.8b, v2.8h, #0x5"),
+        (0x6f1f8c41, "sqrshrun2 v1.8h, v2.4s, #0x1"),
+        (0x2f108c41, "sqrshrun v1.4h, v2.4s, #0x10"),
+        (0x2f089c41, "uqrshrn v1.8b, v2.8h, #0x8"),
+        (0x4f52d042, "sqrdmulh v2.8h, v2.8h, v2.h[1]"),
+        (0x2e628042, "umlal v2.4s, v2.4h, v2.4h"),
+        (0x6f0d8c42, "sqrshrun2 v2.16b, v2.8h, #0x3"),
+        (0x6e224042, "raddhn2 v2.16b, v2.8h, v2.8h"),
+        (0x6f295442, "sli v2.4s, v2.4s, #0x9"),
+    ];
+    const B: u32 = 0x14000000; // b .
+    const LANES16: [u16; 12] =
+        [0, 1, 0x7f, 0x80, 0xff, 0x100, 0x7fff, 0x8000, 0x8001, 0xfffe, 0xffff, 0x4000];
+    const LANES32: [u32; 10] = [
+        0,
+        1,
+        0x7fff_ffff,
+        0x8000_0000,
+        0x8000_0001,
+        0xffff_ffff,
+        0x0000_8000,
+        0x0001_0000,
+        0x4000_0000,
+        0xffff_7fff,
+    ];
+    let mut rng = Rng(0xa11);
+    for (w, name) in insns {
+        let mut code = Vec::new();
+        for x in [w, B] {
+            code.extend_from_slice(&x.to_le_bytes());
+        }
+        let mut jit =
+            JitCpu::new(NativeEngine::new(), JitConfig { hot_threshold: 0, ..JitConfig::default() });
+        let before = vetro_jit::helper::calls();
+        let mut with_qc = 0;
+        for case in 0..400 {
+            let mut v = [0u128; 3];
+            for r in v.iter_mut() {
+                for k in 0..4 {
+                    let word = match rng.below(5) {
+                        // The saturating case of SQ(R)DMULH: the most negative values.
+                        4 => [0x8000_8000, 0x8000_0000][rng.below(2) as usize],
+                        0 => {
+                            LANES16[rng.below(12) as usize] as u32
+                                | (LANES16[rng.below(12) as usize] as u32) << 16
+                        }
+                        1 => LANES32[rng.below(10) as usize],
+                        2 => ((rng.next() as u32) & 0x8080_8080) | (0x7f7f_7f7f * (rng.below(2) as u32)),
+                        _ => rng.next() as u32,
+                    };
+                    *r |= (word as u128) << (32 * k);
+                }
+            }
+            let mut cpu = Cpu::new();
+            cpu.pc = CODE;
+            cpu.v[1] = v[0];
+            cpu.v[2] = v[1];
+            cpu.v[3] = v[2];
+            cpu.fpsr = if case % 7 == 0 { 1 << 27 } else { 0 };
+            let mut mem = UserMemory::new();
+            mem.map(CODE, code.clone(), Perm::RX).unwrap();
+            let mut want = cpu.clone();
+            let mut wmem = UserMemory::new();
+            wmem.map(CODE, code.clone(), Perm::RX).unwrap();
+            for _ in 0..2 {
+                want.step(&mut wmem).unwrap();
+            }
+            let (n, r) = jit.run(&mut cpu, &mut mem, 2);
+            assert_eq!((n, r), (2, Ok(())));
+            assert_eq!(
+                (cpu.v, cpu.fpsr),
+                (want.v, want.fpsr),
+                "{name}: V1 {:#034x}, V2 {:#034x}, V3 {:#034x}, FPSR {:#x} before",
+                v[0],
+                v[1],
+                v[2],
+                if case % 7 == 0 { 1u32 << 27 } else { 0 }
+            );
+            with_qc += u32::from(case % 7 != 0 && want.fpsr & 1 << 27 != 0);
+        }
+        assert!(jit.stats.jit_steps >= 400, "{name}: not run by the JIT: {:?}", jit.stats);
+        assert_eq!(vetro_jit::helper::calls(), before, "{name}: called env.simd");
+        // UQSHRN by the full width cannot saturate (the result fits).
+        if (name.starts_with("sq") || name.starts_with("uq")) && name != "uqshrn v1.4h, v2.4s, #0x10" {
+            assert!(with_qc > 5, "{name}: QC set in only {with_qc} cases: test too weak");
+        }
+    }
+}

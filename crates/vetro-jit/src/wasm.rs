@@ -270,6 +270,7 @@ pub mod v {
     pub const I32X4_EXTADD_PAIRWISE_I16X8_U: u32 = 0x7f;
     pub const I16X8_ABS: u32 = 0x80;
     pub const I16X8_NEG: u32 = 0x81;
+    pub const I16X8_Q15MULR_SAT_S: u32 = 0x82;
     pub const I16X8_ALL_TRUE: u32 = 0x83;
     pub const I16X8_EXTEND_LOW_I8X16_S: u32 = 0x87;
     pub const I16X8_EXTEND_HIGH_I8X16_S: u32 = 0x88;

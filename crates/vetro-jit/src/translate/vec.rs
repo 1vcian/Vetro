@@ -11,28 +11,31 @@ use crate::wasm::v;
 
 /// WASM opcode per element size (8, 16, 32, 64 bits); `None` if
 /// the operation does not exist at that size.
-type BySize = [Option<u32>; 4];
+pub(super) type BySize = [Option<u32>; 4];
 
-const ADD: BySize = [Some(v::I8X16_ADD), Some(v::I16X8_ADD), Some(v::I32X4_ADD), Some(v::I64X2_ADD)];
-const SUB: BySize = [Some(v::I8X16_SUB), Some(v::I16X8_SUB), Some(v::I32X4_SUB), Some(v::I64X2_SUB)];
+pub(super) const ADD: BySize =
+    [Some(v::I8X16_ADD), Some(v::I16X8_ADD), Some(v::I32X4_ADD), Some(v::I64X2_ADD)];
+pub(super) const SUB: BySize =
+    [Some(v::I8X16_SUB), Some(v::I16X8_SUB), Some(v::I32X4_SUB), Some(v::I64X2_SUB)];
 const EQ: BySize = [Some(v::I8X16_EQ), Some(v::I16X8_EQ), Some(v::I32X4_EQ), Some(v::I64X2_EQ)];
 const GT_S: BySize = [Some(v::I8X16_GT_S), Some(v::I16X8_GT_S), Some(v::I32X4_GT_S), Some(v::I64X2_GT_S)];
 const GT_U: BySize = [Some(v::I8X16_GT_U), Some(v::I16X8_GT_U), Some(v::I32X4_GT_U), None];
 const GE_S: BySize = [Some(v::I8X16_GE_S), Some(v::I16X8_GE_S), Some(v::I32X4_GE_S), Some(v::I64X2_GE_S)];
 const GE_U: BySize = [Some(v::I8X16_GE_U), Some(v::I16X8_GE_U), Some(v::I32X4_GE_U), None];
-const MAX_S: BySize = [Some(v::I8X16_MAX_S), Some(v::I16X8_MAX_S), Some(v::I32X4_MAX_S), None];
-const MAX_U: BySize = [Some(v::I8X16_MAX_U), Some(v::I16X8_MAX_U), Some(v::I32X4_MAX_U), None];
-const MIN_S: BySize = [Some(v::I8X16_MIN_S), Some(v::I16X8_MIN_S), Some(v::I32X4_MIN_S), None];
-const MIN_U: BySize = [Some(v::I8X16_MIN_U), Some(v::I16X8_MIN_U), Some(v::I32X4_MIN_U), None];
-const MUL: BySize = [None, Some(v::I16X8_MUL), Some(v::I32X4_MUL), None];
+pub(super) const MAX_S: BySize = [Some(v::I8X16_MAX_S), Some(v::I16X8_MAX_S), Some(v::I32X4_MAX_S), None];
+pub(super) const MAX_U: BySize = [Some(v::I8X16_MAX_U), Some(v::I16X8_MAX_U), Some(v::I32X4_MAX_U), None];
+pub(super) const MIN_S: BySize = [Some(v::I8X16_MIN_S), Some(v::I16X8_MIN_S), Some(v::I32X4_MIN_S), None];
+pub(super) const MIN_U: BySize = [Some(v::I8X16_MIN_U), Some(v::I16X8_MIN_U), Some(v::I32X4_MIN_U), None];
+pub(super) const MUL: BySize = [None, Some(v::I16X8_MUL), Some(v::I32X4_MUL), None];
 const ABS: BySize = [Some(v::I8X16_ABS), Some(v::I16X8_ABS), Some(v::I32X4_ABS), Some(v::I64X2_ABS)];
 const NEG: BySize = [Some(v::I8X16_NEG), Some(v::I16X8_NEG), Some(v::I32X4_NEG), Some(v::I64X2_NEG)];
-const SHL: BySize = [Some(v::I8X16_SHL), Some(v::I16X8_SHL), Some(v::I32X4_SHL), Some(v::I64X2_SHL)];
-const SHR_S: BySize =
+pub(super) const SHL: BySize =
+    [Some(v::I8X16_SHL), Some(v::I16X8_SHL), Some(v::I32X4_SHL), Some(v::I64X2_SHL)];
+pub(super) const SHR_S: BySize =
     [Some(v::I8X16_SHR_S), Some(v::I16X8_SHR_S), Some(v::I32X4_SHR_S), Some(v::I64X2_SHR_S)];
-const SHR_U: BySize =
+pub(super) const SHR_U: BySize =
     [Some(v::I8X16_SHR_U), Some(v::I16X8_SHR_U), Some(v::I32X4_SHR_U), Some(v::I64X2_SHR_U)];
-const SPLAT: BySize =
+pub(super) const SPLAT: BySize =
     [Some(v::I8X16_SPLAT), Some(v::I16X8_SPLAT), Some(v::I32X4_SPLAT), Some(v::I64X2_SPLAT)];
 
 /// `i8x16.shuffle` indices for a result of `n` elements of `eb` bytes
