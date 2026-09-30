@@ -43,6 +43,7 @@
 
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync, writeSync, fstatSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { gunzipSync } from 'node:zlib';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEV, instantiate, Machine } from '../../web/node/vetro.mjs';
@@ -315,14 +316,16 @@ async function main() {
         'done',
         '',
       ].join('\n');
-      await adb.push('/data/local/tmp/vetro-maps.sh', new TextEncoder().encode(script));
-      const ks = await sh('su 0 cat /proc/kallsyms 2>/dev/null || cat /proc/kallsyms');
-      const maps = await sh('su 0 sh /data/local/tmp/vetro-maps.sh 2>/dev/null || sh /data/local/tmp/vetro-maps.sh');
       const base = outPath.replace(/\.json$/, '');
-      writeFileSync(`${base}.kallsyms`, ks);
-      writeFileSync(`${base}.maps`, maps);
       writeFileSync(`${base}.samples`, [...samples].map(([k, v]) => `${v} ${k}`).join('\n') + '\n');
-      log(`samples: ${samples.size} keys, kallsyms ${ks.length} bytes, maps ${maps.length} bytes`);
+      await adb.push('/data/local/tmp/vetro-maps.sh', new TextEncoder().encode(script));
+      const maps = await sh('su 0 sh /data/local/tmp/vetro-maps.sh 2>/dev/null || sh /data/local/tmp/vetro-maps.sh');
+      writeFileSync(`${base}.maps`, maps);
+      // Text symbols only, compressed in the guest (the full list is ~10 MiB
+      // through adb at guest speed).
+      const ks = await sh(`su 0 sh -c 'grep " [tT] " /proc/kallsyms | gzip -1 | base64'`);
+      writeFileSync(`${base}.kallsyms`, gunzipSync(Buffer.from(ks.replace(/\s+/g, ''), 'base64')));
+      log(`samples: ${samples.size} keys, kallsyms ${ks.length} bytes (base64 gzip), maps ${maps.length} bytes`);
       end('dump');
     }
   };
