@@ -29,7 +29,7 @@ case "$info" in
 esac
 [ -f "$p/system/etc/security/cacerts/$ca" ] || fail "$ca is not in /system/etc/security/cacerts"
 # Trademarks: overlays installed, no QuickSearchBox, wallpaper and its property.
-for f in product/overlay/VetroFrameworkOverlay.apk product/overlay/VetroPackageInstallerOverlay.apk product/overlay/VetroBrowserOverlay.apk product/overlay/VetroSettingsOverlay.apk product/media/wallpaper/vetro.png; do
+for f in product/overlay/VetroFrameworkOverlay.apk product/overlay/VetroPackageInstallerOverlay.apk product/overlay/VetroBrowserOverlay.apk product/overlay/VetroSettingsOverlay.apk product/overlay/VetroSettingsProviderOverlay.apk product/media/wallpaper/vetro.png; do
   [ -f "$p/$f" ] || fail "/$f missing"
 done
 [ ! -e "$p/product/app/QuickSearchBox" ] || fail "QuickSearchBox is still in /product/app"
@@ -53,6 +53,15 @@ case "$bootconfig" in
   *androidboot.hardware.hwcomposer.display_framebuffer_format=bgra*) ;;
   *) fail "display_framebuffer_format is not bgra in vendor_boot" ;;
 esac
+# Idle guest (ADR 0040): no HALs for hardware the virt machine lacks, the
+# features declared unavailable, the Bluetooth audio policy the audio HAL
+# includes, SurfaceFlinger allowed to use present fences.
+for a in com.android.hardware.uwb com.android.hardware.threadnetwork com.google.cf.nfc com.google.cf.rild com.google.cf.bt; do
+  [ ! -e "$p/vendor/apex/$a.apex" ] || fail "/vendor/apex/$a.apex is still installed"
+done
+[ -f "$p/vendor/etc/permissions/vetro_missing_hardware.xml" ] || fail "vetro_missing_hardware.xml missing"
+[ -f "$p/vendor/etc/bluetooth_audio_policy_configuration_7_0.xml" ] || fail "the Bluetooth audio policy the audio HAL includes is missing"
+grep -q 'setprop debug.sf.vsync_reactor_ignore_present_fences false' "$p/vendor/etc/init/init.vetro.rc" || fail "init.vetro.rc does not turn present fences back on"
 rm -rf "$o"
 mkdir -p "$o/props"
 for f in boot.img vendor_boot.img init_boot.img super.img userdata.img; do

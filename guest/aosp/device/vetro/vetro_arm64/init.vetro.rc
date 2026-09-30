@@ -1,7 +1,7 @@
 # init of the Vetro arm64 board, after Cuttlefish's init.cutf_cvm.rc.
 #
-# The screen stays on without anything here: Cuttlefish's SettingsProvider
-# overlay (cuttlefish_overlay_settings_provider, shared/device.mk) sets
+# The screen stays on without anything here: VetroSettingsProviderOverlay
+# (and Cuttlefish's cuttlefish_overlay_settings_provider) set
 # def_stay_on_while_plugged_in, so the first boot writes
 # stay_on_while_plugged_in=1 (AC), and the health HAL reports AC power
 # (measured: `dumpsys power` mStayOn=true). init cannot run `settings` (no

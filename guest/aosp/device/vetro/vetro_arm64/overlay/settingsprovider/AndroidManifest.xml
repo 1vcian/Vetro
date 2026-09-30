@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Static overlay of SettingsProvider's defaults (ADR 0040): the values the
+     first boot writes into the settings database. Above Cuttlefish's own
+     overlay (cuttlefish_overlay_settings_provider, priority 1). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="vetro.overlay.settingsprovider">
+    <application android:hasCode="false" />
+    <overlay
+        android:targetPackage="com.android.providers.settings"
+        android:isStatic="true"
+        android:priority="10" />
+</manifest>

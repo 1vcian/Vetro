@@ -110,6 +110,11 @@ PRODUCT_PACKAGES += \
     VetroPackageInstallerOverlay \
     VetroBrowserOverlay \
     VetroSettingsOverlay
+
+# Idle guest (ADR 0040): SettingsProvider defaults (screen on while powered,
+# no auto-rotation) and, in VetroFrameworkOverlay, no flip-to-screen-off:
+# both kept an accelerometer listener sampling forever.
+PRODUCT_PACKAGES += VetroSettingsProviderOverlay
 PRODUCT_COPY_FILES += \
     device/vetro/vetro_arm64/branding/wallpaper.png:$(TARGET_COPY_OUT_PRODUCT)/media/wallpaper/vetro.png
 PRODUCT_PRODUCT_PROPERTIES += \

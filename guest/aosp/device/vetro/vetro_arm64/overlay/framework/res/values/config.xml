@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Framework configuration for Vetro's virt machine (ADR 0040). -->
+<resources>
+    <!-- No flip-to-screen-off: FaceDownDetector sampled the (emulated,
+         motionless) accelerometer at 5 Hz forever, SensorService and
+         system_server work on one slow emulated CPU. -->
+    <bool name="config_flipToScreenOffEnabled">false</bool>
+</resources>

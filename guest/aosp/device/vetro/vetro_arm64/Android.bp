@@ -72,3 +72,12 @@ runtime_resource_overlay {
     resource_dirs: ["overlay/settings/res"],
 }
 
+
+runtime_resource_overlay {
+    // SettingsProvider defaults: screen on while powered, no auto-rotation
+    // (ADR 0040).
+    name: "VetroSettingsProviderOverlay",
+    product_specific: true,
+    manifest: "overlay/settingsprovider/AndroidManifest.xml",
+    resource_dirs: ["overlay/settingsprovider/res"],
+}

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SettingsProvider defaults for Vetro (ADR 0040). -->
+<resources>
+    <!-- Screen on while powered (the health HAL reports AC and USB): the
+         boolean writes stay_on_while_plugged_in=1 (AC). Also Cuttlefish's
+         value; stated here so the image does not depend on it (init cannot
+         run `settings`). -->
+    <bool name="def_stay_on_while_plugged_in">true</bool>
+    <!-- No auto-rotation: the display is the host's window and the
+         accelerometer is emulated and still. With it on,
+         WindowOrientationListener sampled the accelerometer at 15 Hz forever
+         (SensorService, android.ui and the sensors HAL: about 4% of the idle
+         CPU, measured). -->
+    <bool name="def_accelerometer_rotation">false</bool>
+</resources>
