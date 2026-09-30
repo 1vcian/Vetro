@@ -306,6 +306,10 @@ Translated:
   permissions of EL0), MRS FPCR/FPSR and MSR FPSR (FP enabled), at EL1 MRS
   TTBR0/TTBR1/CONTEXTIDR/MIDR, MSR CONTEXTIDR, MSR TTBR0/TTBR1 (exit with
   `YIELD` after the instruction).
+- ADR 0040: the cryptographic extension (AESE, AESD, AESMC, AESIMC, SHA1C,
+  SHA1P, SHA1M, SHA1H, SHA1SU0, SHA1SU1, SHA256H, SHA256H2, SHA256SU0,
+  SHA256SU1) and 64-bit PMULL/PMULL2 without `env.simd` (`rt.cr<k>`); LDTR/STTR
+  at EL1 through the EL0 software TLB.
 
 Left to the interpreter: literal LDR of V registers, interleaved single
 structures (single-lane LD2..LD4, LD2R..LD4R), the other system
