@@ -299,8 +299,18 @@ async function main() {
         const r = await adb.shell(c);
         return r.stdout;
       };
-      const ks = await sh("su 0 cat /proc/kallsyms 2>/dev/null || cat /proc/kallsyms");
-      const maps = await sh("for p in /proc/[0-9]*; do echo \"== ${p#/proc/} $(cat $p/cmdline 2>/dev/null | tr '\\0' ' ')\"; su 0 cat $p/maps 2>/dev/null | grep -E ' r-xp | --xp '; done");
+      // Shell builtins only (no fork per process: the guest is slow).
+      const script = [
+        'for p in /proc/[0-9]*; do',
+        '  c=; read -r c < $p/cmdline 2>/dev/null',
+        '  echo "== ${p#/proc/} $c"',
+        "  while IFS= read -r l; do case \"$l\" in *' r-xp '*|*' --xp '*) echo \"$l\";; esac; done < $p/maps 2>/dev/null",
+        'done',
+        '',
+      ].join('\n');
+      await adb.push('/data/local/tmp/vetro-maps.sh', new TextEncoder().encode(script));
+      const ks = await sh('su 0 cat /proc/kallsyms 2>/dev/null || cat /proc/kallsyms');
+      const maps = await sh('su 0 sh /data/local/tmp/vetro-maps.sh 2>/dev/null || sh /data/local/tmp/vetro-maps.sh');
       const base = outPath.replace(/\.json$/, '');
       writeFileSync(`${base}.kallsyms`, ks);
       writeFileSync(`${base}.maps`, maps);
