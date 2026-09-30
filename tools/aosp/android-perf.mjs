@@ -205,6 +205,8 @@ async function main() {
       jit: d(mark.jit, now.jit),
       perf: d(mark.perf, now.perf),
       rssMiB: Math.round(process.memoryUsage().rss / 2 ** 20),
+      // Host load at the end of the phase (Linux): the build VM is shared.
+      load: existsSync('/proc/loadavg') ? readFileSync('/proc/loadavg', 'utf8').split(' ').slice(0, 3).join(' ') : null,
       ...extra,
     };
     const ran = steps - (p.perf?.wfiSteps ?? 0);
@@ -214,7 +216,7 @@ async function main() {
     if (arg('stop-after', null) === name) stopNow = true;
     samplePhase = `after ${name}`.replace(/ /g, '_');
     const j = p.jit;
-    log(`== ${name}: ${(p.wallMs / 1000).toFixed(1)} s wall, ${(p.cpuMs / 1000).toFixed(1)} s CPU (disk wait ${(p.diskWaitMs / 1000).toFixed(1)} s), ${p.guestSecs.toFixed(1)} s guest, RSS ${p.rssMiB} MiB, ` +
+    log(`== ${name}: ${(p.wallMs / 1000).toFixed(1)} s wall, ${(p.cpuMs / 1000).toFixed(1)} s CPU (disk wait ${(p.diskWaitMs / 1000).toFixed(1)} s), ${p.guestSecs.toFixed(1)} s guest, RSS ${p.rssMiB} MiB, load ${p.load}, ` +
       `${(ran / 1e6).toFixed(0)} M executed (${p.mips} MIPS), interp ${((p.perf?.interpSteps ?? 0) / 1e6).toFixed(1)} M, WFI skip ${((p.perf?.wfiSteps ?? 0) / 1e6).toFixed(0)} M` +
       (j ? `, jit ${(j.jitSteps / 1e6).toFixed(0)} M, ${j.blocks} regions, ${mib(j.wasmBytes)} MiB wasm, epochs ${j.epochsRegs}/${j.epochsTlbi}/${j.epochsCode}, ` +
         `resolves ${j.resolves}, host ld/st ${j.hostLds}/${j.hostSts}, faults ${j.faults}, svcs ${j.svcs}, runs ${j.runs}, calls ${j.calls}, ` +
