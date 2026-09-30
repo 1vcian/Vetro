@@ -312,19 +312,11 @@ async function main() {
         const r = await adb.shell(c);
         return r.stdout;
       };
-      // Shell builtins only (no fork per process: the guest is slow).
-      const script = [
-        'for p in /proc/[0-9]*; do',
-        '  c=; read -r c < $p/cmdline 2>/dev/null',
-        '  echo "== ${p#/proc/} $c"',
-        "  while IFS= read -r l; do case \"$l\" in *' r-xp '*|*' --xp '*) echo \"$l\";; esac; done < $p/maps 2>/dev/null",
-        'done',
-        '',
-      ].join('\n');
       const base = outPath.replace(/\.json$/, '');
       writeFileSync(`${base}.samples`, [...samples].map(([k, v]) => `${v} ${k}`).join('\n') + '\n');
-      await adb.push('/data/local/tmp/vetro-maps.sh', new TextEncoder().encode(script));
-      const maps = await sh('su 0 sh /data/local/tmp/vetro-maps.sh 2>/dev/null || sh /data/local/tmp/vetro-maps.sh');
+      // One grep over all the mappings and one ps (the guest is slow: no
+      // process per pid, no shell loop reading byte by byte).
+      const maps = await sh(`su 0 sh -c "ps -A -o PID,NAME; grep -H ' r-xp ' /proc/[0-9]*/maps"`);
       writeFileSync(`${base}.maps`, maps);
       // Text symbols only, compressed in the guest (the full list is ~10 MiB
       // through adb at guest speed).

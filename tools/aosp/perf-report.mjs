@@ -165,14 +165,17 @@ if (existsSync(`${base}.kallsyms`)) {
 }
 const maps = [];
 if (existsSync(`${base}.maps`)) {
-  let proc = '?';
+  // android-perf.mjs --samples: `ps -A -o PID,NAME`, then
+  // `/proc/<pid>/maps:<line>` for every executable mapping.
+  const names = new Map();
   for (const l of readFileSync(`${base}.maps`, 'utf8').split('\n')) {
-    if (l.startsWith('== ')) {
-      proc = l.slice(3).split(' ').slice(1, 2).join(' ') || l.slice(3);
+    const ps = /^\s*(\d+)\s+(\S+)\s*$/.exec(l);
+    if (ps) {
+      names.set(ps[1], ps[2]);
       continue;
     }
-    const m = /^([0-9a-f]+)-([0-9a-f]+) \S+ ([0-9a-f]+) \S+ \d+\s*(.*)$/.exec(l);
-    if (m) maps.push([BigInt(`0x${m[1]}`), BigInt(`0x${m[2]}`), (m[4] || '[anon]').split('/').pop(), proc]);
+    const m = /^\/proc\/(\d+)\/maps:([0-9a-f]+)-([0-9a-f]+) \S+ [0-9a-f]+ \S+ \d+\s*(.*)$/.exec(l);
+    if (m) maps.push([BigInt(`0x${m[2]}`), BigInt(`0x${m[3]}`), (m[4] || '[anon]').split('/').pop(), names.get(m[1]) ?? m[1]]);
   }
 }
 function kernelSym(pc) {
