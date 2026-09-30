@@ -71,3 +71,20 @@ runtime_resource_overlay {
     manifest: "overlay/settings/AndroidManifest.xml",
     resource_dirs: ["overlay/settings/res"],
 }
+
+// Hardware the virt machine doesn't have (ADR 0037, device.mk): the features
+// declared unavailable (SystemConfig drops them whoever declared them, e.g.
+// Cuttlefish's android.hardware.uwb.xml) and the HAL APEXes not installed.
+prebuilt_etc {
+    name: "VetroMissingHardware",
+    src: "vetro_missing_hardware.xml",
+    filename: "vetro_missing_hardware.xml",
+    sub_dir: "permissions",
+    vendor: true,
+    overrides: [
+        "com.android.hardware.uwb",
+        "com.android.hardware.threadnetwork",
+        "ThreadNetworkDemoApp",
+        "com.google.cf.nfc",
+    ],
+}

@@ -42,6 +42,14 @@ LOCAL_ENABLE_OEMLOCK := false
 # ADR 0037). With false, shared/bluetooth/device_vendor.mk installs no HAL and
 # excludes the Bluetooth features, so system_server starts no Bluetooth service.
 BOARD_HAVE_BLUETOOTH := false
+# No telephony: Cuttlefish's RIL (com.google.cf.rild) talks to the host's
+# modem simulator, which isn't there, so IRadioModem/slot1 never registers and
+# com.android.phone waits for it once a second forever (servicemanager, init
+# and logd work at every round; measured on the settled home screen, ADR
+# 0037). Cuttlefish's own switch (shared/telephony/device_vendor.mk, used by
+# its auto products): no rild and none of the telephony features its APEX
+# declares, so PhoneGlobals does not create phones (no FEATURE_TELEPHONY).
+TARGET_NO_TELEPHONY := true
 $(call inherit-product, device/google/cuttlefish/shared/phone/device_vendor.mk)
 $(call inherit-product, device/google/cuttlefish/vsoc_arm64/bootloader.mk)
 

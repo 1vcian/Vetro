@@ -11,6 +11,16 @@ PRODUCT_PACKAGES += \
     fstab.vetro \
     fstab.vetro.vendor_ramdisk
 
+# Hardware the virt machine doesn't have (ADR 0037, "Idle guest"): UWB,
+# Thread and NFC. Cuttlefish's HALs for them talk to the host (/dev/hvcN,
+# vsock) and abort; init.vetro.rc stopped their restarts, but their clients
+# (UwbService in system_server, ot-daemon, the NFC app) then asked
+# servicemanager for them once a second forever. VetroMissingHardware removes
+# the HAL APEXes (`overrides`, like VetroFrameworkOverlay with
+# QuickSearchBox) and declares the features unavailable, so the framework
+# starts no service for them.
+PRODUCT_PACKAGES += VetroMissingHardware
+
 # The board's init and ueventd.
 PRODUCT_COPY_FILES += \
     device/vetro/vetro_arm64/init.vetro.rc:$(TARGET_COPY_OUT_VENDOR)/etc/init/init.vetro.rc

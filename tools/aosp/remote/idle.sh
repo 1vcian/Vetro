@@ -28,7 +28,7 @@ rm -rf "$d"; mkdir -p "$d"
 log() { echo "$(date -u +%T) $*" >> "$d/log"; }
 st() { echo "$*" > "$d/status"; log "$*"; }
 sh_() { timeout 120 "$A" -s "$s" shell "$@" 2>/dev/null; }
-up() { sh_ cut -d' ' -f1 /proc/uptime; }
+up() { sh_ cat /proc/uptime | cut -d' ' -f1; }
 st WAIT-BOOT
 while :; do
   "$A" connect "$s" >/dev/null 2>&1

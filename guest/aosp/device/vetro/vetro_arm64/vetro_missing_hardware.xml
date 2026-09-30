@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Hardware the Vetro virt machine doesn't have (ADR 0037, device.mk): with
+  these features unavailable the framework starts no UWB, Thread or NFC
+  service, whose clients otherwise wait for the missing HALs once a second.
+  Telephony goes with TARGET_NO_TELEPHONY and Bluetooth with
+  BOARD_HAVE_BLUETOOTH (vetro_arm64.mk).
+-->
+<permissions>
+    <unavailable-feature name="android.hardware.uwb" />
+    <unavailable-feature name="android.hardware.thread_network" />
+    <unavailable-feature name="android.hardware.nfc" />
+    <unavailable-feature name="android.hardware.nfc.any" />
+    <unavailable-feature name="android.hardware.nfc.hce" />
+    <unavailable-feature name="android.hardware.nfc.hcef" />
+    <unavailable-feature name="android.hardware.nfc.uicc" />
+    <unavailable-feature name="android.hardware.nfc.ese" />
+</permissions>

@@ -1,4 +1,13 @@
 # init of the Vetro arm64 board, after Cuttlefish's init.cutf_cvm.rc.
+#
+# The screen stays on without anything here: Cuttlefish's SettingsProvider
+# overlay (cuttlefish_overlay_settings_provider, shared/device.mk) sets
+# def_stay_on_while_plugged_in, so the first boot writes
+# stay_on_while_plugged_in=1 (AC), and the health HAL reports AC power
+# (measured: `dumpsys power` mStayOn=true). init cannot run `settings` (no
+# domain transition to a shell command, even permissive), so the
+# `settings put ... 7` that used to be here never worked; the app also runs
+# `svc power stayon true` after adb connects (web/node/android.mjs).
 
 on early-init
     # For boot logs comparable with QEMU (tools/aosp/compare).
@@ -14,10 +23,6 @@ on boot
 on property:sys.boot_completed=1
     # Level 2: after boot the console prints only messages below 4.
     write /dev/kmsg "<2>VETRO: sys.boot_completed=1"
-    # Screen always on (power "plugged in"): on a slow emulated CPU the
-    # inactivity screen-off arrives before the home screen is drawn, and
-    # analysis wants the screen visible.
-    exec_background - system system -- /system/bin/settings put global stay_on_while_plugged_in 7
 
 # Cuttlefish services that without its host (vsock, /dev/hvcN, simulators)
 # exit or abort immediately and that init would restart every 5 s, with a tombstone
