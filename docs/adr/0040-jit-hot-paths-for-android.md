@@ -109,6 +109,34 @@ looked unused at the budget, and `pm install` compiled 39% more code.
 All `rt.*` imports are in order of first use (before, the 43 fixed ones
 came first in every module).
 
+### Measured (build VM, shared; Node 22; same guest instructions per phase)
+Interleaved A/B, main then this branch, one after the other
+(`android-perf.mjs`, host load 1.3–2.4 for main, 1.5–3.9 for the branch):
+
+| Phase | main wall / CPU s (MIPS) | branch wall / CPU s (MIPS) |
+|---|---|---|
+| adb ready | 124.5 / 161.2 (34.4) | 114.3 / 149.5 (37.3) |
+| launcher idle 20 s | 64.6 / 82.8 (31.1) | 53.3 / 62.2 (37.6) |
+| `pm install` | 203.4 / 258.9 (44.9) | 245.6 / 290.0 (37.2)¹ |
+| `am start -W` | 197.3 / 262.8 (23.0) | 157.5 / 209.1 (28.8) |
+| focused | 19.2 / 25.6 | 16.0 / 22.4 |
+| app idle 20 s | 78.4 / 115.4 (25.5) | 68.6 / 98.8 (29.2) |
+| total | 698 / 922 | 666 / 846 |
+
+¹ host load rose to 3.8 during this phase; standalone runs of the branch
+gave 182–198 s for `pm install` (main 246 s in an earlier standalone run).
+Run-to-run variance on the shared VM is ±15% per phase; the totals of the
+standalone runs were 769 s (main) and 672 s (branch). Resets 8 → 0; region
+calls average 17–23 guest instructions. M4 benchmarks unchanged within noise
+(kernel boot in V8 3.41–3.58 s vs 3.50–3.66 s; guest `sha256sum` 580 vs 494
+MIPS, `gzip` 365 vs 338, shell loop 116 vs 119, FP `awk` 153 vs 158).
+
+What remains (clean profile of the branch): region code 37%, the dispatcher
+loop 13%, `Cache::lookup` 11% before its last change, `SysJit::run` 4%,
+compilation 4%, interpreter 5%. The guest itself: kernel 25% of the time
+(33% of the instructions), libart 5%, libc 4%, the guest's software Vulkan
+(`vulkan.pastel.so`, SwiftShader's JIT code) 4%, the software composer 1%.
+
 ## Not done, and why
 - **Region chaining without the dispatcher**: regions cannot import the
   block table, because V8 (Node 22) still gives every importing instance a
