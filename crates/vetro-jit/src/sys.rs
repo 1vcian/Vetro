@@ -424,6 +424,13 @@ struct Cache<M> {
 }
 
 impl<M> Cache<M> {
+    /// The EL0 software TLB groups were filled under the current table bases:
+    /// their entries give what an access with EL0 permissions gives now, so
+    /// LDTR/STTR at EL1 may use them and fill them (ADR 0040).
+    fn utlb_ok(&self) -> bool {
+        self.groups[0].key == Some(self.lo) && self.groups[1].key == Some(self.hi)
+    }
+
     /// Context of the jump cache entries valid now for the
     /// parameters `fl` ([`flags`]: EL, TBI, SPSel, FP). The fetch
     /// translation depends on the table bases and on what
@@ -626,7 +633,7 @@ impl<M> SysHost<'_, M> {
     /// Software TLB entries for the page of `va` (translated to `pa`):
     /// after a successful unaligned access (`aligned` false) the page is
     /// Normal and SCTLR_EL1.A is 0, and it is valid for unaligned ones too.
-    fn fill(&mut self, mem: &mut [u8], va: u64, pa: u64, write: bool, aligned: bool) {
+    fn fill(&mut self, mem: &mut [u8], va: u64, pa: u64, write: bool, aligned: bool, el: u8) {
         let Some((base, addr, len)) = self.ram else { return };
         let page = pa & !0xfff;
         if page < base || page + 0x1000 > base + len || (write && self.phys.is_watched(pa >> 12)) {
@@ -635,8 +642,8 @@ impl<M> SysHost<'_, M> {
         let host = addr as u64 + (page - base);
         let vpage = va & !0xfff;
         let idx = ((va >> 12) & (area::TLB_ENTRIES as u64 - 1)) as usize * 16;
-        let tables = [Some(area::tlb(self.el, write)), (!aligned).then(|| area::tlb_u(self.el, write))];
-        let g = &mut self.cache.groups[(self.el * 2 + half(va)) as usize];
+        let tables = [Some(area::tlb(el, write)), (!aligned).then(|| area::tlb_u(el, write))];
+        let g = &mut self.cache.groups[(el * 2 + half(va)) as usize];
         for t in tables.into_iter().flatten() {
             let e = self.cache.at + t as usize + idx;
             mem[e..e + 8].copy_from_slice(&vpage.to_le_bytes());
@@ -657,9 +664,12 @@ impl<M> Host for SysHost<'_, M> {
         if !self.phys.ram_read(pa, &mut b[..size as usize]) {
             return Err(());
         }
-        // Checked with the permissions of EL0: not an entry for this EL.
+        // Checked with the permissions of EL0: an entry of the EL0 tables,
+        // if they belong to the current table bases (ADR 0040).
         if !unpriv {
-            self.fill(mem, va, pa, false, aligned);
+            self.fill(mem, va, pa, false, aligned, self.el);
+        } else if self.cache.utlb_ok() {
+            self.fill(mem, va, pa, false, aligned, 0);
         }
         Ok(u64::from_le_bytes(b))
     }
@@ -677,7 +687,9 @@ impl<M> Host for SysHost<'_, M> {
             Some(true) => Ok(true),
             Some(false) => {
                 if !unpriv {
-                    self.fill(mem, va, pa, true, aligned);
+                    self.fill(mem, va, pa, true, aligned, self.el);
+                } else if self.cache.utlb_ok() {
+                    self.fill(mem, va, pa, true, aligned, 0);
                 }
                 Ok(false)
             }
@@ -1138,7 +1150,10 @@ impl<E: Engine> SysJit<E> {
         pc: &mut u64,
     ) -> (u64, Option<Next>) {
         let at = self.cache.at;
+        let utlb = el == 1 && self.cache.utlb_ok();
         let m = self.engine.memory();
+        // LDTR/STTR at EL1 through the EL0 tables (ADR 0040).
+        state::write_u32(m, at, off::UTLB, utlb as u32);
         // Clock: `steps` of JitState restarts from 0 on every run.
         match time {
             Some(c) => {

@@ -632,9 +632,19 @@ fn f_cr0() -> u32 {
     F_FP0 + fp::rt_ops().len() as u32
 }
 
+/// LDTR/STTR at EL1 (`rt.ldt_<n>`, `rt.stt_<n>`, ADR 0040), after the
+/// cryptographic ones.
+fn f_unpriv0() -> u32 {
+    f_cr0() + crypto::count()
+}
+
+fn f_unpriv(write: bool, bytes: u32) -> u32 {
+    f_unpriv0() + write as u32 * 4 + bytes.trailing_zeros()
+}
+
 /// Runtime functions.
 fn n_rt() -> u32 {
-    f_cr0() + crypto::count()
+    f_unpriv0() + 8
 }
 
 /// Bit of `size` for `env.ld`/`env.st`: half of a 16-byte access not
@@ -699,8 +709,55 @@ fn rt_sig(id: u32) -> (String, Vec<ValType>, Vec<ValType>) {
         F_STQ_SLOW => ("stq_slow".into(), vec![I32, I64, I64, I64, I64, I64, I32], vec![I32]),
         F_SIMD => ("simd".into(), vec![I32, I32, I64, I32], vec![I64]),
         _ if id >= F_FP0 && id < f_cr0() => fp::rt_sig((id - F_FP0) as usize),
-        _ if id >= f_cr0() && id < n_rt() => crypto::rt_sig((id - f_cr0()) as usize),
+        _ if id >= f_cr0() && id < f_unpriv0() => crypto::rt_sig((id - f_cr0()) as usize),
+        _ if id >= f_unpriv0() && id < n_rt() => {
+            let k = id - f_unpriv0();
+            if k < 4 {
+                (format!("ldt_{}", 1 << k), vec![I32, I64, I64, I64, I32], vec![I64, I32])
+            } else {
+                (format!("stt_{}", 1 << (k - 4)), vec![I32, I64, I64, I64, I64, I32], vec![I32])
+            }
+        }
         _ => unreachable!("unknown runtime function: {id}"),
+    }
+}
+
+/// The software TLB paths of `rt.ld<el>_<n>`/`rt.st<el>_<n>` (params: state
+/// 0, `va`, the value 2 for a store; `e` an i32 scratch local): returns from
+/// the function on a hit in the aligned TLB of the EL, or in its unaligned
+/// TLB for an access that stays within the page.
+fn tlb_fast_paths(f: &mut Func, el: u8, write: bool, bytes: u32, va: u32, e: u32) {
+    let tlb = area::tlb(el, write);
+    // e = state + ((va >> 12) & 511) * 16; hit if tag == va & (!0xfff | (n - 1))
+    f.local_get(va).i64_const(8).op(op::I64_SHR_U).op(op::I32_WRAP_I64);
+    f.i32_const(((area::TLB_ENTRIES - 1) << 4) as i32).op(op::I32_AND);
+    f.local_get(0).op(op::I32_ADD).local_tee(e).i64_load(tlb);
+    f.local_get(va).i64_const((!0xfffu64 | (bytes as u64 - 1)) as i64).op(op::I64_AND);
+    f.op(op::I64_EQ).if_(BLOCK_EMPTY);
+    f.local_get(e).i64_load(tlb + 8).local_get(va).op(op::I64_ADD).op(op::I32_WRAP_I64);
+    if write {
+        f.local_get(2).i64_store_n(bytes, 0).i32_const(0);
+    } else {
+        f.i64_load_n(bytes, 0).i32_const(0);
+    }
+    f.op(op::RETURN).end();
+    if bytes > 1 {
+        // Unaligned: TLB of the unaligned accesses, if it does not
+        // cross into the next page.
+        let tu = area::tlb_u(el, write);
+        f.local_get(va).op(op::I32_WRAP_I64).i32_const(bytes as i32 - 1).op(op::I32_AND);
+        f.local_get(e).i64_load(tu).local_get(va).i64_const(!0xfff).op(op::I64_AND).op(op::I64_EQ);
+        f.op(op::I32_AND);
+        f.local_get(va).op(op::I32_WRAP_I64).i32_const(0xfff).op(op::I32_AND);
+        f.i32_const((0x1000 - bytes) as i32).op(op::I32_LE_U).op(op::I32_AND);
+        f.if_(BLOCK_EMPTY);
+        f.local_get(e).i64_load(tu + 8).local_get(va).op(op::I64_ADD).op(op::I32_WRAP_I64);
+        if write {
+            f.local_get(2).i64_store_n(bytes, 0).i32_const(0);
+        } else {
+            f.i64_load_n(bytes, 0).i32_const(0);
+        }
+        f.op(op::RETURN).end();
     }
 }
 
@@ -798,58 +855,48 @@ pub fn runtime(memory: MemoryImport) -> Vec<u8> {
     def(&mut m, F_NZCV, f);
 
     // ld<el>_<n>(state 0, va 1, pc0 2, steps 3, packed 4) and
-    // st<el>_<n>(state 0, va 1, value 2, pc0 3, steps 4, packed 5).
-    for write in [false, true] {
-        for el in 0..2u8 {
-            for lg in 0..4u32 {
-                let bytes = 1u32 << lg;
-                let tlb = area::tlb(el, write);
-                let (va, e) = (1, if write { 6 } else { 5 });
-                let mut f = Func { locals: vec![(1, I32)], ..Func::default() };
-                // e = state + ((va >> 12) & 511) * 16; hit if tag == va & (!0xfff | (n - 1))
-                f.local_get(va).i64_const(8).op(op::I64_SHR_U).op(op::I32_WRAP_I64);
-                f.i32_const(((area::TLB_ENTRIES - 1) << 4) as i32).op(op::I32_AND);
-                f.local_get(0).op(op::I32_ADD).local_tee(e).i64_load(tlb);
-                f.local_get(va).i64_const((!0xfffu64 | (bytes as u64 - 1)) as i64).op(op::I64_AND);
-                f.op(op::I64_EQ).if_(BLOCK_EMPTY);
-                f.local_get(e).i64_load(tlb + 8).local_get(va).op(op::I64_ADD).op(op::I32_WRAP_I64);
-                if write {
-                    f.local_get(2).i64_store_n(bytes, 0).i32_const(0);
-                } else {
-                    f.i64_load_n(bytes, 0).i32_const(0);
+    // st<el>_<n>(state 0, va 1, value 2, pc0 3, steps 4, packed 5); the same
+    // for ldt_<n>/stt_<n> (LDTR/STTR at EL1, ADR 0040): the EL0 tables if
+    // `JitState::utlb` says they belong to the current table bases, the
+    // host with `SIZE_UNPRIV` otherwise (defined last, after the
+    // cryptographic functions: `late`).
+    let mut late = Vec::new();
+    for unpriv in [false, true] {
+        for write in [false, true] {
+            for el in 0..2u8 {
+                if unpriv && el == 1 {
+                    continue;
                 }
-                f.op(op::RETURN).end();
-                if bytes > 1 {
-                    // Unaligned: TLB of the unaligned accesses, if it does not
-                    // cross into the next page.
-                    let tu = area::tlb_u(el, write);
-                    f.local_get(va).op(op::I32_WRAP_I64).i32_const(bytes as i32 - 1).op(op::I32_AND);
-                    f.local_get(e)
-                        .i64_load(tu)
-                        .local_get(va)
-                        .i64_const(!0xfff)
-                        .op(op::I64_AND)
-                        .op(op::I64_EQ);
-                    f.op(op::I32_AND);
-                    f.local_get(va).op(op::I32_WRAP_I64).i32_const(0xfff).op(op::I32_AND);
-                    f.i32_const((0x1000 - bytes) as i32).op(op::I32_LE_U).op(op::I32_AND);
-                    f.if_(BLOCK_EMPTY);
-                    f.local_get(e).i64_load(tu + 8).local_get(va).op(op::I64_ADD).op(op::I32_WRAP_I64);
-                    if write {
-                        f.local_get(2).i64_store_n(bytes, 0).i32_const(0);
-                    } else {
-                        f.i64_load_n(bytes, 0).i32_const(0);
+                for lg in 0..4u32 {
+                    let bytes = 1u32 << lg;
+                    let (va, e) = (1, if write { 6 } else { 5 });
+                    let mut f = Func { locals: vec![(1, I32)], ..Func::default() };
+                    if unpriv {
+                        f.local_get(0).i32_load(off::UTLB).if_(BLOCK_EMPTY);
                     }
-                    f.op(op::RETURN).end();
+                    tlb_fast_paths(&mut f, el, write, bytes, va, e);
+                    if unpriv {
+                        f.end();
+                    }
+                    let size = bytes as i32 | if unpriv { SIZE_UNPRIV as i32 } else { 0 };
+                    if write {
+                        f.local_get(0).local_get(va).i32_const(size).local_get(2);
+                        f.local_get(3).local_get(4).local_get(5).call(rt(F_ST_SLOW));
+                    } else {
+                        f.local_get(0).local_get(va).i32_const(size);
+                        f.local_get(2).local_get(3).local_get(4).call(rt(F_LD_SLOW));
+                    }
+                    let id = match (unpriv, write) {
+                        (true, _) => f_unpriv(write, bytes),
+                        (false, true) => f_tlb(F_ST_TLB, el, bytes),
+                        (false, false) => f_tlb(F_LD_TLB, el, bytes),
+                    };
+                    if unpriv {
+                        late.push((id, f));
+                    } else {
+                        def(&mut m, id, f);
+                    }
                 }
-                if write {
-                    f.local_get(0).local_get(va).i32_const(bytes as i32).local_get(2);
-                    f.local_get(3).local_get(4).local_get(5).call(rt(F_ST_SLOW));
-                } else {
-                    f.local_get(0).local_get(va).i32_const(bytes as i32);
-                    f.local_get(2).local_get(3).local_get(4).call(rt(F_LD_SLOW));
-                }
-                def(&mut m, f_tlb(if write { F_ST_TLB } else { F_LD_TLB }, el, bytes), f);
             }
         }
     }
@@ -1091,6 +1138,9 @@ pub fn runtime(memory: MemoryImport) -> Vec<u8> {
     // Cryptographic extension (ADR 0040).
     for c in crypto::all() {
         def(&mut m, crypto::rt_id(c), crypto::build(c, |o| rt(crypto::rt_id(o))));
+    }
+    for (id, f) in late {
+        def(&mut m, id, f);
     }
     m.encode()
 }
@@ -1924,28 +1974,6 @@ impl Tx {
         self.f.if_(BLOCK_EMPTY);
         self.exit_fault_saved();
         self.f.end();
-    }
-
-    /// Load through the host with `size` (bytes and flag bits such as
-    /// [`SIZE_UNPRIV`]): the value on the stack, FAULT exit on a fault.
-    fn ld_slow(&mut self, addr: u32, size: u32) {
-        self.f.local_get(L_STATE).local_get(addr);
-        self.f.i32_const(size as i32);
-        self.slow_args();
-        self.f.call(F_LD_SLOW);
-        self.f.if_(BLOCK_EMPTY);
-        self.exit_fault_saved();
-        self.f.end();
-    }
-
-    /// Store through the host with `size` (bytes and flag bits), like
-    /// [`st`](Self::st) for the rest.
-    fn st_slow(&mut self, addr: u32, size: u32, val: u32, stop: Option<u32>) {
-        self.f.local_get(L_STATE).local_get(addr);
-        self.f.i32_const(size as i32).local_get(val);
-        self.slow_args();
-        self.f.call(F_ST_SLOW);
-        self.st_result(stop);
     }
 
     /// Store of `bytes` bytes of the value in `val` at the address in `addr`
@@ -3020,7 +3048,11 @@ impl Tx {
                         self.f.local_set(t64(7));
                         if unpriv {
                             debug_assert!(!writeback, "LDTR/STTR have no writeback");
-                            self.st_slow(t64(4), bytes | SIZE_UNPRIV, t64(7), None);
+                            let f = self.rt_opt(f_unpriv(true, bytes));
+                            self.f.local_get(L_STATE).local_get(t64(4)).local_get(t64(7));
+                            self.slow_args();
+                            self.f.call(f);
+                            self.st_result(None);
                         } else if writeback {
                             self.st(t64(4), bytes, t64(7), Some(0));
                             self.f.local_get(t64(6));
@@ -3033,7 +3065,12 @@ impl Tx {
                     }
                     MemOp::Load { .. } => {
                         if unpriv {
-                            self.ld_slow(t64(4), bytes | SIZE_UNPRIV);
+                            let f = self.rt_opt(f_unpriv(false, bytes));
+                            self.f.local_get(L_STATE).local_get(t64(4));
+                            self.slow_args();
+                            self.f.call(f).if_(BLOCK_EMPTY);
+                            self.exit_fault_saved();
+                            self.f.end();
                         } else {
                             self.ld(t64(4), bytes);
                         }

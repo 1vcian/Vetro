@@ -82,7 +82,10 @@ pub struct JitState {
     /// 1 if `time_base` and `cntvoff` are valid for this run; otherwise
     /// MRS CNTPCT/CNTVCT exits and the interpreter does it.
     pub time_ok: u32,
-    pub _pad2: u32,
+    /// System mode (ADR 0040): 1 if the EL0 software TLB was filled under the
+    /// current table bases, so LDTR/STTR at EL1 (EL0 permissions) may use it
+    /// (written by the host before every dispatcher run).
+    pub utlb: u32,
     /// System mode (M4): TTBR0_EL1, TTBR1_EL1 and CONTEXTIDR_EL1 (MRS/MSR at
     /// EL1; an MSR of a TTBR ends the run with YIELD, the host resyncs the
     /// regime).
@@ -132,6 +135,7 @@ pub mod off {
     pub const TIME_BASE: u32 = 968;
     pub const CNTVOFF: u32 = 976;
     pub const TIME_OK: u32 = 984;
+    pub const UTLB: u32 = 988;
     pub const TTBR0: u32 = 992;
     pub const TTBR1: u32 = 1000;
     pub const CONTEXTIDR: u32 = 1008;
@@ -314,7 +318,7 @@ impl JitState {
         w(968, &self.time_base.to_le_bytes());
         w(976, &self.cntvoff.to_le_bytes());
         w(984, &self.time_ok.to_le_bytes());
-        w(988, &[0; 4]);
+        w(988, &self.utlb.to_le_bytes());
         w(992, &self.ttbr0.to_le_bytes());
         w(1000, &self.ttbr1.to_le_bytes());
         w(1008, &self.contextidr.to_le_bytes());
@@ -376,7 +380,7 @@ impl JitState {
             time_base: q(968),
             cntvoff: q(976),
             time_ok: d(984),
-            _pad2: 0,
+            utlb: d(988),
             ttbr0: q(992),
             ttbr1: q(1000),
             contextidr: q(1008),
@@ -501,7 +505,7 @@ mod tests {
         assert_eq!(offset_of!(JitState, ttbr0), off::TTBR0 as usize);
         assert_eq!(offset_of!(JitState, ttbr1), off::TTBR1 as usize);
         assert_eq!(offset_of!(JitState, contextidr), off::CONTEXTIDR as usize);
-        assert_eq!(offset_of!(JitState, _pad2) + 4, off::TTBR0 as usize);
+        assert_eq!(offset_of!(JitState, utlb), off::UTLB as usize);
         assert_eq!(offset_of!(JitState, _pad3) + 8, off::SIZE);
         assert!(off::SIZE <= super::area::JC as usize, "the system area follows JitState");
         assert_eq!(size_of::<JitState>(), off::SIZE);

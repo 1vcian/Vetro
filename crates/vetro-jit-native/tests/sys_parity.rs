@@ -1147,6 +1147,135 @@ fn msr_ttbr0_in_a_region_ends_the_run() {
     }
 }
 
+/// LDTR/STTR at EL1 through the EL0 software TLB (ADR 0040), as in Linux's
+/// uaccess with software PAN: EL0 code loads and stores a user page (filling
+/// the EL0 tables under table A), then an SVC; the EL1 handler reads and
+/// writes the same page with LDTR/STTR (hits in the EL0 tables), loads an
+/// EL1-only page with LDR (an EL1 entry) and then with LDTR (must fault: EL0
+/// permissions), switches TTBR0 to table B, where the same VA maps another
+/// page (the EL0 entries filled under A must not serve it), and back. Same
+/// trace as the interpreter, and the user page accesses mostly without the
+/// host. Fails if the EL0 tables are used under another base, or if LDTR
+/// takes an EL1 entry (both tried).
+#[test]
+fn ldtr_sttr_at_el1_use_the_el0_tlb_of_the_same_tables() {
+    const K: u64 = 0xffff_ff80_0000_0000;
+    const U: u64 = 0x20_0000;
+    const UCODE: u64 = 0x40_0000 + 0x8000;
+    let (l1a, l2a, l3a) = (TABLES, TABLES + 0x1000, TABLES + 0x2000);
+    let (l1b, l2b, l3b) = (TABLES + 0x3000, TABLES + 0x4000, TABLES + 0x5000);
+    let (l1k, l2k) = (TABLES + 0x6000, TABLES + 0x7000);
+    let (da, db, dk) = (DATA, DATA + 0x1000, DATA + 0x2000);
+    let mut ram = vec![0u8; RAM_LEN];
+    let put = |ram: &mut [u8], pa: u64, bytes: &[u8]| {
+        let o = (pa - RAM_BASE) as usize;
+        ram[o..o + bytes.len()].copy_from_slice(bytes);
+    };
+    let words = |ws: &[u32]| ws.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>();
+    // Current EL, SPx, synchronous: skip the instruction (the faulting LDTR).
+    put(&mut ram, VBAR + 0x200, &words(&HANDLER));
+    // Lower EL, AArch64, synchronous: the SVC handler.
+    put(
+        &mut ram,
+        VBAR + 0x400,
+        &words(&[
+            0xd5384039, // mrs x25, ELR_EL1
+            0xd538401a, // mrs x26, SPSR_EL1
+            0xf8400ae2, // ldtr x2, [x23]
+            0x8b0200c6, // add x6, x6, x2
+            0xf8010ae5, // sttr x5, [x23, #0x10]
+            0xf9400309, // ldr x9, [x24]
+            0xf8400b07, // ldtr x7, [x24]
+            0x8b070108, // add x8, x8, x7
+            0x38403aeb, // ldtrb w11, [x23, #0x3]
+            0x8b0b018c, // add x12, x12, x11
+            0xd5182015, // msr TTBR0_EL1, x21
+            0xf8400ae3, // ldtr x3, [x23]
+            0x8b03014a, // add x10, x10, x3
+            0xf8018ae5, // sttr x5, [x23, #0x18]
+            0xd5182014, // msr TTBR0_EL1, x20
+            0xd5184039, // msr ELR_EL1, x25
+            0xd518401a, // msr SPSR_EL1, x26
+            0xd69f03e0, // eret
+        ]),
+    );
+    put(
+        &mut ram,
+        CODE + (UCODE - 0x40_0000),
+        &words(&[
+            0xf94002e1, // ldr x1, [x23]
+            0xf90006e5, // str x5, [x23, #0x8]
+            0x910004a5, // add x5, x5, #0x1
+            0xd4000001, // svc #0
+            0xd1000673, // sub x19, x19, #0x1
+            0xb5ffff73, // cbnz x19, 0x0
+            0x14000000, // b .
+        ]),
+    );
+    put(&mut ram, da, &0x1111u64.to_le_bytes());
+    put(&mut ram, db, &0x2_2222_0000u64.to_le_bytes());
+    put(&mut ram, dk, &0x3_0000_0003u64.to_le_bytes());
+    let block = |pa: u64, ap: u64| pa | VALID_BLOCK | AF | SH_INNER | ap | ATTR_NORMAL;
+    let page = |pa: u64, ap: u64| pa | VALID_PAGE | AF | SH_INNER | ap | ATTR_NORMAL | (1 << 11);
+    for (l1, l2, l3, data) in [(l1a, l2a, l3a, da), (l1b, l2b, l3b, db)] {
+        put(&mut ram, l1, &(l2 | VALID_TABLE).to_le_bytes());
+        put(&mut ram, l2 + 8, &(l3 | VALID_TABLE).to_le_bytes());
+        put(&mut ram, l2 + 16, &(block(CODE, AP_RW_ALL) | 1 << 11).to_le_bytes());
+        put(&mut ram, l3, &page(data, AP_RW_ALL).to_le_bytes());
+        put(&mut ram, l3 + 8, &page(dk, AP_RW_EL1).to_le_bytes());
+    }
+    put(&mut ram, l1k, &(l2k | VALID_TABLE).to_le_bytes());
+    put(&mut ram, l2k, &block(RAM_BASE, AP_RW_EL1).to_le_bytes());
+
+    let mut cpu = Cpu::new();
+    cpu.reset_system(SysConfig::default());
+    let s = &mut cpu.sys;
+    s.vbar_el1 = K + (VBAR - RAM_BASE);
+    s.mair_el1 = 0x00ff;
+    s.tcr_el1 = 25
+        | 0b01 << 8
+        | 0b01 << 10
+        | 0b11 << 12
+        | 25 << 16
+        | 0b01 << 24
+        | 0b01 << 26
+        | 0b11 << 28
+        | 0b10 << 30
+        | 0b010 << 32;
+    s.ttbr0_el1 = l1a | 1 << 48;
+    s.ttbr1_el1 = l1k;
+    s.sctlr_el1 |= sctlr::M;
+    s.daif = 0;
+    cpu.sys.el = 0;
+    cpu.sys.spsel = false;
+    cpu.pc = UCODE;
+    cpu.x[19] = 1000;
+    cpu.x[20] = l1a | 1 << 48;
+    cpu.x[21] = l1b | 2 << 48;
+    cpu.x[23] = U;
+    cpu.x[24] = U + 0x1000;
+
+    let want = run_interp(cpu.clone(), ram.clone());
+    let rounds = 1000 - want.cpu.x[19];
+    assert!(rounds > 50, "only {rounds} rounds");
+    assert_eq!(want.cpu.x[6], rounds * 0x1111, "LDTR reads the user page under table A");
+    assert_eq!(want.cpu.x[10], rounds * 0x2_2222_0000, "under table B the other page");
+    assert_eq!(want.cpu.x[8], 0, "LDTR of the EL1-only page faults");
+    for seed in 0..24 {
+        let (got, s) = run_jit(cpu.clone(), &ram, seed);
+        assert_eq!(got, want, "seed {seed}: interpreter and JIT differ ({s:?})");
+        assert!(s.jit_steps > 1000, "seed {seed}: not run in regions: {s:?}");
+        // Per round: the faulting LDTR and the LDTR/STTR under table B go to
+        // the host; those under table A are TLB hits.
+        assert!(
+            s.host_lds + s.host_sts < 5 * rounds,
+            "seed {seed}: LDTR/STTR through the host: {} + {} for {rounds} rounds",
+            s.host_lds,
+            s.host_sts
+        );
+    }
+}
+
 /// An engine that compiles "in the background" (ADR 0038): every region
 /// module becomes ready only after a random number of `ready` polls, and
 /// its regions reach the block table only then (as in the browser, where
