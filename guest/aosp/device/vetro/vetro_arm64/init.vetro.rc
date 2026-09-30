@@ -13,6 +13,15 @@ on early-init
     # For boot logs comparable with QEMU (tools/aosp/compare).
     write /dev/kmsg "VETRO: vetro_arm64 board init"
 
+on init
+    # SurfaceFlinger uses the HWC's present fences (the DRM commit's OUT_FENCE,
+    # guest/aosp/patches/device/generic/goldfish-opengl/0002) so it can turn
+    # hardware vsync off on an idle screen. Cuttlefish's init_graphics.vendor.rc
+    # sets this true at early-init; with true SurfaceFlinger keeps vsync on
+    # forever (VSyncReactor: "keep HWVSync on as long as we ignore present
+    # fences"): 75 onVsync binder calls a second on one emulated CPU.
+    setprop debug.sf.vsync_reactor_ignore_present_fences false
+
 on boot
     # No proactive memory compaction and no watermark boosting: on one
     # emulated CPU kcompactd took ~23% of the idle home screen's CPU
