@@ -1153,6 +1153,12 @@ pub fn runtime(memory: MemoryImport) -> Vec<u8> {
 /// from the host (`env.resolve`). Returns `NEXT` (entry missing for the host too,
 /// or limit) or the exit code of the block.
 pub fn dispatcher(memory: MemoryImport) -> Vec<u8> {
+    dispatcher_with(memory, false)
+}
+
+/// Like [`dispatcher`]; with `count` every region call also increments
+/// `JitState::dispatches` (measurements, ADR 0040).
+pub fn dispatcher_with(memory: MemoryImport, count: bool) -> Vec<u8> {
     use ValType::*;
     let mut m = Module::new();
     let t = m.ty(&[I32], &[I32]);
@@ -1183,6 +1189,14 @@ pub fn dispatcher(memory: MemoryImport) -> Vec<u8> {
     f.local_get(s).i64_load(off::LIMIT).op(op::I64_GT_U);
     f.if_(BLOCK_EMPTY).i32_const(crate::NEXT as i32).op(op::RETURN).end();
     // entry = w >> 26; code = table[(w >> 8) & (TABLE_SIZE - 1)](s)
+    if count {
+        f.local_get(s)
+            .local_get(s)
+            .i64_load(off::DISPATCHES)
+            .i64_const(1)
+            .op(op::I64_ADD)
+            .i64_store(off::DISPATCHES);
+    }
     f.local_get(s).local_get(w).i32_const(26).op(op::I32_SHR_U).i32_store(off::ENTRY);
     f.local_get(s).local_get(w).i32_const(8).op(op::I32_SHR_U);
     f.i32_const((TABLE_SIZE - 1) as i32).op(op::I32_AND).call_indirect(t);

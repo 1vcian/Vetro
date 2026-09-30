@@ -217,6 +217,8 @@ pub struct SysJitStats {
     /// (ADR 0040).
     pub evictions: u64,
     pub evicted_modules: u64,
+    /// Region calls by the dispatcher, with `SysJitConfig::names` (ADR 0040).
+    pub dispatches: u64,
     /// Bytes of WebAssembly compiled (modules and dispatcher).
     pub wasm_bytes: u64,
 }
@@ -1287,6 +1289,10 @@ impl<E: Engine> SysJit<E> {
         };
         self.cache.stats.runs += 1;
         let m = self.engine.memory();
+        if self.cfg.names {
+            self.cache.stats.dispatches += state::read_u64(m, at, off::DISPATCHES);
+            state::write_u64(m, at, off::DISPATCHES, 0);
+        }
         let steps = state::read_u64(m, at, off::STEPS);
         *pc = state::read_u64(m, at, off::PC);
         self.cache.stats.jit_steps += steps;
@@ -1480,7 +1486,7 @@ impl<E: Engine> SysJit<E> {
     }
 
     fn compile_dispatcher(&mut self) {
-        let wasm = translate::dispatcher(self.cfg.memory);
+        let wasm = translate::dispatcher_with(self.cfg.memory, self.cfg.names);
         let d = match self.engine.compile(&wasm) {
             Ok(d) => d,
             Err(_) => {

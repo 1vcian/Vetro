@@ -220,7 +220,8 @@ async function main() {
       `${(ran / 1e6).toFixed(0)} M executed (${p.mips} MIPS), interp ${((p.perf?.interpSteps ?? 0) / 1e6).toFixed(1)} M, WFI skip ${((p.perf?.wfiSteps ?? 0) / 1e6).toFixed(0)} M` +
       (j ? `, jit ${(j.jitSteps / 1e6).toFixed(0)} M, ${j.blocks} regions, ${mib(j.wasmBytes)} MiB wasm, epochs ${j.epochsRegs}/${j.epochsTlbi}/${j.epochsCode}, ` +
         `resolves ${j.resolves}, host ld/st ${j.hostLds}/${j.hostSts}, faults ${j.faults}, svcs ${j.svcs}, runs ${j.runs}, calls ${j.calls}, ` +
-        `yields ${j.yields}, resets ${j.resets}` + (j.evictions !== undefined ? `, evictions ${j.evictions} (${j.evictedModules} modules), regime switches ${j.regimeSwitches}, memo ${j.memoHits}` : '') : ''));
+        `yields ${j.yields}, resets ${j.resets}` + (j.evictions !== undefined ? `, evictions ${j.evictions} (${j.evictedModules} modules), regime switches ${j.regimeSwitches}, memo ${j.memoHits}` : '') +
+        (j.dispatches ? `, region calls ${j.dispatches} (${(j.jitSteps / j.dispatches).toFixed(1)} instructions each)` : '') : ''));
     mark = now;
     return p;
   };

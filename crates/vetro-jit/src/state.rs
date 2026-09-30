@@ -92,7 +92,9 @@ pub struct JitState {
     pub ttbr0: u64,
     pub ttbr1: u64,
     pub contextidr: u64,
-    pub _pad3: u64,
+    /// Region calls made by the dispatcher (counted only by a dispatcher
+    /// built for measurements, [`crate::translate::dispatcher_with`]).
+    pub dispatches: u64,
 }
 
 /// `exit_detail` of a YIELD after MSR TTBR0/TTBR1 (ADR 0040): the host
@@ -143,6 +145,7 @@ pub mod off {
     pub const TTBR0: u32 = 992;
     pub const TTBR1: u32 = 1000;
     pub const CONTEXTIDR: u32 = 1008;
+    pub const DISPATCHES: u32 = 1016;
     /// Total size.
     pub const SIZE: usize = 1024;
 }
@@ -326,7 +329,7 @@ impl JitState {
         w(992, &self.ttbr0.to_le_bytes());
         w(1000, &self.ttbr1.to_le_bytes());
         w(1008, &self.contextidr.to_le_bytes());
-        w(1016, &[0; 8]);
+        w(1016, &self.dispatches.to_le_bytes());
         for (i, r) in self.v.iter().enumerate() {
             w(432 + 16 * i, &r[0].to_le_bytes());
             w(440 + 16 * i, &r[1].to_le_bytes());
@@ -388,7 +391,7 @@ impl JitState {
             ttbr0: q(992),
             ttbr1: q(1000),
             contextidr: q(1008),
-            _pad3: 0,
+            dispatches: q(1016),
         }
     }
 }
@@ -510,7 +513,8 @@ mod tests {
         assert_eq!(offset_of!(JitState, ttbr1), off::TTBR1 as usize);
         assert_eq!(offset_of!(JitState, contextidr), off::CONTEXTIDR as usize);
         assert_eq!(offset_of!(JitState, utlb), off::UTLB as usize);
-        assert_eq!(offset_of!(JitState, _pad3) + 8, off::SIZE);
+        assert_eq!(offset_of!(JitState, dispatches), off::DISPATCHES as usize);
+        assert_eq!(off::DISPATCHES as usize + 8, off::SIZE);
         assert!(off::SIZE <= super::area::JC as usize, "the system area follows JitState");
         assert_eq!(size_of::<JitState>(), off::SIZE);
         assert_eq!(align_of::<JitState>(), 16);
