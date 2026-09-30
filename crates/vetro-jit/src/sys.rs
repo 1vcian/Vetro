@@ -401,12 +401,25 @@ struct Entry<M> {
     /// context it cannot change (the guarantee the jump cache relies on), so
     /// a lookup with the same context and no partial TLBI since skips the MMU.
     memo: Option<(u32, u32, u64)>,
+    /// The compiled and ready variant last found (ADR 0040): its physical
+    /// address and jump cache word, in the entry itself (a lookup is a chain
+    /// of cache misses otherwise). Cleared whenever `variants` changes.
+    hot: Option<(u64, u32)>,
+    /// Looked up hot since the last eviction: the eviction marks the modules
+    /// of its variants.
+    used: bool,
 }
 
 impl<M> Default for Entry<M> {
     fn default() -> Self {
-        Entry { seen: 0, variants: Vec::new(), memo: None }
+        Entry { seen: 0, variants: Vec::new(), memo: None, hot: None, used: false }
     }
+}
+
+/// The jump cache word of a compiled region entry (`area::JC`):
+/// `entry << 26 | slot << 8 | maximum steps`.
+fn jc_word<M>(c: &Compiled<M>) -> u32 {
+    (c.bb as u32) << 26 | c.slot << 8 | c.max_steps as u32
 }
 
 /// A hot block waiting for compilation.
@@ -428,8 +441,9 @@ enum Flow {
     End(Next),
 }
 
-enum Look<M> {
-    Hot(Rc<Compiled<M>>),
+enum Look {
+    /// A ready region: its jump cache word.
+    Hot(u32),
     Translate(u64),
     One,
     Cold,
@@ -517,7 +531,7 @@ impl<M> Cache<M> {
         mmu: &mut Mmu,
         phys: &mut dyn SysPhys,
         count: bool,
-    ) -> Look<M> {
+    ) -> Look {
         if !pc.is_multiple_of(4) {
             return Look::One;
         }
@@ -536,7 +550,7 @@ impl<M> Cache<M> {
                     return Look::Cold;
                 }
                 if threshold > 1 {
-                    v.insert(Entry { seen: 1, variants: Vec::new(), memo: None });
+                    v.insert(Entry { seen: 1, ..Entry::default() });
                     return Look::Cold;
                 }
                 v.insert(Entry::default())
@@ -566,11 +580,17 @@ impl<M> Cache<M> {
             }
         };
         e.memo = Some((ctx, generation, pa));
+        if let Some((_, w)) = e.hot.filter(|h| h.0 == pa) {
+            e.used = true;
+            return Look::Hot(w);
+        }
         if let Some(v) = e.variants.iter().find(|v| v.pa == pa) {
             return match &v.block {
                 Some(c) if c.ready.get() => {
-                    c.module.used.set(true);
-                    Look::Hot(c.clone())
+                    let w = jc_word(c);
+                    e.hot = Some((pa, w));
+                    e.used = true;
+                    Look::Hot(w)
                 }
                 // Still compiling (ADR 0038): the interpreter runs it.
                 Some(_) => Look::Cold,
@@ -602,14 +622,13 @@ impl<M> Cache<M> {
     /// Jump cache entry: `pc` → block, valid for `ctx`, in the first way; the
     /// entry it replaces, if for another `pc`, moves to the second (2-way,
     /// ADR 0040).
-    fn install_jc(&self, mem: &mut [u8], pc: u64, ctx: u32, c: &Compiled<M>) {
+    fn install_jc(&self, mem: &mut [u8], pc: u64, ctx: u32, w: u32) {
         let (e, second) = self.jc_ways(pc);
         if state::read_u64(mem, e, 0) != pc {
             mem.copy_within(e..e + 16, second);
         }
         mem[e..e + 8].copy_from_slice(&pc.to_le_bytes());
         mem[e + 8..e + 12].copy_from_slice(&ctx.to_le_bytes());
-        let w = (c.bb as u32) << 26 | c.slot << 8 | c.max_steps as u32;
         mem[e + 12..e + 16].copy_from_slice(&w.to_le_bytes());
     }
 
@@ -636,6 +655,7 @@ impl<M> Cache<M> {
     fn record(&mut self, key: Key, pa: u64, block: Option<Rc<Compiled<M>>>) {
         let e = self.blocks.entry(key).or_default();
         e.variants.retain(|v| v.pa != pa);
+        e.hot = block.as_ref().filter(|c| c.ready.get()).map(|c| (pa, jc_word(c)));
         e.variants.push(Variant { pa, block });
         self.pages.entry(pa >> 12).or_default().push(key);
     }
@@ -797,8 +817,8 @@ impl<M> Host for SysHost<'_, M> {
         let ctx = state::read_u32(mem, at, off::CTX);
         self.cache.stats.resolves += 1;
         match self.cache.lookup(pc, self.fl, ctx, &self.regs, self.el, self.mmu, self.phys, false) {
-            Look::Hot(c) => {
-                self.cache.install_jc(mem, pc, ctx, &c);
+            Look::Hot(w) => {
+                self.cache.install_jc(mem, pc, ctx, w);
                 true
             }
             _ => false,
@@ -1031,6 +1051,7 @@ impl<E: Engine> SysJit<E> {
                 for k in keys {
                     if let Some(e) = c.blocks.get_mut(&k) {
                         e.variants.retain(|v| v.pa >> 12 != page);
+                        e.hot = None;
                     }
                 }
                 c.stats.invalidated_pages += 1;
@@ -1185,8 +1206,8 @@ impl<E: Engine> SysJit<E> {
                 }
             }
             let ctx = self.cache.ctx(fl);
-            let c = match self.cache.lookup(pc, fl, ctx, &regs, el, mmu, phys, true) {
-                Look::Hot(c) => c,
+            let w = match self.cache.lookup(pc, fl, ctx, &regs, el, mmu, phys, true) {
+                Look::Hot(w) => w,
                 Look::One => break Next::One,
                 Look::Cold => break Next::Cold,
                 Look::Translate(pa) => {
@@ -1200,12 +1221,12 @@ impl<E: Engine> SysJit<E> {
                         // Compiled in the background (ADR 0038): the
                         // interpreter runs it until the module is ready.
                         Ok(c) if !c.ready.get() => break Next::Cold,
-                        Ok(c) => c,
+                        Ok(c) => jc_word(&c),
                         Err(n) => break n,
                     }
                 }
             };
-            if c.max_steps as u64 > budget - done {
+            if (w & 0xff) as u64 > budget - done {
                 break Next::One;
             }
             if self.dispatcher.is_none() {
@@ -1218,7 +1239,7 @@ impl<E: Engine> SysJit<E> {
             // The epoch may have changed (compilation, reset).
             let ctx = self.cache.ctx(fl);
             let m = self.engine.memory();
-            self.cache.install_jc(m, pc, ctx, &c);
+            self.cache.install_jc(m, pc, ctx, w);
             if !in_jit {
                 let mut s = JitState::from_cpu_sys(cpu);
                 s.ctx = ctx;
@@ -1562,6 +1583,16 @@ impl<E: Engine> SysJit<E> {
         if c.modules.is_empty() {
             return false;
         }
+        // The lookups mark their entries: now the modules.
+        for e in c.blocks.values_mut() {
+            if std::mem::take(&mut e.used) {
+                for v in &e.variants {
+                    if let Some(b) = &v.block {
+                        b.module.used.set(true);
+                    }
+                }
+            }
+        }
         let unused = c.modules.iter().filter(|(w, _)| w.upgrade().is_some_and(|m| !m.used.get())).count();
         let old_half = if unused == 0 { c.modules.len().div_ceil(2) } else { 0 };
         let mut dead = std::collections::HashSet::new();
@@ -1579,6 +1610,7 @@ impl<E: Engine> SysJit<E> {
         let is_dead = |m: &Rc<Mod<E::Module>>| dead.contains(&(Rc::as_ptr(m) as usize));
         for e in c.blocks.values_mut() {
             e.variants.retain(|v| v.block.as_ref().is_none_or(|b| !is_dead(&b.module)));
+            e.hot = None;
         }
         // Without resets the cold entries would pile up: those below the
         // threshold with nothing compiled go (their count starts again), and

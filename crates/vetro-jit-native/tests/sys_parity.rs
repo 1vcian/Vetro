@@ -1154,6 +1154,46 @@ fn msr_ttbr0_in_a_region_switches_the_regime() {
     }
 }
 
+/// Self-modifying code at EL1 (ADR 0040): a loop rewrites its own first
+/// instruction at every round (`add x0, x0, #1` and `#2` in turn). Every
+/// round must run the instruction just written: the store ends the region,
+/// the page's regions are dropped, and a lookup must not hand out the old one
+/// (the entry's cached hot variant goes with them). Fails if the hot variant
+/// survives the invalidation (tried).
+#[test]
+fn self_modifying_code_drops_the_hot_variant() {
+    let seed = (0..100).find(|&s| setup(s).0.sys.el == 1).expect("a case at EL1");
+    let (mut cpu, mut ram) = setup(seed);
+    let prog = [
+        0x91000400u32, // add x0, x0, #0x1 (rewritten)
+        0xd1000673,    // sub x19, x19, #0x1
+        0xb4000093,    // cbz x19, 0x18
+        0xb90002b4,    // str w20, [x21]
+        0x4a160294,    // eor w20, w20, w22
+        0x17fffffb,    // b 0x0
+        0x14000000,    // b .
+    ];
+    let o = (START - RAM_BASE) as usize;
+    for (k, w) in prog.iter().enumerate() {
+        ram[o + 4 * k..o + 4 * k + 4].copy_from_slice(&w.to_le_bytes());
+    }
+    cpu.sys.sctlr_el1 &= !(sctlr::A | sctlr::SA);
+    cpu.pc = START;
+    cpu.x[0] = 0;
+    cpu.x[19] = 200;
+    cpu.x[20] = 0x91000800; // add x0, x0, #0x2
+    cpu.x[21] = START;
+    cpu.x[22] = 0x91000400 ^ 0x91000800;
+    let want = run_interp(cpu.clone(), ram.clone());
+    assert_eq!(want.cpu.x[19], 0, "the loop must finish");
+    assert_eq!(want.cpu.x[0], 100 + 2 * 100, "the rewritten instruction runs at every round");
+    for seed in 0..24 {
+        let (got, s) = run_jit(cpu.clone(), &ram, seed);
+        assert_eq!(got, want, "seed {seed}: interpreter and JIT differ ({s:?})");
+        assert!(s.jit_steps > 300 && s.invalidated_pages > 20, "seed {seed}: test too weak: {s:?}");
+    }
+}
+
 /// The jump cache's second way (ADR 0040): two regions whose PCs share an
 /// index (32 KiB apart), both in TTBR0 and different under the two tables,
 /// called from kernel code that switches TTBR0 at every round. Under table A
