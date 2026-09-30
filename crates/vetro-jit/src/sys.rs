@@ -480,7 +480,6 @@ impl<M> Cache<M> {
     /// read it from now (same translation as the interpreter's fetch) and,
     /// if `count`, counts the entries of untranslated ones.
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     fn lookup(
         &mut self,
         pc: u64,
