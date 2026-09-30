@@ -690,3 +690,85 @@ fn saturating_simd_sets_qc_like_the_interpreter() {
         assert!(with_qc > 20, "{name}: QC set in only {with_qc} cases: test too weak");
     }
 }
+
+/// The cryptographic extension in the regions (ADR 0040): every AES, SHA1,
+/// SHA256 and 64-bit PMULL form, with random and special registers (zero,
+/// all ones, a register used as both source and destination), must leave the
+/// V registers and FPSR exactly as the interpreter does, without calling
+/// `env.simd`. Breaking any piece (a S-box slice, a ShiftRows lane, the
+/// InvMixColumns pre-multiplication, a carry-less product mask, a SHA round
+/// rotation) turns it red.
+#[test]
+fn crypto_matches_the_interpreter_without_env_simd() {
+    // Encodings from tools/a64asm.sh.
+    let insns: [(u32, &str); 19] = [
+        (0x4e284841, "aese v1.16b, v2.16b"),
+        (0x4e285841, "aesd v1.16b, v2.16b"),
+        (0x4e286841, "aesmc v1.16b, v2.16b"),
+        (0x4e287841, "aesimc v1.16b, v2.16b"),
+        (0x0ee3e041, "pmull v1.1q, v2.1d, v3.1d"),
+        (0x4ee3e041, "pmull2 v1.1q, v2.2d, v3.2d"),
+        (0x5e034041, "sha256h q1, q2, v3.4s"),
+        (0x5e035041, "sha256h2 q1, q2, v3.4s"),
+        (0x5e282841, "sha256su0 v1.4s, v2.4s"),
+        (0x5e036041, "sha256su1 v1.4s, v2.4s, v3.4s"),
+        (0x5e030041, "sha1c q1, s2, v3.4s"),
+        (0x5e031041, "sha1p q1, s2, v3.4s"),
+        (0x5e032041, "sha1m q1, s2, v3.4s"),
+        (0x5e033041, "sha1su0 v1.4s, v2.4s, v3.4s"),
+        (0x5e281841, "sha1su1 v1.4s, v2.4s"),
+        (0x5e280841, "sha1h s1, s2"),
+        (0x4e284821, "aese v1.16b, v1.16b"),
+        (0x4e286821, "aesmc v1.16b, v1.16b"),
+        (0x5e014021, "sha256h q1, q1, v1.4s"),
+    ];
+    const B: u32 = 0x14000000; // b .
+    let mut rng = Rng(0xae5);
+    for (w, name) in insns {
+        let mut code = Vec::new();
+        for x in [w, B] {
+            code.extend_from_slice(&x.to_le_bytes());
+        }
+        let mut jit =
+            JitCpu::new(NativeEngine::new(), JitConfig { hot_threshold: 0, ..JitConfig::default() });
+        let before = vetro_jit::helper::calls();
+        for case in 0..300 {
+            let mut v = [0u128; 3];
+            for r in v.iter_mut() {
+                *r = match (case + rng.below(3) as usize) % 8 {
+                    0 => 0,
+                    1 => u128::MAX,
+                    2 => (rng.next() as u128) << 64,
+                    _ => (rng.next() as u128) << 64 | rng.next() as u128,
+                };
+            }
+            let mut cpu = Cpu::new();
+            cpu.pc = CODE;
+            cpu.v[1] = v[0];
+            cpu.v[2] = v[1];
+            cpu.v[3] = v[2];
+            cpu.v[4] = rng.next() as u128;
+            cpu.fpsr = if case % 5 == 0 { 1 << 27 } else { 0 };
+            let mut mem = UserMemory::new();
+            mem.map(CODE, code.clone(), Perm::RX).unwrap();
+            let mut want = cpu.clone();
+            let mut wmem = UserMemory::new();
+            wmem.map(CODE, code.clone(), Perm::RX).unwrap();
+            for _ in 0..2 {
+                want.step(&mut wmem).unwrap();
+            }
+            let (n, r) = jit.run(&mut cpu, &mut mem, 2);
+            assert_eq!((n, r), (2, Ok(())));
+            assert_eq!(
+                (cpu.v, cpu.fpsr),
+                (want.v, want.fpsr),
+                "{name}: V1 {:#034x}, V2 {:#034x}, V3 {:#034x} before",
+                v[0],
+                v[1],
+                v[2]
+            );
+        }
+        assert!(jit.stats.jit_steps >= 300, "{name}: not run by the JIT: {:?}", jit.stats);
+        assert_eq!(vetro_jit::helper::calls(), before, "{name}: called env.simd");
+    }
+}

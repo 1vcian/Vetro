@@ -1260,7 +1260,7 @@ impl<E: Engine> SysJit<E> {
             self.reset();
         }
         let blocks: Vec<Region> = self.cache.pending.iter().map(|p| p.block.clone()).collect();
-        let wasm = translate::module(&blocks, self.cfg.memory);
+        let wasm = translate::module_with(&blocks, self.cfg.memory, self.cfg.profile);
         self.cache.stats.wasm_bytes += wasm.len() as u64;
         let module = match self.engine.compile(&wasm) {
             Ok(m) => m,

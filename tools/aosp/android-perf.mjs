@@ -24,6 +24,11 @@
 //   --cold=S         cold boot for S guest seconds instead of the restore
 //   --restore-only   stops after the restore (to profile it)
 //   --stop-after=P   stops after phase P (e.g. "adb ready")
+//   --samples        guest PC samples (one per quantum of 1 M instructions:
+//                    weighted by instructions) and, at the end, the guest's
+//                    /proc/kallsyms and executable mappings (for
+//                    tools/aosp/perf-report.mjs; changes the guest's work
+//                    only after the last phase)
 //   --diag           after the launcher idle: `top` in the guest (changes the guest's work)
 //   --out=FILE       measurements as JSON (default target/aosp/perf.json)
 //
@@ -197,6 +202,7 @@ async function main() {
     p.mips = cpuMs > 0 ? +(ran / cpuMs / 1000).toFixed(1) : null;
     res.phases.push(p);
     if (arg('stop-after', null) === name) stopNow = true;
+    samplePhase = `after ${name}`.replace(/ /g, '_');
     const j = p.jit;
     log(`== ${name}: ${(p.wallMs / 1000).toFixed(1)} s wall, ${(p.cpuMs / 1000).toFixed(1)} s CPU (disk wait ${(p.diskWaitMs / 1000).toFixed(1)} s), ${p.guestSecs.toFixed(1)} s guest, ` +
       `${(ran / 1e6).toFixed(0)} M executed (${p.mips} MIPS), interp ${((p.perf?.interpSteps ?? 0) / 1e6).toFixed(1)} M, WFI skip ${((p.perf?.wfiSteps ?? 0) / 1e6).toFixed(0)} M` +
@@ -214,8 +220,18 @@ async function main() {
   const guest = () => m.steps;
   const latin1 = new TextDecoder('latin1');
   let consoleTail = '';
+  const samples = flag('samples') ? new Map() : null;
+  let samplePhase = 'start';
   const step = async () => {
     const stop = m.run(1_000_000);
+    if (samples && stop === 'Budget') {
+      const t = m.registersText();
+      const pc = /pc +([0-9a-f]+)/.exec(t)[1];
+      const el = /el (\d)/.exec(t)[1];
+      const asid = /ttbr0_el1 +([0-9a-f]{4})/.exec(t)[1];
+      const k = `${samplePhase} ${el} ${asid} ${pc}`;
+      samples.set(k, (samples.get(k) ?? 0) + 1);
+    }
     if (stop === 'Blocked') {
       await feeder.serve();
       return;
@@ -276,6 +292,22 @@ async function main() {
     end('focused');
     await waitGuest('app idle', () => false, idleSecs, true);
     end(`app idle ${idleSecs} s`);
+    if (samples) {
+      // Where the guest's code lives: kernel symbols and every process's
+      // executable mappings (zygote's children share their libraries' addresses).
+      const sh = async (c) => {
+        const r = await adb.shell(c);
+        return r.stdout;
+      };
+      const ks = await sh("su 0 cat /proc/kallsyms 2>/dev/null || cat /proc/kallsyms");
+      const maps = await sh("for p in /proc/[0-9]*; do echo \"== ${p#/proc/} $(cat $p/cmdline 2>/dev/null | tr '\\0' ' ')\"; su 0 cat $p/maps 2>/dev/null | grep -E ' r-xp | --xp '; done");
+      const base = outPath.replace(/\.json$/, '');
+      writeFileSync(`${base}.kallsyms`, ks);
+      writeFileSync(`${base}.maps`, maps);
+      writeFileSync(`${base}.samples`, [...samples].map(([k, v]) => `${v} ${k}`).join('\n') + '\n');
+      log(`samples: ${samples.size} keys, kallsyms ${ks.length} bytes, maps ${maps.length} bytes`);
+      end('dump');
+    }
   };
 
   if (cold) {

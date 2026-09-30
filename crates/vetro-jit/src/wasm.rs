@@ -637,6 +637,8 @@ pub struct Module {
     exports: Vec<(String, u32)>,
     /// Imported function table: (module, field, minimum entries).
     table: Option<(String, String, u32)>,
+    /// Function names (`name` custom section), for profilers: (index, name).
+    names: Vec<(u32, String)>,
 }
 
 impl Module {
@@ -680,6 +682,12 @@ impl Module {
 
     pub fn export_func(&mut self, name: &str, index: u32) {
         self.exports.push((name.into(), index));
+    }
+
+    /// Names function `index` in the `name` custom section (what V8's CPU
+    /// profiles show). Indices in increasing order.
+    pub fn name_func(&mut self, index: u32, name: &str) {
+        self.names.push((index, name.into()));
     }
 
     pub fn encode(&self) -> Vec<u8> {
@@ -754,6 +762,22 @@ impl Module {
             f.encode(&mut sec);
         }
         section(&mut out, 10, &sec);
+
+        if !self.names.is_empty() {
+            // Custom section "name", subsection 1: function names.
+            let mut sub = Vec::new();
+            uleb(&mut sub, self.names.len() as u64);
+            for (i, n) in &self.names {
+                uleb(&mut sub, *i as u64);
+                name(&mut sub, n);
+            }
+            sec.clear();
+            name(&mut sec, "name");
+            sec.push(1);
+            uleb(&mut sec, sub.len() as u64);
+            sec.extend_from_slice(&sub);
+            section(&mut out, 0, &sec);
+        }
         out
     }
 }

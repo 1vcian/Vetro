@@ -32,6 +32,7 @@ use vetro_cpu::decode::{
 use vetro_cpu::simd::{CopyOp, IntInsn, MovImmOp, SimdInsn, VecMemInsn};
 use vetro_cpu::sysreg::EnvReg;
 
+mod crypto;
 mod fp;
 mod vec;
 
@@ -557,6 +558,13 @@ const fn t32(i: u32) -> u32 {
 /// function of block `i` is exported as `b<i>`. In system mode the
 /// engine then places them in the dispatcher's table (`Engine::place`).
 pub fn module(blocks: &[Region], memory: MemoryImport) -> Vec<u8> {
+    module_with(blocks, memory, false)
+}
+
+/// Like [`module`]; with `names` every region function is also named
+/// `r<el>_<pc>` in the `name` section, so a V8 CPU profile attributes the
+/// time to guest code (measurement only: the code is the same).
+pub fn module_with(blocks: &[Region], memory: MemoryImport, names: bool) -> Vec<u8> {
     use ValType::*;
     let mut m = Module::new();
     let t_blk = m.ty(&[I32], &[I32]);
@@ -575,6 +583,10 @@ pub fn module(blocks: &[Region], memory: MemoryImport) -> Vec<u8> {
     for (i, f) in funcs.into_iter().enumerate() {
         let idx = m.func(t_blk, f);
         m.export_func(&format!("b{i}"), idx);
+        if names {
+            let el = blocks[i].sys.map_or(0, |s| s.el);
+            m.name_func(idx, &format!("r{el}_{:x}", blocks[i].pc));
+        }
     }
     m.encode()
 }
@@ -615,9 +627,14 @@ const F_SIMD: u32 = 42;
 /// Floating-point fast paths (`rt.fp<k>`, [`fp::rt_ops`]).
 const F_FP0: u32 = 43;
 
+/// Cryptographic operations (`rt.cr<k>`, [`crypto::OPS`]), after the FP ones.
+fn f_cr0() -> u32 {
+    F_FP0 + fp::rt_ops().len() as u32
+}
+
 /// Runtime functions.
 fn n_rt() -> u32 {
-    F_FP0 + fp::rt_ops().len() as u32
+    f_cr0() + crypto::count()
 }
 
 /// Bit of `size` for `env.ld`/`env.st`: half of a 16-byte access not
@@ -681,7 +698,8 @@ fn rt_sig(id: u32) -> (String, Vec<ValType>, Vec<ValType>) {
         F_STU | 41 => (format!("stu{}", id - F_STU), vec![I32, I64, I64, I64, I64, I32], vec![I32]),
         F_STQ_SLOW => ("stq_slow".into(), vec![I32, I64, I64, I64, I64, I64, I32], vec![I32]),
         F_SIMD => ("simd".into(), vec![I32, I32, I64, I32], vec![I64]),
-        _ if id >= F_FP0 && id < n_rt() => fp::rt_sig((id - F_FP0) as usize),
+        _ if id >= F_FP0 && id < f_cr0() => fp::rt_sig((id - F_FP0) as usize),
+        _ if id >= f_cr0() && id < n_rt() => crypto::rt_sig((id - f_cr0()) as usize),
         _ => unreachable!("unknown runtime function: {id}"),
     }
 }
@@ -1070,6 +1088,10 @@ pub fn runtime(memory: MemoryImport) -> Vec<u8> {
     for k in 0..fp::rt_ops().len() {
         def(&mut m, F_FP0 + k as u32, fp::build(k, simd));
     }
+    // Cryptographic extension (ADR 0040).
+    for c in crypto::all() {
+        def(&mut m, crypto::rt_id(c), crypto::build(c, |o| rt(crypto::rt_id(o))));
+    }
     m.encode()
 }
 
@@ -1280,8 +1302,24 @@ struct Tx {
     simd: bool,
     /// Inline TLB fast path (otherwise always `rt.*`).
     inline_tlb: bool,
-    /// `rt.fp<k>` functions imported by the module, besides the fixed ones.
+    /// `rt.fp<k>` and `rt.cr<k>` functions imported by the module, besides the
+    /// fixed ones.
     fp_used: Vec<u32>,
+}
+
+impl Tx {
+    /// Index in the module of the optional runtime function `id` (imported
+    /// after the fixed ones, in order of first use).
+    fn rt_opt(&mut self, id: u32) -> u32 {
+        let k = match self.fp_used.iter().position(|&u| u == id) {
+            Some(k) => k,
+            None => {
+                self.fp_used.push(id);
+                self.fp_used.len() - 1
+            }
+        };
+        F_FP0 + k as u32
+    }
 }
 
 /// Where the new `pc` of an exit comes from.
@@ -3086,6 +3124,17 @@ impl Tx {
             }
             Insn::Simd(SimdInsn::Mem(m)) => self.vec_mem(m),
             Insn::Simd(SimdInsn::Int(i @ (IntInsn::Copy { .. } | IntInsn::MovImm { .. }))) => self.vec_int(i),
+            Insn::Simd(SimdInsn::Int(IntInsn::ThreeDiff {
+                scalar: false,
+                u: false,
+                size: 3,
+                opcode: 0b1110,
+                q,
+                rm,
+                rn,
+                rd,
+            })) => self.pmull64(q, rm, rn, rd),
+            Insn::Simd(SimdInsn::Crypto(c)) => self.crypto(c),
             Insn::Simd(SimdInsn::Int(i)) if self.vec_int_inline(i) => {}
             Insn::Simd(SimdInsn::Fp(f)) if self.fp_inline(f) => {}
             Insn::Simd(s) => self.simd_helper(&s),

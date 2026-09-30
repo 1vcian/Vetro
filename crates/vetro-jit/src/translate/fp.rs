@@ -257,15 +257,7 @@ impl Tx {
     /// Index in the module of the `rt.fp<k>` function of `op` (imported after
     /// the fixed ones, in order of first use).
     fn rt_fp(&mut self, op_: FpRt) -> u32 {
-        let id = rt_id(op_);
-        let k = match self.fp_used.iter().position(|&u| u == id) {
-            Some(k) => k,
-            None => {
-                self.fp_used.push(id);
-                self.fp_used.len() - 1
-            }
-        };
-        F_FP0 + k as u32
+        self.rt_opt(rt_id(op_))
     }
 
     /// FP instructions inline or with a runtime fast path; false if
