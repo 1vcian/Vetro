@@ -357,8 +357,9 @@ struct Mod<M> {
     used: Cell<bool>,
 }
 
-/// Modules compiled between two clearings of the `used` flags (ADR 0040):
-/// an eviction takes the modules not entered in the current window.
+/// Modules compiled between two jump cache refreshes (ADR 0040): after one,
+/// every region entered is looked up again and marks its module, so the
+/// marks say which modules were entered since the last eviction.
 const SWEEP_MODULES: u32 = 1024;
 
 /// An entry of a compiled region.
@@ -453,7 +454,7 @@ struct Cache<M> {
     /// (their chunk is free once nothing refers to them).
     modules: Vec<(std::rc::Weak<Mod<M>>, u32)>,
     retired: Vec<(std::rc::Weak<Mod<M>>, u32)>,
-    /// Modules compiled since the last [`SysJit::sweep`].
+    /// Modules compiled since the last [`SysJit::refresh_marks`].
     since_sweep: u32,
     /// Context numbers of the jump cache: one per (EL, TTBR0 base, TTBR1
     /// base) since the last [`SysJit::new_epoch`], which clears them (ADR
@@ -1405,12 +1406,13 @@ impl<E: Engine> SysJit<E> {
         self.engine.place(&module, n, base);
         self.cache.stats.modules += 1;
         let ready = Rc::new(Cell::new(self.engine.ready(&module)));
-        // Fresh code counts as used: the next eviction keeps it.
-        let module = Rc::new(Mod { m: module, used: Cell::new(true) });
+        // Marked when one of its regions is looked up (not the first entry,
+        // which follows the compilation).
+        let module = Rc::new(Mod { m: module, used: Cell::new(false) });
         self.cache.modules.push((Rc::downgrade(&module), chunk));
         self.cache.since_sweep += 1;
         if self.cache.since_sweep >= SWEEP_MODULES {
-            self.sweep();
+            self.refresh_marks();
         }
         if !ready.get() {
             self.compiling.push((module.clone(), ready.clone()));
@@ -1498,24 +1500,19 @@ impl<E: Engine> SysJit<E> {
         None
     }
 
-    /// A new window for the `used` flags (ADR 0040): cleared, and the jump
-    /// cache entries lose their context (new epoch), so every region entered
-    /// from now on is looked up by the host at least once and marks its module.
-    fn sweep(&mut self) {
-        for (w, _) in &self.cache.modules {
-            if let Some(m) = w.upgrade() {
-                m.used.set(false);
-            }
-        }
+    /// The jump cache entries lose their context (new epoch, ADR 0040): every
+    /// region entered from now on is looked up by the host at least once and
+    /// marks its module, also the ones that never left the jump cache.
+    fn refresh_marks(&mut self) {
         self.cache.since_sweep = 0;
         self.new_epoch();
     }
 
     /// Evicts the modules none of whose regions was entered since the last
-    /// [`sweep`](Self::sweep) (ADR 0040), or, if all of them were, the older
-    /// half: their regions leave the cache (they are translated again when
-    /// hot), the jump cache entries lose their context, and the engine frees
-    /// each module when its last reference goes. Then a new window starts.
+    /// eviction (ADR 0040), or, if all of them were, the older half: their
+    /// regions leave the cache (they are translated again when hot), the jump
+    /// cache entries lose their context, and the engine frees each module
+    /// when its last reference goes. The marks of the others are cleared.
     /// False if there was nothing to evict.
     fn evict(&mut self) -> bool {
         let c = &mut self.cache;
@@ -1565,7 +1562,12 @@ impl<E: Engine> SysJit<E> {
         self.compiling.retain(|(m, _)| !is_dead(m));
         c.stats.evictions += 1;
         c.stats.evicted_modules += dead.len() as u64;
-        self.sweep();
+        for (w, _) in &c.modules {
+            if let Some(m) = w.upgrade() {
+                m.used.set(false);
+            }
+        }
+        self.refresh_marks();
         true
     }
 
