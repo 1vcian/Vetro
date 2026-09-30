@@ -1,0 +1,28 @@
+--- a/system/hwc3/Composer.cpp
++++ b/system/hwc3/Composer.cpp
+@@ -17,6 +17,7 @@
+ #include "Composer.h"
+ 
+ #include <android-base/logging.h>
++#include <android-base/properties.h>
+ #include <android/binder_ibinder_platform.h>
+ 
+ #include "Common.h"
+@@ -95,7 +96,16 @@
+     DEBUG_LOG("%s", __FUNCTION__);
+ 
+     caps->clear();
+-    caps->emplace_back(Capability::PRESENT_FENCE_IS_NOT_RELIABLE);
++    // Vetro: the present fence is the DRM atomic commit's OUT_FENCE, signalled
++    // by the kernel when virtio-gpu has flushed the frame, so it is used. With
++    // PRESENT_FENCE_IS_NOT_RELIABLE SurfaceFlinger ignores present fences and
++    // keeps hardware vsync on forever: the vsync thread's onVsync reached
++    // SurfaceFlinger over binder 75 times a second on an idle screen, 10-15%
++    // of the emulated CPU. androidboot.vetro.hwc_present_fence=unreliable
++    // restores the upstream capability.
++    if (::android::base::GetProperty("ro.boot.vetro.hwc_present_fence", "") == "unreliable") {
++        caps->emplace_back(Capability::PRESENT_FENCE_IS_NOT_RELIABLE);
++    }
+     caps->emplace_back(Capability::BOOT_DISPLAY_CONFIG);
+ 
+     return ndk::ScopedAStatus::ok();

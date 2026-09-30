@@ -1,0 +1,60 @@
+--- a/system/hwc3/VsyncThread.h
++++ b/system/hwc3/VsyncThread.h
+@@ -22,6 +22,7 @@
+ #include <android/hardware/graphics/common/1.0/types.h>
+ 
+ #include <chrono>
++#include <condition_variable>
+ #include <mutex>
+ #include <optional>
+ #include <thread>
+@@ -71,6 +72,8 @@
+     std::shared_ptr<IComposerCallback> mCallbacks;
+ 
+     bool mVsyncEnabled = false;
++    // Vetro: the thread sleeps on it while vsync is disabled (mStateMutex).
++    std::condition_variable mEnabledChanged;
+     std::chrono::nanoseconds mVsyncPeriod;
+     std::chrono::time_point<std::chrono::steady_clock> mPreviousVsync;
+ 
+--- a/system/hwc3/VsyncThread.cpp
++++ b/system/hwc3/VsyncThread.cpp
+@@ -75,7 +75,11 @@
+ }
+ 
+ HWC3::Error VsyncThread::stop() {
+-    mShuttingDown.store(true);
++    {
++        std::unique_lock<std::mutex> lock(mStateMutex);
++        mShuttingDown.store(true);
++    }
++    mEnabledChanged.notify_all();
+     mThread.join();
+ 
+     return HWC3::Error::None;
+@@ -97,6 +101,7 @@
+     std::unique_lock<std::mutex> lock(mStateMutex);
+ 
+     mVsyncEnabled = enabled;
++    mEnabledChanged.notify_all();
+ 
+     return HWC3::Error::None;
+ }
+@@ -140,6 +145,17 @@
+     TimePoint previousLog = std::chrono::steady_clock::now();
+ 
+     while (!mShuttingDown.load()) {
++        {
++            // Vetro: no wakeups while SurfaceFlinger has vsync off (an idle
++            // screen). Upstream woke at every period (75 Hz) to call no one:
++            // measurable CPU on one slow emulated CPU. The next vsync stays in
++            // phase with the previous ones (GetNextVsyncInPhase).
++            std::unique_lock<std::mutex> lock(mStateMutex);
++            mEnabledChanged.wait(lock, [this] { return mVsyncEnabled || mShuttingDown.load(); });
++        }
++        if (mShuttingDown.load()) {
++            break;
++        }
+         TimePoint now = std::chrono::steady_clock::now();
+         TimePoint nextVsync = GetNextVsyncInPhase(vsyncPeriod, mPreviousVsync, now);
+ 
