@@ -522,26 +522,36 @@ impl<M> Cache<M> {
         // Cold code (no variant and below the threshold): the fetch
         // translation is not needed. Count as before (the interpreter will
         // execute the same instructions anyway, even if the fetch fails).
+        // One hash lookup for everything (ADR 0040: the map is large and this
+        // runs at every jump cache miss).
         let threshold = self.hot_threshold;
-        match self.blocks.get_mut(&(pc, fl)) {
-            None if !count => return Look::Cold,
-            Some(e) if e.variants.is_empty() && !count => return Look::Cold,
-            None if threshold > 1 => {
-                self.blocks.insert((pc, fl), Entry { seen: 1, variants: Vec::new(), memo: None });
+        let generation = self.inval_gen;
+        let stats = &mut self.stats;
+        let e = match self.blocks.entry((pc, fl)) {
+            std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
+            std::collections::hash_map::Entry::Vacant(v) => {
+                if !count {
+                    return Look::Cold;
+                }
+                if threshold > 1 {
+                    v.insert(Entry { seen: 1, variants: Vec::new(), memo: None });
+                    return Look::Cold;
+                }
+                v.insert(Entry::default())
+            }
+        };
+        if e.variants.is_empty() {
+            if !count {
                 return Look::Cold;
             }
-            Some(e) if e.variants.is_empty() && e.seen.saturating_add(1) < threshold => {
+            if e.seen.saturating_add(1) < threshold {
                 e.seen += 1;
                 return Look::Cold;
             }
-            _ => {}
         }
-        let generation = self.inval_gen;
-        let memo =
-            self.blocks.get(&(pc, fl)).and_then(|e| e.memo).filter(|m| m.0 == ctx && m.1 == generation);
-        let pa = match memo {
+        let pa = match e.memo.filter(|m| m.0 == ctx && m.1 == generation) {
             Some((_, _, pa)) => {
-                self.stats.memo_hits += 1;
+                stats.memo_hits += 1;
                 pa
             }
             None => {
@@ -552,11 +562,6 @@ impl<M> Cache<M> {
                     Err(_) => return Look::One,
                 }
             }
-        };
-        let e = match self.blocks.get_mut(&(pc, fl)) {
-            Some(e) => e,
-            None if count => self.blocks.entry((pc, fl)).or_default(),
-            None => return Look::Cold,
         };
         e.memo = Some((ctx, generation, pa));
         if let Some(v) = e.variants.iter().find(|v| v.pa == pa) {
@@ -922,11 +927,13 @@ impl<E: Engine> SysJit<E> {
     /// if it lost count, every entry of its EL whose page is in its half.
     fn flush_group(&mut self, g: usize, writes_only: bool) {
         let at = self.cache.at;
-        let group = std::mem::take(&mut self.cache.groups[g]);
+        // In place: the list keeps its allocation (ADR 0040: with the software
+        // PAN's TTBR0 switches followed within the run, this runs at every
+        // kernel entry and exit).
+        let group = &mut self.cache.groups[g];
         let m = self.engine.memory();
         let is_write = |e: usize| ((e - at - area::TLB as usize) / area::TLB_SIZE as usize) & 1 == 1;
         let invalid = area::TLB_INVALID.to_le_bytes();
-        let mut kept = TlbGroup { key: group.key, ..TlbGroup::default() };
         if group.overflow {
             let (el, h) = ((g / 2) as u8, (g % 2) as u8);
             for write in [false, true] {
@@ -944,18 +951,19 @@ impl<E: Engine> SysJit<E> {
                 }
             }
             // The read tables were not looked at: the count stays lost.
-            kept.overflow = writes_only;
+            group.overflow = writes_only;
+            group.filled.clear();
         } else {
-            for &e in &group.filled {
+            group.filled.retain(|&e| {
                 let e = e as usize;
                 if writes_only && !is_write(e) {
-                    kept.filled.push(e as u32);
+                    true
                 } else {
                     m[e..e + 8].copy_from_slice(&invalid);
+                    false
                 }
-            }
+            });
         }
-        self.cache.groups[g] = kept;
     }
 
     /// After TLBIs by VA: forgets the software TLB entries and the jump cache
@@ -1063,6 +1071,13 @@ impl<E: Engine> SysJit<E> {
             self.new_epoch();
             self.flush_tlb(false);
         }
+        self.sync_bases(cpu, &r);
+    }
+
+    /// The table bases of the regime `r` (part of [`sync_regime`](Self::sync_regime),
+    /// alone after a region's MSR TTBR: nothing else can have changed within
+    /// the run).
+    fn sync_bases(&mut self, cpu: &Cpu, r: &TranslationRegs) {
         let (lo, hi) = (r.ttbr0 & !TTBR_ASID, r.ttbr1 & !TTBR_ASID);
         if (lo, hi) != (self.cache.lo, self.cache.hi) {
             self.cache.stats.base_switches += 1;
@@ -1143,7 +1158,7 @@ impl<E: Engine> SysJit<E> {
                         }
                         (steps, Flow::Regime) => {
                             done += steps;
-                            regs = self.switch_regime(cpu, mmu);
+                            regs = self.switch_regime(cpu);
                             continue;
                         }
                         (steps, Flow::End(n)) => {
@@ -1204,7 +1219,7 @@ impl<E: Engine> SysJit<E> {
                 (steps, Flow::Go) => done += steps,
                 (steps, Flow::Regime) => {
                     done += steps;
-                    regs = self.switch_regime(cpu, mmu);
+                    regs = self.switch_regime(cpu);
                 }
                 (steps, Flow::End(n)) => {
                     done += steps;
@@ -1224,13 +1239,14 @@ impl<E: Engine> SysJit<E> {
     /// bases go from `JitState` into the `Cpu` (the rest stays in
     /// `JitState`) and the contexts and TLB groups follow them, as at the start
     /// of a run. Returns the new translation registers.
-    fn switch_regime(&mut self, cpu: &mut Cpu, mmu: &Mmu) -> TranslationRegs {
+    fn switch_regime(&mut self, cpu: &mut Cpu) -> TranslationRegs {
         let m = self.engine.memory();
         cpu.sys.ttbr0_el1 = state::read_u64(m, self.cache.at, off::TTBR0);
         cpu.sys.ttbr1_el1 = state::read_u64(m, self.cache.at, off::TTBR1);
         self.cache.stats.regime_switches += 1;
-        self.sync_regime(cpu, mmu);
-        translation_regs(cpu)
+        let r = translation_regs(cpu);
+        self.sync_bases(cpu, &r);
+        r
     }
 
     /// Runs the dispatcher from `pc` (the jump cache entry and `JitState` are
