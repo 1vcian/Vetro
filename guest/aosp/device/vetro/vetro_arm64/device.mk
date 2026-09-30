@@ -20,6 +20,16 @@ PRODUCT_PACKAGES += \
 # the features unavailable, so the framework starts no service for them.
 PRODUCT_PACKAGES += VetroMissingHardware
 
+# Cuttlefish's audio policy (shared/config/audio/policy/
+# audio_policy_configuration.xml) always includes the Bluetooth audio policy,
+# but with BOARD_HAVE_BLUETOOTH := false shared/bluetooth/device_vendor.mk no
+# longer installs it: the audio HAL then never registers IModule/default,
+# audioserver waits for it and system_server aborts in
+# ExternalCaptureStateTracker (a framework restart every ~400 s, measured).
+# The file (AOSP's own) is installed anyway; its modules stay unused.
+PRODUCT_COPY_FILES += \
+    frameworks/av/services/audiopolicy/config/bluetooth_audio_policy_configuration_7_0.xml:$(TARGET_COPY_OUT_VENDOR)/etc/bluetooth_audio_policy_configuration_7_0.xml
+
 # The board's init and ueventd.
 PRODUCT_COPY_FILES += \
     device/vetro/vetro_arm64/init.vetro.rc:$(TARGET_COPY_OUT_VENDOR)/etc/init/init.vetro.rc
