@@ -95,6 +95,10 @@ pub struct JitState {
     pub _pad3: u64,
 }
 
+/// `exit_detail` of a YIELD after MSR TTBR0/TTBR1 (ADR 0040): the host
+/// follows the new regime within the run (a YIELD after unmasking leaves it 0).
+pub const DETAIL_REGIME: u32 = 3;
+
 /// Field offsets (bytes from the start of the structure).
 pub mod off {
     pub const X: u32 = 0;

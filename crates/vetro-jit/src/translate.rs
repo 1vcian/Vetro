@@ -2963,6 +2963,12 @@ impl Tx {
                     self.f.local_get(L_STATE);
                     self.get_x(rt);
                     self.f.i64_store(o);
+                    // `exit_detail` = 3: a regime YIELD, which the host follows
+                    // within the run (ADR 0040).
+                    self.f
+                        .local_get(L_STATE)
+                        .i32_const(crate::state::DETAIL_REGIME as i32)
+                        .i32_store(off::EXIT_DETAIL);
                     self.f.i32_const(1);
                     self.yield_if();
                 } else {

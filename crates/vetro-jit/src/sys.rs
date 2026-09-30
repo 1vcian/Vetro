@@ -211,6 +211,8 @@ pub struct SysJitStats {
     pub jc_probes: u64,
     /// Lookups that reused a remembered fetch translation (ADR 0040).
     pub memo_hits: u64,
+    /// MSR TTBR0/TTBR1 in a region followed within the same run (ADR 0040).
+    pub regime_switches: u64,
     /// Bytes of WebAssembly compiled (modules and dispatcher).
     pub wasm_bytes: u64,
 }
@@ -395,6 +397,17 @@ struct Pending {
     pa: u64,
     words: Vec<u32>,
     block: Region,
+}
+
+/// What a dispatcher run means for the rest of [`SysJit::run`].
+enum Flow {
+    /// Go on from the new `pc`.
+    Go,
+    /// The translation regime changed (MSR TTBR): go on after
+    /// [`SysJit::switch_regime`].
+    Regime,
+    /// The run ends: what comes next.
+    End(Next),
 }
 
 enum Look<M> {
@@ -1057,7 +1070,7 @@ impl<E: Engine> SysJit<E> {
         self.drain(phys);
         self.sync_regime(cpu, mmu);
         self.sync_ram(phys);
-        let regs = translation_regs(cpu);
+        let mut regs = translation_regs(cpu);
         let sys = target(cpu);
         let (el, fl) = (sys.el, flags(sys));
         let at = self.cache.at;
@@ -1093,11 +1106,16 @@ impl<E: Engine> SysJit<E> {
                     }
                     self.cache.stats.jc_probes += 1;
                     match self.dispatch(cpu, mmu, phys, &regs, el, fl, time, done, &mut pc) {
-                        (steps, None) => {
+                        (steps, Flow::Go) => {
                             done += steps;
                             continue;
                         }
-                        (steps, Some(n)) => {
+                        (steps, Flow::Regime) => {
+                            done += steps;
+                            regs = self.switch_regime(cpu, mmu);
+                            continue;
+                        }
+                        (steps, Flow::End(n)) => {
                             done += steps;
                             break n;
                         }
@@ -1152,8 +1170,12 @@ impl<E: Engine> SysJit<E> {
                 state::write_u32(m, at, off::EXIT_DETAIL, 0);
             }
             match self.dispatch(cpu, mmu, phys, &regs, el, fl, time, done, &mut pc) {
-                (steps, None) => done += steps,
-                (steps, Some(n)) => {
+                (steps, Flow::Go) => done += steps,
+                (steps, Flow::Regime) => {
+                    done += steps;
+                    regs = self.switch_regime(cpu, mmu);
+                }
+                (steps, Flow::End(n)) => {
                     done += steps;
                     break n;
                 }
@@ -1165,8 +1187,23 @@ impl<E: Engine> SysJit<E> {
         SysRun { steps: done, next }
     }
 
+    /// After a region's MSR TTBR0/TTBR1 (YIELD without unmasked
+    /// interrupts, ADR 0040): the run goes on in the new regime instead of
+    /// returning to the machine. Nothing about interrupts changed; the table
+    /// bases go from `JitState` into the `Cpu` (the rest stays in
+    /// `JitState`) and the contexts and TLB groups follow them, as at the start
+    /// of a run. Returns the new translation registers.
+    fn switch_regime(&mut self, cpu: &mut Cpu, mmu: &Mmu) -> TranslationRegs {
+        let m = self.engine.memory();
+        cpu.sys.ttbr0_el1 = state::read_u64(m, self.cache.at, off::TTBR0);
+        cpu.sys.ttbr1_el1 = state::read_u64(m, self.cache.at, off::TTBR1);
+        self.cache.stats.regime_switches += 1;
+        self.sync_regime(cpu, mmu);
+        translation_regs(cpu)
+    }
+
     /// Runs the dispatcher from `pc` (the jump cache entry and `JitState` are
-    /// ready): the steps it executed and, if the run must end, what comes next.
+    /// ready): the steps it executed and whether the run goes on.
     #[allow(clippy::too_many_arguments)]
     fn dispatch(
         &mut self,
@@ -1179,7 +1216,7 @@ impl<E: Engine> SysJit<E> {
         time: Option<Clock>,
         done: u64,
         pc: &mut u64,
-    ) -> (u64, Option<Next>) {
+    ) -> (u64, Flow) {
         let at = self.cache.at;
         let utlb = el == 1 && self.cache.utlb_ok();
         let m = self.engine.memory();
@@ -1207,24 +1244,30 @@ impl<E: Engine> SysJit<E> {
         *pc = state::read_u64(m, at, off::PC);
         self.cache.stats.jit_steps += steps;
         let next = match code {
-            NEXT => None,
+            NEXT => Flow::Go,
             STOP => {
                 self.cache.stats.stops += 1;
                 self.drain(phys);
-                None
+                Flow::Go
             }
             FAULT => {
                 self.cache.stats.faults += 1;
-                Some(Next::One)
+                Flow::End(Next::One)
             }
             SVC => {
                 self.cache.stats.svcs += 1;
-                Some(Next::One)
+                Flow::End(Next::One)
             }
             YIELD => {
-                // Interrupts unmasked: the caller decides (`jit_budget`).
                 self.cache.stats.yields += 1;
-                Some(Next::Jit)
+                // MSR TTBR0/TTBR1 (`exit_detail` = 3): the run goes on in the
+                // new regime. Otherwise interrupts were unmasked, and the
+                // caller decides (`jit_budget`).
+                if state::read_u32(m, at, off::EXIT_DETAIL) == state::DETAIL_REGIME {
+                    Flow::Regime
+                } else {
+                    Flow::End(Next::Jit)
+                }
             }
             other => panic!("unknown dispatcher exit code: {other}"),
         };

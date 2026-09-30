@@ -1060,12 +1060,15 @@ fn ldtr_sttr_at_el1_use_el0_permissions() {
 }
 
 /// MSR TTBR0_EL1 inside a region (M4): the region exits right after it
-/// (YIELD) and the host starts the next run in the new regime. Here EL1
-/// code in TTBR1 loads the same TTBR0 address under two tables in one loop:
-/// a software TLB entry filled under the first table must not serve the
-/// load after the switch. Fails if the MSR does not end the run (tried).
+/// (YIELD, `exit_detail` 3) and the host goes on in the new regime within the
+/// same run (ADR 0040; before, the run ended). Here EL1 code in TTBR1 loads
+/// the same TTBR0 address under two tables in one loop: a software TLB entry
+/// filled under the first table must not serve the load after the switch.
+/// Fails if the MSR does not end the region, or if the host does not resync
+/// the regime (contexts, TLB groups, translation registers) before going on
+/// (all tried).
 #[test]
-fn msr_ttbr0_in_a_region_ends_the_run() {
+fn msr_ttbr0_in_a_region_switches_the_regime() {
     const K: u64 = 0xffff_ff80_0000_0000;
     const U: u64 = 0x20_0000;
     let (l1a, l2a, l3a) = (TABLES, TABLES + 0x1000, TABLES + 0x2000);
@@ -1144,6 +1147,7 @@ fn msr_ttbr0_in_a_region_ends_the_run() {
         let (got, s) = run_jit(cpu.clone(), &ram, seed);
         assert_eq!(got, want, "seed {seed}: interpreter and JIT differ ({s:?})");
         assert!(s.jit_steps > 500 && s.yields > 50, "seed {seed}: not run in regions: {s:?}");
+        assert!(s.regime_switches > 50, "seed {seed}: the run ended at every MSR TTBR0: {s:?}");
     }
 }
 
