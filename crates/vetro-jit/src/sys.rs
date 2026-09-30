@@ -209,6 +209,8 @@ pub struct SysJitStats {
     pub tlbi_partial: u64,
     /// Entries from the host found in the jump cache (no lookup).
     pub jc_probes: u64,
+    /// Lookups that reused a remembered fetch translation (ADR 0040).
+    pub memo_hits: u64,
     /// Bytes of WebAssembly compiled (modules and dispatcher).
     pub wasm_bytes: u64,
 }
@@ -374,11 +376,16 @@ struct Entry<M> {
     /// Entries seen with the interpreter.
     seen: u32,
     variants: Vec<Variant<M>>,
+    /// The fetch translation last checked for this `pc` (ADR 0040):
+    /// (jump cache context, [`Cache::inval_gen`], physical address). Within a
+    /// context it cannot change (the guarantee the jump cache relies on), so
+    /// a lookup with the same context and no partial TLBI since skips the MMU.
+    memo: Option<(u32, u32, u64)>,
 }
 
 impl<M> Default for Entry<M> {
     fn default() -> Self {
-        Entry { seen: 0, variants: Vec::new() }
+        Entry { seen: 0, variants: Vec::new(), memo: None }
     }
 }
 
@@ -417,6 +424,9 @@ struct Cache<M> {
     ids: FastMap<(u8, u64, u64), u32>,
     /// Last context number handed out.
     next_id: u32,
+    /// Generation of the partial TLBIs (by VA): a remembered fetch
+    /// translation ([`Entry::memo`]) is valid only in its own.
+    inval_gen: u32,
     /// Table bases (TTBR0/TTBR1 without the ASID) of the current regime.
     lo: u64,
     hi: u64,
@@ -457,10 +467,12 @@ impl<M> Cache<M> {
     /// read it from now (same translation as the interpreter's fetch) and,
     /// if `count`, counts the entries of untranslated ones.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn lookup(
         &mut self,
         pc: u64,
         fl: u8,
+        ctx: u32,
         regs: &TranslationRegs,
         el: u8,
         mmu: &mut Mmu,
@@ -478,7 +490,7 @@ impl<M> Cache<M> {
             None if !count => return Look::Cold,
             Some(e) if e.variants.is_empty() && !count => return Look::Cold,
             None if threshold > 1 => {
-                self.blocks.insert((pc, fl), Entry { seen: 1, variants: Vec::new() });
+                self.blocks.insert((pc, fl), Entry { seen: 1, variants: Vec::new(), memo: None });
                 return Look::Cold;
             }
             Some(e) if e.variants.is_empty() && e.seen.saturating_add(1) < threshold => {
@@ -487,12 +499,21 @@ impl<M> Cache<M> {
             }
             _ => {}
         }
-        let pa = {
-            let mut ram = RamOnly(phys);
-            let mut bus = MmuBus::new(mmu, &mut ram);
-            match bus.translate(regs, pc, AccessReq { access: Access::Fetch, el, aligned: true }) {
-                Ok(pa) => pa,
-                Err(_) => return Look::One,
+        let generation = self.inval_gen;
+        let memo =
+            self.blocks.get(&(pc, fl)).and_then(|e| e.memo).filter(|m| m.0 == ctx && m.1 == generation);
+        let pa = match memo {
+            Some((_, _, pa)) => {
+                self.stats.memo_hits += 1;
+                pa
+            }
+            None => {
+                let mut ram = RamOnly(phys);
+                let mut bus = MmuBus::new(mmu, &mut ram);
+                match bus.translate(regs, pc, AccessReq { access: Access::Fetch, el, aligned: true }) {
+                    Ok(pa) => pa,
+                    Err(_) => return Look::One,
+                }
             }
         };
         let e = match self.blocks.get_mut(&(pc, fl)) {
@@ -500,6 +521,7 @@ impl<M> Cache<M> {
             None if count => self.blocks.entry((pc, fl)).or_default(),
             None => return Look::Cold,
         };
+        e.memo = Some((ctx, generation, pa));
         if let Some(v) = e.variants.iter().find(|v| v.pa == pa) {
             return match &v.block {
                 Some(c) if c.ready.get() => Look::Hot(c.clone()),
@@ -713,7 +735,7 @@ impl<M> Host for SysHost<'_, M> {
         let pc = state::read_u64(mem, at, off::PC);
         let ctx = state::read_u32(mem, at, off::CTX);
         self.cache.stats.resolves += 1;
-        match self.cache.lookup(pc, self.fl, &self.regs, self.el, self.mmu, self.phys, false) {
+        match self.cache.lookup(pc, self.fl, ctx, &self.regs, self.el, self.mmu, self.phys, false) {
             Look::Hot(c) => {
                 self.cache.install_jc(mem, pc, ctx, &c);
                 true
@@ -742,6 +764,7 @@ impl<E: Engine> SysJit<E> {
                 next_slot: 0,
                 ids: FastMap::default(),
                 next_id: 0,
+                inval_gen: 0,
                 lo: 0,
                 hi: 0,
                 groups: Default::default(),
@@ -894,6 +917,8 @@ impl<E: Engine> SysJit<E> {
     /// After TLBIs by VA: forgets the software TLB entries and the jump cache
     /// entries whose page is in one of `ranges` (VA[55:0] & [`RANGE`]).
     fn invalidate_ranges(&mut self, ranges: &[u64]) {
+        // The fetch translations remembered by the lookups may be among them.
+        self.cache.inval_gen = self.cache.inval_gen.wrapping_add(1);
         let at = self.cache.at;
         let m = self.engine.memory();
         let hit = |va: u64| ranges.contains(&(va & RANGE));
@@ -1079,7 +1104,8 @@ impl<E: Engine> SysJit<E> {
                     }
                 }
             }
-            let c = match self.cache.lookup(pc, fl, &regs, el, mmu, phys, true) {
+            let ctx = self.cache.ctx(fl);
+            let c = match self.cache.lookup(pc, fl, ctx, &regs, el, mmu, phys, true) {
                 Look::Hot(c) => c,
                 Look::One => break Next::One,
                 Look::Cold => break Next::Cold,

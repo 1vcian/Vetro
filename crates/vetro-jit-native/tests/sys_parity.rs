@@ -1265,6 +1265,9 @@ fn ldtr_sttr_at_el1_use_the_el0_tlb_of_the_same_tables() {
         let (got, s) = run_jit(cpu.clone(), &ram, seed);
         assert_eq!(got, want, "seed {seed}: interpreter and JIT differ ({s:?})");
         assert!(s.jit_steps > 1000, "seed {seed}: not run in regions: {s:?}");
+        // The runs after each MSR TTBR0 find their regions again without the
+        // MMU (remembered fetch translations, ADR 0040).
+        assert!(s.memo_hits > rounds, "seed {seed}: fetch translations not remembered: {s:?}");
         // Per round: the faulting LDTR and the LDTR/STTR under table B go to
         // the host; those under table A are TLB hits.
         assert!(

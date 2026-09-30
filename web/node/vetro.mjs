@@ -1016,11 +1016,12 @@ export class Machine {
     const x = this.#x;
     const names = ['jitSteps', 'runs', 'resolves', 'calls', 'blocks', 'modules', 'reused', 'invalidatedPages', 'faults',
       'svcs', 'stops', 'epochs', 'tlbFlushes', 'tlbFills', 'resets', 'yields', 'hostLds', 'hostSts', 'epochsRegs', 'epochsTlbi',
-      'epochsCode', 'wasmBytes'];
+      'epochsCode', 'wasmBytes', 'baseSwitches', 'tlbiPartial', 'jcProbes', 'memoHits'];
     const p = x.vetro_alloc(8 * names.length) >>> 0;
     const n = x.vetro_jit_stats(this.#vm, p, names.length);
     const v = new BigUint64Array(x.memory.buffer, p, names.length);
-    const out = n ? Object.fromEntries(names.map((k, i) => [k, Number(v[i])])) : null;
+    // Older builds write fewer counters: only the first `n`.
+    const out = n ? Object.fromEntries(names.slice(0, n).map((k, i) => [k, Number(v[i])])) : null;
     x.vetro_free(p, 8 * names.length);
     return out;
   }

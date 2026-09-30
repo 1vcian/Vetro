@@ -789,6 +789,10 @@ pub unsafe extern "C" fn vetro_jit_stats(vm: *const Vm, out: *mut u64, cap: usiz
         s.epochs_tlbi,
         s.epochs_code,
         s.wasm_bytes,
+        s.base_switches,
+        s.tlbi_partial,
+        s.jc_probes,
+        s.memo_hits,
     ];
     let n = v.len().min(cap);
     if n > 0 {
@@ -798,7 +802,8 @@ pub unsafe extern "C" fn vetro_jit_stats(vm: *const Vm, out: *mut u64, cap: usiz
 }
 
 /// Turns on the JIT like [`vetro_machine_set_jit`]; `flags` bit 0 also
-/// counts the interpreter's instructions per class ([`vetro_jit_profile`]).
+/// counts the interpreter's instructions per class ([`vetro_jit_profile`]),
+/// bit 1 names the region functions after their guest PC (V8 profiles).
 /// Measurements only: the result of execution doesn't change.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_machine_set_jit_with(vm: *mut Vm, hot_threshold: u32, batch: u32, flags: u32) {
