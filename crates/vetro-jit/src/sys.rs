@@ -213,6 +213,10 @@ pub struct SysJitStats {
     pub memo_hits: u64,
     /// MSR TTBR0/TTBR1 in a region followed within the same run (ADR 0040).
     pub regime_switches: u64,
+    /// Evictions of unused modules instead of a reset, and modules evicted
+    /// (ADR 0040).
+    pub evictions: u64,
+    pub evicted_modules: u64,
     /// Bytes of WebAssembly compiled (modules and dispatcher).
     pub wasm_bytes: u64,
 }
@@ -346,9 +350,20 @@ pub fn target(cpu: &Cpu) -> SysTarget {
     }
 }
 
+/// A compiled module and what eviction needs to know (ADR 0040).
+struct Mod<M> {
+    m: M,
+    /// Looked up (entered through the host) since the last eviction.
+    used: Cell<bool>,
+}
+
+/// Modules compiled between two clearings of the `used` flags (ADR 0040):
+/// an eviction takes the modules not entered in the current window.
+const SWEEP_MODULES: u32 = 1024;
+
 /// An entry of a compiled region.
 struct Compiled<M> {
-    _module: Rc<M>,
+    module: Rc<Mod<M>>,
     /// False while the engine is still compiling the module
     /// ([`Engine::ready`], ADR 0038): the region runs in the interpreter.
     ready: Rc<Cell<bool>>,
@@ -365,7 +380,7 @@ struct Compiled<M> {
 type Entries<M> = Rc<[(u64, Rc<Compiled<M>>)]>;
 
 /// A module the engine is still compiling and its readiness flag.
-type Compiling<M> = (Rc<M>, Rc<Cell<bool>>);
+type Compiling<M> = (Rc<Mod<M>>, Rc<Cell<bool>>);
 
 /// A block for a physical page: compiled, or `None` if the first
 /// instruction is not translated.
@@ -430,7 +445,16 @@ struct Cache<M> {
     pending: Vec<Pending>,
     /// Block requests pending since the last compilation.
     pending_hits: usize,
-    next_slot: u32,
+    /// Table chunks handed out so far (`batch` entries each), and the free
+    /// ones (ADR 0040).
+    next_chunk: u32,
+    free_chunks: Vec<u32>,
+    /// Live modules with their chunk, and the evicted ones not yet dropped
+    /// (their chunk is free once nothing refers to them).
+    modules: Vec<(std::rc::Weak<Mod<M>>, u32)>,
+    retired: Vec<(std::rc::Weak<Mod<M>>, u32)>,
+    /// Modules compiled since the last [`SysJit::sweep`].
+    since_sweep: u32,
     /// Context numbers of the jump cache: one per (EL, TTBR0 base, TTBR1
     /// base) since the last [`SysJit::new_epoch`], which clears them (ADR
     /// 0035).
@@ -536,7 +560,10 @@ impl<M> Cache<M> {
         e.memo = Some((ctx, generation, pa));
         if let Some(v) = e.variants.iter().find(|v| v.pa == pa) {
             return match &v.block {
-                Some(c) if c.ready.get() => Look::Hot(c.clone()),
+                Some(c) if c.ready.get() => {
+                    c.module.used.set(true);
+                    Look::Hot(c.clone())
+                }
                 // Still compiling (ADR 0038): the interpreter runs it.
                 Some(_) => Look::Cold,
                 None => Look::One,
@@ -773,7 +800,11 @@ impl<E: Engine> SysJit<E> {
                 compiled: HashMap::new(),
                 pending: Vec::new(),
                 pending_hits: 0,
-                next_slot: 0,
+                next_chunk: 0,
+                free_chunks: Vec::new(),
+                modules: Vec::new(),
+                retired: Vec::new(),
+                since_sweep: 0,
                 ids: FastMap::default(),
                 next_id: 0,
                 inval_gen: 0,
@@ -1344,30 +1375,43 @@ impl<E: Engine> SysJit<E> {
         if n == 0 {
             return;
         }
-        if self.cache.next_slot + n > TABLE_SIZE {
-            self.reset();
-        }
+        assert!(n as usize <= self.cfg.batch, "a module has at most `batch` regions");
         let blocks: Vec<Region> = self.cache.pending.iter().map(|p| p.block.clone()).collect();
         let wasm = translate::module_with(&blocks, self.cfg.memory, self.cfg.names);
         self.cache.stats.wasm_bytes += wasm.len() as u64;
-        let module = match self.engine.compile(&wasm) {
-            Ok(m) => m,
-            Err(_) => {
-                // Engine full (wasmtime: instances per store): everything is
-                // discarded and we retry once.
+        // Table full or engine full (the browser's code budget, wasmtime's
+        // instances per store): first the modules not entered since the last
+        // eviction go (ADR 0040), then, if that is not enough, everything.
+        let mut chunk = self.alloc_chunk();
+        if chunk.is_none() && self.evict() {
+            chunk = self.alloc_chunk();
+        }
+        let mut compiled = chunk.and_then(|_| self.engine.compile(&wasm).ok());
+        if chunk.is_some() && compiled.is_none() && self.evict() {
+            compiled = self.engine.compile(&wasm).ok();
+        }
+        let (module, chunk) = match (compiled, chunk) {
+            (Some(m), Some(k)) => (m, k),
+            _ => {
                 self.reset();
+                let k = self.alloc_chunk().expect("an empty table has chunks");
                 match self.engine.compile(&wasm) {
-                    Ok(m) => m,
-                    Err(e) => panic!("JIT module rejected by the engine: {e}"),
+                    Ok(m) => (m, k),
+                    Err(e) => panic!("JIT module of {} bytes rejected by the engine: {e}", wasm.len()),
                 }
             }
         };
-        let base = self.cache.next_slot;
+        let base = chunk * self.cfg.batch as u32;
         self.engine.place(&module, n, base);
-        self.cache.next_slot += n;
         self.cache.stats.modules += 1;
         let ready = Rc::new(Cell::new(self.engine.ready(&module)));
-        let module = Rc::new(module);
+        // Fresh code counts as used: the next eviction keeps it.
+        let module = Rc::new(Mod { m: module, used: Cell::new(true) });
+        self.cache.modules.push((Rc::downgrade(&module), chunk));
+        self.cache.since_sweep += 1;
+        if self.cache.since_sweep >= SWEEP_MODULES {
+            self.sweep();
+        }
         if !ready.get() {
             self.compiling.push((module.clone(), ready.clone()));
         }
@@ -1381,7 +1425,7 @@ impl<E: Engine> SysJit<E> {
                 .into_iter()
                 .map(|(epc, bb, max)| {
                     let c = Compiled {
-                        _module: module.clone(),
+                        module: module.clone(),
                         ready: ready.clone(),
                         slot,
                         max_steps: max as u8,
@@ -1408,7 +1452,7 @@ impl<E: Engine> SysJit<E> {
         }
         let engine = &mut self.engine;
         self.compiling.retain(|(m, r)| {
-            if engine.ready(m) {
+            if engine.ready(&m.m) {
                 r.set(true);
                 false
             } else {
@@ -1429,6 +1473,88 @@ impl<E: Engine> SysJit<E> {
         self.dispatcher = Some(d);
     }
 
+    /// A free chunk of `batch` table entries: one never used, or one of an
+    /// evicted module nothing refers to any more.
+    fn alloc_chunk(&mut self) -> Option<u32> {
+        let c = &mut self.cache;
+        if c.free_chunks.is_empty() {
+            let mut i = 0;
+            while i < c.retired.len() {
+                if c.retired[i].0.strong_count() == 0 {
+                    c.free_chunks.push(c.retired.swap_remove(i).1);
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        if let Some(k) = c.free_chunks.pop() {
+            return Some(k);
+        }
+        let per = self.cfg.batch as u32;
+        if (c.next_chunk + 1) * per <= TABLE_SIZE {
+            c.next_chunk += 1;
+            return Some(c.next_chunk - 1);
+        }
+        None
+    }
+
+    /// A new window for the `used` flags (ADR 0040): cleared, and the jump
+    /// cache entries lose their context (new epoch), so every region entered
+    /// from now on is looked up by the host at least once and marks its module.
+    fn sweep(&mut self) {
+        for (w, _) in &self.cache.modules {
+            if let Some(m) = w.upgrade() {
+                m.used.set(false);
+            }
+        }
+        self.cache.since_sweep = 0;
+        self.new_epoch();
+    }
+
+    /// Evicts the modules none of whose regions was entered since the last
+    /// [`sweep`](Self::sweep) (ADR 0040), or, if all of them were, the older
+    /// half: their regions leave the cache (they are translated again when
+    /// hot), the jump cache entries lose their context, and the engine frees
+    /// each module when its last reference goes. Then a new window starts.
+    /// False if there was nothing to evict.
+    fn evict(&mut self) -> bool {
+        let c = &mut self.cache;
+        c.modules.retain(|(w, k)| {
+            let alive = w.strong_count() > 0;
+            if !alive {
+                c.free_chunks.push(*k);
+            }
+            alive
+        });
+        if c.modules.is_empty() {
+            return false;
+        }
+        let unused = c.modules.iter().filter(|(w, _)| w.upgrade().is_some_and(|m| !m.used.get())).count();
+        let old_half = if unused == 0 { c.modules.len().div_ceil(2) } else { 0 };
+        let mut dead = std::collections::HashSet::new();
+        let mut live = Vec::with_capacity(c.modules.len());
+        for (i, (w, k)) in c.modules.drain(..).enumerate() {
+            let m = w.upgrade().expect("alive");
+            if i < old_half || (unused > 0 && !m.used.get()) {
+                dead.insert(Rc::as_ptr(&m) as usize);
+                c.retired.push((w, k));
+            } else {
+                live.push((w, k));
+            }
+        }
+        c.modules = live;
+        let is_dead = |m: &Rc<Mod<E::Module>>| dead.contains(&(Rc::as_ptr(m) as usize));
+        for e in c.blocks.values_mut() {
+            e.variants.retain(|v| v.block.as_ref().is_none_or(|b| !is_dead(&b.module)));
+        }
+        c.compiled.retain(|_, es| !is_dead(&es[0].1.module));
+        self.compiling.retain(|(m, _)| !is_dead(m));
+        c.stats.evictions += 1;
+        c.stats.evicted_modules += dead.len() as u64;
+        self.sweep();
+        true
+    }
+
     /// Discards all compiled code and resets the engine (table full or
     /// engine full). The pages stay watched: at most a few
     /// empty invalidations.
@@ -1437,7 +1563,11 @@ impl<E: Engine> SysJit<E> {
         c.blocks.clear();
         c.pages.clear();
         c.compiled.clear();
-        c.next_slot = 0;
+        c.next_chunk = 0;
+        c.free_chunks.clear();
+        c.modules.clear();
+        c.retired.clear();
+        c.since_sweep = 0;
         c.stats.resets += 1;
         self.compiling.clear();
         self.dispatcher = None;

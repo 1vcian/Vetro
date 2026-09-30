@@ -506,7 +506,7 @@ fn run_jit(cpu: Cpu, ram: &[u8], seed: u64) -> (Trace, vetro_jit::SysJitStats) {
 /// Like [`run_jit`] with `SysJit::set_stops(stops)`; also counts the
 /// interpreter steps done with the PC in `stops`.
 fn run_jit_stops(cpu: Cpu, ram: &[u8], seed: u64, stops: &[u64]) -> (Trace, vetro_jit::SysJitStats, u64) {
-    run_jit_on(NativeEngine::new(), cpu, ram, seed, stops)
+    run_jit_on(NativeEngine::new(), cpu, ram, seed, stops, false)
 }
 
 /// Like [`run_jit_stops`] on any engine.
@@ -516,6 +516,7 @@ fn run_jit_on<E: Engine>(
     ram: &[u8],
     seed: u64,
     stops: &[u64],
+    resets_ok: bool,
 ) -> (Trace, vetro_jit::SysJitStats, u64) {
     let mut rng = Rng(seed ^ 0xb0d9e7);
     vetro_jit::Engine::reserve(&mut engine, RAM_IN_ENGINE + RAM_LEN);
@@ -569,7 +570,9 @@ fn run_jit_on<E: Engine>(
         };
     }
     let stats = jit.stats();
-    assert_eq!(stats.resets, 0, "RAM lives in the engine memory: no resets");
+    // An engine reset would move the RAM (it lives in the engine's memory),
+    // unless the engine keeps its store (`Budgeted`).
+    assert!(resets_ok || stats.resets == 0, "RAM lives in the engine memory: no resets");
     let h = hash(phys.bytes());
     (Trace { events, steps: n, cpu, ram_hash: h }, stats, hits)
 }
@@ -1367,7 +1370,7 @@ fn background_compilation_keeps_the_execution() {
             next: 0,
             not_ready: not_ready.clone(),
         };
-        let (got, s, _) = run_jit_on(engine, cpu, &ram, seed, &[]);
+        let (got, s, _) = run_jit_on(engine, cpu, &ram, seed, &[], false);
         assert_eq!(got, want, "seed {seed}: interpreter and JIT with background compilation");
         jit_steps += s.jit_steps;
     }
@@ -1376,4 +1379,144 @@ fn background_compilation_keeps_the_execution() {
         "test too weak: {} not-ready polls, {jit_steps} steps in the JIT",
         not_ready.get()
     );
+}
+
+/// An engine with a code budget like the browser's (ADR 0040): it refuses
+/// a module when the live modules' bytes would exceed `budget`, a dropped
+/// module stops counting, and its table entries get a module whose regions
+/// trap, so a jump cache entry or a region that outlived its eviction makes
+/// the test fail instead of running stale code.
+struct Budgeted {
+    inner: NativeEngine,
+    budget: usize,
+    live: std::rc::Rc<std::cell::Cell<usize>>,
+    freed: std::rc::Rc<std::cell::RefCell<Vec<(u32, u32)>>>,
+    trap: Option<vetro_jit_native::NativeModule>,
+}
+
+struct BudgetModule {
+    m: vetro_jit_native::NativeModule,
+    bytes: usize,
+    live: std::rc::Rc<std::cell::Cell<usize>>,
+    place: std::cell::Cell<Option<(u32, u32)>>,
+    freed: std::rc::Rc<std::cell::RefCell<Vec<(u32, u32)>>>,
+}
+
+impl Drop for BudgetModule {
+    fn drop(&mut self) {
+        self.live.set(self.live.get() - self.bytes);
+        if let Some(p) = self.place.get() {
+            self.freed.borrow_mut().push(p);
+        }
+    }
+}
+
+impl Budgeted {
+    fn new(budget: usize) -> Self {
+        Budgeted {
+            inner: NativeEngine::new(),
+            budget,
+            live: Default::default(),
+            freed: Default::default(),
+            trap: None,
+        }
+    }
+
+    /// The entries of dropped modules: regions that trap.
+    fn clear_freed(&mut self) {
+        let freed: Vec<(u32, u32)> = self.freed.borrow_mut().drain(..).collect();
+        if freed.is_empty() {
+            return;
+        }
+        let trap = match self.trap.take() {
+            Some(t) => t,
+            None => {
+                use vetro_jit::wasm::{Func, Module, ValType, op};
+                let mut m = Module::new();
+                let t = m.ty(&[ValType::I32], &[ValType::I32]);
+                for i in 0..16 {
+                    let mut f = Func::default();
+                    f.op(op::UNREACHABLE);
+                    let idx = m.func(t, f);
+                    m.export_func(&format!("b{i}"), idx);
+                }
+                self.inner.compile(&m.encode()).expect("trap module")
+            }
+        };
+        for (count, base) in freed {
+            self.inner.place(&trap, count, base);
+        }
+        self.trap = Some(trap);
+    }
+}
+
+impl Engine for Budgeted {
+    type Module = BudgetModule;
+    fn runtime(&mut self, wasm: &[u8]) -> Result<(), String> {
+        self.inner.runtime(wasm)
+    }
+    fn compile(&mut self, wasm: &[u8]) -> Result<BudgetModule, String> {
+        self.clear_freed();
+        if self.live.get() + wasm.len() > self.budget {
+            return Err("code budget".into());
+        }
+        let m = self.inner.compile(wasm)?;
+        self.live.set(self.live.get() + wasm.len());
+        Ok(BudgetModule {
+            m,
+            bytes: wasm.len(),
+            live: self.live.clone(),
+            place: Default::default(),
+            freed: self.freed.clone(),
+        })
+    }
+    fn run(&mut self, m: &BudgetModule, index: u32, state: u32, host: &mut dyn Host) -> u32 {
+        self.clear_freed();
+        self.inner.run(&m.m, index, state, host)
+    }
+    fn memory(&mut self) -> &mut [u8] {
+        self.inner.memory()
+    }
+    fn place(&mut self, m: &BudgetModule, count: u32, base: u32) {
+        self.clear_freed();
+        m.place.set(Some((count, base)));
+        self.inner.place(&m.m, count, base);
+    }
+    /// The store stays (the tests' RAM lives in its memory): the new
+    /// modules overwrite the table, and every entry the jump cache could name
+    /// was cleared with it.
+    fn reset(&mut self) {
+        self.freed.borrow_mut().clear();
+    }
+    fn reserve(&mut self, bytes: usize) {
+        self.inner.reserve(bytes);
+    }
+    fn host_address(&mut self, p: *const u8, len: usize) -> Option<u32> {
+        self.inner.host_address(p, len)
+    }
+}
+
+/// Eviction instead of a reset (ADR 0040): with a code budget of a few
+/// modules, the modules not entered since the last eviction go, their table
+/// entries trap, and execution stays identical to the interpreter. Red if
+/// the jump cache keeps entries of evicted regions (tried), or if evicting
+/// does not free the budget (more resets).
+#[test]
+fn eviction_keeps_the_execution() {
+    let (mut evictions, mut resets, mut jit_steps) = (0, 0, 0);
+    for seed in 0..200u64 {
+        let (cpu, ram) = setup(seed);
+        let want = run_interp(cpu.clone(), ram.clone());
+        let (got, s, _) = run_jit_on(Budgeted::new(40_000), cpu, &ram, seed, &[], true);
+        assert_eq!(got, want, "seed {seed}: interpreter and JIT with a small code budget ({s:?})");
+        evictions += s.evictions;
+        resets += s.resets;
+        jit_steps += s.jit_steps;
+    }
+    assert!(
+        evictions > 100 && jit_steps > 10_000,
+        "test too weak: {evictions} evictions ({resets} resets), {jit_steps} steps in the JIT"
+    );
+    // Evicting frees the budget: resets become the exception.
+    assert!(resets * 10 < evictions, "{evictions} evictions but {resets} resets");
 }

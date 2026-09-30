@@ -213,7 +213,8 @@ async function main() {
     log(`== ${name}: ${(p.wallMs / 1000).toFixed(1)} s wall, ${(p.cpuMs / 1000).toFixed(1)} s CPU (disk wait ${(p.diskWaitMs / 1000).toFixed(1)} s), ${p.guestSecs.toFixed(1)} s guest, ` +
       `${(ran / 1e6).toFixed(0)} M executed (${p.mips} MIPS), interp ${((p.perf?.interpSteps ?? 0) / 1e6).toFixed(1)} M, WFI skip ${((p.perf?.wfiSteps ?? 0) / 1e6).toFixed(0)} M` +
       (j ? `, jit ${(j.jitSteps / 1e6).toFixed(0)} M, ${j.blocks} regions, ${mib(j.wasmBytes)} MiB wasm, epochs ${j.epochsRegs}/${j.epochsTlbi}/${j.epochsCode}, ` +
-        `resolves ${j.resolves}, host ld/st ${j.hostLds}/${j.hostSts}, faults ${j.faults}, svcs ${j.svcs}, runs ${j.runs}, calls ${j.calls}` : ''));
+        `resolves ${j.resolves}, host ld/st ${j.hostLds}/${j.hostSts}, faults ${j.faults}, svcs ${j.svcs}, runs ${j.runs}, calls ${j.calls}, ` +
+        `yields ${j.yields}, resets ${j.resets}` + (j.evictions !== undefined ? `, evictions ${j.evictions} (${j.evictedModules} modules), regime switches ${j.regimeSwitches}, memo ${j.memoHits}` : '') : ''));
     mark = now;
     return p;
   };

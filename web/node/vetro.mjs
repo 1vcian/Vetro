@@ -1016,7 +1016,7 @@ export class Machine {
     const x = this.#x;
     const names = ['jitSteps', 'runs', 'resolves', 'calls', 'blocks', 'modules', 'reused', 'invalidatedPages', 'faults',
       'svcs', 'stops', 'epochs', 'tlbFlushes', 'tlbFills', 'resets', 'yields', 'hostLds', 'hostSts', 'epochsRegs', 'epochsTlbi',
-      'epochsCode', 'wasmBytes', 'baseSwitches', 'tlbiPartial', 'jcProbes', 'memoHits', 'regimeSwitches'];
+      'epochsCode', 'wasmBytes', 'baseSwitches', 'tlbiPartial', 'jcProbes', 'memoHits', 'regimeSwitches', 'evictions', 'evictedModules'];
     const p = x.vetro_alloc(8 * names.length) >>> 0;
     const n = x.vetro_jit_stats(this.#vm, p, names.length);
     const v = new BigUint64Array(x.memory.buffer, p, names.length);

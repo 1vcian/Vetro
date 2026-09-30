@@ -31,12 +31,14 @@
 export const TABLE_SIZE = 1 << 18;
 
 /**
- * At most this many bytes of generated modules compiled between two resets.
- * Beyond it, `compile` refuses the module and vetro-jit resets the engine (as
- * for a full table): V8 returns no error when the space for compiled code
- * runs out (4 GiB), it kills the process. With Android the JIT got there after
- * half an hour (ADR 0028); 96 MiB of wasm are a few hundred MiB of machine
- * code.
+ * At most this many bytes of live generated modules. Beyond it, `compile`
+ * refuses the module and vetro-jit evicts the modules it did not enter since
+ * the last eviction (ADR 0040), or resets the engine (as for a full table):
+ * V8 returns no error when the space for compiled code runs out (4 GiB), it
+ * kills the process. With Android the JIT got there after half an hour (ADR
+ * 0028); 96 MiB of wasm are a few hundred MiB of machine code. A dropped
+ * module leaves the table and stops counting: V8 frees its code with the
+ * module.
  */
 export const CODE_BUDGET = 96 << 20;
 
@@ -44,6 +46,8 @@ export class JitEngine {
   #vetro = null; // exports of the vetro-wasm instance
   #table = null;
   #instances = new Map(); // index -> exports of the generated module
+  /** Live modules: index -> { bytes, places: [count, base][] } (ADR 0040). */
+  #live = new Map();
   #rt = {}; // exports of the runtime module (imports `rt.*` of the modules)
   #next = 0;
   /** Bytes compiled since the last reset, and the limit. */
@@ -57,7 +61,7 @@ export class JitEngine {
   #gen = 0;
   #pending = new Map();
   /** Compiled modules, bytes and resets, for the benchmarks. */
-  stats = { modules: 0, bytes: 0, resets: 0, compileMs: 0, refused: 0, background: 0, workerMs: 0, instantiateMs: 0, forced: 0, stale: 0 };
+  stats = { modules: 0, bytes: 0, resets: 0, compileMs: 0, refused: 0, background: 0, workerMs: 0, instantiateMs: 0, forced: 0, stale: 0, dropped: 0 };
 
   constructor({ budget = CODE_BUDGET } = {}) {
     this.#budget = budget;
@@ -175,6 +179,7 @@ export class JitEngine {
     this.stats.modules++;
     this.stats.bytes += bytes.length;
     this.#since += bytes.length;
+    this.#live.set(id, { bytes: bytes.length, places: [] });
     return id;
   }
 
@@ -196,9 +201,21 @@ export class JitEngine {
     return this.#instances.get(id)[`b${index}`](state);
   }
 
+  /**
+   * Module `id` is no longer used (vetro-jit evicted it, ADR 0040): its table
+   * entries are cleared, so that nothing keeps it alive, and its bytes no
+   * longer count against the budget.
+   */
   drop(id) {
     this.#instances.delete(id);
     this.#pending.delete(id);
+    const l = this.#live.get(id);
+    if (!l) return;
+    this.#live.delete(id);
+    this.#since -= l.bytes;
+    this.stats.dropped++;
+    const t = this.#table;
+    if (t) for (const [count, base] of l.places) for (let i = 0; i < count; i++) t.set(base + i, null);
   }
 
   /** Puts `b0..b<count-1>` of module `id` into the table from `base`. */
@@ -208,6 +225,7 @@ export class JitEngine {
       p.places.push([count, base]);
       return;
     }
+    this.#live.get(id)?.places.push([count, base]);
     const x = this.#instances.get(id);
     const t = this.#tbl();
     for (let i = 0; i < count; i++) t.set(base + i, x[`b${i}`]);
@@ -217,6 +235,7 @@ export class JitEngine {
   reset() {
     this.#instances.clear();
     this.#pending.clear();
+    this.#live.clear();
     this.#gen++;
     this.#table = null;
     // The entries handed to Rust keep their modules alive (the dispatcher
