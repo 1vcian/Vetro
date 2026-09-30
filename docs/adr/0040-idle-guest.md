@@ -86,13 +86,13 @@ Also from ADR 0037, now built: `vm.compaction_proactiveness=0`,
 `vm.watermark_boost_factor=0`. `tools/aosp/remote/pack.sh` checks 1–5 on
 every build.
 
-## Results (same method, image 8b519e5)
-See `docs/progress/M5.md` for the table. Before/after at the steady state:
-idle 48% → see M5.md; 10 minutes after the launcher: 0% → 65% (image
-45df035, which lacks only item 5's rotation part); load 21 → 2.5. What is
-left right after the first boot is the first media scan (MediaProvider,
-mediaserver, media.extractor over the preinstalled sounds), which ends by
-itself; the prebuilt snapshot is taken after it (`--settle`).
+## Results (same method)
+Table in `docs/progress/M5.md`. 10 minutes after the launcher: 0% idle, load
+21 (64fcd35) → 88.6% idle, load 0.26 (8b519e5); at ~2550 s: 48% → 84%
+(45df035, before the rotation-support change). What is left right after a
+first boot is the first media scan (MediaProvider, mediaserver,
+media.extractor over the preinstalled sounds), which ends by itself; the
+prebuilt snapshot is taken after it (`--settle`).
 
 ## Rejected
 - Removing TeleService, Dialer and the rest of the telephony apps: they are
