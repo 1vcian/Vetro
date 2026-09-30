@@ -1154,6 +1154,99 @@ fn msr_ttbr0_in_a_region_switches_the_regime() {
     }
 }
 
+/// The jump cache's second way (ADR 0040): two regions whose PCs share an
+/// index (32 KiB apart), both in TTBR0 and different under the two tables,
+/// called from kernel code that switches TTBR0 at every round. Under table A
+/// the second region's entry pushes the first one's into the second way;
+/// under table B the first PC must not match it (other context). Fails if
+/// the dispatcher or the host ignores the context in the second way (tried).
+#[test]
+fn jump_cache_second_way_checks_the_context() {
+    const K: u64 = 0xffff_ff80_0000_0000;
+    const U: u64 = 0x20_0000;
+    const NG: u64 = 1 << 11;
+    let (l1a, l2a, l3a) = (TABLES, TABLES + 0x1000, TABLES + 0x2000);
+    let (l1b, l2b, l3b) = (TABLES + 0x3000, TABLES + 0x4000, TABLES + 0x5000);
+    let (l1k, l2k) = (TABLES + 0x6000, TABLES + 0x7000);
+    // Code pages: (U, U + 0x8000) under A and under B.
+    let (ua, ua8, ub, ub8) = (DATA, DATA + 0x1000, DATA + 0x2000, DATA + 0x3000);
+    let mut ram = vec![0u8; RAM_LEN];
+    let put = |ram: &mut [u8], pa: u64, bytes: &[u8]| {
+        let o = (pa - RAM_BASE) as usize;
+        ram[o..o + bytes.len()].copy_from_slice(bytes);
+    };
+    let words = |ws: &[u32]| ws.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>();
+    // Kernel (TTBR1): call U + 0x8040, switch TTBR0, again.
+    put(
+        &mut ram,
+        START,
+        &words(&[
+            0xd63f0300, // blr x24
+            0xd1000673, // sub x19, x19, #0x1
+            0xb40000d3, // cbz x19, 0x20
+            0x36000073, // tbz w19, #0x0, 0x18
+            0xd5182015, // msr TTBR0_EL1, x21
+            0x17fffffb, // b 0x0
+            0xd5182014, // msr TTBR0_EL1, x20
+            0x17fffff9, // b 0x0
+            0x14000000, // b .
+        ]),
+    );
+    // U + 0x8040: x7 += 1 (A) or 2 (B), then U + 0x40: x8 += 1 or 3, return.
+    put(&mut ram, ua8 + 0x40, &words(&[0x910004e7, 0xd61f0320])); // add x7, x7, #1; br x25
+    put(&mut ram, ub8 + 0x40, &words(&[0x910008e7, 0xd61f0320])); // add x7, x7, #2; br x25
+    put(&mut ram, ua + 0x40, &words(&[0x91000508, 0xd65f03c0])); // add x8, x8, #1; ret
+    put(&mut ram, ub + 0x40, &words(&[0x91000d08, 0xd65f03c0])); // add x8, x8, #3; ret
+    let block = |pa: u64| pa | VALID_BLOCK | AF | SH_INNER | AP_RW_EL1 | ATTR_NORMAL;
+    let page = |pa: u64| pa | VALID_PAGE | AF | SH_INNER | AP_RW_EL1 | ATTR_NORMAL | NG;
+    for (l1, l2, l3, code, code8) in [(l1a, l2a, l3a, ua, ua8), (l1b, l2b, l3b, ub, ub8)] {
+        put(&mut ram, l1, &(l2 | VALID_TABLE).to_le_bytes());
+        put(&mut ram, l2 + 8, &(l3 | VALID_TABLE).to_le_bytes());
+        put(&mut ram, l3, &page(code).to_le_bytes());
+        put(&mut ram, l3 + 8 * 8, &page(code8).to_le_bytes());
+    }
+    put(&mut ram, l1k, &(l2k | VALID_TABLE).to_le_bytes());
+    put(&mut ram, l2k, &block(RAM_BASE).to_le_bytes());
+    put(&mut ram, l2k + 8 * 3, &block(CODE).to_le_bytes());
+
+    let mut cpu = Cpu::new();
+    cpu.reset_system(SysConfig::default());
+    let s = &mut cpu.sys;
+    s.vbar_el1 = K + (VBAR - RAM_BASE);
+    s.mair_el1 = 0x00ff;
+    s.tcr_el1 = 25
+        | 0b01 << 8
+        | 0b01 << 10
+        | 0b11 << 12
+        | 25 << 16
+        | 0b01 << 24
+        | 0b01 << 26
+        | 0b11 << 28
+        | 0b10 << 30
+        | 0b010 << 32;
+    s.ttbr0_el1 = l1a | 1 << 48;
+    s.ttbr1_el1 = l1k;
+    s.sctlr_el1 |= sctlr::M;
+    s.daif = 0;
+    cpu.sys.el = 1;
+    cpu.sys.spsel = true;
+    cpu.pc = K + (START - RAM_BASE);
+    cpu.x[19] = 300;
+    cpu.x[20] = l1a | 1 << 48;
+    cpu.x[21] = l1b | 2 << 48;
+    cpu.x[24] = U + 0x8040;
+    cpu.x[25] = U + 0x40;
+
+    let want = run_interp(cpu.clone(), ram.clone());
+    assert!(want.events.is_empty() && want.cpu.x[19] == 0, "the loop must finish: {}", want.cpu.x[19]);
+    assert_eq!((want.cpu.x[7], want.cpu.x[8]), (150 + 2 * 150, 150 + 3 * 150), "A and B alternate");
+    for seed in 0..24 {
+        let (got, s) = run_jit(cpu.clone(), &ram, seed);
+        assert_eq!(got, want, "seed {seed}: interpreter and JIT differ ({s:?})");
+        assert!(s.jit_steps > 1000 && s.resolves > 100, "seed {seed}: not run in regions: {s:?}");
+    }
+}
+
 /// LDTR/STTR at EL1 through the EL0 software TLB (ADR 0040), as in Linux's
 /// uaccess with software PAN: EL0 code loads and stores a user page (filling
 /// the EL0 tables under table A), then an SVC; the EL1 handler reads and

@@ -584,15 +584,29 @@ impl<M> Cache<M> {
     }
 
     /// Maximum steps of the jump cache entry of `pc`, if it is valid for `ctx`.
-    fn probe_jc(&self, mem: &[u8], pc: u64, ctx: u32) -> Option<u8> {
-        let e = self.at + area::JC as usize + ((pc >> 2) & (area::JC_ENTRIES as u64 - 1)) as usize * 16;
-        let hit = state::read_u64(mem, e, 0) == pc && state::read_u32(mem, e, 8) == ctx;
-        hit.then(|| state::read_u32(mem, e, 12) as u8)
+    /// The two entries (ways) where `pc` can be: `i` and `i ^ 1` (ADR 0040).
+    fn jc_ways(&self, pc: u64) -> (usize, usize) {
+        let i = ((pc >> 2) & (area::JC_ENTRIES as u64 - 1)) as usize;
+        let base = self.at + area::JC as usize;
+        (base + i * 16, base + (i ^ 1) * 16)
     }
 
-    /// Jump cache entry: `pc` → block, valid for `ctx`.
+    fn probe_jc(&self, mem: &[u8], pc: u64, ctx: u32) -> Option<u8> {
+        let (a, b) = self.jc_ways(pc);
+        [a, b].into_iter().find_map(|e| {
+            let hit = state::read_u64(mem, e, 0) == pc && state::read_u32(mem, e, 8) == ctx;
+            hit.then(|| state::read_u32(mem, e, 12) as u8)
+        })
+    }
+
+    /// Jump cache entry: `pc` → block, valid for `ctx`, in the first way; the
+    /// entry it replaces, if for another `pc`, moves to the second (2-way,
+    /// ADR 0040).
     fn install_jc(&self, mem: &mut [u8], pc: u64, ctx: u32, c: &Compiled<M>) {
-        let e = self.at + area::JC as usize + ((pc >> 2) & (area::JC_ENTRIES as u64 - 1)) as usize * 16;
+        let (e, second) = self.jc_ways(pc);
+        if state::read_u64(mem, e, 0) != pc {
+            mem.copy_within(e..e + 16, second);
+        }
         mem[e..e + 8].copy_from_slice(&pc.to_le_bytes());
         mem[e + 8..e + 12].copy_from_slice(&ctx.to_le_bytes());
         let w = (c.bb as u32) << 26 | c.slot << 8 | c.max_steps as u32;

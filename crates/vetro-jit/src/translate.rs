@@ -1165,22 +1165,35 @@ pub fn dispatcher_with(memory: MemoryImport, count: bool) -> Vec<u8> {
     m.import_memory("env", "mem", memory);
     m.import_table("env", "tbl", TABLE_SIZE);
     let resolve = m.import_func("env", "resolve", t);
-    // locals: 0 state, 1 pc (i64), 2 entry (i32), 3 w (i32), 4 code (i32)
-    let (s, pc, e, w, code) = (0, 1, 2, 3, 4);
-    let mut f = Func { locals: vec![(1, I64), (3, I32)], ..Func::default() };
+    // locals: 0 state, 1 pc (i64), 2 entry (i32), 3 w (i32), 4 code (i32),
+    // 5 index (i32)
+    let (s, pc, e, w, code, i) = (0, 1, 2, 3, 4, 5);
+    let mut f = Func { locals: vec![(1, I64), (4, I32)], ..Func::default() };
     f.loop_(BLOCK_EMPTY);
-    // e = s + ((pc >> 2) & (JC_ENTRIES - 1)) * 16
+    // i = (pc >> 2) & (JC_ENTRIES - 1); e = s + i * 16
     f.local_get(s).i64_load(off::PC).local_tee(pc);
     f.i64_const(2).op(op::I64_SHR_U).op(op::I32_WRAP_I64);
-    f.i32_const((area::JC_ENTRIES - 1) as i32).op(op::I32_AND).i32_const(4).op(op::I32_SHL);
+    f.i32_const((area::JC_ENTRIES - 1) as i32).op(op::I32_AND).local_tee(i).i32_const(4).op(op::I32_SHL);
     f.local_get(s).op(op::I32_ADD).local_set(e);
-    // entry of another pc or of another context: request it from the host
-    // (`env.resolve`), which writes it if the block exists; otherwise to the host.
-    f.local_get(e).i64_load(area::JC).local_get(pc).op(op::I64_NE);
-    f.local_get(e).i32_load(area::JC + 8).local_get(s).i32_load(off::CTX).op(op::I32_NE);
-    f.op(op::I32_OR).if_(BLOCK_EMPTY);
+    let miss = |f: &mut Func| {
+        f.local_get(e).i64_load(area::JC).local_get(pc).op(op::I64_NE);
+        f.local_get(e).i32_load(area::JC + 8).local_get(s).i32_load(off::CTX).op(op::I32_NE);
+        f.op(op::I32_OR);
+    };
+    // Entry of another pc or of another context: the second way (entry
+    // i ^ 1, where the host moves the entry it replaces, ADR 0040), then the
+    // host (`env.resolve`), which writes it at i if the block exists;
+    // otherwise to the host.
+    miss(&mut f);
+    f.if_(BLOCK_EMPTY);
+    f.local_get(i).i32_const(1).op(op::I32_XOR).i32_const(4).op(op::I32_SHL);
+    f.local_get(s).op(op::I32_ADD).local_set(e);
+    miss(&mut f);
+    f.if_(BLOCK_EMPTY);
     f.local_get(s).call(resolve).op(op::I32_EQZ);
     f.if_(BLOCK_EMPTY).i32_const(crate::NEXT as i32).op(op::RETURN).end();
+    f.local_get(i).i32_const(4).op(op::I32_SHL).local_get(s).op(op::I32_ADD).local_set(e);
+    f.end();
     f.end();
     // steps + maximum steps of the block > limit: to the host
     f.local_get(e).i32_load(area::JC + 12).local_set(w);
