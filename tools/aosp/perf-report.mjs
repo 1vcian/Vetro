@@ -106,6 +106,21 @@ for (const [id, t] of self) {
 console.log(`total ${(total / 1e6).toFixed(1)} s sampled`);
 console.log('\n== self time per category');
 for (const [k, v] of [...cats].sort((a, b) => b[1] - a[1])) console.log(`${ms(v).padStart(9)} ms ${pct(v).padStart(5)}%  ${k}`);
+// --cat=REGEX: the functions of the matching categories.
+const catRe = arg('cat', null);
+if (catRe) {
+  const rx = new RegExp(catRe);
+  const inCat = new Map();
+  for (const [id, t] of self) {
+    const n = byId.get(id);
+    const { functionName: name, url } = n.callFrame;
+    if (!rx.test(category(name || '(anon)', url || ''))) continue;
+    const k = demangle(name || '(anon)').slice(0, 110);
+    inCat.set(k, (inCat.get(k) ?? 0) + t);
+  }
+  console.log(`\n== functions in categories /${catRe}/`);
+  for (const [k, v] of [...inCat].sort((a, b) => b[1] - a[1]).slice(0, top)) console.log(`${ms(v).padStart(9)} ms ${pct(v).padStart(5)}%  ${k}`);
+}
 console.log(`\n== top ${top} functions (self)`);
 for (const [k, v] of [...funcs].sort((a, b) => b[1] - a[1]).slice(0, top)) console.log(`${ms(v).padStart(9)} ms ${pct(v).padStart(5)}%  ${k}`);
 

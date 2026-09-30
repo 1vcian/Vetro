@@ -300,6 +300,11 @@ async function main() {
     end('focused');
     await waitGuest('app idle', () => false, idleSecs, true);
     end(`app idle ${idleSecs} s`);
+    if (profile) {
+      // Before the dump below (it changes the guest's work).
+      res.profileReport = m.jitProfile(80);
+      writeFileSync(outPath.replace(/\.json$/, '.profile.txt'), res.profileReport);
+    }
     if (samples) {
       // Where the guest's code lives: kernel symbols and every process's
       // executable mappings (zygote's children share their libraries' addresses).
@@ -367,10 +372,7 @@ async function main() {
   res.engine = engine.stats;
   log(`JS engine: ${JSON.stringify(engine.stats)}`);
   res.steps = String(m.steps);
-  if (profile) {
-    res.profileReport = m.jitProfile(60);
-    console.log(res.profileReport);
-  }
+  if (profile) console.log(res.profileReport);
   mkdirSync(dirname(outPath), { recursive: true });
   writeFileSync(outPath, `${JSON.stringify(res, null, 1)}\n`);
   log(`measurements: ${outPath}`);

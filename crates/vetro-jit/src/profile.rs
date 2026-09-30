@@ -111,12 +111,31 @@ pub fn class(insn: &Insn) -> String {
     }
 }
 
+/// A multiplicative hash (the keys are instruction words and parameters):
+/// the profile counts on every interpreter step and `env.simd` call.
+#[derive(Clone, Copy, Debug, Default)]
+struct WordHasher(u64);
+
+impl std::hash::Hasher for WordHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0.rotate_left(8) ^ b as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        }
+    }
+    fn write_u32(&mut self, v: u32) {
+        self.0 = (self.0.rotate_left(32) ^ v as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+}
+
 /// Per-class counters. Instruction words are counted as they come (cheap:
 /// the profile runs on every interpreter step and `env.simd` call) and
 /// grouped into classes only for the report.
 #[derive(Clone, Debug, Default)]
 pub struct Profile {
-    words: HashMap<(u32, Option<SysTarget>), u64>,
+    words: HashMap<(u32, Option<SysTarget>), u64, std::hash::BuildHasherDefault<WordHasher>>,
     total: u64,
 }
 
