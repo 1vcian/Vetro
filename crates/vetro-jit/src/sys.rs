@@ -1547,6 +1547,20 @@ impl<E: Engine> SysJit<E> {
         for e in c.blocks.values_mut() {
             e.variants.retain(|v| v.block.as_ref().is_none_or(|b| !is_dead(&b.module)));
         }
+        // Without resets the cold entries would pile up: those below the
+        // threshold with nothing compiled go (their count starts again), and
+        // the page index is rebuilt from what remains.
+        let threshold = c.hot_threshold;
+        c.blocks.retain(|_, e| !e.variants.is_empty() || e.seen >= threshold);
+        c.pages.clear();
+        for (k, e) in &c.blocks {
+            for v in &e.variants {
+                c.pages.entry(v.pa >> 12).or_default().push(*k);
+            }
+        }
+        for p in &c.pending {
+            c.pages.entry(p.pa >> 12).or_default().push(p.key);
+        }
         c.compiled.retain(|_, es| !is_dead(&es[0].1.module));
         self.compiling.retain(|(m, _)| !is_dead(m));
         c.stats.evictions += 1;
