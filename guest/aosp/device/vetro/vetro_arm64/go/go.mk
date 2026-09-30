@@ -12,7 +12,7 @@ $(call inherit-product, $(SRC_TARGET_DIR)/product/go_defaults_common.mk)
 
 # Removes apps nothing in the boot or in analysis needs (screensavers,
 # demos, the music and calendar apps) and microG's battery-saving exemption
-# (it dozes like any app): `overrides` in go/Android.bp.
+# (it dozes like any app): LOCAL_OVERRIDES_MODULES in Android.mk.
 PRODUCT_PACKAGES += VetroGoRemovals
 
 PRODUCT_PRODUCT_PROPERTIES += \

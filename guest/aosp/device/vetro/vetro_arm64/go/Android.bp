@@ -11,23 +11,3 @@ prebuilt_etc {
     vendor: true,
 }
 
-// The vetro_arm64_go product only: apps it does not install. A file module
-// whose `overrides` drops them from the inherited PRODUCT_PACKAGES (the same
-// mechanism as VetroFrameworkOverlay with QuickSearchBox, ADR 0030).
-prebuilt_etc {
-    name: "VetroGoRemovals",
-    src: "go-removals.txt",
-    product_specific: true,
-    overrides: [
-        "BasicDreams",
-        "PhotoTable",
-        "EasterEgg",
-        "Traceur",
-        "DeviceAsWebcam",
-        "Music",
-        "Calendar",
-        // microG without its battery-saving exemption: it dozes and defers
-        // its jobs like any app (it kept ~27% of the idle CPU, ADR 0037).
-        "sysconfig-vetro-microg.xml",
-    ],
-}
