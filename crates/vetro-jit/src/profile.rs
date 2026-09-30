@@ -111,10 +111,12 @@ pub fn class(insn: &Insn) -> String {
     }
 }
 
-/// Per-class counters.
+/// Per-class counters. Instruction words are counted as they come (cheap:
+/// the profile runs on every interpreter step and `env.simd` call) and
+/// grouped into classes only for the report.
 #[derive(Clone, Debug, Default)]
 pub struct Profile {
-    counts: HashMap<String, u64>,
+    words: HashMap<(u32, Option<SysTarget>), u64>,
     total: u64,
 }
 
@@ -123,13 +125,22 @@ impl Profile {
     /// whether the JIT would know how to translate it (then it is cold code or a
     /// step after an exit, not a missing instruction).
     pub fn note(&mut self, w: u32, sys: Option<SysTarget>) {
-        let insn = vetro_cpu::decode(w);
-        let mut c = class(&insn);
-        if kind_in(&insn, sys) != Kind::Unsupported {
-            c.push_str(" [translated]");
-        }
-        *self.counts.entry(c).or_default() += 1;
+        *self.words.entry((w, sys)).or_default() += 1;
         self.total += 1;
+    }
+
+    /// Counts per class.
+    fn counts(&self) -> HashMap<String, u64> {
+        let mut counts: HashMap<String, u64> = HashMap::new();
+        for (&(w, sys), &k) in &self.words {
+            let insn = vetro_cpu::decode(w);
+            let mut c = class(&insn);
+            if kind_in(&insn, sys) != Kind::Unsupported {
+                c.push_str(" [translated]");
+            }
+            *counts.entry(c).or_default() += k;
+        }
+        counts
     }
 
     /// Instructions counted.
@@ -139,7 +150,7 @@ impl Profile {
 
     /// The `n` most frequent classes, in decreasing order.
     pub fn top(&self, n: usize) -> Vec<(String, u64)> {
-        let mut v: Vec<(String, u64)> = self.counts.iter().map(|(k, &c)| (k.clone(), c)).collect();
+        let mut v: Vec<(String, u64)> = self.counts().into_iter().collect();
         v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         v.truncate(n);
         v

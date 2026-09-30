@@ -17,7 +17,10 @@
 //                    the image is read from R2 only once
 //   --app=ID         catalog app to install (default flowit)
 //   --idle=S         guest seconds of launcher (and app) idle (default 20)
-//   --profile        interpreter instruction classes (VETRO_JIT_PROFILE=1 does the same)
+//   --profile        interpreter instruction classes (VETRO_JIT_PROFILE=1 does the same;
+//                    costly: not for timings)
+//   --names          region functions named r<el>_<pc> for V8 CPU profiles
+//                    (tools/aosp/perf-report.mjs; no other cost)
 //   --no-jit         interpreter only
 //   --bg-compile     JIT modules compiled in a Worker (ADR 0038)
 //   --threshold=N    JIT hot threshold (default 64, the app's)
@@ -172,7 +175,10 @@ async function main() {
     writeFileSync(outPath, `${JSON.stringify(res, null, 1)}\n`);
     return;
   }
-  if (jit) m.setJit(Number(arg('threshold', 64)), 16, { profile: profile && !!exports.vetro_machine_set_jit_with });
+  if (jit) {
+    const withFlags = !!exports.vetro_machine_set_jit_with;
+    m.setJit(Number(arg('threshold', 64)), 16, { profile: profile && withFlags, names: flag('names') && withFlags });
+  }
 
   // Phase accounting.
   let mark = null;

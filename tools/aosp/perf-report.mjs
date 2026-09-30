@@ -4,7 +4,7 @@
 // named r<el>_<pc> in the modules' name section) and --samples (guest
 // /proc/kallsyms and executable mappings, instruction-weighted PC samples).
 //
-//   node tools/aosp/perf-report.mjs PROFILE.cpuprofile [--base=target/aosp/perf] [--top=40]
+//   node tools/aosp/perf-report.mjs PROFILE.cpuprofile [--base=target/aosp/perf] [--top=40] [--from=S] [--until=S]
 //
 // Prints:
 //   - self time per category: region code, runtime (rt.*), host functions
@@ -24,14 +24,20 @@ const arg = (name, def) => {
 };
 const base = arg('base', 'target/aosp/perf');
 const top = Number(arg('top', 40));
+// Window of the profile, in seconds from its start (e.g. one phase).
+const from = Number(arg('from', 0)) * 1e6;
+const until = Number(arg('until', Infinity)) * 1e6;
 const p = JSON.parse(readFileSync(file, 'utf8'));
 const byId = new Map(p.nodes.map((x) => [x.id, x]));
 const parent = new Map();
 for (const n of p.nodes) for (const c of n.children ?? []) parent.set(c, n.id);
 const self = new Map();
 let total = 0;
+let clock = 0;
 for (let i = 0; i < p.samples.length; i++) {
   const d = p.timeDeltas[i] ?? 0;
+  clock += d;
+  if (clock < from || clock > until) continue;
   self.set(p.samples[i], (self.get(p.samples[i]) ?? 0) + d);
   total += d;
 }

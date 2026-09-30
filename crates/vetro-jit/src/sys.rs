@@ -142,6 +142,10 @@ pub struct SysJitConfig {
     /// Counts the interpreter's instructions per class
     /// ([`SysJit::profile_step`], [`Profile`]).
     pub profile: bool,
+    /// Names every region function `r<el>_<pc>` in the modules' `name`
+    /// section, so that a V8 CPU profile attributes time to guest code (ADR
+    /// 0040). Measurement only: the code is the same.
+    pub names: bool,
 }
 
 impl Default for SysJitConfig {
@@ -152,6 +156,7 @@ impl Default for SysJitConfig {
             memory: MemoryImport { min: 1, shared_max: None },
             state_addr: 16,
             profile: false,
+            names: false,
         }
     }
 }
@@ -1275,7 +1280,7 @@ impl<E: Engine> SysJit<E> {
             self.reset();
         }
         let blocks: Vec<Region> = self.cache.pending.iter().map(|p| p.block.clone()).collect();
-        let wasm = translate::module_with(&blocks, self.cfg.memory, self.cfg.profile);
+        let wasm = translate::module_with(&blocks, self.cfg.memory, self.cfg.names);
         self.cache.stats.wasm_bytes += wasm.len() as u64;
         let module = match self.engine.compile(&wasm) {
             Ok(m) => m,
