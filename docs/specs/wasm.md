@@ -85,7 +85,8 @@ practice: take the view after every call that may allocate.
 | `vetro_message_ptr` / `vetro_message_len` | `(vm) -> *const u8` / `usize` | last UTF-8 message: load error or `what` of an unimplemented instruction. Valid until the next call on the machine |
 | `vetro_unimplemented_pc` / `vetro_unimplemented_raw` | `(vm) -> u64` / `u32` | PC and encoding of the last unimplemented instruction |
 | `vetro_machine_set_jit` | `(vm, hot_threshold: u32, batch: u32)` | enables the system-mode JIT (ADR 0013) on the JS engine: entries before a block is translated, blocks per module (0 = 1). The result does not change, only the speed |
-| `vetro_jit_stats` | `(vm, out: *mut u64, cap: usize) -> usize` | JIT counters (`SysJitStats`: `jit_steps`, `runs`, `resolves`, `calls`, `blocks`, `modules`, `reused`, `invalidated_pages`, `faults`, `svcs`, `stops`, `epochs`, `tlb_flushes`, `tlb_fills`, `resets`, `yields`) in `out`; returns how many (0 without JIT) |
+| `vetro_jit_stats` | `(vm, out: *mut u64, cap: usize) -> usize` | JIT counters (`SysJitStats`: `jit_steps`, `runs`, `resolves`, `calls`, `blocks`, `modules`, `reused`, `invalidated_pages`, `faults`, `svcs`, `stops`, `epochs`, `tlb_flushes`, `tlb_fills`, `resets`, `yields`, `host_lds`, `host_sts`, `epochs_regs`, `epochs_tlbi`, `epochs_code`, `wasm_bytes` (ADR 0036), `base_switches`, `tlbi_partial`, `jc_probes`, `memo_hits`, `regime_switches`, `evictions`, `evicted_modules` (ADR 0040)) in `out`, in this order; returns how many (0 without JIT) |
+| `vetro_machine_set_jit_with` | `(vm, hot_threshold: u32, batch: u32, flags: u32)` | like `vetro_machine_set_jit`; `flags` bit 0: per-class counters of the interpreter's instructions (`vetro_jit_profile`, ADR 0026), bit 1: region functions named `r<el>_<pc>` in the modules' `name` section, for V8 CPU profiles (ADR 0040). Measurements only |
 
 `vetro_load_linux` codes: 0 success; 1 the loader rejected the files
 (reason in the message); 2 command line not UTF-8.
@@ -401,7 +402,7 @@ JS provides them at instantiation (`web/node/vetro.mjs`):
 | `vetro_jit.place` | `(module: i32, count: u32, base: u32)` | puts the module's `b0..b<count-1>` in the block table (the dispatcher's `env.tbl`) starting at entry `base` |
 | `vetro_jit.reset` | `()` | discards all instances and recreates the block table |
 | `vetro_jit.ready` | `(module: i32) -> u32` | ABI 14: 1 if the module can run, 0 while a Worker still compiles it (ADR 0038: `JitEngine.startBackground()`; the regions of a module that is not ready run in the interpreter and the module is placed in the block table when it arrives) |
-| `vetro_jit.drop` | `(module: i32)` | frees the module |
+| `vetro_jit.drop` | `(module: i32)` | frees the module (vetro-jit evicted it or reset, ADR 0040): its block table entries are cleared, so nothing keeps it alive, and its bytes no longer count against the code budget |
 
 ## The JIT engine in JavaScript
 
