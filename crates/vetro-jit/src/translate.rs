@@ -571,12 +571,12 @@ pub fn module_with(blocks: &[Region], memory: MemoryImport, names: bool) -> Vec<
     let t_blk = m.ty(&[I32], &[I32]);
     m.import_memory("env", "mem", memory);
     // First the functions (which choose which `rt.fp<k>` to import), then the
-    // imports: the fixed ones (0..F_FP0) and the fast paths used, at the indices
-    // assigned by the regions (ADR 0026: importing them all would cost ~1.5 KB
-    // per module).
+    // imports: the runtime functions used, at the indices assigned by the
+    // regions in order of first use (ADR 0026 for the fast paths, ADR 0040 for
+    // all of them: fewer bytes and less work instantiating each module).
     let mut used = Vec::new();
     let funcs: Vec<Func> = blocks.iter().map(|b| function_with(b, &mut used)).collect();
-    for id in (0..F_FP0).chain(used.iter().copied()) {
+    for id in used.iter().copied() {
         let (name, p, r) = rt_sig(id);
         let t = m.ty(&p, &r);
         m.import_func("rt", &name, t);
@@ -1285,13 +1285,15 @@ fn function_with(r: &Region, used: &mut Vec<u32>) -> Func {
     // For FAULT `pc` and `steps` have already been saved by the slow path (or
     // `exit_fault`).
     let all = t.written;
-    *used = std::mem::take(&mut t.fp_used);
     t.flush();
+    let finish = t.rt_opt(F_FINISH);
+    let vsync = t.simd.then(|| t.rt_opt(F_VSYNC));
+    *used = std::mem::take(&mut t.fp_used);
     let f = &mut t.f;
     // NEXT (the common case) without calls; the others with `rt.finish`.
     f.local_get(L_EXIT_CODE).if_(ValType::I32 as u8);
     f.local_get(L_STATE).local_get(L_EXIT_CODE).local_get(L_EXIT_PC);
-    f.local_get(L_STEPS).local_get(L_EXIT_DONE).op(op::I64_ADD).call(F_FINISH);
+    f.local_get(L_STEPS).local_get(L_EXIT_DONE).op(op::I64_ADD).call(finish);
     f.else_();
     f.local_get(L_STATE).local_get(L_EXIT_PC).i64_store(off::PC);
     f.local_get(L_STATE).local_get(L_STEPS).local_get(L_EXIT_DONE).op(op::I64_ADD).i64_store(off::STEPS);
@@ -1303,9 +1305,9 @@ fn function_with(r: &Region, used: &mut Vec<u32>) -> Func {
     let mut pro = Func::default();
     pro.local_get(L_STATE).i64_load(off::STEPS).local_set(L_STEPS);
     pro.i64_const(t.pc0 as i64).local_set(L_PC0);
-    if t.simd {
+    if let Some(vsync) = vsync {
         // SIMD/FP registers in JitState (once per run).
-        pro.local_get(L_STATE).call(F_VSYNC);
+        pro.local_get(L_STATE).call(vsync);
     }
     if multi {
         pro.local_get(L_STATE).i64_load(off::LIMIT).local_set(L_LIMIT);
@@ -1373,8 +1375,8 @@ struct Tx {
 }
 
 impl Tx {
-    /// Index in the module of the optional runtime function `id` (imported
-    /// after the fixed ones, in order of first use).
+    /// Index in the module of runtime function `id` (imported in order of
+    /// first use).
     fn rt_opt(&mut self, id: u32) -> u32 {
         let k = match self.fp_used.iter().position(|&u| u == id) {
             Some(k) => k,
@@ -1383,7 +1385,13 @@ impl Tx {
                 self.fp_used.len() - 1
             }
         };
-        F_FP0 + k as u32
+        k as u32
+    }
+
+    /// Calls runtime function `id`.
+    fn call_rt(&mut self, id: u32) {
+        let k = self.rt_opt(id);
+        self.f.call(k);
     }
 }
 
@@ -1514,7 +1522,9 @@ impl Tx {
             f.local_get(L_FK).if_(BLOCK_EMPTY);
         }
         f.local_get(L_FK).local_get(L_FA).local_get(L_FB).local_get(L_FR).local_get(L_NZCV);
-        f.call(F_NZCV).local_set(L_NZCV).i32_const(0).local_set(L_FK);
+        self.call_rt(F_NZCV);
+        let f = &mut self.f;
+        f.local_set(L_NZCV).i32_const(0).local_set(L_FK);
         if !known {
             f.end();
         }
@@ -1601,7 +1611,7 @@ impl Tx {
     fn exit_fault(&mut self) {
         self.f.local_get(L_STATE);
         self.slow_args();
-        self.f.call(F_SAVE);
+        self.call_rt(F_SAVE);
         self.exit_fault_saved();
     }
 
@@ -1968,7 +1978,8 @@ impl Tx {
             self.f.else_();
             self.f.local_get(L_STATE).local_get(addr);
             self.slow_args();
-            self.f.call(f_tlb(F_LD_TLB, sys.el, bytes)).if_(BLOCK_EMPTY);
+            self.call_rt(f_tlb(F_LD_TLB, sys.el, bytes));
+            self.f.if_(BLOCK_EMPTY);
             self.exit_fault_saved();
             self.f.end();
             self.f.end();
@@ -1978,12 +1989,12 @@ impl Tx {
         match self.sys {
             Some(sys) => {
                 self.slow_args();
-                self.f.call(f_tlb(F_LD_TLB, sys.el, bytes));
+                self.call_rt(f_tlb(F_LD_TLB, sys.el, bytes));
             }
             None => {
                 self.f.i32_const(bytes as i32);
                 self.slow_args();
-                self.f.call(F_LD_SLOW);
+                self.call_rt(F_LD_SLOW);
             }
         }
         self.f.if_(BLOCK_EMPTY);
@@ -2013,7 +2024,7 @@ impl Tx {
             self.f.else_();
             self.f.local_get(L_STATE).local_get(addr).local_get(val);
             self.slow_args();
-            self.f.call(f_tlb(F_ST_TLB, sys.el, bytes));
+            self.call_rt(f_tlb(F_ST_TLB, sys.el, bytes));
             self.st_result(stop);
             self.f.end();
             return;
@@ -2023,12 +2034,12 @@ impl Tx {
             Some(sys) if bytes != ZVA_BYTES => {
                 self.f.local_get(val);
                 self.slow_args();
-                self.f.call(f_tlb(F_ST_TLB, sys.el, bytes));
+                self.call_rt(f_tlb(F_ST_TLB, sys.el, bytes));
             }
             _ => {
                 self.f.i32_const(bytes as i32).local_get(val);
                 self.slow_args();
-                self.f.call(F_ST_SLOW);
+                self.call_rt(F_ST_SLOW);
             }
         }
         self.st_result(stop);
@@ -2068,12 +2079,12 @@ impl Tx {
         match self.sys {
             Some(sys) => {
                 self.slow_args();
-                self.f.call(f_pair(F_LDP_TLB, sys.el, bytes));
+                self.call_rt(f_pair(F_LDP_TLB, sys.el, bytes));
             }
             None => {
                 self.f.i32_const(bytes as i32);
                 self.slow_args();
-                self.f.call(F_LDP_SLOW);
+                self.call_rt(F_LDP_SLOW);
             }
         }
         self.f.if_(BLOCK_EMPTY);
@@ -2088,12 +2099,12 @@ impl Tx {
             Some(sys) => {
                 self.f.local_get(v1).local_get(v2);
                 self.slow_args();
-                self.f.call(f_pair(F_STP_TLB, sys.el, bytes));
+                self.call_rt(f_pair(F_STP_TLB, sys.el, bytes));
             }
             None => {
                 self.f.i32_const(bytes as i32).local_get(v1).local_get(v2);
                 self.slow_args();
-                self.f.call(F_STP_SLOW);
+                self.call_rt(F_STP_SLOW);
             }
         }
         self.st_result(stop);
@@ -2206,7 +2217,7 @@ impl Tx {
     fn ld_q(&mut self, addr: u32) {
         self.f.local_get(L_STATE).local_get(addr);
         self.slow_args();
-        self.f.call(match self.sys {
+        self.call_rt(match self.sys {
             Some(s) => F_LDQ_TLB + s.el as u32,
             None => F_LDQ_SLOW,
         });
@@ -2219,7 +2230,7 @@ impl Tx {
     fn st_q(&mut self, addr: u32, lo: u32, hi: u32, stop: Option<u32>) {
         self.f.local_get(L_STATE).local_get(addr).local_get(lo).local_get(hi);
         self.slow_args();
-        self.f.call(match self.sys {
+        self.call_rt(match self.sys {
             Some(s) => F_STQ_TLB + s.el as u32,
             None => F_STQ_SLOW,
         });
@@ -2519,7 +2530,7 @@ impl Tx {
         } else {
             self.f.i32_const(0);
         }
-        self.f.call(F_SIMD);
+        self.call_rt(F_SIMD);
         match io.out {
             crate::helper::Out::None => {
                 self.f.op(op::DROP);

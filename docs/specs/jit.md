@@ -17,10 +17,9 @@ uses that region instead of translating another one.
 
 ## Generated modules
 A module contains one or more regions. It imports `env.mem` (the linear memory
-with `JitState`) and the **runtime** functions `rt.<name>` (table below):
-all the fixed ones, in the same order (indices 0..43), then only the
-optional ones its regions use (`rt.fp<k>`, `rt.cr<k>`, `rt.ldt_<n>`,
-`rt.stt_<n>`), in order of first use.
+with `JitState`) and the **runtime** functions `rt.<name>` (table below)
+that its regions use, in order of first use (ADR 0040; before, all the fixed
+ones 0..43 came first).
 It exports `b<N>: (state: i32) -> i32` for each region `N`; with
 `SysJitConfig::names` (measurements) the `name` section also names region
 `N` `r<el>_<pc>` (hex), so a V8 CPU profile shows the guest code. The result:
