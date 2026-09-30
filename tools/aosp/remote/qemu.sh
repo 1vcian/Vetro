@@ -14,6 +14,10 @@
 # adb on 127.0.0.1:$VETRO_ADB_PORT (default 5565), QEMU monitor (screendump)
 # on 127.0.0.1:$VETRO_QEMU_MONITOR (default 4454), both on the VM only.
 # The disk is copy-on-write (snapshot=on): every boot is a first boot.
+# VETRO_QEMU_MEM (default 3G) and VETRO_QEMU_SCREEN (WxH, default the
+# device's 1280x800) give the machine of another device profile, e.g. the
+# app's `light` one: VETRO_QEMU_MEM=2G VETRO_QEMU_SCREEN=960x600 plus
+# androidboot.lcd_density=180 in VETRO_AOSP_APPEND (ADR 0039).
 set -euo pipefail
 work="$HOME/${VETRO_AOSP_WORK:-vetro-aosp}"
 tree="$HOME/${VETRO_AOSP_TREE:-aosp}"
@@ -22,6 +26,9 @@ d="$work/qemu/$name"
 images="${VETRO_AOSP_IMAGES:-$work/out}"
 adb_port="${VETRO_ADB_PORT:-5565}"
 mon_port="${VETRO_QEMU_MONITOR:-4454}"
+mem="${VETRO_QEMU_MEM:-3G}"
+gpu=virtio-gpu-device
+if [ -n "${VETRO_QEMU_SCREEN:-}" ]; then gpu="$gpu,xres=${VETRO_QEMU_SCREEN%x*},yres=${VETRO_QEMU_SCREEN#*x}"; fi
 qemu=qemu-system-aarch64
 [ -x "$HOME/qemu/bin/qemu-system-aarch64" ] && qemu="$HOME/qemu/bin/qemu-system-aarch64"
 mkdir -p "$d"
@@ -39,11 +46,11 @@ case "${1:-status}" in
     fi
     rm -f "$d/serial.log"
     # shellcheck disable=SC2086
-    nohup setsid "$qemu" -M virt,gic-version=3,its=off -cpu cortex-a53 -smp 1 -m 3G \
+    nohup setsid "$qemu" -M virt,gic-version=3,its=off -cpu cortex-a53 -smp 1 -m "$mem" \
       -display none -no-reboot -global virtio-mmio.force-legacy=false -nic none \
       -serial "file:$d/serial.log" -monitor "tcp:127.0.0.1:$mon_port,server,nowait" \
       -kernel "$d/boot/Image" -initrd "$d/boot/initrd" -append "$(cat "$d/boot/cmdline")" \
-      -device virtio-gpu-device -device virtio-keyboard-device -device virtio-tablet-device \
+      -device "$gpu" -device virtio-keyboard-device -device virtio-tablet-device \
       -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$adb_port-:5555" -device virtio-net-device,netdev=net0 \
       -drive "file=$d/disk.img,if=none,id=disk,format=raw,snapshot=on" -device virtio-blk-device,drive=disk \
       ${VETRO_QEMU_EXTRA:-} </dev/null >"$d/qemu.out" 2>&1 &

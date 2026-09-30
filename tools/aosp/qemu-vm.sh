@@ -13,17 +13,22 @@
 #   tools/aosp/qemu-vm.sh adb ARGS...     the VM's adb (AOSP host build) on the guest
 #   tools/aosp/qemu-vm.sh screendump F.png  the scanout as QEMU shows it (monitor)
 #   tools/aosp/qemu-vm.sh screencap F.png   SurfaceFlinger's picture (adb screencap)
+#   tools/aosp/qemu-vm.sh idle            detached on the VM: waits for the settled
+#                                         home screen, then measures how idle the
+#                                         guest is (remote/idle.sh; VETRO_IDLE_*)
+#   tools/aosp/qemu-vm.sh idle-report     its state, log and report
 # VETRO_QEMU_NAME (default aosp), VETRO_ADB_PORT (5565), VETRO_QEMU_MONITOR
 # (4454), VETRO_VM_IMAGES (images on the VM, default ~/$WORK/out; the local
 # VETRO_AOSP_IMAGES must be the same image, for the bootloader's files), VETRO_AOSP_APPEND (more kernel/bootconfig parameters, e.g.
-# androidboot.* for Vetro's bootloader), VETRO_QEMU_EXTRA: see remote/qemu.sh.
+# androidboot.* for Vetro's bootloader), VETRO_QEMU_EXTRA, VETRO_QEMU_MEM,
+# VETRO_QEMU_SCREEN: see remote/qemu.sh.
 set -eu
 . "$(cd "$(dirname "$0")" && pwd)/common.sh"
 name="${VETRO_QEMU_NAME:-aosp}"
 port="${VETRO_ADB_PORT:-5565}"
 mon="${VETRO_QEMU_MONITOR:-4454}"
 rd="$VETRO_AOSP_WORK/qemu/$name"
-env="VETRO_AOSP_WORK=$VETRO_AOSP_WORK VETRO_AOSP_TREE=$VETRO_AOSP_TREE VETRO_QEMU_NAME=$name VETRO_ADB_PORT=$port VETRO_QEMU_MONITOR=$mon"
+env="VETRO_AOSP_WORK=$VETRO_AOSP_WORK VETRO_AOSP_TREE=$VETRO_AOSP_TREE VETRO_QEMU_NAME=$name VETRO_ADB_PORT=$port VETRO_QEMU_MONITOR=$mon VETRO_QEMU_MEM=${VETRO_QEMU_MEM:-3G} VETRO_QEMU_SCREEN=${VETRO_QEMU_SCREEN:-}"
 # Another image already on the VM (a directory with super.img and
 # userdata.img, relative to the home), e.g. a previous version from R2.
 [ -n "${VETRO_VM_IMAGES:-}" ] && env="$env VETRO_AOSP_IMAGES=\$HOME/$VETRO_VM_IMAGES"
@@ -60,5 +65,11 @@ case "${1:-status}" in
     [ -n "${2:-}" ] || { echo "usage: $0 screencap F.png" >&2; exit 2; }
     vm "$adb_vm connect 127.0.0.1:$port >/dev/null 2>&1; $adb_vm -s 127.0.0.1:$port exec-out screencap -p" > "$2"
     echo "$2" ;;
-  *) echo "usage: $0 start|status|stop|log [N]|adb ARGS|screendump F.png|screencap F.png" >&2; exit 2 ;;
+  idle)
+    vm_rsync -a --delete "$here/remote/" "$VETRO_AOSP_HOST:$VETRO_AOSP_WORK/remote/"
+    vm "$env VETRO_IDLE_SECS=${VETRO_IDLE_SECS:-120} VETRO_IDLE_SETTLE=${VETRO_IDLE_SETTLE:-600} VETRO_IDLE_MAX_SETTLE=${VETRO_IDLE_MAX_SETTLE:-2400} nohup setsid bash $VETRO_AOSP_WORK/remote/idle.sh </dev/null >/dev/null 2>&1 &"
+    echo "idle measurement launched for $name" ;;
+  idle-report)
+    vm "cat $rd/idle/status; tail -n 5 $rd/idle/log; cat $rd/idle/report.txt 2>/dev/null" ;;
+  *) echo "usage: $0 start|status|stop|log [N]|adb ARGS|screendump F.png|screencap F.png|idle|idle-report" >&2; exit 2 ;;
 esac
