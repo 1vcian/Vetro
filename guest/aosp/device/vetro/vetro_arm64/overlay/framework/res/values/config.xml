@@ -5,4 +5,11 @@
          motionless) accelerometer at 5 Hz forever, SensorService and
          system_server work on one slow emulated CPU. -->
     <bool name="config_flipToScreenOffEnabled">false</bool>
+    <!-- No sensor-based rotation: the display is the host's window. With
+         rotation merely locked (def_accelerometer_rotation) DisplayRotation
+         still kept WindowOrientationListener at 15 Hz for the rotation
+         suggestion button (needSensorRunning); without auto-rotation support
+         it never starts it. Apps that request a fixed orientation still get
+         it. -->
+    <bool name="config_supportAutoRotation">false</bool>
 </resources>
