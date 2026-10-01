@@ -62,6 +62,17 @@ done
 [ -f "$p/vendor/etc/permissions/vetro_missing_hardware.xml" ] || fail "vetro_missing_hardware.xml missing"
 [ -f "$p/vendor/etc/bluetooth_audio_policy_configuration_7_0.xml" ] || fail "the Bluetooth audio policy the audio HAL includes is missing"
 grep -q 'setprop debug.sf.vsync_reactor_ignore_present_fences false' "$p/vendor/etc/init/init.vetro.rc" || fail "init.vetro.rc does not turn present fences back on"
+# Slim image (ADR 0041): a sample of each removal group (telephony, printing,
+# backup, demo apps, Cuttlefish's host service, product apps, vendor HALs)
+# and the unavailable features.
+for f in system/priv-app/TeleService system/app/PrintSpooler system/priv-app/LocalTransport system/app/Traceur \
+    system_ext/priv-app/CarrierConfig product/priv-app/Dialer product/app/messaging product/app/Camera2 \
+    vendor/priv-app/CuttlefishService vendor/apex/com.google.emulated.camera.provider.hal.apex \
+    vendor/apex/com.android.hardware.neuralnetworks.apex vendor/bin/hw/android.hardware.biometrics.face-service.default; do
+  [ ! -e "$p/$f" ] || fail "/$f is still installed"
+done
+[ -f "$p/vendor/etc/permissions/vetro_slim.xml" ] || fail "vetro_slim.xml missing"
+grep -qx 'ro.system_settings.service.odp_enabled=false' "$p/system/build.prop" || fail "on-device personalization is not off"
 rm -rf "$o"
 mkdir -p "$o/props"
 for f in boot.img vendor_boot.img init_boot.img super.img userdata.img; do

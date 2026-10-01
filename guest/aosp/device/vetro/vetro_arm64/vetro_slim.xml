@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Slim image (ADR 0041, Android.mk VetroSlim): features whose apps and HALs
+  are not installed. SystemServer starts no service for them
+  (PrintManagerService, BackupManagerService, MidiService, WifiP2pService,
+  face and fingerprint services, ConsumerIrService), as on the watches and TVs
+  that lack them too; apps see the feature missing and a null manager.
+-->
+<permissions>
+    <unavailable-feature name="android.software.print" />
+    <unavailable-feature name="android.software.backup" />
+    <unavailable-feature name="android.software.midi" />
+    <unavailable-feature name="android.software.live_wallpaper" />
+    <unavailable-feature name="android.software.managed_users" />
+    <unavailable-feature name="android.software.sip" />
+    <unavailable-feature name="android.software.sip.voip" />
+    <unavailable-feature name="android.hardware.wifi.direct" />
+    <unavailable-feature name="android.hardware.consumerir" />
+    <unavailable-feature name="android.hardware.biometrics.face" />
+    <unavailable-feature name="android.hardware.fingerprint" />
+    <unavailable-feature name="android.hardware.se.omapi.ese" />
+    <unavailable-feature name="android.hardware.se.omapi.uicc" />
+    <unavailable-feature name="android.hardware.se.omapi.sd" />
+</permissions>

@@ -20,6 +20,13 @@ PRODUCT_PACKAGES += \
 # the features unavailable, so the framework starts no service for them.
 PRODUCT_PACKAGES += VetroMissingHardware
 
+# Slim image (ADR 0041): apps, HALs and framework services an emulator in a
+# browser tab does not need (VetroSlim in Android.mk, vetro_slim.xml), and the
+# on-device personalization system service off (its standard switch).
+PRODUCT_PACKAGES += VetroSlim
+PRODUCT_SYSTEM_PROPERTIES += \
+    ro.system_settings.service.odp_enabled=false
+
 # Cuttlefish's audio policy (shared/config/audio/policy/
 # audio_policy_configuration.xml) always includes the Bluetooth audio policy,
 # but with BOARD_HAVE_BLUETOOTH := false shared/bluetooth/device_vendor.mk no

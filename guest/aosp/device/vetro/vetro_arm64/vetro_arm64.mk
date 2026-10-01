@@ -17,12 +17,28 @@ PRODUCT_ENFORCE_ARTIFACT_PATH_REQUIREMENTS := relaxed
 # system_ext
 #
 $(call inherit-product, $(SRC_TARGET_DIR)/product/handheld_system_ext.mk)
-$(call inherit-product, $(SRC_TARGET_DIR)/product/telephony_system_ext.mk)
+# No telephony_system_ext.mk (CarrierConfig, EmergencyInfo): no modem (ADR
+# 0040) and no telephony apps (ADR 0041).
 
 #
 # product
 #
-$(call inherit-product, $(SRC_TARGET_DIR)/product/aosp_product.mk)
+# aosp_product.mk without telephony_product.mk (Dialer,
+# ImsServiceEntitlement), messaging and PhotoTable, and with AOSP's current
+# sound set instead of every sound ever shipped (AllAudio.mk: 220 files the
+# first media scan reads, against 57): ADR 0041.
+$(call inherit-product, $(SRC_TARGET_DIR)/product/handheld_product.mk)
+$(call inherit-product, frameworks/base/data/sounds/AudioPackage14.mk)
+PRODUCT_PACKAGES += \
+    initial-package-stopped-states-aosp.xml \
+    preinstalled-packages-platform-aosp-product.xml \
+    ThemePicker
+# Default sounds from AudioPackage14 (handheld_system.mk's defaults are
+# optional vendor properties naming files of AllAudio.mk).
+PRODUCT_VENDOR_PROPERTIES += \
+    ro.config.ringtone=Atria.ogg \
+    ro.config.notification_sound=Tethys.ogg \
+    ro.config.alarm_alert=Argon.ogg
 
 #
 # vendor: the Cuttlefish phone's (virtual HALs, SwiftShader, minigbm, ranchu
@@ -50,7 +66,10 @@ BOARD_HAVE_BLUETOOTH := false
 # its auto products): no rild and none of the telephony features its APEX
 # declares, so PhoneGlobals does not create phones (no FEATURE_TELEPHONY).
 TARGET_NO_TELEPHONY := true
-$(call inherit-product, device/google/cuttlefish/shared/phone/device_vendor.mk)
+# Cuttlefish's phone vendor without the HALs for hardware the virt machine
+# lacks (camera, face, fingerprint, IR, identity, reboot escrow, secure
+# element): vetro_vendor.mk, ADR 0041.
+$(call inherit-product, device/vetro/vetro_arm64/vetro_vendor.mk)
 $(call inherit-product, device/google/cuttlefish/vsoc_arm64/bootloader.mk)
 
 # Our parts: fstab, init, microG, overlays.

@@ -52,3 +52,87 @@ LOCAL_OVERRIDES_MODULES := \
     Calendar \
     sysconfig-vetro-microg.xml
 include $(BUILD_PREBUILT)
+
+# Slim image (ADR 0041): what an emulator in a browser tab does not need,
+# removed from the inherited system, system_ext, product and vendor lists, and
+# the features of the framework services that would serve it declared
+# unavailable (vetro_slim.xml: SystemServer then starts no PrintManagerService,
+# BackupManagerService, MidiService or WifiP2pService). Kept: what an ordinary
+# app needs (package and activity managers, input, graphics, network, storage,
+# WebView, notifications, keyboard, the contacts, calendar, telephony and
+# download providers, documents, the permission controller) and every
+# mainline APEX (their jars are on the boot and system server classpaths the
+# preopted code is compiled against).
+include $(CLEAR_VARS)
+LOCAL_MODULE := VetroSlim
+LOCAL_LICENSE_KINDS := legacy_notice
+LOCAL_LICENSE_CONDITIONS := notice
+LOCAL_NOTICE_FILE := $(LOCAL_PATH)/LICENSE
+LOCAL_MODULE_CLASS := ETC
+LOCAL_MODULE_STEM := vetro_slim.xml
+LOCAL_SRC_FILES := vetro_slim.xml
+LOCAL_VENDOR_MODULE := true
+LOCAL_MODULE_RELATIVE_PATH := permissions
+# Telephony apps (no modem, TARGET_NO_TELEPHONY: com.android.phone was
+# persistent and idle), printing, backup, MIDI, secure element and NFC tag,
+# MTP, cameras, dreams and live wallpapers, demo, trace and diagnostic apps,
+# work-profile provisioning, the accessibility menu, the old browser's
+# bookmarks, music and calendar apps; Cuttlefish's host-service app and test
+# servers; vendor HAL APEXes for hardware the virt machine lacks or for
+# alternatives the bootconfig does not select.
+LOCAL_OVERRIDES_MODULES := \
+    TeleService \
+    ONS \
+    CarrierDefaultApp \
+    CallLogBackup \
+    com.android.cellbroadcast \
+    CellBroadcastLegacyApp \
+    MmsService \
+    SimAppDialog \
+    Stk \
+    QualifiedNetworksService \
+    CFSatelliteService \
+    GbaService \
+    PrintSpooler \
+    BuiltInPrintService \
+    PrintRecommendationService \
+    LocalTransport \
+    SharedStorageBackup \
+    BackupRestoreConfirmation \
+    WallpaperBackup \
+    BluetoothMidiService \
+    SecureElement \
+    Tag \
+    MtpService \
+    CameraExtensionsProxy \
+    DeviceAsWebcam \
+    Camera2 \
+    BasicDreams \
+    PhotoTable \
+    LiveWallpapersPicker \
+    EasterEgg \
+    Traceur \
+    DeviceDiagnostics \
+    DynamicSystemInstallationService \
+    ManagedProvisioning \
+    AccessibilityMenu \
+    BookmarkProvider \
+    PartnerBookmarksProvider \
+    Music \
+    Calendar \
+    CuttlefishService \
+    aidl_lazy_test_server \
+    aidl_lazy_cb_test_server \
+    com.android.hardware.authsecret \
+    com.android.hardware.cas \
+    com.android.hardware.contexthub \
+    com.android.hardware.neuralnetworks \
+    com.android.hardware.net.nlinterceptor \
+    com.android.hardware.tetheroffload \
+    com.android.hardware.security.secretkeeper \
+    com.android.hardware.gatekeeper.cf_remote \
+    com.android.hardware.keymint.rust_cf_remote \
+    com.android.hardware.keymint.rust_cf_guest_trusty_nonsecure \
+    com.android.hardware.graphics.composer.drm_hwcomposer \
+    com.google.cf.confirmationui
+include $(BUILD_PREBUILT)
