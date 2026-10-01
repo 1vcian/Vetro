@@ -86,13 +86,18 @@ content: sections HEAD, EVTS, KEYF, END  (in this order)
 
 | Section | Fields |
 |---|---|
-| `HEAD` | u32 snapshot version of the keyframes; u64 RAM, u64 time, u64 seed; bool JIT; u64 keyframe interval; starting fingerprint |
+| `HEAD` | u32 snapshot version of the keyframes; u64 RAM, u64 time, u64 seed; bool JIT; u64 keyframe interval; starting fingerprint; with more than one core u32 cores (ADR 0042: absent = 1, so single-core logs keep their bytes) |
 | `EVTS` | seq of events: u64 instruction, u64 CPU hash, u64 console bytes; u8 0 = input (encoding below), 1 = opaque (opt u32 slot) |
 | `KEYF` | seq of keyframes: u64 instruction, u64 console bytes and u64 console hash, bytes snapshot (`Machine::save`) |
 | `END ` | final fingerprint |
 
 Fingerprint: 7 × u64 (instructions, CPU, MMU, platform, RAM, console
-bytes, console hash). Hash: `hash64` of `Cpu::save`, `Mmu::save`,
+bytes, console hash). With several cores the CPU hash covers every core and
+the round robin (the `SMP ` section of the snapshot), and the instruction
+count is the clock (every core's instructions). Recording and replay need the
+cores in turns: a machine whose cores run in parallel refuses to record
+(`Machine::start_parallel` refuses during a recording or replay, and the app
+stops the parallel cores first). Hash: `hash64` of `Cpu::save`, `Mmu::save`,
 `Virt::save`, of the RAM bytes; console 64-bit FNV-1a.
 
 Inputs: u8 type, then 0 `Console` bytes; 1 `Keyboard`, 2 `Pointer` seq of

@@ -14,6 +14,24 @@ cargo build --release --target wasm32-unknown-unknown -p vetro-wasm
 # -> target/wasm32-unknown-unknown/release/vetro_wasm.wasm
 ```
 
+The threads build (ADR 0042), for cores running in parallel in Workers:
+
+```sh
+tools/wasm-threads.sh
+# -> target/wasm32-unknown-unknown/release/vetro_wasm_threads.wasm
+```
+
+Same sources and API, built with `+atomics,+bulk-memory,+mutable-globals`
+and `-Z build-std` (the pinned nightly, ADR 0002), the memory imported
+(`env.memory`) as a shared `WebAssembly.Memory` (initial 32 MiB, maximum
+4 GiB) that the JS loader creates when it sees the import, and
+`__stack_pointer`, `__wasm_init_tls`, `__tls_size`, `__tls_align`,
+`__tls_base` exported for the core Workers. `vetro_threads() -> u32` is 1 in
+it, 0 in the ordinary build; the JIT's modules then import a shared memory
+(`MemoryImport::shared_max` = 65536 pages). It needs cross-origin isolation
+(COOP/COEP); the single-thread cost is within noise (guest kernel boot in V8:
+1754 against 1746 ms, five interleaved runs each).
+
 WASM types: `usize` and pointers are `i32` (in JS `number`), `u64` is `i64`
 (in JS `BigInt`), `u32` is `i32` (in JS `number`; for values above 2³¹ use
 `>>> 0`). Pointers too must be read with `>>> 0`: with more than 2 GiB of
@@ -374,6 +392,33 @@ In JS: `Machine.capture`, `captureStats`, `inspectRequests`,
 `replayStart`, `registersText`, `readVirt`, `translate`, `readPhys`;
 constants `TIMELINE_INPUT`, `TIMELINE_EFFECT`, `RR_STATE`, `REPLAY_START`;
 `Recording` (`web/node/recording.mjs`) for keyframes in an archive.
+
+### Several cores (ADR 0042)
+
+| Export | Signature | Meaning |
+|---|---|---|
+| `vetro_machine_new_smp` | `(ram, now, seed, devices, width, height, cpus: u32) -> *mut Vm` | like `vetro_machine_new_with` with `cpus` cores (1..=16, 0 = 1; null beyond): in turns on this thread, deterministic |
+| `vetro_parallel_start` | `(vm) -> u32` | threads build: cores 1..n leave the turns and are handed to Workers; their number, 0 if refused (one core, recording or replay, not the threads build; `vetro_message` says why) |
+| `vetro_parallel_core` | `(vm, i: u32) -> *mut Core` | core `i` (1..n) for its Worker |
+| `vetro_parallel_request_stop` | `(vm)` | asks the cores to stop: their `vetro_core_run` returns soon |
+| `vetro_parallel_stop` | `(vm)` | once every Worker has finished: the cores back in turns (deterministic, savable) |
+| `vetro_parallel_active` | `(vm) -> u32` | 1 while the cores run in parallel |
+| `vetro_core_set_jit` | `(core, hot_threshold: u32, batch: u32)` | on the core's Worker: its JIT on that Worker's JS engine (0 = interpreter) |
+| `vetro_core_run` | `(core, budget: u64) -> u32` | up to `budget` instructions of the core: a `vetro_run` code |
+| `vetro_core_stopped` | `(core) -> u32` | 1 once the cores must stop (asked, or the machine powered off or reset) |
+| `vetro_core_drop_jit` | `(core)` | drops the core's JIT on its Worker before the Worker ends |
+| `vetro_core_executed` | `(core) -> u64` | instructions the core executed in parallel |
+| `vetro_load_raw` | `(vm, pa: u64, src, len, pc: u64) -> u32` | bare-metal programs (tests): bytes into RAM, the running core at `pc` if not 0 |
+
+With the cores in parallel `vetro_run` runs core 0 for a stretch of the
+clock (`budget` steps of the shared clock, every core's instructions counted);
+everything else (inputs, devices, the network) works as before, under the
+board's lock. In JS: `Machine.startParallel({ jit, budget, workerUrl })` starts
+`web/node/core-worker.mjs` per core (a module Worker, or a `worker_threads`
+Worker in Node: it instantiates the module again on the same memory, sets its
+stack (2 MiB from `vetro_alloc`) and thread-local storage, creates its own
+`JitEngine` and loops on `vetro_core_run`); `Machine.stopParallel()` asks them
+to stop, waits for their reports and calls `vetro_parallel_stop`.
 
 ### JIT bridge
 

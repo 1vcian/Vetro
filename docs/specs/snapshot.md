@@ -89,16 +89,19 @@ gives the same bytes.
   The JIT, if any, stays.
 - `Machine::restore(&MachineConfig, &Devices, &[u8]) -> Result<Machine, Error>`:
   `with_devices` + `load_state`.
-- `Machine::config_hash()`.
+- `Machine::config_hash()`. With one core the configuration bytes (hence
+  the hash, and the prebuilt snapshots' keys) are those of the single-core
+  machine; with more they add `"cpus"` and the number (ADR 0042).
 
 Content sections, in order:
 
 | Tag | Fields |
 |---|---|
 | `MACH` | u64 instructions; opt u64 timer deadline; opt u64 network deadline; bool WFI pending; u64 CNTPCT; bool lines to update; bool virtio to serve; bool disk waiting |
-| `CPU ` | `Cpu`: 31 × u64 X, u64 SP, u64 PC, u32 NZCV, u64 TPIDR_EL0, u64 TPIDRRO_EL0, opt monitor (u64 address, u32 bytes, u128 value), 32 × u128 V, u32 FPCR, u32 FPSR, then `SysState`: u8 mode, `SysConfig` (u8 PSCI, u64 MPIDR, bool GICv3, u64 CBAR), u8 EL (0/1), bool SPSel, u32 DAIF, bool IL, 2 × u64 SP_ELx, 17 × u64 EL1 registers (ELR, SPSR, VBAR, ESR, FAR, SCTLR, TCR, TTBR0, TTBR1, MAIR, CONTEXTIDR, CPACR, TPIDR, PAR, CNTKCTL, CSSELR, MDSCR), bool OSLK, u64 OSDLR, 20 × u64 DBGB/WVR/CR, u8 CLAIM, u64 PMUSERENR, opt u32 SError |
+| `CPU ` | `Cpu` (of the running core with several cores): 31 × u64 X, u64 SP, u64 PC, u32 NZCV, u64 TPIDR_EL0, u64 TPIDRRO_EL0, opt monitor (u64 address, u32 bytes, u128 value), 32 × u128 V, u32 FPCR, u32 FPSR, then `SysState`: u8 mode, `SysConfig` (u8 PSCI, u64 MPIDR, bool GICv3, u64 CBAR), u8 EL (0/1), bool SPSel, u32 DAIF, bool IL, 2 × u64 SP_ELx, 17 × u64 EL1 registers (ELR, SPSR, VBAR, ESR, FAR, SCTLR, TCR, TTBR0, TTBR1, MAIR, CONTEXTIDR, CPACR, TPIDR, PAR, CNTKCTL, CSSELR, MDSCR), bool OSLK, u64 OSDLR, 20 × u64 DBGB/WVR/CR, u8 CLAIM, u64 PMUSERENR, opt u32 SError |
+| `SMP ` | only with several cores (ADR 0042): u64 cores, u64 running core, u64 clock value at which its turn ends, then per core bool on and, for the others, bool WFI pending and its `Cpu` |
 | `MMU ` | u64 PARange (checked), 5 × u64 translation registers, u32 TLB entries, per entry u32 slot (increasing), u64 VA base, u64 size, u64 PA base, u16 ASID, bool global, u8 level, u8 AP, bool UXN, bool PXN, u8 AttrIndx, u8 SH |
-| `PLAT` | sections `TIMR`, `GIC3`, `UART`, `RTC `, `GPIO`, then 32 × `VIO ` (u64 slot, transport, queues, section `VDEV` with the device if any) |
+| `PLAT` | sections `TIMR` (core 0's timer), `GIC3`, `UART`, `RTC `, `GPIO`, then 32 × `VIO ` (u64 slot, transport, queues, section `VDEV` with the device if any); with several cores then `TMRS` (the timers of cores 1..n). `GIC3` with one core is the single-core layout; with more it is followed, per core 1..n, by its 32 private interrupts, its wake state and its CPU interface |
 | `RAM ` | `blocks` of the whole RAM |
 
 ## `vetro-platform`

@@ -6,13 +6,14 @@ GICv3, generic timer, PL011 UART, PL031 RTC, virtio-mmio transport with
 virtio-blk, virtio-net and virtio-console, device tree. For M5: virtio-gpu 2D,
 virtio-input (keyboard, tablet, touchscreen), virtio-vsock and PL061 GPIO
 with the power key (`gpio-keys`, seen by Android's GKI). The map mirrors `qemu-system-aarch64 -M virt`, so kernel and
-device tree can be compared with QEMU without adjustments. A single CPU.
+device tree can be compared with QEMU without adjustments. One to 16 cores
+(ADR 0042): a redistributor and a generic timer each.
 
 ## Memory map (`map.rs`)
 | Region | Base | Size | Interrupt (INTID) |
 |---|---|---|---|
 | GICD (distributor) | `0x0800_0000` | `0x1_0000` | — |
-| GICR (redistributor, CPU 0: RD + SGI frames) | `0x080A_0000` | `0x2_0000` | — |
+| GICR (redistributors, core k: RD + SGI frames at + k·`0x2_0000`) | `0x080A_0000` | n·`0x2_0000` | — |
 | UART PL011 | `0x0900_0000` | `0x1000` | SPI 1 (33), level |
 | RTC PL031 | `0x0901_0000` | `0x1000` | SPI 2 (34), level |
 | GPIO PL061 | `0x0903_0000` | `0x1000` | SPI 7 (39), level |
@@ -43,18 +44,26 @@ RAM does not go through the MMIO bus: the CPU/MMU memory handles it.
   with the CNTPCT value passed in from outside; `irq_lines(cntpct)` returns
   `[(27, level), (30, level)]`; `next_deadline(cntpct)` the next
   CNTPCT value at which a line goes high.
-- `Gic`: MMIO (distributor and redistributor) as an `MmioDevice` on a single
-  region `GICD_BASE .. GICR_BASE + 0x2_0000` (`gic::MMIO_SIZE`); the hole
-  in between is RAZ/WI. Lines: `set_irq_level(intid, level)`,
-  `set_spi_level(spi, level)`, `send_sgi(intid)`. Output: `irq_line()`.
-  System registers, to be called from MRS/MSR:
+- `Gic`: `new()` (one core) or `with_cpus(n)`; MMIO (distributor and
+  redistributors) as an `MmioDevice` on a single region
+  `GICD_BASE .. GICR_BASE + n·0x2_0000` (`Gic::mmio_size(n)`; `gic::MMIO_SIZE`
+  for one core); the hole in between is RAZ/WI. Lines:
+  `set_irq_level(intid, level)` (PPIs of core 0), `set_private_level(cpu,
+  intid, level)`, `set_spi_level(spi, level)`, `send_sgi(intid)`,
+  `send_sgi_to(cpu, intid)`. Output: `irq_line()` (current core),
+  `irq_line_of(cpu)`. `set_current(cpu)` chooses the core whose CPU
+  interface the system registers reach. `gic::cpu_affinity(i)`: Aff1 = i / 16,
+  Aff0 = i % 16 (QEMU virt with a GICv3). System registers, to be called from
+  MRS/MSR (of the current core):
   `read_iar1`, `write_eoir1`, `write_dir`, `read_hppir1`, `read/write_pmr`,
   `read/write_ctlr`, `read/write_igrpen1`, `read/write_sre`,
   `read/write_bpr1`, `read_rpr`, `read/write_ap1r0`, `write_sgi1r`.
-- `Virt`: bus already mounted + `timer`; `gic_mut()`, `uart_mut()`, `rtc_mut()`,
-  `gpio_mut()`; `update_irqs(cntpct)` brings the timer, UART,
+- `Virt`: `new(now)` or `with_cpus(now, n)`: bus already mounted + `timers`
+  (one per core; `timer()`/`timer_mut()` of the current core,
+  `set_current_cpu(i)`); `gic_mut()`, `uart_mut()`, `rtc_mut()`,
+  `gpio_mut()`; `update_irqs(cntpct)` brings every core's timer lines, the UART,
   RTC, GPIO lines and those of the 32
-  virtio slots to the GIC; `irq_line()`. Virtio: `attach_virtio(slot, Box<dyn VirtioDevice>)`,
+  virtio slots to the GIC; `irq_line()`, `irq_line_of(cpu)`. Virtio: `attach_virtio(slot, Box<dyn VirtioDevice>)`,
   `attach_virtio_next(dev) -> slot` (highest free slot, like QEMU: the first
   device goes in slot 31), `virtio(slot)` / `virtio_mut(slot)` ->
   `VirtioMmio`, `service_virtio(&mut dyn GuestRam)`. Errors: `VirtioSlotError`
@@ -139,8 +148,9 @@ RAM does not go through the MMIO bus: the CPU/MMU memory handles it.
   `prop_u32_list`, `prop_u64_list`, `prop_str`, `prop_strs`, `prop_bytes`,
   `prop_empty`, `reserve_memory`, `boot_cpuid`, `finish() -> Result<Vec<u8>, FdtError>`.
   DTB format v17 (last_comp 16), deduplicated strings.
-- `virt_dtb(&VirtDtbConfig) -> Vec<u8>`: memory, cpus (`enable-method =
-  "psci"`), psci (`arm,psci-1.0`, `hvc` method by default), timer
+- `virt_dtb(&VirtDtbConfig) -> Vec<u8>`: memory, cpus (`cpus` of them,
+  `cpu@N` with `reg` = the affinity and `enable-method = "psci"`; with more
+  than one, phandles and QEMU's `cpu-map`: one socket, one cluster), psci (`arm,psci-1.0`, `hvc` method by default), timer
   (`arm,armv8-timer`), GIC (`arm,gic-v3`), fixed 24 MHz clock, PL011, PL031,
   PL061 (phandle 3) with `gpio-keys/poweroff` (line 3, KEY_POWER, like
   QEMU), 32 virtio-mmio, `chosen` with `bootargs`, `stdout-path = "/pl011@9000000"`
@@ -153,8 +163,12 @@ RAM does not go through the MMIO bus: the CPU/MMU memory handles it.
   No LPI/ITS. 256 SPIs (ITLinesNumber = 8, IDbits = 9). CPU interface
   with 5 priority bits (PRIbits = 4) like QEMU: PMR mask `0xF8`, BPR1
   minimum 3. ICC_CTLR_EL1.CBPR is RAZ/WI (BPR0 not modelled); EOImode
-  writable (with EOImode = 1, ICC_DIR_EL1 is needed). SGI1R: with one CPU only
-  affinity 0.0.0 and bit 0 of the TargetList count. GICR_WAKER does the handshake
+  writable (with EOImode = 1, ICC_DIR_EL1 is needed). SGI1R: the cores of
+  cluster Aff3.Aff2.Aff1 whose Aff0 is in the TargetList (offset by RS × 16),
+  or with IRM every core but the sender. GICR_TYPER: affinity, processor
+  number, Last on the last core. GICD_TYPER.CPUNumber = n - 1 (at most 7).
+  SPIs go to the core named by IROUTER; IRM = 1 to core 0 (QEMU has no 1-of-N
+  either). GICR_WAKER does the handshake
   but does not block delivery. Selection: numerically lowest priority,
   ties broken by lowest INTID; delivered if IGRPEN1, priority < PMR and
   group priority < running priority. SPIs routed to CPU 0

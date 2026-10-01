@@ -245,6 +245,10 @@ pub trait SysPhys: PhysMemory {
     fn is_watched(&self, page: u64) -> bool;
     fn take_code_dirty(&mut self, out: &mut Vec<u64>);
     fn ram_region(&mut self) -> Option<(u64, *mut u8, usize)> { None }
+    /// After watching a fresh page: false while other cores may still write
+    /// it directly (ADR 0042); the JIT then leaves the block to the
+    /// interpreter and reads it again later. Default true.
+    fn watch_ready(&mut self, page: u64) -> bool { true }
 }
 
 impl<E: Engine> SysJit<E> {
@@ -267,7 +271,23 @@ grant more steps than those up to the next platform event. After
 `YIELD`, `run` returns with `Next::Jit`: the caller rechecks interrupts.
 `SysJitDyn` is the same as a trait object (for `Machine::set_jit`), with
 `set_time` and the per-class profile (`profiling`, `profile_step`,
-`profile`). Default threshold: 64 entries before translating. The machine
+`profile`).
+
+Several cores (ADR 0042), settings of the whole JIT (a change forgets every
+block): `set_yields(true)` (cores in turns) leaves WFE and YIELD to the
+interpreter, which reports `SysEvent::Yield` and ends the core's turn;
+`set_parallel(true)` (cores on host threads) makes DMB/DSB/ISB an
+`atomic.fence`, LDAR/STLR atomic accesses on the inline path (a fence after
+or around the host call), the exclusive loads followed by a fence and the
+store-exclusives an `i64.atomic.rmw*.cmpxchg` against the monitor's value on
+the software TLB's write entry (FAULT to the interpreter without it; STXP of
+two doublewords always in the interpreter). `set_abort(flag)` and
+`limit_addr()`: another core sets the flag and writes zero at the limit to end
+the run at the next region boundary; `flush_writes()` forgets the write
+entries of the software TLB (another core watched a page). `SysTarget` carries
+`yields` and `parallel`. With several cores the machine gives no clock
+(`set_time`): MRS CNTPCT/CNTVCT exits to the interpreter (the counter is that
+of `steps / n`). Default threshold: 64 entries before translating. The machine
 calls `set_time` before every `run`.
 
 ### User mode (`vetro_jit::JitCpu`)
