@@ -16,7 +16,9 @@
 // compiles the modules in a Worker (ADR 0038): still the same instructions
 // and log; the loop then yields to the event loop after every quantum.
 // --cpus N boots N guest cores (ADR 0042, deterministic turns): the log goes
-// to node-boot-smpN[-jit].log.
+// to node-boot-smpN[-jit].log. With --parallel (threads build) cores 1..N
+// run in Workers of their own: not deterministic (no --expect-steps check),
+// the log goes to node-boot-parN[-jit].log.
 //
 // Node 22, no dependencies. The .wasm is built with tools/wasm-boot.sh
 // (cargo build --release --target wasm32-unknown-unknown -p vetro-wasm).
@@ -52,6 +54,8 @@ const jitBatch = Number(opt('--jit-batch', '16'));
 const background = jit && args.includes('--jit-background');
 /** ADR 0042: guest cores, in turns on this thread (deterministic). */
 const cpus = Number(opt('--cpus', '1'));
+/** ADR 0042: cores 1..n in Workers of their own (threads build). */
+const parallel = args.includes('--parallel');
 /** After each quantum with --jit-background: lets the Worker's modules arrive. */
 const tick = background ? () => new Promise((ok) => setImmediate(ok)) : () => null;
 
@@ -71,6 +75,7 @@ async function main() {
   m.loadLinux(image, initrd, CMDLINE);
   if (background) await engine.startBackground();
   if (jit) m.setJit(jitThreshold, jitBatch);
+  if (parallel) await m.startParallel({ jit: jit ? { threshold: jitThreshold, batch: jitBatch } : null });
   const tLoad = performance.now();
 
   // The log as a latin1 string: one character per byte, positions as in Rust.
@@ -118,8 +123,12 @@ async function main() {
   }
   if (stop !== 'PowerOff') throw new Fail(`poweroff -f did not turn the machine off: ${stop}`);
   const t1 = performance.now();
+  if (parallel) {
+    const reports = await m.stopParallel();
+    console.log(`parallel cores: ${JSON.stringify(reports.map((r) => ({ stop: r.stop, executed: r.executed })))}`);
+  }
 
-  const smp = cpus > 1 ? `-smp${cpus}` : '';
+  const smp = cpus > 1 ? `-${parallel ? 'par' : 'smp'}${cpus}` : '';
   writeFileSync(join(kernelDir, jit ? `node-boot${smp}-jit.log` : `node-boot${smp}.log`), normalize(log), 'latin1');
   const steps = m.steps;
   const secs = (t1 - tLoad) / 1000;
@@ -137,7 +146,7 @@ async function main() {
   }
   // Line to be read by scripts (tools/wasm-boot.sh).
   console.log(`VETRO-NODE-BOOT steps=${steps} ms=${Math.round(t1 - tLoad)}`);
-  if (expectSteps !== null && BigInt(expectSteps) !== steps) {
+  if (expectSteps !== null && !parallel && BigInt(expectSteps) !== steps) {
     throw new Fail(`instructions: ${steps} in Node, expected ${expectSteps} (the machine is deterministic)`);
   }
   m.free();

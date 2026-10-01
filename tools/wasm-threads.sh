@@ -35,7 +35,8 @@ export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS="-C target-feature=+atomics
 -C link-arg=--shared-memory -C link-arg=--import-memory \
 -C link-arg=--initial-memory=$INITIAL -C link-arg=--max-memory=$MAX \
 -C link-arg=--export=__wasm_init_tls -C link-arg=--export=__tls_size \
--C link-arg=--export=__tls_align -C link-arg=--export=__tls_base"
+-C link-arg=--export=__tls_align -C link-arg=--export=__tls_base \
+-C link-arg=--export=__stack_pointer"
 # shellcheck disable=SC2086
 cargo build $flag --target wasm32-unknown-unknown -p vetro-wasm \
   -Z build-std=std,panic_abort --target-dir target/threads

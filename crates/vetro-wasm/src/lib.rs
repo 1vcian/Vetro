@@ -41,6 +41,7 @@ pub mod files;
 pub mod gl;
 pub mod jit;
 pub mod net;
+pub mod parallel;
 pub mod replay;
 
 use std::alloc::Layout;
@@ -150,6 +151,8 @@ pub mod load {
 /// A machine with the surrounding buffers for JS.
 pub struct Vm {
     m: Machine,
+    /// The cores 1..n while they run in parallel in Workers (ADR 0042).
+    cores: Vec<Box<vetro_machine::Core>>,
     /// Compression level of the snapshots (ABI 13, ADR 0031).
     snapshot_level: vetro_machine::vetro_snapshot::Level,
     /// Console output already taken from the UART and not read by JS yet.
@@ -256,6 +259,7 @@ impl Vm {
     pub fn with_devices(cfg: &MachineConfig, devices: &Devices) -> Self {
         let vm = Vm {
             m: Machine::with_devices(cfg, devices),
+            cores: Vec::new(),
             out: Vec::new(),
             out_pos: 0,
             message: String::new(),

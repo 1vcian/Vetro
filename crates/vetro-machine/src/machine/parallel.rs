@@ -31,7 +31,7 @@
 
 use core::sync::atomic::{Ordering, fence};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use vetro_cpu::Cpu;
 use vetro_cpu::sys::SysEvent;
@@ -47,8 +47,10 @@ use crate::psci::{self, Call};
 const SLICE: u64 = 1 << 15;
 
 /// Longest a core waits in WFI on the host's own thread (core 0) before
-/// returning to the host, which must keep handling its inputs.
+/// returning to the host, which must keep handling its inputs: this many
+/// sleeps of [`MAIN_NAP`] (no clock is needed, which wasm32 lacks).
 const MAIN_WAIT: Duration = Duration::from_millis(4);
+const MAIN_NAP: Duration = Duration::from_millis(1);
 
 /// One core's execution state while the cores run in parallel.
 pub(crate) struct ParCore {
@@ -375,7 +377,7 @@ impl ParCore {
         slot.wait_until.store(target, Ordering::SeqCst);
         let idle = cores.idle.fetch_add(1, Ordering::SeqCst) + 1;
         let on = cores.slots.iter().filter(|s| s.on.load(Ordering::SeqCst)).count();
-        let start = Instant::now();
+        let mut naps = 0u32;
         let mut out = Wait::Later;
         if idle >= on {
             // Every core waits: time jumps to the earliest deadline.
@@ -419,7 +421,7 @@ impl ParCore {
                     break;
                 }
                 if main
-                    && (start.elapsed() >= MAIN_WAIT
+                    && (naps as u128 * MAIN_NAP.as_millis() >= MAIN_WAIT.as_millis()
                         || cores.net_deadline.load(Ordering::SeqCst) <= cores.clock.load(Ordering::SeqCst))
                 {
                     out = Wait::Later;
@@ -430,7 +432,9 @@ impl ParCore {
                     && !slot.has_requests()
                     && cores.clock.load(Ordering::SeqCst) < target
                 {
-                    let _ = slot.wake.wait_timeout(g, Duration::from_millis(if main { 1 } else { 20 }));
+                    let _ =
+                        slot.wake.wait_timeout(g, if main { MAIN_NAP } else { Duration::from_millis(20) });
+                    naps += 1;
                 }
             }
         }

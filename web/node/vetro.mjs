@@ -247,7 +247,9 @@ export async function instantiate(wasmBytes, { jitBudget } = {}) {
     imports.env = { memory };
   }
   const instance = await WebAssembly.instantiate(module, imports);
-  exports = memory ? { ...instance.exports, memory } : instance.exports;
+  // The module goes with the exports: the parallel cores' Workers
+  // instantiate it again on the same memory (ADR 0042).
+  exports = memory ? { ...instance.exports, memory, module } : instance.exports;
   jit.attach(exports);
   const abi = exports.vetro_abi_version();
   if (abi !== ABI_VERSION) throw new Error(`vetro-wasm: API ${abi}, expected ${ABI_VERSION}`);
@@ -1067,6 +1069,101 @@ export class Machine {
     this.#x.vetro_free(this.#buf, this.#cap);
     this.#x.vetro_machine_free(this.#vm);
   }
+
+  // ---- Cores in parallel (ADR 0042) -------------------------------------
+
+  /** The Workers of cores 1..n while the cores run in parallel. */
+  #par = null;
+
+  /** True while cores 1..n run in their Workers. */
+  get parallel() {
+    return this.#par !== null;
+  }
+
+  /**
+   * Runs cores 1..n each in a Worker of its own (`core-worker.mjs`) on the
+   * shared memory of the threads build; core 0 keeps running in `run`. Not
+   * deterministic: stop with `stopParallel` before saving or recording.
+   * `jit`: { threshold, batch } for every core's JIT, or null. Resolves with
+   * the number of Workers once they all run.
+   */
+  async startParallel({ jit = null, budget = 1_000_000, workerUrl = new URL('./core-worker.mjs', import.meta.url) } = {}) {
+    const x = this.#x;
+    if (this.#par) throw new Error('the cores already run in parallel');
+    if (!x.module || typeof SharedArrayBuffer === 'undefined' || !(x.memory.buffer instanceof SharedArrayBuffer)) {
+      throw new Error('parallel cores need the threads build of vetro-wasm (tools/wasm-threads.sh)');
+    }
+    const n = x.vetro_parallel_start(this.#vm);
+    if (n === 0) throw new Error(`vetro_parallel_start: ${this.#message()}`);
+    const tlsSize = x.__tls_size.value;
+    const workers = [];
+    const allocs = [];
+    for (let i = 1; i <= n; i++) {
+      const core = x.vetro_parallel_core(this.#vm, i) >>> 0;
+      const stack = x.vetro_alloc(CORE_STACK) >>> 0;
+      const tls = x.vetro_alloc(Math.max(tlsSize, 16)) >>> 0;
+      if (!stack || !tls) throw new Error('vetro_alloc failed for a core Worker');
+      allocs.push([stack, CORE_STACK], [tls, Math.max(tlsSize, 16)]);
+      workers.push(await spawnCore(workerUrl, { module: x.module, memory: x.memory, core, stackTop: stack + CORE_STACK, tls, jit, budget }));
+    }
+    await Promise.all(workers.map((w) => w.ready));
+    this.#par = { workers, allocs };
+    return n;
+  }
+
+  /**
+   * Stops cores 1..n and takes them back (the cores are in turns again,
+   * deterministic): resolves with each Worker's report ({ stop, executed, jit }).
+   */
+  async stopParallel() {
+    const p = this.#par;
+    if (!p) return [];
+    const x = this.#x;
+    x.vetro_parallel_request_stop(this.#vm);
+    const reports = await Promise.all(p.workers.map((w) => w.done));
+    x.vetro_parallel_stop(this.#vm);
+    for (const w of p.workers) w.terminate();
+    for (const [ptr, len] of p.allocs) x.vetro_free(ptr, len);
+    this.#par = null;
+    return reports;
+  }
+}
+
+/** Stack of a core Worker's thread (bytes). */
+const CORE_STACK = 2 << 20;
+
+/**
+ * Starts a core Worker: { ready, done, terminate }, `ready` resolving when the
+ * core runs, `done` with its final report.
+ */
+async function spawnCore(url, msg) {
+  let ready, done, fail;
+  const pReady = new Promise((ok, ko) => {
+    ready = ok;
+    fail = ko;
+  });
+  const pDone = new Promise((ok) => (done = ok));
+  const onMsg = (m) => {
+    if (m.type === 'ready') ready();
+    else if (m.type === 'done') done(m);
+    else if (m.type === 'error') {
+      console.error(`core Worker: ${m.error}`);
+      fail(new Error(m.error));
+      done({ stop: 'Error', error: m.error, executed: 0 });
+    }
+  };
+  if (typeof Worker === 'function' && typeof process === 'undefined') {
+    const w = new Worker(url, { type: 'module' });
+    w.onmessage = (e) => onMsg(e.data);
+    w.postMessage(msg);
+    return { ready: pReady, done: pDone, terminate: () => w.terminate() };
+  }
+  const { Worker: NodeWorker } = await import('node:worker_threads');
+  const w = new NodeWorker(url);
+  w.on('message', onMsg);
+  w.on('error', (e) => onMsg({ type: 'error', error: String(e?.stack ?? e) }));
+  w.postMessage(msg);
+  return { ready: pReady, done: pDone, terminate: () => w.terminate() };
 }
 
 /**
