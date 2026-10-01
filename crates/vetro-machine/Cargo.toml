@@ -18,5 +18,9 @@ vetro-gfxstream = { path = "../vetro-gfxstream" }
 # Introspection (ADR 0027): no dependencies, also builds for wasm.
 vetro-analysis = { path = "../vetro-analysis" }
 
+[dev-dependencies]
+# The JIT on wasmtime for the parallel cores' litmus tests (ADR 0042).
+vetro-jit-native = { path = "../vetro-jit-native" }
+
 [lints]
 workspace = true

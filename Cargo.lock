@@ -967,6 +967,7 @@ dependencies = [
  "vetro-cpu",
  "vetro-gfxstream",
  "vetro-jit",
+ "vetro-jit-native",
  "vetro-mmu",
  "vetro-net",
  "vetro-platform",
