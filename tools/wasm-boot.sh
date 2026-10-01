@@ -7,7 +7,9 @@
 #   3. with --jit, also the system-mode JIT in Node/V8
 #      (web/node/boot.mjs --jit, ADR 0013), and again with the modules
 #      compiled in a Worker (--jit-background, ADR 0038), and with the threads
-#      build of vetro-wasm (shared memory, tools/wasm-threads.sh, ADR 0041).
+#      build of vetro-wasm (shared memory, tools/wasm-threads.sh, ADR 0041);
+#   4. with --jit, two guest cores in turns (ADR 0041): natively with the
+#      interpreter and with the JIT in V8, same instructions and log.
 # The counted instructions and the console log must be identical (the
 # machine is deterministic, with or without the JIT). Prints the timings.
 #
@@ -48,7 +50,8 @@ native_log=target/guest-kernel/native-boot-test.out
 # No pipe: sh has no pipefail, and the test's outcome must count. Only
 # the interpreter: VETRO_JIT is not needed here.
 status=0
-env -u VETRO_JIT cargo test --release -p vetro-boot-tests --test vetro -- --nocapture > "$native_log" 2>&1 || status=$?
+env -u VETRO_JIT cargo test --release -p vetro-boot-tests --test vetro -- --exact vetro_boots_guest_kernel_to_shell \
+  --nocapture > "$native_log" 2>&1 || status=$?
 cat "$native_log"
 [ "$status" -eq 0 ] || exit "$status"
 steps=$(sed -n 's/.*(\([0-9]*\) instructions).*/\1/p' "$native_log" | tail -n 1)
@@ -99,6 +102,27 @@ if [ "$jit" -eq 1 ]; then
   threads_ms=$(sed -n 's/^VETRO-NODE-BOOT .*ms=\([0-9]*\).*/\1/p' target/guest-kernel/node-boot-threads.out)
   cmp target/guest-kernel/vetro-boot.log target/guest-kernel/node-boot-jit.log \
     || { echo "ERROR: the console log of the threads build differs from the native one" >&2; exit 1; }
+fi
+
+if [ "$jit" -eq 1 ]; then
+  # ADR 0041: two guest cores in turns, natively (interpreter) and with the
+  # JIT in V8: same instructions and log.
+  echo "==> two cores: native interpreter, then the JIT in Node"
+  smp_log=target/guest-kernel/native-boot-smp2.out
+  status=0
+  env -u VETRO_JIT cargo test --release -p vetro-boot-tests --test vetro -- --exact vetro_boots_guest_kernel_smp2 \
+    --nocapture > "$smp_log" 2>&1 || status=$?
+  cat "$smp_log"
+  [ "$status" -eq 0 ] || exit "$status"
+  smp_steps=$(sed -n 's/.*(\([0-9]*\) instructions, .*/\1/p' "$smp_log" | tail -n 1)
+  [ -n "$smp_steps" ] || { echo "ERROR: two-core native boot without an outcome" >&2; exit 1; }
+  status=0
+  node web/node/boot.mjs --wasm "$wasm" --jit --cpus 2 --expect-steps "$smp_steps" > target/guest-kernel/node-boot-smp2.out \
+    || status=$?
+  cat target/guest-kernel/node-boot-smp2.out
+  [ "$status" -eq 0 ] || exit "$status"
+  cmp target/guest-kernel/vetro-boot-smp2.log target/guest-kernel/node-boot-smp2-jit.log \
+    || { echo "ERROR: the two-core log with the JIT in Node differs from the native one" >&2; exit 1; }
 fi
 
 echo "==> timings (same $steps instructions, same log; from load to power-off)"

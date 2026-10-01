@@ -25,6 +25,8 @@
 //   --bg-compile     JIT modules compiled in a Worker (ADR 0038)
 //   --threshold=N    JIT hot threshold (default 64, the app's)
 //   --jit-budget=MIB live JIT code budget in V8 (default CODE_BUDGET of jit-engine.mjs)
+//   --cpus=N         guest cores (ADR 0042; default 1): the snapshot (--snap)
+//                    must come from prebuilt-snapshot.mjs --cpus=N
 //   --cold=S         cold boot for S guest seconds instead of the restore
 //   --restore-only   stops after the restore (to profile it)
 //   --stop-after=P   stops after phase P (e.g. "adb ready")
@@ -135,9 +137,11 @@ async function main() {
   const budget = arg('jit-budget', null);
   const { exports, jit: engine } = await instantiate(readFileSync(wasmPath), budget ? { jitBudget: Number(budget) << 20 } : {});
   if (flag('bg-compile')) await engine.startBackground();
-  const M = ANDROID_MACHINE;
+  // ADR 0041: --cpus=N cores (deterministic turns); the snapshot must be one
+  // made with the same number (tools/aosp/prebuilt-snapshot.mjs --cpus=N).
+  const M = { ...ANDROID_MACHINE, cpus: Number(arg('cpus', 1)) };
   const devices = machineDevices(DEV, M);
-  const m = new Machine(exports, { ramSize: BigInt(M.ramMiB) << 20n, devices, width: M.width, height: M.height });
+  const m = new Machine(exports, { ramSize: BigInt(M.ramMiB) << 20n, devices, width: M.width, height: M.height, cpus: M.cpus });
   const feeder = new DiskFeeder(m);
   const layout = await new LayoutSource(new URL('web/disk.json', manifestUrl).href).open();
   const cache = new FileCache(cacheDir, layout.key, ANDROID_DISK.blockSize, Math.ceil(layout.size / ANDROID_DISK.blockSize));

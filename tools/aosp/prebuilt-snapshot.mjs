@@ -36,6 +36,9 @@
 //                    Without it: ANDROID_MACHINE and ANDROID_PARAMS (the same
 //                    as the default profile).
 //
+//   --cpus=N         guest cores (ADR 0041; default 1): the snapshot key
+//                    changes with the number (the configuration hash).
+//
 // Also writes <out>/<key>.png, the scanout at the home screen.
 //
 // Writes <out>/<key>.snap (the snapshot, as the app stores it in OPFS) and
@@ -81,7 +84,8 @@ const CONSOLE_TAIL = 64 * 1024;
 const profileArg = arg('profile', null);
 const profile = profileArg === null ? null
   : parseProfile(readFileSync(STARTER_PROFILES.includes(profileArg) ? join(root, 'web/app/profiles', `${profileArg}.json`) : profileArg, 'utf8'));
-const machine = profile ? profileMachine(profile) : ANDROID_MACHINE;
+// ADR 0041: --cpus=N guest cores (deterministic turns on one thread).
+const machine = { ...(profile ? profileMachine(profile) : ANDROID_MACHINE), cpus: Number(arg('cpus', 1)) };
 const params = profile ? profileBootParams(profile) : ANDROID_PARAMS;
 const setup = profile ? profileAdbCommands(profile) : [];
 
@@ -133,7 +137,7 @@ async function main() {
   const M = machine;
   if (profile) log(`profile ${profile.id}: ${M.width}x${M.height} at ${profile.screen.density} dpi, ${M.ramMiB} MiB, parameters "${params}"`);
   const devices = machineDevices(DEV, M);
-  const m = new Machine(exports, { ramSize: BigInt(M.ramMiB) << 20n, devices, width: M.width, height: M.height });
+  const m = new Machine(exports, { ramSize: BigInt(M.ramMiB) << 20n, devices, width: M.width, height: M.height, cpus: M.cpus });
   const feeder = new DiskFeeder(m);
   const layout = await new LayoutSource(new URL('web/disk.json', manifestUrl).href).open();
   feeder.add(layout, { cache: new MemoryCache(), ...ANDROID_DISK });

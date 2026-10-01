@@ -8,12 +8,15 @@
 //
 //   node web/node/boot.mjs [--wasm FILE] [--kernel DIR] [--expect-steps N]
 //                          [--jit [--jit-threshold N] [--jit-batch N] [--jit-background]]
+//                          [--cpus N]
 //
 // With --jit it runs with the system-mode JIT (ADR 0013, modules compiled
 // by V8): instructions and log must be the same as the interpreter's, and the
 // log goes to target/guest-kernel/node-boot-jit.log. --jit-background
 // compiles the modules in a Worker (ADR 0038): still the same instructions
 // and log; the loop then yields to the event loop after every quantum.
+// --cpus N boots N guest cores (ADR 0041, deterministic turns): the log goes
+// to node-boot-smpN[-jit].log.
 //
 // Node 22, no dependencies. The .wasm is built with tools/wasm-boot.sh
 // (cargo build --release --target wasm32-unknown-unknown -p vetro-wasm).
@@ -47,6 +50,8 @@ const jit = args.includes('--jit');
 const jitThreshold = Number(opt('--jit-threshold', '64'));
 const jitBatch = Number(opt('--jit-batch', '16'));
 const background = jit && args.includes('--jit-background');
+/** ADR 0041: guest cores, in turns on this thread (deterministic). */
+const cpus = Number(opt('--cpus', '1'));
 /** After each quantum with --jit-background: lets the Worker's modules arrive. */
 const tick = background ? () => new Promise((ok) => setImmediate(ok)) : () => null;
 
@@ -62,7 +67,7 @@ async function main() {
   const { exports, jit: engine } = await instantiate(readFileSync(wasmPath));
   const image = readFileSync(join(kernelDir, 'Image'));
   const initrd = readFileSync(join(kernelDir, 'initramfs.cpio.gz'));
-  const m = new Machine(exports);
+  const m = new Machine(exports, { cpus });
   m.loadLinux(image, initrd, CMDLINE);
   if (background) await engine.startBackground();
   if (jit) m.setJit(jitThreshold, jitBatch);
@@ -114,7 +119,8 @@ async function main() {
   if (stop !== 'PowerOff') throw new Fail(`poweroff -f did not turn the machine off: ${stop}`);
   const t1 = performance.now();
 
-  writeFileSync(join(kernelDir, jit ? 'node-boot-jit.log' : 'node-boot.log'), normalize(log), 'latin1');
+  const smp = cpus > 1 ? `-smp${cpus}` : '';
+  writeFileSync(join(kernelDir, jit ? `node-boot${smp}-jit.log` : `node-boot${smp}.log`), normalize(log), 'latin1');
   const steps = m.steps;
   const secs = (t1 - tLoad) / 1000;
   console.log(
