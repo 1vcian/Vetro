@@ -304,7 +304,7 @@ async function build(c, sources) {
   for (const o of overlays) o?.close();
   overlays = [];
   m?.free();
-  m = new Machine(exports, { ramSize: BigInt(c.ramMiB) << 20n, devices: devicesOf(c), width: c.width, height: c.height });
+  m = new Machine(exports, { ramSize: BigInt(c.ramMiB) << 20n, devices: devicesOf(c), width: c.width, height: c.height, cpus: c.cpus ?? 1 });
   if (glExec) m.glEnable();
   feeder = new DiskFeeder(m);
   for (const [i, d] of (c.disks ?? []).entries()) await openDisk(d, i, sources);
@@ -319,8 +319,45 @@ function persistOverlays() {
 
 const generations = () => overlays.map((o) => (o ? o.generation : null));
 
+// ---- Parallel cores (ADR 0042) --------------------------------------------
+
+/** Workers' reports of the last parallel stretch. */
+let coreReports = [];
+
+/**
+ * Cores 1..n back in turns (deterministic) before what needs it: a
+ * snapshot, a recording or a replay. Resolves at once with one core.
+ */
+async function pauseCores() {
+  if (m?.parallel) coreReports = await m.stopParallel();
+}
+
+/**
+ * Cores 1..n in their Workers again (if the machine has several, the page
+ * is isolated and no recording or replay is in progress).
+ */
+async function resumeCores() {
+  if (!m || m.parallel || (cfg.cpus ?? 1) < 2 || mode !== 'live' || !exports.module) return;
+  if (m.rrStatus?.().state === 'Recording') return;
+  try {
+    const n = await m.startParallel({ jit: cfg.jit ? { threshold: 64, batch: 16 } : null });
+    status(`${n + 1} cores in parallel`);
+  } catch (e) {
+    status(`cores in turns: ${e.message ?? e}`);
+  }
+}
+
 /** Machine snapshot in OPFS, together with the overlays (saved first). */
 async function saveSnapshot(why) {
+  await pauseCores();
+  try {
+    await saveSnapshotNow(why);
+  } finally {
+    await resumeCores();
+  }
+}
+
+async function saveSnapshotNow(why) {
   persistOverlays();
   const meta = {
     steps: String(m.steps),
@@ -486,6 +523,7 @@ async function start(c) {
   }
   if (c.jit && c.jitBackground) await jitEngine.startBackground();
   if (c.jit) m.setJit();
+  await resumeCores();
   if (c.files) openFiles();
   if (c.net) m.capture(true);
   try {
@@ -556,7 +594,8 @@ async function prepareAndroid(c) {
  */
 async function fetchPrebuilt(times) {
   const t0 = performance.now();
-  const found = await findPrebuilt(android.manifestUrl, snapKey);
+  const base = cfg.android?.prebuiltBase ?? android.manifestUrl;
+  const found = await findPrebuilt(base, snapKey);
   times.prebuiltLookup = performance.now() - t0;
   if (!found.info) {
     status(`cold boot: ${found.missing}`);
@@ -570,7 +609,7 @@ async function fetchPrebuilt(times) {
   status(`downloading the home-screen snapshot (${(info.size / 2 ** 20).toFixed(0)} MiB${resumed ? `, resuming at ${(resumed / 2 ** 20).toFixed(0)} MiB` : ''})`);
   let last = 0;
   try {
-    const r = await downloadPrebuilt(info, prebuiltSnapUrl(android.manifestUrl, snapKey), target.file, {
+    const r = await downloadPrebuilt(info, prebuiltSnapUrl(base, snapKey), target.file, {
       resume: target.resume,
       saveResume: target.saveResume,
       onProgress: (p) => {
@@ -1015,7 +1054,12 @@ function replayEnded(st) {
   post({ type: 'replay-ended', status: st, steps: Number(m.steps) });
   postAnalysis(true);
   postRr();
+  // The cores go parallel again at the next turn of the loop (ADR 0042).
+  wantCores = true;
 }
+
+/** Set when the cores may go parallel again (after a replay). */
+let wantCores = false;
 
 async function startReplay(step, stopAt) {
   if (m.rrStatus().state === 'Recording') {
@@ -1044,6 +1088,9 @@ async function startReplay(step, stopAt) {
 
 /** A recording or replay command. */
 async function rr(cmd) {
+  // Recording and replay need the cores in turns (deterministic); they run
+  // in parallel again once both are over.
+  await pauseCores();
   try {
     switch (cmd.op) {
       case 'record-start':
@@ -1077,6 +1124,7 @@ async function rr(cmd) {
     post({ type: 'rr-error', op: cmd.op, message: String(e.message ?? e) });
   }
   postRr();
+  if (mode === 'live' && m.rrStatus().state !== 'Recording') await resumeCores();
 }
 
 async function loop() {
@@ -1097,6 +1145,10 @@ async function loop() {
   let wall0 = performance.now();
   for (;;) {
     while (control.length) await rr(control.shift());
+    if (wantCores) {
+      wantCores = false;
+      await resumeCores();
+    }
     if (mode === 'paused') {
       while (inbox.length) apply(inbox.shift());
       if (!control.length) await new Promise((ok) => (wake = ok));

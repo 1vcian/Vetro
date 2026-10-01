@@ -752,12 +752,34 @@ $('adb-shell').addEventListener('submit', async (e) => {
 });
 
 /**
- * True if the threads build of vetro-wasm runs (ADR 0042): asked for with
- * `?threads=1` (or by a parallel machine) and possible only with cross-origin
- * isolation (COOP/COEP from the server, or coi-serviceworker on Pages).
+ * True if the threads build of vetro-wasm can run (ADR 0042): only with
+ * cross-origin isolation (COOP/COEP from the server, or coi-serviceworker on
+ * Pages).
  */
-function threadsBuild() {
-  return q.get('threads') === '1' && globalThis.crossOriginIsolated === true;
+const isolated = () => globalThis.crossOriginIsolated === true;
+
+/**
+ * Guest cores for `auto` (ADR 0042): 4 on a host with at least 6 logical
+ * cores, 2 with at least 3, otherwise 1 (each core is a Worker, and the page
+ * and the machine's own Worker need host cores too).
+ */
+export function autoCpus(logical = navigator.hardwareConcurrency ?? 1) {
+  return logical >= 6 ? 4 : logical >= 3 ? 2 : 1;
+}
+
+/**
+ * The cores of the machine to start: the form's choice; more than one only
+ * where the cores can run in parallel (cross-origin isolation), otherwise one
+ * (cores in turns on one thread would only be slower).
+ */
+function chosenCpus() {
+  const v = form.elements.cpus.value;
+  const n = v === 'auto' ? autoCpus() : Number(v) || 1;
+  if (n > 1 && !isolated()) {
+    setStatus(`${n} cores need cross-origin isolation (reload with ?cpus=${v}): starting with one`);
+    return 1;
+  }
+  return n;
 }
 
 async function start() {
@@ -768,10 +790,12 @@ async function start() {
   const kernel = android ? null : source('kernelUrl', 'kernelFile');
   if (!kernel && !android) return setStatus('kernel missing');
   const disk = android ? null : source('diskUrl', 'diskFile');
+  const cpus = chosenCpus();
   const config = {
-    // ADR 0042: the threads build (shared memory) needs cross-origin
-    // isolation; without it the ordinary build runs.
-    wasmUrl: new URL(threadsBuild() ? '../wasm/vetro_wasm_threads.wasm' : '../wasm/vetro_wasm.wasm', location.href).href,
+    // ADR 0042: the threads build (shared memory) for parallel cores or when
+    // asked for (`?threads=1`); it needs cross-origin isolation.
+    wasmUrl: new URL(isolated() && (cpus > 1 || q.get('threads') === '1') ? '../wasm/vetro_wasm_threads.wasm' : '../wasm/vetro_wasm.wasm', location.href).href,
+    cpus,
     kernel,
     initrd: source('initrdUrl', 'initrdFile'),
     disks: disk ? [{ ...disk, blockSize: Number(el.blockKiB.value) << 10, readOnly: false }] : [],
@@ -790,7 +814,10 @@ async function start() {
     snapshot: el.snapshot.checked,
     persist: el.persist.checked,
     android: android ? { manifest: new URL(el.manifestUrl.value.trim() || DEFAULT_MANIFEST, location.href).href, prebuilt: !el.coldBoot.checked,
-      graphics: el.fullGraphics.checked ? 'full' : 'light' } : null,
+      graphics: el.fullGraphics.checked ? 'full' : 'light',
+      // Where to look for prebuilt snapshots (`?prebuilt=URL`, a directory
+      // with snapshots/<key>.json): next to the image by default.
+      prebuiltBase: q.has('prebuilt') ? new URL(q.get('prebuilt'), location.href).href : null } : null,
     gpu: android && q.get('gpu') === 'webgl' ? 'webgl' : null,
   };
   if (android) {
@@ -917,7 +944,7 @@ async function start() {
         break;
       }
       case 'started':
-        if (!msg.restored) setStatus(`running (${renderer.name}, ${config.jit ? 'JIT' : 'interpreter'}${crossOriginIsolated ? ', isolated' : ''}${config.wasmUrl.includes('_threads') ? ', threads build' : ''})`);
+        if (!msg.restored) setStatus(`running (${renderer.name}, ${config.jit ? 'JIT' : 'interpreter'}${crossOriginIsolated ? ', isolated' : ''}${config.wasmUrl.includes('_threads') ? ', threads build' : ''}${config.cpus > 1 ? `, ${config.cpus} cores` : ''})`);
         consoleEl.focus();
         break;
       case 'stopped':
@@ -973,7 +1000,7 @@ form.elements.manifestUrl.addEventListener('change', () => {
   syncVersion();
   showPrebuiltHint();
 });
-for (const [param, field] of [['kernel', 'kernelUrl'], ['initrd', 'initrdUrl'], ['disk', 'diskUrl'], ['cmdline', 'cmdline'], ['pointer', 'pointer'], ['ram', 'ramMiB']]) {
+for (const [param, field] of [['kernel', 'kernelUrl'], ['initrd', 'initrdUrl'], ['disk', 'diskUrl'], ['cmdline', 'cmdline'], ['pointer', 'pointer'], ['ram', 'ramMiB'], ['cpus', 'cpus']]) {
   if (q.has(param)) form.elements[field].value = q.get(param);
 }
 if (q.get('webgpu') === '1') form.elements.webgpu.checked = true;

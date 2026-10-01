@@ -9,9 +9,10 @@
   <link rel="apple-touch-icon" href="icons/icon-180.png">
   <link rel="stylesheet" href="app.css">
   <!-- ADR 0042: cross-origin isolation where the host cannot send COOP/COEP
-       (GitHub Pages), only when the threads build is asked for: the service
-       worker adds the headers, at the cost of one reload on the first visit. -->
-  <script>window.coi = { shouldRegister: () => new URLSearchParams(location.search).get('threads') === '1', quiet: true };</script>
+       (GitHub Pages), only when the threads build or more than one core is
+       asked for (?threads=1, ?cpus=2|4|auto): the service worker adds the
+       headers, at the cost of one reload on the first visit. -->
+  <script>window.coi = { shouldRegister: () => { const q = new URLSearchParams(location.search); return q.get('threads') === '1' || (q.has('cpus') && q.get('cpus') !== '1'); }, quiet: true };</script>
   <script src="vendor/coi-serviceworker.js"></script>
   <script type="module" src="main.mjs"></script>
 </head>
@@ -84,6 +85,14 @@
       </label>
       <label title="virtio-net with the vetro-net stack and the sinkhole (DHCP 10.0.2.15)"><input name="net" type="checkbox" checked> network</label>
       <label title="virtio-vsock and the guest vetro-files daemon (ADR 0020)"><input name="files" type="checkbox" checked> file manager</label>
+      <label title="Guest cores (ADR 0042): with more than one they run in parallel, each in a Worker of its own, if the page is cross-origin isolated; auto picks from this computer's cores">cores
+        <select name="cpus">
+          <option value="1" selected>1</option>
+          <option value="2">2</option>
+          <option value="4">4</option>
+          <option value="auto">auto</option>
+        </select>
+      </label>
       <label><input name="jit" type="checkbox" checked> JIT</label>
       <label><input name="realtime" type="checkbox" checked> real time</label>
       <label><input name="opfs" type="checkbox" checked> OPFS cache</label>

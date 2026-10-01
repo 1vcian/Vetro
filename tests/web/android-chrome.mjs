@@ -188,6 +188,8 @@ async function session(chrome, profile, url, kind) {
     }
     // adb after the restore, then the APK.
     await page.waitFor('adb connected after the restore', async () => (await page.eval(ANDROID_STATE)).adb.state === 'ready', 10 * 60_000);
+    misure[prebuilt ? 'adb_prebuilt_ms' : 'adb_ms'] = Date.now() - t0;
+    console.log(`adb ready ${secs(Date.now() - t0)} s after the page opened`);
     const devices = await page.eval('window.vetroAndroid.devices()');
     check(devices[0]?.serial === 'VETRO00001', `adb devices: ${JSON.stringify(devices)}`);
     const sh = await page.eval("window.vetroAndroid.shell('getprop sys.boot_completed; getprop ro.product.model')");
