@@ -10,6 +10,11 @@
 //! `VETRO_KSELFTEST=1`. With `VETRO_JIT=1` (`VETRO_JIT_THRESHOLD=N`) Vetro
 //! also runs with the system-mode JIT, which must give the same log
 //! byte for byte and the same instructions as the interpreter.
+//!
+//! With `VETRO_KSELFTEST_CPUS=N` (ADR 0041) both run with N cores: QEMU with
+//! `-smp N -accel tcg,thread=single` (cores in turns on one thread, like
+//! Vetro's deterministic SMP machine), Vetro with `MachineConfig::cpus`; the
+//! logs go to `*-kselftest-smpN.log`.
 
 use std::process::Command;
 use std::time::Duration;
@@ -59,6 +64,8 @@ fn kselftest_come_sotto_qemu() {
     let Some(qemu) = qemu_system() else {
         return skip_or_fail("VETRO_REQUIRE_SYSTEM_ORACLE", "qemu-system-aarch64 missing");
     };
+    let cpus = cpus();
+    let sfx = if cpus > 1 { format!("-smp{cpus}") } else { String::new() };
     let expected: usize = std::fs::read_to_string(dir.join("kselftest-list.txt"))
         .map(|t| t.lines().filter(|l| !l.trim().is_empty()).count())
         .unwrap_or(0);
@@ -66,24 +73,27 @@ fn kselftest_come_sotto_qemu() {
     // QEMU.
     let mut cmd = Command::new(qemu);
     cmd.args(QEMU_MACHINE).args(["-nographic", "-kernel"]).arg(&image).arg("-initrd").arg(&initrd);
+    if cpus > 1 {
+        cmd.args(["-smp", &cpus.to_string(), "-accel", "tcg,thread=single"]);
+    }
     cmd.args(["-append", CMDLINE]);
     let mut con = Console::spawn(cmd).expect("boot of qemu-system-aarch64");
     let limit = Duration::from_secs(3600);
     assert!(con.wait_for("VETRO-KSELFTEST-FINE", 0, limit).is_some(), "QEMU: kselftests not finished");
     con.finish(Duration::from_secs(30));
     let qlog = con.log();
-    std::fs::write(dir.join("qemu-kselftest.log"), normalize(&qlog)).unwrap();
+    std::fs::write(dir.join(format!("qemu-kselftest{sfx}.log")), normalize(&qlog)).unwrap();
     let theirs = results(&qlog);
     assert_eq!(theirs.len(), expected, "QEMU did not run all the tests");
 
     // Vetro.
     let (image, initrd) = (std::fs::read(&image).unwrap(), std::fs::read(&initrd).unwrap());
-    let (vlog, steps) = run_vetro(&image, &initrd, None);
-    std::fs::write(dir.join("vetro-kselftest.log"), normalize(&vlog)).unwrap();
+    let (vlog, steps) = run_vetro(&image, &initrd, None, cpus);
+    std::fs::write(dir.join(format!("vetro-kselftest{sfx}.log")), normalize(&vlog)).unwrap();
     let ours = results(&vlog);
     if let Some(t) = jit_threshold() {
-        let (jlog, jsteps) = run_vetro(&image, &initrd, Some(t));
-        std::fs::write(dir.join("vetro-kselftest-jit.log"), normalize(&jlog)).unwrap();
+        let (jlog, jsteps) = run_vetro(&image, &initrd, Some(t), cpus);
+        std::fs::write(dir.join(format!("vetro-kselftest{sfx}-jit.log")), normalize(&jlog)).unwrap();
         assert_eq!(jsteps, steps, "instructions differ with the JIT");
         assert!(jlog == vlog, "kselftest log different with the JIT (vetro-kselftest-jit.log)");
         eprintln!("kselftest with the JIT (threshold {t}): same log, {jsteps} instructions");
@@ -127,6 +137,11 @@ fn kselftest_come_sotto_qemu() {
     );
 }
 
+/// Cores (`VETRO_KSELFTEST_CPUS`, default 1).
+fn cpus() -> u32 {
+    std::env::var("VETRO_KSELFTEST_CPUS").ok().and_then(|v| v.parse().ok()).unwrap_or(1)
+}
+
 fn jit_threshold() -> Option<u32> {
     if !std::env::var("VETRO_JIT").is_ok_and(|v| v == "1") {
         return None;
@@ -135,8 +150,8 @@ fn jit_threshold() -> Option<u32> {
 }
 
 /// The whole selection under Vetro (with the JIT if `jit`): log and instructions.
-fn run_vetro(image: &[u8], initrd: &[u8], jit: Option<u32>) -> (String, u64) {
-    let mut m = Machine::new(&MachineConfig::default());
+fn run_vetro(image: &[u8], initrd: &[u8], jit: Option<u32>, cpus: u32) -> (String, u64) {
+    let mut m = Machine::new(&MachineConfig { cpus, ..MachineConfig::default() });
     m.load_linux(image, Some(initrd), CMDLINE).expect("loading the kernel");
     if let Some(t) = jit {
         m.set_jit(Some(vetro_jit_native::system_jit(t)));

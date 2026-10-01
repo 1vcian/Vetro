@@ -317,6 +317,51 @@ mod tests {
         assert!(one.load_state(&snap).is_err());
     }
 
+    /// Record & replay with two cores (ADR 0019): a recording with keyframes
+    /// and two host inputs replays identically from the start in other quanta
+    /// and from a keyframe on a new machine.
+    #[test]
+    fn record_and_replay_two_cores() {
+        use crate::record::{Input, Log, ReplayStatus, Reply};
+        let mut m = machine(2);
+        m.start_recording(super::super::RecordOptions { keyframe_every: 60_000 });
+        let mut inputs = vec![(150_001u64, false), (77_777, true)];
+        let stop = loop {
+            if let Some(&(at, level)) = inputs.last()
+                && m.steps >= at
+            {
+                assert_eq!(m.input(Input::Gpio { line: 3, level }), Reply::Done);
+                inputs.pop();
+            }
+            let s = m.run(5_000);
+            if s != Stop::Budget {
+                break s;
+            }
+        };
+        assert_eq!(stop, Stop::PowerOff);
+        let log = Log::decode(&m.stop_recording().unwrap().encode()).unwrap();
+        assert_eq!(log.config.cpus, 2);
+        assert_eq!(log.events.len(), 2);
+        assert!(log.keyframes.len() >= 3);
+        let end = (m.steps, m.digest());
+        let replay = |m: &mut Machine, q: u64| {
+            while matches!(m.replay_status(), Some(ReplayStatus::Running { .. })) {
+                m.run(q);
+            }
+            assert_eq!(m.replay_status(), Some(&ReplayStatus::Finished));
+            (m.steps, m.digest())
+        };
+        for q in [997, 1 << 40] {
+            let mut r = machine(2);
+            r.start_replay(&log).unwrap();
+            assert_eq!(replay(&mut r, q), end, "quantum {q}");
+        }
+        let cfg = MachineConfig { ram_size: 1 << 20, cpus: 2, ..MachineConfig::default() };
+        let mut r = Machine::with_devices(&cfg, &Devices::none());
+        r.replay_from(&log, 200_000).unwrap();
+        assert_eq!(replay(&mut r, 4_093), end, "from a keyframe");
+    }
+
     /// The machine is idle only when every core that is on waits with
     /// nothing to wake it: core 0 starts core 1 and both park in WFI.
     #[test]
