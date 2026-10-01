@@ -84,20 +84,65 @@ fn boot_with(image: &[u8], initrd: &[u8], jit: Option<u32>, cpus: u32, quantum: 
         m.set_jit(Some(vetro_jit_native::system_jit(t)));
     }
     let mut r = Run { m, log: Vec::new(), quantum };
+    script(&mut r)
+}
+
+/// ADR 0042: the boot with `cpus` cores in parallel on host threads (core 0
+/// on this thread), with the JIT on every core if `jit`. Not deterministic:
+/// only the outcome and the log's lines count.
+fn boot_parallel(image: &[u8], initrd: &[u8], jit: Option<u32>, cpus: u32) -> Boot {
+    let mut m = Machine::new(&MachineConfig { cpus, ..MachineConfig::default() });
+    m.load_linux(image, Some(initrd), "console=ttyAMA0").expect("loading the kernel");
+    if let Some(t) = jit {
+        m.set_jit(Some(vetro_jit_native::system_jit(t)));
+    }
+    let cores = m.start_parallel().expect("parallel");
+    let mut r = Run { m, log: Vec::new(), quantum: 1_000_000 };
+    let (b, executed) = std::thread::scope(|s| {
+        let handles: Vec<_> = cores
+            .into_iter()
+            .map(|mut c| {
+                s.spawn(move || {
+                    c.set_jit(jit.map(vetro_jit_native::system_jit));
+                    while !c.stopped() {
+                        match c.run(1_000_000) {
+                            Stop::Budget | Stop::Idle => {}
+                            Stop::PowerOff | Stop::Reset => break,
+                            other => panic!("core {}: {other:?}", c.index()),
+                        }
+                    }
+                    c.drop_jit();
+                    c
+                })
+            })
+            .collect();
+        let b = script(&mut r);
+        r.m.request_stop();
+        let cores: Vec<_> = handles.into_iter().map(|h| h.join().expect("core thread")).collect();
+        let executed: Vec<u64> = cores.iter().map(|c| c.executed()).collect();
+        r.m.stop_parallel(cores);
+        (b, executed)
+    });
+    eprintln!("parallel: instructions of cores 1..: {executed:?}");
+    b
+}
+
+/// The script of the test on a machine ready to boot.
+fn script(r: &mut Run) -> Boot {
     let fail = |r: &Run, e: String| -> ! { panic!("{e}; last lines of the console:\n{}", r.tail()) };
 
-    let at = r.until(BOOT_MARKER, 0).unwrap_or_else(|e| fail(&r, e));
+    let at = r.until(BOOT_MARKER, 0).unwrap_or_else(|e| fail(r, e));
     let t_boot = r.m.guest_ns();
     // Up to the end of the line: a block of instructions can end halfway.
-    let at_end = r.until(AUTOTEST_END, at).unwrap_or_else(|e| fail(&r, e));
-    let end = r.until("\n", at_end).unwrap_or_else(|e| fail(&r, e));
+    let at_end = r.until(AUTOTEST_END, at).unwrap_or_else(|e| fail(r, e));
+    let end = r.until("\n", at_end).unwrap_or_else(|e| fail(r, e));
     let line = String::from_utf8_lossy(&r.log[at_end - AUTOTEST_END.len()..end]).into_owned();
     assert_eq!(line.trim_end(), AUTOTEST_OK, "self-test with errors:\n{}", r.tail());
     // Same script as the QEMU test: input only at a complete prompt.
-    let prompt = r.until(SHELL_PROMPT, end).unwrap_or_else(|e| fail(&r, e));
+    let prompt = r.until(SHELL_PROMPT, end).unwrap_or_else(|e| fail(r, e));
     r.m.console_input(b"echo VETRO-SHELL-$((6*7))\n");
-    let out = r.until("VETRO-SHELL-42", prompt).unwrap_or_else(|e| fail(&r, e));
-    r.until(SHELL_PROMPT, out).unwrap_or_else(|e| fail(&r, e));
+    let out = r.until("VETRO-SHELL-42", prompt).unwrap_or_else(|e| fail(r, e));
+    r.until(SHELL_PROMPT, out).unwrap_or_else(|e| fail(r, e));
     r.m.console_input(b"poweroff -f\n");
     let limit = r.m.steps + PHASE_BUDGET;
     let stop = loop {
@@ -113,6 +158,57 @@ fn boot_with(image: &[u8], initrd: &[u8], jit: Option<u32>, cpus: u32, quantum: 
     }
     let log = normalize(&String::from_utf8_lossy(&r.log));
     Boot { log, steps: r.m.steps, t_boot, t_end: r.m.guest_ns() }
+}
+
+/// ADR 0042: the same script with the two cores in parallel on two host
+/// threads, with the interpreter and (`VETRO_JIT=1`) the JIT on each: the
+/// self-test passes, the shell answers, the machine powers off, and the log's
+/// lines are QEMU's with `-smp 2` (the comparison by set of lines of
+/// `qemu-boot.log`).
+#[test]
+fn vetro_boots_guest_kernel_parallel2() {
+    if cfg!(debug_assertions) {
+        return skip_or_fail(
+            "VETRO_REQUIRE_GUEST_KERNEL",
+            "boot under Vetro only in release (cargo test --release)",
+        );
+    }
+    let Some((image, initrd)) = guest_kernel() else {
+        return skip_or_fail(
+            "VETRO_REQUIRE_GUEST_KERNEL",
+            "target/guest-kernel missing: run tools/guest-kernel/build.sh",
+        );
+    };
+    let (image, initrd) = (std::fs::read(image).unwrap(), std::fs::read(initrd).unwrap());
+    let root = repo_root();
+    let (_, reference) = qemu_reference(&root, "qemu-boot-smp2.log");
+    let mut runs: Vec<Option<u32>> = vec![None];
+    if let Some(t) = jit_threshold() {
+        runs.push(Some(t));
+    }
+    for jit in runs {
+        let t0 = std::time::Instant::now();
+        let b = boot_parallel(&image, &initrd, jit, 2);
+        eprintln!(
+            "Vetro, 2 cores in parallel (JIT {jit:?}): powered off at {:.2} s of guest time ({} instructions, {:.2} s)",
+            b.t_end as f64 / 1e9,
+            b.steps,
+            t0.elapsed().as_secs_f64()
+        );
+        std::fs::write(root.join("target/guest-kernel/vetro-boot-par2.log"), &b.log).unwrap();
+        assert!(
+            b.log.contains("smp: Brought up 1 node, 2 CPUs"),
+            "the second core did not come up:\n{}",
+            b.log
+        );
+        let (ours, theirs) = (comparable_lines(&b.log), comparable_lines(&reference));
+        let diff = line_diff(&theirs, &ours);
+        assert!(
+            diff.is_empty(),
+            "parallel two-core log differs from QEMU's (- QEMU only, + Vetro only):\n{}",
+            diff.join("\n")
+        );
+    }
 }
 
 fn jit_threshold() -> Option<u32> {

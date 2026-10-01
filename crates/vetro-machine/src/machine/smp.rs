@@ -139,7 +139,12 @@ impl Smp {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests_support {
+    pub(in crate::machine) use super::tests::{machine, to_power_off, word};
+}
+
+#[cfg(test)]
+pub(super) mod tests {
     use super::super::{Devices, Machine, MachineConfig, Stop};
     use vetro_platform::map;
 
@@ -233,7 +238,7 @@ mod tests {
         0xd65f03c0, // ret
     ];
 
-    fn machine(cpus: u32) -> Machine {
+    pub(in crate::machine) fn machine(cpus: u32) -> Machine {
         let cfg = MachineConfig { ram_size: 1 << 20, cpus, ..MachineConfig::default() };
         let mut m = Machine::with_devices(&cfg, &Devices::none());
         {
@@ -246,14 +251,14 @@ mod tests {
         m
     }
 
-    fn word(m: &Machine, off: u64) -> u64 {
+    pub(in crate::machine) fn word(m: &Machine, off: u64) -> u64 {
         let mut v = [0u8; 8];
         assert!(m.board.borrow().ram.read(R + off, &mut v));
         u64::from_le_bytes(v)
     }
 
     /// Runs in host quanta of `quantum` up to the power-off.
-    fn to_power_off(m: &mut Machine, quantum: u64) {
+    pub(in crate::machine) fn to_power_off(m: &mut Machine, quantum: u64) {
         let limit = m.steps + 50_000_000;
         loop {
             match m.run(quantum) {

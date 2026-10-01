@@ -16,9 +16,12 @@ use crate::hooks::{Breakpoint, GuestView, Hooks, Tracer};
 use crate::net::{self, NetLink, NetSetup, TappedFrame};
 use crate::psci::{self, Call};
 
+mod parallel;
 mod record;
 pub mod smp;
 mod snapshot;
+
+pub use parallel::Core;
 
 pub use record::RecordOptions;
 
@@ -134,7 +137,7 @@ pub struct Machine {
     pub cpu: Cpu,
     pub mmu: Mmu,
     /// The devices behind a lock, the RAM and the cores' lines (ADR 0042).
-    pub board: BoardCell,
+    pub board: std::sync::Arc<BoardCell>,
     seed: u64,
     /// Instructions executed (and time steps skipped in WFIs): the clock.
     pub steps: u64,
@@ -175,6 +178,9 @@ pub struct Machine {
     /// Broadcasts of the running core still to be acknowledged (cores in
     /// parallel, ADR 0042; always empty in turns).
     waits: Vec<(usize, u64)>,
+    /// With the cores in parallel: core 0's state (`cpu`, `mmu`, `jit`
+    /// are then unused).
+    par: Option<Box<parallel::ParCore>>,
 }
 
 /// How [`Machine::run_cpu`] ends a stretch of one core.
@@ -267,7 +273,7 @@ impl Machine {
         Machine {
             cpu,
             mmu: Mmu::new(PA_BITS),
-            board: BoardCell::new(board),
+            board: std::sync::Arc::new(BoardCell::new(board)),
             steps: 0,
             timer_deadline: None,
             net_deadline: None,
@@ -286,6 +292,7 @@ impl Machine {
             smp: (cfg.cpus > 1).then(|| Box::new(smp::Smp::new(cfg.cpus as usize))),
             ncpu: u64::from(cfg.cpus),
             waits: Vec::new(),
+            par: None,
         }
     }
 
@@ -720,6 +727,9 @@ impl Machine {
     /// instructions stop at every log event to apply it, and at the end of
     /// the recording ([`Machine::replay_status`]).
     pub fn run(&mut self, budget: u64) -> Stop {
+        if self.par.is_some() {
+            return self.run_parallel(budget);
+        }
         if self.rr.replaying() {
             return self.run_replay(budget);
         }

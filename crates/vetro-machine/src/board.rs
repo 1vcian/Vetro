@@ -211,8 +211,10 @@ pub struct Ram {
     /// Watched pages.
     watched: AtomicUsize,
     /// Physical pages (`pa >> 12`) watched and then written, for each
-    /// consumer ([`Ram::set_consumers`]).
+    /// consumer (one per JIT, [`Ram::set_consumers`]); only the first
+    /// `consumers` receive them.
     dirty: Vec<Mutex<Vec<u64>>>,
+    consumers: AtomicUsize,
 }
 
 // SAFETY: the bytes are only reached through `&self` methods that copy in and
@@ -223,22 +225,32 @@ unsafe impl Sync for Ram {}
 
 impl Ram {
     pub fn new(size: u64) -> Self {
+        Self::with_consumers(size, 1)
+    }
+
+    /// A RAM whose written code pages up to `n` JITs can follow (one per core
+    /// running in parallel, ADR 0042); one at first.
+    pub fn with_consumers(size: u64, n: usize) -> Self {
         let pages = size.div_ceil(4096) as usize;
         Ram {
             bytes: Store::new(size),
             code: (0..pages.div_ceil(64)).map(|_| AtomicU64::new(0)).collect(),
             watched: AtomicUsize::new(0),
-            dirty: vec![Mutex::new(Vec::new())],
+            dirty: (0..n.max(1)).map(|_| Mutex::new(Vec::new())).collect(),
+            consumers: AtomicUsize::new(1),
         }
     }
 
-    /// Number of consumers of the written watched pages (one per JIT;
-    /// default 1): [`take_code_dirty_for`](Self::take_code_dirty_for) takes
-    /// consumer `i`'s list. Pending pages are kept for consumer 0 and given to
-    /// the new ones too.
-    pub fn set_consumers(&mut self, n: usize) {
-        let pending = lock(&self.dirty[0]).clone();
-        self.dirty = (0..n.max(1)).map(|_| Mutex::new(pending.clone())).collect();
+    /// Number of JITs following the written code pages (at most the number
+    /// given to [`Ram::with_consumers`]): [`take_code_dirty_for`](Self::take_code_dirty_for)
+    /// takes consumer `i`'s list. The lists of the new consumers start empty
+    /// (their JITs have no blocks yet); those of the dropped ones are emptied.
+    pub fn set_consumers(&self, n: usize) {
+        let n = n.clamp(1, self.dirty.len());
+        for d in &self.dirty[1..] {
+            lock(d).clear();
+        }
+        self.consumers.store(n, Ordering::SeqCst);
     }
 
     /// RAM bytes.
@@ -355,7 +367,7 @@ impl Ram {
             {
                 self.watched.fetch_sub(1, Ordering::SeqCst);
                 let page = (map::RAM_BASE >> 12) + i as u64;
-                for d in &self.dirty {
+                for d in &self.dirty[..self.consumers.load(Ordering::SeqCst)] {
                     lock(d).push(page);
                 }
                 hit = true;
@@ -422,6 +434,11 @@ impl Ram {
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// A mutex of the cores' slots, ignoring poisoning.
+pub(crate) fn lock_slot<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    lock(m)
 }
 
 // ---- Snapshot (M6, ADR 0015) -------------------------------------------------
@@ -524,6 +541,11 @@ impl GuestRam for RamRef<'_> {
     }
 }
 
+// SAFETY: the board is reached only through `BoardCell`'s lock; its devices
+// and their backends are Rust data (disks fed by the host, displays in
+// memory), so any core's thread may service them while holding the lock.
+unsafe impl Send for Board {}
+
 /// RAM, platform and time.
 pub struct Board {
     /// Shared with the cores of a parallel machine (ADR 0042).
@@ -553,7 +575,7 @@ impl Board {
     /// A board for `cpus` cores (a redistributor and a timer each).
     pub fn with_cpus(ram_size: u64, now_secs: u64, cpus: usize) -> Self {
         Board {
-            ram: Arc::new(Ram::new(ram_size)),
+            ram: Arc::new(Ram::with_consumers(ram_size, cpus)),
             virt: Virt::with_cpus(now_secs, cpus),
             cntpct: 0,
             irq_dirty: true,
@@ -587,6 +609,24 @@ impl Board {
         self.virt.update_irqs(self.cntpct);
         self.lines_changed();
         self.irq_dirty = false;
+        if self.cores.parallel.load(Ordering::Relaxed) {
+            // Each core's next timer deadline, which it watches without the lock.
+            for (i, s) in self.cores.slots.iter().enumerate() {
+                let d = self.virt.timers[i].next_deadline(self.cntpct).unwrap_or(u64::MAX);
+                s.deadline.store(d, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// With the cores in parallel, a change is applied at once: devices
+    /// serviced, lines and deadlines updated (nobody polls `irq_dirty`).
+    fn settle(&mut self) {
+        if self.cores.parallel.load(Ordering::Relaxed) {
+            if self.virtio_dirty {
+                self.service_virtio();
+            }
+            self.update_irqs();
+        }
     }
 
     /// Runs the virtio devices on top of RAM.
@@ -611,6 +651,7 @@ impl Board {
         self.virt.gpio_mut().set_input(line, level);
         self.lines_changed();
         self.irq_dirty = true;
+        self.settle();
     }
 
     fn mmio_touched(&mut self, pa: u64) {
@@ -620,6 +661,7 @@ impl Board {
         if (map::VIRTIO_BASE..virtio_end).contains(&pa) {
             self.virtio_dirty = true;
         }
+        self.settle();
     }
 }
 
@@ -636,6 +678,18 @@ pub(crate) struct Cores {
     /// The cores run on host threads at the same time: lines are computed
     /// eagerly and TLBIs and code watches are broadcast.
     pub parallel: AtomicBool,
+    /// With the cores in parallel: the clock (steps of every core plus the
+    /// time skipped when all wait; CNTPCT is that of `clock / n`).
+    pub clock: AtomicU64,
+    /// Cores waiting in WFI.
+    pub idle: AtomicUsize,
+    /// The host wants the cores to stop (`Machine::stop_parallel`).
+    pub stop: AtomicBool,
+    /// A core powered the machine off (1) or reset it (2).
+    pub halt: AtomicU8,
+    /// Clock value of the network stack's next deadline (`u64::MAX` none),
+    /// for the jump of time when every core waits.
+    pub net_deadline: AtomicU64,
 }
 
 /// One core's shared state.
@@ -645,6 +699,8 @@ pub(crate) struct Slot {
     irq: AtomicU8,
     /// Bumped by every kick; a core waiting in WFI wakes when it changes.
     pub kick: AtomicU32,
+    /// The kick count the core last looked at ([`Slot::clear_kick`]).
+    seen: AtomicU32,
     /// Set by a kick: the core's JIT run ends at the next region boundary.
     pub abort: Arc<AtomicBool>,
     /// Address of the core's `JitState` step limit (0 = none): a kick writes
@@ -663,6 +719,21 @@ pub(crate) struct Slot {
     /// Clock value at which this core, waiting in WFI, wants to wake (its
     /// timer deadline), `u64::MAX` = none, 0 = not waiting.
     pub wait_until: AtomicU64,
+    /// With the cores in parallel: its generic timer's next deadline
+    /// (CNTPCT, `u64::MAX` = none), as of the last `update_irqs`.
+    pub deadline: AtomicU64,
+}
+
+impl Slot {
+    /// The core looks at what kicked it (requests, lines, stop).
+    pub fn clear_kick(&self) {
+        self.seen.store(self.kick.load(Ordering::SeqCst), Ordering::SeqCst);
+    }
+
+    /// Kicked since [`Slot::clear_kick`].
+    pub fn kick_seen(&self) -> bool {
+        self.kick.load(Ordering::SeqCst) != self.seen.load(Ordering::SeqCst)
+    }
 }
 
 /// What a core asks of another one in parallel (applied between runs, then
@@ -684,6 +755,7 @@ impl Cores {
                 .map(|i| Slot {
                     irq: AtomicU8::new(IRQ_UNKNOWN),
                     kick: AtomicU32::new(0),
+                    seen: AtomicU32::new(0),
                     abort: Arc::new(AtomicBool::new(false)),
                     limit: AtomicUsize::new(0),
                     sleep: Mutex::new(()),
@@ -694,9 +766,15 @@ impl Cores {
                     on: AtomicBool::new(i == 0),
                     start: Mutex::new(None),
                     wait_until: AtomicU64::new(0),
+                    deadline: AtomicU64::new(u64::MAX),
                 })
                 .collect(),
             parallel: AtomicBool::new(false),
+            clock: AtomicU64::new(0),
+            idle: AtomicUsize::new(0),
+            stop: AtomicBool::new(false),
+            halt: AtomicU8::new(0),
+            net_deadline: AtomicU64::new(u64::MAX),
         }
     }
 
@@ -1092,6 +1170,7 @@ impl CpuEnv for Env<'_> {
             _ => {}
         }
         b.lines_changed();
+        b.settle();
     }
 }
 
