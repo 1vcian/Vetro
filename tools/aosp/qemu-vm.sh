@@ -16,7 +16,12 @@
 #   tools/aosp/qemu-vm.sh idle            detached on the VM: waits for the settled
 #                                         home screen, then measures how idle the
 #                                         guest is (remote/idle.sh; VETRO_IDLE_*)
-#   tools/aosp/qemu-vm.sh idle-report     its state, log and report
+#   tools/aosp/qemu-vm.sh idle-report     its state, log and report (with RAM,
+#                                         boot times and inventory, ADR 0041)
+#   tools/aosp/qemu-vm.sh apps            detached on the VM, after idle: the app
+#                                         catalog installed and opened with adb
+#                                         (remote/apps.sh; VETRO_APPS_WAIT)
+#   tools/aosp/qemu-vm.sh apps-report     its state and report
 # VETRO_QEMU_NAME (default aosp), VETRO_ADB_PORT (5565), VETRO_QEMU_MONITOR
 # (4454), VETRO_VM_IMAGES (images on the VM, default ~/$WORK/out; the local
 # VETRO_AOSP_IMAGES must be the same image, for the bootloader's files), VETRO_AOSP_APPEND (more kernel/bootconfig parameters, e.g.
@@ -71,5 +76,11 @@ case "${1:-status}" in
     echo "idle measurement launched for $name" ;;
   idle-report)
     vm "cat $rd/idle/status; tail -n 5 $rd/idle/log; cat $rd/idle/report.txt 2>/dev/null" ;;
-  *) echo "usage: $0 start|status|stop|log [N]|adb ARGS|screendump F.png|screencap F.png|idle|idle-report" >&2; exit 2 ;;
+  apps)
+    vm_rsync -a --delete "$here/remote/" "$VETRO_AOSP_HOST:$VETRO_AOSP_WORK/remote/"
+    vm "$env VETRO_APPS_WAIT=${VETRO_APPS_WAIT:-60} nohup setsid bash $VETRO_AOSP_WORK/remote/apps.sh </dev/null >/dev/null 2>&1 &"
+    echo "catalog apps check launched for $name (after the idle measurement)" ;;
+  apps-report)
+    vm "cat $rd/apps/status; tail -n 3 $rd/apps/log; cat $rd/apps/report.txt 2>/dev/null" ;;
+  *) echo "usage: $0 start|status|stop|log [N]|adb ARGS|screendump F.png|screencap F.png|idle|idle-report|apps|apps-report" >&2; exit 2 ;;
 esac

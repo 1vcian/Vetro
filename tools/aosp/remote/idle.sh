@@ -45,6 +45,8 @@ done
 home="$(up)"
 log "launcher focused at guest $home"
 echo "$home" > "$d/home"
+# Launcher drawn (ActivityTaskManager's "Displayed", guest seconds since boot).
+sh_ "logcat -d -v monotonic -s ActivityTaskManager:I | grep -m1 'Displayed com.android.launcher3'" > "$d/displayed.txt"
 st SETTLE
 t0=$(date +%s)
 while :; do
@@ -77,5 +79,15 @@ timeout $((secs * 4 + 300)) "$A" -s "$s" shell su 0 sh /data/local/tmp/vetro-idl
 sh_ dumpsys cpuinfo > "$d/cpuinfo.txt"
 sh_ top -b -n 1 -m 20 -o PID,USER,S,%CPU,TIME+,CMDLINE > "$d/top.txt"
 sh_ ps -A -o PID,NAME > "$d/ps.txt"
+# Memory and inventory of the settled guest (ADR 0041): /proc/meminfo, the
+# framework's RAM summary and per-process PSS, packages, APEXes, features and
+# system services; boot_completed from the serial console (init.vetro.rc).
+sh_ cat /proc/meminfo > "$d/meminfo.txt"
+sh_ dumpsys meminfo > "$d/dumpsys-meminfo.txt"
+sh_ pm list packages -f > "$d/packages.txt"
+sh_ pm list features > "$d/features.txt"
+sh_ ls /apex > "$d/apex.txt"
+sh_ service list > "$d/services.txt"
+grep -a -m1 'VETRO: sys.boot_completed=1' "$work/qemu/$name/serial.log" > "$d/boot_completed.txt" || true
 python3 "$work/remote/idle-report.py" "$d" > "$d/report.txt" 2>&1
 st DONE

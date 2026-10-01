@@ -3,6 +3,7 @@
 # measured window, from the guest's /proc/stat and /proc/PID/stat deltas.
 #   idle-report.py DIR   (DIR/raw = the guest's /data/local/tmp/vetro-idle)
 import os
+import re
 import sys
 
 d = sys.argv[1]
@@ -69,3 +70,51 @@ print(f"processes with CPU in the window: {len(rows)}; exited during it: {len(p0
 print("top processes (% of the window's CPU time):")
 for t, pid, name in rows[:15]:
     print(f"  {100 * t / total:5.1f}%  {pid:6d}  {name[:90]}")
+
+
+def optional(name):
+    try:
+        with open(os.path.join(d, name)) as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+# Boot times, memory and inventory (ADR 0041), when idle.sh collected them.
+m = re.search(r"\[\s*([0-9.]+)\]", optional("boot_completed.txt"))
+if m:
+    print(f"boot_completed at guest {float(m.group(1)):.0f} s")
+home = optional("home").strip()
+if home:
+    print(f"launcher focused at guest {float(home):.0f} s")
+m = re.match(r"\s*([0-9.]+)", optional("displayed.txt"))
+if m:
+    print(f"launcher displayed at guest {float(m.group(1)):.0f} s")
+mem = {}
+for line in optional("meminfo.txt").splitlines():
+    k, _, v = line.partition(":")
+    if v.strip().endswith("kB"):
+        mem[k.strip()] = int(v.split()[0])
+if mem:
+    used = mem["MemTotal"] - mem["MemAvailable"]
+    print(f"meminfo: total {mem['MemTotal'] // 1024} MiB, available {mem['MemAvailable'] // 1024} MiB, "
+          f"used (total - available) {used // 1024} MiB, free {mem['MemFree'] // 1024} MiB, "
+          f"cached {mem['Cached'] // 1024} MiB, anon {(mem.get('AnonPages', 0)) // 1024} MiB, "
+          f"shmem {mem.get('Shmem', 0) // 1024} MiB, slab {mem.get('Slab', 0) // 1024} MiB")
+dm = optional("dumpsys-meminfo.txt")
+for key in ("Total RAM", "Free RAM", "Used RAM", "Lost RAM"):
+    m = re.search(rf"^\s*{key}:\s*([0-9,]+)K(.*)$", dm, re.M)
+    if m:
+        print(f"dumpsys {key}: {int(m.group(1).replace(',', '')) // 1024} MiB{m.group(2)[:100]}")
+m = re.search(r"Total PSS by process:\n(.*?)\n\s*\n", dm, re.S)
+if m:
+    procs = m.group(1).splitlines()
+    print(f"processes with PSS: {len(procs)}; largest:")
+    for line in procs[:12]:
+        print("  " + line.strip()[:100])
+for name, label in (("packages.txt", "packages"), ("apex.txt", "/apex entries"),
+                    ("features.txt", "features"), ("services.txt", "binder services"),
+                    ("ps.txt", "processes (ps -A)")):
+    text = optional(name)
+    if text:
+        print(f"{label}: {len([x for x in text.splitlines() if x.strip()])}")
