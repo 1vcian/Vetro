@@ -7,8 +7,8 @@
 #   3. with --jit, also the system-mode JIT in Node/V8
 #      (web/node/boot.mjs --jit, ADR 0013), and again with the modules
 #      compiled in a Worker (--jit-background, ADR 0038), and with the threads
-#      build of vetro-wasm (shared memory, tools/wasm-threads.sh, ADR 0041);
-#   4. with --jit, two guest cores in turns (ADR 0041): natively with the
+#      build of vetro-wasm (shared memory, tools/wasm-threads.sh, ADR 0042);
+#   4. with --jit, two guest cores in turns (ADR 0042): natively with the
 #      interpreter and with the JIT in V8, same instructions and log.
 # The counted instructions and the console log must be identical (the
 # machine is deterministic, with or without the JIT). Prints the timings.
@@ -91,8 +91,8 @@ if [ "$jit" -eq 1 ]; then
 fi
 
 if [ "$jit" -eq 1 ]; then
-  # ADR 0041: the threads build (atomics, shared memory), same instructions and log.
-  echo "==> boot with the JIT in Node, threads build (shared memory, ADR 0041)"
+  # ADR 0042: the threads build (atomics, shared memory), same instructions and log.
+  echo "==> boot with the JIT in Node, threads build (shared memory, ADR 0042)"
   tools/wasm-threads.sh
   status=0
   node web/node/boot.mjs --wasm target/wasm32-unknown-unknown/release/vetro_wasm_threads.wasm --jit --expect-steps "$steps" \
@@ -105,7 +105,7 @@ if [ "$jit" -eq 1 ]; then
 fi
 
 if [ "$jit" -eq 1 ]; then
-  # ADR 0041: two guest cores in turns, natively (interpreter) and with the
+  # ADR 0042: two guest cores in turns, natively (interpreter) and with the
   # JIT in V8: same instructions and log.
   echo "==> two cores: native interpreter, then the JIT in Node"
   smp_log=target/guest-kernel/native-boot-smp2.out

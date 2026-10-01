@@ -705,7 +705,7 @@ mod tests {
         assert!(matches!(b.finish(), Err(FdtError::InvalidName(_))));
     }
 
-    /// Two cores (ADR 0041): like QEMU virt with `-smp 2`, `cpu@0` and `cpu@1`
+    /// Two cores (ADR 0042): like QEMU virt with `-smp 2`, `cpu@0` and `cpu@1`
     /// with their affinity in `reg`, phandles and the `cpu-map`, and a
     /// redistributor per core in the GIC's `reg`. One core: no `cpu-map`.
     #[test]

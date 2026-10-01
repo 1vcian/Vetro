@@ -91,6 +91,13 @@ pub trait SysPhys: PhysMemory {
     /// Appends to `out` the watched pages written since the last call
     /// (which are no longer watched).
     fn take_code_dirty(&mut self, out: &mut Vec<u64>);
+    /// After [`watch_code`](Self::watch_code) of a page: true if its code can
+    /// be translated now. With cores running in parallel (ADR 0042) the others
+    /// must first stop writing to the page directly; until then the JIT leaves
+    /// it to the interpreter and reads it again later.
+    fn watch_ready(&mut self, _page: u64) -> bool {
+        true
+    }
     /// RAM as a contiguous host block: physical start address,
     /// pointer and length. Used by the blocks' software TLB.
     fn ram_region(&mut self) -> Option<(u64, *mut u8, usize)> {
@@ -326,9 +333,10 @@ impl TlbGroup {
 /// | parameters`).
 const CTX_SHIFT: u32 = 7;
 
-/// The translation parameters for the current CPU state (`yields`: the
-/// JIT's setting, [`SysJit::set_yields`]).
-pub fn target(cpu: &Cpu, yields: bool) -> SysTarget {
+/// The translation parameters for the current CPU state (`yields` and
+/// `parallel`: the JIT's settings, [`SysJit::set_yields`],
+/// [`SysJit::set_parallel`]).
+pub fn target(cpu: &Cpu, yields: bool, parallel: bool) -> SysTarget {
     let t = cpu.sys.tcr_el1;
     // CPACR_EL1.FPEN like `Cpu::fp_trapped`: 11 no trap, 01 EL0 only.
     let fp = match cpu.sys.cpacr_el1 >> cpacr::FPEN_SHIFT & 3 {
@@ -351,6 +359,7 @@ pub fn target(cpu: &Cpu, yields: bool) -> SysTarget {
         fp,
         cntk,
         yields,
+        parallel,
     }
 }
 
@@ -686,6 +695,10 @@ pub struct SysJit<E: Engine> {
     stops: std::collections::BTreeSet<u64>,
     /// WFE and YIELD left to the interpreter ([`SysJit::set_yields`]).
     yields: bool,
+    /// Code for cores running in parallel ([`SysJit::set_parallel`]).
+    parallel: bool,
+    /// Set by another core to end the current run ([`SysJit::set_abort`]).
+    abort: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// The guest clock for the regions (ADR 0026): instructions executed
@@ -870,6 +883,8 @@ impl<E: Engine> SysJit<E> {
             time: None,
             stops: std::collections::BTreeSet::new(),
             yields: false,
+            parallel: false,
+            abort: None,
             profile: cfg.profile.then(|| {
                 crate::helper::profile(true);
                 Profile::default()
@@ -898,7 +913,7 @@ impl<E: Engine> SysJit<E> {
 
     /// With `on`, regions never contain WFE or YIELD: the interpreter
     /// executes them and reports `SysEvent::Yield`, which ends a core's turn
-    /// on a machine with several cores (ADR 0041). Without it (one core) they
+    /// on a machine with several cores (ADR 0042). Without it (one core) they
     /// are NOPs inside the regions. A change forgets every block, like
     /// [`SysJit::set_stops`].
     pub fn set_yields(&mut self, on: bool) {
@@ -906,6 +921,38 @@ impl<E: Engine> SysJit<E> {
             self.yields = on;
             self.forget_blocks();
         }
+    }
+
+    /// Code for a core that runs in parallel with others on shared memory
+    /// (ADR 0042): DMB/DSB/ISB become `atomic.fence`, LDAR/STLR atomic
+    /// accesses, the exclusive loads are followed by a fence and the
+    /// store-exclusives are left to the interpreter (an atomic
+    /// compare-and-exchange). A change forgets every block.
+    pub fn set_parallel(&mut self, on: bool) {
+        if on != self.parallel {
+            self.parallel = on;
+            self.forget_blocks();
+        }
+    }
+
+    /// A flag another core sets to end this core's run at the next region
+    /// boundary (with the limit at zero, [`SysJit::limit_addr`]). Cleared by
+    /// the owner before every run.
+    pub fn set_abort(&mut self, flag: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        self.abort = Some(flag);
+    }
+
+    /// Host address of the step limit in `JitState` (an aligned u64): another
+    /// core writes zero there to stop the dispatcher at the next block.
+    pub fn limit_addr(&mut self) -> usize {
+        let at = self.cache.at + off::LIMIT as usize;
+        self.engine.memory()[at..].as_mut_ptr().addr()
+    }
+
+    /// Forgets the software TLB's write entries: another core now has
+    /// translated code on a page this core may write directly (ADR 0042).
+    pub fn flush_writes(&mut self) {
+        self.flush_tlb(true);
     }
 
     /// Forgets all blocks (even the waiting ones) and the jump cache
@@ -944,7 +991,7 @@ impl<E: Engine> SysJit<E> {
         if let Ok(pa) = pa
             && phys.ram_read(pa, &mut w)
         {
-            p.note(u32::from_le_bytes(w), Some(target(cpu, self.yields)));
+            p.note(u32::from_le_bytes(w), Some(target(cpu, self.yields, self.parallel)));
         }
     }
 
@@ -1177,7 +1224,7 @@ impl<E: Engine> SysJit<E> {
         self.sync_regime(cpu, mmu);
         self.sync_ram(phys);
         let mut regs = translation_regs(cpu);
-        let sys = target(cpu, self.yields);
+        let sys = target(cpu, self.yields, self.parallel);
         let (el, fl) = (sys.el, flags(sys));
         let at = self.cache.at;
         let mut done = 0u64;
@@ -1185,7 +1232,9 @@ impl<E: Engine> SysJit<E> {
         let mut pc = cpu.pc;
         let time = self.time.take();
         let next = loop {
-            if done >= budget {
+            if done >= budget
+                || self.abort.as_ref().is_some_and(|a| a.load(std::sync::atomic::Ordering::Relaxed))
+            {
                 break Next::Jit;
             }
             // A valid jump cache entry for `pc` names the region the lookup
@@ -1422,6 +1471,11 @@ impl<E: Engine> SysJit<E> {
         if !was_watched {
             // No direct writes to a page that now has blocks.
             self.flush_tlb(true);
+            if !phys.watch_ready(page) {
+                // Other cores may still write it directly (ADR 0042): read it
+                // again once they no longer can.
+                return Err(Next::Cold);
+            }
         }
         if let Some(es) = self.cache.compiled.get(&(key, words.clone())) {
             let es = es.clone();
@@ -1708,6 +1762,16 @@ pub trait SysJitDyn {
     fn set_stops(&mut self, stops: &[u64]);
     /// WFE and YIELD left to the interpreter ([`SysJit::set_yields`]).
     fn set_yields(&mut self, on: bool);
+    /// Code for cores in parallel ([`SysJit::set_parallel`]).
+    fn set_parallel(&mut self, _on: bool) {}
+    /// The flag that ends a run ([`SysJit::set_abort`]).
+    fn set_abort(&mut self, _flag: std::sync::Arc<std::sync::atomic::AtomicBool>) {}
+    /// Address of the step limit ([`SysJit::limit_addr`]), 0 if none.
+    fn limit_addr(&mut self) -> usize {
+        0
+    }
+    /// Forgets the software TLB's write entries ([`SysJit::flush_writes`]).
+    fn flush_writes(&mut self) {}
     fn profile(&self) -> Option<&Profile> {
         None
     }
@@ -1731,6 +1795,18 @@ impl<E: Engine> SysJitDyn for SysJit<E> {
     }
     fn set_yields(&mut self, on: bool) {
         SysJit::set_yields(self, on)
+    }
+    fn set_parallel(&mut self, on: bool) {
+        SysJit::set_parallel(self, on)
+    }
+    fn set_abort(&mut self, flag: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        SysJit::set_abort(self, flag)
+    }
+    fn limit_addr(&mut self) -> usize {
+        SysJit::limit_addr(self)
+    }
+    fn flush_writes(&mut self) {
+        SysJit::flush_writes(self)
     }
     fn profile_step(&mut self, cpu: &Cpu, mmu: &mut Mmu, phys: &mut dyn SysPhys) {
         SysJit::profile_step(self, cpu, mmu, phys)

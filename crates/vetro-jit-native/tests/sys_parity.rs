@@ -357,6 +357,7 @@ fn setup(seed: u64) -> (Cpu, Vec<u8>) {
         fp: true,
         cntk: 0,
         yields: false,
+        parallel: false,
     };
     // Program: random instructions, system instructions, exclusive pairs.
     let mut prog = Vec::with_capacity(PROG_LEN);
@@ -376,7 +377,7 @@ fn setup(seed: u64) -> (Cpu, Vec<u8>) {
             _ => prog.push(random_insn(&mut rng, sys)),
         }
     }
-    // ADR 0041: WFE and YIELD at fixed places (NOPs in the regions, or left
+    // ADR 0042: WFE and YIELD at fixed places (NOPs in the regions, or left
     // to the interpreter with `set_yields`), without drawing from the
     // generator.
     for (i, w) in prog.iter_mut().enumerate() {
@@ -538,6 +539,9 @@ fn run_jit_on<E: Engine>(
     jit.set_stops(stops);
     // Odd seeds: WFE and YIELD stay with the interpreter (several cores).
     jit.set_yields(seed % 2 == 1);
+    // Every third seed: the code of a core in parallel (ADR 0042), the same
+    // execution on one thread (fences, atomic LDAR/STLR, STXR interpreted).
+    jit.set_parallel(seed % 3 == 2);
     let base = vetro_jit::Engine::memory(jit.engine())[RAM_IN_ENGINE..].as_mut_ptr();
     let mut phys = TestPhys { ram: base, watched: vec![false; RAM_LEN >> 12], dirty: Vec::new() };
     phys.bytes().copy_from_slice(ram);

@@ -371,7 +371,7 @@ fn trap_e_undefined_da_el0() {
     m.cpu.sys.sctlr_el1 &= !sctlr::NTWI;
     m.expect_sync(0xd503207f, 0x07e0_0000);
     // WFE is never trapped (like QEMU); WFE and YIELD are a hint for the
-    // machine's scheduler (ADR 0041).
+    // machine's scheduler (ADR 0042).
     let mut m = M::at_el0(el0);
     m.cpu.sys.sctlr_el1 &= !sctlr::NTWE;
     assert_eq!(m.one(0xd503205f), SysEvent::Yield);

@@ -13,7 +13,7 @@ workspace = true
 vetro-jit = { path = "../vetro-jit" }
 # The JIT's only external dependency, and only here (never in the core nor in the
 # browser, which uses JavaScript's WebAssembly).
-wasmtime = { version = "49", default-features = false, features = ["cranelift", "runtime", "std"] }
+wasmtime = { version = "49", default-features = false, features = ["cranelift", "runtime", "std", "threads"] }
 
 [dev-dependencies]
 vetro-cpu = { path = "../vetro-cpu" }

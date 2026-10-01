@@ -8,7 +8,7 @@
 //! |---|---|
 //! | `MACH` | clock (instructions), cached deadlines, pending WFI, CNTPCT and board line state |
 //! | `CPU ` | general registers, SIMD/FP, PSTATE, system registers, exclusive monitor (of the running core) |
-//! | `SMP ` | only with several cores (ADR 0041): running core, end of its turn, power state and registers of the others |
+//! | `SMP ` | only with several cores (ADR 0042): running core, end of its turn, power state and registers of the others |
 //! | `MMU ` | translation registers and TLB entries |
 //! | `PLAT` | timer, GIC, PL011, PL031, PL061 and the 32 virtio slots (transport, queues, device, backend) |
 //! | `RAM ` | the RAM in pages, zero pages omitted, the others compressed |
@@ -217,9 +217,10 @@ impl Machine {
         let mut w = Writer::with_capacity(reserve.max(1 << 20));
         w.set_level(level);
         self.save_head(&mut w);
-        let b = self.board.borrow();
+        // The RAM without the board's lock (`file_header` takes it).
+        let ram = self.board.ram();
         let mut ram_len = 0u64;
-        b.ram.save_chunks(level, &mut |c| ram_len += c.len() as u64);
+        ram.save_chunks(level, &mut |c| ram_len += c.len() as u64);
         let total = w.len() as u64 + 12 + ram_len;
         let mut h = Hash64::new(total);
         h.update(w.as_bytes());
@@ -231,7 +232,7 @@ impl Machine {
         h.update(&sec);
         sink(&sec);
         let mut again = 0u64;
-        b.ram.save_chunks(level, &mut |c| {
+        ram.save_chunks(level, &mut |c| {
             again += c.len() as u64;
             h.update(c);
             sink(c);
@@ -316,7 +317,7 @@ impl Machine {
             b.irq_dirty = s.bool()?;
             b.virtio_dirty = s.bool()?;
             b.host_wait = s.bool()?;
-            b.irq_cache = None;
+            b.lines_changed();
         }
         s.finish()?;
         let mut s = r.section(b"CPU ")?;

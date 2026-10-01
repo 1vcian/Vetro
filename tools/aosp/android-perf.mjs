@@ -137,7 +137,7 @@ async function main() {
   const budget = arg('jit-budget', null);
   const { exports, jit: engine } = await instantiate(readFileSync(wasmPath), budget ? { jitBudget: Number(budget) << 20 } : {});
   if (flag('bg-compile')) await engine.startBackground();
-  // ADR 0041: --cpus=N cores (deterministic turns); the snapshot must be one
+  // ADR 0042: --cpus=N cores (deterministic turns); the snapshot must be one
   // made with the same number (tools/aosp/prebuilt-snapshot.mjs --cpus=N).
   const M = { ...ANDROID_MACHINE, cpus: Number(arg('cpus', 1)) };
   const devices = machineDevices(DEV, M);

@@ -17,7 +17,7 @@
 //!
 //! The same with two cores scheduled in round robin on one host thread
 //! (`-smp 2 -accel tcg,thread=single`, the oracle of Vetro's deterministic
-//! SMP machine, ADR 0041): `qemu-boot-smp2.log`.
+//! SMP machine, ADR 0042): `qemu-boot-smp2.log`.
 
 use std::process::Command;
 use std::time::Duration;

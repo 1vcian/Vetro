@@ -236,7 +236,7 @@ export async function instantiate(wasmBytes, { jitBudget } = {}) {
     },
     vetro_jit: jit.imports(),
   };
-  // The threads build (tools/wasm-threads.sh, ADR 0041) imports its memory:
+  // The threads build (tools/wasm-threads.sh, ADR 0042) imports its memory:
   // a shared WebAssembly.Memory created here, with the initial size the
   // build fixes and the 4 GiB maximum. The ordinary build exports its own.
   const module = wasmBytes instanceof WebAssembly.Module ? wasmBytes : await WebAssembly.compile(wasmBytes);
@@ -280,7 +280,7 @@ export class Machine {
    */
   constructor(x, { ramSize = 0n, nowSecs = 0n, seed = 0n, devices = DEV.DEFAULT, width = 0, height = 0, cpus = 1 } = {}) {
     this.#x = x;
-    // ADR 0041: more than one core (turns on this thread, deterministic).
+    // ADR 0042: more than one core (turns on this thread, deterministic).
     this.#vm = cpus > 1
       ? x.vetro_machine_new_smp(ramSize, nowSecs, seed, devices, width, height, cpus)
       : x.vetro_machine_new_with(ramSize, nowSecs, seed, devices, width, height);

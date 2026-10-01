@@ -33,7 +33,7 @@ pub trait PhysMemory {
 
     /// Compare-and-exchange of `old.len()` aligned bytes (store-exclusive):
     /// writes `new` if the bytes are `old`; true if it wrote. Memory shared
-    /// with cores running in parallel must do it atomically (ADR 0041); the
+    /// with cores running in parallel must do it atomically (ADR 0042); the
     /// default reads, compares and writes.
     fn cmpxchg(&mut self, pa: u64, old: &[u8], new: &[u8]) -> Result<bool, BusError> {
         let mut cur = [0u8; 16];
@@ -48,7 +48,7 @@ pub trait PhysMemory {
 
     /// A broadcast TLBI (the Inner Shareable forms) after the core applied it
     /// to its own TLB: the other cores' TLBs must forget the same entries
-    /// before it continues (ADR 0041). Nothing to do with one TLB.
+    /// before it continues (ADR 0042). Nothing to do with one TLB.
     fn tlbi_broadcast(&mut self, _op: vetro_cpu::sys::TlbiOp, _xt: u64) {}
 }
 

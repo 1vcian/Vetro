@@ -2,9 +2,10 @@
 //! Implements the physical memory seen by the MMU and the CPU environment
 //! ([`CpuEnv`]): generic timer, GIC CPU interface, IRQ line.
 
-use core::cell::RefCell;
-use core::sync::atomic::{AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+
+use vetro_cpu::sys::TlbiOp;
 
 use vetro_cpu::sys::CpuEnv;
 use vetro_cpu::sysreg::EnvReg;
@@ -196,7 +197,7 @@ pub const RAM_CHUNK: usize = 1 << 28;
 /// device DMA, image loading) marks them dirty. That is
 /// why bytes are written only with [`write`](Self::write).
 ///
-/// Shared (ADR 0041): every method takes `&self`, so the cores of a parallel
+/// Shared (ADR 0042): every method takes `&self`, so the cores of a parallel
 /// machine read and write it from their threads without a lock, as the
 /// JIT's regions do with plain WebAssembly accesses. The watch bitmap is
 /// atomic, and each JIT (consumer) has its own list of written pages. Aligned
@@ -393,7 +394,7 @@ impl Ram {
     }
 
     /// Atomic compare-and-exchange of `old.len()` (1, 2, 4 or 8, aligned)
-    /// bytes at `pa` (exclusives, ADR 0041): writes `new` if the bytes are
+    /// bytes at `pa` (exclusives, ADR 0042): writes `new` if the bytes are
     /// `old`. `None` outside RAM or for another size.
     pub fn cmpxchg(&self, pa: u64, old: &[u8], new: &[u8]) -> Option<bool> {
         let n = old.len();
@@ -511,7 +512,7 @@ impl GuestRam for Ram {
 }
 
 /// A shared reference to the RAM as a [`GuestRam`]: the devices of a
-/// parallel machine, whose cores keep using it (ADR 0041).
+/// parallel machine, whose cores keep using it (ADR 0042).
 pub struct RamRef<'a>(pub &'a Ram);
 
 impl GuestRam for RamRef<'_> {
@@ -525,7 +526,7 @@ impl GuestRam for RamRef<'_> {
 
 /// RAM, platform and time.
 pub struct Board {
-    /// Shared with the cores of a parallel machine (ADR 0041).
+    /// Shared with the cores of a parallel machine (ADR 0042).
     pub ram: Arc<Ram>,
     pub virt: Virt,
     /// Current value of CNTPCT_EL0.
@@ -535,15 +536,13 @@ pub struct Board {
     pub(crate) irq_dirty: bool,
     /// An access to a virtio-mmio slot: the device must be serviced.
     pub(crate) virtio_dirty: bool,
-    /// Level of the GIC IRQ line, if already computed: the CPU reads it
-    /// before every instruction with PSTATE.I = 0, and `Gic::irq_line` walks
-    /// all interrupts. It is cleared by every operation that can change the
-    /// GIC state (MMIO, ICC_*, `update_irqs`, virtio).
-    pub(crate) irq_cache: Option<bool>,
     /// After the last virtio service a virtio-blk request is waiting for
     /// data from the host (`BlockError::NotReady`): the machine executes no
     /// instructions until they arrive (`Stop::Blocked`).
     pub(crate) host_wait: bool,
+    /// The cores' IRQ lines as seen without the lock, and their wakeups
+    /// (ADR 0042).
+    pub(crate) cores: Arc<Cores>,
 }
 
 impl Board {
@@ -559,15 +558,34 @@ impl Board {
             cntpct: 0,
             irq_dirty: true,
             virtio_dirty: false,
-            irq_cache: None,
             host_wait: false,
+            cores: Arc::new(Cores::new(cpus)),
+        }
+    }
+
+    /// Something may have changed the GIC's state: the cached lines are
+    /// stale. With the cores in parallel the lines are recomputed at once
+    /// and a core whose line rose is woken (ADR 0042).
+    pub(crate) fn lines_changed(&mut self) {
+        let c = &self.cores;
+        if !c.parallel.load(Ordering::SeqCst) {
+            for s in &c.slots {
+                s.irq.store(IRQ_UNKNOWN, Ordering::SeqCst);
+            }
+            return;
+        }
+        for (i, s) in c.slots.iter().enumerate() {
+            let l = if self.virt.irq_line_of(i) { IRQ_HIGH } else { IRQ_LOW };
+            if s.irq.swap(l, Ordering::SeqCst) != IRQ_HIGH && l == IRQ_HIGH {
+                c.kick(i);
+            }
         }
     }
 
     /// Brings the levels of all lines to the GIC.
     pub fn update_irqs(&mut self) {
         self.virt.update_irqs(self.cntpct);
-        self.irq_cache = None;
+        self.lines_changed();
         self.irq_dirty = false;
     }
 
@@ -576,9 +594,9 @@ impl Board {
         let Board { ram, virt, .. } = self;
         virt.service_virtio(&mut RamRef(ram));
         self.host_wait = (0..map::VIRTIO_SLOTS as u32).any(|k| {
-            virt.virtio(k).and_then(|t| t.device_as::<VirtioBlk>()).is_some_and(VirtioBlk::has_pending)
+            self.virt.virtio(k).and_then(|t| t.device_as::<VirtioBlk>()).is_some_and(VirtioBlk::has_pending)
         });
-        self.irq_cache = None;
+        self.lines_changed();
         self.virtio_dirty = false;
         self.irq_dirty = true;
     }
@@ -591,12 +609,12 @@ impl Board {
     /// replay (M10, ADR 0019); called here directly it escapes the log.
     pub fn gpio_input(&mut self, line: u32, level: bool) {
         self.virt.gpio_mut().set_input(line, level);
-        self.irq_cache = None;
+        self.lines_changed();
         self.irq_dirty = true;
     }
 
     fn mmio_touched(&mut self, pa: u64) {
-        self.irq_cache = None;
+        self.lines_changed();
         self.irq_dirty = true;
         let virtio_end = map::VIRTIO_BASE + map::VIRTIO_SLOTS * map::VIRTIO_SLOT_SIZE;
         if (map::VIRTIO_BASE..virtio_end).contains(&pa) {
@@ -605,21 +623,272 @@ impl Board {
     }
 }
 
+/// [`Slot::irq`]: not computed since the last change.
+const IRQ_UNKNOWN: u8 = 0;
+const IRQ_LOW: u8 = 1;
+const IRQ_HIGH: u8 = 2;
+
+/// What every core needs to see of the others without the board's lock
+/// (ADR 0042): its IRQ line, a way to wake it, and with the cores in parallel
+/// their coordination (`machine::parallel`).
+pub(crate) struct Cores {
+    pub slots: Vec<Slot>,
+    /// The cores run on host threads at the same time: lines are computed
+    /// eagerly and TLBIs and code watches are broadcast.
+    pub parallel: AtomicBool,
+}
+
+/// One core's shared state.
+#[allow(dead_code)] // the parallel cores' fields: machine::parallel
+pub(crate) struct Slot {
+    /// Its IRQ line (`IRQ_*`).
+    irq: AtomicU8,
+    /// Bumped by every kick; a core waiting in WFI wakes when it changes.
+    pub kick: AtomicU32,
+    /// Set by a kick: the core's JIT run ends at the next region boundary.
+    pub abort: Arc<AtomicBool>,
+    /// Address of the core's `JitState` step limit (0 = none): a kick writes
+    /// zero there, so the dispatcher returns at the next block.
+    pub limit: AtomicUsize,
+    /// For sleeping in WFI.
+    pub sleep: Mutex<()>,
+    pub wake: Condvar,
+    /// Requests from the other cores ([`Request`]) and how many were applied.
+    pub inbox: Mutex<Vec<Request>>,
+    pub posted: AtomicU64,
+    pub applied: AtomicU64,
+    /// Powered on, and the CPU_ON that started it (entry, context).
+    pub on: AtomicBool,
+    pub start: Mutex<Option<(u64, u64)>>,
+    /// Clock value at which this core, waiting in WFI, wants to wake (its
+    /// timer deadline), `u64::MAX` = none, 0 = not waiting.
+    pub wait_until: AtomicU64,
+}
+
+/// What a core asks of another one in parallel (applied between runs, then
+/// acknowledged through [`Slot::applied`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Request {
+    /// A TLBI that was broadcast (the local form).
+    Tlbi(TlbiOp, u64),
+    /// A page now holds translated code: no more direct writes to it from the
+    /// JIT's software TLB.
+    Watch(u64),
+}
+
+#[allow(dead_code)] // the coordination of the parallel cores: machine::parallel
+impl Cores {
+    fn new(n: usize) -> Self {
+        Cores {
+            slots: (0..n)
+                .map(|i| Slot {
+                    irq: AtomicU8::new(IRQ_UNKNOWN),
+                    kick: AtomicU32::new(0),
+                    abort: Arc::new(AtomicBool::new(false)),
+                    limit: AtomicUsize::new(0),
+                    sleep: Mutex::new(()),
+                    wake: Condvar::new(),
+                    inbox: Mutex::new(Vec::new()),
+                    posted: AtomicU64::new(0),
+                    applied: AtomicU64::new(0),
+                    on: AtomicBool::new(i == 0),
+                    start: Mutex::new(None),
+                    wait_until: AtomicU64::new(0),
+                })
+                .collect(),
+            parallel: AtomicBool::new(false),
+        }
+    }
+
+    /// Wakes core `i`: out of a WFI wait, and out of its JIT run at the next
+    /// region boundary.
+    pub fn kick(&self, i: usize) {
+        let s = &self.slots[i];
+        s.kick.fetch_add(1, Ordering::SeqCst);
+        s.abort.store(true, Ordering::SeqCst);
+        let at = s.limit.load(Ordering::SeqCst);
+        if at != 0 {
+            // SAFETY: the core published the address of its JitState's
+            // limit, an aligned u64 that lives as long as its JIT
+            // (`machine::parallel`).
+            unsafe { AtomicU64::from_ptr(at as *mut u64) }.store(0, Ordering::SeqCst);
+        }
+        let _g = lock(&s.sleep);
+        s.wake.notify_all();
+    }
+
+    /// Posts `r` to every other core that is on, kicking them; returns the
+    /// count each must reach (`(core, posted)`), for [`Cores::acked`].
+    pub fn broadcast(&self, from: usize, r: Request) -> Vec<(usize, u64)> {
+        let mut out = Vec::new();
+        for (i, s) in self.slots.iter().enumerate() {
+            if i == from || !s.on.load(Ordering::SeqCst) {
+                continue;
+            }
+            let n = {
+                let mut q = lock(&s.inbox);
+                q.push(r);
+                s.posted.fetch_add(1, Ordering::SeqCst) + 1
+            };
+            out.push((i, n));
+            self.kick(i);
+        }
+        out
+    }
+
+    /// True if every core in `waits` has applied its requests up to the count.
+    pub fn acked(&self, waits: &[(usize, u64)]) -> bool {
+        waits.iter().all(|&(i, n)| {
+            let s = &self.slots[i];
+            s.applied.load(Ordering::SeqCst) >= n || !s.on.load(Ordering::SeqCst)
+        })
+    }
+
+    /// Takes core `i`'s pending requests; [`Cores::done`] acknowledges them.
+    pub fn take(&self, i: usize) -> Vec<Request> {
+        core::mem::take(&mut *lock(&self.slots[i].inbox))
+    }
+
+    pub fn done(&self, i: usize, n: usize) {
+        self.slots[i].applied.fetch_add(n as u64, Ordering::SeqCst);
+    }
+
+    /// Core `i`'s IRQ line from the cache, or `None` if it must be computed.
+    fn cached_irq(&self, i: usize) -> Option<bool> {
+        match self.slots[i].irq.load(Ordering::SeqCst) {
+            IRQ_HIGH => Some(true),
+            IRQ_LOW => Some(false),
+            _ => None,
+        }
+    }
+}
+
+/// The board shared by the cores (ADR 0042): the devices behind a lock, the
+/// RAM and the cores' lines outside it. `borrow` and `borrow_mut` take the
+/// lock (the names of the single-threaded `RefCell` it replaces).
+pub struct BoardCell {
+    dev: Mutex<Board>,
+    ram: Arc<Ram>,
+    pub(crate) cores: Arc<Cores>,
+    /// Debug builds: the thread holding the lock, so that taking it again on
+    /// the same thread panics instead of hanging.
+    #[cfg(debug_assertions)]
+    owner: AtomicUsize,
+}
+
+/// A guard of [`BoardCell`]: the board, locked.
+pub struct BoardGuard<'a> {
+    g: MutexGuard<'a, Board>,
+    #[cfg(debug_assertions)]
+    owner: &'a AtomicUsize,
+}
+
+impl core::ops::Deref for BoardGuard<'_> {
+    type Target = Board;
+    fn deref(&self) -> &Board {
+        &self.g
+    }
+}
+
+impl core::ops::DerefMut for BoardGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Board {
+        &mut self.g
+    }
+}
+
+#[cfg(debug_assertions)]
+impl Drop for BoardGuard<'_> {
+    fn drop(&mut self) {
+        self.owner.store(0, Ordering::SeqCst);
+    }
+}
+
+#[cfg(debug_assertions)]
+fn thread_tag() -> usize {
+    thread_local!(static TAG: u8 = const { 0 });
+    TAG.with(|t| core::ptr::from_ref(t).addr())
+}
+
+impl BoardCell {
+    pub fn new(b: Board) -> Self {
+        BoardCell {
+            ram: b.ram.clone(),
+            cores: b.cores.clone(),
+            dev: Mutex::new(b),
+            #[cfg(debug_assertions)]
+            owner: AtomicUsize::new(0),
+        }
+    }
+
+    /// Takes the board's lock (one at a time: the guard must be dropped
+    /// before the same thread takes it again).
+    pub fn borrow(&self) -> BoardGuard<'_> {
+        #[cfg(debug_assertions)]
+        assert_ne!(
+            self.owner.load(Ordering::SeqCst),
+            thread_tag(),
+            "board lock taken twice by the same thread"
+        );
+        let g = lock(&self.dev);
+        #[cfg(debug_assertions)]
+        self.owner.store(thread_tag(), Ordering::SeqCst);
+        BoardGuard {
+            g,
+            #[cfg(debug_assertions)]
+            owner: &self.owner,
+        }
+    }
+
+    pub fn borrow_mut(&self) -> BoardGuard<'_> {
+        self.borrow()
+    }
+
+    /// The RAM, without the lock.
+    pub fn ram(&self) -> &Ram {
+        &self.ram
+    }
+
+    #[allow(dead_code)] // machine::parallel
+    pub(crate) fn ram_arc(&self) -> &Arc<Ram> {
+        &self.ram
+    }
+}
+
 fn mmio_size(len: usize) -> Option<u8> {
     matches!(len, 1 | 2 | 4 | 8).then_some(len as u8)
 }
 
-/// Physical memory: RAM, otherwise the MMIO bus (an access of 1, 2, 4 or
-/// 8 bytes; whatever does not respond is a decode error).
-pub(crate) struct Phys<'a>(pub &'a RefCell<Board>);
+/// Physical memory of core `core`: RAM (without the lock), otherwise the MMIO
+/// bus (an access of 1, 2, 4 or 8 bytes; whatever does not respond is a
+/// decode error). `consumer` is the JIT whose written code pages it takes.
+pub(crate) struct Phys<'a> {
+    pub cell: &'a BoardCell,
+    pub core: usize,
+    pub consumer: usize,
+    /// Broadcast requests posted by this core whose acknowledgement it
+    /// still has to wait for (parallel cores, `machine::parallel`).
+    pub waits: &'a mut Vec<(usize, u64)>,
+}
+
+impl<'a> Phys<'a> {
+    /// Core `core` with consumer 0 and no broadcasts (one JIT, cores in turns).
+    pub fn single(cell: &'a BoardCell, core: usize, waits: &'a mut Vec<(usize, u64)>) -> Self {
+        Phys { cell, core, consumer: 0, waits }
+    }
+
+    fn parallel(&self) -> bool {
+        self.cell.cores.parallel.load(Ordering::Relaxed)
+    }
+}
 
 impl PhysMemory for Phys<'_> {
     fn read(&mut self, pa: u64, buf: &mut [u8]) -> Result<(), BusError> {
-        let mut b = self.0.borrow_mut();
-        if b.ram.read(pa, buf) {
+        if self.cell.ram.read(pa, buf) {
             return Ok(());
         }
         let size = mmio_size(buf.len()).ok_or(BusError::Slave)?;
+        let mut b = self.cell.borrow_mut();
+        b.virt.set_current_cpu(self.core);
         let v = b.virt.bus.read(pa, size).ok_or(BusError::Decode)?;
         buf.copy_from_slice(&v.to_le_bytes()[..buf.len()]);
         b.mmio_touched(pa);
@@ -627,18 +896,60 @@ impl PhysMemory for Phys<'_> {
     }
 
     fn write(&mut self, pa: u64, data: &[u8]) -> Result<(), BusError> {
-        let mut b = self.0.borrow_mut();
-        if b.ram.write(pa, data) {
+        if self.cell.ram.write(pa, data) {
             return Ok(());
         }
         let size = mmio_size(data.len()).ok_or(BusError::Slave)?;
         let mut v = [0u8; 8];
         v[..data.len()].copy_from_slice(data);
+        let mut b = self.cell.borrow_mut();
+        b.virt.set_current_cpu(self.core);
         if !b.virt.bus.write(pa, size, u64::from_le_bytes(v)) {
             return Err(BusError::Decode);
         }
         b.mmio_touched(pa);
         Ok(())
+    }
+
+    fn cmpxchg(&mut self, pa: u64, old: &[u8], new: &[u8]) -> Result<bool, BusError> {
+        if let Some(ok) = self.cell.ram.cmpxchg(pa, old, new) {
+            return Ok(ok);
+        }
+        // 16 bytes (STXP of two doublewords), or not RAM: read, compare and
+        // write under the board's lock, which every 16-byte exclusive takes.
+        let _g = self.cell.borrow_mut();
+        let mut cur = [0u8; 16];
+        let cur = &mut cur[..old.len()];
+        if !self.cell.ram.read(pa, cur) {
+            return Err(BusError::Decode);
+        }
+        if cur != old {
+            return Ok(false);
+        }
+        self.cell.ram.write(pa, new);
+        Ok(true)
+    }
+
+    fn tlbi_broadcast(&mut self, op: TlbiOp, xt: u64) {
+        if self.parallel() {
+            let local = local_tlbi(op);
+            let w = self.cell.cores.broadcast(self.core, Request::Tlbi(local, xt));
+            self.waits.extend(w);
+        }
+    }
+}
+
+/// The local form of a broadcast TLBI.
+fn local_tlbi(op: TlbiOp) -> TlbiOp {
+    use TlbiOp::*;
+    match op {
+        Vmalle1is => Vmalle1,
+        Vae1is => Vae1,
+        Aside1is => Aside1,
+        Vaae1is => Vaae1,
+        Vale1is => Vale1,
+        Vaale1is => Vaale1,
+        other => other,
     }
 }
 
@@ -646,50 +957,80 @@ impl PhysMemory for Phys<'_> {
 /// watched.
 impl SysPhys for Phys<'_> {
     fn ram_read(&mut self, pa: u64, buf: &mut [u8]) -> bool {
-        self.0.borrow().ram.read(pa, buf)
+        self.cell.ram.read(pa, buf)
     }
     fn ram_write(&mut self, pa: u64, data: &[u8]) -> Option<bool> {
-        self.0.borrow_mut().ram.write_watched(pa, data)
+        self.cell.ram.write_watched(pa, data)
     }
     fn watch_code(&mut self, page: u64) -> bool {
-        self.0.borrow_mut().ram.watch_code(page)
+        let fresh = !self.cell.ram.is_watched(page);
+        let ok = self.cell.ram.watch_code(page);
+        if ok && fresh && self.parallel() {
+            let w = self.cell.cores.broadcast(self.core, Request::Watch(page));
+            self.waits.extend(w);
+        }
+        ok
+    }
+    fn watch_ready(&mut self, _page: u64) -> bool {
+        // With the cores in parallel a newly watched page is translated only
+        // once the others no longer write to it directly.
+        self.waits.is_empty()
     }
     fn is_watched(&self, page: u64) -> bool {
-        self.0.borrow().ram.is_watched(page)
+        self.cell.ram.is_watched(page)
     }
     fn take_code_dirty(&mut self, out: &mut Vec<u64>) {
-        self.0.borrow_mut().ram.take_code_dirty(out)
+        self.cell.ram.take_code_dirty_for(self.consumer, out)
     }
     fn ram_region(&mut self) -> Option<(u64, *mut u8, usize)> {
-        let b = self.0.borrow();
-        Some((map::RAM_BASE, b.ram.bytes.ptr, b.ram.bytes.len))
+        let r = &self.cell.ram;
+        Some((map::RAM_BASE, r.bytes.ptr, r.bytes.len))
     }
 }
 
-/// The CPU environment: GIC IRQ line, generic timer, ICC_*.
-pub(crate) struct Env<'a>(pub &'a RefCell<Board>);
+/// The environment of core `core`: its IRQ line, its generic timer, its GIC
+/// CPU interface (ICC_*).
+pub(crate) struct Env<'a> {
+    pub cell: &'a BoardCell,
+    pub core: usize,
+    /// CNTPCT for the counter reads, if the caller computes it (the parallel
+    /// cores' shared clock); otherwise the board's.
+    pub now: Option<u64>,
+}
+
+impl<'a> Env<'a> {
+    pub fn new(cell: &'a BoardCell, core: usize) -> Self {
+        Env { cell, core, now: None }
+    }
+}
 
 /// The CPU interface's "no interrupt" INTID.
 const SPURIOUS: u64 = 1023;
 
 impl CpuEnv for Env<'_> {
     fn irq_line(&mut self) -> bool {
-        let mut b = self.0.borrow_mut();
-        if let Some(l) = b.irq_cache {
+        let cores = &self.cell.cores;
+        if let Some(l) = cores.cached_irq(self.core) {
             return l;
         }
-        let l = b.virt.irq_line();
-        b.irq_cache = Some(l);
+        // Computed and stored under the lock, so a change made meanwhile by
+        // another core cannot be overwritten with a stale level.
+        let b = self.cell.borrow();
+        let l = b.virt.irq_line_of(self.core);
+        cores.slots[self.core].irq.store(if l { IRQ_HIGH } else { IRQ_LOW }, Ordering::SeqCst);
         l
     }
 
     fn read_sysreg(&mut self, reg: EnvReg) -> u64 {
         use EnvReg::*;
-        let mut b = self.0.borrow_mut();
-        let c = b.cntpct;
-        b.irq_cache = None;
+        let mut b = self.cell.borrow_mut();
+        if let Some(n) = self.now {
+            b.cntpct = b.cntpct.max(n);
+        }
+        let c = self.now.unwrap_or(b.cntpct);
+        b.virt.set_current_cpu(self.core);
         let v = &mut b.virt;
-        match reg {
+        let r = match reg {
             CntfrqEl0 => u64::from(map::CNTFRQ_HZ),
             CntpctEl0 => c,
             CntvctEl0 => v.timer_mut().cntvct(c),
@@ -713,15 +1054,22 @@ impl CpuEnv for Env<'_> {
             IccBpr0El1 | IccAp0r0El1 | IccIgrpen0El1 => 0,
             // Write-only registers: the CPU never reads them.
             IccEoir0El1 | IccEoir1El1 | IccDirEl1 | IccSgi1rEl1 | IccAsgi1rEl1 | IccSgi0rEl1 => 0,
+        };
+        if matches!(reg, IccIar1El1) {
+            b.lines_changed();
         }
+        r
     }
 
     fn write_sysreg(&mut self, reg: EnvReg, value: u64) {
         use EnvReg::*;
-        let mut b = self.0.borrow_mut();
-        let c = b.cntpct;
-        b.irq_cache = None;
+        let mut b = self.cell.borrow_mut();
+        if let Some(n) = self.now {
+            b.cntpct = b.cntpct.max(n);
+        }
+        let c = self.now.unwrap_or(b.cntpct);
         b.irq_dirty = true;
+        b.virt.set_current_cpu(self.core);
         let v = &mut b.virt;
         match reg {
             CntpTvalEl0 => v.timer_mut().set_cntp_tval(c, value),
@@ -743,6 +1091,7 @@ impl CpuEnv for Env<'_> {
             // get here (the CPU rejects the write).
             _ => {}
         }
+        b.lines_changed();
     }
 }
 
@@ -786,8 +1135,8 @@ mod tests {
         assert!(small.restore(&mut Reader::new(a.as_bytes())).is_err());
     }
 
-    fn board_with_vtimer_enabled() -> RefCell<Board> {
-        let b = RefCell::new(Board::new(1 << 20, 0));
+    fn board_with_vtimer_enabled() -> BoardCell {
+        let b = BoardCell::new(Board::new(1 << 20, 0));
         {
             let mut bb = b.borrow_mut();
             let bus = &mut bb.virt.bus;
@@ -796,7 +1145,7 @@ mod tests {
             bus.write(map::GICR_BASE + GICR_SGI_BASE + GICR_IGROUPR0, 4, 0xFFFF_FFFF);
             bus.write(map::GICR_BASE + GICR_SGI_BASE + GICR_ISENABLER0, 4, 1 << map::PPI_VTIMER);
         }
-        let mut env = Env(&b);
+        let mut env = Env::new(&b, 0);
         env.write_sysreg(EnvReg::IccPmrEl1, 0xF0);
         env.write_sysreg(EnvReg::IccIgrpen1El1, 1);
         b
@@ -808,10 +1157,10 @@ mod tests {
     #[test]
     fn linea_irq_in_cache_segue_il_gic() {
         let b = board_with_vtimer_enabled();
-        let mut env = Env(&b);
+        let mut env = Env::new(&b, 0);
         b.borrow_mut().update_irqs();
         assert!(!env.irq_line());
-        assert_eq!(b.borrow().irq_cache, Some(false), "the level stays cached");
+        assert_eq!(b.cores.cached_irq(0), Some(false), "the level stays cached");
 
         env.write_sysreg(EnvReg::CntvCvalEl0, 100);
         env.write_sysreg(EnvReg::CntvCtlEl0, CTL_ENABLE);
@@ -828,7 +1177,8 @@ mod tests {
         assert!(!env.irq_line());
 
         // An MMIO access to the GIC clears the cache: an SGI pending again.
-        let mut phys = Phys(&b);
+        let mut waits = Vec::new();
+        let mut phys = Phys::single(&b, 0, &mut waits);
         phys.write(map::GICR_BASE + GICR_SGI_BASE + GICR_ISENABLER0, &1u32.to_le_bytes()).unwrap();
         phys.write(map::GICR_BASE + GICR_SGI_BASE + GICR_ISPENDR0, &1u32.to_le_bytes()).unwrap();
         assert!(env.irq_line(), "SGI 0 enabled and made pending via MMIO");
@@ -852,7 +1202,7 @@ mod tests {
             bus.write(map::GPIO_BASE + pl061::IE, 1, m);
             bb.update_irqs();
         }
-        let mut env = Env(&b);
+        let mut env = Env::new(&b, 0);
         assert!(!env.irq_line());
         b.borrow_mut().gpio_input(pl061::POWER_KEY_LINE, true);
         assert!(b.borrow().irq_dirty, "the lines must be brought to the GIC");

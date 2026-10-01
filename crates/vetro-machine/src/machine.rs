@@ -1,7 +1,5 @@
 //! The machine: CPU, MMU and board, with the execution loop.
 
-use core::cell::RefCell;
-
 use vetro_cpu::sys::{CpuEnv, SysEvent};
 use vetro_cpu::{Cpu, SysConfig};
 use vetro_jit::{Next, SysJitDyn, SysJitStats};
@@ -12,7 +10,7 @@ use vetro_platform::virtio::{
 };
 use vetro_platform::{VirtDtbConfig, VirtioDevice, map, virt_dtb};
 
-use crate::board::{Board, Env, Phys};
+use crate::board::{Board, BoardCell, Env, Phys};
 use crate::boot::{self, BootError, BootPlan, RamConfig};
 use crate::hooks::{Breakpoint, GuestView, Hooks, Tracer};
 use crate::net::{self, NetLink, NetSetup, TappedFrame};
@@ -36,7 +34,7 @@ pub struct MachineConfig {
     pub now_secs: u64,
     /// Seed of the randomness offered to the guest (`rng-seed` in the device tree).
     pub seed: u64,
-    /// Cores (1..=16, ADR 0041): with more than one they run in turns on one
+    /// Cores (1..=16, ADR 0042): with more than one they run in turns on one
     /// thread ([`smp`]), deterministically.
     pub cpus: u32,
 }
@@ -135,7 +133,8 @@ pub enum Stop {
 pub struct Machine {
     pub cpu: Cpu,
     pub mmu: Mmu,
-    pub board: RefCell<Board>,
+    /// The devices behind a lock, the RAM and the cores' lines (ADR 0042).
+    pub board: BoardCell,
     seed: u64,
     /// Instructions executed (and time steps skipped in WFIs): the clock.
     pub steps: u64,
@@ -169,10 +168,13 @@ pub struct Machine {
     /// Counters for measurements (not in snapshots, no effect on execution).
     perf: Perf,
     /// The other cores and their round robin, with more than one core
-    /// (ADR 0041); `cpu`, `interp` and `wfi_pending` are the running core's.
+    /// (ADR 0042); `cpu`, `interp` and `wfi_pending` are the running core's.
     smp: Option<Box<smp::Smp>>,
     /// Cores (`cfg.cpus`): the counter advances once every `ncpu` steps.
     ncpu: u64,
+    /// Broadcasts of the running core still to be acknowledged (cores in
+    /// parallel, ADR 0042; always empty in turns).
+    waits: Vec<(usize, u64)>,
 }
 
 /// How [`Machine::run_cpu`] ends a stretch of one core.
@@ -265,7 +267,7 @@ impl Machine {
         Machine {
             cpu,
             mmu: Mmu::new(PA_BITS),
-            board: RefCell::new(board),
+            board: BoardCell::new(board),
             steps: 0,
             timer_deadline: None,
             net_deadline: None,
@@ -283,6 +285,7 @@ impl Machine {
             perf: Perf::default(),
             smp: (cfg.cpus > 1).then(|| Box::new(smp::Smp::new(cfg.cpus as usize))),
             ncpu: u64::from(cfg.cpus),
+            waits: Vec::new(),
         }
     }
 
@@ -331,7 +334,7 @@ impl Machine {
             self.rr.note_jit();
             j.set_stops(&self.hooks.stops());
             // Several cores: WFE and YIELD end a turn, so the regions leave them
-            // to the interpreter (ADR 0041).
+            // to the interpreter (ADR 0042).
             j.set_yields(self.smp.is_some());
         }
         self.jit = jit;
@@ -696,7 +699,7 @@ impl Machine {
             return None;
         }
         // PSTATE.I and PSTATE.A (bits 7 and 8 of DAIF), like `take_interrupt`.
-        if s.daif & 1 << 7 == 0 && Env(&self.board).irq_line() {
+        if s.daif & 1 << 7 == 0 && Env::new(&self.board, self.current_cpu()).irq_line() {
             return None;
         }
         if s.daif & 1 << 8 == 0 && s.serror_pending.is_some() {
@@ -741,7 +744,7 @@ impl Machine {
         }
     }
 
-    /// Several cores (ADR 0041, [`smp`]): turns in round robin up to `end`.
+    /// Several cores (ADR 0042, [`smp`]): turns in round robin up to `end`.
     /// Where a turn ends depends only on the clock and on the guest, so the
     /// host's quanta never change the interleaving.
     fn run_smp(&mut self, end: u64) -> Stop {
@@ -791,7 +794,7 @@ impl Machine {
             s.cur = k;
             let mut b = self.board.borrow_mut();
             b.virt.set_current_cpu(k);
-            b.irq_cache = None;
+            b.lines_changed();
             b.irq_dirty = true;
         }
         s.turn_end = self.steps.saturating_add(smp::QUANTUM);
@@ -848,6 +851,7 @@ impl Machine {
             return Exit::Stop(stop);
         }
         let smp = self.smp.is_some();
+        let core = self.current_cpu();
         while self.steps < end {
             let now = self.now();
             {
@@ -874,7 +878,7 @@ impl Machine {
                     let cntvoff = self.board.borrow().virt.timer().cntvoff;
                     jit.set_time(vetro_jit::Clock { steps: self.steps, cntvoff });
                 }
-                let mut phys = Phys(&self.board);
+                let mut phys = Phys::single(&self.board, core, &mut self.waits);
                 let r = jit.run(&mut self.cpu, &mut self.mmu, &mut phys, limit);
                 self.steps += r.steps;
                 self.interp = if r.next == Next::Jit && r.steps == 0 { Next::One } else { r.next };
@@ -889,12 +893,16 @@ impl Machine {
             if let Some(jit) = self.jit.as_mut()
                 && jit.profiling()
             {
-                jit.profile_step(&self.cpu, &mut self.mmu, &mut Phys(&self.board));
+                jit.profile_step(
+                    &self.cpu,
+                    &mut self.mmu,
+                    &mut Phys::single(&self.board, core, &mut self.waits),
+                );
             }
             let ev = {
-                let mut phys = Phys(&self.board);
+                let mut phys = Phys::single(&self.board, core, &mut self.waits);
                 let mut bus = MmuBus::new(&mut self.mmu, &mut phys);
-                let mut env = Env(&self.board);
+                let mut env = Env::new(&self.board, core);
                 self.cpu.step_system(&mut bus, &mut env)
             };
             // WFE and YIELD are executed instructions; with several cores

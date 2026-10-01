@@ -15,7 +15,7 @@
 // log goes to target/guest-kernel/node-boot-jit.log. --jit-background
 // compiles the modules in a Worker (ADR 0038): still the same instructions
 // and log; the loop then yields to the event loop after every quantum.
-// --cpus N boots N guest cores (ADR 0041, deterministic turns): the log goes
+// --cpus N boots N guest cores (ADR 0042, deterministic turns): the log goes
 // to node-boot-smpN[-jit].log.
 //
 // Node 22, no dependencies. The .wasm is built with tools/wasm-boot.sh
@@ -50,7 +50,7 @@ const jit = args.includes('--jit');
 const jitThreshold = Number(opt('--jit-threshold', '64'));
 const jitBatch = Number(opt('--jit-batch', '16'));
 const background = jit && args.includes('--jit-background');
-/** ADR 0041: guest cores, in turns on this thread (deterministic). */
+/** ADR 0042: guest cores, in turns on this thread (deterministic). */
 const cpus = Number(opt('--cpus', '1'));
 /** After each quantum with --jit-background: lets the Worker's modules arrive. */
 const tick = background ? () => new Promise((ok) => setImmediate(ok)) : () => null;

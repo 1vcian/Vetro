@@ -98,7 +98,7 @@ pub trait SysBus {
     /// Physical compare-and-exchange (a piece that does not cross pages, of
     /// 1, 2, 4, 8 or 16 bytes): writes `new` if the bytes are `old`; true if it
     /// wrote. Atomic with respect to the other cores of a parallel machine
-    /// (ADR 0041); the default reads, compares and writes.
+    /// (ADR 0042); the default reads, compares and writes.
     fn cmpxchg_phys(&mut self, pa: u64, old: &[u8], new: &[u8]) -> Result<bool, BusFault> {
         let mut cur = [0u8; 16];
         let cur = &mut cur[..old.len()];

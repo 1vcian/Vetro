@@ -11,4 +11,4 @@ web/app/vendor/coi-serviceworker.js is coi-serviceworker 0.1.7 by Guido
 Zuidhof and contributors (https://github.com/gzuidhof/coi-serviceworker),
 MIT licence, unmodified (web/app/vendor/coi-serviceworker.LICENSE). It gives
 the app cross-origin isolation on hosts that cannot send COOP/COEP headers
-(GitHub Pages), for the threads build (ADR 0041).
+(GitHub Pages), for the threads build (ADR 0042).

@@ -752,7 +752,7 @@ $('adb-shell').addEventListener('submit', async (e) => {
 });
 
 /**
- * True if the threads build of vetro-wasm runs (ADR 0041): asked for with
+ * True if the threads build of vetro-wasm runs (ADR 0042): asked for with
  * `?threads=1` (or by a parallel machine) and possible only with cross-origin
  * isolation (COOP/COEP from the server, or coi-serviceworker on Pages).
  */
@@ -769,7 +769,7 @@ async function start() {
   if (!kernel && !android) return setStatus('kernel missing');
   const disk = android ? null : source('diskUrl', 'diskFile');
   const config = {
-    // ADR 0041: the threads build (shared memory) needs cross-origin
+    // ADR 0042: the threads build (shared memory) needs cross-origin
     // isolation; without it the ordinary build runs.
     wasmUrl: new URL(threadsBuild() ? '../wasm/vetro_wasm_threads.wasm' : '../wasm/vetro_wasm.wasm', location.href).href,
     kernel,

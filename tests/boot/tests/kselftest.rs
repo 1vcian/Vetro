@@ -11,7 +11,7 @@
 //! also runs with the system-mode JIT, which must give the same log
 //! byte for byte and the same instructions as the interpreter.
 //!
-//! With `VETRO_KSELFTEST_CPUS=N` (ADR 0041) both run with N cores: QEMU with
+//! With `VETRO_KSELFTEST_CPUS=N` (ADR 0042) both run with N cores: QEMU with
 //! `-smp N -accel tcg,thread=single` (cores in turns on one thread, like
 //! Vetro's deterministic SMP machine), Vetro with `MachineConfig::cpus`; the
 //! logs go to `*-kselftest-smpN.log`.

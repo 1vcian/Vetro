@@ -546,7 +546,7 @@ impl Log {
         let jit = s.bool()?;
         let keyframe_every = s.u64()?;
         let start = Digest::load(&mut s)?;
-        // Cores (ADR 0041): only with more than one, so single-core logs keep
+        // Cores (ADR 0042): only with more than one, so single-core logs keep
         // their bytes.
         let cpus = if s.remaining() > 0 { s.u32()? } else { 1 };
         let config = MachineConfig { ram_size, now_secs, seed, cpus };

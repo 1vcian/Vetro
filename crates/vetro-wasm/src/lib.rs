@@ -648,7 +648,7 @@ mod host {
 }
 
 /// 1 in the threads build (atomics, memory imported as a shared
-/// `WebAssembly.Memory`, ADR 0041), 0 in the ordinary one.
+/// `WebAssembly.Memory`, ADR 0042), 0 in the ordinary one.
 #[unsafe(no_mangle)]
 pub extern "C" fn vetro_threads() -> u32 {
     u32::from(jit::THREADS)
@@ -970,7 +970,7 @@ pub extern "C" fn vetro_machine_new_with(
     Box::into_raw(Box::new(Vm::with_devices(&cfg, &devices_from(devices, width, height))))
 }
 
-/// Like [`vetro_machine_new_with`] with `cpus` cores (1..=16, ADR 0041; 0 =
+/// Like [`vetro_machine_new_with`] with `cpus` cores (1..=16, ADR 0042; 0 =
 /// 1): they run in turns on this thread, deterministically. Null if `cpus` is
 /// out of range.
 #[unsafe(no_mangle)]

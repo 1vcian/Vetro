@@ -138,9 +138,14 @@ pub struct SysTarget {
     pub cntk: u8,
     /// WFE and YIELD stay with the interpreter, which reports them to the
     /// machine (`SysEvent::Yield`): with several cores on one thread they
-    /// end the core's turn (ADR 0041). A setting of the whole JIT
+    /// end the core's turn (ADR 0042). A setting of the whole JIT
     /// ([`SysJit::set_yields`](crate::SysJit::set_yields)), not of the CPU state.
     pub yields: bool,
+    /// Code for a core running in parallel with others (ADR 0042): fences for
+    /// the barriers, atomic LDAR/STLR, a fence after the exclusive loads, and
+    /// the store-exclusives left to the interpreter
+    /// ([`SysJit::set_parallel`](crate::SysJit::set_parallel)).
+    pub parallel: bool,
 }
 
 /// Where a translated MRS reads from.
@@ -231,6 +236,9 @@ pub fn kind_in(insn: &Insn, sys: Option<SysTarget>) -> Kind {
         match *insn {
             Insn::Wfi => return Kind::Unsupported,
             Insn::Wfe | Insn::Yield if s.yields => return Kind::Unsupported,
+            // In parallel the store-exclusive is an atomic compare-and-exchange
+            // in the interpreter (ADR 0042).
+            Insn::Exclusive { load: false, .. } if s.parallel => return Kind::Unsupported,
             // CPACR_EL1.FPEN trap: to the interpreter.
             Insn::Simd(_) if !s.fp => return Kind::Unsupported,
             Insn::CacheMaint if s.el == 0 => return Kind::Unsupported,
@@ -1415,6 +1423,16 @@ impl Tx {
     }
 }
 
+/// Ordering of a translated access (ADR 0042).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ord {
+    Plain,
+    /// LDAR family.
+    Acquire,
+    /// STLR family.
+    Release,
+}
+
 /// Where the new `pc` of an exit comes from.
 enum PcSrc {
     Const(u64),
@@ -1985,6 +2003,14 @@ impl Tx {
     /// mode it goes through the software TLB (`rt.ld<el>_<n>`), otherwise
     /// through the host (`rt.ld_slow`).
     fn ld(&mut self, addr: u32, bytes: u32) {
+        self.ld_ord(addr, bytes, Ord::Plain);
+    }
+
+    /// [`ld`](Self::ld) with an ordering: with cores in parallel (ADR 0042) an
+    /// acquire is an atomic load on the inline path and a load followed by a
+    /// fence through the host.
+    fn ld_ord(&mut self, addr: u32, bytes: u32, ord: Ord) {
+        let atomic = ord != Ord::Plain && self.sys.is_some_and(|s| s.parallel);
         if let Some(sys) = self.sys
             && self.inline_tlb
         {
@@ -1994,7 +2020,12 @@ impl Tx {
             self.tlb_hit(addr, bytes, tlb);
             self.f.if_(ValType::I64 as u8);
             self.f.local_get(t32(2)).i64_load(tlb + 8).local_get(addr).op(op::I64_ADD);
-            self.f.op(op::I32_WRAP_I64).i64_load_n(bytes, 0);
+            self.f.op(op::I32_WRAP_I64);
+            if atomic {
+                self.f.i64_atomic_load_n(bytes, 0);
+            } else {
+                self.f.i64_load_n(bytes, 0);
+            }
             self.f.else_();
             self.f.local_get(L_STATE).local_get(addr);
             self.slow_args();
@@ -2002,6 +2033,9 @@ impl Tx {
             self.f.if_(BLOCK_EMPTY);
             self.exit_fault_saved();
             self.f.end();
+            if atomic {
+                self.f.atomic_fence();
+            }
             self.f.end();
             return;
         }
@@ -2029,6 +2063,14 @@ impl Tx {
     /// nothing else to do afterwards), otherwise it records it in `t32(stop)` (0 if not)
     /// for [`stop_after`](Self::stop_after).
     fn st(&mut self, addr: u32, bytes: u32, val: u32, stop: Option<u32>) {
+        self.st_ord(addr, bytes, val, stop, Ord::Plain);
+    }
+
+    /// [`st`](Self::st) with an ordering: with cores in parallel (ADR 0042) a
+    /// release is an atomic store on the inline path (sequentially
+    /// consistent, like LDAR/STLR) and a store between fences through the host.
+    fn st_ord(&mut self, addr: u32, bytes: u32, val: u32, stop: Option<u32>, ord: Ord) {
+        let atomic = ord != Ord::Plain && self.sys.is_some_and(|s| s.parallel);
         if let Some(sys) = self.sys
             && self.inline_tlb
             && bytes != ZVA_BYTES
@@ -2037,14 +2079,25 @@ impl Tx {
             self.tlb_hit(addr, bytes, tlb);
             self.f.if_(BLOCK_EMPTY);
             self.f.local_get(t32(2)).i64_load(tlb + 8).local_get(addr).op(op::I64_ADD);
-            self.f.op(op::I32_WRAP_I64).local_get(val).i64_store_n(bytes, 0);
+            self.f.op(op::I32_WRAP_I64).local_get(val);
+            if atomic {
+                self.f.i64_atomic_store_n(bytes, 0);
+            } else {
+                self.f.i64_store_n(bytes, 0);
+            }
             if let Some(s) = stop {
                 self.f.i32_const(0).local_set(t32(s));
             }
             self.f.else_();
+            if atomic {
+                self.f.atomic_fence();
+            }
             self.f.local_get(L_STATE).local_get(addr).local_get(val);
             self.slow_args();
             self.call_rt(f_tlb(F_ST_TLB, sys.el, bytes));
+            if atomic {
+                self.f.atomic_fence();
+            }
             self.st_result(stop);
             self.f.end();
             return;
@@ -2956,6 +3009,11 @@ impl Tx {
                 self.exit_branch();
             }
 
+            // With cores in parallel the guest's barriers order the host's
+            // accesses too (ADR 0042).
+            Insn::Barrier if self.sys.is_some_and(|s| s.parallel) => {
+                self.f.atomic_fence();
+            }
             Insn::Nop | Insn::Barrier | Insn::CacheMaint | Insn::Wfi | Insn::Wfe | Insn::Yield => {}
             Insn::Mrs { reg: SysReg::Nzcv, rt } => {
                 self.get_nzcv();
@@ -3199,7 +3257,7 @@ impl Tx {
                 self.get_xsp(rn);
                 self.f.local_set(t64(4));
                 self.misaligned_fault(size);
-                self.ld(t64(4), 1 << size);
+                self.ld_ord(t64(4), 1 << size, Ord::Acquire);
                 self.set_x(rt);
             }
             Insn::StoreRelease { size, rt, rn } => {
@@ -3209,7 +3267,7 @@ impl Tx {
                 self.misaligned_fault(size);
                 self.get_x(rt);
                 self.f.local_set(t64(7));
-                self.st(t64(4), 1 << size, t64(7), None);
+                self.st_ord(t64(4), 1 << size, t64(7), None, Ord::Release);
             }
             Insn::Simd(SimdInsn::Mem(m)) => self.vec_mem(m),
             Insn::Simd(SimdInsn::Int(i @ (IntInsn::Copy { .. } | IntInsn::MovImm { .. }))) => self.vec_int(i),
@@ -3264,6 +3322,11 @@ impl Tx {
         let (lo, hi) = (t64(7), t64(3));
         if load {
             load_pair(self, lo, hi);
+            if self.sys.is_some_and(|s| s.parallel) {
+                // LDAXR's acquire (and LDXR, conservatively) with other cores
+                // running (ADR 0042).
+                self.f.atomic_fence();
+            }
             let f = &mut self.f;
             f.local_get(L_STATE).i32_const(1).i32_store(off::MON_VALID);
             f.local_get(L_STATE).i32_const(total as i32).i32_store(off::MON_BYTES);
@@ -3594,6 +3657,7 @@ mod tests {
                         fp: i != 3,
                         cntk: i as u8 & 3,
                         yields: i == 1,
+                        parallel: i == 2,
                     };
                     let sb: Vec<Region> = blocks
                         .iter()
@@ -3652,7 +3716,16 @@ mod tests {
     fn branch_addr_like_the_cpu() {
         let t = 0x5a00_0000_0040_1000u64;
         let n = 0x5a80_0000_0040_1000u64;
-        let s = |tbi0, tbi1| SysTarget { el: 0, tbi0, tbi1, spsel: false, fp: true, cntk: 0, yields: false };
+        let s = |tbi0, tbi1| SysTarget {
+            el: 0,
+            tbi0,
+            tbi1,
+            spsel: false,
+            fp: true,
+            cntk: 0,
+            yields: false,
+            parallel: false,
+        };
         assert_eq!(s(false, false).branch_addr(t), t);
         assert_eq!(s(true, false).branch_addr(t), 0x0000_0000_0040_1000);
         assert_eq!(s(true, false).branch_addr(n), n);
@@ -3673,6 +3746,7 @@ mod tests {
             fp: true,
             cntk: 0,
             yields: false,
+            parallel: false,
         });
         let el1 = Some(SysTarget {
             el: 1,
@@ -3682,10 +3756,11 @@ mod tests {
             fp: true,
             cntk: 0,
             yields: false,
+            parallel: false,
         });
         assert_eq!(kind_in(&Insn::Wfi, None), Kind::Linear);
         assert_eq!(kind_in(&Insn::Wfi, el1), Kind::Unsupported);
-        // ADR 0041: WFE and YIELD are NOPs in the regions, unless the JIT
+        // ADR 0042: WFE and YIELD are NOPs in the regions, unless the JIT
         // leaves them to the interpreter (several cores on one thread).
         let yields = el1.map(|s| SysTarget { yields: true, ..s });
         for i in [Insn::Wfe, Insn::Yield] {
@@ -3722,8 +3797,16 @@ mod tests {
             0xd65f03c0,    // ret
             0x94000020,    // bl .+128
         ];
-        let sys =
-            Some(SysTarget { el: 1, tbi0: false, tbi1: true, spsel: true, fp: true, cntk: 0, yields: false });
+        let sys = Some(SysTarget {
+            el: 1,
+            tbi0: false,
+            tbi1: true,
+            spsel: true,
+            fp: true,
+            cntk: 0,
+            yields: false,
+            parallel: false,
+        });
         let pc = 0xffff_8000_1234_5000u64;
         let r = Region::linear(pc, words.to_vec(), sys);
         let m = module(std::slice::from_ref(&r), MemoryImport { min: 1, shared_max: None });

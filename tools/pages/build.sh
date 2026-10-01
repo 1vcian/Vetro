@@ -16,7 +16,7 @@
 #   app/android-prebuilt.json  the prebuilt Android snapshot for this
 #                              vetro-wasm, if R2 has it (ADR 0031)
 #   wasm/vetro_wasm.wasm       the machine
-#   wasm/vetro_wasm_threads.wasm  the same with a shared memory (ADR 0041,
+#   wasm/vetro_wasm_threads.wasm  the same with a shared memory (ADR 0042,
 #                              `?threads=1`, isolation by coi-serviceworker)
 #   guest/Image, guest/initramfs.cpio.gz
 #   sources/                   GPL sources: kernel (in 60 MiB pieces, Pages's
@@ -58,7 +58,7 @@ grep -q "busybox-static-$BUSYBOX_VER-r$APORTS_PKGREL " "$guest/VERSIONS" || {
 
 echo "==> vetro-wasm (release, wasm32)"
 (cd "$root" && cargo build --release --target wasm32-unknown-unknown -p vetro-wasm)
-echo "==> vetro-wasm threads build (ADR 0041)"
+echo "==> vetro-wasm threads build (ADR 0042)"
 "$root/tools/wasm-threads.sh"
 
 rm -rf "$out"

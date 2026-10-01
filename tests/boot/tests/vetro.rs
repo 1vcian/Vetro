@@ -189,7 +189,7 @@ fn vetro_boots_guest_kernel_to_shell() {
     );
 }
 
-/// ADR 0041: the same script on two cores in turns on one thread
+/// ADR 0042: the same script on two cores in turns on one thread
 /// (deterministic). The secondary core comes up through PSCI CPU_ON; the log
 /// must match QEMU's with `-smp 2 -accel tcg,thread=single`; another host
 /// quantum gives the same instructions and log (the interleaving depends only

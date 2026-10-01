@@ -1,5 +1,5 @@
 //! GICv3: distributor, one redistributor and one system-register CPU
-//! interface per core (ARM IHI0069); up to 16 cores (ADR 0041).
+//! interface per core (ARM IHI0069); up to 16 cores (ADR 0042).
 //!
 //! Scope and choices (see also `docs/specs/platform.md`):
 //! - **A single security state** (GICD_CTLR.DS = 1, RAO/WI) and affinity
@@ -1129,7 +1129,7 @@ mod tests {
         assert_eq!(MmioDevice::read(&mut g, GICD_IPRIORITYR, 4), 0, "SGI priority RAZ in the distributor");
     }
 
-    /// Two cores (ADR 0041): a redistributor each (TYPER with affinity,
+    /// Two cores (ADR 0042): a redistributor each (TYPER with affinity,
     /// processor number and Last), banked SGIs and PPIs, a CPU interface each,
     /// SPIs routed by IROUTER, SGIs by ICC_SGI1R_EL1 target list or IRM.
     #[test]

@@ -36,7 +36,7 @@
 //                    Without it: ANDROID_MACHINE and ANDROID_PARAMS (the same
 //                    as the default profile).
 //
-//   --cpus=N         guest cores (ADR 0041; default 1): the snapshot key
+//   --cpus=N         guest cores (ADR 0042; default 1): the snapshot key
 //                    changes with the number (the configuration hash).
 //
 // Also writes <out>/<key>.png, the scanout at the home screen.
@@ -84,7 +84,7 @@ const CONSOLE_TAIL = 64 * 1024;
 const profileArg = arg('profile', null);
 const profile = profileArg === null ? null
   : parseProfile(readFileSync(STARTER_PROFILES.includes(profileArg) ? join(root, 'web/app/profiles', `${profileArg}.json`) : profileArg, 'utf8'));
-// ADR 0041: --cpus=N guest cores (deterministic turns on one thread).
+// ADR 0042: --cpus=N guest cores (deterministic turns on one thread).
 const machine = { ...(profile ? profileMachine(profile) : ANDROID_MACHINE), cpus: Number(arg('cpus', 1)) };
 const params = profile ? profileBootParams(profile) : ANDROID_PARAMS;
 const setup = profile ? profileAdbCommands(profile) : [];

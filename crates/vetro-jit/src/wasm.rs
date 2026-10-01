@@ -473,6 +473,39 @@ impl Func {
             _ => self.memarg(op::I64_STORE, 3, offset),
         }
     }
+    /// Instruction with prefix 0xfe (threads: atomics), with a memory
+    /// argument of the natural alignment `align` (log2 of the bytes).
+    fn atomic(&mut self, o: u8, align: u32, offset: u32) -> &mut Self {
+        self.code.push(0xfe);
+        uleb(&mut self.code, o as u64);
+        uleb(&mut self.code, align as u64);
+        uleb(&mut self.code, offset as u64);
+        self
+    }
+    /// `atomic.fence` (sequentially consistent).
+    pub fn atomic_fence(&mut self) -> &mut Self {
+        self.code.extend_from_slice(&[0xfe, 0x03, 0x00]);
+        self
+    }
+    /// Atomic load of `bytes` bytes (1, 2, 4, 8, naturally aligned or it
+    /// traps) zero-extended into an i64.
+    pub fn i64_atomic_load_n(&mut self, bytes: u32, offset: u32) -> &mut Self {
+        match bytes {
+            1 => self.atomic(0x14, 0, offset),
+            2 => self.atomic(0x15, 1, offset),
+            4 => self.atomic(0x16, 2, offset),
+            _ => self.atomic(0x11, 3, offset),
+        }
+    }
+    /// Atomic store of the low `bytes` bytes of an i64 (naturally aligned).
+    pub fn i64_atomic_store_n(&mut self, bytes: u32, offset: u32) -> &mut Self {
+        match bytes {
+            1 => self.atomic(0x1b, 0, offset),
+            2 => self.atomic(0x1c, 1, offset),
+            4 => self.atomic(0x1d, 2, offset),
+            _ => self.atomic(0x18, 3, offset),
+        }
+    }
     pub fn f32_load(&mut self, offset: u32) -> &mut Self {
         self.memarg(op::F32_LOAD, 2, offset)
     }

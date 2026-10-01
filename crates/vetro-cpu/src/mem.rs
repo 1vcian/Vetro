@@ -47,7 +47,7 @@ pub trait Memory {
 
     /// The store of a store-exclusive whose monitor matched: writes `new` at
     /// `addr` if the bytes there are still `old` (same length, aligned), in
-    /// one atomic step when other cores run at the same time (ADR 0041).
+    /// one atomic step when other cores run at the same time (ADR 0042).
     /// True if it wrote. The default reads, compares and writes.
     fn cmpxchg(&mut self, addr: u64, old: &[u8], new: &[u8]) -> Result<bool, MemFault> {
         let mut cur = [0u8; 16];

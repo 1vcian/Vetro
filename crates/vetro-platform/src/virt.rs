@@ -55,7 +55,7 @@ impl Virt {
         Self::with_cpus(now_secs, 1)
     }
 
-    /// Platform with `cpus` cores (1..=16, ADR 0041): a redistributor and a
+    /// Platform with `cpus` cores (1..=16, ADR 0042): a redistributor and a
     /// generic timer per core.
     pub fn with_cpus(now_secs: u64, cpus: usize) -> Self {
         let mut bus = Bus::new();

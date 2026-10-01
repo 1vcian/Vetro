@@ -246,7 +246,7 @@ impl Machine {
     }
 
     /// The running core's registers and, with several cores, the others and
-    /// the round robin (ADR 0041).
+    /// the round robin (ADR 0042).
     fn cpu_hash(&self) -> u64 {
         let mut w = Writer::with_capacity(2048);
         self.cpu.save(&mut w);

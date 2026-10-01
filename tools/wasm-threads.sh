@@ -1,5 +1,5 @@
 #!/bin/sh
-# The threads build of vetro-wasm (ADR 0041): atomics and bulk memory, the
+# The threads build of vetro-wasm (ADR 0042): atomics and bulk memory, the
 # standard library rebuilt with them (-Z build-std, the pinned nightly of
 # ADR 0002), the memory imported as a shared WebAssembly.Memory with a 4 GiB
 # maximum. Same Rust sources and the same C API as the ordinary build: the JS

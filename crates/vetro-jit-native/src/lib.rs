@@ -58,6 +58,8 @@ impl NativeEngine {
     pub fn new() -> Self {
         let mut config = wasmtime::Config::new();
         config.cranelift_opt_level(wasmtime::OptLevel::Speed);
+        // Atomics and fences in the regions of cores in parallel (ADR 0042).
+        config.wasm_threads(true);
         let engine = wasmtime::Engine::new(&config).expect("wasmtime configuration");
         let (store, memory, table, linker) = Self::store(&engine);
         NativeEngine { store, memory, table, linker, runtime: None }

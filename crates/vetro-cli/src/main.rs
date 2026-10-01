@@ -369,7 +369,7 @@ fn boot(args: &[String]) -> ExitCode {
             Some(("--gpu", "gfxstream")) => gfxstream = true,
             Some(("--gl-record", v)) => gl_record = Some(v.to_string()),
             Some(("--gl-trace", "1")) => gl_trace = true,
-            // ADR 0041: cores, in turns on one thread (deterministic).
+            // ADR 0042: cores, in turns on one thread (deterministic).
             Some(("--smp", v)) => match v.parse::<u32>() {
                 Ok(n) if (1..=vetro_machine::smp::MAX_CPUS).contains(&n) => cfg.cpus = n,
                 _ => return usage(),

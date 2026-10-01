@@ -1,4 +1,4 @@
-//! Several cores on one thread, deterministic (ADR 0041, step 2 of ADR 0038).
+//! Several cores on one thread, deterministic (ADR 0042, step 2 of ADR 0038).
 //!
 //! The machine runs one core at a time, in **turns** of at most
 //! [`QUANTUM`] clock steps, in round robin over the cores that are on. The

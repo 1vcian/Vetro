@@ -142,7 +142,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export function appMounts() {
   return [
     ['/wasm/vetro_wasm.wasm', join(root, 'target/wasm32-unknown-unknown/release/vetro_wasm.wasm')],
-    // The threads build (tools/wasm-threads.sh, ADR 0041), for `?threads=1`.
+    // The threads build (tools/wasm-threads.sh, ADR 0042), for `?threads=1`.
     ['/wasm/vetro_wasm_threads.wasm', join(root, 'target/wasm32-unknown-unknown/release/vetro_wasm_threads.wasm')],
     ['/guest/', join(root, 'target/guest-kernel')],
     ['/disks/', join(root, 'target/web-disks')],
