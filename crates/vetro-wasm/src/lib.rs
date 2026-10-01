@@ -151,8 +151,9 @@ pub mod load {
 /// A machine with the surrounding buffers for JS.
 pub struct Vm {
     m: Machine,
-    /// The cores 1..n while they run in parallel in Workers (ADR 0042).
-    cores: Vec<Box<vetro_machine::Core>>,
+    /// The cores 1..n while they run in parallel in Workers (ADR 0042);
+    /// never reallocated meanwhile (the Workers hold pointers to them).
+    cores: Vec<vetro_machine::Core>,
     /// Compression level of the snapshots (ABI 13, ADR 0031).
     snapshot_level: vetro_machine::vetro_snapshot::Level,
     /// Console output already taken from the UART and not read by JS yet.

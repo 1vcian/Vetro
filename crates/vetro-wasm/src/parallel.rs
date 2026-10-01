@@ -53,7 +53,7 @@ pub unsafe extern "C" fn vetro_parallel_start(vm: *mut Vm) -> u32 {
     }
     match vm.m.start_parallel() {
         Ok(cores) => {
-            vm.cores = cores.into_iter().map(Box::new).collect();
+            vm.cores = cores;
             vm.cores.len() as u32
         }
         Err(e) => {
@@ -72,7 +72,7 @@ pub unsafe extern "C" fn vetro_parallel_core(vm: *mut Vm, i: u32) -> *mut Core {
     // SAFETY: see above.
     let vm = unsafe { &mut *vm };
     match vm.cores.get_mut((i as usize).wrapping_sub(1)) {
-        Some(c) => &mut **c,
+        Some(c) => c,
         None => core::ptr::null_mut(),
     }
 }
@@ -97,7 +97,7 @@ pub unsafe extern "C" fn vetro_parallel_request_stop(vm: *mut Vm) {
 pub unsafe extern "C" fn vetro_parallel_stop(vm: *mut Vm) {
     // SAFETY: see above.
     let vm = unsafe { &mut *vm };
-    let cores = core::mem::take(&mut vm.cores).into_iter().map(|b| *b).collect();
+    let cores = core::mem::take(&mut vm.cores);
     vm.m.stop_parallel(cores);
 }
 
