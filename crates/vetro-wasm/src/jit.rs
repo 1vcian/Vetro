@@ -26,6 +26,18 @@ use vetro_jit::{Engine, FAULT, Host, NEXT, STOP};
 
 /// Size of the shared memory of a [`JsEngine`]: `JitState` and
 /// the system-mode area (`vetro_jit::state::area`).
+/// How the generated modules import `env.mem` (vetro-wasm's own memory):
+/// shared, with the 4 GiB maximum of the threads build (`tools/wasm-threads.sh`,
+/// ADR 0041), when this module is built with atomics; otherwise an ordinary
+/// memory. An import must match the memory it is given: a shared memory only
+/// links to a shared import with the same maximum.
+pub fn memory_import() -> vetro_jit::wasm::MemoryImport {
+    vetro_jit::wasm::MemoryImport { min: 1, shared_max: THREADS.then_some(65536) }
+}
+
+/// True in the threads build (atomics and a shared memory).
+pub const THREADS: bool = cfg!(target_feature = "atomics");
+
 pub const SHARED_LEN: usize = 256 * 1024;
 
 #[repr(C, align(16))]

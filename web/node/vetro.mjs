@@ -41,6 +41,19 @@ export const INOTIFY = {
 };
 
 const utf8 = new TextDecoder();
+/**
+ * Initial memory pages of the threads build (`--initial-memory` in
+ * tools/wasm-threads.sh: 32 MiB).
+ */
+export const THREADS_INITIAL_PAGES = 512;
+/**
+ * A copy of `bytes` if they live in a SharedArrayBuffer (the threads build's
+ * memory): browsers refuse shared views in TextDecoder, ImageData, Blob and
+ * the like. Otherwise `bytes` itself.
+ */
+export function unshared(bytes) {
+  return typeof SharedArrayBuffer !== 'undefined' && bytes.buffer instanceof SharedArrayBuffer ? bytes.slice() : bytes;
+}
 const toUtf8 = new TextEncoder();
 /** Bytes of a snapshot header (vetro_snapshot::HEADER_LEN). */
 export const SNAPSHOT_HEADER_LEN = 36;
@@ -204,7 +217,7 @@ export async function instantiate(wasmBytes, { jitBudget } = {}) {
   const imports = {
     vetro_host: {
       panic: (ptr, len) => {
-        const msg = utf8.decode(new Uint8Array(exports.memory.buffer, ptr >>> 0, len));
+        const msg = utf8.decode(unshared(new Uint8Array(exports.memory.buffer, ptr >>> 0, len)));
         console.error(`vetro-wasm: panic: ${msg}`);
       },
       snapshot_read: (ptr, cap) => {
@@ -223,8 +236,18 @@ export async function instantiate(wasmBytes, { jitBudget } = {}) {
     },
     vetro_jit: jit.imports(),
   };
-  const { instance } = await WebAssembly.instantiate(wasmBytes, imports);
-  exports = instance.exports;
+  // The threads build (tools/wasm-threads.sh, ADR 0041) imports its memory:
+  // a shared WebAssembly.Memory created here, with the initial size the
+  // build fixes and the 4 GiB maximum. The ordinary build exports its own.
+  const module = wasmBytes instanceof WebAssembly.Module ? wasmBytes : await WebAssembly.compile(wasmBytes);
+  let memory = null;
+  if (WebAssembly.Module.imports(module).some((i) => i.kind === 'memory')) {
+    if (typeof SharedArrayBuffer === 'undefined') throw new Error('vetro-wasm threads build: no SharedArrayBuffer (cross-origin isolation is needed)');
+    memory = new WebAssembly.Memory({ initial: THREADS_INITIAL_PAGES, maximum: 65536, shared: true });
+    imports.env = { memory };
+  }
+  const instance = await WebAssembly.instantiate(module, imports);
+  exports = memory ? { ...instance.exports, memory } : instance.exports;
   jit.attach(exports);
   const abi = exports.vetro_abi_version();
   if (abi !== ABI_VERSION) throw new Error(`vetro-wasm: API ${abi}, expected ${ABI_VERSION}`);
@@ -917,7 +940,7 @@ export class Machine {
   #message() {
     const x = this.#x;
     const ptr = x.vetro_message_ptr(this.#vm) >>> 0;
-    return utf8.decode(new Uint8Array(x.memory.buffer, ptr, x.vetro_message_len(this.#vm)));
+    return utf8.decode(unshared(new Uint8Array(x.memory.buffer, ptr, x.vetro_message_len(this.#vm))));
   }
 
   /** Kernel, initramfs (or null) and command line; throws on error. */
@@ -1249,7 +1272,7 @@ export class GuestFiles {
       const ptr = x.vetro_files_ptr(this.#vm) >>> 0;
       const buf = new Uint8Array(x.memory.buffer, ptr, n);
       const jl = buf[0] | (buf[1] << 8) | (buf[2] << 16) | (buf[3] << 24);
-      const msg = JSON.parse(utf8.decode(buf.subarray(4, 4 + jl)));
+      const msg = JSON.parse(utf8.decode(unshared(buf.subarray(4, 4 + jl))));
       if (msg.kind === 'event') {
         this.onEvent?.(msg);
         continue;

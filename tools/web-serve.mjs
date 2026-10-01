@@ -9,6 +9,7 @@
 // Mounts:
 //   /                       -> web/            (the app is in /app/)
 //   /wasm/vetro_wasm.wasm   -> target/wasm32-unknown-unknown/release/vetro_wasm.wasm
+//   /wasm/vetro_wasm_threads.wasm -> the threads build (tools/wasm-threads.sh)
 //   /guest/                 -> target/guest-kernel/  (Image, initramfs.cpio.gz)
 //   /disks/                 -> target/web-disks/     (disk images to try)
 //   /aosp/                  -> target/aosp/out/      (Vetro's AOSP image: manifest.json,
@@ -141,6 +142,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export function appMounts() {
   return [
     ['/wasm/vetro_wasm.wasm', join(root, 'target/wasm32-unknown-unknown/release/vetro_wasm.wasm')],
+    // The threads build (tools/wasm-threads.sh, ADR 0041), for `?threads=1`.
+    ['/wasm/vetro_wasm_threads.wasm', join(root, 'target/wasm32-unknown-unknown/release/vetro_wasm_threads.wasm')],
     ['/guest/', join(root, 'target/guest-kernel')],
     ['/disks/', join(root, 'target/web-disks')],
     // Prebuilt Android snapshots (tools/aosp/prebuilt-snapshot.mjs, ADR 0031).

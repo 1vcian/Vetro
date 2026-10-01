@@ -14,11 +14,23 @@
 // Protocol: in { id, gen, bytes } -> out { id, gen, module, ms } or
 // { id, gen, error }. No state besides the scratch memory.
 
-const scratch = new WebAssembly.Memory({ initial: 8 });
+let scratch = new WebAssembly.Memory({ initial: 8 });
 
 /** Compiles `bytes` and runs Liftoff on every exported region. */
 function compile(bytes) {
   const module = new WebAssembly.Module(bytes);
+  try {
+    return warm(module);
+  } catch (e) {
+    // The threads build's modules import a shared memory (ADR 0041), which
+    // only links to a shared scratch memory with the same maximum.
+    if (!(e instanceof WebAssembly.LinkError) || scratch.buffer instanceof SharedArrayBuffer) throw e;
+    scratch = new WebAssembly.Memory({ initial: 8, maximum: 65536, shared: true });
+    return warm(module);
+  }
+}
+
+function warm(module) {
   const imports = {};
   for (const imp of WebAssembly.Module.imports(module)) {
     let v;

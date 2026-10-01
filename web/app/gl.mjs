@@ -149,7 +149,8 @@ export class WebGlExecutor {
     const f32s = (off, len) => pixelArray(0x1406, bytes(off, len));
     const i32s = (off, len) => pixelArray(0x1404, bytes(off, len));
     const u32s = (off, len) => pixelArray(0x1405, bytes(off, len));
-    const text = (off, len) => new TextDecoder().decode(bytes(off, len));
+    // A copy: TextDecoder refuses views of the threads build's shared memory.
+    const text = (off, len) => new TextDecoder().decode(bytes(off, len).slice());
     let o = 0;
     this.stats.batches++;
     for (let i = 0; i < w.length;) {
@@ -330,7 +331,7 @@ export class WebGlExecutor {
             const uniforms = [];
             for (let k = 0; k < count; k++) {
               const b = a + 1 + 5 * k;
-              uniforms.push({ base: w[b], size: w[b + 1], name: new TextDecoder().decode(names.subarray(w[b + 2], w[b + 2] + w[b + 3])), array: !!w[b + 4] });
+              uniforms.push({ base: w[b], size: w[b + 1], name: new TextDecoder().decode(names.slice(w[b + 2], w[b + 2] + w[b + 3])), array: !!w[b + 4] });
             }
             this.programs.set(id, { uniforms, cache: new Map() });
             break;

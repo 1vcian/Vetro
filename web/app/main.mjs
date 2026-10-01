@@ -751,6 +751,15 @@ $('adb-shell').addEventListener('submit', async (e) => {
   out.scrollTop = out.scrollHeight;
 });
 
+/**
+ * True if the threads build of vetro-wasm runs (ADR 0041): asked for with
+ * `?threads=1` (or by a parallel machine) and possible only with cross-origin
+ * isolation (COOP/COEP from the server, or coi-serviceworker on Pages).
+ */
+function threadsBuild() {
+  return q.get('threads') === '1' && globalThis.crossOriginIsolated === true;
+}
+
 async function start() {
   const el = form.elements;
   const android = osValue() === 'android';
@@ -760,7 +769,9 @@ async function start() {
   if (!kernel && !android) return setStatus('kernel missing');
   const disk = android ? null : source('diskUrl', 'diskFile');
   const config = {
-    wasmUrl: new URL('../wasm/vetro_wasm.wasm', location.href).href,
+    // ADR 0041: the threads build (shared memory) needs cross-origin
+    // isolation; without it the ordinary build runs.
+    wasmUrl: new URL(threadsBuild() ? '../wasm/vetro_wasm_threads.wasm' : '../wasm/vetro_wasm.wasm', location.href).href,
     kernel,
     initrd: source('initrdUrl', 'initrdFile'),
     disks: disk ? [{ ...disk, blockSize: Number(el.blockKiB.value) << 10, readOnly: false }] : [],
@@ -906,7 +917,7 @@ async function start() {
         break;
       }
       case 'started':
-        if (!msg.restored) setStatus(`running (${renderer.name}, ${config.jit ? 'JIT' : 'interpreter'}${crossOriginIsolated ? ', isolated' : ''})`);
+        if (!msg.restored) setStatus(`running (${renderer.name}, ${config.jit ? 'JIT' : 'interpreter'}${crossOriginIsolated ? ', isolated' : ''}${config.wasmUrl.includes('_threads') ? ', threads build' : ''})`);
         consoleEl.focus();
         break;
       case 'stopped':

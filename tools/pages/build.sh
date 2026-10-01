@@ -16,6 +16,8 @@
 #   app/android-prebuilt.json  the prebuilt Android snapshot for this
 #                              vetro-wasm, if R2 has it (ADR 0031)
 #   wasm/vetro_wasm.wasm       the machine
+#   wasm/vetro_wasm_threads.wasm  the same with a shared memory (ADR 0041,
+#                              `?threads=1`, isolation by coi-serviceworker)
 #   guest/Image, guest/initramfs.cpio.gz
 #   sources/                   GPL sources: kernel (in 60 MiB pieces, Pages's
 #                              limit is 100 MiB per file), BusyBox and
@@ -56,12 +58,15 @@ grep -q "busybox-static-$BUSYBOX_VER-r$APORTS_PKGREL " "$guest/VERSIONS" || {
 
 echo "==> vetro-wasm (release, wasm32)"
 (cd "$root" && cargo build --release --target wasm32-unknown-unknown -p vetro-wasm)
+echo "==> vetro-wasm threads build (ADR 0041)"
+"$root/tools/wasm-threads.sh"
 
 rm -rf "$out"
 mkdir -p "$out"/{wasm,guest,sources}
 cp -R "$root/web/app" "$out/app"
 cp -R "$root/web/node" "$out/node"
 cp "$root/target/wasm32-unknown-unknown/release/vetro_wasm.wasm" "$out/wasm/"
+cp "$root/target/wasm32-unknown-unknown/release/vetro_wasm_threads.wasm" "$out/wasm/"
 cp "$guest/Image" "$guest/initramfs.cpio.gz" "$out/guest/"
 touch "$out/.nojekyll"
 

@@ -8,6 +8,11 @@
   <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
   <link rel="apple-touch-icon" href="icons/icon-180.png">
   <link rel="stylesheet" href="app.css">
+  <!-- ADR 0041: cross-origin isolation where the host cannot send COOP/COEP
+       (GitHub Pages), only when the threads build is asked for: the service
+       worker adds the headers, at the cost of one reload on the first visit. -->
+  <script>window.coi = { shouldRegister: () => new URLSearchParams(location.search).get('threads') === '1', quiet: true };</script>
+  <script src="vendor/coi-serviceworker.js"></script>
   <script type="module" src="main.mjs"></script>
 </head>
 <body>

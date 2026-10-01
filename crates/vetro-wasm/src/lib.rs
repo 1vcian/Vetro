@@ -451,6 +451,7 @@ impl Vm {
             batch: batch.max(1) as usize,
             profile,
             names,
+            memory: jit::memory_import(),
             ..vetro_jit::SysJitConfig::default()
         };
         self.m.set_jit(Some(Box::new(vetro_jit::SysJit::new(jit::JsEngine::default(), cfg))));
@@ -644,6 +645,13 @@ mod host {
         /// The next bytes of a snapshot for `vetro_snapshot_restore_stream`.
         pub fn snapshot_read(ptr: *mut u8, cap: usize) -> usize;
     }
+}
+
+/// 1 in the threads build (atomics, memory imported as a shared
+/// `WebAssembly.Memory`, ADR 0041), 0 in the ordinary one.
+#[unsafe(no_mangle)]
+pub extern "C" fn vetro_threads() -> u32 {
+    u32::from(jit::THREADS)
 }
 
 /// API version ([`ABI_VERSION`]).
