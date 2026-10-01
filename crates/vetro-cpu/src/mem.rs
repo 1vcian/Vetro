@@ -44,6 +44,21 @@ pub trait Memory {
     fn zero_block(&mut self, addr: u64) -> Result<(), MemFault> {
         self.write(addr, &[0u8; 64])
     }
+
+    /// The store of a store-exclusive whose monitor matched: writes `new` at
+    /// `addr` if the bytes there are still `old` (same length, aligned), in
+    /// one atomic step when other cores run at the same time (ADR 0041).
+    /// True if it wrote. The default reads, compares and writes.
+    fn cmpxchg(&mut self, addr: u64, old: &[u8], new: &[u8]) -> Result<bool, MemFault> {
+        let mut cur = [0u8; 16];
+        let cur = &mut cur[..old.len()];
+        self.read(addr, cur)?;
+        if cur != old {
+            return Ok(false);
+        }
+        self.write(addr, new)?;
+        Ok(true)
+    }
 }
 
 /// Permissions of a region.

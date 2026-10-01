@@ -79,6 +79,13 @@ impl<P: PhysMemory + ?Sized> SysBus for MmuBus<'_, P> {
 
     fn tlbi(&mut self, op: TlbiOp, xt: u64) {
         self.mmu.tlbi(op, xt);
+        if op.is_broadcast() {
+            self.phys.tlbi_broadcast(op, xt);
+        }
+    }
+
+    fn cmpxchg_phys(&mut self, pa: u64, old: &[u8], new: &[u8]) -> Result<bool, BusFault> {
+        self.phys.cmpxchg(pa, old, new).map_err(|e| bus_fault(FaultKind::External(e)))
     }
 
     fn tlb_flush_all(&mut self) {

@@ -3,6 +3,8 @@
 //! ([`CpuEnv`]): generic timer, GIC CPU interface, IRQ line.
 
 use core::cell::RefCell;
+use core::sync::atomic::{AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use vetro_cpu::sys::CpuEnv;
 use vetro_cpu::sysreg::EnvReg;
@@ -73,7 +75,6 @@ impl Store {
     fn region(len: usize) -> Self {
         unreachable!("RAM of {len} bytes beyond isize::MAX on a 64-bit host")
     }
-
     /// `[o, o+n)` (already checked by the caller, `n` small).
     #[inline]
     fn get(&self, o: usize, n: usize) -> &[u8] {
@@ -82,11 +83,90 @@ impl Store {
         unsafe { core::slice::from_raw_parts(self.ptr.wrapping_add(o), n) }
     }
 
+    /// `[o, o+n)` writable through a shared reference.
+    ///
+    /// # Safety
+    /// Nothing else may access those bytes while the slice lives (a
+    /// restore, which has the RAM to itself).
     #[inline]
-    fn get_mut(&mut self, o: usize, n: usize) -> &mut [u8] {
+    #[allow(clippy::mut_from_ref)]
+    unsafe fn get_mut_shared(&self, o: usize, n: usize) -> &mut [u8] {
         debug_assert!(o + n <= self.len);
-        // SAFETY: as in `get`, with `&mut self`.
+        // SAFETY: within the owned bytes; exclusivity is the caller's.
         unsafe { core::slice::from_raw_parts_mut(self.ptr.wrapping_add(o), n) }
+    }
+
+    /// Copies `[o, o+buf.len())` into `buf` (checked by the caller). An
+    /// aligned access of 1, 2, 4 or 8 bytes is a single atomic load.
+    #[inline]
+    fn load(&self, o: usize, buf: &mut [u8]) {
+        debug_assert!(o + buf.len() <= self.len);
+        let p = self.ptr.wrapping_add(o);
+        let n = buf.len();
+        // SAFETY: within the owned bytes; the atomics are aligned (checked).
+        unsafe {
+            match n {
+                8 if p.addr().is_multiple_of(8) => {
+                    buf.copy_from_slice(&AtomicU64::from_ptr(p.cast()).load(Ordering::Relaxed).to_le_bytes())
+                }
+                4 if p.addr().is_multiple_of(4) => {
+                    buf.copy_from_slice(&AtomicU32::from_ptr(p.cast()).load(Ordering::Relaxed).to_le_bytes())
+                }
+                2 if p.addr().is_multiple_of(2) => {
+                    buf.copy_from_slice(&AtomicU16::from_ptr(p.cast()).load(Ordering::Relaxed).to_le_bytes())
+                }
+                1 => buf[0] = AtomicU8::from_ptr(p).load(Ordering::Relaxed),
+                _ => core::ptr::copy_nonoverlapping(p, buf.as_mut_ptr(), n),
+            }
+        }
+    }
+
+    /// Copies `data` to `[o, o+data.len())` (checked by the caller), like
+    /// [`Store::load`].
+    #[inline]
+    fn store(&self, o: usize, data: &[u8]) {
+        debug_assert!(o + data.len() <= self.len);
+        let p = self.ptr.wrapping_add(o);
+        let n = data.len();
+        // SAFETY: as in `load`.
+        unsafe {
+            match n {
+                8 if p.addr().is_multiple_of(8) => AtomicU64::from_ptr(p.cast())
+                    .store(u64::from_le_bytes(data.try_into().expect("8 bytes")), Ordering::Relaxed),
+                4 if p.addr().is_multiple_of(4) => AtomicU32::from_ptr(p.cast())
+                    .store(u32::from_le_bytes(data.try_into().expect("4 bytes")), Ordering::Relaxed),
+                2 if p.addr().is_multiple_of(2) => AtomicU16::from_ptr(p.cast())
+                    .store(u16::from_le_bytes(data.try_into().expect("2 bytes")), Ordering::Relaxed),
+                1 => AtomicU8::from_ptr(p).store(data[0], Ordering::Relaxed),
+                _ => core::ptr::copy_nonoverlapping(data.as_ptr(), p, n),
+            }
+        }
+    }
+
+    /// Atomic compare-and-exchange of `n` (1, 2, 4, 8) bytes at `o`, as
+    /// little-endian values; true if it wrote. Unaligned host addresses (a RAM
+    /// vector that is not 8-aligned) fall back to a plain compare and write.
+    fn cmpxchg(&self, o: usize, n: usize, old: u64, new: u64) -> bool {
+        let p = self.ptr.wrapping_add(o);
+        if !p.addr().is_multiple_of(n) {
+            let mut cur = [0u8; 8];
+            self.load(o, &mut cur[..n]);
+            if u64::from_le_bytes(cur) != old {
+                return false;
+            }
+            self.store(o, &new.to_le_bytes()[..n]);
+            return true;
+        }
+        let (s, f) = (Ordering::SeqCst, Ordering::SeqCst);
+        // SAFETY: within the owned bytes, aligned.
+        unsafe {
+            match n {
+                8 => AtomicU64::from_ptr(p.cast()).compare_exchange(old, new, s, f).is_ok(),
+                4 => AtomicU32::from_ptr(p.cast()).compare_exchange(old as u32, new as u32, s, f).is_ok(),
+                2 => AtomicU16::from_ptr(p.cast()).compare_exchange(old as u16, new as u16, s, f).is_ok(),
+                _ => AtomicU8::from_ptr(p).compare_exchange(old as u8, new as u8, s, f).is_ok(),
+            }
+        }
     }
 }
 
@@ -115,20 +195,49 @@ pub const RAM_CHUNK: usize = 1 << 28;
 /// ([`watch_code`](Self::watch_code)): every write that goes through here (CPU,
 /// device DMA, image loading) marks them dirty. That is
 /// why bytes are written only with [`write`](Self::write).
+///
+/// Shared (ADR 0041): every method takes `&self`, so the cores of a parallel
+/// machine read and write it from their threads without a lock, as the
+/// JIT's regions do with plain WebAssembly accesses. The watch bitmap is
+/// atomic, and each JIT (consumer) has its own list of written pages. Aligned
+/// accesses of 1, 2, 4 and 8 bytes are single atomic accesses (the
+/// architecture's single-copy atomicity); concurrent accesses to the same bytes
+/// are the guest's business, as on hardware and in QEMU.
 pub struct Ram {
     bytes: Store,
     /// One bit per 4 KiB page: watched.
-    code: Vec<u64>,
+    code: Vec<AtomicU64>,
     /// Watched pages.
-    watched: usize,
-    /// Physical pages (`pa >> 12`) watched and then written.
-    dirty: Vec<u64>,
+    watched: AtomicUsize,
+    /// Physical pages (`pa >> 12`) watched and then written, for each
+    /// consumer ([`Ram::set_consumers`]).
+    dirty: Vec<Mutex<Vec<u64>>>,
 }
+
+// SAFETY: the bytes are only reached through `&self` methods that copy in and
+// out (atomically for the small aligned accesses), and the bookkeeping is
+// atomic or behind mutexes; like guest RAM shared by cores (or by a CPU and
+// devices) on hardware.
+unsafe impl Sync for Ram {}
 
 impl Ram {
     pub fn new(size: u64) -> Self {
         let pages = size.div_ceil(4096) as usize;
-        Ram { bytes: Store::new(size), code: vec![0; pages.div_ceil(64)], watched: 0, dirty: Vec::new() }
+        Ram {
+            bytes: Store::new(size),
+            code: (0..pages.div_ceil(64)).map(|_| AtomicU64::new(0)).collect(),
+            watched: AtomicUsize::new(0),
+            dirty: vec![Mutex::new(Vec::new())],
+        }
+    }
+
+    /// Number of consumers of the written watched pages (one per JIT;
+    /// default 1): [`take_code_dirty_for`](Self::take_code_dirty_for) takes
+    /// consumer `i`'s list. Pending pages are kept for consumer 0 and given to
+    /// the new ones too.
+    pub fn set_consumers(&mut self, n: usize) {
+        let pending = lock(&self.dirty[0]).clone();
+        self.dirty = (0..n.max(1)).map(|_| Mutex::new(pending.clone())).collect();
     }
 
     /// RAM bytes.
@@ -136,8 +245,9 @@ impl Ram {
         self.bytes.len as u64
     }
 
-    /// The RAM bytes as one slice (read-only). Always on 64-bit hosts; on
-    /// wasm32 only up to 2 GiB - 1 (beyond that, [`chunks`](Self::chunks)).
+    /// The RAM bytes as one slice (read-only, with nothing else writing).
+    /// Always on 64-bit hosts; on wasm32 only up to 2 GiB - 1 (beyond that,
+    /// [`chunks`](Self::chunks)).
     pub fn bytes(&self) -> &[u8] {
         assert!(self.bytes.len <= isize::MAX as usize, "RAM beyond isize::MAX: use Ram::chunks");
         self.bytes.get(0, self.bytes.len)
@@ -191,7 +301,7 @@ impl Ram {
     }
 
     /// Watches the physical page `page` (`pa >> 12`); false if it is not RAM.
-    pub fn watch_code(&mut self, page: u64) -> bool {
+    pub fn watch_code(&self, page: u64) -> bool {
         let Some(i) = (page << 12).checked_sub(map::RAM_BASE).map(|o| (o >> 12) as usize) else {
             return false;
         };
@@ -199,9 +309,8 @@ impl Ram {
             return false;
         }
         let (w, b) = (i / 64, 1u64 << (i % 64));
-        if self.code[w] & b == 0 {
-            self.code[w] |= b;
-            self.watched += 1;
+        if self.code[w].fetch_or(b, Ordering::SeqCst) & b == 0 {
+            self.watched.fetch_add(1, Ordering::SeqCst);
         }
         true
     }
@@ -211,31 +320,43 @@ impl Ram {
         match (page << 12).checked_sub(map::RAM_BASE) {
             Some(o) if o < self.size() => {
                 let i = (o >> 12) as usize;
-                self.code[i / 64] & 1 << (i % 64) != 0
+                self.code[i / 64].load(Ordering::SeqCst) & 1 << (i % 64) != 0
             }
             _ => false,
         }
     }
 
-    /// Appends to `out` the watched pages written since then.
-    pub fn take_code_dirty(&mut self, out: &mut Vec<u64>) {
-        out.append(&mut self.dirty);
+    /// Appends to `out` the watched pages written since then (consumer 0).
+    pub fn take_code_dirty(&self, out: &mut Vec<u64>) {
+        self.take_code_dirty_for(0, out);
+    }
+
+    /// Like [`take_code_dirty`](Self::take_code_dirty) for consumer `i`.
+    pub fn take_code_dirty_for(&self, i: usize, out: &mut Vec<u64>) {
+        let mut d = lock(&self.dirty[i]);
+        if !d.is_empty() {
+            out.append(&mut d);
+        }
     }
 
     /// Marks dirty (and no longer watched) the pages of `[o, o+len)`
     /// (offset into RAM); true if there was at least one.
     #[inline]
-    fn touch(&mut self, o: usize, len: usize) -> bool {
-        if self.watched == 0 || len == 0 {
+    fn touch(&self, o: usize, len: usize) -> bool {
+        if self.watched.load(Ordering::SeqCst) == 0 || len == 0 {
             return false;
         }
         let mut hit = false;
         for i in o >> 12..=(o + len - 1) >> 12 {
             let (w, b) = (i / 64, 1u64 << (i % 64));
-            if self.code[w] & b != 0 {
-                self.code[w] &= !b;
-                self.watched -= 1;
-                self.dirty.push((map::RAM_BASE >> 12) + i as u64);
+            if self.code[w].load(Ordering::SeqCst) & b != 0
+                && self.code[w].fetch_and(!b, Ordering::SeqCst) & b != 0
+            {
+                self.watched.fetch_sub(1, Ordering::SeqCst);
+                let page = (map::RAM_BASE >> 12) + i as u64;
+                for d in &self.dirty {
+                    lock(d).push(page);
+                }
                 hit = true;
             }
         }
@@ -244,11 +365,12 @@ impl Ram {
 
     /// A write that also says whether it touched watched code: `None`
     /// outside RAM.
-    pub fn write_watched(&mut self, pa: u64, data: &[u8]) -> Option<bool> {
+    pub fn write_watched(&self, pa: u64, data: &[u8]) -> Option<bool> {
         let o = self.range(pa, data.len())?;
-        self.bytes.get_mut(o, data.len()).copy_from_slice(data);
+        self.bytes.store(o, data);
         Some(self.touch(o, data.len()))
     }
+
     /// Offset in `bytes` of `[pa, pa+len)`, if entirely inside RAM.
     #[inline]
     fn range(&self, pa: u64, len: usize) -> Option<usize> {
@@ -259,16 +381,46 @@ impl Ram {
     pub fn read(&self, pa: u64, buf: &mut [u8]) -> bool {
         match self.range(pa, buf.len()) {
             Some(o) => {
-                buf.copy_from_slice(self.bytes.get(o, buf.len()));
+                self.bytes.load(o, buf);
                 true
             }
             None => false,
         }
     }
 
-    pub fn write(&mut self, pa: u64, data: &[u8]) -> bool {
+    pub fn write(&self, pa: u64, data: &[u8]) -> bool {
         self.write_watched(pa, data).is_some()
     }
+
+    /// Atomic compare-and-exchange of `old.len()` (1, 2, 4 or 8, aligned)
+    /// bytes at `pa` (exclusives, ADR 0041): writes `new` if the bytes are
+    /// `old`. `None` outside RAM or for another size.
+    pub fn cmpxchg(&self, pa: u64, old: &[u8], new: &[u8]) -> Option<bool> {
+        let n = old.len();
+        if n != new.len() || !matches!(n, 1 | 2 | 4 | 8) || !pa.is_multiple_of(n as u64) {
+            return None;
+        }
+        let o = self.range(pa, n)?;
+        let le = |b: &[u8]| {
+            let mut v = [0u8; 8];
+            v[..n].copy_from_slice(b);
+            u64::from_le_bytes(v)
+        };
+        let ok = self.bytes.cmpxchg(o, n, le(old), le(new));
+        if ok {
+            self.touch(o, n);
+        }
+        Some(ok)
+    }
+
+    /// Host address of the RAM bytes (for the JIT's software TLB).
+    pub fn host_ptr(&self) -> *mut u8 {
+        self.bytes.ptr
+    }
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 // ---- Snapshot (M6, ADR 0015) -------------------------------------------------
@@ -312,8 +464,8 @@ impl RamSource for vetro_snapshot::Reader<'_> {
 impl Ram {
     /// Restores the RAM from the content of the `RAM ` section (see
     /// [`vetro_snapshot::Snapshot::restore`] for [`Ram`]), from any
-    /// [`RamSource`].
-    pub fn restore_from(&mut self, r: &mut dyn RamSource) -> vetro_snapshot::Result<()> {
+    /// [`RamSource`]. Nothing else may use the RAM meanwhile.
+    pub fn restore_from(&self, r: &mut dyn RamSource) -> vetro_snapshot::Result<()> {
         const PAGE: usize = vetro_snapshot::BLOCK;
         struct Src<'a>(&'a mut dyn RamSource);
         impl vetro_snapshot::blocks::Source for Src<'_> {
@@ -321,11 +473,12 @@ impl Ram {
                 self.0.take(n)
             }
         }
-        struct Dst<'a>(&'a mut Ram);
+        struct Dst<'a>(&'a Ram);
         impl vetro_snapshot::blocks::Target for Dst<'_> {
             fn block_mut(&mut self, i: usize) -> &mut [u8] {
                 let len = self.0.bytes.len;
-                self.0.bytes.get_mut(i * PAGE, (len - i * PAGE).min(PAGE))
+                // SAFETY: the restore has the RAM to itself (see above).
+                unsafe { self.0.bytes.get_mut_shared(i * PAGE, (len - i * PAGE).min(PAGE)) }
             }
         }
         let len = self.bytes.len;
@@ -336,7 +489,8 @@ impl Ram {
         })?;
         for i in 0..pages {
             if present[i / 64] & 1 << (i % 64) == 0 {
-                let p = self.bytes.get_mut(i * PAGE, (len - i * PAGE).min(PAGE));
+                // SAFETY: as above.
+                let p = unsafe { self.bytes.get_mut_shared(i * PAGE, (len - i * PAGE).min(PAGE)) };
                 if !vetro_snapshot::is_zero(p) {
                     p.fill(0);
                 }
@@ -356,9 +510,23 @@ impl GuestRam for Ram {
     }
 }
 
+/// A shared reference to the RAM as a [`GuestRam`]: the devices of a
+/// parallel machine, whose cores keep using it (ADR 0041).
+pub struct RamRef<'a>(pub &'a Ram);
+
+impl GuestRam for RamRef<'_> {
+    fn read(&self, addr: u64, buf: &mut [u8]) -> Result<(), RamError> {
+        if self.0.read(addr, buf) { Ok(()) } else { Err(RamError { addr, len: buf.len() }) }
+    }
+    fn write(&mut self, addr: u64, data: &[u8]) -> Result<(), RamError> {
+        if self.0.write(addr, data) { Ok(()) } else { Err(RamError { addr, len: data.len() }) }
+    }
+}
+
 /// RAM, platform and time.
 pub struct Board {
-    pub ram: Ram,
+    /// Shared with the cores of a parallel machine (ADR 0041).
+    pub ram: Arc<Ram>,
     pub virt: Virt,
     /// Current value of CNTPCT_EL0.
     pub cntpct: u64,
@@ -386,7 +554,7 @@ impl Board {
     /// A board for `cpus` cores (a redistributor and a timer each).
     pub fn with_cpus(ram_size: u64, now_secs: u64, cpus: usize) -> Self {
         Board {
-            ram: Ram::new(ram_size),
+            ram: Arc::new(Ram::new(ram_size)),
             virt: Virt::with_cpus(now_secs, cpus),
             cntpct: 0,
             irq_dirty: true,
@@ -406,7 +574,7 @@ impl Board {
     /// Runs the virtio devices on top of RAM.
     pub fn service_virtio(&mut self) {
         let Board { ram, virt, .. } = self;
-        virt.service_virtio(ram);
+        virt.service_virtio(&mut RamRef(ram));
         self.host_wait = (0..map::VIRTIO_SLOTS as u32).any(|k| {
             virt.virtio(k).and_then(|t| t.device_as::<VirtioBlk>()).is_some_and(VirtioBlk::has_pending)
         });
@@ -593,7 +761,7 @@ mod tests {
         // More than one RAM_CHUNK piece is not needed: the piece logic is the
         // same, and an odd length exercises the short last piece.
         let size = 3 * 4096 * 64 + 4096 * 3 + 520;
-        let mut ram = Ram::new(size as u64);
+        let ram = Ram::new(size as u64);
         for (i, pa) in [0u64, 4096 * 7 + 13, 4096 * 100, size as u64 - 9].into_iter().enumerate() {
             let data: Vec<u8> = (0..9).map(|k| (i * 31 + k * 7 + 1) as u8).collect();
             assert!(ram.write(map::RAM_BASE + pa, &data));

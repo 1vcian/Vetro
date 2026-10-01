@@ -237,7 +237,7 @@ mod tests {
         let cfg = MachineConfig { ram_size: 1 << 20, cpus, ..MachineConfig::default() };
         let mut m = Machine::with_devices(&cfg, &Devices::none());
         {
-            let mut b = m.board.borrow_mut();
+            let b = m.board.borrow_mut();
             for (i, w) in PROBE.iter().enumerate() {
                 assert!(b.ram.write(R + 4 * i as u64, &w.to_le_bytes()));
             }
@@ -378,7 +378,7 @@ mod tests {
             0x17ffffff,    // b 0x14 <park>
         ];
         {
-            let mut b = m.board.borrow_mut();
+            let b = m.board.borrow_mut();
             for (i, w) in code.iter().enumerate() {
                 assert!(b.ram.write(R + 4 * i as u64, &w.to_le_bytes()));
             }

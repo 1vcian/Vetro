@@ -539,15 +539,16 @@ impl Cpu {
                     } else {
                         self.xr(rt) as u128
                     };
+                    // The monitor matches: an atomic compare-and-exchange against
+                    // the value LDXR read (QEMU's approach: a store of another
+                    // core in between makes it fail, ABA is accepted).
+                    let n = total as usize;
                     let ok = match self.monitor.take() {
                         Some(m) if m.addr == address && m.bytes == total => {
-                            read_uint(mem, address, total as usize)? == m.value
+                            mem.cmpxchg(address, &m.value.to_le_bytes()[..n], &new.to_le_bytes()[..n])?
                         }
                         _ => false,
                     };
-                    if ok {
-                        write_uint(mem, address, total as usize, new)?;
-                    }
                     self.set_x(rs, !ok as u64);
                 }
             }

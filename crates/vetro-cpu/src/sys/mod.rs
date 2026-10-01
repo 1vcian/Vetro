@@ -95,6 +95,20 @@ pub trait SysBus {
     fn tlbi(&mut self, op: TlbiOp, xt: u64);
     /// Flushes the TLB (writes to SCTLR_EL1 and TCR_EL1, like QEMU).
     fn tlb_flush_all(&mut self);
+    /// Physical compare-and-exchange (a piece that does not cross pages, of
+    /// 1, 2, 4, 8 or 16 bytes): writes `new` if the bytes are `old`; true if it
+    /// wrote. Atomic with respect to the other cores of a parallel machine
+    /// (ADR 0041); the default reads, compares and writes.
+    fn cmpxchg_phys(&mut self, pa: u64, old: &[u8], new: &[u8]) -> Result<bool, BusFault> {
+        let mut cur = [0u8; 16];
+        let cur = &mut cur[..old.len()];
+        self.read_phys(pa, cur)?;
+        if cur != old {
+            return Ok(false);
+        }
+        self.write_phys(pa, new)?;
+        Ok(true)
+    }
 }
 
 /// What the platform provides to the core: interrupt lines and system

@@ -182,7 +182,7 @@ impl Machine {
         w.raw(&[0; vetro_snapshot::HEADER_LEN]);
         self.save_head(&mut w);
         let b = self.board.borrow();
-        w.section(b"RAM ", |w| w.put(&b.ram));
+        w.section(b"RAM ", |w| w.put(&*b.ram));
         drop(b);
         let mut file = w.into_bytes();
         let (head, payload) = file.split_at_mut(vetro_snapshot::HEADER_LEN);
@@ -293,9 +293,9 @@ impl Machine {
         let mut r = Reader::new(payload);
         self.load_head(&mut r)?;
         {
-            let mut b = self.board.borrow_mut();
+            let b = self.board.borrow_mut();
             let mut s = r.section(b"RAM ")?;
-            b.ram.restore(&mut s)?;
+            b.ram.restore_from(&mut s)?;
             s.finish()?;
         }
         r.finish()?;
@@ -491,7 +491,7 @@ pub(super) mod tests {
     fn probe() -> Machine {
         let mut m = Machine::with_devices(&cfg(), &Devices::none());
         {
-            let mut b = m.board.borrow_mut();
+            let b = m.board.borrow_mut();
             for (base, code) in [(R, &MAIN[..]), (R + 0xa00, &SVC[..]), (IRQ_AT, &IRQ[..])] {
                 for (i, w) in code.iter().enumerate() {
                     assert!(b.ram.write(base + 4 * i as u64, &w.to_le_bytes()));

@@ -578,7 +578,7 @@ impl Machine {
         });
         let plan = boot::plan(ram, image, initrd_len, dtb.len() as u64)?;
         {
-            let mut b = self.board.borrow_mut();
+            let b = self.board.borrow();
             for (pa, bytes) in plan.segments(image, initrd, &dtb) {
                 assert!(b.ram.write(pa, bytes), "segment outside RAM: the plan rules it out");
             }
@@ -1037,7 +1037,7 @@ mod tests {
         let mut m = Machine::new(&MachineConfig { ram_size: 1 << 20, ..MachineConfig::default() });
         let code = [0xd503_207fu32, 0x1400_0000]; // wfi; b .
         {
-            let mut b = m.board.borrow_mut();
+            let b = m.board.borrow_mut();
             for (i, w) in code.iter().enumerate() {
                 assert!(b.ram.write(map::RAM_BASE + 4 * i as u64, &w.to_le_bytes()));
             }
@@ -1066,7 +1066,7 @@ mod tests {
         let machine = || {
             let mut m = Machine::new(&MachineConfig { ram_size: 1 << 20, ..MachineConfig::default() });
             {
-                let mut b = m.board.borrow_mut();
+                let b = m.board.borrow_mut();
                 for (i, w) in code.iter().enumerate() {
                     assert!(b.ram.write(map::RAM_BASE + 4 * i as u64, &w.to_le_bytes()));
                 }

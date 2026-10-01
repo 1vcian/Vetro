@@ -118,6 +118,19 @@ impl<'a, B: SysBus + ?Sized> SysMem<'a, B> {
             b.write_phys(pa, &data[off..off + n])
         })
     }
+
+    /// Store-exclusive: translated as a write; the bus compares and writes
+    /// (`SysBus::cmpxchg_phys`). Aligned (checked by the caller), so within a
+    /// page.
+    pub(crate) fn cmpxchg_as(&mut self, addr: u64, old: &[u8], new: &[u8]) -> Result<bool, MemFault> {
+        let el = self.el;
+        let mut ok = false;
+        self.access(addr, old.len(), Access::Write, el, false, |b, pa, _, _| {
+            ok = b.cmpxchg_phys(pa, old, new)?;
+            Ok(())
+        })?;
+        Ok(ok)
+    }
 }
 
 impl<B: SysBus + ?Sized> Memory for SysMem<'_, B> {
@@ -159,6 +172,10 @@ impl<B: SysBus + ?Sized> Memory for SysMem<'_, B> {
 
     fn write_unpriv(&mut self, addr: u64, data: &[u8]) -> Result<(), MemFault> {
         self.write_as(addr, data, 0)
+    }
+
+    fn cmpxchg(&mut self, addr: u64, old: &[u8], new: &[u8]) -> Result<bool, MemFault> {
+        self.cmpxchg_as(addr, old, new)
     }
 
     fn zero_block(&mut self, addr: u64) -> Result<(), MemFault> {

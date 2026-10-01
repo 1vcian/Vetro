@@ -669,7 +669,7 @@ mod tests {
     fn echo_probe() -> Machine {
         let mut m = Machine::with_devices(&cfg(), &Devices::none());
         {
-            let mut b = m.board.borrow_mut();
+            let b = m.board.borrow_mut();
             let main = &MAIN[..25]; // up to `mov x2, #0`
             for (base, code) in
                 [(R, main), (R + 4 * 25, &ECHO[..]), (R + 0xa00, &SVC[..]), (IRQ_AT, &IRQ[..])]
