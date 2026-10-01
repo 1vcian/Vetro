@@ -237,8 +237,11 @@ pub fn kind_in(insn: &Insn, sys: Option<SysTarget>) -> Kind {
             Insn::Wfi => return Kind::Unsupported,
             Insn::Wfe | Insn::Yield if s.yields => return Kind::Unsupported,
             // In parallel the store-exclusive is an atomic compare-and-exchange
-            // in the interpreter (ADR 0042).
-            Insn::Exclusive { load: false, .. } if s.parallel => return Kind::Unsupported,
+            // (ADR 0042); for 16 bytes (STXP of doublewords) there is none in
+            // WASM: the interpreter does it.
+            Insn::Exclusive { load: false, pair: true, size: 3, .. } if s.parallel => {
+                return Kind::Unsupported;
+            }
             // CPACR_EL1.FPEN trap: to the interpreter.
             Insn::Simd(_) if !s.fp => return Kind::Unsupported,
             Insn::CacheMaint if s.el == 0 => return Kind::Unsupported,
@@ -3365,6 +3368,10 @@ impl Tx {
             }
             self.f.local_set(hi);
         }
+        if self.sys.is_some_and(|s| s.parallel) {
+            self.store_exclusive_atomic(total, lo, rs);
+            return;
+        }
         // ok (t32(3)) = monitor for this access and memory unchanged.
         self.f.i32_const(0).local_set(t32(3));
         self.f.i32_const(0).local_set(t32(0)).i32_const(0).local_set(t32(1));
@@ -3389,6 +3396,39 @@ impl Tx {
         self.f.local_get(t32(3)).op(op::I32_EQZ).op(op::I64_EXTEND_I32_U);
         self.set_x(rs);
         if total == 16 { self.stop_after(&[0, 1]) } else { self.stop_after(&[0]) }
+    }
+
+    /// The store of a store-exclusive with cores in parallel (ADR 0042): if
+    /// the monitor is for this address and size, an atomic compare-and-exchange
+    /// of `total` bytes (1..8) against the value the exclusive load saw, on
+    /// the software TLB's write entry for the page; without the entry the
+    /// interpreter redoes the instruction (FAULT, monitor untouched). The
+    /// address is in `t64(4)` (aligned), the new value in `lo`.
+    fn store_exclusive_atomic(&mut self, total: u32, lo: u32, rs: u8) {
+        let sys = self.sys.expect("system mode");
+        let tlb = area::tlb(sys.el, true);
+        let f = &mut self.f;
+        f.i32_const(0).local_set(t32(3));
+        f.local_get(L_STATE).i32_load(off::MON_VALID);
+        f.local_get(L_STATE).i64_load(off::MON_ADDR).local_get(t64(4)).op(op::I64_EQ).op(op::I32_AND);
+        f.local_get(L_STATE).i32_load(off::MON_BYTES).i32_const(total as i32).op(op::I32_EQ).op(op::I32_AND);
+        f.if_(BLOCK_EMPTY);
+        self.tlb_hit(t64(4), total, tlb);
+        self.f.op(op::I32_EQZ).if_(BLOCK_EMPTY);
+        self.exit_fault();
+        self.f.end();
+        // expected = the loaded value, wrapped to `total` bytes like the operation.
+        let mask = if total == 8 { -1i64 } else { ((1u64 << (8 * total)) - 1) as i64 };
+        let f = &mut self.f;
+        f.local_get(t32(2)).i64_load(tlb + 8).local_get(t64(4)).op(op::I64_ADD).op(op::I32_WRAP_I64);
+        f.local_get(L_STATE).i64_load(off::MON_LO).i64_const(mask).op(op::I64_AND).local_tee(t64(6));
+        f.local_get(lo);
+        f.i64_atomic_cmpxchg_n(total, 0);
+        f.local_get(t64(6)).op(op::I64_EQ).local_set(t32(3));
+        f.end();
+        self.f.local_get(L_STATE).i32_const(0).i32_store(off::MON_VALID);
+        self.f.local_get(t32(3)).op(op::I32_EQZ).op(op::I64_EXTEND_I32_U);
+        self.set_x(rs);
     }
 
     /// If the address in `t64(4)` is not aligned to `1 << size`, exits with

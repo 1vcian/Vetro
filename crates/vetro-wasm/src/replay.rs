@@ -416,6 +416,25 @@ pub unsafe extern "C" fn vetro_read_phys(vm: *mut Vm, pa: u64, dst: *mut u8, len
     vm.m.read_phys(pa, buf) as u32
 }
 
+/// Writes `len` bytes into RAM at physical address `pa` (a bare-metal
+/// program or its data, like QEMU's `-device loader`): 1 done, 0 outside the
+/// RAM. With `pc` != 0 the running core starts there (EL1h, MMU off: the
+/// reset state). An input outside the guest's control: not for recordings.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_load_raw(vm: *mut Vm, pa: u64, src: *const u8, len: usize, pc: u64) -> u32 {
+    // SAFETY: `vm` comes from `vetro_machine_new*`.
+    let vm = unsafe { &mut *vm };
+    // SAFETY: `src` is valid for `len` bytes.
+    let data = if len == 0 { &[][..] } else { unsafe { core::slice::from_raw_parts(src, len) } };
+    if !vm.m.board.borrow().ram.write(pa, data) {
+        return 0;
+    }
+    if pc != 0 {
+        vm.m.cpu.pc = pc;
+    }
+    1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

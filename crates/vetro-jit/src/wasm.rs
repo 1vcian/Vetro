@@ -497,6 +497,17 @@ impl Func {
             _ => self.atomic(0x11, 3, offset),
         }
     }
+    /// Atomic compare-and-exchange of `bytes` bytes (naturally aligned):
+    /// [address, expected, replacement] -> the old value zero-extended (the
+    /// operands are wrapped to `bytes`).
+    pub fn i64_atomic_cmpxchg_n(&mut self, bytes: u32, offset: u32) -> &mut Self {
+        match bytes {
+            1 => self.atomic(0x4c, 0, offset),
+            2 => self.atomic(0x4d, 1, offset),
+            4 => self.atomic(0x4e, 2, offset),
+            _ => self.atomic(0x49, 3, offset),
+        }
+    }
     /// Atomic store of the low `bytes` bytes of an i64 (naturally aligned).
     pub fn i64_atomic_store_n(&mut self, bytes: u32, offset: u32) -> &mut Self {
         match bytes {

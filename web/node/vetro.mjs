@@ -933,6 +933,18 @@ export class Machine {
     return pa === 0xffffffffffffffffn ? null : pa;
   }
 
+  /**
+   * Writes `bytes` into RAM at physical address `pa` (a bare-metal program,
+   * tests); with `pc` the running core starts there. False outside the RAM.
+   */
+  loadRaw(pa, bytes, pc = 0n) {
+    const x = this.#x;
+    const [p, n] = copyIn(x, bytes);
+    const ok = x.vetro_load_raw(this.#vm, BigInt(pa), p, n, BigInt(pc)) === 1;
+    if (n) x.vetro_free(p, n);
+    return ok;
+  }
+
   /** `len` bytes of RAM at physical address `pa`, or null outside the RAM. */
   readPhys(pa, len) {
     const x = this.#x;

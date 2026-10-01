@@ -61,7 +61,10 @@
 #  16. the catalog panel in headless Chrome (tests/web/browser-catalog.mjs):
 #      cards, icon under COEP, Install -> downloading -> installing -> Open,
 #      Retry after a tampered APK, Update, hidden without a catalog.
-#  17. two guest cores in parallel in the app in Chrome (tests/web/browser-smp.mjs,
+#  17. litmus tests of the parallel cores in V8 (tests/web/litmus.mjs, ADR 0042):
+#      SB+dmbs, MP+dmbs, MP+rel+acq, the exclusive counter, with the cores in
+#      Workers, interpreter and JIT (the software TLB's fast paths);
+#  18. two guest cores in parallel in the app in Chrome (tests/web/browser-smp.mjs,
 #      ADR 0042): threads build, core 1 in a Worker, two processors seen, the
 #      snapshot with the cores in turns, restored with the cores parallel again.
 #
@@ -139,6 +142,9 @@ node tests/web/browser-analysis.mjs
 echo "==> app catalog panel in Chrome (M6)"
 node tests/web/browser-catalog.mjs
 
-echo "==> two guest cores in parallel in the app in Chrome (ADR 0042)"
+echo "==> litmus tests of the parallel cores in V8 (ADR 0042)"
 tools/wasm-threads.sh
+node tests/web/litmus.mjs
+
+echo "==> two guest cores in parallel in the app in Chrome (ADR 0042)"
 node tests/web/browser-smp.mjs

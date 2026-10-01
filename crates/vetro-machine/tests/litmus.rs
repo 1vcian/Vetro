@@ -193,9 +193,12 @@ const MP_RELACQ: [u32; 49] = [
     0x17ffffff, // b 0xbc <park>
 ];
 
-/// Both cores add 1 to the word at R+0x60000 N times with LDXR/STXR, then
-/// meet at R+0x10000 and core 0 powers the machine off.
-const ATOM: [u32; 37] = [
+/// Both cores add 1 to the word at R+0x60000 N times with LDXR/STXR (with
+/// a plain store to the same page in the loop, so the JIT's software TLB has
+/// the page for writing and the store-exclusive runs inside the region as a
+/// compare-and-exchange), then meet at R+0x10000 and core 0 powers the
+/// machine off.
+const ATOM: [u32; 39] = [
     0xd2a80014, // mov x20, #0x40000000        // =1073741824
     0xd2a10001, // mov x1, #0x8000000          // =134217728
     0x52800042, // mov w2, #0x2                // =2
@@ -213,26 +216,28 @@ const ATOM: [u32; 37] = [
     0x9141828a, // add x10, x20, #0x60, lsl #12 // =0x60000
     0x91404295, // add x21, x20, #0x10, lsl #12 // =0x10000
     0xd2800009, // mov x9, #0x0                // =0
+    0x8b0d0d4e, // add x14, x10, x13, lsl #3
+    0xf90005c9, // str x9, [x14, #0x8]
     0xc85f7d4b, // ldxr x11, [x10]
     0x9100056b, // add x11, x11, #0x1
     0xc80c7d4b, // stxr w12, x11, [x10]
-    0x35ffffac, // cbnz w12, 0x44 <loop>
+    0x35ffffac, // cbnz w12, 0x4c <loop+0x4>
     0x91000529, // add x9, x9, #0x1
     0xeb1a013f, // cmp x9, x26
-    0x54ffff41, // b.ne 0x44 <loop>
+    0x54ffff21, // b.ne 0x48 <loop>
     0xc85ffeab, // ldaxr x11, [x21]
     0x9100056b, // add x11, x11, #0x1
     0xc80cfeab, // stlxr w12, x11, [x21]
-    0x35ffffac, // cbnz w12, 0x60 <loop+0x1c>
-    0xb50000ed, // cbnz x13, 0x8c <park>
+    0x35ffffac, // cbnz w12, 0x68 <loop+0x20>
+    0xb50000ed, // cbnz x13, 0x94 <park>
     0xc8dffeab, // ldar x11, [x21]
     0xf100097f, // cmp x11, #0x2
-    0x54ffffcb, // b.lt 0x74 <loop+0x30>
+    0x54ffffcb, // b.lt 0x7c <loop+0x34>
     0xd2800100, // mov x0, #0x8                // =8
     0xf2b08000, // movk x0, #0x8400, lsl #16
     0xd4000002, // hvc #0
     0xd503207f, // wfi
-    0x17ffffff, // b 0x8c <park>
+    0x17ffffff, // b 0x94 <park>
 ];
 
 fn machine(code: &[u32], n: u64) -> Machine {

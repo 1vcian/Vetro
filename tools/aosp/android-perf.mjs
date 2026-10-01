@@ -27,6 +27,10 @@
 //   --jit-budget=MIB live JIT code budget in V8 (default CODE_BUDGET of jit-engine.mjs)
 //   --cpus=N         guest cores (ADR 0042; default 1): the snapshot (--snap)
 //                    must come from prebuilt-snapshot.mjs --cpus=N
+//   --parallel       cores 1..N in worker_threads of their own (threads build,
+//                    --wasm=...vetro_wasm_threads.wasm): not deterministic
+//   --profile=P      device profile (web/app/profiles, e.g. light: the app's
+//                    default) instead of ANDROID_MACHINE
 //   --cold=S         cold boot for S guest seconds instead of the restore
 //   --restore-only   stops after the restore (to profile it)
 //   --stop-after=P   stops after phase P (e.g. "adb ready")
@@ -53,6 +57,7 @@ import { DEV, instantiate, Machine } from '../../web/node/vetro.mjs';
 import { AdbClient } from '../../web/node/adb.mjs';
 import { DiskFeeder, LayoutSource } from '../../web/node/disk.mjs';
 import { ANDROID_DISK, ANDROID_MACHINE, ANDROID_PARAMS, ANDROID_WAKE, DEFAULT_MANIFEST, HOME_QUERY, machineDevices } from '../../web/node/android.mjs';
+import { parseProfile, profileBootParams, profileMachine, STARTER_PROFILES } from '../../web/node/profiles.mjs';
 import { androidSnapshotKey, prebuiltSnapUrl } from '../../web/node/prebuilt.mjs';
 import { CATALOG_URL, loadCatalog } from '../../web/node/catalog.mjs';
 
@@ -139,14 +144,18 @@ async function main() {
   if (flag('bg-compile')) await engine.startBackground();
   // ADR 0042: --cpus=N cores (deterministic turns); the snapshot must be one
   // made with the same number (tools/aosp/prebuilt-snapshot.mjs --cpus=N).
-  const M = { ...ANDROID_MACHINE, cpus: Number(arg('cpus', 1)) };
+  const profileArg = arg('profile', null);
+  const devProfile = profileArg === null ? null
+    : parseProfile(readFileSync(STARTER_PROFILES.includes(profileArg) ? join(root, 'web/app/profiles', `${profileArg}.json`) : profileArg, 'utf8'));
+  const params = devProfile ? profileBootParams(devProfile) : ANDROID_PARAMS;
+  const M = { ...(devProfile ? profileMachine(devProfile) : ANDROID_MACHINE), cpus: Number(arg('cpus', 1)) };
   const devices = machineDevices(DEV, M);
   const m = new Machine(exports, { ramSize: BigInt(M.ramMiB) << 20n, devices, width: M.width, height: M.height, cpus: M.cpus });
   const feeder = new DiskFeeder(m);
   const layout = await new LayoutSource(new URL('web/disk.json', manifestUrl).href).open();
   const cache = new FileCache(cacheDir, layout.key, ANDROID_DISK.blockSize, Math.ceil(layout.size / ANDROID_DISK.blockSize));
   feeder.add(layout, { cache, ...ANDROID_DISK });
-  const { key } = await androidSnapshotKey(m, { machine: M, devices, manifest, images, params: ANDROID_PARAMS, layout });
+  const { key } = await androidSnapshotKey(m, { machine: M, devices, manifest, images, params, layout });
   const res = { wasm: wasmPath, key, jit, profile, bgCompile: flag('bg-compile'), phases: [] };
   // The app is fetched before the machine runs: the host's actions must not
   // wait on the network while the guest advances.
@@ -163,7 +172,7 @@ async function main() {
   if (cold) {
     const bytes = [];
     for (const f of images) bytes.push(new Uint8Array(await (await fetch(f.url)).arrayBuffer()));
-    m.loadAndroid({ boot: bytes[0], vendorBoot: bytes[1], initBoot: bytes[2], params: ANDROID_PARAMS });
+    m.loadAndroid({ boot: bytes[0], vendorBoot: bytes[1], initBoot: bytes[2], params });
   } else {
     const snapPath = arg('snap', join(root, `target/aosp/cache/${key}.snap`));
     if (!existsSync(snapPath)) {
@@ -186,12 +195,19 @@ async function main() {
     const withFlags = !!exports.vetro_machine_set_jit_with;
     m.setJit(Number(arg('threshold', 64)), 16, { profile: profile && withFlags, names: flag('names') && withFlags });
   }
+  const parallel = flag('parallel');
+  if (parallel) {
+    const n = await m.startParallel({ jit: jit ? { threshold: Number(arg('threshold', 64)), batch: 16 } : null });
+    log(`parallel: cores 1..${n} in worker_threads`);
+  }
+  res.cpus = M.cpus;
+  res.parallel = parallel;
 
   // Phase accounting.
   let mark = null;
   // Older vetro-wasm builds (for "before" measurements) lack the counters.
   const perf = () => (exports.vetro_perf ? m.perf() : null);
-  const snap = () => ({ wall: performance.now(), cpu: cpu(), steps: m.steps, wait: feeder.stats.waitMs, jit: m.jitStats(), perf: perf() });
+  const snap = () => ({ wall: performance.now(), cpu: cpu(), steps: m.steps, ns: m.guestNs, wait: feeder.stats.waitMs, jit: m.jitStats(), perf: perf() });
   const begin = () => (mark = snap());
   const end = (name, extra = {}) => {
     const now = snap();
@@ -205,7 +221,8 @@ async function main() {
       cpuMs: Math.round(now.cpu - mark.cpu),
       diskWaitMs: Math.round(now.wait - mark.wait),
       steps,
-      guestSecs: steps / 1e8,
+      // Guest time (with several cores the clock counts every core's instructions).
+      guestSecs: Number(now.ns - mark.ns) / 1e9,
       jit: d(mark.jit, now.jit),
       perf: d(mark.perf, now.perf),
       rssMiB: Math.round(process.memoryUsage().rss / 2 ** 20),
@@ -235,7 +252,7 @@ async function main() {
   let flow = null;
   let flowDone = false;
   let flowError = null;
-  const guest = () => m.steps;
+  const guest = () => m.guestNs;
   const latin1 = new TextDecoder('latin1');
   let consoleTail = '';
   const samples = flag('samples') ? new Map() : null;
@@ -260,7 +277,7 @@ async function main() {
   };
   /** Runs the machine until `pred()` or `secs` of guest time (then throws unless `soft`). */
   const waitGuest = (what, pred, secs, soft = false) => new Promise((ok, ko) => {
-    const limit = guest() + BigInt(Math.round(secs * 1e8));
+    const limit = guest() + BigInt(Math.round(secs * 1e9));
     waiters.push({ pred, limit, ok, ko: soft ? ok : () => ko(new Error(`${what}: not within ${secs} s of guest time`)) });
   });
   const waiters = [];
@@ -369,6 +386,10 @@ async function main() {
       await new Promise((ok) => setImmediate(ok));
     }
     if (flowError) throw flowError;
+  }
+  if (parallel) {
+    res.cores = await m.stopParallel();
+    log(`parallel cores: ${JSON.stringify(res.cores.map((r) => ({ stop: r.stop, executed: r.executed })))}`);
   }
   res.totalWallMs = Math.round(performance.now() - t0);
   res.engine = engine.stats;
