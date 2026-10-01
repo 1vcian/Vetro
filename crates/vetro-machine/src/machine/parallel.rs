@@ -243,7 +243,10 @@ impl ParCore {
         let slot = &cores.slots[self.idx];
         let mut done = 0u64;
         while done < left {
-            if slot.kick_seen() || cores.stop.load(Ordering::SeqCst) || cores.halt.load(Ordering::SeqCst) != 0
+            if slot.kick_seen()
+                || slot.has_requests()
+                || cores.stop.load(Ordering::SeqCst)
+                || cores.halt.load(Ordering::SeqCst) != 0
             {
                 // Requests, an interrupt or a stop: back to the loop.
                 return (
@@ -352,12 +355,23 @@ impl ParCore {
     fn wait(&mut self, cell: &BoardCell, main: bool) -> Wait {
         let cores = &*cell.cores;
         let slot = &cores.slots[self.idx];
+        // The kick count before looking at the line: a kick from here on
+        // (an interrupt raised meanwhile) ends the wait.
+        let seen = slot.kick.load(Ordering::SeqCst);
         self.sync(cell);
         if self.irq(cell) {
             return Wait::Woken;
         }
-        let target = self.deadline(cores).map_or(u64::MAX, |d| steps_for(d).saturating_mul(self.n));
-        let seen = slot.kick.load(Ordering::SeqCst);
+        let horizon = cores.horizon.load(Ordering::SeqCst);
+        let mut target = self.deadline(cores).map_or(u64::MAX, |d| steps_for(d).saturating_mul(self.n));
+        if main {
+            // Core 0 returns to the host at the end of its quantum.
+            target = target.min(horizon);
+        }
+        if main && cores.net_deadline.load(Ordering::SeqCst) <= cores.clock.load(Ordering::SeqCst) {
+            // The network stack is due: core 0's caller polls it first.
+            return Wait::Later;
+        }
         slot.wait_until.store(target, Ordering::SeqCst);
         let idle = cores.idle.fetch_add(1, Ordering::SeqCst) + 1;
         let on = cores.slots.iter().filter(|s| s.on.load(Ordering::SeqCst)).count();
@@ -373,7 +387,8 @@ impl ParCore {
                 .filter(|&w| w != 0)
                 .chain([cores.net_deadline.load(Ordering::SeqCst)])
                 .min()
-                .unwrap_or(u64::MAX);
+                .unwrap_or(u64::MAX)
+                .min(horizon);
             if t == u64::MAX {
                 if main {
                     out = Wait::Idle;
@@ -386,10 +401,16 @@ impl ParCore {
         if !matches!(out, Wait::Idle) {
             loop {
                 if cores.clock.load(Ordering::SeqCst) >= target {
-                    out = Wait::Woken;
+                    out = if main && target == horizon && target != u64::MAX {
+                        Wait::Later
+                    } else {
+                        Wait::Woken
+                    };
                     break;
                 }
                 if slot.kick.load(Ordering::SeqCst) != seen
+                    || slot.has_requests()
+                    || self.irq(cell)
                     || cores.stop.load(Ordering::SeqCst)
                     || cores.halt.load(Ordering::SeqCst) != 0
                 {
@@ -397,12 +418,18 @@ impl ParCore {
                     out = Wait::Woken;
                     break;
                 }
-                if main && start.elapsed() >= MAIN_WAIT {
+                if main
+                    && (start.elapsed() >= MAIN_WAIT
+                        || cores.net_deadline.load(Ordering::SeqCst) <= cores.clock.load(Ordering::SeqCst))
+                {
                     out = Wait::Later;
                     break;
                 }
                 let g = crate::board::lock_slot(&slot.sleep);
-                if slot.kick.load(Ordering::SeqCst) == seen && cores.clock.load(Ordering::SeqCst) < target {
+                if slot.kick.load(Ordering::SeqCst) == seen
+                    && !slot.has_requests()
+                    && cores.clock.load(Ordering::SeqCst) < target
+                {
                     let _ = slot.wake.wait_timeout(g, Duration::from_millis(if main { 1 } else { 20 }));
                 }
             }
@@ -441,7 +468,10 @@ impl ParCore {
                 }
                 let seen = slot.kick.load(Ordering::SeqCst);
                 let g = crate::board::lock_slot(&slot.sleep);
-                if slot.kick.load(Ordering::SeqCst) == seen && !slot.on.load(Ordering::SeqCst) {
+                if slot.kick.load(Ordering::SeqCst) == seen
+                    && !slot.on.load(Ordering::SeqCst)
+                    && !slot.has_requests()
+                {
                     let _ =
                         slot.wake.wait_timeout(g, if main { MAIN_WAIT } else { Duration::from_millis(20) });
                 }
@@ -454,7 +484,7 @@ impl ParCore {
                 // A CPU_ON that raced with the core's own power-off.
                 self.power_on(start.0, start.1);
             }
-            if left == 0 {
+            if left == 0 || (main && self.flush(cores) >= cores.horizon.load(Ordering::SeqCst)) {
                 self.flush(cores);
                 return Stop::Budget;
             }
@@ -466,7 +496,13 @@ impl ParCore {
                 }
                 continue;
             }
-            let (done, ev) = self.stretch(cell, left.min(SLICE));
+            let mut n = left.min(SLICE);
+            if main {
+                let (c, h) =
+                    (cores.clock.load(Ordering::SeqCst) + self.pending, cores.horizon.load(Ordering::SeqCst));
+                n = n.min(h.saturating_sub(c).max(1));
+            }
+            let (done, ev) = self.stretch(cell, n);
             left -= done.min(left);
             match ev {
                 Event::Budget => {}
@@ -738,6 +774,9 @@ impl Machine {
         let board = self.board.clone();
         let cores = &board.cores;
         let mut left = budget;
+        // Like the cores in turns, a quantum is a stretch of the clock.
+        let end = cores.clock.load(Ordering::SeqCst).saturating_add(budget);
+        cores.horizon.store(end, Ordering::SeqCst);
         loop {
             // The network stack (core 0's duty) and the devices it feeds.
             let clock = cores.clock.load(Ordering::SeqCst);
@@ -754,7 +793,7 @@ impl Machine {
             self.par = Some(core0);
             self.steps = cores.clock.load(Ordering::SeqCst);
             left = left.saturating_sub(done.max(1));
-            if stop != Stop::Budget || left == 0 || cores.stop.load(Ordering::SeqCst) {
+            if stop != Stop::Budget || left == 0 || self.steps >= end || cores.stop.load(Ordering::SeqCst) {
                 return stop;
             }
         }
@@ -767,8 +806,9 @@ impl Machine {
         b.cntpct = b.cntpct.max(now);
         let now = b.cntpct;
         let net_due = self.net_deadline.is_some_and(|d| now >= d);
+        let touched = core::mem::take(&mut b.serviced);
         if let Some(slot) = self.slots.net
-            && (net_due || b.virtio_dirty)
+            && (net_due || b.virtio_dirty || touched)
         {
             let at = crate::net::micros(now);
             let link = b

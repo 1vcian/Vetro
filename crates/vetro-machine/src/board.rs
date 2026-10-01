@@ -565,6 +565,10 @@ pub struct Board {
     /// The cores' IRQ lines as seen without the lock, and their wakeups
     /// (ADR 0042).
     pub(crate) cores: Arc<Cores>,
+    /// Devices serviced since the network stack last looked (cores in
+    /// parallel: whoever touches a device services it, core 0 polls the
+    /// stack).
+    pub(crate) serviced: bool,
 }
 
 impl Board {
@@ -582,6 +586,7 @@ impl Board {
             virtio_dirty: false,
             host_wait: false,
             cores: Arc::new(Cores::new(cpus)),
+            serviced: false,
         }
     }
 
@@ -639,6 +644,13 @@ impl Board {
         self.lines_changed();
         self.virtio_dirty = false;
         self.irq_dirty = true;
+        self.serviced = true;
+        if self.cores.parallel.load(Ordering::Relaxed) {
+            // The network stack may have work now (a frame from the guest):
+            // core 0 polls it before time moves on.
+            self.cores.net_deadline.store(0, Ordering::SeqCst);
+            self.cores.kick(0);
+        }
     }
 
     /// Drives input line `line` of the PL061 GPIO: line 3
@@ -690,6 +702,10 @@ pub(crate) struct Cores {
     /// Clock value of the network stack's next deadline (`u64::MAX` none),
     /// for the jump of time when every core waits.
     pub net_deadline: AtomicU64,
+    /// Clock value at which the host's current quantum ends (`Machine::run`
+    /// of core 0): time never jumps beyond it, so the guest waits for the
+    /// host as with the cores in turns (ADR 0039).
+    pub horizon: AtomicU64,
 }
 
 /// One core's shared state.
@@ -734,6 +750,11 @@ impl Slot {
     pub fn kick_seen(&self) -> bool {
         self.kick.load(Ordering::SeqCst) != self.seen.load(Ordering::SeqCst)
     }
+
+    /// Requests from other cores not yet applied.
+    pub fn has_requests(&self) -> bool {
+        self.posted.load(Ordering::SeqCst) > self.applied.load(Ordering::SeqCst)
+    }
 }
 
 /// What a core asks of another one in parallel (applied between runs, then
@@ -775,6 +796,7 @@ impl Cores {
             stop: AtomicBool::new(false),
             halt: AtomicU8::new(0),
             net_deadline: AtomicU64::new(u64::MAX),
+            horizon: AtomicU64::new(u64::MAX),
         }
     }
 
