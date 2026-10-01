@@ -10,7 +10,7 @@ tree="$HOME/${VETRO_AOSP_TREE:-aosp}"
 work="$HOME/${VETRO_AOSP_WORK:-vetro-aosp}"
 product="${VETRO_AOSP_PRODUCT:-vetro_arm64}"
 p="$tree/out/target/product/$product"
-o="$work/out"
+o="${VETRO_PACK_OUT:-$work/out}"  # another directory: e.g. to keep the published image's pack
 
 # Checks on the result before copying (ADR 0030): if one fails the build isn't
 # the intended one and fetch.sh stops.
@@ -65,9 +65,12 @@ grep -q 'setprop debug.sf.vsync_reactor_ignore_present_fences false' "$p/vendor/
 # Slim image (ADR 0041): a sample of each removal group (telephony, printing,
 # backup, demo apps, Cuttlefish's host service, product apps, vendor HALs)
 # and the unavailable features.
-for f in system/priv-app/TeleService system/app/PrintSpooler system/priv-app/LocalTransport system/app/Traceur \
-    system_ext/priv-app/CarrierConfig product/priv-app/Dialer product/app/messaging product/app/Camera2 \
-    vendor/priv-app/CuttlefishService vendor/apex/com.google.emulated.camera.provider.hal.apex \
+# (APKs, not their directories: an app with JNI keeps a lib/ symlink there.)
+for f in system/priv-app/TeleService/TeleService.apk system/app/PrintSpooler/PrintSpooler.apk \
+    system/priv-app/LocalTransport/LocalTransport.apk system/app/Traceur/Traceur.apk \
+    system_ext/priv-app/CarrierConfig/CarrierConfig.apk product/priv-app/Dialer/Dialer.apk \
+    product/app/messaging/messaging.apk product/app/Camera2/Camera2.apk \
+    vendor/priv-app/CuttlefishService/CuttlefishService.apk vendor/apex/com.google.emulated.camera.provider.hal.apex \
     vendor/apex/com.android.hardware.neuralnetworks.apex vendor/bin/hw/android.hardware.biometrics.face-service.default; do
   [ ! -e "$p/$f" ] || fail "/$f is still installed"
 done
