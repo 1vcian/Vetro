@@ -326,8 +326,9 @@ impl TlbGroup {
 /// | parameters`).
 const CTX_SHIFT: u32 = 7;
 
-/// The translation parameters for the current CPU state.
-pub fn target(cpu: &Cpu) -> SysTarget {
+/// The translation parameters for the current CPU state (`yields`: the
+/// JIT's setting, [`SysJit::set_yields`]).
+pub fn target(cpu: &Cpu, yields: bool) -> SysTarget {
     let t = cpu.sys.tcr_el1;
     // CPACR_EL1.FPEN like `Cpu::fp_trapped`: 11 no trap, 01 EL0 only.
     let fp = match cpu.sys.cpacr_el1 >> cpacr::FPEN_SHIFT & 3 {
@@ -349,6 +350,7 @@ pub fn target(cpu: &Cpu) -> SysTarget {
         spsel: cpu.sys.spsel,
         fp,
         cntk,
+        yields,
     }
 }
 
@@ -682,6 +684,8 @@ pub struct SysJit<E: Engine> {
     /// Virtual addresses that no region contains
     /// ([`SysJit::set_stops`], introspection hook points).
     stops: std::collections::BTreeSet<u64>,
+    /// WFE and YIELD left to the interpreter ([`SysJit::set_yields`]).
+    yields: bool,
 }
 
 /// The guest clock for the regions (ADR 0026): instructions executed
@@ -865,6 +869,7 @@ impl<E: Engine> SysJit<E> {
             compiling: Vec::new(),
             time: None,
             stops: std::collections::BTreeSet::new(),
+            yields: false,
             profile: cfg.profile.then(|| {
                 crate::helper::profile(true);
                 Profile::default()
@@ -888,6 +893,24 @@ impl<E: Engine> SysJit<E> {
             return;
         }
         self.stops = new;
+        self.forget_blocks();
+    }
+
+    /// With `on`, regions never contain WFE or YIELD: the interpreter
+    /// executes them and reports `SysEvent::Yield`, which ends a core's turn
+    /// on a machine with several cores (ADR 0041). Without it (one core) they
+    /// are NOPs inside the regions. A change forgets every block, like
+    /// [`SysJit::set_stops`].
+    pub fn set_yields(&mut self, on: bool) {
+        if on != self.yields {
+            self.yields = on;
+            self.forget_blocks();
+        }
+    }
+
+    /// Forgets all blocks (even the waiting ones) and the jump cache
+    /// entries (new epoch).
+    fn forget_blocks(&mut self) {
         let c = &mut self.cache;
         c.blocks.clear();
         c.pages.clear();
@@ -921,7 +944,7 @@ impl<E: Engine> SysJit<E> {
         if let Ok(pa) = pa
             && phys.ram_read(pa, &mut w)
         {
-            p.note(u32::from_le_bytes(w), Some(target(cpu)));
+            p.note(u32::from_le_bytes(w), Some(target(cpu, self.yields)));
         }
     }
 
@@ -1154,7 +1177,7 @@ impl<E: Engine> SysJit<E> {
         self.sync_regime(cpu, mmu);
         self.sync_ram(phys);
         let mut regs = translation_regs(cpu);
-        let sys = target(cpu);
+        let sys = target(cpu, self.yields);
         let (el, fl) = (sys.el, flags(sys));
         let at = self.cache.at;
         let mut done = 0u64;
@@ -1683,6 +1706,8 @@ pub trait SysJitDyn {
     fn set_time(&mut self, _c: Clock) {}
     /// Addresses that the regions do not contain ([`SysJit::set_stops`]).
     fn set_stops(&mut self, stops: &[u64]);
+    /// WFE and YIELD left to the interpreter ([`SysJit::set_yields`]).
+    fn set_yields(&mut self, on: bool);
     fn profile(&self) -> Option<&Profile> {
         None
     }
@@ -1703,6 +1728,9 @@ impl<E: Engine> SysJitDyn for SysJit<E> {
     }
     fn set_stops(&mut self, stops: &[u64]) {
         SysJit::set_stops(self, stops)
+    }
+    fn set_yields(&mut self, on: bool) {
+        SysJit::set_yields(self, on)
     }
     fn profile_step(&mut self, cpu: &Cpu, mmu: &mut Mmu, phys: &mut dyn SysPhys) {
         SysJit::profile_step(self, cpu, mmu, phys)

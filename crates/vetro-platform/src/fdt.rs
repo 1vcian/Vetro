@@ -241,9 +241,13 @@ impl FdtBuilder {
     }
 }
 
-/// Parameters of the virt platform device tree (one CPU).
+/// Parameters of the virt platform device tree.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VirtDtbConfig {
+    /// Cores (1..=16): `/cpus/cpu@N` with `reg` = the affinity of
+    /// [`crate::gic::cpu_affinity`], one redistributor each; with more than one
+    /// also QEMU's `cpu-map` (one socket, one cluster, a core per CPU).
+    pub cpus: u32,
     /// RAM size starting at `map::RAM_BASE`.
     pub ram_size: u64,
     /// Kernel command line (`/chosen/bootargs`).
@@ -285,6 +289,7 @@ fn seed_bytes(seed: u64, n: usize) -> Vec<u8> {
 impl Default for VirtDtbConfig {
     fn default() -> Self {
         Self {
+            cpus: 1,
             ram_size: 1 << 30,
             bootargs: "console=ttyAMA0 earlycon".into(),
             initrd: None,
@@ -302,6 +307,8 @@ pub const PHANDLE_GIC: u32 = 1;
 pub const PHANDLE_CLK: u32 = 2;
 /// Phandle of the PL061 GPIO (used by `gpio-keys`).
 pub const PHANDLE_GPIO: u32 = 3;
+/// Phandle of `cpu@0` with more than one core (`cpu@N`: this plus N).
+pub const PHANDLE_CPU0: u32 = 4;
 /// Linux KEY_POWER (`linux,code` of the power key).
 const KEY_POWER: u32 = 116;
 
@@ -343,12 +350,26 @@ pub fn virt_dtb(cfg: &VirtDtbConfig) -> Vec<u8> {
     b.end_node();
 
     b.begin_node("cpus").prop_u32("#address-cells", 1).prop_u32("#size-cells", 0);
-    b.begin_node("cpu@0")
-        .prop_str("device_type", "cpu")
-        .prop_str("compatible", "arm,cortex-a53")
-        .prop_u32("reg", 0)
-        .prop_str("enable-method", "psci")
-        .end_node();
+    let smp = cfg.cpus > 1;
+    if smp {
+        // Like QEMU virt: the topology as one socket and one cluster.
+        b.begin_node("cpu-map").begin_node("socket0").begin_node("cluster0");
+        for i in 0..cfg.cpus {
+            b.begin_node(&format!("core{i}")).prop_u32("cpu", PHANDLE_CPU0 + i).end_node();
+        }
+        b.end_node().end_node().end_node();
+    }
+    for i in 0..cfg.cpus {
+        b.begin_node(&format!("cpu@{i}"))
+            .prop_str("device_type", "cpu")
+            .prop_str("compatible", "arm,cortex-a53")
+            .prop_u32("reg", crate::gic::cpu_affinity(i as usize) as u32)
+            .prop_str("enable-method", "psci");
+        if smp {
+            b.prop_u32("phandle", PHANDLE_CPU0 + i);
+        }
+        b.end_node();
+    }
     b.end_node();
 
     b.begin_node("psci")
@@ -372,7 +393,10 @@ pub fn virt_dtb(cfg: &VirtDtbConfig) -> Vec<u8> {
         .prop_str("compatible", "arm,gic-v3")
         .prop_u32("#interrupt-cells", 3)
         .prop_empty("interrupt-controller")
-        .prop_u64_list("reg", &[map::GICD_BASE, map::GICD_SIZE, map::GICR_BASE, map::GICR_SIZE_PER_CPU])
+        .prop_u64_list(
+            "reg",
+            &[map::GICD_BASE, map::GICD_SIZE, map::GICR_BASE, map::GICR_SIZE_PER_CPU * u64::from(cfg.cpus)],
+        )
         .prop_u32("#redistributor-regions", 1)
         .prop_u32("#address-cells", 2)
         .prop_u32("#size-cells", 2)
@@ -679,5 +703,31 @@ mod tests {
         let mut b = FdtBuilder::new();
         b.begin_node("radice");
         assert!(matches!(b.finish(), Err(FdtError::InvalidName(_))));
+    }
+
+    /// Two cores (ADR 0041): like QEMU virt with `-smp 2`, `cpu@0` and `cpu@1`
+    /// with their affinity in `reg`, phandles and the `cpu-map`, and a
+    /// redistributor per core in the GIC's `reg`. One core: no `cpu-map`.
+    #[test]
+    fn two_cores() {
+        let t = parse(&virt_dtb(&VirtDtbConfig { cpus: 2, ..VirtDtbConfig::default() }));
+        for i in 0..2 {
+            let cpu = &t[&format!("/cpus/cpu@{i}")];
+            assert_eq!(cells(&cpu["reg"]), [i]);
+            assert_eq!(strs(&cpu["enable-method"]), ["psci"]);
+            assert_eq!(cells(&cpu["phandle"]), [PHANDLE_CPU0 + i]);
+            assert_eq!(
+                cells(&t[&format!("/cpus/cpu-map/socket0/cluster0/core{i}")]["cpu"]),
+                [PHANDLE_CPU0 + i]
+            );
+        }
+        assert!(!t.contains_key("/cpus/cpu@2"));
+        assert_eq!(
+            cells(&t["/intc@8000000"]["reg"]),
+            [0, 0x0800_0000, 0, 0x1_0000, 0, 0x080A_0000, 0, 0x4_0000]
+        );
+        let one = parse(&virt_dtb(&VirtDtbConfig::default()));
+        assert!(!one.keys().any(|k| k.contains("cpu-map")));
+        assert!(!one["/cpus/cpu@0"].contains_key("phandle"));
     }
 }

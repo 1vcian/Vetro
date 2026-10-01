@@ -7,7 +7,8 @@
 //! | Section | Content |
 //! |---|---|
 //! | `MACH` | clock (instructions), cached deadlines, pending WFI, CNTPCT and board line state |
-//! | `CPU ` | general registers, SIMD/FP, PSTATE, system registers, exclusive monitor |
+//! | `CPU ` | general registers, SIMD/FP, PSTATE, system registers, exclusive monitor (of the running core) |
+//! | `SMP ` | only with several cores (ADR 0041): running core, end of its turn, power state and registers of the others |
 //! | `MMU ` | translation registers and TLB entries |
 //! | `PLAT` | timer, GIC, PL011, PL031, PL061 and the 32 virtio slots (transport, queues, device, backend) |
 //! | `RAM ` | the RAM in pages, zero pages omitted, the others compressed |
@@ -27,10 +28,16 @@ use super::{Devices, Machine, MachineConfig, Pointer};
 fn config_bytes(m: &Machine) -> Vec<u8> {
     let mut w = Writer::new();
     w.str("vetro-machine");
-    let MachineConfig { ram_size, now_secs, seed } = m.cfg;
+    let MachineConfig { ram_size, now_secs, seed, cpus } = m.cfg;
     w.u64(ram_size);
     w.u64(now_secs);
     w.u64(seed);
+    // One core: the bytes (and the hash) of the single-core machine, so its
+    // snapshots stay valid.
+    if cpus > 1 {
+        w.str("cpus");
+        w.u32(cpus);
+    }
     let Devices { gpu, keyboard, pointer, net, vsock_cid } = &m.devices;
     // The nested configurations (EDID monitor, network, sinkhole) in their
     // `Debug` form: stable (sorted tables) and complete.
@@ -259,6 +266,9 @@ impl Machine {
             w.bool(b.host_wait);
         });
         w.section(b"CPU ", |w| w.put(&self.cpu));
+        if let Some(s) = &self.smp {
+            w.section(b"SMP ", |w| s.save(w));
+        }
         w.section(b"MMU ", |w| w.put(&self.mmu));
         let b = self.board.borrow();
         w.section(b"PLAT", |w| w.put(&b.virt));
@@ -312,6 +322,12 @@ impl Machine {
         let mut s = r.section(b"CPU ")?;
         self.cpu.restore(&mut s)?;
         s.finish()?;
+        if let Some(smp) = self.smp.as_mut() {
+            let mut s = r.section(b"SMP ")?;
+            smp.restore(&mut s)?;
+            s.finish()?;
+            self.board.borrow_mut().virt.set_current_cpu(smp.cur);
+        }
         let mut s = r.section(b"MMU ")?;
         self.mmu.restore(&mut s)?;
         s.finish()?;

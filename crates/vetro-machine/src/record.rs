@@ -502,6 +502,9 @@ impl Log {
             w.bool(self.jit);
             w.u64(self.keyframe_every);
             self.start.save(w);
+            if self.config.cpus > 1 {
+                w.u32(self.config.cpus);
+            }
         });
         w.section(b"EVTS", |w| {
             w.seq(&self.events, |w, e| {
@@ -539,10 +542,14 @@ impl Log {
         let mut r = Reader::new(payload);
         let mut s = r.section(b"HEAD")?;
         let snapshot_version = s.u32()?;
-        let config = MachineConfig { ram_size: s.u64()?, now_secs: s.u64()?, seed: s.u64()? };
+        let (ram_size, now_secs, seed) = (s.u64()?, s.u64()?, s.u64()?);
         let jit = s.bool()?;
         let keyframe_every = s.u64()?;
         let start = Digest::load(&mut s)?;
+        // Cores (ADR 0041): only with more than one, so single-core logs keep
+        // their bytes.
+        let cpus = if s.remaining() > 0 { s.u32()? } else { 1 };
+        let config = MachineConfig { ram_size, now_secs, seed, cpus };
         s.finish()?;
         let mut s = r.section(b"EVTS")?;
         let events = s.seq(26, |r| {

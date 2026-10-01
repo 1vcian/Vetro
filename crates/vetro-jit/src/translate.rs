@@ -89,6 +89,7 @@ pub fn kind(insn: &Insn) -> Kind {
         | Insn::CacheMaint
         | Insn::Wfi
         | Insn::Wfe
+        | Insn::Yield
         | Insn::LdLiteral { .. }
         | Insn::LdStPair { .. }
         | Insn::LoadAcquire { .. }
@@ -135,6 +136,11 @@ pub struct SysTarget {
     /// CNTKCTL_EL1.EL0PCTEN (bit 0) and EL0VCTEN (bit 1): at EL0 MRS of
     /// CNTPCT/CNTVCT is translated only if allowed (ADR 0026).
     pub cntk: u8,
+    /// WFE and YIELD stay with the interpreter, which reports them to the
+    /// machine (`SysEvent::Yield`): with several cores on one thread they
+    /// end the core's turn (ADR 0041). A setting of the whole JIT
+    /// ([`SysJit::set_yields`](crate::SysJit::set_yields)), not of the CPU state.
+    pub yields: bool,
 }
 
 /// Where a translated MRS reads from.
@@ -224,6 +230,7 @@ pub fn kind_in(insn: &Insn, sys: Option<SysTarget>) -> Kind {
     if let Some(s) = sys {
         match *insn {
             Insn::Wfi => return Kind::Unsupported,
+            Insn::Wfe | Insn::Yield if s.yields => return Kind::Unsupported,
             // CPACR_EL1.FPEN trap: to the interpreter.
             Insn::Simd(_) if !s.fp => return Kind::Unsupported,
             Insn::CacheMaint if s.el == 0 => return Kind::Unsupported,
@@ -2949,7 +2956,7 @@ impl Tx {
                 self.exit_branch();
             }
 
-            Insn::Nop | Insn::Barrier | Insn::CacheMaint | Insn::Wfi | Insn::Wfe => {}
+            Insn::Nop | Insn::Barrier | Insn::CacheMaint | Insn::Wfi | Insn::Wfe | Insn::Yield => {}
             Insn::Mrs { reg: SysReg::Nzcv, rt } => {
                 self.get_nzcv();
                 self.f.op(op::I64_EXTEND_I32_U);
@@ -3586,6 +3593,7 @@ mod tests {
                         spsel: i != 2,
                         fp: i != 3,
                         cntk: i as u8 & 3,
+                        yields: i == 1,
                     };
                     let sb: Vec<Region> = blocks
                         .iter()
@@ -3644,7 +3652,7 @@ mod tests {
     fn branch_addr_like_the_cpu() {
         let t = 0x5a00_0000_0040_1000u64;
         let n = 0x5a80_0000_0040_1000u64;
-        let s = |tbi0, tbi1| SysTarget { el: 0, tbi0, tbi1, spsel: false, fp: true, cntk: 0 };
+        let s = |tbi0, tbi1| SysTarget { el: 0, tbi0, tbi1, spsel: false, fp: true, cntk: 0, yields: false };
         assert_eq!(s(false, false).branch_addr(t), t);
         assert_eq!(s(true, false).branch_addr(t), 0x0000_0000_0040_1000);
         assert_eq!(s(true, false).branch_addr(n), n);
@@ -3657,10 +3665,33 @@ mod tests {
     /// the permissions of EL0, `SIZE_UNPRIV`).
     #[test]
     fn interpreter_only_insns_in_system_mode() {
-        let el0 = Some(SysTarget { el: 0, tbi0: false, tbi1: false, spsel: false, fp: true, cntk: 0 });
-        let el1 = Some(SysTarget { el: 1, tbi0: false, tbi1: false, spsel: true, fp: true, cntk: 0 });
+        let el0 = Some(SysTarget {
+            el: 0,
+            tbi0: false,
+            tbi1: false,
+            spsel: false,
+            fp: true,
+            cntk: 0,
+            yields: false,
+        });
+        let el1 = Some(SysTarget {
+            el: 1,
+            tbi0: false,
+            tbi1: false,
+            spsel: true,
+            fp: true,
+            cntk: 0,
+            yields: false,
+        });
         assert_eq!(kind_in(&Insn::Wfi, None), Kind::Linear);
         assert_eq!(kind_in(&Insn::Wfi, el1), Kind::Unsupported);
+        // ADR 0041: WFE and YIELD are NOPs in the regions, unless the JIT
+        // leaves them to the interpreter (several cores on one thread).
+        let yields = el1.map(|s| SysTarget { yields: true, ..s });
+        for i in [Insn::Wfe, Insn::Yield] {
+            assert_eq!(kind_in(&i, el1), Kind::Linear);
+            assert_eq!(kind_in(&i, yields), Kind::Unsupported);
+        }
         assert_eq!(kind_in(&Insn::CacheMaint, el1), Kind::Linear);
         assert_eq!(kind_in(&Insn::CacheMaint, el0), Kind::Unsupported);
         let ldtr = decode(0xf8400820); // ldtr x0, [x1]
@@ -3691,7 +3722,8 @@ mod tests {
             0xd65f03c0,    // ret
             0x94000020,    // bl .+128
         ];
-        let sys = Some(SysTarget { el: 1, tbi0: false, tbi1: true, spsel: true, fp: true, cntk: 0 });
+        let sys =
+            Some(SysTarget { el: 1, tbi0: false, tbi1: true, spsel: true, fp: true, cntk: 0, yields: false });
         let pc = 0xffff_8000_1234_5000u64;
         let r = Region::linear(pc, words.to_vec(), sys);
         let m = module(std::slice::from_ref(&r), MemoryImport { min: 1, shared_max: None });

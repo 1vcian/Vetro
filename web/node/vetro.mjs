@@ -278,9 +278,13 @@ export class Machine {
    * `Devices::default`); width/height: initial GPU resolution
    * (0 = 1280x800).
    */
-  constructor(x, { ramSize = 0n, nowSecs = 0n, seed = 0n, devices = DEV.DEFAULT, width = 0, height = 0 } = {}) {
+  constructor(x, { ramSize = 0n, nowSecs = 0n, seed = 0n, devices = DEV.DEFAULT, width = 0, height = 0, cpus = 1 } = {}) {
     this.#x = x;
-    this.#vm = x.vetro_machine_new_with(ramSize, nowSecs, seed, devices, width, height);
+    // ADR 0041: more than one core (turns on this thread, deterministic).
+    this.#vm = cpus > 1
+      ? x.vetro_machine_new_smp(ramSize, nowSecs, seed, devices, width, height, cpus)
+      : x.vetro_machine_new_with(ramSize, nowSecs, seed, devices, width, height);
+    if (!this.#vm) throw new Error(`vetro_machine_new_smp: ${cpus} cores not supported`);
     this.#buf = x.vetro_alloc(this.#cap) >>> 0;
   }
 

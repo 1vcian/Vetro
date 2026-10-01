@@ -25,6 +25,8 @@ const PHASE_BUDGET: u64 = 6_000_000_000;
 struct Run {
     m: Machine,
     log: Vec<u8>,
+    /// Instructions per `Machine::run` (the host's quantum).
+    quantum: u64,
 }
 
 impl Run {
@@ -39,7 +41,7 @@ impl Run {
             if self.m.steps >= limit {
                 return Err(format!("{needle:?} did not arrive within {PHASE_BUDGET} instructions"));
             }
-            let stop = self.m.run(1_000_000);
+            let stop = self.m.run(self.quantum);
             self.log.extend(self.m.console_output());
             match stop {
                 Stop::Budget => {}
@@ -71,12 +73,17 @@ struct Boot {
 
 /// The complete script, with or without the JIT (threshold).
 fn boot(image: &[u8], initrd: &[u8], jit: Option<u32>) -> Boot {
-    let mut m = Machine::new(&MachineConfig::default());
+    boot_with(image, initrd, jit, 1, 1_000_000)
+}
+
+/// [`boot`] with `cpus` cores and the host's quantum.
+fn boot_with(image: &[u8], initrd: &[u8], jit: Option<u32>, cpus: u32, quantum: u64) -> Boot {
+    let mut m = Machine::new(&MachineConfig { cpus, ..MachineConfig::default() });
     m.load_linux(image, Some(initrd), "console=ttyAMA0").expect("loading the kernel");
     if let Some(t) = jit {
         m.set_jit(Some(vetro_jit_native::system_jit(t)));
     }
-    let mut r = Run { m, log: Vec::new() };
+    let mut r = Run { m, log: Vec::new(), quantum };
     let fail = |r: &Run, e: String| -> ! { panic!("{e}; last lines of the console:\n{}", r.tail()) };
 
     let at = r.until(BOOT_MARKER, 0).unwrap_or_else(|e| fail(&r, e));
@@ -94,7 +101,7 @@ fn boot(image: &[u8], initrd: &[u8], jit: Option<u32>) -> Boot {
     r.m.console_input(b"poweroff -f\n");
     let limit = r.m.steps + PHASE_BUDGET;
     let stop = loop {
-        let s = r.m.run(1_000_000);
+        let s = r.m.run(r.quantum);
         r.log.extend(r.m.console_output());
         if s != Stop::Budget || r.m.steps >= limit {
             break s;
@@ -170,7 +177,7 @@ fn vetro_boots_guest_kernel_to_shell() {
     }
 
     // Comparison with the boot under QEMU of the same files, if there is one.
-    let (ref_path, reference) = qemu_reference(&root);
+    let (ref_path, reference) = qemu_reference(&root, "qemu-boot.log");
     eprintln!("comparing with {}", ref_path.display());
     let (ours, theirs) = (comparable_lines(&log), comparable_lines(&reference));
     let diff = line_diff(&theirs, &ours);
@@ -182,10 +189,74 @@ fn vetro_boots_guest_kernel_to_shell() {
     );
 }
 
-/// QEMU log to compare with: the one just written by the `qemu` test
-/// on the same files, or the versioned reference.
-fn qemu_reference(root: &std::path::Path) -> (std::path::PathBuf, String) {
-    let fresh = root.join("target/guest-kernel/qemu-boot.log");
+/// ADR 0041: the same script on two cores in turns on one thread
+/// (deterministic). The secondary core comes up through PSCI CPU_ON; the log
+/// must match QEMU's with `-smp 2 -accel tcg,thread=single`; another host
+/// quantum gives the same instructions and log (the interleaving depends only
+/// on the clock), and so does the JIT (`VETRO_JIT=1`).
+#[test]
+fn vetro_boots_guest_kernel_smp2() {
+    if cfg!(debug_assertions) {
+        return skip_or_fail(
+            "VETRO_REQUIRE_GUEST_KERNEL",
+            "boot under Vetro only in release (cargo test --release)",
+        );
+    }
+    let Some((image, initrd)) = guest_kernel() else {
+        return skip_or_fail(
+            "VETRO_REQUIRE_GUEST_KERNEL",
+            "target/guest-kernel missing: run tools/guest-kernel/build.sh",
+        );
+    };
+    let (image, initrd) = (std::fs::read(image).unwrap(), std::fs::read(initrd).unwrap());
+    let t0 = std::time::Instant::now();
+    let b = boot_with(&image, &initrd, None, 2, 1_000_000);
+    eprintln!(
+        "Vetro, 2 cores: /init at {:.2} s of guest time, powered off at {:.2} s ({} instructions, {:.2} s)",
+        b.t_boot as f64 / 1e9,
+        b.t_end as f64 / 1e9,
+        b.steps,
+        t0.elapsed().as_secs_f64()
+    );
+    let root = repo_root();
+    std::fs::write(root.join("target/guest-kernel/vetro-boot-smp2.log"), &b.log).unwrap();
+    assert!(
+        b.log.contains("smp: Brought up 1 node, 2 CPUs"),
+        "the second core did not come up:
+{}",
+        b.log
+    );
+
+    let q = boot_with(&image, &initrd, None, 2, 999_983);
+    // (`t_boot` is read at the end of the host's quantum that printed the marker.)
+    assert_eq!((q.steps, q.t_end), (b.steps, b.t_end), "another host quantum");
+    assert!(q.log == b.log, "another host quantum changes the log");
+    if let Some(t) = jit_threshold() {
+        let j = boot_with(&image, &initrd, Some(t), 2, 1_000_000);
+        assert_eq!(
+            (j.steps, j.t_boot, j.t_end),
+            (b.steps, b.t_boot, b.t_end),
+            "instructions differ with the JIT"
+        );
+        assert!(j.log == b.log, "log different with the JIT on two cores");
+    }
+
+    let (ref_path, reference) = qemu_reference(&root, "qemu-boot-smp2.log");
+    eprintln!("comparing with {}", ref_path.display());
+    let (ours, theirs) = (comparable_lines(&b.log), comparable_lines(&reference));
+    let diff = line_diff(&theirs, &ours);
+    assert!(
+        diff.is_empty(),
+        "Vetro's two-core log differs from {} (- QEMU only, + Vetro only):\n{}",
+        ref_path.display(),
+        diff.join("\n")
+    );
+}
+
+/// QEMU log `name` to compare with: the one just written by the `qemu`
+/// test on the same files, or the versioned reference.
+fn qemu_reference(root: &std::path::Path, name: &str) -> (std::path::PathBuf, String) {
+    let fresh = root.join("target/guest-kernel").join(name);
     let mtime = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
     let inputs = ["Image", "initramfs.cpio.gz"].map(|f| mtime(&root.join("target/guest-kernel").join(f)));
     if let Some(t) = mtime(&fresh)
@@ -193,8 +264,9 @@ fn qemu_reference(root: &std::path::Path) -> (std::path::PathBuf, String) {
     {
         return (fresh.clone(), std::fs::read_to_string(&fresh).unwrap());
     }
-    let r = root.join("guest/kernel/reference/qemu-boot.log");
-    let text = std::fs::read_to_string(&r)
-        .expect("guest/kernel/reference/qemu-boot.log (VETRO_BOOT_UPDATE_REFERENCE=1 in the QEMU test)");
+    let r = root.join("guest/kernel/reference").join(name);
+    let text = std::fs::read_to_string(&r).unwrap_or_else(|_| {
+        panic!("guest/kernel/reference/{name} (VETRO_BOOT_UPDATE_REFERENCE=1 in the QEMU test)")
+    });
     (r, text)
 }

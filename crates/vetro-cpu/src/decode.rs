@@ -328,6 +328,9 @@ pub enum Insn {
     Wfi,
     /// As in QEMU it is always a NOP (never waits, hence never trapped).
     Wfe,
+    /// YIELD: a NOP; in system mode a hint for the scheduler of the cores
+    /// ([`SysEvent::Yield`](crate::SysEvent::Yield)), like WFE.
+    Yield,
     /// MSR (immediate) on SPSel or DAIF: `imm` is CRm.
     MsrImm {
         field: PstateField,
@@ -592,6 +595,7 @@ fn system(w: u32) -> Insn {
                 // HINT: unallocated hints behave as NOP (so
                 // do PAC*SP, BTI etc. on a v8.0 CPU).
                 (0b0010, 0b011) => match (crm, op2) {
+                    (0, 0b001) => Insn::Yield,
                     (0, 0b010) => Insn::Wfe,
                     (0, 0b011) => Insn::Wfi,
                     _ => Insn::Nop,

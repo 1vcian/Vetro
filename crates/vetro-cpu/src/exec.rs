@@ -410,7 +410,7 @@ impl Cpu {
             // Instructions that system mode executes before getting here
             // (`crate::sys`): in user mode they behave as they did before
             // the decoder recognised them.
-            Insn::Wfi | Insn::Wfe => {}
+            Insn::Wfi | Insn::Wfe | Insn::Yield => {}
             Insn::Hvc { .. } | Insn::Smc { .. } | Insn::Eret | Insn::MsrImm { .. } | Insn::Sys { .. } => {
                 return Err(Exception::Undefined(raw));
             }

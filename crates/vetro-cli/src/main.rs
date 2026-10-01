@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [args...]
-//! vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=LINE] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORT-:GUEST_PORT]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=INSTRUCTIONS:FILE]... [--save-on=TEXT:FILE [--save-delay=S] [--exit-after-save]] [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=INSTRUCTION [--dump=VA:BYTES]]] [--vsock] [--files-ls=PATH]... [--files-cat=PATH]... [--files-put=PATH:FILE]... [--kernel-profile=FILE [--system-map=FILE] [--kernel-btf=FILE]] [--tls] [--binder-log=FILE] [--profile=NAME|FILE]
+//! vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=LINE] [--mem=MiB] [--smp=N] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORT-:GUEST_PORT]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=INSTRUCTIONS:FILE]... [--save-on=TEXT:FILE [--save-delay=S] [--exit-after-save]] [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=INSTRUCTION [--dump=VA:BYTES]]] [--vsock] [--files-ls=PATH]... [--files-cat=PATH]... [--files-put=PATH:FILE]... [--kernel-profile=FILE [--system-map=FILE] [--kernel-btf=FILE]] [--tls] [--binder-log=FILE] [--profile=NAME|FILE]
 //! ```
 //!
 //! `boot` starts the virt machine (M3) with the PL011 console on stdin/stdout.
@@ -130,7 +130,7 @@ fn usage() -> ExitCode {
         "usage: vetro run [--strace] [--host-clock] [--sysroot=DIR] [--cpus=N] [--jit] [--jit-threshold=N] [--stats] <elf> [args...]"
     );
     eprintln!(
-        "       vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=LINE] [--mem=MiB] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORT-:GUEST_PORT]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=INSTRUCTIONS:FILE]... [--save-on=TEXT:FILE [--save-delay=S] [--exit-after-save]] [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=INSTRUCTION [--dump=VA:BYTES]]] [--vsock] [--files-ls=PATH]... [--files-cat=PATH]... [--files-put=PATH:FILE]... [--kernel-profile=FILE [--system-map=FILE] [--kernel-btf=FILE]] [--tls] [--binder-log=FILE] [--profile=NAME|FILE] [--gpu=gfxstream [--gl-record=FILE]]"
+        "       vetro boot (--kernel=Image [--initrd=FILE] | --boot-img=FILE [--vendor-boot=FILE] [--init-boot=FILE] [--recovery] [--android-dump=DIR]) [--append=LINE] [--mem=MiB] [--smp=N] [--no-devices] [--net] [--no-net] [--net-events] [--hostfwd=tcp:[ADDR]:PORT-:GUEST_PORT]... [--pcap=FILE] [--har=FILE] [--net-requests] [--disk=FILE [--overlay=FILE]]... [--guest-secs=N] [--jit] [--jit-threshold=N] [--stats] [--save-at=INSTRUCTIONS:FILE]... [--save-on=TEXT:FILE [--save-delay=S] [--exit-after-save]] [--restore=FILE] [--record=FILE [--keyframes=N]] [--replay=FILE [--goto=INSTRUCTION [--dump=VA:BYTES]]] [--vsock] [--files-ls=PATH]... [--files-cat=PATH]... [--files-put=PATH:FILE]... [--kernel-profile=FILE [--system-map=FILE] [--kernel-btf=FILE]] [--tls] [--binder-log=FILE] [--profile=NAME|FILE] [--gpu=gfxstream [--gl-record=FILE]]"
     );
     ExitCode::from(2)
 }
@@ -369,6 +369,11 @@ fn boot(args: &[String]) -> ExitCode {
             Some(("--gpu", "gfxstream")) => gfxstream = true,
             Some(("--gl-record", v)) => gl_record = Some(v.to_string()),
             Some(("--gl-trace", "1")) => gl_trace = true,
+            // ADR 0041: cores, in turns on one thread (deterministic).
+            Some(("--smp", v)) => match v.parse::<u32>() {
+                Ok(n) if (1..=vetro_machine::smp::MAX_CPUS).contains(&n) => cfg.cpus = n,
+                _ => return usage(),
+            },
             Some(("--mem", v)) => match v.parse::<u64>() {
                 Ok(m) => {
                     cfg.ram_size = m << 20;

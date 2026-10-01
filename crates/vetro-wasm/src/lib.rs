@@ -949,6 +949,7 @@ fn config(ram_size: u64, now_secs: u64, seed: u64) -> MachineConfig {
         ram_size: if ram_size == 0 { d.ram_size } else { ram_size },
         now_secs: if now_secs == 0 { d.now_secs } else { now_secs },
         seed: if seed == 0 { d.seed } else { seed },
+        cpus: 1,
     }
 }
 
@@ -966,6 +967,28 @@ pub extern "C" fn vetro_machine_new_with(
 ) -> *mut Vm {
     install_panic_hook();
     let cfg = config(ram_size, now_secs, seed);
+    Box::into_raw(Box::new(Vm::with_devices(&cfg, &devices_from(devices, width, height))))
+}
+
+/// Like [`vetro_machine_new_with`] with `cpus` cores (1..=16, ADR 0041; 0 =
+/// 1): they run in turns on this thread, deterministically. Null if `cpus` is
+/// out of range.
+#[unsafe(no_mangle)]
+pub extern "C" fn vetro_machine_new_smp(
+    ram_size: u64,
+    now_secs: u64,
+    seed: u64,
+    devices: u32,
+    width: u32,
+    height: u32,
+    cpus: u32,
+) -> *mut Vm {
+    install_panic_hook();
+    let cpus = cpus.max(1);
+    if cpus > vetro_machine::smp::MAX_CPUS {
+        return core::ptr::null_mut();
+    }
+    let cfg = MachineConfig { cpus, ..config(ram_size, now_secs, seed) };
     Box::into_raw(Box::new(Vm::with_devices(&cfg, &devices_from(devices, width, height))))
 }
 

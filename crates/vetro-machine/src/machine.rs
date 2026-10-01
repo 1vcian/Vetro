@@ -19,6 +19,7 @@ use crate::net::{self, NetLink, NetSetup, TappedFrame};
 use crate::psci::{self, Call};
 
 mod record;
+pub mod smp;
 mod snapshot;
 
 pub use record::RecordOptions;
@@ -35,13 +36,16 @@ pub struct MachineConfig {
     pub now_secs: u64,
     /// Seed of the randomness offered to the guest (`rng-seed` in the device tree).
     pub seed: u64,
+    /// Cores (1..=16, ADR 0041): with more than one they run in turns on one
+    /// thread ([`smp`]), deterministically.
+    pub cpus: u32,
 }
 
 impl Default for MachineConfig {
     fn default() -> Self {
         // 1 GiB like the `-m 1G` of the reference test; fixed time like the
         // virtual time of the user mode layer.
-        MachineConfig { ram_size: 1 << 30, now_secs: 1_767_225_600, seed: 0x5645_5452_4f00_0001 }
+        MachineConfig { ram_size: 1 << 30, now_secs: 1_767_225_600, seed: 0x5645_5452_4f00_0001, cpus: 1 }
     }
 }
 
@@ -164,6 +168,21 @@ pub struct Machine {
     hooks: Hooks,
     /// Counters for measurements (not in snapshots, no effect on execution).
     perf: Perf,
+    /// The other cores and their round robin, with more than one core
+    /// (ADR 0041); `cpu`, `interp` and `wfi_pending` are the running core's.
+    smp: Option<Box<smp::Smp>>,
+    /// Cores (`cfg.cpus`): the counter advances once every `ncpu` steps.
+    ncpu: u64,
+}
+
+/// How [`Machine::run_cpu`] ends a stretch of one core.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Exit {
+    Stop(Stop),
+    /// WFE or YIELD with several cores: the turn ends here.
+    Yield,
+    /// PSCI CPU_OFF with several cores: the core stops.
+    Off,
 }
 
 /// Where the machine's steps go, for measurements ([`Machine::perf`]).
@@ -204,9 +223,15 @@ impl Machine {
     /// [`MemDisplay`]; the browser replaces it with `VirtioGpu::set_backend`
     /// (from [`Machine::gpu`]).
     pub fn with_devices(cfg: &MachineConfig, devices: &Devices) -> Self {
+        assert!(
+            (1..=smp::MAX_CPUS).contains(&cfg.cpus),
+            "{} cores: 1..={} supported",
+            cfg.cpus,
+            smp::MAX_CPUS
+        );
         let mut cpu = Cpu::new();
         cpu.reset_system(SysConfig::default());
-        let mut board = Board::new(cfg.ram_size, cfg.now_secs);
+        let mut board = Board::with_cpus(cfg.ram_size, cfg.now_secs, cfg.cpus as usize);
         let mut slots = Slots::default();
         let mut attach = |dev: Box<dyn VirtioDevice>| {
             Some(board.virt.attach_virtio_next(dev).expect("32 slots are enough for the machine's devices"))
@@ -256,7 +281,46 @@ impl Machine {
             replay_status: None,
             hooks: Hooks::default(),
             perf: Perf::default(),
+            smp: (cfg.cpus > 1).then(|| Box::new(smp::Smp::new(cfg.cpus as usize))),
+            ncpu: u64::from(cfg.cpus),
         }
+    }
+
+    /// Number of cores.
+    pub fn cpus(&self) -> u32 {
+        self.ncpu as u32
+    }
+
+    /// The core that runs now (the one in [`Machine::cpu`]); 0 with one core.
+    pub fn current_cpu(&self) -> usize {
+        self.smp.as_ref().map_or(0, |s| s.cur)
+    }
+
+    /// The registers of core `i` (the running one is [`Machine::cpu`]).
+    pub fn cpu_of(&self, i: usize) -> Option<&Cpu> {
+        match &self.smp {
+            None => (i == 0).then_some(&self.cpu),
+            Some(s) if i == s.cur => Some(&self.cpu),
+            Some(s) => s.vcpus.get(i).map(|v| &v.cpu),
+        }
+    }
+
+    /// Whether core `i` is on (PSCI).
+    pub fn cpu_on(&self, i: usize) -> bool {
+        match &self.smp {
+            None => i == 0,
+            Some(s) => s.vcpus.get(i).is_some_and(|v| v.on),
+        }
+    }
+
+    /// CNTPCT at the current clock.
+    fn now(&self) -> u64 {
+        counter(self.steps / self.ncpu)
+    }
+
+    /// First clock value at which CNTPCT is at least `c`.
+    fn steps_at(&self, c: u64) -> u64 {
+        steps_for(c).saturating_mul(self.ncpu)
     }
 
     /// Turns on (or removes) the system mode JIT. The result of the
@@ -266,6 +330,9 @@ impl Machine {
         if let Some(j) = jit.as_mut() {
             self.rr.note_jit();
             j.set_stops(&self.hooks.stops());
+            // Several cores: WFE and YIELD end a turn, so the regions leave them
+            // to the interpreter (ADR 0041).
+            j.set_yields(self.smp.is_some());
         }
         self.jit = jit;
         self.interp = Next::Jit;
@@ -501,6 +568,7 @@ impl Machine {
         // fixes it, then the DTB is generated and the plan redone with its length.
         let first = boot::plan(ram, image, initrd_len, 0)?;
         let dtb = virt_dtb(&VirtDtbConfig {
+            cpus: self.ncpu as u32,
             ram_size,
             bootargs: bootargs.to_string(),
             initrd: first.initrd.map(|r| (r.addr, r.end())),
@@ -516,6 +584,14 @@ impl Machine {
             }
         }
         let e = plan.entry;
+        if let Some(s) = self.smp.as_mut() {
+            // Core 0 runs the kernel; the others wait for PSCI CPU_ON.
+            let n = s.vcpus.len();
+            **s = smp::Smp::new(n);
+            self.board.borrow_mut().virt.set_current_cpu(0);
+            self.wfi_pending = false;
+            self.interp = Next::Jit;
+        }
         self.cpu.reset_system(SysConfig::default());
         self.cpu.pc = e.pc;
         self.cpu.x = [0; 31];
@@ -554,15 +630,16 @@ impl Machine {
         self.board.borrow().host_wait
     }
 
-    /// Guest time in nanoseconds (10 ns per instruction).
+    /// Guest time in nanoseconds (10 ns per instruction, per core).
     pub fn guest_ns(&self) -> u64 {
-        self.steps * 10
+        self.steps / self.ncpu * 10
     }
 
     fn sync_irqs(&mut self) {
         self.perf.syncs += 1;
+        let now = self.now();
         let mut b = self.board.borrow_mut();
-        b.cntpct = counter(self.steps);
+        b.cntpct = now;
         let net_due = self.net_deadline.is_some_and(|d| b.cntpct >= d);
         if let Some(slot) = self.slots.net
             && (net_due || b.virtio_dirty)
@@ -601,7 +678,7 @@ impl Machine {
             self.net_deadline = link.stack.next_deadline().map(|t| net::counter_at(t).max(b.cntpct + 1));
         }
         b.update_irqs();
-        let timer = b.virt.timer.next_deadline(b.cntpct);
+        let timer = b.virt.timer().next_deadline(b.cntpct);
         self.timer_deadline = match (timer, self.net_deadline) {
             (Some(a), Some(n)) => Some(a.min(n)),
             (a, n) => a.or(n),
@@ -627,7 +704,7 @@ impl Machine {
         }
         let mut limit = end - self.steps;
         if let Some(d) = self.timer_deadline {
-            let at = steps_for(d);
+            let at = self.steps_at(d);
             if at <= self.steps {
                 return None;
             }
@@ -654,17 +731,125 @@ impl Machine {
     /// replay.
     fn run_quantum(&mut self, budget: u64) -> Stop {
         let end = self.steps.saturating_add(budget);
+        if self.smp.is_some() {
+            return self.run_smp(end);
+        }
+        match self.run_cpu(end) {
+            Exit::Stop(s) => s,
+            // Only with several cores.
+            Exit::Yield | Exit::Off => unreachable!("one core: no turns"),
+        }
+    }
+
+    /// Several cores (ADR 0041, [`smp`]): turns in round robin up to `end`.
+    /// Where a turn ends depends only on the clock and on the guest, so the
+    /// host's quanta never change the interleaving.
+    fn run_smp(&mut self, end: u64) -> Stop {
+        loop {
+            if self.steps >= end {
+                return Stop::Budget;
+            }
+            let s = self.smp.as_ref().expect("several cores");
+            if self.steps >= s.turn_end || !s.vcpus[s.cur].on {
+                let Some(k) = s.next_on() else {
+                    return Stop::PowerOff;
+                };
+                self.switch_to(k);
+            }
+            let turn_end = self.smp.as_ref().expect("several cores").turn_end;
+            match self.run_cpu(end.min(turn_end)) {
+                Exit::Stop(Stop::Budget) => {}
+                Exit::Yield => self.end_turn(),
+                Exit::Off => {
+                    let s = self.smp.as_mut().expect("several cores");
+                    s.vcpus[s.cur].on = false;
+                    self.end_turn();
+                }
+                Exit::Stop(other) => return other,
+            }
+        }
+    }
+
+    fn end_turn(&mut self) {
+        let steps = self.steps;
+        self.smp.as_mut().expect("several cores").turn_end = steps;
+    }
+
+    /// Makes core `k` the running one and starts its turn.
+    fn switch_to(&mut self, k: usize) {
+        let s = self.smp.as_mut().expect("several cores");
+        let c = s.cur;
+        if k != c {
+            let parked = &mut s.vcpus[c];
+            core::mem::swap(&mut self.cpu, &mut parked.cpu);
+            parked.interp = self.interp;
+            parked.wfi_pending = self.wfi_pending;
+            let next = &mut s.vcpus[k];
+            core::mem::swap(&mut self.cpu, &mut next.cpu);
+            self.interp = next.interp;
+            self.wfi_pending = next.wfi_pending;
+            s.cur = k;
+            let mut b = self.board.borrow_mut();
+            b.virt.set_current_cpu(k);
+            b.irq_cache = None;
+            b.irq_dirty = true;
+        }
+        s.turn_end = self.steps.saturating_add(smp::QUANTUM);
+    }
+
+    /// PSCI CPU_ON (QEMU's `arm_set_cpu_on`): the core with affinity
+    /// `target` starts at `entry` in EL1h, in its reset state, with x0 =
+    /// `context`, at its next turn.
+    fn psci_cpu_on(&mut self, target: u64, entry: u64, context: u64) -> i64 {
+        let Some(s) = self.smp.as_mut() else {
+            // One core: it is the caller, so it is on.
+            return if target == vetro_platform::gic::cpu_affinity(0) {
+                psci::RET_ALREADY_ON
+            } else {
+                psci::RET_INVALID_PARAMS
+            };
+        };
+        let Some(i) = s.by_affinity(target) else {
+            return psci::RET_INVALID_PARAMS;
+        };
+        if s.vcpus[i].on {
+            return psci::RET_ALREADY_ON;
+        }
+        let mut v = smp::Vcpu::off(i);
+        v.cpu.pc = entry;
+        v.cpu.x[0] = context;
+        v.on = true;
+        s.vcpus[i] = v;
+        psci::RET_SUCCESS
+    }
+
+    /// PSCI AFFINITY_INFO at level 0: on (0) or off (1).
+    fn psci_affinity_info(&self, target: u64) -> i64 {
+        let i = match &self.smp {
+            None => (target == vetro_platform::gic::cpu_affinity(0)).then_some(0),
+            Some(s) => s.by_affinity(target),
+        };
+        match i {
+            None => psci::RET_INVALID_PARAMS,
+            Some(i) if self.cpu_on(i) => psci::AFFINITY_ON,
+            Some(_) => psci::AFFINITY_OFF,
+        }
+    }
+
+    /// The running core up to `end` (or until it stops, or ends its turn).
+    fn run_cpu(&mut self, end: u64) -> Exit {
         self.sync_irqs();
         if self.blocked() {
-            return Stop::Blocked;
+            return Exit::Stop(Stop::Blocked);
         }
         if core::mem::take(&mut self.wfi_pending)
             && let Some(stop) = self.wait_for_interrupt(end)
         {
-            return stop;
+            return Exit::Stop(stop);
         }
+        let smp = self.smp.is_some();
         while self.steps < end {
-            let now = counter(self.steps);
+            let now = self.now();
             {
                 let mut b = self.board.borrow_mut();
                 b.cntpct = now;
@@ -673,7 +858,7 @@ impl Machine {
                     drop(b);
                     self.sync_irqs();
                     if self.blocked() {
-                        return Stop::Blocked;
+                        return Exit::Stop(Stop::Blocked);
                     }
                 }
             }
@@ -682,9 +867,13 @@ impl Machine {
                 && let Some(limit) = self.jit_budget(end)
             {
                 let jit = self.jit.as_mut().expect("checked above");
-                // The clock for MRS CNTPCT/CNTVCT inside regions.
-                let cntvoff = self.board.borrow().virt.timer.cntvoff;
-                jit.set_time(vetro_jit::Clock { steps: self.steps, cntvoff });
+                // The clock for MRS CNTPCT/CNTVCT inside regions. With several
+                // cores the counter is that of steps / n, which the regions do
+                // not compute: they leave those MRS to the interpreter.
+                if !smp {
+                    let cntvoff = self.board.borrow().virt.timer().cntvoff;
+                    jit.set_time(vetro_jit::Clock { steps: self.steps, cntvoff });
+                }
                 let mut phys = Phys(&self.board);
                 let r = jit.run(&mut self.cpu, &mut self.mmu, &mut phys, limit);
                 self.steps += r.steps;
@@ -708,6 +897,10 @@ impl Machine {
                 let mut env = Env(&self.board);
                 self.cpu.step_system(&mut bus, &mut env)
             };
+            // WFE and YIELD are executed instructions; with several cores
+            // they also end the turn (below).
+            let yielded = ev == SysEvent::Yield;
+            let ev = if yielded { SysEvent::Executed } else { ev };
             self.steps += 1;
             self.perf.interp_steps += 1;
             // Only the steps of interest: a breakpoint at the PC, or an
@@ -726,33 +919,46 @@ impl Machine {
                 self.interp = Next::Jit;
             }
             match ev {
-                SysEvent::Executed | SysEvent::Exception { .. } => {}
+                SysEvent::Executed | SysEvent::Exception { .. } => {
+                    if yielded && smp {
+                        return Exit::Yield;
+                    }
+                }
+                SysEvent::Yield => unreachable!("mapped to Executed above"),
                 SysEvent::WaitForInterrupt => {
                     if let Some(stop) = self.wait_for_interrupt(end) {
-                        return stop;
+                        return Exit::Stop(stop);
                     }
                 }
                 SysEvent::Hvc(_) | SysEvent::Smc(_) => {
                     let x = [self.cpu.x[0], self.cpu.x[1], self.cpu.x[2], self.cpu.x[3]];
-                    match psci::call(x, self.cpu.sys.cfg.mpidr) {
+                    match psci::call(x) {
                         Call::Ret(v) => self.cpu.x[0] = v as u64,
                         Call::Suspend => {
                             self.cpu.x[0] = 0;
                             if let Some(stop) = self.wait_for_interrupt(end) {
-                                return stop;
+                                return Exit::Stop(stop);
                             }
                         }
-                        Call::Off => return Stop::PowerOff,
-                        Call::SystemReset => return Stop::Reset,
+                        Call::CpuOn { target, entry, context } => {
+                            self.cpu.x[0] = self.psci_cpu_on(target, entry, context) as u64;
+                        }
+                        Call::AffinityInfo { target } => {
+                            self.cpu.x[0] = self.psci_affinity_info(target) as u64;
+                        }
+                        // CPU_OFF of the only core powers the machine off.
+                        Call::CpuOff if smp => return Exit::Off,
+                        Call::CpuOff | Call::SystemOff => return Exit::Stop(Stop::PowerOff),
+                        Call::SystemReset => return Exit::Stop(Stop::Reset),
                     }
                 }
                 SysEvent::Unimplemented { raw, what } => {
                     self.steps -= 1;
-                    return Stop::Unimplemented { pc: self.cpu.pc, raw, what };
+                    return Exit::Stop(Stop::Unimplemented { pc: self.cpu.pc, raw, what });
                 }
             }
         }
-        Stop::Budget
+        Exit::Stop(Stop::Budget)
     }
 
     /// WFI: if no interrupt is ready, time jumps to the next deadline
@@ -763,6 +969,11 @@ impl Machine {
     /// instead of at the deadline, and the host's clock (the browser's real
     /// time) is never overtaken by more than a quantum. The guest sees the
     /// same thing either way: nothing happens during a WFI but interrupts.
+    ///
+    /// With several cores `end` is also the end of the core's turn: a core
+    /// with nothing to do waits until then (the others run in the
+    /// meantime), and the machine is idle only when every core that is on
+    /// waits with no interrupt and no deadline.
     fn wait_for_interrupt(&mut self, end: u64) -> Option<Stop> {
         self.sync_irqs();
         if self.blocked() {
@@ -775,21 +986,36 @@ impl Machine {
             return None;
         }
         match self.timer_deadline {
-            Some(d) if steps_for(d) > end => {
+            Some(d) if self.steps_at(d) > end => {
                 self.steps = self.steps.max(end);
                 self.wfi_pending = true;
                 Some(Stop::Budget)
             }
             Some(d) => {
-                let to = self.steps.max(steps_for(d));
+                let to = self.steps.max(self.steps_at(d));
                 self.perf.wfis += 1;
                 self.perf.wfi_steps += to - self.steps;
                 self.steps = to;
                 self.sync_irqs();
                 None
             }
+            None if self.smp.is_some() && !self.others_idle() => {
+                self.steps = self.steps.max(end);
+                self.wfi_pending = true;
+                Some(Stop::Budget)
+            }
             None => Some(Stop::Idle),
         }
+    }
+
+    /// With several cores: every other core that is on waits in a WFI with
+    /// no interrupt for it and no timer deadline.
+    fn others_idle(&self) -> bool {
+        let Some(s) = &self.smp else { return true };
+        let b = self.board.borrow();
+        s.vcpus.iter().enumerate().filter(|&(i, v)| i != s.cur && v.on).all(|(i, v)| {
+            v.wfi_pending && !b.virt.irq_line_of(i) && b.virt.timers[i].next_deadline(b.cntpct).is_none()
+        })
     }
 
     /// Physical start address of RAM.

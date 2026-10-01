@@ -380,9 +380,14 @@ pub struct Board {
 
 impl Board {
     pub fn new(ram_size: u64, now_secs: u64) -> Self {
+        Self::with_cpus(ram_size, now_secs, 1)
+    }
+
+    /// A board for `cpus` cores (a redistributor and a timer each).
+    pub fn with_cpus(ram_size: u64, now_secs: u64, cpus: usize) -> Self {
         Board {
             ram: Ram::new(ram_size),
-            virt: Virt::new(now_secs),
+            virt: Virt::with_cpus(now_secs, cpus),
             cntpct: 0,
             irq_dirty: true,
             virtio_dirty: false,
@@ -519,13 +524,13 @@ impl CpuEnv for Env<'_> {
         match reg {
             CntfrqEl0 => u64::from(map::CNTFRQ_HZ),
             CntpctEl0 => c,
-            CntvctEl0 => v.timer.cntvct(c),
-            CntpTvalEl0 => v.timer.cntp_tval(c),
-            CntpCtlEl0 => v.timer.cntp_ctl(c),
-            CntpCvalEl0 => v.timer.cntp_cval(),
-            CntvTvalEl0 => v.timer.cntv_tval(c),
-            CntvCtlEl0 => v.timer.cntv_ctl(c),
-            CntvCvalEl0 => v.timer.cntv_cval(),
+            CntvctEl0 => v.timer_mut().cntvct(c),
+            CntpTvalEl0 => v.timer_mut().cntp_tval(c),
+            CntpCtlEl0 => v.timer_mut().cntp_ctl(c),
+            CntpCvalEl0 => v.timer_mut().cntp_cval(),
+            CntvTvalEl0 => v.timer_mut().cntv_tval(c),
+            CntvCtlEl0 => v.timer_mut().cntv_ctl(c),
+            CntvCvalEl0 => v.timer_mut().cntv_cval(),
             IccPmrEl1 => v.gic().read_pmr(),
             IccIar1El1 => v.gic_mut().read_iar1(),
             IccHppir1El1 => v.gic().read_hppir1(),
@@ -551,12 +556,12 @@ impl CpuEnv for Env<'_> {
         b.irq_dirty = true;
         let v = &mut b.virt;
         match reg {
-            CntpTvalEl0 => v.timer.set_cntp_tval(c, value),
-            CntpCtlEl0 => v.timer.set_cntp_ctl(value),
-            CntpCvalEl0 => v.timer.set_cntp_cval(value),
-            CntvTvalEl0 => v.timer.set_cntv_tval(c, value),
-            CntvCtlEl0 => v.timer.set_cntv_ctl(value),
-            CntvCvalEl0 => v.timer.set_cntv_cval(value),
+            CntpTvalEl0 => v.timer_mut().set_cntp_tval(c, value),
+            CntpCtlEl0 => v.timer_mut().set_cntp_ctl(value),
+            CntpCvalEl0 => v.timer_mut().set_cntp_cval(value),
+            CntvTvalEl0 => v.timer_mut().set_cntv_tval(c, value),
+            CntvCtlEl0 => v.timer_mut().set_cntv_ctl(value),
+            CntvCvalEl0 => v.timer_mut().set_cntv_cval(value),
             IccPmrEl1 => v.gic_mut().write_pmr(value),
             IccEoir1El1 => v.gic_mut().write_eoir1(value),
             IccDirEl1 => v.gic_mut().write_dir(value),

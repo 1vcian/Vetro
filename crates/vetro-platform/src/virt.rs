@@ -1,5 +1,5 @@
 //! The assembled virt platform: bus with GIC, UART, RTC, GPIO and 32
-//! virtio-mmio slots, plus CPU 0's generic timer and the wiring of the
+//! virtio-mmio slots, plus one generic timer per core and the wiring of the
 //! IRQ lines.
 //!
 //! The CPU (M3) will use `bus` for MMIO accesses outside RAM, `gic_mut`
@@ -14,7 +14,7 @@
 //! as QEMU does with `-device` in command-line order).
 
 use crate::bus::{Bus, DeviceId};
-use crate::gic::{self, Gic};
+use crate::gic::Gic;
 use crate::map;
 use crate::pl011::Pl011;
 use crate::pl031::Pl031;
@@ -35,7 +35,11 @@ pub enum VirtioSlotError {
 
 pub struct Virt {
     pub bus: Bus,
-    pub timer: GenericTimer,
+    /// Generic timer of each core (its PPIs go to that core's redistributor).
+    pub timers: Vec<GenericTimer>,
+    /// Core whose timer and CPU interface the system registers reach
+    /// ([`Virt::set_current_cpu`]).
+    cur: usize,
     gic: DeviceId,
     uart: DeviceId,
     rtc: DeviceId,
@@ -45,10 +49,18 @@ pub struct Virt {
 }
 
 impl Virt {
-    /// Platform with the RTC initialised to `now_secs` (external time).
+    /// Platform with one core and the RTC initialised to `now_secs`
+    /// (external time).
     pub fn new(now_secs: u64) -> Self {
+        Self::with_cpus(now_secs, 1)
+    }
+
+    /// Platform with `cpus` cores (1..=16, ADR 0041): a redistributor and a
+    /// generic timer per core.
+    pub fn with_cpus(now_secs: u64, cpus: usize) -> Self {
         let mut bus = Bus::new();
-        let gic = bus.map(map::GICD_BASE, gic::MMIO_SIZE, "gicv3", Box::new(Gic::new())).unwrap();
+        let size = Gic::mmio_size(cpus);
+        let gic = bus.map(map::GICD_BASE, size, "gicv3", Box::new(Gic::with_cpus(cpus))).unwrap();
         let uart = bus.map(map::UART_BASE, map::UART_SIZE, "pl011", Box::new(Pl011::new())).unwrap();
         let rtc = bus.map(map::RTC_BASE, map::RTC_SIZE, "pl031", Box::new(Pl031::new(now_secs))).unwrap();
         let gpio = bus.map(map::GPIO_BASE, map::GPIO_SIZE, "pl061", Box::new(Pl061::new())).unwrap();
@@ -56,7 +68,33 @@ impl Virt {
             let base = map::VIRTIO_BASE + k as u64 * map::VIRTIO_SLOT_SIZE;
             bus.map(base, map::VIRTIO_SLOT_SIZE, "virtio-mmio", Box::new(VirtioMmio::empty())).unwrap()
         });
-        Self { bus, timer: GenericTimer::default(), gic, uart, rtc, gpio, virtio }
+        Self { bus, timers: vec![GenericTimer::default(); cpus], cur: 0, gic, uart, rtc, gpio, virtio }
+    }
+
+    /// Number of cores.
+    pub fn cpus(&self) -> usize {
+        self.timers.len()
+    }
+
+    /// The core that runs: its timer ([`Virt::timer`]) and its GIC CPU
+    /// interface answer the system registers, and [`Virt::irq_line`] is its line.
+    pub fn set_current_cpu(&mut self, cpu: usize) {
+        assert!(cpu < self.timers.len());
+        self.cur = cpu;
+        self.gic_mut().set_current(cpu);
+    }
+
+    pub fn current_cpu(&self) -> usize {
+        self.cur
+    }
+
+    /// The generic timer of the current core.
+    pub fn timer(&self) -> &GenericTimer {
+        &self.timers[self.cur]
+    }
+
+    pub fn timer_mut(&mut self) -> &mut GenericTimer {
+        &mut self.timers[self.cur]
     }
 
     /// virtio-mmio transport of slot `slot`.
@@ -134,15 +172,17 @@ impl Virt {
     /// Brings the level of all lines to the GIC: timer (PPI 27 and 30),
     /// UART (SPI 1), RTC (SPI 2), GPIO (SPI 7) and virtio (SPI 16 + slot).
     pub fn update_irqs(&mut self, cntpct: u64) {
-        let timer = self.timer.irq_lines(cntpct);
+        let timers: Vec<_> = self.timers.iter().map(|t| t.irq_lines(cntpct)).collect();
         let uart = self.uart().irq_level();
         let rtc = self.rtc().irq_level();
         let gpio = self.gpio().irq_level();
         let virtio: [bool; map::VIRTIO_SLOTS as usize] =
             core::array::from_fn(|k| self.virtio(k as u32).is_some_and(VirtioMmio::irq_level));
         let gic = self.gic_mut();
-        for (intid, level) in timer {
-            gic.set_irq_level(intid, level);
+        for (cpu, lines) in timers.into_iter().enumerate() {
+            for (intid, level) in lines {
+                gic.set_private_level(cpu, intid, level);
+            }
         }
         gic.set_spi_level(map::UART_SPI, uart);
         gic.set_spi_level(map::RTC_SPI, rtc);
@@ -152,9 +192,14 @@ impl Virt {
         }
     }
 
-    /// IRQ line to CPU 0.
+    /// IRQ line to the current core.
     pub fn irq_line(&self) -> bool {
         self.gic().irq_line()
+    }
+
+    /// IRQ line to core `cpu`.
+    pub fn irq_line_of(&self, cpu: usize) -> bool {
+        self.gic().irq_line_of(cpu)
     }
 }
 
@@ -162,10 +207,11 @@ impl Virt {
 
 /// All platform devices, each in its own section: timer,
 /// GIC, UART, RTC, GPIO and the 32 virtio slots (an empty slot saves only its
-/// DeviceID 0). The bus has no state: the regions are fixed by `Virt::new`.
+/// DeviceID 0); with more than one core, then the timers of cores 1..n
+/// (`TMRS`). The bus has no state: the regions are fixed by `Virt::new`.
 impl vetro_snapshot::Snapshot for Virt {
     fn save(&self, w: &mut vetro_snapshot::Writer) {
-        w.section(b"TIMR", |w| w.put(&self.timer));
+        w.section(b"TIMR", |w| w.put(&self.timers[0]));
         w.section(b"GIC3", |w| w.put(self.gic()));
         w.section(b"UART", |w| w.put(self.uart()));
         w.section(b"RTC ", |w| w.put(self.rtc()));
@@ -174,6 +220,13 @@ impl vetro_snapshot::Snapshot for Virt {
             w.section(b"VIO ", |w| {
                 w.u64(u64::from(k));
                 w.put(self.virtio(k).expect("32 slots"));
+            });
+        }
+        if self.timers.len() > 1 {
+            w.section(b"TMRS", |w| {
+                for t in &self.timers[1..] {
+                    w.put(t);
+                }
             });
         }
     }
@@ -188,7 +241,7 @@ impl vetro_snapshot::Snapshot for Virt {
             sec.get(s)?;
             sec.finish()
         }
-        part(r, b"TIMR", &mut self.timer)?;
+        part(r, b"TIMR", &mut self.timers[0])?;
         part(r, b"GIC3", self.gic_mut())?;
         part(r, b"UART", self.uart_mut())?;
         part(r, b"RTC ", self.rtc_mut())?;
@@ -197,6 +250,13 @@ impl vetro_snapshot::Snapshot for Virt {
             let mut sec = r.section(b"VIO ")?;
             sec.expect_u64("virtio slot", u64::from(k))?;
             sec.get(self.virtio_mut(k).expect("32 slots"))?;
+            sec.finish()?;
+        }
+        if self.timers.len() > 1 {
+            let mut sec = r.section(b"TMRS")?;
+            for t in &mut self.timers[1..] {
+                sec.get(t)?;
+            }
             sec.finish()?;
         }
         Ok(())
@@ -272,14 +332,14 @@ mod tests {
         let mut v = Virt::new(0);
         init_gic(&mut v);
         v.bus.write(GICR + GICR_SGI_BASE + GICR_ISENABLER0, 4, 1 << map::PPI_VTIMER);
-        v.timer.set_cntv_cval(1000);
-        v.timer.set_cntv_ctl(timer::CTL_ENABLE);
+        v.timer_mut().set_cntv_cval(1000);
+        v.timer_mut().set_cntv_ctl(timer::CTL_ENABLE);
         v.update_irqs(999);
         assert!(!v.irq_line());
         v.update_irqs(1000);
         assert_eq!(v.gic_mut().read_iar1(), u64::from(map::PPI_VTIMER));
         // The guest turns the timer off in the handler, then EOI.
-        v.timer.set_cntv_ctl(0);
+        v.timer_mut().set_cntv_ctl(0);
         v.update_irqs(1001);
         v.gic_mut().write_eoir1(u64::from(map::PPI_VTIMER));
         assert!(!v.irq_line());

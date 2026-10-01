@@ -14,6 +14,10 @@
 //! command written on the console, the power-off with `poweroff -f` (PSCI).
 //! The complete log goes to `target/guest-kernel/qemu-boot.log`; the versioned
 //! reference is `guest/kernel/reference/qemu-boot.log`.
+//!
+//! The same with two cores scheduled in round robin on one host thread
+//! (`-smp 2 -accel tcg,thread=single`, the oracle of Vetro's deterministic
+//! SMP machine, ADR 0041): `qemu-boot-smp2.log`.
 
 use std::process::Command;
 use std::time::Duration;
@@ -21,6 +25,17 @@ use vetro_boot_tests::*;
 
 #[test]
 fn qemu_boots_guest_kernel_to_shell() {
+    qemu_boot(&[], "qemu-boot.log");
+}
+
+#[test]
+fn qemu_boots_guest_kernel_smp2() {
+    qemu_boot(&["-smp", "2", "-accel", "tcg,thread=single"], "qemu-boot-smp2.log");
+}
+
+/// The script under QEMU with `extra` options; the log goes to
+/// `target/guest-kernel/<name>` (and the reference of the same name).
+fn qemu_boot(extra: &[&str], name: &str) {
     let Some((image, initrd)) = guest_kernel() else {
         return skip_or_fail(
             "VETRO_REQUIRE_GUEST_KERNEL",
@@ -35,6 +50,7 @@ fn qemu_boots_guest_kernel_to_shell() {
     };
     let mut cmd = Command::new(qemu);
     cmd.args(QEMU_MACHINE)
+        .args(extra)
         .args(["-nographic", "-kernel"])
         .arg(&image)
         .arg("-initrd")
@@ -77,11 +93,11 @@ fn qemu_boots_guest_kernel_to_shell() {
     let log = normalize(&con.log());
 
     let root = repo_root();
-    std::fs::write(root.join("target/guest-kernel/qemu-boot.log"), &log).unwrap();
+    std::fs::write(root.join("target/guest-kernel").join(name), &log).unwrap();
     if std::env::var("VETRO_BOOT_UPDATE_REFERENCE").is_ok_and(|v| v == "1") {
         let dir = root.join("guest/kernel/reference");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("qemu-boot.log"), &log).unwrap();
+        std::fs::write(dir.join(name), &log).unwrap();
     }
     eprintln!(
         "QEMU: /init at {:.1} s, self-test finished at {:.1} s, powered off at {:.1} s",

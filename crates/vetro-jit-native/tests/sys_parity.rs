@@ -356,6 +356,7 @@ fn setup(seed: u64) -> (Cpu, Vec<u8>) {
         spsel: !el0,
         fp: true,
         cntk: 0,
+        yields: false,
     };
     // Program: random instructions, system instructions, exclusive pairs.
     let mut prog = Vec::with_capacity(PROG_LEN);
@@ -373,6 +374,14 @@ fn setup(seed: u64) -> (Cpu, Vec<u8>) {
                 prog.push(with_field(st, 5, 5, rn));
             }
             _ => prog.push(random_insn(&mut rng, sys)),
+        }
+    }
+    // ADR 0041: WFE and YIELD at fixed places (NOPs in the regions, or left
+    // to the interpreter with `set_yields`), without drawing from the
+    // generator.
+    for (i, w) in prog.iter_mut().enumerate() {
+        if i % 61 == 17 {
+            *w = if i / 61 % 2 == 0 { 0xd503205f } else { 0xd503203f }; // wfe; yield
         }
     }
     let code: Vec<u8> = prog.iter().flat_map(|w| w.to_le_bytes()).collect();
@@ -461,7 +470,7 @@ fn step(
     // `n` also counts this step: n - 1 had been done before.
     let ev = cpu.step_system(&mut MmuBus::new(mmu, phys), &mut NoEnv { steps: n - 1 });
     match ev {
-        SysEvent::Executed | SysEvent::WaitForInterrupt => true,
+        SysEvent::Executed | SysEvent::WaitForInterrupt | SysEvent::Yield => true,
         SysEvent::Unimplemented { .. } => {
             events.push((n, ev));
             false
@@ -527,6 +536,8 @@ fn run_jit_on<E: Engine>(
     };
     let mut jit = SysJit::new(engine, cfg);
     jit.set_stops(stops);
+    // Odd seeds: WFE and YIELD stay with the interpreter (several cores).
+    jit.set_yields(seed % 2 == 1);
     let base = vetro_jit::Engine::memory(jit.engine())[RAM_IN_ENGINE..].as_mut_ptr();
     let mut phys = TestPhys { ram: base, watched: vec![false; RAM_LEN >> 12], dirty: Vec::new() };
     phys.bytes().copy_from_slice(ram);

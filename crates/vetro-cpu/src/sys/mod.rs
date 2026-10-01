@@ -124,6 +124,12 @@ pub enum SysEvent {
     /// WFI executed (PC already at the next instruction): the platform can
     /// advance time up to the next interrupt.
     WaitForInterrupt,
+    /// WFE or YIELD executed (PC already at the next instruction): a hint
+    /// that this core waits for another one. Nothing happens to the core
+    /// (like QEMU, WFE never waits); a machine with several cores scheduled
+    /// on one thread can let the next core run (QEMU's `EXCP_YIELD` with
+    /// single-threaded TCG).
+    Yield,
     /// HVC of the PSCI conduit: PC already after the instruction, arguments in x0-x7,
     /// result to be written into x0 (all HVCs go to the conduit, as in
     /// QEMU: an unknown function returns NOT_SUPPORTED).

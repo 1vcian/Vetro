@@ -207,9 +207,9 @@ impl Cpu {
                 self.pc = next;
                 SysEvent::WaitForInterrupt
             }
-            Insn::Wfe => {
+            Insn::Wfe | Insn::Yield => {
                 self.pc = next;
-                SysEvent::Executed
+                SysEvent::Yield
             }
             Insn::Hvc { imm } => {
                 if el == 0 || self.sys.cfg.psci != PsciConduit::Hvc {

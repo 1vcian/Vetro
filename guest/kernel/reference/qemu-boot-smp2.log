@@ -1,0 +1,243 @@
+Booting Linux on physical CPU 0x0000000000 [0x410fd034]
+Linux version 6.18.53 (vetro@vetro) (gcc (Alpine 14.2.0) 14.2.0, GNU ld (GNU Binutils) 2.44) #1 SMP Thu Sep 24 00:00:00 UTC 2026
+random: crng init done
+Machine model: linux,dummy-virt
+OF: reserved mem: Reserved memory: No reserved-memory node in the DT
+Zone ranges:
+  DMA      [mem 0x0000000040000000-0x000000007fffffff]
+  DMA32    empty
+  Normal   empty
+Movable zone start for each node
+Early memory node ranges
+  node   0: [mem 0x0000000040000000-0x000000007fffffff]
+Initmem setup node 0 [mem 0x0000000040000000-0x000000007fffffff]
+psci: probing for conduit method from DT.
+psci: PSCIv1.1 detected in firmware.
+psci: Using standard PSCI v0.2 function IDs
+psci: Trusted OS migration not required
+psci: SMC Calling Convention v1.0
+percpu: Embedded 14 pages/cpu s26136 r0 d31208 u57344
+Detected VIPT I-cache on CPU0
+CPU features: detected: GICv3 CPU interface
+alternatives: applying boot alternatives
+Kernel command line: console=ttyAMA0
+printk: log buffer data + meta data: 131072 + 458752 = 589824 bytes
+Dentry cache hash table entries: 131072 (order: 8, 1048576 bytes, linear)
+Inode-cache hash table entries: 65536 (order: 7, 524288 bytes, linear)
+software IO TLB: SWIOTLB bounce buffer size adjusted to 1MB
+software IO TLB: area num 2.
+software IO TLB: mapped [mem 0x000000007eb00000-0x000000007ec00000] (1MB)
+Built 1 zonelists, mobility grouping on.  Total pages: 262144
+mem auto-init: stack:all(zero), heap alloc:off, heap free:off
+SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=2, Nodes=1
+rcu: Hierarchical RCU implementation.
+rcu: RCU calculated value of scheduler-enlistment delay is 10 jiffies.
+NR_IRQS: 64, nr_irqs: 64, preallocated irqs: 0
+GICv3: 256 SPIs implemented
+GICv3: 0 Extended SPIs implemented
+Root IRQ handler: gic_handle_irq
+GICv3: GICv3 features: 16 PPIs
+GICv3: GICD_CTLR.DS=1, SCR_EL3.FIQ=0
+GICv3: CPU0: found redistributor 0 region 0:0x00000000080a0000
+ITS: No ITS available, not enabling LPIs
+rcu: srcu_init: Setting srcu_struct sizes based on contention.
+clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 19112604462750000 ns
+arch_timer: cp15 timer running at 62.50MHz (virt).
+clocksource: arch_sys_counter: mask: 0x1ffffffffffffff max_cycles: 0x1cd42e208c, max_idle_ns: 881590405314 ns
+sched_clock: 57 bits at 63MHz, resolution 16ns, wraps every 4398046511096ns
+Console: colour dummy device 80x25
+Calibrating delay loop (skipped), value calculated using timer frequency.. 125.00 BogoMIPS (lpj=625000)
+pid_max: default: 32768 minimum: 301
+Mount-cache hash table entries: 2048 (order: 2, 16384 bytes, linear)
+Mountpoint-cache hash table entries: 2048 (order: 2, 16384 bytes, linear)
+rcu: Hierarchical SRCU implementation.
+rcu: 	Max phase no-delay instances is 1000.
+smp: Bringing up secondary CPUs ...
+Detected VIPT I-cache on CPU1
+GICv3: CPU1: found redistributor 1 region 0:0x00000000080c0000
+CPU1: Booted secondary processor 0x0000000001 [0x410fd034]
+smp: Brought up 1 node, 2 CPUs
+SMP: Total of 2 processors activated.
+CPU: All CPU(s) started at EL1
+CPU features: detected: 32-bit EL0 Support
+CPU features: detected: CRC32 instructions
+alternatives: applying system-wide alternatives
+Memory: 1013308K/1048576K available (4288K kernel code, 678K rwdata, 944K rodata, 896K init, 249K bss, 31104K reserved, 0K cma-reserved)
+devtmpfs: initialized
+posixtimers hash table entries: 1024 (order: 2, 16384 bytes, linear)
+futex hash table entries: 512 (32768 bytes on 1 NUMA nodes, total 32 KiB, linear).
+NET: Registered PF_NETLINK/PF_ROUTE protocol family
+DMA: preallocated 128 KiB GFP_KERNEL pool for atomic allocations
+DMA: preallocated 128 KiB GFP_KERNEL|GFP_DMA pool for atomic allocations
+DMA: preallocated 128 KiB GFP_KERNEL|GFP_DMA32 pool for atomic allocations
+ASID allocator initialised with 65536 entries
+Serial: AMBA PL011 UART driver
+9000000.pl011: ttyAMA0 at MMIO 0x9000000 (irq = 13, base_baud = 0) is a PL011 rev1
+printk: console [ttyAMA0] enabled
+clocksource: Switched to clocksource arch_sys_counter
+NET: Registered PF_INET protocol family
+IP idents hash table entries: 16384 (order: 5, 131072 bytes, linear)
+tcp_listen_portaddr_hash hash table entries: 512 (order: 1, 8192 bytes, linear)
+Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+TCP established hash table entries: 8192 (order: 4, 65536 bytes, linear)
+TCP bind hash table entries: 8192 (order: 6, 262144 bytes, linear)
+TCP: Hash tables configured (established 8192 bind 8192)
+UDP hash table entries: 512 (order: 3, 32768 bytes, linear)
+UDP-Lite hash table entries: 512 (order: 3, 32768 bytes, linear)
+NET: Registered PF_UNIX/PF_LOCAL protocol family
+Unpacking initramfs...
+workingset: timestamp_bits=62 max_order=18 bucket_order=0
+input: QEMU Virtio Tablet as /devices/platform/a003a00.virtio_mmio/virtio1/input/input0
+input: QEMU Virtio Keyboard as /devices/platform/a003c00.virtio_mmio/virtio2/input/input1
+[drm] features: -virgl +edid -resource_blob -host_visible
+[drm] features: -context_init
+[drm] number of scanouts: 1
+[drm] number of cap sets: 0
+[drm] Initialized virtio_gpu 0.1.0 for a003e00.virtio_mmio on minor 0
+Freeing initrd memory: 1540K
+rtc-pl031 9010000.pl031: registered as rtc0
+NET: Registered PF_PACKET protocol family
+NET: Registered PF_VSOCK protocol family
+clk: Disabling unused clocks
+Freeing unused kernel memory: 896K
+Run /init as init process
+VETRO-BOOT-OK: /init avviato (6.18.53)
+VETRO-AUTOTEST-INIZIO
+Linux (none) 6.18.53 #1 SMP Thu Sep 24 00:00:00 UTC 2026 aarch64 Linux
+VETRO-AUTOTEST ok: uname -m è aarch64
+rootfs on / type rootfs (rw,size=508736k,nr_inodes=127184)
+proc on /proc type proc (rw,relatime)
+sysfs on /sys type sysfs (rw,relatime)
+devtmpfs on /dev type devtmpfs (rw,relatime,size=508736k,nr_inodes=127184,mode=755)
+tmpfs on /tmp type tmpfs (rw,relatime)
+VETRO-AUTOTEST ok: proc montato
+VETRO-AUTOTEST ok: sysfs montato
+VETRO-AUTOTEST ok: devtmpfs montato
+[1;34mblock[m     [1;34mclass[m     [1;34mdevices[m   [1;34mfs[m        [1;34mmodule[m
+[1;34mbus[m       [1;34mdev[m       [1;34mfirmware[m  [1;34mkernel[m
+VETRO-AUTOTEST ok: /sys/devices presente
+VETRO-AUTOTEST ok: console PL011
+VETRO-AUTOTEST ok: RTC PL031
+VETRO-AUTOTEST ok: echo e pipe
+VETRO-AUTOTEST ok: file su tmpfs
+VETRO-AUTOTEST ok: aritmetica della shell
+  40200000-4073ffff : Kernel code
+  40820000-4091ffff : Kernel data
+initrd-start:  00 00 00 00 48 00 00 00
+VETRO-AUTOTEST ok: DRM: /dev/dri/card0
+vetro-dev: drm driver virtio_gpu 0.1.0
+vetro-dev: drm crtc 1 connettori 1 encoder 1, fb da 32x32 a 8192x8192
+vetro-dev: drm connettore tipo 15 stato 1, 26 modi, 320x200 mm
+vetro-dev: drm modo 1280x800 75 Hz clock 107300 tipo 0x48 preferito
+vetro-dev: drm modo 5120x2160 50 Hz clock 742500 tipo 0x40
+vetro-dev: drm modo 4096x2160 50 Hz clock 594000 tipo 0x40
+vetro-dev: drm modo 3840x2160 60 Hz clock 594000 tipo 0x40
+vetro-dev: drm modo 3840x2160 60 Hz clock 593407 tipo 0x40
+vetro-dev: drm modo 3840x2160 50 Hz clock 594000 tipo 0x40
+vetro-dev: drm modo 1920x1440 60 Hz clock 234000 tipo 0x40
+vetro-dev: drm modo 2560x1080 50 Hz clock 185625 tipo 0x40
+vetro-dev: drm modo 1856x1392 60 Hz clock 218250 tipo 0x40
+vetro-dev: drm modo 1792x1344 60 Hz clock 204750 tipo 0x40
+vetro-dev: drm modo 2048x1152 60 Hz clock 162000 tipo 0x40
+vetro-dev: drm modo 1920x1200 60 Hz clock 193250 tipo 0x40
+vetro-dev: drm modo 1920x1080 60 Hz clock 148500 tipo 0x40
+vetro-dev: drm modo 1920x1080 50 Hz clock 148500 tipo 0x40
+vetro-dev: drm modo 1600x1200 60 Hz clock 162000 tipo 0x40
+vetro-dev: drm modo 1680x1050 60 Hz clock 146250 tipo 0x40
+vetro-dev: drm modo 1400x1050 60 Hz clock 121750 tipo 0x40
+vetro-dev: drm modo 1280x1024 60 Hz clock 108000 tipo 0x40
+vetro-dev: drm modo 1440x900 60 Hz clock 106500 tipo 0x40
+vetro-dev: drm modo 1280x960 60 Hz clock 108000 tipo 0x40
+vetro-dev: drm modo 1360x768 60 Hz clock 85500 tipo 0x40
+vetro-dev: drm modo 1280x768 60 Hz clock 79500 tipo 0x40
+vetro-dev: drm modo 1024x768 60 Hz clock 65000 tipo 0x40
+vetro-dev: drm modo 800x600 60 Hz clock 40000 tipo 0x40
+vetro-dev: drm modo 640x480 60 Hz clock 25200 tipo 0x40
+vetro-dev: drm modo 640x480 60 Hz clock 25175 tipo 0x40
+vetro-dev: drm dumb 1280x800 pitch 5120 size 4096000
+vetro-dev: drm modeset 1280x800 ok
+vetro-dev: drm dirtyfb ok
+vetro-dev: drm cursore ok
+vetro-dev: drm chiuso
+VETRO-AUTOTEST ok: DRM: dumb buffer, modeset, dirtyfb e cursore
+drm Virtual-1: connected, enabled, modi: 1280x800 5120x2160 4096x2160 3840x2160 3840x2160 3840x2160 1920x1440 2560x1080 1856x1392 1792x1344 2048x1152 1920x1200 1920x1080 1920x1080 1600x1200 1680x1050 1400x1050 1280x1024 1440x900 1280x960 1360x768 1280x768 1024x768 800x600 640x480 640x480 
+VETRO-AUTOTEST ok: DRM: modo preferito 1280x800
+EDID:
+ 00 ff ff ff ff ff ff 00 49 14 34 12 00 00 00 00
+ 2a 18 01 04 a5 20 14 78 06 ee 91 a3 54 4c 99 26
+ 0f 50 54 21 08 00 e1 c0 d1 c0 d1 00 a9 40 b3 00
+ 95 00 81 80 81 40 ea 29 00 c0 51 20 1c 30 40 26
+ 44 40 45 cb 10 00 00 18 00 00 00 f7 00 0a 00 40
+ 82 00 28 20 00 00 00 00 00 00 00 00 00 fd 00 32
+ 7d 1e a0 ff 01 0a 20 20 20 20 20 20 00 00 00 fc
+ 00 51 45 4d 55 20 4d 6f 6e 69 74 6f 72 0a 01 3a
+ 02 03 0b 00 46 7d 65 60 59 1f 61 00 00 00 10 00
+ 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+ 10 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+ 00 00 10 00 00 00 00 00 00 00 00 00 00 00 00 00
+ 00 00 00 00 10 00 00 00 00 00 00 00 00 00 00 00
+ 00 00 00 00 00 00 10 00 00 00 00 00 00 00 00 00
+ 00 00 00 00 00 00 00 00 10 00 00 00 00 00 00 00
+ 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 2f
+VETRO-AUTOTEST ok: input: tastiera e tablet
+I: Bus=0006 Vendor=0627 Product=0003 Version=0002
+N: Name="QEMU Virtio Tablet"
+P: Phys=virtio1/input0
+S: Sysfs=/devices/platform/a003a00.virtio_mmio/virtio1/input/input0
+U: Uniq=
+H: Handlers=event0 
+B: PROP=0
+B: EV=f
+B: KEY=30400 1f0000 0 0 0 0
+B: REL=100
+B: ABS=3
+
+I: Bus=0006 Vendor=0627 Product=0001 Version=0001
+N: Name="QEMU Virtio Keyboard"
+P: Phys=virtio2/input0
+S: Sysfs=/devices/platform/a003c00.virtio_mmio/virtio2/input/input1
+U: Uniq=
+H: Handlers=kbd event1 
+B: PROP=0
+B: EV=120003
+B: KEY=400000007 ff803078f800dfff febeffff7bcfffff fffffffffffffffe
+B: LED=7
+
+vetro-dev: /dev/input/event0 nome "QEMU Virtio Tablet"
+vetro-dev:   phys "virtio1/input0"
+vetro-dev:   uniq ""
+vetro-dev:   id bus 0006 vendor 0627 product 0003 version 0002, evdev 10001
+vetro-dev:   prop:
+vetro-dev:   ev: 0 1 2 3
+vetro-dev:   key: 110 111 112 113 114 14a 150 151
+vetro-dev:   rel: 8
+vetro-dev:   abs: 0 1
+vetro-dev:   abs 0 min 0 max 32767 fuzz 0 flat 0 res 0
+vetro-dev:   abs 1 min 0 max 32767 fuzz 0 flat 0 res 0
+vetro-dev: /dev/input/event1 nome "QEMU Virtio Keyboard"
+vetro-dev:   phys "virtio2/input0"
+vetro-dev:   uniq ""
+vetro-dev:   id bus 0006 vendor 0627 product 0001 version 0001, evdev 10001
+vetro-dev:   prop:
+vetro-dev:   ev: 0 1 11 14
+vetro-dev:   key: 1 2 3 4 5 6 7 8 9 a b c d e f 10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f 20 21 22 23 24 25 26 27 28 29 2a 2b 2c 2d 2e 2f 30 31 32 33 34 35 36 37 38 39 3a 3b 3c 3d 3e 3f 40 41 42 43 44 45 46 47 48 49 4a 4b 4c 4d 4e 4f 50 51 52 53 56 57 58 59 5b 5c 5d 5e 60 61 62 63 64 65 66 67 68 69 6a 6b 6c 6d 6e 6f 71 72 73 74 75 77 79 7a 7b 7c 7d 7e 7f 80 81 82 83 84 85 86 87 88 89 8a 8b 8c 8e 8f 9b 9c 9d 9e 9f a3 a4 a5 a6 ac ad b7 b8 b9 ba bb bc bd be bf c0 c1 c2 e2
+vetro-dev:   led: 0 1 2
+vetro-dev:   rep ritardo 250 periodo 33
+VETRO-AUTOTEST ok: input: capacità di evdev
+VETRO-AUTOTEST ok: vsock: /dev/vsock
+VETRO-AUTOTEST ok: rete: eth0
+eth0: 52:54:00:12:34:56
+udhcpc: bound eth0 10.0.2.15/255.255.255.0 router 10.0.2.2 dns 10.0.2.3 lease 86400
+VETRO-AUTOTEST ok: rete: DHCP
+Kernel IP routing table
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+0.0.0.0         10.0.2.2        0.0.0.0         UG    0      0        0 eth0
+10.0.2.0        0.0.0.0         255.255.255.0   U     0      0        0 eth0
+nameserver 10.0.2.3
+VETRO-AUTOTEST ok: rete: ping al gateway
+VETRO-AUTOTEST ok: rete: ping al DNS
+VETRO-AUTOTEST-FINE: ok
+~ # [6necho VETRO-SHELL-$((6*7))
+VETRO-SHELL-42
+~ # [6npoweroff -f
+reboot: Power down

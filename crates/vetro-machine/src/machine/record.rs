@@ -245,9 +245,14 @@ impl Machine {
         self.console.len + self.board.borrow().virt.uart().output().len() as u64
     }
 
+    /// The running core's registers and, with several cores, the others and
+    /// the round robin (ADR 0041).
     fn cpu_hash(&self) -> u64 {
         let mut w = Writer::with_capacity(2048);
         self.cpu.save(&mut w);
+        if let Some(s) = &self.smp {
+            s.save(&mut w);
+        }
         hash64(w.as_bytes())
     }
 
