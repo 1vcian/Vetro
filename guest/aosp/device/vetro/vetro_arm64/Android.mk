@@ -53,7 +53,7 @@ LOCAL_OVERRIDES_MODULES := \
     sysconfig-vetro-microg.xml
 include $(BUILD_PREBUILT)
 
-# Slim image (ADR 0041): what an emulator in a browser tab does not need,
+# Slim image (ADR 0043): what an emulator in a browser tab does not need,
 # removed from the inherited system, system_ext, product and vendor lists, and
 # the features of the framework services that would serve it declared
 # unavailable (vetro_slim.xml: SystemServer then starts no PrintManagerService,

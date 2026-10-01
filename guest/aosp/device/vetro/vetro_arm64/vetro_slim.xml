@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Slim image (ADR 0041, Android.mk VetroSlim): features whose apps and HALs
+  Slim image (ADR 0043, Android.mk VetroSlim): features whose apps and HALs
   are not installed. SystemServer starts no service for them
   (PrintManagerService, BackupManagerService, MidiService, WifiP2pService,
   face and fingerprint services, ConsumerIrService), as on the watches and TVs

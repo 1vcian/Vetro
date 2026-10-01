@@ -1,4 +1,4 @@
-# ADR 0041 — A slim image
+# ADR 0043 — A slim image
 
 - Status: proposed (M5/M6, 2026-10-01). Builds on ADR 0022 (AOSP image),
   0033 (app catalog), 0040 (idle guest). Details:

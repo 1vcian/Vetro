@@ -17,7 +17,7 @@
 #                                         home screen, then measures how idle the
 #                                         guest is (remote/idle.sh; VETRO_IDLE_*)
 #   tools/aosp/qemu-vm.sh idle-report     its state, log and report (with RAM,
-#                                         boot times and inventory, ADR 0041)
+#                                         boot times and inventory, ADR 0043)
 #   tools/aosp/qemu-vm.sh apps            detached on the VM, after idle: the app
 #                                         catalog installed and opened with adb
 #                                         (remote/apps.sh; VETRO_APPS_WAIT)

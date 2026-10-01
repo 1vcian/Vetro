@@ -80,7 +80,7 @@ def optional(name):
         return ""
 
 
-# Boot times, memory and inventory (ADR 0041), when idle.sh collected them.
+# Boot times, memory and inventory (ADR 0043), when idle.sh collected them.
 m = re.search(r"\[\s*([0-9.]+)\]", optional("boot_completed.txt"))
 if m:
     print(f"boot_completed at guest {float(m.group(1)):.0f} s")

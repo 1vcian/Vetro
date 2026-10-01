@@ -79,7 +79,7 @@ timeout $((secs * 4 + 300)) "$A" -s "$s" shell su 0 sh /data/local/tmp/vetro-idl
 sh_ dumpsys cpuinfo > "$d/cpuinfo.txt"
 sh_ top -b -n 1 -m 20 -o PID,USER,S,%CPU,TIME+,CMDLINE > "$d/top.txt"
 sh_ ps -A -o PID,NAME > "$d/ps.txt"
-# Memory and inventory of the settled guest (ADR 0041): /proc/meminfo, the
+# Memory and inventory of the settled guest (ADR 0043): /proc/meminfo, the
 # framework's RAM summary and per-process PSS, packages, APEXes, features and
 # system services; boot_completed from the serial console (init.vetro.rc).
 sh_ cat /proc/meminfo > "$d/meminfo.txt"

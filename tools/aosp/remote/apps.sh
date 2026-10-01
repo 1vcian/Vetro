@@ -1,7 +1,7 @@
 #!/bin/bash
 # On the build VM (launched detached by tools/aosp/qemu-vm.sh apps): the app
 # catalog (ADR 0033, catalog/v1.json on R2) on a booted guest, after
-# remote/idle.sh has finished (ADR 0041, slim image): every app downloaded
+# remote/idle.sh has finished (ADR 0043, slim image): every app downloaded
 # once (checked against the catalog's sha256, cached in ~/$WORK/cache),
 # installed with adb, opened from its launcher activity, then checked after
 # $VETRO_APPS_WAIT guest seconds (default 60): the app's process alive, its

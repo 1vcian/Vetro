@@ -18,7 +18,7 @@ PRODUCT_ENFORCE_ARTIFACT_PATH_REQUIREMENTS := relaxed
 #
 $(call inherit-product, $(SRC_TARGET_DIR)/product/handheld_system_ext.mk)
 # No telephony_system_ext.mk (CarrierConfig, EmergencyInfo): no modem (ADR
-# 0040) and no telephony apps (ADR 0041).
+# 0040) and no telephony apps (ADR 0043).
 
 #
 # product
@@ -26,7 +26,7 @@ $(call inherit-product, $(SRC_TARGET_DIR)/product/handheld_system_ext.mk)
 # aosp_product.mk without telephony_product.mk (Dialer,
 # ImsServiceEntitlement), messaging and PhotoTable, and with AOSP's current
 # sound set instead of every sound ever shipped (AllAudio.mk: 220 files the
-# first media scan reads, against 57): ADR 0041.
+# first media scan reads, against 57): ADR 0043.
 $(call inherit-product, $(SRC_TARGET_DIR)/product/handheld_product.mk)
 $(call inherit-product, frameworks/base/data/sounds/AudioPackage14.mk)
 PRODUCT_PACKAGES += \
@@ -68,7 +68,7 @@ BOARD_HAVE_BLUETOOTH := false
 TARGET_NO_TELEPHONY := true
 # Cuttlefish's phone vendor without the HALs for hardware the virt machine
 # lacks (camera, face, fingerprint, IR, identity, reboot escrow, secure
-# element): vetro_vendor.mk, ADR 0041.
+# element): vetro_vendor.mk, ADR 0043.
 $(call inherit-product, device/vetro/vetro_arm64/vetro_vendor.mk)
 $(call inherit-product, device/google/cuttlefish/vsoc_arm64/bootloader.mk)
 

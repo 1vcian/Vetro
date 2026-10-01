@@ -20,7 +20,7 @@ PRODUCT_PACKAGES += \
 # the features unavailable, so the framework starts no service for them.
 PRODUCT_PACKAGES += VetroMissingHardware
 
-# Slim image (ADR 0041): apps, HALs and framework services an emulator in a
+# Slim image (ADR 0043): apps, HALs and framework services an emulator in a
 # browser tab does not need (VetroSlim in Android.mk, vetro_slim.xml), and the
 # on-device personalization system service off (its standard switch).
 PRODUCT_PACKAGES += VetroSlim

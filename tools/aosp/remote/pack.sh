@@ -62,7 +62,7 @@ done
 [ -f "$p/vendor/etc/permissions/vetro_missing_hardware.xml" ] || fail "vetro_missing_hardware.xml missing"
 [ -f "$p/vendor/etc/bluetooth_audio_policy_configuration_7_0.xml" ] || fail "the Bluetooth audio policy the audio HAL includes is missing"
 grep -q 'setprop debug.sf.vsync_reactor_ignore_present_fences false' "$p/vendor/etc/init/init.vetro.rc" || fail "init.vetro.rc does not turn present fences back on"
-# Slim image (ADR 0041): a sample of each removal group (telephony, printing,
+# Slim image (ADR 0043): a sample of each removal group (telephony, printing,
 # backup, demo apps, Cuttlefish's host service, product apps, vendor HALs)
 # and the unavailable features.
 # (APKs, not their directories: an app with JNI keeps a lib/ symlink there.)

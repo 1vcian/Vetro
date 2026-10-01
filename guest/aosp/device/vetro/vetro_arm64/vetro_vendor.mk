@@ -2,7 +2,7 @@
 # Vetro's vendor composition: Cuttlefish's phone vendor
 # (device/google/cuttlefish/shared/phone/device_vendor.mk, AOSP 15) without
 # the pieces for hardware the virt machine does not have and no app needs to
-# find (ADR 0041, "Slim image"): no camera HAL (emulated cameras, two APEXes
+# find (ADR 0043, "Slim image"): no camera HAL (emulated cameras, two APEXes
 # and a provider process), no face or fingerprint HALs (started after boot),
 # no consumer IR, no identity credential HAL (credstore runs without it), no
 # reboot-escrow HAL, no secure element HAL, no SIP/VoIP feature. Everything
