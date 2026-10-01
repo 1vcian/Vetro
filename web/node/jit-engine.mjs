@@ -33,7 +33,7 @@ export const TABLE_SIZE = 1 << 18;
 /**
  * At most this many bytes of live generated modules. Beyond it, `compile`
  * refuses the module and vetro-jit evicts the modules it did not enter since
- * the last eviction (ADR 0040), or resets the engine (as for a full table):
+ * the last eviction (ADR 0041), or resets the engine (as for a full table):
  * V8 returns no error when the space for compiled code runs out (4 GiB), it
  * kills the process. With Android the JIT got there after half an hour (ADR
  * 0028); 96 MiB of wasm are a few hundred MiB of machine code. A dropped
@@ -46,7 +46,7 @@ export class JitEngine {
   #vetro = null; // exports of the vetro-wasm instance
   #table = null;
   #instances = new Map(); // index -> exports of the generated module
-  /** Live modules: index -> { bytes, places: [count, base][] } (ADR 0040). */
+  /** Live modules: index -> { bytes, places: [count, base][] } (ADR 0041). */
   #live = new Map();
   #rt = {}; // exports of the runtime module (imports `rt.*` of the modules)
   #next = 0;
@@ -202,7 +202,7 @@ export class JitEngine {
   }
 
   /**
-   * Module `id` is no longer used (vetro-jit evicted it, ADR 0040): its table
+   * Module `id` is no longer used (vetro-jit evicted it, ADR 0041): its table
    * entries are cleared, so that nothing keeps it alive, and its bytes no
    * longer count against the budget.
    */

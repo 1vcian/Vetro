@@ -1,4 +1,4 @@
-//! More integer SIMD inline (ADR 0040): the widening, narrowing, by-element
+//! More integer SIMD inline (ADR 0041): the widening, narrowing, by-element
 //! and saturating-doubling forms that Android's media and graphics code runs
 //! (they went through `env.simd`: the interpreter's element loops on
 //! 128-bit integers, about a tenth of an Android profile).

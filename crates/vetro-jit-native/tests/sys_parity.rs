@@ -1064,7 +1064,7 @@ fn ldtr_sttr_at_el1_use_el0_permissions() {
 
 /// MSR TTBR0_EL1 inside a region (M4): the region exits right after it
 /// (YIELD, `exit_detail` 3) and the host goes on in the new regime within the
-/// same run (ADR 0040; before, the run ended). Here EL1 code in TTBR1 loads
+/// same run (ADR 0041; before, the run ended). Here EL1 code in TTBR1 loads
 /// the same TTBR0 address under two tables in one loop: a software TLB entry
 /// filled under the first table must not serve the load after the switch.
 /// Fails if the MSR does not end the region, or if the host does not resync
@@ -1154,7 +1154,7 @@ fn msr_ttbr0_in_a_region_switches_the_regime() {
     }
 }
 
-/// Self-modifying code at EL1 (ADR 0040): a loop rewrites its own first
+/// Self-modifying code at EL1 (ADR 0041): a loop rewrites its own first
 /// instruction at every round (`add x0, x0, #1` and `#2` in turn). Every
 /// round must run the instruction just written: the store ends the region,
 /// the page's regions are dropped, and a lookup must not hand out the old one
@@ -1194,7 +1194,7 @@ fn self_modifying_code_drops_the_hot_variant() {
     }
 }
 
-/// The jump cache's second way (ADR 0040): two regions whose PCs share an
+/// The jump cache's second way (ADR 0041): two regions whose PCs share an
 /// index (32 KiB apart), both in TTBR0 and different under the two tables,
 /// called from kernel code that switches TTBR0 at every round. Under table A
 /// the second region's entry pushes the first one's into the second way;
@@ -1287,7 +1287,7 @@ fn jump_cache_second_way_checks_the_context() {
     }
 }
 
-/// LDTR/STTR at EL1 through the EL0 software TLB (ADR 0040), as in Linux's
+/// LDTR/STTR at EL1 through the EL0 software TLB (ADR 0041), as in Linux's
 /// uaccess with software PAN: EL0 code loads and stores a user page (filling
 /// the EL0 tables under table A), then an SVC; the EL1 handler reads and
 /// writes the same page with LDTR/STTR (hits in the EL0 tables), loads an
@@ -1406,7 +1406,7 @@ fn ldtr_sttr_at_el1_use_the_el0_tlb_of_the_same_tables() {
         assert_eq!(got, want, "seed {seed}: interpreter and JIT differ ({s:?})");
         assert!(s.jit_steps > 1000, "seed {seed}: not run in regions: {s:?}");
         // The runs after each MSR TTBR0 find their regions again without the
-        // MMU (remembered fetch translations, ADR 0040).
+        // MMU (remembered fetch translations, ADR 0041).
         assert!(s.memo_hits > rounds, "seed {seed}: fetch translations not remembered: {s:?}");
         // Per round: the faulting LDTR and the LDTR/STTR under table B go to
         // the host; those under table A are TLB hits.
@@ -1514,7 +1514,7 @@ fn background_compilation_keeps_the_execution() {
     );
 }
 
-/// An engine with a code budget like the browser's (ADR 0040): it refuses
+/// An engine with a code budget like the browser's (ADR 0041): it refuses
 /// a module when the live modules' bytes would exceed `budget`, a dropped
 /// module stops counting, and its table entries get a module whose regions
 /// trap, so a jump cache entry or a region that outlived its eviction makes
@@ -1629,7 +1629,7 @@ impl Engine for Budgeted {
     }
 }
 
-/// Eviction instead of a reset (ADR 0040): with a code budget of a few
+/// Eviction instead of a reset (ADR 0041): with a code budget of a few
 /// modules, the modules not entered since the last eviction go, their table
 /// entries trap, and execution stays identical to the interpreter. Red if
 /// the jump cache keeps entries of evicted regions (tried), or if evicting

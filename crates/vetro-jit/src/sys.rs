@@ -144,7 +144,7 @@ pub struct SysJitConfig {
     pub profile: bool,
     /// Names every region function `r<el>_<pc>` in the modules' `name`
     /// section, so that a V8 CPU profile attributes time to guest code (ADR
-    /// 0040). Measurement only: the code is the same.
+    /// 0041). Measurement only: the code is the same.
     pub names: bool,
 }
 
@@ -209,15 +209,15 @@ pub struct SysJitStats {
     pub tlbi_partial: u64,
     /// Entries from the host found in the jump cache (no lookup).
     pub jc_probes: u64,
-    /// Lookups that reused a remembered fetch translation (ADR 0040).
+    /// Lookups that reused a remembered fetch translation (ADR 0041).
     pub memo_hits: u64,
-    /// MSR TTBR0/TTBR1 in a region followed within the same run (ADR 0040).
+    /// MSR TTBR0/TTBR1 in a region followed within the same run (ADR 0041).
     pub regime_switches: u64,
     /// Evictions of unused modules instead of a reset, and modules evicted
-    /// (ADR 0040).
+    /// (ADR 0041).
     pub evictions: u64,
     pub evicted_modules: u64,
-    /// Region calls by the dispatcher, with `SysJitConfig::names` (ADR 0040).
+    /// Region calls by the dispatcher, with `SysJitConfig::names` (ADR 0041).
     pub dispatches: u64,
     /// Bytes of WebAssembly compiled (modules and dispatcher).
     pub wasm_bytes: u64,
@@ -352,14 +352,14 @@ pub fn target(cpu: &Cpu) -> SysTarget {
     }
 }
 
-/// A compiled module and what eviction needs to know (ADR 0040).
+/// A compiled module and what eviction needs to know (ADR 0041).
 struct Mod<M> {
     m: M,
     /// Looked up (entered through the host) since the last eviction.
     used: Cell<bool>,
 }
 
-/// Modules compiled between two jump cache refreshes (ADR 0040): after one,
+/// Modules compiled between two jump cache refreshes (ADR 0041): after one,
 /// every region entered is looked up again and marks its module, so the
 /// marks say which modules were entered since the last eviction.
 const SWEEP_MODULES: u32 = 1024;
@@ -396,12 +396,12 @@ struct Entry<M> {
     /// Entries seen with the interpreter.
     seen: u32,
     variants: Vec<Variant<M>>,
-    /// The fetch translation last checked for this `pc` (ADR 0040):
+    /// The fetch translation last checked for this `pc` (ADR 0041):
     /// (jump cache context, [`Cache::inval_gen`], physical address). Within a
     /// context it cannot change (the guarantee the jump cache relies on), so
     /// a lookup with the same context and no partial TLBI since skips the MMU.
     memo: Option<(u32, u32, u64)>,
-    /// The compiled and ready variant last found (ADR 0040): its physical
+    /// The compiled and ready variant last found (ADR 0041): its physical
     /// address and jump cache word, in the entry itself (a lookup is a chain
     /// of cache misses otherwise). Cleared whenever `variants` changes.
     hot: Option<(u64, u32)>,
@@ -463,7 +463,7 @@ struct Cache<M> {
     /// Block requests pending since the last compilation.
     pending_hits: usize,
     /// Table chunks handed out so far (`batch` entries each), and the free
-    /// ones (ADR 0040).
+    /// ones (ADR 0041).
     next_chunk: u32,
     free_chunks: Vec<u32>,
     /// Live modules with their chunk, and the evicted ones not yet dropped
@@ -495,7 +495,7 @@ struct Cache<M> {
 impl<M> Cache<M> {
     /// The EL0 software TLB groups were filled under the current table bases:
     /// their entries give what an access with EL0 permissions gives now, so
-    /// LDTR/STTR at EL1 may use them and fill them (ADR 0040).
+    /// LDTR/STTR at EL1 may use them and fill them (ADR 0041).
     fn utlb_ok(&self) -> bool {
         self.groups[0].key == Some(self.lo) && self.groups[1].key == Some(self.hi)
     }
@@ -538,7 +538,7 @@ impl<M> Cache<M> {
         // Cold code (no variant and below the threshold): the fetch
         // translation is not needed. Count as before (the interpreter will
         // execute the same instructions anyway, even if the fetch fails).
-        // One hash lookup for everything (ADR 0040: the map is large and this
+        // One hash lookup for everything (ADR 0041: the map is large and this
         // runs at every jump cache miss).
         let threshold = self.hot_threshold;
         let generation = self.inval_gen;
@@ -604,7 +604,7 @@ impl<M> Cache<M> {
     }
 
     /// Maximum steps of the jump cache entry of `pc`, if it is valid for `ctx`.
-    /// The two entries (ways) where `pc` can be: `i` and `i ^ 1` (ADR 0040).
+    /// The two entries (ways) where `pc` can be: `i` and `i ^ 1` (ADR 0041).
     fn jc_ways(&self, pc: u64) -> (usize, usize) {
         let i = ((pc >> 2) & (area::JC_ENTRIES as u64 - 1)) as usize;
         let base = self.at + area::JC as usize;
@@ -621,7 +621,7 @@ impl<M> Cache<M> {
 
     /// Jump cache entry: `pc` → block, valid for `ctx`, in the first way; the
     /// entry it replaces, if for another `pc`, moves to the second (2-way,
-    /// ADR 0040).
+    /// ADR 0041).
     fn install_jc(&self, mem: &mut [u8], pc: u64, ctx: u32, w: u32) {
         let (e, second) = self.jc_ways(pc);
         if state::read_u64(mem, e, 0) != pc {
@@ -773,7 +773,7 @@ impl<M> Host for SysHost<'_, M> {
             return Err(());
         }
         // Checked with the permissions of EL0: an entry of the EL0 tables,
-        // if they belong to the current table bases (ADR 0040).
+        // if they belong to the current table bases (ADR 0041).
         if !unpriv {
             self.fill(mem, va, pa, false, aligned, self.el);
         } else if self.cache.utlb_ok() {
@@ -963,7 +963,7 @@ impl<E: Engine> SysJit<E> {
     /// if it lost count, every entry of its EL whose page is in its half.
     fn flush_group(&mut self, g: usize, writes_only: bool) {
         let at = self.cache.at;
-        // In place: the list keeps its allocation (ADR 0040: with the software
+        // In place: the list keeps its allocation (ADR 0041: with the software
         // PAN's TTBR0 switches followed within the run, this runs at every
         // kernel entry and exit).
         let group = &mut self.cache.groups[g];
@@ -1271,7 +1271,7 @@ impl<E: Engine> SysJit<E> {
     }
 
     /// After a region's MSR TTBR0/TTBR1 (YIELD without unmasked
-    /// interrupts, ADR 0040): the run goes on in the new regime instead of
+    /// interrupts, ADR 0041): the run goes on in the new regime instead of
     /// returning to the machine. Nothing about interrupts changed; the table
     /// bases go from `JitState` into the `Cpu` (the rest stays in
     /// `JitState`) and the contexts and TLB groups follow them, as at the start
@@ -1304,7 +1304,7 @@ impl<E: Engine> SysJit<E> {
         let at = self.cache.at;
         let utlb = el == 1 && self.cache.utlb_ok();
         let m = self.engine.memory();
-        // LDTR/STTR at EL1 through the EL0 tables (ADR 0040).
+        // LDTR/STTR at EL1 through the EL0 tables (ADR 0041).
         state::write_u32(m, at, off::UTLB, utlb as u32);
         // Clock: `steps` of JitState restarts from 0 on every run.
         match time {
@@ -1439,7 +1439,7 @@ impl<E: Engine> SysJit<E> {
         self.cache.stats.wasm_bytes += wasm.len() as u64;
         // Table full or engine full (the browser's code budget, wasmtime's
         // instances per store): first the modules not entered since the last
-        // eviction go (ADR 0040), then, if that is not enough, everything.
+        // eviction go (ADR 0041), then, if that is not enough, everything.
         let mut chunk = self.alloc_chunk();
         if chunk.is_none() && self.evict() {
             chunk = self.alloc_chunk();
@@ -1557,7 +1557,7 @@ impl<E: Engine> SysJit<E> {
         None
     }
 
-    /// The jump cache entries lose their context (new epoch, ADR 0040): every
+    /// The jump cache entries lose their context (new epoch, ADR 0041): every
     /// region entered from now on is looked up by the host at least once and
     /// marks its module, also the ones that never left the jump cache.
     fn refresh_marks(&mut self) {
@@ -1566,7 +1566,7 @@ impl<E: Engine> SysJit<E> {
     }
 
     /// Evicts the modules none of whose regions was entered since the last
-    /// eviction (ADR 0040), or, if all of them were, the older half: their
+    /// eviction (ADR 0041), or, if all of them were, the older half: their
     /// regions leave the cache (they are translated again when hot), the jump
     /// cache entries lose their context, and the engine frees each module
     /// when its last reference goes. The marks of the others are cleared.

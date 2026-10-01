@@ -994,7 +994,7 @@ export class Machine {
    */
   setJit(threshold = 64, batch = 16, { profile = false, names = false } = {}) {
     // Bit 0: instruction classes of the interpreter; bit 1: region functions
-    // named after their guest PC (V8 CPU profiles, ADR 0040).
+    // named after their guest PC (V8 CPU profiles, ADR 0041).
     const flags = (profile ? 1 : 0) | (names ? 2 : 0);
     if (flags) this.#x.vetro_machine_set_jit_with(this.#vm, threshold, batch, flags);
     else this.#x.vetro_machine_set_jit(this.#vm, threshold, batch);

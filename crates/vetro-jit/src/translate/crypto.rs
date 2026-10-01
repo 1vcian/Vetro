@@ -1,4 +1,4 @@
-//! Cryptographic extension in the regions (ADR 0040): AESE/AESD/AESMC/AESIMC,
+//! Cryptographic extension in the regions (ADR 0041): AESE/AESD/AESMC/AESIMC,
 //! PMULL/PMULL2 of 64-bit lanes, SHA1 and SHA256.
 //!
 //! Before, these went through `env.simd` (the interpreter on a scratch CPU,

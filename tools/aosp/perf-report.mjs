@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Where the Android workload's time goes (M4, ADR 0040): digests a V8 CPU
+// Where the Android workload's time goes (M4, ADR 0041): digests a V8 CPU
 // profile of tools/aosp/android-perf.mjs run with --profile (region functions
 // named r<el>_<pc> in the modules' name section) and --samples (guest
 // /proc/kallsyms and executable mappings, instruction-weighted PC samples).

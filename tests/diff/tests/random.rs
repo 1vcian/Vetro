@@ -65,7 +65,7 @@ fn random_fp_fast_paths_match_qemu() {
 }
 
 /// Short programs of cryptographic instructions (AES, SHA1, SHA256, 64-bit
-/// PMULL): interpreter, JIT (rt.cr functions, ADR 0040) and QEMU identical.
+/// PMULL): interpreter, JIT (rt.cr functions, ADR 0041) and QEMU identical.
 #[test]
 fn random_crypto_focused_match_qemu() {
     run_with(

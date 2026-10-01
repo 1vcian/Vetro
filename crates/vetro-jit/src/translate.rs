@@ -572,7 +572,7 @@ pub fn module_with(blocks: &[Region], memory: MemoryImport, names: bool) -> Vec<
     m.import_memory("env", "mem", memory);
     // First the functions (which choose which `rt.fp<k>` to import), then the
     // imports: the runtime functions used, at the indices assigned by the
-    // regions in order of first use (ADR 0026 for the fast paths, ADR 0040 for
+    // regions in order of first use (ADR 0026 for the fast paths, ADR 0041 for
     // all of them: fewer bytes and less work instantiating each module).
     let mut used = Vec::new();
     let funcs: Vec<Func> = blocks.iter().map(|b| function_with(b, &mut used)).collect();
@@ -633,7 +633,7 @@ fn f_cr0() -> u32 {
     F_FP0 + fp::rt_ops().len() as u32
 }
 
-/// LDTR/STTR at EL1 (`rt.ldt_<n>`, `rt.stt_<n>`, ADR 0040), after the
+/// LDTR/STTR at EL1 (`rt.ldt_<n>`, `rt.stt_<n>`, ADR 0041), after the
 /// cryptographic ones.
 fn f_unpriv0() -> u32 {
     f_cr0() + crypto::count()
@@ -857,7 +857,7 @@ pub fn runtime(memory: MemoryImport) -> Vec<u8> {
 
     // ld<el>_<n>(state 0, va 1, pc0 2, steps 3, packed 4) and
     // st<el>_<n>(state 0, va 1, value 2, pc0 3, steps 4, packed 5); the same
-    // for ldt_<n>/stt_<n> (LDTR/STTR at EL1, ADR 0040): the EL0 tables if
+    // for ldt_<n>/stt_<n> (LDTR/STTR at EL1, ADR 0041): the EL0 tables if
     // `JitState::utlb` says they belong to the current table bases, the
     // host with `SIZE_UNPRIV` otherwise (defined last, after the
     // cryptographic functions: `late`).
@@ -1136,7 +1136,7 @@ pub fn runtime(memory: MemoryImport) -> Vec<u8> {
     for k in 0..fp::rt_ops().len() {
         def(&mut m, F_FP0 + k as u32, fp::build(k, simd));
     }
-    // Cryptographic extension (ADR 0040).
+    // Cryptographic extension (ADR 0041).
     for c in crypto::all() {
         def(&mut m, crypto::rt_id(c), crypto::build(c, |o| rt(crypto::rt_id(o))));
     }
@@ -1157,7 +1157,7 @@ pub fn dispatcher(memory: MemoryImport) -> Vec<u8> {
 }
 
 /// Like [`dispatcher`]; with `count` every region call also increments
-/// `JitState::dispatches` (measurements, ADR 0040).
+/// `JitState::dispatches` (measurements, ADR 0041).
 pub fn dispatcher_with(memory: MemoryImport, count: bool) -> Vec<u8> {
     use ValType::*;
     let mut m = Module::new();
@@ -1181,7 +1181,7 @@ pub fn dispatcher_with(memory: MemoryImport, count: bool) -> Vec<u8> {
         f.op(op::I32_OR);
     };
     // Entry of another pc or of another context: the second way (entry
-    // i ^ 1, where the host moves the entry it replaces, ADR 0040), then the
+    // i ^ 1, where the host moves the entry it replaces, ADR 0041), then the
     // host (`env.resolve`), which writes it at i if the block exists;
     // otherwise to the host.
     miss(&mut f);
@@ -3003,7 +3003,7 @@ impl Tx {
                     self.get_x(rt);
                     self.f.i64_store(o);
                     // `exit_detail` = 3: a regime YIELD, which the host follows
-                    // within the run (ADR 0040).
+                    // within the run (ADR 0041).
                     self.f
                         .local_get(L_STATE)
                         .i32_const(crate::state::DETAIL_REGIME as i32)

@@ -1,4 +1,4 @@
-# JIT to WASM: ABI and interfaces (ADR 0012, ADR 0013, ADR 0024, ADR 0026, ADR 0036, ADR 0040)
+# JIT to WASM: ABI and interfaces (ADR 0012, ADR 0013, ADR 0024, ADR 0026, ADR 0036, ADR 0041)
 
 ## Regions
 The unit of translation is the **region** (ADR 0024): the basic blocks of a
@@ -18,7 +18,7 @@ uses that region instead of translating another one.
 ## Generated modules
 A module contains one or more regions. It imports `env.mem` (the linear memory
 with `JitState`) and the **runtime** functions `rt.<name>` (table below)
-that its regions use, in order of first use (ADR 0040; before, all the fixed
+that its regions use, in order of first use (ADR 0041; before, all the fixed
 ones 0..43 came first).
 It exports `b<N>: (state: i32) -> i32` for each region `N`; with
 `SysJitConfig::names` (measurements) the `name` section also names region
@@ -30,7 +30,7 @@ It exports `b<N>: (state: i32) -> i32` for each region `N`; with
 | 1 `FAULT` | an access failed (or, in system mode, the interpreter must do it: MMIO, unaligned SP, unaligned exclusive, Q straddling a page...): `pc` and `steps` are those of the instruction, the registers as after the preceding instructions; the host keeps the details |
 | 2 `STOP` | stop after the current instruction (write to watched code): `pc` is the next one |
 | 3 `SVC` | the region ends with SVC: `pc` points to the instruction (the host executes it with the interpreter). BRK and HVC close the block *before* themselves with `NEXT` |
-| 4 `YIELD` | (system mode) MSR DAIF/DAIFClr unmasked interrupts: `pc` is the next instruction, the host rechecks interrupts before continuing. After MSR TTBR0/TTBR1 the region also writes `exit_detail` = 3: the host follows the new regime (contexts, TLB groups) and goes on within the same run (ADR 0040) |
+| 4 `YIELD` | (system mode) MSR DAIF/DAIFClr unmasked interrupts: `pc` is the next instruction, the host rechecks interrupts before continuing. After MSR TTBR0/TTBR1 the region also writes `exit_detail` = 3: the host follows the new regime (contexts, TLB groups) and goes on within the same run (ADR 0041) |
 
 Every basic block, before starting, checks that `steps + block steps
 <= limit`, otherwise it exits with `NEXT` at its start: the instruction count
@@ -53,8 +53,8 @@ A module compiled once per engine (`Engine::runtime`): it imports
 | `vsync` | `(state)` | if `v_valid` = 0, `env.vsync(state)` |
 | `simd` | `(state, word: i32, x: i64, nzcv: i32) -> i64` | `env.simd` (ADR 0026) |
 | `fp<k>` | `(state, word)` (`-> i32` NZCV for FCMP, `-> i64` for FCVT to an integer; SCVTF/UCVTF: `(state, word, x: i64)`) | FP fast path of the instruction `word` (table in `translate::fp`): writes the result if it is certainly equal to the interpreter's (FPCR = 0, no NaN, no denormals or overflows, IXC already 1 or exact result), otherwise `env.simd` |
-| `cr<k>` | on values (table in `translate::crypto`): `(d: v128, n: v128) -> v128` AESE/AESD/SHA256SU0/SHA1SU1, `(n: v128) -> v128` AESMC/AESIMC, `(x, y, w: v128) -> v128` SHA256H/SHA256H2/SHA256SU1, `(x: v128, y: i32, w: v128) -> v128` SHA1C/SHA1P/SHA1M, `(a: i64, b: i64) -> (i64, i64)` 64-bit PMULL | the cryptographic extension (ADR 0040), bit for bit the interpreter's; the region loads and stores the V registers. Internal (not imported): the S-boxes and the 32-bit carry-less product |
-| `ldt_<n>`, `stt_<n>` | as `ld<el>_<n>`/`st<el>_<n>` | LDTR/STTR at EL1 (ADR 0040): the EL0 software TLB if `JitState::utlb` = 1, otherwise the host with `SIZE_UNPRIV` |
+| `cr<k>` | on values (table in `translate::crypto`): `(d: v128, n: v128) -> v128` AESE/AESD/SHA256SU0/SHA1SU1, `(n: v128) -> v128` AESMC/AESIMC, `(x, y, w: v128) -> v128` SHA256H/SHA256H2/SHA256SU1, `(x: v128, y: i32, w: v128) -> v128` SHA1C/SHA1P/SHA1M, `(a: i64, b: i64) -> (i64, i64)` 64-bit PMULL | the cryptographic extension (ADR 0041), bit for bit the interpreter's; the region loads and stores the V registers. Internal (not imported): the S-boxes and the 32-bit carry-less product |
+| `ldt_<n>`, `stt_<n>` | as `ld<el>_<n>`/`st<el>_<n>` | LDTR/STTR at EL1 (ADR 0041): the EL0 software TLB if `JitState::utlb` = 1, otherwise the host with `SIZE_UNPRIV` |
 
 The slow paths save the instruction's `pc` and `steps` before calling
 the host (the spec wants them saved during `ld`/`st`): for `FAULT` the region
@@ -73,7 +73,7 @@ access not aligned to 16; the host treats it as unaligned (SCTLR_EL1.A,
 Device memory), as the interpreter treats the whole access. `size` with the
 `SIZE_UNPRIV` bit (0x100, system mode, from `rt.ldt_<n>`/`rt.stt_<n>`):
 LDTR/STTR at EL1, checked with the permissions of EL0; after a success the
-host enters the page in the EL0 tables if `utlb` holds (ADR 0040), never in
+host enters the page in the EL0 tables if `utlb` holds (ADR 0041), never in
 the EL1 ones.
 
 ### The dispatcher (system mode)
@@ -90,9 +90,9 @@ returns `NEXT`. It returns the exit code of the last region.
 Regions do not import the table: the engine puts them there
 (`Engine::place`). V8 gives every instance that imports a table its own
 dispatch table as large as that table (still so in Node 22: 5 MiB per
-instance for 2¹⁸ entries, measured for ADR 0040).
+instance for 2¹⁸ entries, measured for ADR 0041).
 
-**Table chunks and eviction** (ADR 0040). A module takes a chunk of `batch`
+**Table chunks and eviction** (ADR 0041). A module takes a chunk of `batch`
 table entries. The host marks a module when it looks up one of its regions
 (`env.resolve`, the start of a run); every 1024 modules the marks are cleared
 with a new epoch (so every region entered is looked up again). When the
@@ -114,7 +114,7 @@ chosen by the host (`state` is the absolute address in the `env.mem` memory):
 | 256 | `pc` | u64 |
 | 264 | `steps` | u64: instructions executed, updated as in the interpreter |
 | 272 | `nzcv` | u32, bits 31:28 like `Cpu::nzcv` (valid if `fk` = 0) |
-| 276 | `exit_detail` | u32: 0 on entry (the host clears it), 1 fault, 2 STOP, 3 YIELD after MSR TTBR0/TTBR1 (ADR 0040) |
+| 276 | `exit_detail` | u32: 0 on entry (the host clears it), 1 fault, 2 STOP, 3 YIELD after MSR TTBR0/TTBR1 (ADR 0041) |
 | 280 | `el` | u32, exception level (0 in user mode) |
 | 284 | `ctx` | u32: jump cache context (system mode) |
 | 288 | `limit` | u64: maximum steps of the run |
@@ -141,7 +141,7 @@ chosen by the host (`state` is the absolute address in the `env.mem` memory):
 | 968 | `time_base` | u64: (system mode) machine instructions at the start of the run: the CNTPCT of an instruction is `counter(time_base + steps + index)` |
 | 976 | `cntvoff` | u64: CNTVCT = CNTPCT - `cntvoff` |
 | 984 | `time_ok` | u32: 1 if `time_base` and `cntvoff` are valid for the run (otherwise MRS of the counter exits) |
-| 988 | `utlb` | u32: (system mode, ADR 0040) 1 if the EL0 software TLB groups were filled under the current table bases: LDTR/STTR at EL1 may use and fill them (written by the host before every dispatcher run) |
+| 988 | `utlb` | u32: (system mode, ADR 0041) 1 if the EL0 software TLB groups were filled under the current table bases: LDTR/STTR at EL1 may use and fill them (written by the host before every dispatcher run) |
 | 992 | `ttbr0`, `ttbr1`, `contextidr` | 3 × u64: (system mode) TTBR0_EL1, TTBR1_EL1, CONTEXTIDR_EL1 (MRS/MSR at EL1; an MSR of a TTBR exits with `YIELD`) |
 | 1016 | — | padding up to 1024 |
 
@@ -260,7 +260,7 @@ pub enum Next { Jit, One, Cold }   // then: JIT, one interpreter step, interpret
 ```
 `SysJitConfig::names` names the region functions (above); lookups remember
 the fetch translation per jump cache context and partial-TLBI generation
-(ADR 0040), so a jump cache miss for a known region does not use the MMU.
+(ADR 0041), so a jump cache miss for a known region does not use the MMU.
 The caller (`Machine::run`) does not call `run` when the interpreter
 would take an interrupt, with PSTATE.IL or with an unaligned PC, and does not
 grant more steps than those up to the next platform event. After
@@ -305,7 +305,7 @@ Translated:
   permissions of EL0), MRS FPCR/FPSR and MSR FPSR (FP enabled), at EL1 MRS
   TTBR0/TTBR1/CONTEXTIDR/MIDR, MSR CONTEXTIDR, MSR TTBR0/TTBR1 (exit with
   `YIELD` after the instruction).
-- ADR 0040: the cryptographic extension (AESE, AESD, AESMC, AESIMC, SHA1C,
+- ADR 0041: the cryptographic extension (AESE, AESD, AESMC, AESIMC, SHA1C,
   SHA1P, SHA1M, SHA1H, SHA1SU0, SHA1SU1, SHA256H, SHA256H2, SHA256SU0,
   SHA256SU1) and 64-bit PMULL/PMULL2 without `env.simd` (`rt.cr<k>`); LDTR/STTR
   at EL1 through the EL0 software TLB.

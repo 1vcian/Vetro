@@ -90,7 +90,7 @@ pub const SIMD_CLASSES: &[(u32, u32, &str)] = &[
     (0xFF3E_0C00, 0x4E28_0800, "crypto aes"),
     (0xFF20_8C00, 0x5E00_0000, "crypto sha 3-reg"),
     (0xFF3E_0C00, 0x5E28_0800, "crypto sha 2-reg"),
-    // PMULL/PMULL2 of 64-bit lanes (GHASH): the JIT's carry-less product (ADR 0040).
+    // PMULL/PMULL2 of 64-bit lanes (GHASH): the JIT's carry-less product (ADR 0041).
     (0xBFE0_FC00, 0x0EE0_E000, "crypto pmull"),
 ];
 

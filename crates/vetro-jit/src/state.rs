@@ -82,7 +82,7 @@ pub struct JitState {
     /// 1 if `time_base` and `cntvoff` are valid for this run; otherwise
     /// MRS CNTPCT/CNTVCT exits and the interpreter does it.
     pub time_ok: u32,
-    /// System mode (ADR 0040): 1 if the EL0 software TLB was filled under the
+    /// System mode (ADR 0041): 1 if the EL0 software TLB was filled under the
     /// current table bases, so LDTR/STTR at EL1 (EL0 permissions) may use it
     /// (written by the host before every dispatcher run).
     pub utlb: u32,
@@ -97,7 +97,7 @@ pub struct JitState {
     pub dispatches: u64,
 }
 
-/// `exit_detail` of a YIELD after MSR TTBR0/TTBR1 (ADR 0040): the host
+/// `exit_detail` of a YIELD after MSR TTBR0/TTBR1 (ADR 0041): the host
 /// follows the new regime within the run (a YIELD after unmasking leaves it 0).
 pub const DETAIL_REGIME: u32 = 3;
 

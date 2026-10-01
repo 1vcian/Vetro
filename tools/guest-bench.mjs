@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// M4 steady-state benchmarks in the guest (ADR 0024, 0026, 0040): boots the
+// M4 steady-state benchmarks in the guest (ADR 0024, 0026, 0041): boots the
 // M3 guest kernel under vetro-wasm in Node (V8) with the JIT, then runs each
 // command twice at the shell prompt and reports the MIPS of the second run
 // (code already compiled). Guest instructions per command are deterministic;

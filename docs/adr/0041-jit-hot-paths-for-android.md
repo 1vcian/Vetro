@@ -1,4 +1,4 @@
-# ADR 0040 — JIT hot paths for Android: crypto, uaccess, regime switches, eviction
+# ADR 0041 — JIT hot paths for Android: crypto, uaccess, regime switches, eviction
 
 - Status: accepted (M4, 2026-09-30). Extends ADR 0013, 0024, 0026, 0036 and
   0038. Measurements: `docs/progress/M4.md` (2026-09-30).

@@ -691,7 +691,7 @@ fn saturating_simd_sets_qc_like_the_interpreter() {
     }
 }
 
-/// The cryptographic extension in the regions (ADR 0040): every AES, SHA1,
+/// The cryptographic extension in the regions (ADR 0041): every AES, SHA1,
 /// SHA256 and 64-bit PMULL form, with random and special registers (zero,
 /// all ones, a register used as both source and destination), must leave the
 /// V registers and FPSR exactly as the interpreter does, without calling
@@ -774,7 +774,7 @@ fn crypto_matches_the_interpreter_without_env_simd() {
 }
 
 /// The widening, narrowing, by-element, halving and saturating-doubling
-/// integer SIMD forms inline (ADR 0040): V registers and FPSR (QC) exactly as
+/// integer SIMD forms inline (ADR 0041): V registers and FPSR (QC) exactly as
 /// the interpreter, for every size and "2" form, with lanes at the limits
 /// (0, 1, the extremes of each width, around the rounding and saturation
 /// points) and random ones, without calling `env.simd`. Registers used as
