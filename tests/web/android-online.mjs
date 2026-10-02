@@ -20,9 +20,17 @@
 //
 // The gateway's per-connection counters here come from the test's own
 // socket wrapper (the gateway itself logs only per-lane totals).
+//
+// The page is served on any free port (VETRO_WEB_PORT, default: chosen by
+// the system, so the test can run next to another one on 8080): the image,
+// the prebuilt snapshot and the catalog come from R2 through a same-origin
+// proxy at /r2/ (the manifest's base_url rewritten to it), so R2's CORS list
+// does not matter.
 // Measurements in target/aosp/online-measurements.json.
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer, request as httpRequest } from 'node:http';
+import { Readable } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { appMounts, serve } from '../../tools/web-serve.mjs';
@@ -79,6 +87,45 @@ function every(ms, fn) {
   };
 }
 
+/**
+ * The app's server (`inner`) behind a front server that also proxies R2 at
+ * /r2/ (GET with Range); returns { url, close }.
+ */
+async function frontServer(inner, port) {
+  const R2 = new URL(DEFAULT_MANIFEST).origin;
+  const server = createServer(async (req, res) => {
+    try {
+      if (req.url.startsWith('/r2/')) {
+        const up = await fetch(`${R2}${req.url.slice(3)}`, { headers: req.headers.range ? { range: req.headers.range } : {} });
+        const headers = { 'Cache-Control': 'no-cache', 'Cross-Origin-Resource-Policy': 'same-origin' };
+        for (const k of ['content-type', 'content-range', 'accept-ranges', 'etag', 'last-modified']) if (up.headers.get(k)) headers[k] = up.headers.get(k);
+        if (req.url.endsWith('/manifest.json') && up.ok) {
+          const j = await up.json();
+          j.base_url = j.base_url.replace(R2, `${front.url}/r2`);
+          const body = Buffer.from(JSON.stringify(j));
+          res.writeHead(200, { ...headers, 'content-length': body.length });
+          return res.end(body);
+        }
+        if (up.headers.get('content-length')) headers['content-length'] = up.headers.get('content-length');
+        res.writeHead(up.status, headers);
+        if (!up.body || req.method === 'HEAD') return res.end();
+        return Readable.fromWeb(up.body).pipe(res);
+      }
+      const p = httpRequest({ host: '127.0.0.1', port: new URL(inner.url).port, path: req.url, method: req.method, headers: req.headers }, (r) => {
+        res.writeHead(r.statusCode, r.headers);
+        r.pipe(res);
+      });
+      p.on('error', () => res.destroy());
+      req.pipe(p);
+    } catch (e) {
+      res.writeHead(502).end(String(e));
+    }
+  });
+  await new Promise((ok) => server.listen(port, '127.0.0.1', ok));
+  const front = { url: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((ok) => { server.close(ok); server.closeAllConnections(); }) };
+  return front;
+}
+
 const toName = (name, after) => conns.filter((c) => c.port === 443 && c.name === name && c.at >= after);
 const shot = async (page, file) => {
   const png = await page.eval("document.getElementById('screen').toDataURL('image/png')");
@@ -89,11 +136,14 @@ run(async () => {
   const chrome = findChrome();
   if (!chrome) throw new Fail('Chrome not found (VETRO_CHROME)');
   mkdirSync(out, { recursive: true });
-  const srv = await serve({ mounts: appMounts(), port: Number(process.env.VETRO_WEB_PORT ?? 8080) });
+  const inner = await serve({ mounts: appMounts(), port: 0 });
+  const srv = await frontServer(inner, Number(process.env.VETRO_WEB_PORT ?? 0));
   const origin = new URL(srv.url).origin;
   const gw = await startGateway({ port: 0, vars: { TOKEN_SECRET: 'a'.repeat(48), ALLOWED_ORIGINS: origin }, connect: counted, resolver, log: (o) => (m.lanes ??= []).push(o) });
-  const manifest = process.env.VETRO_ANDROID_MANIFEST ?? DEFAULT_MANIFEST;
-  const url = `${srv.url}/app/?os=android&autostart=1&manifest=${encodeURIComponent(manifest)}&catalog=${encodeURIComponent(process.env.VETRO_CATALOG ?? CATALOG_URL)}&gateway=${encodeURIComponent(gw.url)}`;
+  const viaProxy = (u) => u.replace(new URL(DEFAULT_MANIFEST).origin, `${srv.url}/r2`);
+  const manifest = viaProxy(process.env.VETRO_ANDROID_MANIFEST ?? DEFAULT_MANIFEST);
+  const catalog = viaProxy(process.env.VETRO_CATALOG ?? CATALOG_URL);
+  const url = `${srv.url}/app/?os=android&autostart=1&manifest=${encodeURIComponent(manifest)}&catalog=${encodeURIComponent(catalog)}&gateway=${encodeURIComponent(gw.url)}`;
   const profile = mkdtempSync(join(tmpdir(), 'vetro-online-chrome-'));
   const { proc, cdp } = await launch(chrome, profile);
   let ok = false;
@@ -178,6 +228,7 @@ run(async () => {
     } catch {}
     await gw.close();
     await srv.close();
+    await inner.close();
     if (ok) rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
     else console.log(`Chrome profile kept: ${profile}`);
   }

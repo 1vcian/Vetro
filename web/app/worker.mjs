@@ -1110,21 +1110,20 @@ function replayEnded(st) {
 let gateway = null;
 
 function startGateway(c) {
-  if (!c.gateway) {
-    status('network: offline (sinkhole)');
-    return;
-  }
-  gateway = new GatewayClient(c.gateway, { onData: () => wake?.() });
+  if (c.gateway) gateway = new GatewayClient(c.gateway, { onData: () => wake?.() });
   goOnline();
-  status(`network: online through ${new URL(c.gateway).host}`);
+  status(gateway ? `network: online through ${new URL(c.gateway).host}` : 'network: offline (sinkhole)');
 }
 
-/** The machine's uplink online, its old gateway connections dropped. */
+/**
+ * The machine's uplink online if there is a gateway, offline otherwise (a
+ * snapshot or a replay may have left it either way), its old gateway
+ * connections dropped.
+ */
 function goOnline() {
-  if (!gateway) return;
-  gateway.reset();
+  gateway?.reset();
   m.relayPush(relayDown());
-  m.relayPush(relayOnline(true));
+  m.relayPush(relayOnline(!!gateway));
 }
 
 /**
