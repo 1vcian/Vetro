@@ -67,6 +67,20 @@ export class JitEngine {
     this.#budget = budget;
   }
 
+  /**
+   * The code budget (bytes). V8's limits on compiled wasm code are per
+   * process (4 GiB of code, and on Linux one memory mapping or more per
+   * module against vm.max_map_count, 65530 by default): with the cores in
+   * parallel, each with its own engine, `Machine.startParallel` splits it.
+   */
+  get budget() {
+    return this.#budget;
+  }
+
+  set budget(b) {
+    this.#budget = b;
+  }
+
   /** To be called right after instantiating vetro-wasm (the imports are needed first). */
   attach(vetroExports) {
     this.#vetro = vetroExports;

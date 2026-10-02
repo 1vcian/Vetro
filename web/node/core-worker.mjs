@@ -4,8 +4,8 @@
 // one agent), running `vetro_core_run` until the cores stop. A browser module
 // Worker or a Node `worker_threads` Worker.
 //
-// Protocol: in { module, memory, core, stackTop, tls, jit, budget } (jit:
-// { threshold, batch } or null) -> out { type: 'ready' }, then once the cores
+// Protocol: in { module, memory, core, stackTop, tls, jit, jitBudget, budget }
+// (jit: { threshold, batch } or null; jitBudget: its engine's code budget) -> out { type: 'ready' }, then once the cores
 // stop (`vetro_parallel_request_stop` or the machine powered off)
 // { type: 'done', stop, executed, jit } or { type: 'error', error }. In
 // { type: 'ping' } at any time -> out { type: 'pong' } from the event loop.
@@ -34,8 +34,8 @@ function turn() {
   });
 }
 
-async function run({ module, memory, core, stackTop, tls, jit, budget }, post) {
-  const engine = new JitEngine();
+async function run({ module, memory, core, stackTop, tls, jit, jitBudget, budget }, post) {
+  const engine = new JitEngine(jitBudget ? { budget: jitBudget } : {});
   let x = null;
   const imports = {
     env: { memory },

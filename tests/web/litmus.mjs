@@ -283,7 +283,10 @@ run(async () => {
         check(m.loadRaw(R, new Uint8Array(new Uint32Array(ATOM).buffer), BigInt(R)), 'program outside RAM');
         check(m.loadRaw(R + 0x800, new Uint8Array(new BigUint64Array([1n << 40n]).buffer)), 'N outside RAM');
         if (jit) m.setJit(1, 1);
+        const total = x.jitEngine.budget;
         await m.startParallel({ jit: jit ? { threshold: 1, batch: 1 } : null });
+        // One code budget per process (V8's limits), split between the two engines.
+        check(x.jitEngine.budget === Math.floor(total / 2), `core 0's JIT budget ${x.jitEngine.budget} with the cores in parallel (total ${total})`);
         // Core 0 starts core 1 (CPU_ON), then both count for hours.
         for (let i = 0; i < 20; i++) m.run(1 << 20);
         const t0 = performance.now();
@@ -291,6 +294,7 @@ run(async () => {
         console.log(`core Worker ping (${tag}): ${answered ? `answered in ${(performance.now() - t0).toFixed(0)} ms` : 'no answer in 10 s'}`);
         check(answered, `the core Worker never returns to its event loop (${tag})`);
         await m.stopParallel();
+        check(x.jitEngine.budget === total, `JIT budget ${x.jitEngine.budget} after the cores stopped, expected ${total}`);
       } finally {
         m.free();
       }

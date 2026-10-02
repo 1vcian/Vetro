@@ -2,7 +2,7 @@
 // the C API of docs/specs/wasm.md. It doesn't use Node APIs: it works in the
 // browser too (the bytes of the .wasm are passed by the caller).
 
-import { JitEngine } from './jit-engine.mjs';
+import { CODE_BUDGET, JitEngine } from './jit-engine.mjs';
 
 export const ABI_VERSION = 15;
 /** Codes of vetro_run. */
@@ -249,7 +249,7 @@ export async function instantiate(wasmBytes, { jitBudget } = {}) {
   const instance = await WebAssembly.instantiate(module, imports);
   // The module goes with the exports: the parallel cores' Workers
   // instantiate it again on the same memory (ADR 0042).
-  exports = memory ? { ...instance.exports, memory, module } : instance.exports;
+  exports = memory ? { ...instance.exports, memory, module, jitEngine: jit } : instance.exports;
   jit.attach(exports);
   const abi = exports.vetro_abi_version();
   if (abi !== ABI_VERSION) throw new Error(`vetro-wasm: API ${abi}, expected ${ABI_VERSION}`);
@@ -1108,6 +1108,13 @@ export class Machine {
     const n = x.vetro_parallel_start(this.#vm);
     if (n === 0) throw new Error(`vetro_parallel_start: ${this.#message()}`);
     const tlsSize = x.__tls_size.value;
+    // One JIT code budget for the process, split between the engines (this
+    // thread's and one per core Worker): V8's limits are per process. With
+    // four cores and a full budget each, Android in Node ran out of memory
+    // mappings within minutes ("Commit wasm code space Allocation failed").
+    const total = x.jitEngine?.budget ?? CODE_BUDGET;
+    const jitBudget = Math.floor(total / (n + 1));
+    if (x.jitEngine) x.jitEngine.budget = jitBudget;
     const workers = [];
     const allocs = [];
     for (let i = 1; i <= n; i++) {
@@ -1116,10 +1123,10 @@ export class Machine {
       const tls = x.vetro_alloc(Math.max(tlsSize, 16)) >>> 0;
       if (!stack || !tls) throw new Error('vetro_alloc failed for a core Worker');
       allocs.push([stack, CORE_STACK], [tls, Math.max(tlsSize, 16)]);
-      workers.push(await spawnCore(workerUrl, { module: x.module, memory: x.memory, core, stackTop: stack + CORE_STACK, tls, jit, budget }));
+      workers.push(await spawnCore(workerUrl, { module: x.module, memory: x.memory, core, stackTop: stack + CORE_STACK, tls, jit, jitBudget, budget }));
     }
     await Promise.all(workers.map((w) => w.ready));
-    this.#par = { workers, allocs };
+    this.#par = { workers, allocs, total };
     return n;
   }
 
@@ -1145,6 +1152,7 @@ export class Machine {
     x.vetro_parallel_stop(this.#vm);
     for (const w of p.workers) w.terminate();
     for (const [ptr, len] of p.allocs) x.vetro_free(ptr, len);
+    if (x.jitEngine) x.jitEngine.budget = p.total;
     this.#par = null;
     return reports;
   }
