@@ -9,7 +9,9 @@
 # the BusyBox sources and the prebuilt Android snapshot lookup. Builds
 # vetro-wasm in release. Layout:
 #
-#   index.html, .nojekyll      landing page (links to app/ and docs/)
+#   index.html, .nojekyll      landing page: one "Launch Vetro" button to app/
+#                              (the zero-choice app starts the phone at once),
+#                              small links to the Linux demo and docs/
 #   app/, node/                web/app and web/node (the app imports ../node/)
 #   docs/                      the user guide, docs/user/*.md as HTML
 #                              (tools/pages/markdown.mjs), with its images
@@ -144,8 +146,7 @@ cat > "$out/index.html" <<'EOF'
   <meta property="og:image" content="app/icons/icon-512.png">
   <style>
     body { font: 16px/1.5 system-ui, sans-serif; max-width: 42rem; margin: 3rem auto; padding: 0 1rem; color: #1b1b1b; background: #fafafa; }
-    a.button { display: inline-block; padding: .6rem 1.2rem; margin: 0 .4rem .4rem 0; background: #1b1b1b; color: #fff; border-radius: .4rem; text-decoration: none; }
-    a.button.secondary { background: #fff; color: #1b1b1b; border: 1px solid #1b1b1b; }
+    a.button { display: inline-block; padding: .9rem 2.2rem; margin: .5rem 0 1rem; background: #1b1b1b; color: #fff; border-radius: .5rem; text-decoration: none; font-size: 1.25rem; font-weight: 600; }
     small { color: #555; }
   </style>
 </head>
@@ -154,17 +155,18 @@ cat > "$out/index.html" <<'EOF'
   <p>A full ARM64 system emulator written in Rust, running in your browser as
   WebAssembly: its own AArch64 CPU (interpreter and JIT to WebAssembly) on a
   copy of QEMU's <code>virt</code> board.</p>
-  <p>This demo boots a small Linux 6.18 guest with a BusyBox shell. Nothing
-  leaves your browser: disk writes and snapshots stay in its private storage
-  (OPFS).</p>
-  <p><a class="button" href="app/?autostart=1&amp;cmdline=console%3DttyAMA0%20vetro.noautotest">Launch the demo</a>
-  <a class="button secondary" href="app/">Open the app</a>
-  <a class="button secondary" href="docs/">User guide</a></p>
-  <p>The app also runs Vetro's own AOSP 15 image with microG: choose it under
-  <em>System</em>. The <a href="docs/">user guide</a> explains the first
-  visit, using the phone, the network inspector, the file manager, record and
-  replay, device profiles and privacy.</p>
-  <p><small>Chrome or Edge desktop recommended.
+  <p>It runs a whole phone system, Vetro's own AOSP 15 image with microG,
+  and lets you watch it from the outside. Nothing to install and nothing to
+  choose: the first visit downloads the phone once (about 0.5 GB), later
+  visits resume it in seconds. Nothing leaves your browser: the phone, its
+  disk and its snapshots stay in the browser's private storage (OPFS).</p>
+  <p><a class="button" href="app/">Launch Vetro</a></p>
+  <p>The <a href="docs/">user guide</a> explains the first visit, using the
+  phone, the network inspector, the file manager, record and replay, device
+  profiles and privacy.</p>
+  <p><small><a class="demo" href="app/?os=linux">Linux demo</a>: a small
+  Linux 6.18 guest with a BusyBox shell, ready in a few seconds.</small></p>
+  <p><small>Desktop Chrome or Edge, with at least 8 GB of memory.
   Source code: <a href="https://github.com/1vcian/Vetro">github.com/1vcian/Vetro</a>
   (PolyForm Noncommercial 1.0.0).
   The guest's Linux kernel and BusyBox are GPL-2.0: <a href="sources/">their

@@ -52,7 +52,7 @@ key stays stuck.
 
 ## The power button
 
-**Power button** under the screen is the phone's side button:
+**Power** under the screen is the phone's side button:
 
 - a short press turns the screen off, and another one turns it back on;
 - a long press (hold it for a second or two) opens the power menu.
@@ -63,8 +63,8 @@ it.
 ## Installing an app (APK)
 
 Drag an `.apk` file from your computer and drop it **on the phone screen**
-or on the dashed box in the phone panel. You can also click **choose it**
-and pick the file.
+or on the dashed box in the Apps panel next to it. You can also click
+**choose it** and pick the file.
 
 Vetro then:
 
@@ -72,7 +72,7 @@ Vetro then:
 2. opens the app's main screen;
 3. saves the machine, so the app is still there at your next visit.
 
-The panel shows each step, and how long it took. Installing needs the adb
+The line under the drop box shows each step, and how long it took. Installing needs the adb
 connection, which is ready shortly after the home screen: if you drop an APK
 earlier, it waits for it.
 
@@ -90,8 +90,8 @@ Things to know:
 
 ## The adb line
 
-Under the drop box there is a command line connected to the phone's adb
-shell. Type a command and press **Run** (or Enter): the output appears
+Under **Tools** (the small toggle below the screen) there is a command line
+connected to the phone's adb shell. Type a command and press **Run** (or Enter): the output appears
 below it, with the exit code when it is not zero. The shell runs as the
 `shell` user; this is a development (userdebug) build, so `su 0 <command>`
 runs a command as root.
@@ -111,11 +111,11 @@ settings put system screen_brightness 200 # change a setting
 The line runs `adb shell` commands only: there is no `adb push` or
 `adb pull` here. To move files, use the [file manager](file-manager.md).
 
-![The phone panel: adb connected, the drop box and the adb line](images/adb.jpg)
+![Tools: the boot phases, adb connected and the adb line](images/adb.jpg)
 
 ## The serial console
 
-The black box across the page is the system's serial console. It shows the
+The black box under **Tools** is the system's serial console. It shows the
 kernel and system log, and it is also a shell (as the `shell` user, like the
 adb line): click it, type a command, then Enter. The adb line is usually more
 convenient, because its output is not mixed with the log.

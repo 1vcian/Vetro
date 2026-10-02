@@ -30,9 +30,20 @@
 //   5. third session: resumes from the snapshot instead of booting the kernel
 //      (time measured), the console answers, the write is there, the file
 //      manager reconnects to the snapshot's daemon.
-//   6. the AOSP image selector (`?os=android`, not started): the default
-//      version (ANDROID_VERSIONS[0]) in the manifest field, the previous one
-//      selectable, "other" for a typed URL.
+//   6. the AOSP image selector (`?advanced=1`, the setup form, not started):
+//      the default system is AOSP, the default version (ANDROID_VERSIONS[0])
+//      in the manifest field, the previous one selectable, "other" for a
+//      typed URL;
+//   7. the zero-choice default page (`app/`, M10): no setup form, the phone
+//      starts by itself (here with a manifest that does not exist), the
+//      screen, the Power button and the APK drop visible, the developer
+//      panels (console included) under a closed "Tools" toggle, no
+//      browser notice in Chrome, and the failure said on the progress line;
+//   8. the same page in a browser without WebAssembly SIMD (stood in for by
+//      a `WebAssembly.validate` that says no): the notice says Vetro cannot
+//      run here, and nothing starts.
+//
+// Sessions 1-5 run the Linux demo (`?os=linux`).
 //
 // Chrome: VETRO_CHROME, otherwise the usual paths. Without Chrome the test
 // says SKIP (it is not a passed test) and exits with 0, or with 1 if
@@ -95,7 +106,7 @@ run(async () => {
   const profile = mkdtempSync(join(tmpdir(), 'vetro-chrome-'));
   const { proc, cdp } = await launch(chrome, profile);
   try {
-    const q = new URLSearchParams({ disk: '/disks/test.img', cmdline: 'console=ttyAMA0 vetro.noautotest', autostart: '1' });
+    const q = new URLSearchParams({ os: 'linux', disk: '/disks/test.img', cmdline: 'console=ttyAMA0 vetro.noautotest', autostart: '1' });
     const url = `${srv.url}/app/?${q}`;
     let t0 = Date.now();
     let { page, targetId } = await openPage(cdp, url);
@@ -281,10 +292,12 @@ run(async () => {
       `Range requests ${ranges.length - before3}`);
     // 6. The AOSP image selector (the machine is not started).
     await cdp.send('Target.closeTarget', { targetId });
-    ({ page, targetId } = await openPage(cdp, `${srv.url}/app/?os=android`));
+    ({ page, targetId } = await openPage(cdp, `${srv.url}/app/?advanced=1`));
     const SELECTOR = `(() => { const f = document.getElementById('setup')?.elements;
-      return f?.androidVersion?.options.length > 1 && { version: f.androidVersion.value, manifest: f.manifestUrl.value, options: [...f.androidVersion.options].map((o) => o.value) }; })()`;
+      return f?.androidVersion?.options.length > 1 && { version: f.androidVersion.value, manifest: f.manifestUrl.value, options: [...f.androidVersion.options].map((o) => o.value),
+        os: f.os.value, form: !document.getElementById('setup').hidden, machine: !document.getElementById('machine').hidden }; })()`;
     const sel = await page.waitFor('AOSP version selector', () => page.eval(SELECTOR), 30_000);
+    check(sel.form && !sel.machine && sel.os === 'android', `?advanced=1: the form, AOSP by default, nothing started: ${JSON.stringify(sel)}`);
     check(sel.manifest === DEFAULT_MANIFEST && sel.version === DEFAULT_MANIFEST, `default image: ${JSON.stringify(sel)}`);
     check(JSON.stringify(sel.options) === JSON.stringify([...ANDROID_VERSIONS.map((v) => v.manifest), '']), `versions offered: ${JSON.stringify(sel.options)}`);
     const pick = (value) => page.eval(`(() => { const f = document.getElementById('setup').elements; f.androidVersion.value = ${JSON.stringify(value)};
@@ -295,6 +308,52 @@ run(async () => {
       f.manifestUrl.dispatchEvent(new Event('change')); return f.androidVersion.value; })()`);
     check(typed === '', `a typed URL selects "other": ${JSON.stringify(typed)}`);
     console.log(`AOSP image selector: default ${ANDROID_VERSIONS[0].version}, ${ANDROID_VERSIONS.length} versions offered`);
+
+    // 7. The zero-choice default page: nothing to choose, the phone starts.
+    await cdp.send('Target.closeTarget', { targetId });
+    ({ page, targetId } = await openPage(cdp, `${srv.url}/app/?manifest=/aosp-missing/manifest.json&catalog=/catalog-missing.json`));
+    const PAGE = `(() => {
+      const $ = (id) => document.getElementById(id);
+      // Rendered: not hidden, not under a hidden parent or a closed <details>.
+      const shown = (id) => $(id)?.checkVisibility() ?? false;
+      return { form: shown('setup'), machine: shown('machine'), screen: shown('screen'), power: shown('power'), drop: shown('apk-drop'),
+        tools: $('tools').open, toolsShown: shown('tools'), console: shown('console'), consoleInTools: !!$('console').closest('#tools'),
+        analysis: shown('analysis-box'), forget: shown('forget'), status: shown('status'), progress: $('progress-text').textContent,
+        kind: $('progress-line').dataset.kind, unsupported: shown('unsupported'), support: window.vetroState?.support ?? null,
+        android: window.vetroAndroid ? true : false };
+    })()`;
+    const zc = await page.waitFor('the failure on the progress line', async () => {
+      const r = await page.eval(PAGE);
+      return r.kind === 'error' ? r : null;
+    }, 60_000).catch(async (e) => {
+      throw new Fail(`${e.message}: ${JSON.stringify(await page.eval(PAGE))}`);
+    });
+    check(!zc.form && zc.machine && zc.screen && zc.power && zc.drop, `default page: the phone and its controls, no form: ${JSON.stringify(zc)}`);
+    check(!zc.tools && zc.toolsShown && !zc.analysis && !zc.forget && !zc.console && zc.consoleInTools && !zc.status,
+      `default page: the developer panels under a closed Tools toggle: ${JSON.stringify(zc)}`);
+    check(JSON.stringify(zc.support) === '[]' && !zc.unsupported, `headless Chrome: no browser notice expected: ${JSON.stringify(zc.support)}`);
+    check(zc.progress.includes('aosp-missing') && zc.progress.includes('Reload'), `the failure on the progress line: ${zc.progress}`);
+    // The Tools toggle opens the panels.
+    await page.eval("document.querySelector('#tools > summary').click()");
+    const opened = await page.eval(PAGE);
+    check(opened.tools && opened.analysis && opened.forget && opened.console, `Tools opened: ${JSON.stringify(opened)}`);
+    console.log(`zero-choice page: started by itself, Tools closed, the error on the progress line: "${zc.progress}"`);
+
+    // 8. A browser without WebAssembly SIMD: a notice, nothing started.
+    await cdp.send('Target.closeTarget', { targetId });
+    ({ page, targetId } = await openPage(cdp, `${srv.url}/app/?catalog=/catalog-missing.json`, { before: 'WebAssembly.validate = () => false;' }));
+    const noSimd = await page.waitFor('the notice without SIMD', () => page.eval(`(() => {
+      const $ = (id) => document.getElementById(id);
+      return window.vetroState?.support && { support: window.vetroState.support.map((i) => i.id + (i.fatal ? '!' : '')), notice: $('unsupported').checkVisibility(),
+        text: $('unsupported').textContent.replace(/\\s+/g, ' ').trim(), machine: $('machine').checkVisibility(), boot: window.vetroState.boot,
+        progress: $('progress-text').textContent, kind: $('progress-line').dataset.kind };
+    })()`), 30_000);
+    check(JSON.stringify(noSimd.support) === '["simd!"]' && noSimd.notice && noSimd.text.includes('cannot run Vetro') && noSimd.text.includes('SIMD'),
+      `without SIMD: the notice: ${JSON.stringify(noSimd)}`);
+    await new Promise((ok) => setTimeout(ok, 2000));
+    const after = await page.eval("({ machine: document.getElementById('machine').checkVisibility(), boot: window.vetroState.boot, stats: window.vetroState.stats ?? null })");
+    check(!after.machine && after.boot === null && after.stats === null && noSimd.kind === 'error', `without SIMD nothing starts: ${JSON.stringify({ ...noSimd, ...after })}`);
+    console.log(`browser without SIMD: "${noSimd.text}", nothing started`);
     console.log('app in the browser: ok');
   } finally {
     await srv.close();

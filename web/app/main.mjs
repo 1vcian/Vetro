@@ -1,11 +1,21 @@
-// The Vetro page: picks kernel, initramfs and disk, starts the machine
-// in the Worker (worker.mjs), shows the virtio-gpu scanout and the cursor,
-// the serial console, and sends keyboard, mouse/touch and the power button
-// to the guest. No bundler and no dependencies: ES modules served as they
-// are (tools/web-serve.mjs).
+// The Vetro page: starts the machine in the Worker (worker.mjs), shows the
+// virtio-gpu scanout and the cursor, the serial console, and sends keyboard,
+// mouse/touch and the power button to the guest. No bundler and no
+// dependencies: ES modules served as they are (tools/web-serve.mjs).
 //
-// URL parameters to prefill and optionally start:
-//   ?kernel=URL&initrd=URL&disk=URL&cmdline=...&pointer=multitouch&webgpu=1&autostart=1
+// Zero-choice start (M10, launch.mjs): `app/` asks nothing. It starts Vetro's
+// AOSP image at once with the defaults (the default image, the light device
+// profile, the prebuilt snapshot or the one saved in OPFS) and shows only the
+// screen, one progress line (`#progress-text`), the Power button, the Apps
+// panel and the APK drop; everything else (boot phases, adb, console, file
+// manager, analysis tabs, Save state, Delete saved data) is under the
+// "Tools" toggle, closed. `?os=linux` starts the Linux demo the same way.
+// `?advanced=1` shows the setup form with every option (and the Tools open)
+// and starts only with `&autostart=1`. A browser that cannot run Vetro gets
+// a notice instead of a silent failure (`#unsupported`, `vetroState.support`).
+//
+// URL parameters, in both modes:
+//   ?os=linux|android&kernel=URL&initrd=URL&disk=URL&cmdline=...&pointer=multitouch&webgpu=1
 //   &snapshot=0 (no snapshot cache) &persist=0 (non-persistent disks)
 //   &files=/tmp,/root (file manager roots) &nofiles=1 (no file manager)
 //
@@ -25,13 +35,13 @@
 // disk overlay in OPFS; at the second boot it resumes from the snapshot.
 // The state can also be read from `window.vetroState` (for browser tests).
 //
-// Vetro's AOSP image (M5/M6, ADR 0028): `?os=android` (or the "System"
+// Vetro's AOSP image (M5/M6, ADR 0028): the default (or the "System"
 // selector) and `&manifest=URL` (default: the newest version published on R2,
 // the others offered in the field, ANDROID_VERSIONS). The
-// panel next to the screen shows the boot phases read from the console and
-// the home screen, the adb status and the place to drop an APK (also on the
-// screen), which the Worker installs with the ADB client and opens; an
-// `adb shell` line. `window.vetroAndroid` for tests. The first start
+// panel next to the screen has the Apps catalog and the place to drop an APK
+// (also on the screen), which the Worker installs with the ADB client and
+// opens; under Tools, the boot phases read from the console and the home
+// screen, the adb status and an `adb shell` line. `window.vetroAndroid` for tests. The first start
 // downloads the prebuilt snapshot at the home screen (ADR 0031) with a
 // progress bar; `&cold=1` (or the "cold boot" box) boots from scratch.
 //
@@ -59,6 +69,7 @@ import { AnalysisPanels } from './analysis.mjs';
 import { ANDROID_MACHINE, ANDROID_VERSIONS, DEFAULT_MANIFEST, PHASES } from '../node/android.mjs';
 import { CatalogPanel } from './catalog.mjs';
 import { CATALOG_URL } from '../node/catalog.mjs';
+import { browserIssues, launchPlan, probeBrowser } from './launch.mjs';
 import { DEFAULT_PROFILE, parseProfile, PREBUILT_PROFILES, profileAdbCommands, profileBootParams, profileUrl, STARTER_PROFILES } from '../node/profiles.mjs';
 
 const $ = (id) => document.getElementById(id);
@@ -130,6 +141,23 @@ const setStatus = (t) => {
   statusEl.textContent = t;
   statusEl.title = t;
 };
+
+/**
+ * The one line the user reads (zero-choice page): what the machine is doing,
+ * in plain words. `fraction`: a number for a progress bar, null for a busy
+ * bar, undefined for no bar; `kind` 'error' colours it.
+ */
+function progress(text, fraction = undefined, kind = '') {
+  const bar = $('progress-bar');
+  $('progress-text').textContent = text;
+  $('progress-line').dataset.kind = kind;
+  bar.hidden = fraction === undefined;
+  if (fraction === null) bar.removeAttribute('value');
+  else if (fraction !== undefined) bar.value = fraction;
+  vetroState.progress = text;
+  // The screen's "starting" note must not outlive a failure.
+  if (kind === 'error') $('screen-android').textContent = 'Vetro stopped: the line at the top of the page says why.';
+}
 
 const panels = new AnalysisPanels({ post: (msg, transfer = []) => worker?.postMessage(msg, transfer), setStatus });
 
@@ -641,6 +669,7 @@ function onPrebuilt(msg) {
   switch (msg.state) {
     case 'missing':
       $('boot-info').textContent = `No ready-made snapshot for this version of Vetro and of the image (${msg.reason}): cold boot, about 45 minutes before the home screen.`;
+      progress('Starting the phone from scratch: the first start takes about 45 minutes, later ones a few seconds…', null);
       break;
     case 'downloading': {
       box.hidden = false;
@@ -648,22 +677,27 @@ function onPrebuilt(msg) {
         bar.removeAttribute('value');
         text.textContent = `Downloading ${mibText(msg.size)}${msg.resumedFrom ? ` (resuming at ${mibText(msg.resumedFrom)})` : ''}…`;
         setStatus(text.textContent);
+        progress(`Downloading the phone (${mibText(msg.size)}, only this once)…`, null);
         break;
       }
       bar.value = msg.loaded / msg.total;
       const rate = (msg.loaded - msg.resumedFrom) / Math.max(msg.ms, 1) * 1000;
       text.textContent = `${mibText(msg.loaded)} of ${mibText(msg.total)} · ${(rate / 1e6).toFixed(1)} MB/s` +
         (rate > 0 ? ` · about ${etaText(msg.total - msg.loaded, rate)} left` : '') + (msg.resumedFrom ? ` · resumed at ${mibText(msg.resumedFrom)}` : '');
+      progress(`Downloading the phone: ${mibText(msg.loaded)} of ${mibText(msg.total)}` +
+        (rate > 0 ? `, about ${etaText(msg.total - msg.loaded, rate)} left` : '') + ' (only this once)', msg.loaded / msg.total);
       break;
     }
     case 'done':
       bar.value = 1;
       text.textContent = `Downloaded and verified: ${mibText(msg.size)} in ${(msg.ms / 1000).toFixed(0)} s${msg.retries ? ` (${msg.retries} retries)` : ''}. Restoring…`;
       setStatus(text.textContent);
+      progress('Downloaded. Starting the phone…', null);
       break;
     case 'failed':
       box.hidden = false;
       text.textContent = `Download interrupted: ${msg.error}. Reload the page to resume it.`;
+      progress(`The download stopped (${msg.error}). Reload the page to resume it.`, undefined, 'error');
       break;
   }
 }
@@ -680,12 +714,17 @@ function onAndroidMessage(msg) {
         androidState.home = { guestSecs: msg.guestSecs, wallMs: msg.wallMs, activity: msg.detail, colors: msg.colors, focusGuestSecs: msg.focusGuestSecs };
         $('boot-info').textContent += ` · home screen at ${msg.guestSecs.toFixed(0)} s of guest time, ${(msg.wallMs / 60000).toFixed(1)} min wall`;
         setStatus('home screen up: the state is saved shortly (the next start resumes from here)');
-      } else if (msg.phase !== 'booted') setStatus(`boot: ${msg.label} (${msg.guestSecs.toFixed(0)} s of guest time)`);
+        progress('Ready');
+      } else if (msg.phase !== 'booted') {
+        setStatus(`boot: ${msg.label} (${msg.guestSecs.toFixed(0)} s of guest time)`);
+        progress(`Starting the phone from scratch (about 45 minutes the first time): ${msg.label}…`, null);
+      }
       return true;
     case 'booted':
       androidState.booted = { guestSecs: msg.guestSecs, wallMs: msg.wallMs };
       $('boot-info').textContent = `boot finished at ${msg.guestSecs.toFixed(0)} s of guest time, ${(msg.wallMs / 60000).toFixed(1)} min wall`;
       setStatus('boot finished: waiting for the home screen ("Vetro is starting…" comes first)');
+      progress('Almost ready: waiting for the home screen…', null);
       return true;
     case 'adb-status': {
       const wasReady = androidState.adb.state === 'ready';
@@ -837,8 +876,14 @@ async function start() {
   $('machine').hidden = false;
   $('files-box').hidden = !config.files;
   $('android-box').hidden = !android;
+  $('android-dev').hidden = !android;
   $('screen-demo').hidden = android;
+  $('screen-linux').hidden = android;
   $('screen-android').hidden = !android;
+  // With the phone the serial console is a developer's log: under Tools.
+  // The Linux demo's shell is the console: it stays next to the screen.
+  if (android) $('tools-body').prepend($('console-box'));
+  progress(android ? 'Starting the phone…' : 'Starting Linux…', null);
   if (android) {
     renderPhases();
     loadCatalogPanel(config.android.manifest, new URL(q.get('catalog') || CATALOG_URL, location.href).href);
@@ -910,6 +955,7 @@ async function start() {
         const t = msg.times;
         setStatus(`restored from the snapshot of ${new Date(msg.savedAt).toLocaleString()} (${(msg.size / 2 ** 20).toFixed(1)} MiB, ` +
           `restore ${t.restore.toFixed(0)} ms, ready in ${(vetroState.boot.ms / 1000).toFixed(2)} s)`);
+        progress(android ? 'Ready' : 'Ready: the shell is in the console');
         break;
       }
       case 'cold':
@@ -944,38 +990,82 @@ async function start() {
         break;
       }
       case 'started':
+        if (!msg.restored && !android) progress('Ready: the shell is in the console');
         if (!msg.restored) setStatus(`running (${renderer.name}, ${config.jit ? 'JIT' : 'interpreter'}${crossOriginIsolated ? ', isolated' : ''}${config.wasmUrl.includes('_threads') ? ', threads build' : ''}${config.cpus > 1 ? `, ${config.cpus} cores` : ''})`);
         consoleEl.focus();
         break;
       case 'stopped':
         vetroState.stopped = msg;
         setStatus(`machine stopped: ${msg.reason} after ${msg.steps} instructions`);
+        progress(`Vetro stopped (${msg.reason}). Reload the page to start it again.`, undefined, 'error');
         break;
       case 'error':
         setStatus(`error: ${msg.text.split('\n')[0]}`);
+        progress(`Something went wrong: ${msg.text.split('\n')[0]}. Reload the page to try again.`, undefined, 'error');
         console.error(msg.text);
         break;
     }
   };
-  worker.onerror = (e) => setStatus(`error in the Worker: ${e.message}`);
+  worker.onerror = (e) => {
+    setStatus(`error in the Worker: ${e.message}`);
+    progress(`Something went wrong: ${e.message}. Reload the page to try again.`, undefined, 'error');
+  };
   worker.postMessage({ type: 'start', config });
 }
 
 $('save').addEventListener('click', () => send({ type: 'save' }));
 
-// Deletes snapshots, overlays and the block cache (only with the machine
-// off: the Worker keeps the files open).
-$('forget').addEventListener('click', async () => {
-  try {
-    const root = await navigator.storage.getDirectory();
-    for (const name of ['vetro-snapshots', 'vetro-overlays', 'vetro-disks', 'vetro-recordings']) {
-      await root.removeEntry(name, { recursive: true }).catch((e) => {
-        if (e.name !== 'NotFoundError') throw e;
-      });
+/** The OPFS folders of the saved data (snapshots, disk overlays, block cache, recordings). */
+const SAVED_DATA = ['vetro-snapshots', 'vetro-overlays', 'vetro-disks', 'vetro-recordings'];
+
+/**
+ * Deletes the saved data. The Worker keeps those files open, so the machine
+ * is stopped first; a file still held right after the stop is retried.
+ */
+async function forgetSavedData() {
+  if (worker) {
+    worker.terminate();
+    worker = null;
+    vetroState.stopped = { reason: 'saved data deleted' };
+  }
+  const root = await navigator.storage.getDirectory();
+  for (const name of SAVED_DATA) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await root.removeEntry(name, { recursive: true });
+        break;
+      } catch (e) {
+        if (e.name === 'NotFoundError') break;
+        if (attempt >= 20) throw e;
+        await new Promise((ok) => setTimeout(ok, 100));
+      }
     }
+  }
+}
+
+// Under Tools; the first click asks for a second one (the viewer has no
+// confirm dialogs, and this cannot be undone).
+let forgetArmed = null;
+$('forget').addEventListener('click', async () => {
+  const button = $('forget');
+  if (!forgetArmed) {
+    button.textContent = 'Click again to delete everything saved';
+    forgetArmed = setTimeout(() => {
+      forgetArmed = null;
+      button.textContent = 'Delete saved data';
+    }, 5000);
+    return;
+  }
+  clearTimeout(forgetArmed);
+  forgetArmed = null;
+  button.textContent = 'Delete saved data';
+  try {
+    await forgetSavedData();
     setStatus('saved data deleted (snapshots, persistent disks, block cache, recordings)');
+    progress('Saved data deleted. Reload the page to start again from the beginning.');
   } catch (e) {
     setStatus(`deletion failed: ${e.message ?? e}`);
+    progress(`The saved data could not be deleted: ${e.message ?? e}`, undefined, 'error');
   }
 });
 
@@ -984,13 +1074,16 @@ form.addEventListener('submit', (e) => {
   start().catch((err) => setStatus(`error: ${err.message ?? err}`));
 });
 
-// URL parameters.
+// URL parameters and the launch plan (launch.mjs).
 const q = new URLSearchParams(location.search);
+const plan = launchPlan(q);
+document.body.dataset.mode = plan.advanced ? 'advanced' : 'simple';
+form.hidden = !plan.advanced;
+$('tools').open = plan.advanced;
+form.elements.os.value = plan.os;
+showOs();
+if (plan.cmdline) form.elements.cmdline.value = plan.cmdline;
 const profilesLoaded = loadProfiles(q.get('profile'));
-if (q.get('os') === 'android') {
-  form.elements.os.value = 'android';
-  showOs();
-}
 if (q.has('manifest')) {
   form.elements.manifestUrl.value = q.get('manifest');
   syncVersion();
@@ -1013,4 +1106,25 @@ if (q.has('files')) {
   pendingRoots = q.get('files').split(',').map((s) => s.trim()).filter(Boolean);
   rootsFromUrl = true;
 }
-if (q.get('autostart') === '1') start().catch((err) => setStatus(`error: ${err.message ?? err}`));
+
+/** Shows what this browser lacks (`browserIssues`); true if the machine cannot run here at all. */
+function showSupport(issues) {
+  vetroState.support = issues;
+  const box = $('unsupported');
+  box.hidden = issues.length === 0;
+  if (!issues.length) return false;
+  const fatal = issues.some((i) => i.fatal);
+  box.dataset.kind = fatal ? 'error' : 'warning';
+  $('unsupported-title').textContent = fatal ? 'This browser cannot run Vetro' : 'This browser may not run Vetro well';
+  $('unsupported-list').replaceChildren(...issues.map((i) => Object.assign(document.createElement('li'), { textContent: i.text })));
+  return fatal;
+}
+
+const blocked = showSupport(browserIssues(probeBrowser(), plan.os));
+if (blocked) progress('Vetro cannot run in this browser: see the notice below. Use a recent desktop Chrome or Edge.', undefined, 'error');
+else if (plan.autostart) {
+  start().catch((err) => {
+    setStatus(`error: ${err.message ?? err}`);
+    progress(`Something went wrong: ${err.message ?? err}. Reload the page to try again.`, undefined, 'error');
+  });
+} else progress('Choose the options, then Start.');

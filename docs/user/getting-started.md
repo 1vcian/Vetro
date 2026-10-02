@@ -13,21 +13,19 @@
 
 Phones and tablets cannot run Vetro yet: it needs a desktop browser.
 
+If the browser cannot run Vetro (it lacks WebAssembly SIMD, for example), or
+may not run it well (another browser, a phone, too little memory), the page
+says so in a box above the screen instead of failing silently.
+
 ## Open the site
 
-1. Go to [1vcian.github.io/Vetro](https://1vcian.github.io/Vetro/) and click
-   **Open the app** (or **Launch the demo** for the small Linux test
-   system).
-2. Under **System**, choose **Vetro's AOSP 15**.
-3. Leave the **Device profile** on **Default (landscape)** for the fastest
-   start (other profiles are explained in
-   [Device profiles](device-profiles.md)).
-4. Click **Start**.
+Go to [1vcian.github.io/Vetro](https://1vcian.github.io/Vetro/) and click
+**Launch Vetro**. That is all: there is nothing to choose. The phone starts
+by itself, with the settings that suit most people (the current system
+image, the light landscape screen, one processor core).
 
-A shortcut that does all of this in one step:
-`https://1vcian.github.io/Vetro/app/?os=android&autostart=1`.
-
-![The setup form with the device profile menu](images/setup.jpg)
+The app's own address, [1vcian.github.io/Vetro/app/](https://1vcian.github.io/Vetro/app/),
+does the same: bookmark it to go straight to the phone.
 
 ## The first visit
 
@@ -36,9 +34,9 @@ processor, so Vetro does not make you wait for it. Instead, the first start
 downloads a **ready-made snapshot**: the whole machine saved at the home
 screen, about 0.5 GB.
 
-- A progress bar shows how much is left, the speed and an estimate of the
-  time. On a fast connection the download takes well under a minute; at
-  6 MB/s it takes a couple of minutes.
+- One line at the top of the page says what is happening: how much of the
+  download is done (for example "Downloading the phone: 120 MiB of 512 MiB,
+  about 30 s left"), then "Starting the phone…", then **Ready**.
 - Every piece is checked (SHA-256) before it is written, so a damaged
   download is never used.
 - If the download stops (a closed tab, a lost connection), reload the page:
@@ -59,32 +57,59 @@ and you find the phone as you left it at the last save: installed apps,
 settings and files included.
 
 Vetro saves the machine by itself at the home screen and after you install
-an app, and you can save at any moment with **Save state** under the screen.
-See [Snapshots and saved data](snapshots-and-data.md).
+an app. See [Snapshots and saved data](snapshots-and-data.md).
 
-## The screen, the panels and the console
+## The page
 
-Once the machine runs, the page has:
+The page shows only what you need to use the phone:
 
-- **the phone screen** on the left, with the **Power button** and
-  **Save state** buttons below it;
-- **the phone panel**: the download and boot progress, the adb connection,
-  the place to drop an APK, and an adb command line
+- **the phone screen**, with the **Power** button below it
   ([Using the phone](using-the-phone.md));
-- **Guest files**: the [file manager](file-manager.md);
+- **the Apps panel** next to it: suggested apps to install with one click,
+  and the box where you can drop an APK file (you can also drop it on the
+  screen);
+- **the progress line** at the top.
+
+Everything else is under **Tools**, a small toggle below the screen, closed
+until you open it:
+
+- **Save state** and **Delete saved data**
+  ([Snapshots and saved data](snapshots-and-data.md));
+- the boot phases, the adb connection and an adb command line
+  ([Using the phone](using-the-phone.md#the-adb-line));
 - **the console**: the system's log, as a serial cable would show it;
-- **the analysis tabs** at the bottom: **Network**, **Timeline** and
-  **Recording** ([Network inspector and timeline](network-and-timeline.md),
+- **Guest files**: the [file manager](file-manager.md);
+- **the analysis tabs**: **Network**, **Timeline** and **Recording**
+  ([Network inspector and timeline](network-and-timeline.md),
   [Record and replay](record-and-replay.md)).
 
 ![The page with the phone at the home screen](images/home.jpg)
 
-## Starting from scratch instead (advanced)
+## The Linux demo
 
-Tick **cold boot** in the setup form to boot the system from nothing instead
-of downloading the snapshot. It downloads only the boot images (about
-136 MiB) and the disk pieces the system reads, but the boot takes about 45
-minutes before the home screen. The boot panel shows each phase as it
-happens (kernel, init, zygote, graphics, system_server, boot finished,
-home screen). When the home screen is up, Vetro saves the machine, and later
-visits resume from there as usual.
+The landing page also links a small **Linux demo**
+([app/?os=linux](https://1vcian.github.io/Vetro/app/?os=linux)): a Linux 6.18
+system with a BusyBox shell, ready in a few seconds. Its shell is the
+console next to the screen: click it and type commands.
+
+## For developers: every option
+
+Adding `?advanced=1` to the app's address shows the full setup form, with
+every option the defaults hide: the system (AOSP or the Linux demo), the
+image version or any `manifest.json`, the [device profile](device-profiles.md),
+**cold boot** instead of the ready-made snapshot, full animations and blurs,
+RAM, screen size, cores, JIT, network, storage options and, for Linux, the
+kernel, initramfs, disk and command line. Tools are open in this mode, and
+nothing starts until you click **Start**.
+
+The same options work as address parameters on the normal page, which then
+starts by itself with them, for example `?profile=phone`, `?cold=1`,
+`?cpus=2`, `?gpu=webgl` or `?graphics=full`.
+
+A **cold boot** boots the system from nothing instead of downloading the
+snapshot. It downloads only the boot images (about 136 MiB) and the disk
+pieces the system reads, but it takes about 45 minutes before the home
+screen. The boot phases under Tools show each one as it happens (kernel,
+init, zygote, graphics, system_server, boot finished, home screen). When the
+home screen is up, Vetro saves the machine, and later visits resume from
+there as usual.

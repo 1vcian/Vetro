@@ -2,8 +2,8 @@
 
 Everything the phone sends and receives passes through Vetro's own network
 card, so Vetro sees it without installing anything in the phone and without
-the apps being able to notice. The **Network** and **Timeline** tabs at the
-bottom of the page show it.
+the apps being able to notice. The **Network** and **Timeline** tabs show
+it: open **Tools**, the small toggle below the phone screen, to see them.
 
 ## What the phone's network is
 

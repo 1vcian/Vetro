@@ -11,13 +11,14 @@ replayed later to get the identical run. You can also stop a replay at any
 instruction and look at the processor's registers and memory at that
 moment.
 
-The **Recording** tab at the bottom of the page does all of this.
+The **Recording** tab, under **Tools** below the phone screen, does all of
+this.
 
 ![The Recording tab](images/tab-replay.jpg)
 
 ## Recording
 
-1. Open the **Recording** tab and click **Record**.
+1. Open **Tools**, then the **Recording** tab, and click **Record**.
 2. Use the phone as usual.
 3. Click **Stop** (the same button).
 
@@ -75,5 +76,5 @@ moment of an input.
   the status line says it cannot be replayed here.
 
 Recordings are also kept in the browser, and a recording survives a page
-reload. **Delete saved data** removes them together with everything else
+reload. **Delete saved data** (under **Tools**) removes them together with everything else
 (see [Snapshots and saved data](snapshots-and-data.md)).

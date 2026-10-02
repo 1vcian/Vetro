@@ -1,8 +1,9 @@
 # Troubleshooting
 
-The status line at the top of the page, next to "Vetro", always says what
-the machine is doing, and shows errors. The console shows the system's own
-log. Start from those two.
+The progress line at the top of the page, next to "Vetro", always says
+what the machine is doing, and shows errors. The console, under **Tools**,
+shows the system's own log; the full setup form (`app/?advanced=1`) also
+shows a detailed status line. Start from those.
 
 ## Browser support
 
@@ -15,8 +16,12 @@ log. Start from those two.
 | Safari, and any browser on iPhone or iPad | not supported |
 | Browsers on Android phones and tablets | not supported |
 
-Use a recent version: Vetro needs WebAssembly, Web Workers and the Origin
-Private File System, all present in current Chrome and Edge.
+Use a recent version: Vetro needs WebAssembly with SIMD, Web Workers and
+the Origin Private File System, all present in current Chrome and Edge.
+When something is missing the page shows a notice above the screen: **This
+browser cannot run Vetro** (the phone is not started) or **This browser may
+not run Vetro well** (another browser, a phone or tablet, or less memory
+than the phone needs: the phone starts anyway).
 
 Private (incognito) windows are not recommended: browsers give them much
 less storage, which may not fit the saved phone, and they forget everything
@@ -47,16 +52,17 @@ The saved phone takes about 1 GB, and the disk pieces grow as you use it.
 
 ## The first start is slow, or stops
 
-- The download of the ready-made snapshot shows its progress. If it stops
-  with **Download interrupted**, reload the page: it resumes where it
-  stopped, and pieces already checked are not downloaded again.
+- The download of the ready-made snapshot shows its progress on the line
+  at the top. If it stops ("The download stopped"), reload the page: it
+  resumes where it stopped, and pieces already checked are not downloaded
+  again.
 - **"No ready-made snapshot for this version"** means there is none for
   this exact version of Vetro, system image and device profile, so the phone
   boots from scratch (about 45 minutes). This happens right after a new
   version is published, before its snapshot is uploaded, and always with a
   profile other than the default. Leaving it to finish is fine: the next
   start is fast.
-- A cold boot shows each phase in the boot panel. Long pauses in
+- A cold boot shows each phase under **Tools**. Long pauses in
   "system_server" and before the home screen are normal on an emulated
   processor.
 
@@ -66,25 +72,27 @@ Vetro emulates an ARM processor instruction by instruction, in WebAssembly;
 it is much slower than a real phone, and a single emulated processor does
 all the work.
 
-- Keep the **JIT** option on (it is on by default): it translates the
-  phone's code into WebAssembly and is several times faster.
+- The JIT is always on in the normal page (only the developer form,
+  `?advanced=1`, can turn it off): it translates the phone's code into
+  WebAssembly and is several times faster.
 - Keep the tab in the foreground: browsers slow down background tabs.
 - The first time an app opens, its files are still arriving: the second
   time is faster.
 - Smaller screens are cheaper to draw: the default **Light** profile draws
   960 x 600 (see [Device profiles](device-profiles.md)).
 - Window animations are off and app animations run at half length by
-  default; **full animations and blurs** in the setup form brings Android's
-  own back, at the cost of more frames to draw.
+  default; `?graphics=full` in the address (or **full animations and
+  blurs** in the setup form, `?advanced=1`) brings the system's own back,
+  at the cost of more frames to draw.
 
 ## The screen stays black
 
 - During a cold boot the screen stays off until the graphics start; the
-  boot panel says which phase the system is in.
+  boot phases under **Tools** say which phase the system is in.
 - After a restore the screen may show "Phone is starting…" for a while:
   the system is finishing its start-up.
 - Click the screen and press a key: if the display went to sleep, it wakes
-  up. The **Power button** turns it on too.
+  up. The **Power** button turns it on too.
 
 ## Keys or clicks do nothing
 
@@ -116,8 +124,8 @@ The error from the installer is shown under the drop box. The usual ones:
 
 ## Clearing data
 
-- **Start over with the saved phone**: reload, then **Delete saved data** in
-  the setup form ([details](snapshots-and-data.md#starting-over)).
+- **Start over with the saved phone**: **Delete saved data** under
+  **Tools**, then reload ([details](snapshots-and-data.md#starting-over)).
 - **Remove everything**: clear the site's data in the browser settings.
 - If the page itself seems stuck after an update, reload it while holding
   Shift, so the browser fetches the new version of the app.
@@ -126,4 +134,5 @@ The error from the installer is shown under the drop box. The usual ones:
 
 Open an issue on [GitHub](https://github.com/1vcian/Vetro/issues) with the
 browser and its version, your computer's memory, the device profile, the
-text of the status line, and the last lines of the console.
+text of the progress line (and of the notice, if there is one), and the
+last lines of the console.

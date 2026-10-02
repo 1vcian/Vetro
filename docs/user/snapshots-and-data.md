@@ -13,14 +13,15 @@ With the phone, Vetro saves a snapshot:
 
 - about five seconds (of phone time) after the home screen first appears;
 - after you install an app;
-- whenever you click **Save state** under the screen.
+- whenever you click **Save state**, under **Tools** below the screen.
 
-The line next to the buttons says when the last snapshot was saved, how big
+The line next to that button says when the last snapshot was saved, how big
 it is and how long it took.
 
 **The next visit resumes from the last snapshot.** Anything you did after
 it (a setting you changed, a file an app wrote) is not in it. Before closing
-the tab, click **Save state** if you want to keep your latest changes.
+the tab, click **Save state** (under **Tools**) if you want to keep your
+latest changes.
 
 ## Where it is kept
 
@@ -46,8 +47,10 @@ downloads (or boots) a fresh one.
 
 To throw away the saved phone and start from the ready-made snapshot again:
 
-1. Reload the page, so the machine is not running.
-2. Click **Delete saved data** in the setup form (under **Start**).
+1. Open **Tools**, below the phone screen.
+2. Click **Delete saved data**, then click it again to confirm. The phone
+   stops first (it keeps those files open while it runs).
+3. Reload the page.
 
 It deletes the snapshots, the saved disk changes, the disk pieces and the
 recordings. The next start is a first visit again: it downloads the
@@ -61,7 +64,9 @@ site.
 
 ## Options in the setup form
 
-These are on by default and are best left on:
+The normal page always uses the defaults. The full setup form
+(`app/?advanced=1`, for developers) has these options; they are on by
+default and are best left on:
 
 - **OPFS cache**: keep the disk pieces already read;
 - **persistent disks**: keep the disk changes (with the phone they are part

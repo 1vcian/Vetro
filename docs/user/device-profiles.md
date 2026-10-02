@@ -2,8 +2,11 @@
 
 A device profile describes the phone Vetro builds: its screen size and
 density, its memory, and a few details the system shows to apps, such as
-the serial number and the device name. Choose one in the **Device profile**
-menu of the setup form, before **Start**.
+the serial number and the device name. The normal page always uses the
+default, **Light (landscape)**. To pick another one, add it to the app's
+address (`app/?profile=phone`), or open the full setup form with
+`app/?advanced=1` and choose it in the **Device profile** menu before
+**Start**.
 
 ## The profiles that come with Vetro
 
@@ -29,7 +32,8 @@ other: each profile keeps its own saved phone (see
   draws at it.
 - **Density**: how many pixels make one "dp", so how large text and buttons
   are. It is also what apps use to pick phone or tablet layouts.
-- **Memory**: the phone's RAM. You can still change **RAM** in the form.
+- **Memory**: the phone's RAM. You can still change **RAM** in the setup
+  form (`?advanced=1`), or with `ram=` in the address.
 - **Serial number and SKU**: what `Build.getSerial()` and `Build.SKU` return
   to apps.
 - **Time zone** and **device name**: applied through adb once the system has
@@ -45,10 +49,10 @@ say "Vetro"), and the language at the very first start.
 
 ## Your own profile
 
-A profile is a small JSON file. Write one, then click **load a profile
-file** in the setup form and pick it; it is added to the menu. You can also
-open the app with `profile=phone` (or `small-phone`, `tablet`) in the
-address to choose a built-in profile.
+A profile is a small JSON file. Write one, open the setup form
+(`app/?advanced=1`), click **load a profile file** and pick it; it is added
+to the menu. A built-in profile needs no form: open the app with
+`?profile=phone` (or `small-phone`, `tablet`, `default`) in the address.
 
 ```json
 {

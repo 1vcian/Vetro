@@ -83,7 +83,7 @@ run(async () => {
   const profile = mkdtempSync(join(tmpdir(), 'vetro-chrome-'));
   const { proc, cdp } = await launch(chrome, profile, { webgl: true });
   try {
-    const { page } = await openPage(cdp, `${srv.url}/app/index.html`);
+    const { page } = await openPage(cdp, `${srv.url}/app/index.html?advanced=1`);
     await page.waitFor('page', () => page.eval("document.readyState === 'complete'"), 30_000);
     const r = await page.eval(`(async () => {
       const { WebGlExecutor, replayRecording } = await import('/app/gl.mjs');

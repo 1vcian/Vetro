@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // ADR 0042: the web app with two guest cores in parallel, in headless Chrome.
 //
-//   1. `/app/?cpus=2&autostart=1` on the isolated local server (COOP/COEP):
+//   1. `/app/?os=linux&cpus=2&autostart=1` on the isolated local server (COOP/COEP):
 //      the threads build of vetro-wasm, core 1 in a Worker of its own; the M3
 //      kernel boots to the shell and sees two processors; the status says
 //      the cores run in parallel. The snapshot at the prompt is saved with
@@ -37,7 +37,7 @@ run(async () => {
   const profile = mkdtempSync(join(tmpdir(), 'vetro-chrome-smp-'));
   const { proc, cdp } = await launch(chrome, profile);
   try {
-    const q = new URLSearchParams({ cpus: '2', cmdline: 'console=ttyAMA0 vetro.noautotest', autostart: '1' });
+    const q = new URLSearchParams({ os: 'linux', cpus: '2', cmdline: 'console=ttyAMA0 vetro.noautotest', autostart: '1' });
     const url = `${srv.url}/app/?${q}`;
     const t0 = Date.now();
     let { page, targetId } = await openPage(cdp, url);

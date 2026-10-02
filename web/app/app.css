@@ -22,7 +22,7 @@ body {
 
 header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 16px;
   padding: 12px 0;
 }
@@ -38,6 +38,52 @@ h1 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
+}
+
+/* The zero-choice page shows the plain progress line only; the developer's
+   status text is for ?advanced=1 (tests read it either way). */
+body[data-mode='simple'] #status {
+  display: none;
+}
+
+/* One line that says what the machine is doing (download, start, ready). */
+#progress-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  min-width: 0;
+  font-size: 15px;
+}
+
+#progress-line[data-kind='error'] {
+  color: #ff7b72;
+}
+
+#progress-bar {
+  width: 14rem;
+  max-width: 100%;
+  height: 0.8rem;
+}
+
+/* The browser cannot run Vetro (or may not run it well): said on the page. */
+#unsupported {
+  border: 1px solid #d29922;
+  background: rgb(210 153 34 / 0.12);
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+}
+
+#unsupported[data-kind='error'] {
+  border-color: #ff7b72;
+  background: rgb(255 123 114 / 0.12);
+}
+
+#unsupported ul {
+  margin: 6px 0 0;
+  padding-left: 20px;
 }
 
 form {
@@ -209,12 +255,45 @@ main {
   font: 12px ui-monospace, monospace;
 }
 
+#save,
 #forget {
   background: transparent;
-  color: var(--dim);
+  color: var(--text);
   border: 1px solid var(--dim);
-  margin-left: 8px;
   font-weight: 400;
+}
+
+/* The developer panels behind one small toggle (closed on the default page). */
+#tools {
+  flex: 1 1 100%;
+  min-width: 0;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+#tools > summary {
+  cursor: pointer;
+  color: var(--dim);
+  width: max-content;
+  padding: 2px 0;
+}
+
+#tools[open] > summary {
+  margin-bottom: 10px;
+}
+
+#tools-body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+#tools-bar {
+  flex: 1 1 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
 }
 
 #console-box {
@@ -240,8 +319,9 @@ main {
   border-color: var(--accent);
 }
 
-/* AOSP: boot phases and adb (M5/M6) */
-#android-box {
+/* AOSP: the Apps panel and the APK drop; under Tools, boot phases and adb (M5/M6) */
+#android-box,
+#android-dev {
   flex: 1 1 320px;
   min-width: 0;
   display: flex;
@@ -254,7 +334,8 @@ main {
   height: 0.9rem;
 }
 
-#android-box h3 {
+#android-box h3,
+#android-dev h3 {
   margin: 4px 0 0;
   font-size: 14px;
 }
@@ -290,6 +371,10 @@ main {
   padding: 14px;
   border-radius: 6px;
   text-align: center;
+}
+
+#apk-drop .file-button {
+  display: inline-block;
 }
 
 #apk-drop.over,

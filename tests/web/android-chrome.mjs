@@ -4,7 +4,10 @@
 //
 //   VETRO_ANDROID=1 node tests/web/android-chrome.mjs
 //
-// 1. First boot: `/app/?os=android&manifest=...&autostart=1`, images and disk
+// The page is the zero-choice default (`/app/`, M10: it starts by itself),
+// with only the image's location given (`?manifest=...`).
+//
+// 1. First boot: `/app/?cold=1&manifest=...`, images and disk
 //    from a local server (target/aosp/out, `/aosp/`) or from
 //    VETRO_ANDROID_MANIFEST (R2 needs port 8080: VETRO_WEB_PORT=8080, the
 //    bucket's CORS allows it). The boot phases with wall times, up to
@@ -35,8 +38,9 @@
 // The times go to stdout and to target/aosp/chrome-measurements.json.
 //
 // VETRO_SCREENSHOTS=DIR with the prebuilt run also saves page screenshots
-// (JPEG) for docs/user/: the setup form, the home screen, the test app, the
-// adb panel, the analysis tabs and the file manager.
+// (JPEG) for docs/user/: the advanced setup form (`?advanced=1`), the home
+// screen, the test app, and with the Tools toggle open the adb panel, the
+// analysis tabs and the file manager.
 
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -103,8 +107,8 @@ async function session(chrome, profile, url, kind) {
   const { proc, cdp } = await launch(chrome, profile);
   try {
     if (SHOTS && kind === 'prebuilt') {
-      // The setup form, before anything starts (the phone profile selected).
-      const { page: form, targetId } = await openPage(cdp, url.replace('autostart=1', 'profile=phone'));
+      // The advanced setup form, before anything starts (the phone profile selected).
+      const { page: form, targetId } = await openPage(cdp, `${url}&advanced=1&profile=phone`);
       await form.waitFor('device profiles in the form', () => form.eval("document.querySelector('select[name=profile]')?.options.length >= 4"), 30_000);
       await pageShot(form, 'setup');
       await cdp.send('Target.closeTarget', { targetId });
@@ -159,6 +163,9 @@ async function session(chrome, profile, url, kind) {
     check(boot.mode === 'snapshot', `start from ${boot.mode}, not from a snapshot`);
     check(boot.prebuilt === prebuilt, `prebuilt ${boot.prebuilt}, expected ${prebuilt}`);
     const frame = await page.waitFor('first frame', async () => (await page.state())?.firstFrame, 60_000);
+    // The zero-choice page: one line says the phone is ready, no browser notice.
+    const line = await page.eval("({ text: document.getElementById('progress-text').textContent, support: window.vetroState.support, tools: document.getElementById('tools').open })");
+    check(line.text === 'Ready' && JSON.stringify(line.support) === '[]' && !line.tools, `progress line after the start: ${JSON.stringify(line)}`);
     const pb = (await page.eval(ANDROID_STATE)).prebuilt;
     const m = { pronto_ms: boot.ms, primo_fotogramma_ms: frame, apertura_ms: Date.now() - t0, times: boot.times, size: boot.size, memoria: boot.memory };
     if (prebuilt) {
@@ -242,7 +249,8 @@ async function session(chrome, profile, url, kind) {
       await page.eval("window.vetroAndroid.shell('getprop ro.product.model')");
       await page.eval("document.getElementById('adb-cmd').value = 'getprop ro.build.version.release'; document.getElementById('adb-shell').requestSubmit()");
       await new Promise((ok) => setTimeout(ok, 3000));
-      await pageShot(page, 'adb', 'android-box');
+      await page.eval("document.getElementById('tools').open = true");
+      await pageShot(page, 'adb', 'android-dev');
       for (const tab of ['net', 'timeline', 'replay']) {
         await page.eval(`document.querySelector('[data-tab=${tab}]').click()`);
         await new Promise((ok) => setTimeout(ok, 1500));
@@ -276,7 +284,7 @@ run(async () => {
   if (!process.env.VETRO_ANDROID_MANIFEST) check(existsSync(join(out, 'out/web/disk.json')), 'target/aosp/out/web/disk.json missing: node tools/aosp/web-disk.mjs');
   if (PREBUILT && !process.env.VETRO_ANDROID_MANIFEST) check(readdirSync(join(out, 'prebuilt')).some((f) => f.endsWith('.json')), 'target/aosp/prebuilt has no snapshot: tools/aosp/prebuilt-snapshot.mjs');
   // VETRO_APP_QUERY: more URL parameters (a device profile, `graphics=full`).
-  const url = `${srv.url}/app/?os=android&autostart=1${PREBUILT ? '' : '&cold=1'}&manifest=${encodeURIComponent(manifest)}${process.env.VETRO_APP_QUERY ?? ''}`;
+  const url = `${srv.url}/app/?${PREBUILT ? '' : 'cold=1&'}manifest=${encodeURIComponent(manifest)}${process.env.VETRO_APP_QUERY ?? ''}`;
   misure.manifest = manifest;
   // VETRO_ANDROID_PROFILE: a Chrome profile to keep (with the snapshot in
   // OPFS); VETRO_ANDROID_SKIP_BOOT=1 skips the first boot and resumes from the

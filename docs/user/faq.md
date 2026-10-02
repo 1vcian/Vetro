@@ -54,8 +54,8 @@ See [Snapshots and saved data](snapshots-and-data.md).
 ## I closed the tab: did I lose my work?
 
 You keep everything up to the last snapshot. Vetro saves at the home screen
-and after each app install; click **Save state** to save at any other
-moment.
+and after each app install; **Save state**, under **Tools**, saves at any
+other moment.
 
 ## Can I use it on my phone or tablet?
 
@@ -70,7 +70,8 @@ switch between them.
 
 ## How do I start again from a clean phone?
 
-Reload the page and click **Delete saved data** before **Start**. See
+Open **Tools** under the screen and click **Delete saved data** (twice, to
+confirm), then reload the page. See
 [Starting over](snapshots-and-data.md#starting-over).
 
 ## Can I use Vetro for commercial work?

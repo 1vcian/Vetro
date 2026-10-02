@@ -140,11 +140,16 @@ export async function launch(chrome, profile, { webgl = false } = {}) {
   return { proc, cdp: await Cdp.connect(url) };
 }
 
-export async function openPage(cdp, url) {
+/**
+ * Opens `url` in a new tab. `before`: a script run in every document of the
+ * tab before its own scripts (to stand in for a browser that lacks a feature).
+ */
+export async function openPage(cdp, url, { before = null } = {}) {
   const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
   const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
   const page = new Page(cdp, sessionId);
   await cdp.send('Page.enable', {}, sessionId);
+  if (before) await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: before }, sessionId);
   await cdp.send('Page.navigate', { url }, sessionId);
   return { page, targetId };
 }

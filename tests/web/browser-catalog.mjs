@@ -66,7 +66,7 @@ run(async () => {
   const profile = mkdtempSync(join(tmpdir(), 'vetro-chrome-'));
   const { proc, cdp } = await launch(chrome, profile);
   try {
-    const { page } = await openPage(cdp, `${srv.url}/app/`);
+    const { page } = await openPage(cdp, `${srv.url}/app/?advanced=1`);
     await page.waitFor('page loaded', () => page.eval("typeof window.vetroCatalog === 'object'"), 30_000);
     // A panel on the page's own elements, with fake adb requests.
     await page.eval(`(async () => {

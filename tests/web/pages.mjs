@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 // The GitHub Pages site (tools/pages/build.sh) as Pages serves it: under a
 // subpath (/Vetro/) and without COOP/COEP headers. In headless Chrome the
-// landing page leads to the app, the app boots the guest kernel to the shell
+// landing page's one button leads to the zero-choice app, which starts the
+// phone by itself (the snapshot download, or the cold boot if none is
+// published, on the progress line; no setup form, no browser notice); the
+// landing page's small "Linux demo" link boots the guest kernel to the shell
 // and the console answers, the network inspector sees a guest request (empty
 // bodies as "0 B"); the GPL sources are there and the kernel tarball put back
 // together from its pieces has the declared sha256; the prebuilt Android
@@ -81,10 +84,25 @@ run(async () => {
   const { proc, cdp } = await launch(chrome, profile);
   try {
     const { page } = await openPage(cdp, `${srv.url}/Vetro/`);
-    const href = await page.waitFor('landing page', () => page.eval("document.querySelector('a.button')?.href ?? ''"), 30_000);
-    check(href.startsWith(`${srv.url}/Vetro/app/`), `the button leads to ${href}`);
+    const links = await page.waitFor('landing page', () => page.eval(`(() => { const b = [...document.querySelectorAll('a.button')];
+      return b.length && { buttons: b.map((a) => [a.textContent, a.href]), demo: document.querySelector('a.demo')?.href ?? '' }; })()`), 30_000);
+    check(JSON.stringify(links.buttons) === JSON.stringify([['Launch Vetro', `${srv.url}/Vetro/app/`]]), `one button, Launch Vetro to app/: ${JSON.stringify(links.buttons)}`);
+    check(links.demo === `${srv.url}/Vetro/app/?os=linux`, `the Linux demo link: ${links.demo}`);
+    // The button: the phone starts by itself, nothing to choose.
+    await page.eval(`location.href = ${JSON.stringify(links.buttons[0][1])}`);
+    const START = `(() => window.vetroState && { progress: window.vetroState.progress ?? '', kind: document.getElementById('progress-line').dataset.kind,
+      support: window.vetroState.support, form: document.getElementById('setup').checkVisibility(), tools: document.getElementById('tools').open })()`;
+    const phone = await page.waitFor('the phone starting by itself', async () => {
+      const r = await page.eval(START);
+      if (r?.kind === 'error') throw new Fail(`the default page failed: ${JSON.stringify(r)}`);
+      return r && /^(Downloading the phone|Starting the phone from scratch|Ready)/.test(r.progress) ? r : null;
+    }, 120_000);
+    check(!phone.form && !phone.tools && JSON.stringify(phone.support) === '[]', `the default page: ${JSON.stringify(phone)}`);
+    console.log(`Launch Vetro: the phone starts by itself ("${phone.progress}"), no form, Tools closed, no browser notice`);
+    // The Linux demo link.
     const t0 = Date.now();
-    await page.eval(`location.href = ${JSON.stringify(href)}`);
+    await page.eval(`location.href = ${JSON.stringify(links.demo)}`);
+    await page.waitFor('the Linux demo page', () => page.eval("location.search === '?os=linux' && !!window.vetroState"), 30_000);
     let at = await page.until('# ');
     const ms = Date.now() - t0;
     const isolated = await page.eval('crossOriginIsolated');

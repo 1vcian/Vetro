@@ -1,6 +1,6 @@
 # File manager
 
-The **Guest files** panel, next to the phone screen, shows files inside the
+The **Guest files** panel, under **Tools** below the phone screen, shows files inside the
 running phone. You can open them, read them in a suitable viewer, and edit
 them while apps are running.
 

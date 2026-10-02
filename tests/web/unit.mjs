@@ -10,7 +10,8 @@
 // rebuilt from a map, Android boot phases and APK manifests
 // (web/node/disk.mjs, android.mjs, apk.mjs, M5/M6), the resource table and
 // icon of an APK, the app catalog's parsing, minimum image version, SHA-256
-// check, download and install states (web/node/catalog.mjs, ADR 0033).
+// check, download and install states (web/node/catalog.mjs, ADR 0033), the
+// zero-choice launch plan and the browser check (web/app/launch.mjs, M10).
 //
 //   node tests/web/unit.mjs
 
@@ -39,6 +40,7 @@ import {
 } from '../../web/app/files.mjs';
 import { encodeSqlArgs, pathBytes, pathString, sqlValue } from '../../web/node/vetro.mjs';
 import { bodyCell, duration, fromB64, guestTime, hexdump, typeText } from '../../web/app/analysis.mjs';
+import { browserIssues, launchPlan, LINUX_DEMO_CMDLINE, MEMORY_GB, probeBrowser, SIMD_PROBE } from '../../web/app/launch.mjs';
 import { check, makeZip, root, run } from './lib.mjs';
 import { downloadPrebuilt, findPrebuilt, PREBUILT_CHUNK, PREBUILT_FORMAT, prebuiltInfoUrl, prebuiltProblem, prebuiltSnapUrl } from '../../web/node/prebuilt.mjs';
 
@@ -562,6 +564,58 @@ test('Android image versions and app colours (ADR 0032)', () => {
   check(colorSeen([0x15, 0x65, 0xc0], blue) && colorSeen([0x1a, 0x60, 0xc6], blue), 'blue, also within the tolerance');
   check(!colorSeen([0xc0, 0x65, 0x15], blue), 'red and blue swapped is not the app colour any more');
   check(!colorSeen(null, blue) && !colorSeen([0x15, 0x65, 0xd0], blue), 'no pixel, or too far');
+});
+
+test('zero-choice launch plan: URL to what starts (web/app/launch.mjs)', () => {
+  const plan = (s) => launchPlan(new URLSearchParams(s));
+  eq(plan(''), { advanced: false, os: 'android', autostart: true, cmdline: null }, 'app/: the phone starts at once, nothing to choose');
+  eq(plan('?os=android'), plan(''), 'os=android is the default');
+  eq(plan('?os=linux'), { advanced: false, os: 'linux', autostart: true, cmdline: LINUX_DEMO_CMDLINE }, 'the Linux demo: straight to the shell');
+  eq(plan('?os=linux&cmdline=console%3DttyAMA0').cmdline, null, "the URL's command line wins");
+  eq(plan('?os=linux&disk=/d.img&autostart=1').autostart, true, 'test URLs keep starting');
+  eq(plan('?advanced=1'), { advanced: true, os: 'android', autostart: false, cmdline: null }, 'advanced: the form, not started');
+  eq(plan('?advanced=1&os=linux&autostart=1'), { advanced: true, os: 'linux', autostart: true, cmdline: null }, 'advanced with autostart');
+  eq(plan('?os=windows').os, 'android', 'an unknown system is the default one');
+  eq(launchPlan('?profile=phone&cpus=2'), plan(''), 'string query; other parameters do not change the plan');
+});
+
+test('browser check: notice instead of a silent failure (web/app/launch.mjs)', () => {
+  check(WebAssembly.validate(SIMD_PROBE), 'the SIMD probe validates in V8');
+  const node = probeBrowser();
+  check(node.wasm && node.simd && node.bigint, `Node's V8: ${JSON.stringify(node)}`);
+  const chrome = { wasm: true, simd: true, worker: true, bigint: true, opfs: true, memoryGB: 8, brands: ['Not.A/Brand', 'Chromium', 'Google Chrome'], mobile: false };
+  eq(browserIssues(chrome), [], 'desktop Chrome with 8 GB: nothing to say');
+  eq(browserIssues({ ...chrome, brands: ['Microsoft Edge', 'Chromium'] }), [], 'desktop Edge');
+  eq(browserIssues({ ...chrome, memoryGB: null }), [], 'memory unknown: no warning');
+  const ids = (b, os) => browserIssues(b, os).map((i) => `${i.id}${i.fatal ? '!' : ''}`);
+  eq(ids({ ...chrome, simd: false }), ['simd!'], 'no SIMD: cannot run');
+  eq(ids({ ...chrome, wasm: false, simd: false }), ['wasm!'], 'no WebAssembly at all');
+  eq(ids({ ...chrome, worker: false, bigint: false }), ['worker!', 'bigint!'], 'no Workers, no BigInt64Array');
+  eq(ids({ ...chrome, brands: null }), ['browser'], 'Firefox or Safari (no userAgentData): a warning');
+  eq(ids({ ...chrome, mobile: true }), ['mobile'], 'a phone: a warning');
+  eq(ids({ ...chrome, opfs: false }), ['opfs'], 'no OPFS: nothing is saved');
+  eq(ids({ ...chrome, memoryGB: 4 }), ['memory'], 'the phone with 4 GB');
+  eq(ids({ ...chrome, memoryGB: 4 }, 'linux'), [], 'the Linux demo with 4 GB');
+  eq(ids({ ...chrome, memoryGB: MEMORY_GB.linux / 2 }, 'linux'), ['memory'], 'the Linux demo with 1 GB');
+  check(browserIssues({ ...chrome, simd: false })[0].text.includes('Chrome or Edge'), 'the notice says what to use');
+  // A stand-in for a browser without SIMD and without userAgentData.
+  const old = probeBrowser({ WebAssembly: { instantiate() {}, validate: () => false }, navigator: { userAgent: 'Mozilla/5.0 (iPhone)' } });
+  eq([old.simd, old.worker, old.opfs, old.memoryGB, old.brands, old.mobile], [false, false, false, null, null, true], 'probe of an old phone browser');
+  // Without userAgentData (not a secure context) the UA string tells Chromium from the others.
+  const ua = (userAgent) => probeBrowser({ navigator: { userAgent } }).brands;
+  eq(ua('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0'), ['Chromium'], 'Edge by its UA');
+  eq(ua('Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0'), null, 'Firefox by its UA');
+  eq(ua('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15'), null, 'Safari by its UA');
+
+  // The default page: no setup form, the developer panels behind a closed Tools toggle.
+  const html = readFileSync(join(root, 'web/app/index.html'), 'utf8');
+  check(/<form id="setup" hidden>/.test(html), 'the setup form is hidden until ?advanced=1');
+  check(/<details id="tools">/.test(html), 'Tools: a toggle, closed by default');
+  const tools = html.slice(html.indexOf('<details id="tools">'), html.indexOf('</details>\n  </main>'));
+  for (const id of ['analysis-box', 'files-box', 'android-dev', 'forget', 'save', 'adb-shell']) check(tools.includes(`id="${id}"`), `#${id} under Tools`);
+  const form = html.slice(html.indexOf('<form id="setup"'), html.indexOf('</form>'));
+  check(!form.includes('id="forget"'), '"Delete saved data" only under Tools');
+  for (const id of ['power', 'catalog-box', 'apk-drop', 'progress-text', 'unsupported']) check(html.includes(`id="${id}"`) && !tools.includes(`id="${id}"`), `#${id} outside Tools`);
 });
 
 test('device profiles: starters, boot parameters, adb commands, rejections (ADR 0035)', () => {

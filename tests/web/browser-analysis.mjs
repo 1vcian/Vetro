@@ -49,7 +49,7 @@ run(async () => {
   const { proc, cdp } = await launch(chrome, profile);
   try {
     await cdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: downloads });
-    const q = new URLSearchParams({ cmdline: 'console=ttyAMA0 vetro.noautotest', autostart: '1', snapshot: '0', persist: '0' });
+    const q = new URLSearchParams({ os: 'linux', cmdline: 'console=ttyAMA0 vetro.noautotest', autostart: '1', snapshot: '0', persist: '0' });
     const { page } = await openPage(cdp, `${srv.url}/app/?${q}`);
     const state = () => page.eval('window.vetroAnalysis.state()');
     const click = (sel) => page.eval(`document.querySelector(${JSON.stringify(sel)}).click()`);

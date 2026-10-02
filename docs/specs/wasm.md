@@ -573,12 +573,21 @@ single thread, no `SharedArrayBuffer`), but the page is already
 `crossOriginIsolated`: when WASM threads arrive (ADR 0002) every server
 hosting the app will have to send them, and every resource from another
 origin (e.g. a disk on a CDN) will need CORS or `Cross-Origin-Resource-Policy:
-cross-origin`. URL parameters:
-`?kernel=URL&initrd=URL&disk=URL&cmdline=...&pointer=multitouch&webgpu=1&autostart=1`,
+cross-origin`. Launch (M10, `web/app/launch.mjs`): `/app/` starts Vetro's
+AOSP image at once with the defaults, no form (the screen, one progress
+line, Power, the Apps panel and the APK drop; the rest under a closed
+"Tools" `<details>`); `os=linux` starts the M3 kernel the same way (with
+`console=ttyAMA0 vetro.noautotest` unless `cmdline=` is given);
+`advanced=1` shows the setup form and starts only with `autostart=1`. A
+browser without WebAssembly SIMD, Workers or `BigInt64Array` gets a notice
+and nothing starts; another browser, a mobile one or one reporting too
+little `deviceMemory` gets a warning (`window.vetroState.support`). URL
+parameters, in both modes:
+`?os=linux|android&kernel=URL&initrd=URL&disk=URL&cmdline=...&pointer=multitouch&webgpu=1`,
 plus `snapshot=0` (no snapshot cache), `persist=0` (non-persistent
 disks), `files=/a,/b` (file manager roots), `nofiles=1`
 (no file manager and no vsock), plus `ram=MiB` and, for Vetro's AOSP
-image, `os=android`, `manifest=URL` (default: the version published on
+image, `manifest=URL` (default: the version published on
 R2; `tools/web-serve.mjs` also serves `target/aosp/out` at `/aosp/`) and
 `catalog=URL` (the app catalog, default catalog/v1.json on R2, ADR 0033).
 
@@ -590,9 +599,10 @@ R2; `tools/web-serve.mjs` also serves `target/aosp/out` at `/aosp/`) and
   Canvas2D with `putImageData`, or WebGPU with `writeTexture` and a
   full-screen triangle, if chosen and available), the cursor in a second
   canvas on top, the console (`terminal.mjs`: CR/LF/BS/TAB, CSI K/J/C/D/G/H,
-  reply to `ESC[6n`, UTF-8), the status bar. Buttons "Save state"
-  (snapshot now) and, before boot, "Delete saved data"
-  (OPFS folders `vetro-snapshots`, `vetro-overlays`, `vetro-disks`). After
+  reply to `ESC[6n`, UTF-8), the status bar. Under "Tools", buttons "Save
+  state" (snapshot now) and "Delete saved data" (stops the Worker, then
+  removes the OPFS folders `vetro-snapshots`, `vetro-overlays`,
+  `vetro-disks`, `vetro-recordings`; a second click confirms). After
   a restore it shows the snapshot's console tail again without
   replying to the terminal's queries. `window.vetroState` (`boot`:
   `{ mode: 'cold' | 'snapshot', ms, times }`, `snapshots`, `disks`) for the
@@ -700,9 +710,9 @@ R2; `tools/web-serve.mjs` also serves `target/aosp/out` at `/aosp/`) and
   screen is drawn, after an install and on request; no separate overlay (the
   snapshot already contains the copy-on-write layer). Snapshots are written
   to and read from OPFS in chunks.
-- Page: "System" selector, a panel with the phases and their times, adb
-  status, APK dropped on the panel or on the screen (or chosen), an
-  `adb shell` line; `window.vetroAndroid` (`state`, `install`, `shell`,
+- Page: "System" selector (`?advanced=1`), the Apps panel with the APK
+  dropped on it or on the screen (or chosen); under "Tools" the phases and
+  their times, adb status and an `adb shell` line; `window.vetroAndroid` (`state`, `install`, `shell`,
   `devices`) for tests. The app catalog panel (`web/app/catalog.mjs`,
   ADR 0033): cards from catalog/v1.json on R2 (`&catalog=URL` for another),
   Install -> verified download -> the same `install` request (`open: false`)

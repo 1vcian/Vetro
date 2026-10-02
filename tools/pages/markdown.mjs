@@ -171,7 +171,7 @@ export function page({ title, body, home = '../', nav = true }) {
   </style>
 </head>
 <body>
-${nav ? `  <nav><a href="${home}">Vetro</a> · <a href="index.html">User guide</a> · <a href="${home}app/">Open the app</a></nav>\n` : ''}${body}
+${nav ? `  <nav><a href="${home}">Vetro</a> · <a href="index.html">User guide</a> · <a href="${home}app/">Launch Vetro</a></nav>\n` : ''}${body}
 </body>
 </html>
 `;
