@@ -20,7 +20,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { inline, linkTarget, markdownToHtml, slug } from '../../tools/pages/markdown.mjs';
 import { join } from 'node:path';
 import { BlobSource, composePlan, composeRead, DiskFeeder, LayoutSource, MemoryCache, parseLayout, RangeSource } from '../../web/node/disk.mjs';
-import { ANDROID_MACHINE, ANDROID_PARAMS, ANDROID_VERSIONS, BootProgress, colorSeen, DEFAULT_MANIFEST, gridColors, isHome, PHASES } from '../../web/node/android.mjs';
+import { ANDROID_MACHINE, ANDROID_PARAMS, ANDROID_VERSIONS, BootProgress, colorSeen, DEFAULT_MANIFEST, gridColors, HOME_QUERY, isHome, PHASES } from '../../web/node/android.mjs';
 import { apkIcon, apkInfo, parseArsc, parseAxml, resolveResource, zipEntries } from '../../web/node/apk.mjs';
 import {
   CATALOG_FORMAT, downloadApk, imageRelease, imageSatisfies, initialState, nextState, parseCatalog, parseEntry, parsePackages, sizeText, STATES, verifyApk,
@@ -528,6 +528,14 @@ test('disk map: extents, fills, holes, LayoutSource over HTTP', async () => {
   } finally {
     await srv.close();
   }
+});
+
+test('home screen query reads dumpsys to the end', () => {
+  // A pipe closed early (grep -m1, head) kills dumpsys in the middle of its
+  // binder transaction: binder errors on the console at every poll.
+  check(!/grep\s+(-\w*m|--max-count)|\|\s*head\b/.test(HOME_QUERY), `HOME_QUERY closes the pipe early: ${HOME_QUERY}`);
+  check(HOME_QUERY.includes('mCurrentFocus'), 'HOME_QUERY asks for the focused window');
+  check(isHome('  mCurrentFocus=Window{8d59ee8 u0 com.android.launcher3/com.android.launcher3.uioverrides.QuickstepLauncher}'), 'isHome');
 });
 
 test('Android boot phases (BootProgress)', () => {

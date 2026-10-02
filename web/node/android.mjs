@@ -153,8 +153,15 @@ export function colorSeen(px, rgb, tol = 8) {
   return !!px && rgb.every((v, i) => Math.abs(v - px[i]) <= tol);
 }
 
-/** adb command for the focused window; the home screen is up if it contains "launcher". */
-export const HOME_QUERY = 'dumpsys window | grep -m1 mCurrentFocus';
+/**
+ * adb command for the focused window; the home screen is up if it contains
+ * "launcher". The dump is read to the end: `grep -m1` closed the pipe at the
+ * first match, dumpsys died with its dump transaction still open in
+ * system_server, and every poll left binder errors on the console ("release
+ * ... still active", "reply target not found") and a dead process. (The
+ * `windows` section alone does not print `mCurrentFocus` on Android 15.)
+ */
+export const HOME_QUERY = 'dumpsys window | grep mCurrentFocus';
 export const isHome = (out) => /launcher/i.test(out);
 
 /**
