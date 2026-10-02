@@ -73,7 +73,9 @@ async function stats() {
   const http = s.disks.reduce((a, d) => ({ requests: a.requests + d.http.requests, bytes: a.bytes + d.http.bytes }), { requests: 0, bytes: 0 });
   return { wall: (Date.now() - t0) / 1000, guest: s.guestSecs, steps: s.steps, mips: s.mips, waitS: s.feeder.waitMs / 1000, served: s.feeder.served, fromSource: s.feeder.fromSource,
     fromCache: s.feeder.fromCache, requests: http.requests, mib: http.bytes / 2 ** 20, memory: s.memory / 2 ** 20, aheadMs: s.aheadMs,
-    prefetched: s.feeder.prefetched ?? null, jitModules: s.jit?.modules ?? null, jitCompileS: s.jitHost ? s.jitHost.compileMs / 1000 : null };
+    prefetched: s.feeder.prefetched ?? null, jitModules: s.jit?.modules ?? null, jitCompileS: s.jitHost ? s.jitHost.compileMs / 1000 : null,
+    // A deferred snapshot save in progress (ADR 0046).
+    save: s.save ?? null };
 }
 
 let sampling = true;
@@ -363,6 +365,10 @@ try {
   }
   await guestLoad('end');
   result.stats = await ev('window.vetroState.stats');
+  // The snapshots saved in this session (why, size, ms on the machine's thread
+  // and in the saver, ADR 0046).
+  result.snapshots = await ev('window.vetroState.snapshots');
+  log(`snapshots: ${JSON.stringify(result.snapshots.map(({ why, size, background, saveMs, writeMs, keptMax, at }) => ({ why, size, background, saveMs, writeMs, keptMax, at })))}`);
   if (JIT_PROFILE) result.jitProfile = await ev('window.vetroState.jitProfile?.text ?? null');
   if (TRACE) {
     const trace = result.stats?.diskTrace;

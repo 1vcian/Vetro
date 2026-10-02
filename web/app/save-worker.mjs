@@ -18,7 +18,7 @@ onmessage = (e) => {
   if (msg.type === 'init') {
     start = (async () => {
       const { exports } = await instantiate(msg.module);
-      job = new SaveJob(exports, await SnapshotStore.opfs(msg.dir), (reply) => postMessage(reply));
+      job = new SaveJob(exports, await SnapshotStore.opfs(msg.dir), (reply, transfer = []) => postMessage(reply, transfer));
     })().then(
       () => postMessage({ type: 'ready' }),
       (err) => postMessage({ type: 'error', message: `saver: ${err.message ?? err}` }),

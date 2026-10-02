@@ -689,16 +689,21 @@ export class Machine {
   }
 
   /**
-   * The next bytes (about `max`) of the deferred save's raw stream, in a new
-   * buffer (to transfer), or null once everything has been given. Throws if
-   * a restore voided the save or there is none.
+   * The next bytes (about `max`) of the deferred save's raw stream, in
+   * `reuse` (an ArrayBuffer, if large enough) or a new buffer (to transfer),
+   * or null once everything has been given. Throws if a restore voided the
+   * save or there is none.
    */
-  snapshotPump(max) {
+  snapshotPump(max, reuse = null) {
     const x = this.#x;
     const n = Number(x.vetro_snapshot_bg_pump(this.#vm, max));
     if (n === 0) return null;
     if (n < 0) throw new Error(n === -1 ? 'no deferred save in progress' : `deferred save void: ${this.#message()}`);
-    return new Uint8Array(x.memory.buffer, x.vetro_snapshot_ptr(this.#vm) >>> 0, n).slice();
+    const src = new Uint8Array(x.memory.buffer, x.vetro_snapshot_ptr(this.#vm) >>> 0, n);
+    if (!reuse || reuse.byteLength < n) return src.slice();
+    const out = new Uint8Array(reuse, 0, n);
+    out.set(src);
+    return out;
   }
 
   /** Ends the deferred save in progress, if any. */

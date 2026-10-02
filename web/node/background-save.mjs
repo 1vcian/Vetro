@@ -12,7 +12,8 @@
 //   only once complete.
 //
 // Messages, machine to saver: `begin` { key, meta, plan }, `data` { bytes },
-// `end`, `abort`; saver to machine: `ack` { bytes }, `done` { size, ms },
+// `end`, `abort`; saver to machine: `ack` { bytes, buffer } (the piece's buffer
+// back, for the next ones), `done` { size, ms, wallMs },
 // `error` { message }.
 
 import { SnapshotAssembler } from './vetro.mjs';
@@ -29,6 +30,8 @@ export class BackgroundSave {
   #inFlight = 0;
   #given = false;
   #settle;
+  /** Buffers of pieces the saver gave back. */
+  #pool = [];
   /** Bytes of the raw stream handed over. */
   sent = 0;
   /** Raw stream length (from the plan). */
@@ -79,7 +82,7 @@ export class BackgroundSave {
     const t0 = performance.now();
     try {
       for (let k = 0; k < pieces && this.#inFlight < WINDOW; k++) {
-        const bytes = this.#m.snapshotPump(PIECE);
+        const bytes = this.#m.snapshotPump(PIECE, this.#pool.pop() ?? null);
         if (!bytes) {
           this.#given = true;
           this.#send({ type: 'end' });
@@ -102,8 +105,11 @@ export class BackgroundSave {
   /** A message from the saver. */
   reply(msg) {
     if (!this.#settle) return;
-    if (msg.type === 'ack') this.#inFlight -= msg.bytes;
-    else if (msg.type === 'done') {
+    if (msg.type === 'ack') {
+      this.#inFlight -= msg.bytes;
+      // The piece's buffer comes back, to be filled again (no new allocations).
+      if (msg.buffer && this.#pool.length < WINDOW / PIECE + 1) this.#pool.push(msg.buffer);
+    } else if (msg.type === 'done') {
       const s = this.#settle;
       this.#settle = null;
       s.ok(msg);
@@ -162,7 +168,7 @@ export class SaveJob {
         const t = performance.now();
         j.asm.push(msg.bytes);
         j.ms += performance.now() - t;
-        this.#reply({ type: 'ack', bytes: msg.bytes.length });
+        this.#reply({ type: 'ack', bytes: msg.bytes.length, buffer: msg.bytes.buffer }, [msg.bytes.buffer]);
         break;
       }
       case 'end': {
