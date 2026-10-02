@@ -96,12 +96,12 @@
 import { DEV, INOTIFY, INPUT, instantiate, Machine, setGlExecutor, TIMELINE_EFFECT, TIMELINE_INPUT } from '../node/vetro.mjs';
 import { WebGlExecutor } from './gl.mjs';
 import { Recording } from '../node/recording.mjs';
-import { BlobSource, DiskFeeder, LayoutSource, MemoryCache, OpfsCache, RangeSource } from '../node/disk.mjs';
+import { BlobSource, DiskFeeder, LayoutSource, MemoryCache, OpfsCache, prefetchBlocks, RangeSource } from '../node/disk.mjs';
 import { AdbClient } from '../node/adb.mjs';
 import { apkInfo } from '../node/apk.mjs';
 import { ANDROID_DISK, ANDROID_HOME_NS, ANDROID_PARAMS, ANDROID_WAKE, ANDROID_GRAPHICS, BootProgress, GFXSTREAM_PARAMS, gridColors, HOME_DRAW_NS, HOME_MIN_COLORS, HOME_POLL_NS, HOME_QUERY, isHome, machineDevices } from '../node/android.mjs';
 import { DiskOverlay, fromBase64, opfsFile, sha256Hex, SnapshotStore, snapshotKey, staleReason, toBase64 } from '../node/persist.mjs';
-import { androidSnapshotKey, downloadPrebuilt, findPrebuilt, PREBUILT_CHUNK, prebuiltSnapUrl } from '../node/prebuilt.mjs';
+import { androidSnapshotKey, downloadPrebuilt, findPrebuilt, PREBUILT_CHUNK, prebuiltBlocksUrl, prebuiltSnapUrl } from '../node/prebuilt.mjs';
 
 /** Largest quantum (instructions). */
 const QUANTUM = 1_000_000;
@@ -153,6 +153,8 @@ const REL_WHEEL = 8;
 let m = null;
 let exports = null;
 let feeder = null;
+/** The JIT's host side (web/node/jit-engine.mjs): its compile times go into the stats. */
+let jitHost = null;
 let cfg = null;
 let running = false;
 const inbox = [];
@@ -417,6 +419,7 @@ async function start(c) {
   const wasm = await (await fetch(c.wasmUrl)).arrayBuffer();
   let jitEngine;
   ({ exports, jit: jitEngine } = await instantiate(wasm));
+  jitHost = jitEngine;
   times.wasm = performance.now() - t0;
   if (c.gpu === 'webgl') {
     const g = c.android ? makeGlExecutor(c) : { why: 'only with the AOSP image' };
@@ -545,6 +548,33 @@ async function start(c) {
     running = false;
     post({ type: 'error', text: e.stack ?? String(e) });
   });
+  if (restored && android) startPrefetch(sources[0]);
+}
+
+/**
+ * After restoring an Android snapshot: the prefetch list published next to
+ * the prebuilt snapshot (`snapshots/<key>.blocks.json`, the disk blocks a
+ * restored guest reads first on the common paths: the home screen, the app
+ * drawer, Settings, an app opened) is fetched into the OPFS block cache in
+ * the background, behind the guest's own requests (DiskFeeder.prefetch).
+ * Blocks already cached are skipped, so later sessions cost nothing. No list
+ * (404) or another disk: nothing happens.
+ */
+async function startPrefetch(layout) {
+  const base = cfg.android?.prebuiltBase ?? android.manifestUrl;
+  const url = prebuiltBlocksUrl(base, snapKey);
+  try {
+    const res = await fetch(url, { cache: 'no-cache' });
+    if (!res.ok) return;
+    const d = feeder.disks[0];
+    const list = prefetchBlocks(await res.json(), { sha256: layout.sha256, blockSize: d.blockSize, blocks: d.blocks });
+    if (list.why) return status(`prefetch list not used: ${list.why}`);
+    const t0 = performance.now();
+    const n = await feeder.prefetch(0, list.blocks, { stop: () => !running });
+    if (n) status(`prefetch: ${n} disk blocks cached in ${((performance.now() - t0) / 1000).toFixed(0)} s`);
+  } catch (e) {
+    status(`prefetch list not used: ${e.message ?? e}`);
+  }
 }
 
 // ---- Vetro's AOSP image (ADR 0028) ----------------------------------------------
@@ -1251,7 +1281,10 @@ async function loop() {
         mips,
         disks: feeder.disks.map((d, i) => ({ ...m.diskStats(i), http: d.source.stats, overlay: overlays[i]?.info ?? null })),
         feeder: feeder.stats,
+        // The blocks fetched from the network, in order (prefetch lists, tools/aosp/live-path.mjs).
+        diskTrace: feeder.disks.map((d) => d.trace),
         jit: m.jitStats(),
+        jitHost: jitHost?.stats ?? null,
         inputs: inputLog.length,
         memory: m.memoryBytes,
         input: { ...inputWait },

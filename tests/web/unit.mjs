@@ -19,7 +19,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { inline, linkTarget, markdownToHtml, slug } from '../../tools/pages/markdown.mjs';
 import { join } from 'node:path';
-import { BlobSource, composePlan, composeRead, DiskFeeder, LayoutSource, MemoryCache, parseLayout, RangeSource } from '../../web/node/disk.mjs';
+import { BlobSource, composePlan, composeRead, DiskFeeder, LayoutSource, MemoryCache, parseLayout, PREFETCH_FORMAT, prefetchBlocks, RangeSource } from '../../web/node/disk.mjs';
 import { ANDROID_MACHINE, ANDROID_PARAMS, ANDROID_VERSIONS, BootProgress, colorSeen, DEFAULT_MANIFEST, gridColors, HOME_QUERY, isHome, PHASES } from '../../web/node/android.mjs';
 import { apkIcon, apkInfo, parseArsc, parseAxml, resolveResource, zipEntries } from '../../web/node/apk.mjs';
 import {
@@ -174,6 +174,89 @@ test('DiskFeeder: cache, contiguous blocks, read-ahead, errors', async () => {
     console.error = orig;
   }
   eq(bad.failed, [[0, 0]], 'only the requested block fails (not the read-ahead one)');
+});
+
+/** A source whose reads wait until released, counting how many are in flight. */
+class SlowSource extends FakeSource {
+  inFlight = 0;
+  maxInFlight = 0;
+  #gates = [];
+  async read(offset, length) {
+    this.inFlight++;
+    this.maxInFlight = Math.max(this.maxInFlight, this.inFlight);
+    await new Promise((ok) => this.#gates.push(ok));
+    this.inFlight--;
+    return super.read(offset, length);
+  }
+  release() {
+    for (const ok of this.#gates.splice(0)) ok();
+  }
+  async drain(p) {
+    let done = false;
+    p.then(() => (done = true));
+    while (!done) {
+      this.release();
+      await new Promise((ok) => setTimeout(ok, 1));
+    }
+    return p;
+  }
+}
+
+test('DiskFeeder: parallel requests, prefetch list, blocks on their way, trace', async () => {
+  // Scattered requested blocks: one request each, all in flight together (up to 6).
+  const m = new FakeMachine();
+  const f = new DiskFeeder(m);
+  const src = new SlowSource(64 * 4096);
+  f.add(src, { cache: new MemoryCache(), blockSize: 4096 });
+  m.wanted = [0, 10, 20, 30, 40, 50, 60, 62].map((block) => ({ disk: 0, block }));
+  eq(await src.drain(f.serve()), 8, 'requested');
+  eq(src.maxInFlight, 6, 'six requests in flight at once');
+  eq(m.filled.map((x) => x[1]).sort((a, b) => a - b), [0, 10, 20, 30, 40, 50, 60, 62], 'all delivered');
+  eq(f.disks[0].trace.slice().sort((a, b) => a - b), [0, 10, 20, 30, 40, 50, 60, 62], 'trace of the fetched blocks');
+
+  // The prefetch list goes to the cache only, skips what is there, waits for the guest.
+  const pm = new FakeMachine();
+  const p = new DiskFeeder(pm);
+  const ps = new SlowSource(64 * 4096);
+  const cache = new MemoryCache();
+  eq(await p.prefetch(0, [1]), 0, 'no disk: nothing');
+  p.add(ps, { cache, blockSize: 4096 });
+  eq(await p.prefetch(0, [1, 2]), 0, 'a cache that is not persistent: no prefetch');
+  cache.persistent = true;
+  cache.put(5, new Uint8Array(4096).fill(55));
+  // The guest asks for block 9 first: the prefetch waits for it.
+  pm.wanted = [{ disk: 0, block: 9 }];
+  const serving = p.serve();
+  const pre = p.prefetch(0, [3, 2, 5, 7, 9, 8]);
+  await new Promise((ok) => setTimeout(ok, 5));
+  eq(ps.reads.length, 0, 'nothing read before the release');
+  eq(ps.inFlight, 1, 'only the guest\'s request in flight');
+  await ps.drain(serving);
+  eq(await ps.drain(pre), 4, 'prefetched blocks');
+  // 9 was already given; 5 in the cache; 2-3 together, 7-8 together.
+  eq(ps.reads, [[9 * 4096, 4096], [2 * 4096, 2 * 4096], [7 * 4096, 2 * 4096]], 'reads');
+  eq(pm.filled.map((x) => x[1]), [9], 'prefetch delivers nothing to the machine');
+  check([2, 3, 7, 8].every((b) => cache.has(b)), 'prefetched blocks in the cache');
+  eq(p.stats.prefetched, 4, 'stats.prefetched');
+  eq(p.stats.prefetchPending, 0, 'stats.prefetchPending');
+
+  // A block the guest asks for while the prefetch is fetching it: awaited, not read twice.
+  const pre2 = p.prefetch(0, [20]);
+  await new Promise((ok) => setTimeout(ok, 1));
+  eq(ps.inFlight, 1, 'prefetch of 20 in flight');
+  pm.wanted = [{ disk: 0, block: 20 }];
+  await ps.drain(Promise.all([p.serve(), pre2]));
+  eq(ps.reads.filter(([o]) => o === 20 * 4096).length, 1, 'block 20 read once');
+  eq(pm.filled.at(-1)[1], 20, 'block 20 delivered');
+});
+
+test('prefetch list: checks', () => {
+  const disk = { sha256: 'ab', blockSize: 1 << 20, blocks: 10 };
+  const list = { format: PREFETCH_FORMAT, version: 1, disk: 'ab', blockSize: 1 << 20, blocks: [3, 1, 3, 12, -1, 2.5, 0] };
+  eq(prefetchBlocks(list, disk), { blocks: [3, 1, 0] }, 'in order, without duplicates and blocks outside the disk');
+  eq(prefetchBlocks({ ...list, disk: 'cd' }, disk).why, 'for another disk', 'another disk');
+  check(prefetchBlocks({ ...list, blockSize: 4096 }, disk).why.startsWith('for 4096-byte blocks'), 'another block size');
+  eq(prefetchBlocks({ format: 'x' }, disk).why, 'not a prefetch list', 'format');
 });
 
 test('keymap', () => {

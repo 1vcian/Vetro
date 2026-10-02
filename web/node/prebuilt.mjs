@@ -9,6 +9,8 @@
 //                                  SHA-256 of every PREBUILT_CHUNK bytes, the
 //                                  metadata the app keeps with a snapshot
 //   <image>/snapshots/<key>.snap   the snapshot file, as the app stores it
+//   <image>/snapshots/<key>.blocks.json  optional: the disk blocks a restored
+//                                  guest reads first (prefetch list)
 //
 // `key` is `snapshotKey(androidKeyParts(...))`, the same key as the app's own
 // snapshots in OPFS: the app computes it from the vetro-wasm it runs and looks
@@ -32,6 +34,8 @@ export const PREBUILT_FORMAT = 'vetro-prebuilt-snapshot';
 export const prebuiltInfoUrl = (manifestUrl, key) => new URL(`snapshots/${key}.json`, manifestUrl).href;
 /** URL of the snapshot bytes. */
 export const prebuiltSnapUrl = (manifestUrl, key) => new URL(`snapshots/${key}.snap`, manifestUrl).href;
+/** URL of the snapshot's prefetch list (web/node/disk.mjs, `prefetchBlocks`). */
+export const prebuiltBlocksUrl = (manifestUrl, key) => new URL(`snapshots/${key}.blocks.json`, manifestUrl).href;
 
 /**
  * Key of the Android snapshots of machine `m` (built, disks added): see
