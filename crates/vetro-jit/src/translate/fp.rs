@@ -1074,7 +1074,9 @@ fn bin(simd: u32, d: bool, op_: Bin, src: Src) -> Func {
                         .op(op::F64_MUL);
                     f.op(op::F64_EQ);
                 }
-                f.local_set(ex).i32_const(1);
+                // An exact result is also fine when tiny or infinite (∞ × x,
+                // ∞ / x: no flags; ADR 0045).
+                f.local_tee(ex).op(op::I32_OR).i32_const(1);
             }
             g.f.op(op::I32_AND).local_set(ok);
         }
@@ -1083,7 +1085,7 @@ fn bin(simd: u32, d: bool, op_: Bin, src: Src) -> Func {
         g.den(a, d);
         g.den(b, d);
         g.f.op(op::I32_OR);
-        if matches!(op_, Bin::Add | Bin::Sub) {
+        if matches!(op_, Bin::Add | Bin::Sub) || !d && matches!(op_, Bin::Mul | Bin::Nmul | Bin::Div) {
             g.den(r, d);
             g.f.op(op::I32_OR);
         }
