@@ -89,6 +89,7 @@ async function until(what, expr, every = 5000) {
       lastStatus = s;
       log(`status: ${s}`);
     }
+    if (s.startsWith('error:')) throw new Error(`the page stopped: ${s}`);
     await sleep(every);
   }
 }
