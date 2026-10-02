@@ -217,10 +217,20 @@ function onFrame3d(msg) {
     $('screen-wrap').style.maxWidth = fb.height > fb.width ? `calc(85vh * ${fb.width / fb.height})` : '';
     placeCursor();
   }
+  const t = performance.now();
   renderer.drawBitmap(msg.bitmap);
   msg.bitmap.close();
+  const now = performance.now();
   const g = (vetroState.gpu ??= { mode: 'webgl' });
   g.frames = (g.frames ?? 0) + 1;
+  // The same responsiveness record as the 2D path (a whole frame each time).
+  perf.frames++;
+  perf.pixels += msg.width * msg.height;
+  perf.drawMs += now - t;
+  perf.maxDrawMs = Math.max(perf.maxDrawMs, now - t);
+  perf.frameLog.push({ t: now, x: 0, y: 0, w: msg.width, h: msg.height, workerMs: msg.at ? absNow() - msg.at : null });
+  if (perf.frameLog.length > PERF_LOG) perf.frameLog.shift();
+  for (const tap of perf.taps) if (tap.frameMs === null) tap.frameMs = now - tap.t;
 }
 
 function onFrame(msg) {
@@ -921,6 +931,9 @@ async function start() {
         break;
       case 'frame3d':
         onFrame3d(msg);
+        break;
+      case 'snapshot-key':
+        vetroState.snapshotKey = { key: msg.key, parts: msg.parts };
         break;
       case 'gpu':
         vetroState.gpu = { ...(vetroState.gpu ?? {}), mode: msg.mode, why: msg.why ?? null };

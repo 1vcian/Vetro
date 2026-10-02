@@ -1330,6 +1330,11 @@ impl VirtioDevice for VirtioGpu {
                     self.backend.update(i as u32, &Self::frame_of(res, s.rect), full);
                 }
                 None if self.res3d.contains_key(&s.resource_id) => {
+                    // The renderer presents the restored contents now: the
+                    // guest may not flush again until something changes.
+                    if let Some(rd) = self.renderer.as_mut() {
+                        rd.flush(i as u32, s.resource_id, full);
+                    }
                     self.backend.update_3d(i as u32, s.rect.width, s.rect.height, full);
                 }
                 None => self.backend.disable(i as u32),

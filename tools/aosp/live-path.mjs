@@ -3,7 +3,7 @@
 // (by default the live site): measures what a user sees (M5/M6).
 //
 //   node tools/aosp/live-path.mjs [--url URL] [--profile DIR] [--out DIR]
-//        [--visit first|second] [--minutes N] [--trace FILE]
+//        [--visit first|second] [--minutes N] [--trace FILE] [--webgl]
 //
 // One visit: opens the page with the Chrome profile DIR (fresh if it does not
 // exist: a first visit downloads the prebuilt snapshot), presses Start, waits
@@ -19,6 +19,11 @@
 // the path (`top` over 10 s). Then the session stays open up to --minutes in total with a tap
 // on the home screen every 30 s. Screenshots (canvas PNG) and
 // measurements.json go to --out.
+//
+// --webgl: Chrome with WebGL2 (its own SwiftShader on a host without a GPU,
+// like the build VM) instead of the GPU turned off: for the accelerated
+// graphics path (`&gpu=webgl` in --url, ADR 0037); use it for both paths when
+// comparing them. The timeline's `frames` counts the frames the page drew.
 //
 // --trace FILE: writes the disk blocks the session fetched from the network,
 // in order (`stats.diskTrace`, a worker that records it), as a prefetch list
@@ -46,6 +51,7 @@ const VISIT = arg('visit', existsSync(PROFILE) ? 'second' : 'first');
 const MINUTES = Number(arg('minutes', 8));
 const TRACE = arg('trace', null);
 const CATALOG_APP = arg('app', 'minesweeper');
+const WEBGL = process.argv.includes('--webgl');
 mkdirSync(OUT, { recursive: true });
 
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
@@ -57,7 +63,7 @@ const save = () => writeFileSync(join(OUT, `measurements-${VISIT}.json`), JSON.s
 
 const chrome = findChrome();
 if (!chrome) throw new Error('Chrome not found (VETRO_CHROME)');
-const { proc, cdp } = await launch(chrome, PROFILE);
+const { proc, cdp } = await launch(chrome, PROFILE, { webgl: WEBGL });
 const { page } = await openPage(cdp, URL_);
 const ev = (e) => page.eval(e);
 
@@ -68,12 +74,12 @@ async function shot(name) {
 
 /** Stats now: guest seconds, MIPS, disk wait (s), HTTP reads and MiB. */
 async function stats() {
-  const s = await ev('window.vetroState?.stats ?? null');
+  const s = await ev('window.vetroState?.stats ? { ...window.vetroState.stats, frames: window.vetroState.perf.frames } : null');
   if (!s) return null;
   const http = s.disks.reduce((a, d) => ({ requests: a.requests + d.http.requests, bytes: a.bytes + d.http.bytes }), { requests: 0, bytes: 0 });
   return { wall: (Date.now() - t0) / 1000, guest: s.guestSecs, steps: s.steps, mips: s.mips, waitS: s.feeder.waitMs / 1000, served: s.feeder.served, fromSource: s.feeder.fromSource,
     fromCache: s.feeder.fromCache, requests: http.requests, mib: http.bytes / 2 ** 20, memory: s.memory / 2 ** 20, aheadMs: s.aheadMs,
-    prefetched: s.feeder.prefetched ?? null, jitModules: s.jit?.modules ?? null, jitCompileS: s.jitHost ? s.jitHost.compileMs / 1000 : null };
+    frames: s.frames, prefetched: s.feeder.prefetched ?? null, jitModules: s.jit?.modules ?? null, jitCompileS: s.jitHost ? s.jitHost.compileMs / 1000 : null };
 }
 
 let sampling = true;
@@ -295,7 +301,7 @@ try {
     return st?.boot;
   }, 60 * 60_000);
   const pb = await ev('window.vetroAndroid.state().prebuilt ?? null');
-  result.ready = { ms: Date.now() - tStart, boot, prebuilt: pb };
+  result.ready = { ms: Date.now() - tStart, boot, prebuilt: pb, gpu: await ev('window.vetroState.gpu?.mode ?? "swiftshader"') };
   log(`ready after ${((Date.now() - tStart) / 1000).toFixed(1)} s (${boot.mode}, prebuilt ${boot.prebuilt}${pb?.ms ? `, download ${(pb.ms / 1000).toFixed(1)} s` : ''})`);
   const frame = await page.waitFor('first frame', () => ev('window.vetroState.firstFrame'), 120_000);
   result.firstFrameMs = frame;
@@ -364,6 +370,7 @@ try {
   await guestLoad('end');
   result.stats = await ev('window.vetroState.stats');
   if (JIT_PROFILE) result.jitProfile = await ev('window.vetroState.jitProfile?.text ?? null');
+  result.gpu = await ev('window.vetroState.gpu ?? null');
   if (TRACE) {
     const trace = result.stats?.diskTrace;
     if (!trace) log('no disk trace in the stats (a worker that records it is needed)');
