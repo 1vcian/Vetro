@@ -85,6 +85,10 @@ const SWIFTSHADER_FP: &[(u32, bool)] = &[
     (0x4e22f420, true),  // fmax v0.4s, v1.4s, v2.4s
     (0x4ea1b820, false), // fcvtzs v0.4s, v1.4s
     (0x4e21d820, false), // scvtf v0.4s, v1.4s
+    (0x4e219820, false), // frintm v0.4s, v1.4s
+    (0x6e219820, false), // frintx v0.4s, v1.4s
+    (0x6e218820, false), // frinta v0.4s, v1.4s
+    (0x4ee19820, false), // frintz v0.2d, v1.2d
     (0x1e222820, true),  // fadd s0, s1, s2
     (0x1e220820, true),  // fmul s0, s1, s2
 ];
