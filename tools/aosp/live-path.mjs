@@ -303,6 +303,8 @@ try {
   const pb = await ev('window.vetroAndroid.state().prebuilt ?? null');
   result.ready = { ms: Date.now() - tStart, boot, prebuilt: pb, gpu: await ev('window.vetroState.gpu?.mode ?? "swiftshader"') };
   log(`ready after ${((Date.now() - tStart) / 1000).toFixed(1)} s (${boot.mode}, prebuilt ${boot.prebuilt}${pb?.ms ? `, download ${(pb.ms / 1000).toFixed(1)} s` : ''})`);
+  // --cpu-profile-ready S: the Worker's profile over the S seconds after the restore.
+  if (arg('cpu-profile-ready', null)) await profileWorker('after-ready', Number(arg('cpu-profile-ready')));
   const frame = await page.waitFor('first frame', () => ev('window.vetroState.firstFrame'), 120_000);
   result.firstFrameMs = frame;
   await sleep(3000);
