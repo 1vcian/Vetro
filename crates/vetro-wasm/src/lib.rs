@@ -86,7 +86,10 @@ use display::WebDisplay;
 /// 15: accelerated graphics (ADR 0037): device bit `GPU_3D`, import
 /// `vetro_host.gl_execute`, exports `vetro_gl_*` and `vetro_display_is_3d`,
 /// `vetro_display_read_3d`.
-pub const ABI_VERSION: u32 = 15;
+/// 16: deferred snapshots (ADR 0046): `vetro_snapshot_bg_*` on the machine,
+/// `vetro_asm_*` (the assembler, any instance), imports
+/// `vetro_host.file_write/file_read`.
+pub const ABI_VERSION: u32 = 16;
 
 /// Alignment of the [`vetro_alloc`] buffers (enough for `JitState`).
 const ALLOC_ALIGN: usize = 16;
@@ -167,6 +170,9 @@ pub struct Vm {
     disks: Vec<u32>,
     /// Last snapshot of `vetro_snapshot_save`, until JS copies it.
     snapshot: Vec<u8>,
+    /// Deferred save in progress (ABI 16, ADR 0046) and whether its last
+    /// bytes have been given.
+    deferred: Option<(vetro_machine::DeferredSave, bool)>,
     /// Persistent overlay of every disk (API index), if open.
     overlays: Vec<Option<DiskOverlay>>,
     /// Last writes of `vetro_overlay_take`, until JS applies them.
@@ -267,6 +273,7 @@ impl Vm {
             unimpl: (0, 0),
             disks: Vec::new(),
             snapshot: Vec::new(),
+            deferred: None,
             overlays: Vec::new(),
             patches: Vec::new(),
             files: None,
@@ -649,6 +656,11 @@ mod host {
         pub fn snapshot_write(ptr: *const u8, len: usize);
         /// The next bytes of a snapshot for `vetro_snapshot_restore_stream`.
         pub fn snapshot_read(ptr: *mut u8, cap: usize) -> usize;
+        /// Writes `len` bytes at offset `at` of the file of a `vetro_asm_*`
+        /// assembler; 0 if done.
+        pub fn file_write(at: u64, ptr: *const u8, len: usize) -> u32;
+        /// Reads `len` bytes at offset `at` of that file; 0 if done.
+        pub fn file_read(at: u64, ptr: *mut u8, len: usize) -> u32;
     }
 }
 
@@ -1478,6 +1490,221 @@ pub unsafe extern "C" fn vetro_snapshot_save_stream(vm: *mut Vm) -> u64 {
     total
 }
 
+/// Starts a deferred save (ABI 16, ADR 0046) of the machine as it is now:
+/// the sections before the RAM are copied as they are and the RAM is trapped
+/// (a page the guest writes is copied first), so the guest goes on at once.
+/// The plan (`vetro_snapshot::deferred::Plan::encode`) goes into the
+/// [`vetro_snapshot_ptr`] buffer; returns its length, 0 if refused (cores in
+/// parallel, small level: the reason is in the message). A deferred save
+/// already in progress is replaced. Read the console first, as for
+/// [`vetro_snapshot_save`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_snapshot_bg_begin(vm: *mut Vm) -> usize {
+    // SAFETY: `vm` comes from `vetro_machine_new`.
+    let vm = unsafe { &mut *vm };
+    vm.deferred = None;
+    if vm.snapshot_level != vetro_machine::vetro_snapshot::Level::Fast {
+        vm.message = "deferred saves are at the fast level only".into();
+        return 0;
+    }
+    let cow: usize = (0..vm.disks.len() as u32).map(|i| vm.disk_dirty_clusters(i)).sum();
+    match vm.m.save_deferred(cow * (4096 + 64) + (16 << 20)) {
+        Ok(s) => {
+            vm.snapshot = s.plan().encode();
+            vm.deferred = Some((s, false));
+            vm.snapshot.len()
+        }
+        Err(e) => {
+            vm.message = e.into();
+            0
+        }
+    }
+}
+
+/// The next bytes (about `max`) of the deferred save's raw stream, in the
+/// [`vetro_snapshot_ptr`] buffer: returns their number, 0 once everything
+/// has been given (the save is then closed), -1 without a deferred save, -2
+/// if the machine was restored since it started (the save is void and
+/// closed).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_snapshot_bg_pump(vm: *mut Vm, max: usize) -> i64 {
+    // SAFETY: `vm` comes from `vetro_machine_new`.
+    let vm = unsafe { &mut *vm };
+    let Some((s, given)) = vm.deferred.as_mut() else { return -1 };
+    if *given {
+        vm.deferred = None;
+        return 0;
+    }
+    vm.snapshot.clear();
+    match s.pump(max, &mut vm.snapshot) {
+        Ok(done) => {
+            *given = done;
+            if vm.snapshot.is_empty() {
+                vm.deferred = None;
+            }
+            vm.snapshot.len() as i64
+        }
+        Err(e) => {
+            vm.message = e.to_string();
+            vm.deferred = None;
+            vm.snapshot = Vec::new();
+            -2
+        }
+    }
+}
+
+/// Ends the deferred save in progress, if any (the RAM is no longer trapped).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_snapshot_bg_cancel(vm: *mut Vm) {
+    // SAFETY: `vm` comes from `vetro_machine_new`.
+    let vm = unsafe { &mut *vm };
+    vm.deferred = None;
+    vm.snapshot = Vec::new();
+}
+
+/// Bytes of guest pages kept for the deferred save in progress (written by
+/// the guest before the save took them), 0 without one.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_snapshot_bg_kept(vm: *const Vm) -> u64 {
+    // SAFETY: `vm` comes from `vetro_machine_new`.
+    let vm = unsafe { &*vm };
+    vm.deferred.as_ref().map_or(0, |(s, _)| s.kept_bytes() as u64)
+}
+
+/// The assembler of a deferred save (ABI 16, ADR 0046): turns the plan and
+/// the raw stream of `vetro_snapshot_bg_*` (from another instance, usually in
+/// another Worker) into the snapshot file, written and read back through the
+/// imports `vetro_host.file_write/file_read` (on the native target: in
+/// memory, [`Asm::file`]).
+pub struct Asm {
+    asm: Option<vetro_machine::vetro_snapshot::deferred::Assembler>,
+    error: String,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub file: Vec<u8>,
+}
+
+/// The file of an assembler.
+struct AsmFile<'a> {
+    #[cfg(not(target_arch = "wasm32"))]
+    file: &'a mut Vec<u8>,
+    #[cfg(target_arch = "wasm32")]
+    _p: core::marker::PhantomData<&'a ()>,
+}
+
+impl vetro_machine::vetro_snapshot::deferred::Out for AsmFile<'_> {
+    fn write_at(&mut self, at: u64, bytes: &[u8]) -> vetro_machine::vetro_snapshot::Result<()> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            // SAFETY: `vetro_host` import, reads `bytes` during the call.
+            if unsafe { host::file_write(at, bytes.as_ptr(), bytes.len()) } != 0 {
+                return Err(vetro_machine::vetro_snapshot::Error::invalid(
+                    "writing the snapshot file failed",
+                ));
+            }
+            Ok(())
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        self.file.write_at(at, bytes)
+    }
+    fn read_at(&mut self, at: u64, buf: &mut [u8]) -> vetro_machine::vetro_snapshot::Result<()> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            // SAFETY: `vetro_host` import, fills `buf` during the call.
+            if unsafe { host::file_read(at, buf.as_mut_ptr(), buf.len()) } != 0 {
+                return Err(vetro_machine::vetro_snapshot::Error::Truncated);
+            }
+            Ok(())
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        self.file.read_at(at, buf)
+    }
+}
+
+impl Asm {
+    fn out(&mut self) -> AsmFile<'_> {
+        #[cfg(not(target_arch = "wasm32"))]
+        return AsmFile { file: &mut self.file };
+        #[cfg(target_arch = "wasm32")]
+        AsmFile { _p: core::marker::PhantomData }
+    }
+}
+
+/// A new assembler for the plan of `len` bytes at `plan` (from
+/// [`vetro_snapshot_bg_begin`]); null if the plan is not valid.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_asm_new(plan: *const u8, len: usize) -> *mut Asm {
+    use vetro_machine::vetro_snapshot::deferred::{Assembler, Plan};
+    // SAFETY: `plan` is valid for `len` bytes.
+    match Plan::decode(unsafe { bytes(plan, len) }) {
+        Ok(p) => Box::into_raw(Box::new(Asm {
+            asm: Some(Assembler::new(p)),
+            error: String::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            file: Vec::new(),
+        })),
+        Err(_) => core::ptr::null_mut(),
+    }
+}
+
+/// The next `len` bytes of the raw stream; 0, or 1 on error
+/// ([`vetro_asm_error_ptr`]; the assembler is then unusable).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_asm_push(a: *mut Asm, data: *const u8, len: usize) -> u32 {
+    // SAFETY: `a` comes from `vetro_asm_new`, `data` is valid for `len` bytes.
+    let a = unsafe { &mut *a };
+    let data = unsafe { bytes(data, len) };
+    let Some(mut asm) = a.asm.take() else { return 1 };
+    let r = asm.push(data, &mut a.out());
+    match r {
+        Ok(()) => {
+            a.asm = Some(asm);
+            0
+        }
+        Err(e) => {
+            a.error = e.to_string();
+            1
+        }
+    }
+}
+
+/// After the whole raw stream: writes the header and returns the file length
+/// (the file may have to be truncated to it), 0 on error.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_asm_finish(a: *mut Asm) -> u64 {
+    // SAFETY: `a` comes from `vetro_asm_new`.
+    let a = unsafe { &mut *a };
+    let Some(asm) = a.asm.take() else { return 0 };
+    match asm.finish(&mut a.out()) {
+        Ok(n) => n,
+        Err(e) => {
+            a.error = e.to_string();
+            0
+        }
+    }
+}
+
+/// UTF-8 of the last error of the assembler (with [`vetro_asm_error_len`]).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_asm_error_ptr(a: *const Asm) -> *const u8 {
+    // SAFETY: `a` comes from `vetro_asm_new`.
+    unsafe { &*a }.error.as_ptr()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_asm_error_len(a: *const Asm) -> usize {
+    // SAFETY: `a` comes from `vetro_asm_new`.
+    unsafe { &*a }.error.len()
+}
+
+/// Frees an assembler.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_asm_free(a: *mut Asm) {
+    if !a.is_null() {
+        // SAFETY: `a` comes from `vetro_asm_new` and is not used afterwards.
+        drop(unsafe { Box::from_raw(a) });
+    }
+}
+
 /// The bytes of the last [`vetro_snapshot_save`] (null if there is none).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vetro_snapshot_ptr(vm: *const Vm) -> *const u8 {
@@ -1831,6 +2058,61 @@ mod tests {
     /// the two continue identically. A format of another version, another
     /// configuration and random bytes are refused with their code and a
     /// message, without touching the machine.
+    /// ABI 16 (ADR 0046): a deferred save taken while the machine runs, its
+    /// raw stream assembled by `vetro_asm_*`, is the file
+    /// `vetro_snapshot_save` gave when it started; a restore voids it.
+    #[test]
+    fn deferred_snapshot_from_the_api() {
+        let disk: Vec<u8> = (0..8192u32).map(|i| (i * 13) as u8).collect();
+        let vm = vetro_machine_new_with(64 << 20, 0, 0, dev::DEFAULT, 320, 200);
+        unsafe {
+            assert_eq!(vetro_disk_add_mem(vm, disk.as_ptr(), disk.len(), 0), 0);
+            assert_eq!(vetro_run(vm, 1000), stop::BUDGET);
+            let slot = (&*vm).disks[0];
+            (&mut *vm)
+                .m
+                .device::<VirtioBlk, _>(Some(slot), |b| b.backend_mut().write_sectors(3, &[0xab; 512]))
+                .unwrap()
+                .unwrap();
+            let n = vetro_snapshot_save(vm);
+            let snap = bytes(vetro_snapshot_ptr(vm), n).to_vec();
+            let p = vetro_snapshot_bg_begin(vm);
+            assert!(p > 0, "{}", message(vm));
+            let asm = vetro_asm_new(vetro_snapshot_ptr(vm), p);
+            assert!(!asm.is_null());
+            let mut pieces = 0;
+            loop {
+                assert_eq!(vetro_run(vm, 2000), stop::BUDGET);
+                // The guest's RAM changes meanwhile (as the guest would do it).
+                assert!((&*vm).m.board.borrow().ram.write(0x4000_0000 + pieces * 4096, &[pieces as u8; 300]));
+                let k = vetro_snapshot_bg_pump(vm, 3 << 20);
+                assert!(k >= 0);
+                if k == 0 {
+                    break;
+                }
+                assert_eq!(vetro_asm_push(asm, vetro_snapshot_ptr(vm), k as usize), 0);
+                pieces += 1;
+            }
+            assert!(pieces > 10, "{pieces}");
+            assert_eq!(vetro_snapshot_bg_pump(vm, 1), -1, "closed");
+            let len = vetro_asm_finish(asm) as usize;
+            assert!((&*asm).file[..len] == snap[..], "deferred file differs");
+            vetro_asm_free(asm);
+            // Refused at the small level; voided by a restore.
+            assert_eq!(vetro_snapshot_set_level(vm, 1), 0);
+            assert_eq!(vetro_snapshot_bg_begin(vm), 0);
+            assert_eq!(vetro_snapshot_set_level(vm, 0), 0);
+            assert!(vetro_snapshot_bg_begin(vm) > 0);
+            assert!(vetro_snapshot_bg_pump(vm, 1 << 16) > 0);
+            assert_eq!(vetro_snapshot_restore(vm, snap.as_ptr(), snap.len()), restore::OK);
+            assert_eq!(vetro_snapshot_bg_pump(vm, 1 << 16), -2);
+            assert!(vetro_snapshot_bg_begin(vm) > 0);
+            vetro_snapshot_bg_cancel(vm);
+            assert_eq!(vetro_snapshot_bg_pump(vm, 1 << 16), -1);
+            vetro_machine_free(vm);
+        }
+    }
+
     #[test]
     fn snapshot_dall_api() {
         let disk: Vec<u8> = (0..8192u32).map(|i| (i * 13) as u8).collect();

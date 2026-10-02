@@ -52,7 +52,9 @@ pub mod tls;
 pub use board::Board;
 pub use files::FilesClient;
 pub use hooks::{Breakpoint, Event, GuestView, SyscallEntry, Tracer};
-pub use machine::{Core, Devices, Machine, MachineConfig, Perf, Pointer, RecordOptions, Slots, Stop, smp};
+pub use machine::{
+    Core, DeferredSave, Devices, Machine, MachineConfig, Perf, Pointer, RecordOptions, Slots, Stop, smp,
+};
 pub use net::{FrameDir, NetLink, NetSetup, TappedFrame};
 pub use record::{Digest, Divergence, HostNetOp, Input, Log, ReplayStatus, Reply, VsockOp};
 pub use vetro_analysis;

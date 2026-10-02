@@ -88,6 +88,12 @@ pub trait SysPhys: PhysMemory {
     fn watch_code(&mut self, page: u64) -> bool;
     /// True if the page is watched.
     fn is_watched(&self, page: u64) -> bool;
+    /// True if writes to the page must go through [`ram_write`](Self::ram_write)
+    /// for another reason (a deferred snapshot still has to copy it, ADR
+    /// 0046): no software TLB entry for writing it.
+    fn write_trapped(&self, _page: u64) -> bool {
+        false
+    }
     /// Appends to `out` the watched pages written since the last call
     /// (which are no longer watched).
     fn take_code_dirty(&mut self, out: &mut Vec<u64>);
@@ -782,7 +788,10 @@ impl<M> SysHost<'_, M> {
     fn fill(&mut self, mem: &mut [u8], va: u64, pa: u64, write: bool, aligned: bool, el: u8) {
         let Some((base, addr, len)) = self.ram else { return };
         let page = pa & !0xfff;
-        if page < base || page + 0x1000 > base + len || (write && self.phys.is_watched(pa >> 12)) {
+        if page < base
+            || page + 0x1000 > base + len
+            || (write && (self.phys.is_watched(pa >> 12) || self.phys.write_trapped(pa >> 12)))
+        {
             return;
         }
         let host = addr as u64 + (page - base);

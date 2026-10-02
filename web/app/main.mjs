@@ -967,7 +967,9 @@ async function start() {
         break;
       case 'snapshot':
         vetroState.snapshots.push({ ...msg, at: performance.now() - startedAt });
-        $('snapinfo').textContent = `snapshot saved (${msg.why}): ${(msg.size / 2 ** 20).toFixed(1)} MiB in ${(msg.saveMs + msg.writeMs).toFixed(0)} ms`;
+        $('snapinfo').textContent = msg.background
+          ? `snapshot saved in the background (${msg.why}): ${(msg.size / 2 ** 20).toFixed(1)} MiB in ${(msg.writeMs / 1000).toFixed(1)} s, ${msg.saveMs.toFixed(0)} ms on the machine's thread`
+          : `snapshot saved (${msg.why}): ${(msg.size / 2 ** 20).toFixed(1)} MiB in ${(msg.saveMs + msg.writeMs).toFixed(0)} ms`;
         break;
       case 'status':
         setStatus(msg.text);

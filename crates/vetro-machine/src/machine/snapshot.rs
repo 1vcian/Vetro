@@ -110,50 +110,7 @@ impl crate::board::RamSource for PullSource<'_> {
     }
 }
 
-/// [`vetro_snapshot::hash64`] in pieces, with the total length known upfront.
-struct Hash64 {
-    h: u64,
-    carry: [u8; 8],
-    n: usize,
-}
-
-impl Hash64 {
-    const P: u64 = 0x0000_0100_0000_01b3;
-
-    fn new(total: u64) -> Self {
-        Hash64 { h: 0xcbf2_9ce4_8422_2325 ^ total, carry: [0; 8], n: 0 }
-    }
-
-    fn update(&mut self, mut data: &[u8]) {
-        if self.n > 0 {
-            let k = (8 - self.n).min(data.len());
-            self.carry[self.n..self.n + k].copy_from_slice(&data[..k]);
-            self.n += k;
-            data = &data[k..];
-            if self.n < 8 {
-                return;
-            }
-            self.h = (self.h ^ u64::from_le_bytes(self.carry)).wrapping_mul(Self::P).rotate_left(23);
-            self.n = 0;
-        }
-        let (words, rest) = data.as_chunks::<8>();
-        for c in words {
-            self.h = (self.h ^ u64::from_le_bytes(*c)).wrapping_mul(Self::P).rotate_left(23);
-        }
-        self.carry[..rest.len()].copy_from_slice(rest);
-        self.n = rest.len();
-    }
-
-    fn finish(self) -> u64 {
-        let mut h = self.h;
-        for &b in &self.carry[..self.n] {
-            h = (h ^ u64::from(b)).wrapping_mul(Self::P);
-        }
-        h = (h ^ (h >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        h = (h ^ (h >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        h ^ (h >> 31)
-    }
-}
+use vetro_snapshot::Hash64;
 
 impl Machine {
     /// Configuration hash: RAM, initial time, seed, devices and virtio slot
@@ -239,6 +196,36 @@ impl Machine {
         });
         assert_eq!(again, ram_len, "RAM changed while saving");
         self.file_header(total, h.finish())
+    }
+
+    /// Starts a deferred save (ADR 0046) of the state at this instant: the
+    /// sections before the RAM copied as they are (large data uncompressed,
+    /// [`Writer::deferred`]), and a write trap over the RAM, so that every page
+    /// is given later as it is now while the guest goes on. The plan and the
+    /// bytes [`DeferredSave::pump`] gives make, through
+    /// [`vetro_snapshot::deferred::Assembler`] (another thread), the same file
+    /// as [`Machine::save`] at this instant. `reserve`: expected bytes before
+    /// the RAM. Refused while the cores run in parallel (their software TLBs
+    /// may write pages directly: stop them first, they can start again right
+    /// after). Another deferred save in progress is replaced (and becomes
+    /// void).
+    pub fn save_deferred(&mut self, reserve: usize) -> Result<DeferredSave, &'static str> {
+        if self.is_parallel() {
+            return Err("the cores run in parallel: stop them before starting a deferred save");
+        }
+        let mut w = Writer::deferred(reserve.max(1 << 20));
+        self.save_head(&mut w);
+        let ram = self.board.ram_arc().clone();
+        let len = ram.size();
+        w.external_section(b"RAM ", len);
+        let (plan, head) = w.into_plan(self.config_hash(), len);
+        let epoch = ram.trap_arm();
+        // From now on no direct writes: pages still to copy are not given to
+        // the software TLB for writing, and those it holds are forgotten.
+        if let Some(j) = self.jit.as_mut() {
+            j.flush_writes();
+        }
+        Ok(DeferredSave { ram, plan, head_len: head.len(), head, sent: 0, page: 0, epoch, done: false })
     }
 
     /// The file header: magic, version, configuration, length and content
@@ -406,6 +393,86 @@ impl Machine {
         let mut m = Machine::with_devices(cfg, devices);
         m.load_state(bytes)?;
         Ok(m)
+    }
+}
+
+/// A deferred save in progress ([`Machine::save_deferred`], ADR 0046).
+pub struct DeferredSave {
+    ram: std::sync::Arc<crate::board::Ram>,
+    plan: vetro_snapshot::deferred::Plan,
+    head: Vec<u8>,
+    head_len: usize,
+    /// Bytes of `head` already given.
+    sent: usize,
+    /// Next RAM page to give.
+    page: usize,
+    epoch: u64,
+    done: bool,
+}
+
+impl DeferredSave {
+    /// The plan for [`vetro_snapshot::deferred::Assembler`].
+    pub fn plan(&self) -> &vetro_snapshot::deferred::Plan {
+        &self.plan
+    }
+
+    /// Bytes of the raw stream given so far.
+    pub fn given(&self) -> u64 {
+        if self.sent < self.head_len {
+            self.sent as u64
+        } else {
+            self.head_len as u64 + (self.page as u64 * vetro_snapshot::BLOCK as u64).min(self.ram.size())
+        }
+    }
+
+    /// Bytes of guest pages kept for this save (written by the guest before
+    /// the save took them).
+    pub fn kept_bytes(&self) -> usize {
+        self.ram.trap_kept_bytes()
+    }
+
+    /// Appends to `out` the next bytes of the raw stream (about `max`, at
+    /// least one page); true once everything has been given (the trap is
+    /// off). An error if the machine was restored since the save started:
+    /// the save is void.
+    pub fn pump(&mut self, max: usize, out: &mut Vec<u8>) -> Result<bool, Error> {
+        const PAGE: usize = vetro_snapshot::BLOCK;
+        if self.done {
+            return Ok(true);
+        }
+        let start = out.len();
+        if self.sent < self.head.len() {
+            let n = (self.head.len() - self.sent).min(max);
+            out.extend_from_slice(&self.head[self.sent..self.sent + n]);
+            self.sent += n;
+            if self.sent == self.head.len() {
+                self.head = Vec::new();
+            }
+        }
+        let room = max.saturating_sub(out.len() - start);
+        if self.sent >= self.head.len() && (room > 0 || out.len() == start) {
+            let pages = self.ram.pages();
+            let to = (self.page + (room / PAGE).max(1)).min(pages);
+            self.ram
+                .trap_take(self.epoch, self.page, to, out)
+                .ok_or_else(|| Error::invalid("deferred save: the machine was restored meanwhile"))?;
+            self.page = to;
+            if to == pages {
+                self.done = true;
+                self.ram.trap_disarm();
+            }
+        }
+        Ok(self.done)
+    }
+}
+
+impl Drop for DeferredSave {
+    /// An unfinished save stops trapping writes (unless a restore already
+    /// voided it, or another save took its place).
+    fn drop(&mut self) {
+        if !self.done && self.ram.trap_epoch() == self.epoch {
+            self.ram.trap_disarm();
+        }
     }
 }
 
@@ -881,5 +948,114 @@ pub(super) mod tests {
         };
         assert_eq!(ram(&n, USED, 16), ram(&ready, USED, 16));
         assert_eq!(ram(&n, DATA, 512), ram(&ready, DATA, 512));
+    }
+
+    /// A machine with more RAM than the probe, pages of noise, repeats and
+    /// text, and the probe's code.
+    fn big_probe() -> Machine {
+        let mut m = Machine::with_devices(&MachineConfig { ram_size: 4 << 20, ..cfg() }, &Devices::none());
+        {
+            let b = m.board.borrow_mut();
+            for (base, code) in [(R, &MAIN[..]), (R + 0xa00, &SVC[..]), (IRQ_AT, &IRQ[..])] {
+                for (i, w) in code.iter().enumerate() {
+                    assert!(b.ram.write(base + 4 * i as u64, &w.to_le_bytes()));
+                }
+            }
+            let mut k = 99u32;
+            for p in 16..1000u64 {
+                let page: Vec<u8> = match p % 5 {
+                    0 => vec![0; 4096],
+                    1 => b"page cache ".iter().cycle().take(4096).copied().collect(),
+                    2 => vec![p as u8; 4096],
+                    _ => (0..4096)
+                        .map(|_| {
+                            k ^= k << 13;
+                            k ^= k >> 17;
+                            k ^= k << 5;
+                            k as u8
+                        })
+                        .collect(),
+                };
+                assert!(b.ram.write(R + p * 4096, &page));
+            }
+        }
+        m.cpu.pc = R;
+        m
+    }
+
+    /// Writes by "devices" while a deferred save runs: pages behind and ahead
+    /// of the save, a compare-and-exchange, a write across two pages.
+    fn scribble(m: &Machine, round: u64) {
+        let b = m.board.borrow();
+        for p in [20u64, 500, 999, 3 + round * 37 % 1000, 1000 - round % 900] {
+            assert!(b.ram.write(R + p * 4096 + round % 4000, &[round as u8 ^ 0x5a; 64]));
+        }
+        assert!(b.ram.write(R + 700 * 4096 - 3, &[7; 6]));
+        let mut old = [0u8; 8];
+        assert!(b.ram.read(R + 800 * 4096, &mut old));
+        assert_eq!(b.ram.cmpxchg(R + 800 * 4096, &old, &round.to_le_bytes()), Some(true));
+    }
+
+    /// ADR 0046: a deferred save gives, while the guest and the devices keep
+    /// writing the RAM, the very file `save` gives at the instant it started;
+    /// the machine runs exactly as without it.
+    #[test]
+    fn deferred_save_is_the_file_of_its_instant() {
+        use vetro_snapshot::deferred::assemble;
+        for piece in [4096usize, 37_000, 1 << 20] {
+            let mut m = big_probe();
+            let mut twin = big_probe();
+            run_to(&mut m, 50_000, 5_000, &mut Vec::new());
+            run_to(&mut twin, 50_000, 5_000, &mut Vec::new());
+            let expect = m.save();
+            let mut s = m.save_deferred(0).unwrap();
+            let plan = s.plan().clone();
+            let mut raw = Vec::new();
+            let mut round = 0;
+            loop {
+                let end = m.steps + 3_000;
+                run_to(&mut m, end, 1_000, &mut Vec::new());
+                run_to(&mut twin, end, 1_000, &mut Vec::new());
+                scribble(&m, round);
+                scribble(&twin, round);
+                round += 1;
+                if s.pump(piece, &mut raw).unwrap() {
+                    break;
+                }
+            }
+            assert!(round > 3, "{piece}: the save spans several slices ({round})");
+            assert_eq!(s.given(), plan.raw_len, "{piece}: everything given");
+            assert_eq!(s.kept_bytes(), 0, "{piece}: kept pages handed over");
+            let ram = m.board.ram_arc().clone();
+            assert!((0..1024).all(|p| !ram.write_trapped((R >> 12) + p)), "{piece}: trap off");
+            let file = assemble(plan, &raw, 65_536).unwrap();
+            assert!(file == expect, "{piece}: deferred file differs from the save of its instant");
+            assert!(m.save() == twin.save(), "{piece}: the machine ran as without the save");
+        }
+    }
+
+    /// A restore voids a deferred save in progress; dropping an unfinished
+    /// save turns the trap off; a new save replaces the old one.
+    #[test]
+    fn deferred_save_voided_by_restore() {
+        let mut m = big_probe();
+        run_to(&mut m, 10_000, 5_000, &mut Vec::new());
+        let snap = m.save();
+        let ram = m.board.ram_arc().clone();
+        let mut s = m.save_deferred(0).unwrap();
+        assert!(ram.write_trapped(R >> 12));
+        let mut raw = Vec::new();
+        assert!(!s.pump(8192, &mut raw).unwrap());
+        m.load_state(&snap).unwrap();
+        assert!(!ram.write_trapped((R >> 12) + 500), "restore turns the trap off");
+        assert!(s.pump(1 << 20, &mut raw).is_err(), "void after a restore");
+        drop(s);
+        let s = m.save_deferred(0).unwrap();
+        let mut t = m.save_deferred(0).unwrap();
+        drop(s);
+        assert!(ram.write_trapped((R >> 12) + 500), "the old save does not end the new one's trap");
+        assert!(!t.pump(1 << 16, &mut raw).unwrap());
+        drop(t);
+        assert!(!ram.write_trapped((R >> 12) + 500), "dropped: trap off");
     }
 }

@@ -21,6 +21,7 @@
 //! Specification in `docs/specs/snapshot.md`.
 
 pub mod blocks;
+pub mod deferred;
 pub mod lz;
 pub mod lzh;
 pub mod overlay;
@@ -132,6 +133,9 @@ pub trait Snapshot {
 pub struct Writer {
     buf: Vec<u8>,
     level: Level,
+    /// A deferred writer ([`Writer::deferred`]): the large data and the
+    /// section lengths that depend on it, left to [`deferred::Assembler`].
+    marks: Option<Vec<deferred::Mark>>,
 }
 
 impl Writer {
@@ -140,7 +144,42 @@ impl Writer {
     }
 
     pub fn with_capacity(n: usize) -> Self {
-        Writer { buf: Vec::with_capacity(n), level: Level::Fast }
+        Writer { buf: Vec::with_capacity(n), level: Level::Fast, marks: None }
+    }
+
+    /// A deferred writer (ADR 0046): [`compress`] copies the data as it is
+    /// and notes where it is, [`Writer::section`] notes where its length
+    /// goes; [`Writer::into_plan`] gives those marks, and
+    /// [`deferred::Assembler`] (on another thread) turns the bytes into the
+    /// file a normal writer at [`Level::Fast`] would have written.
+    pub fn deferred(n: usize) -> Self {
+        Writer { buf: Vec::with_capacity(n), level: Level::Fast, marks: Some(Vec::new()) }
+    }
+
+    /// True for a [`Writer::deferred`].
+    pub fn is_deferred(&self) -> bool {
+        self.marks.is_some()
+    }
+
+    /// The last part of a deferred writer's content: section `tag` holding
+    /// `len` bytes of large data (as [`compress`] writes it) that are not in
+    /// this writer: the caller streams them after its bytes (the machine's
+    /// RAM, page by page).
+    pub fn external_section(&mut self, tag: &[u8; 4], len: u64) {
+        self.raw(tag);
+        let at = self.buf.len() as u64;
+        self.u64(0);
+        let marks = self.marks.as_mut().expect("external_section on a deferred writer");
+        marks.push(deferred::Mark::Section { at, end: at + 8 + len });
+        marks.push(deferred::Mark::Blocks { at: at + 8, len });
+    }
+
+    /// The marks and bytes of a deferred writer, with `extra` bytes streamed
+    /// after them ([`Writer::external_section`]) and the configuration hash
+    /// of the file header.
+    pub fn into_plan(self, config_hash: u64, extra: u64) -> (deferred::Plan, Vec<u8>) {
+        let marks = self.marks.expect("into_plan on a deferred writer");
+        (deferred::Plan { config_hash, marks, raw_len: self.buf.len() as u64 + extra }, self.buf)
     }
 
     /// How [`compress`] compresses in this writer (default [`Level::Fast`]).
@@ -231,9 +270,16 @@ impl Writer {
         self.raw(tag);
         let at = self.buf.len();
         self.u64(0);
+        let mark = self.marks.as_mut().map(|m| {
+            m.push(deferred::Mark::Section { at: at as u64, end: 0 });
+            m.len() - 1
+        });
         f(self);
         let len = (self.buf.len() - at - 8) as u64;
         self.buf[at..at + 8].copy_from_slice(&len.to_le_bytes());
+        if let (Some(i), Some(m)) = (mark, self.marks.as_mut()) {
+            m[i] = deferred::Mark::Section { at: at as u64, end: self.buf.len() as u64 };
+        }
     }
     /// A state that implements [`Snapshot`].
     pub fn put<S: Snapshot + ?Sized>(&mut self, s: &S) {
@@ -399,6 +445,54 @@ pub fn hash64(data: &[u8]) -> u64 {
     h ^ (h >> 31)
 }
 
+/// [`hash64`] in pieces, with the total length known upfront (the chunked
+/// saves, ADR 0028 and 0046).
+#[derive(Clone, Debug)]
+pub struct Hash64 {
+    h: u64,
+    carry: [u8; 8],
+    n: usize,
+}
+
+impl Hash64 {
+    const P: u64 = 0x0000_0100_0000_01b3;
+
+    /// For data of `total` bytes in all.
+    pub fn new(total: u64) -> Self {
+        Hash64 { h: 0xcbf2_9ce4_8422_2325 ^ total, carry: [0; 8], n: 0 }
+    }
+
+    pub fn update(&mut self, mut data: &[u8]) {
+        if self.n > 0 {
+            let k = (8 - self.n).min(data.len());
+            self.carry[self.n..self.n + k].copy_from_slice(&data[..k]);
+            self.n += k;
+            data = &data[k..];
+            if self.n < 8 {
+                return;
+            }
+            self.h = (self.h ^ u64::from_le_bytes(self.carry)).wrapping_mul(Self::P).rotate_left(23);
+            self.n = 0;
+        }
+        let (words, rest) = data.as_chunks::<8>();
+        for c in words {
+            self.h = (self.h ^ u64::from_le_bytes(*c)).wrapping_mul(Self::P).rotate_left(23);
+        }
+        self.carry[..rest.len()].copy_from_slice(rest);
+        self.n = rest.len();
+    }
+
+    pub fn finish(self) -> u64 {
+        let mut h = self.h;
+        for &b in &self.carry[..self.n] {
+            h = (h ^ u64::from(b)).wrapping_mul(Self::P);
+        }
+        h = (h ^ (h >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        h = (h ^ (h >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        h ^ (h >> 31)
+    }
+}
+
 // ---- File -------------------------------------------------------------------
 
 /// Complete snapshot: header and `payload` (the sections).
@@ -466,6 +560,11 @@ pub fn decode_container<'a>(magic: &[u8; 8], version: u32, bytes: &'a [u8]) -> R
 /// Writes `data` in blocks of [`BLOCK`] bytes ([`blocks`]): zero blocks take
 /// nothing, the others are compressed at the writer's [`Level`].
 pub fn compress(w: &mut Writer, data: &[u8]) {
+    if let Some(m) = w.marks.as_mut() {
+        m.push(deferred::Mark::Blocks { at: w.buf.len() as u64, len: data.len() as u64 });
+        w.buf.extend_from_slice(data);
+        return;
+    }
     let level = w.level;
     blocks::encode(data.len(), level, &|i| &data[i * BLOCK..(i * BLOCK + BLOCK).min(data.len())], &mut |c| {
         w.raw(c)

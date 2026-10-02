@@ -20,6 +20,7 @@ mod parallel;
 mod record;
 pub mod smp;
 mod snapshot;
+pub use snapshot::DeferredSave;
 
 pub use parallel::Core;
 

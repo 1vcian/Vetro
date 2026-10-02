@@ -3,6 +3,7 @@
 //! ([`CpuEnv`]): generic timer, GIC CPU interface, IRQ line.
 
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 use vetro_cpu::sys::TlbiOp;
@@ -215,6 +216,24 @@ pub struct Ram {
     /// `consumers` receive them.
     dirty: Vec<Mutex<Vec<u64>>>,
     consumers: AtomicUsize,
+    /// The deferred save's write trap (ADR 0046).
+    trap: Trap,
+}
+
+/// The pages of a deferred save not copied yet (ADR 0046): one bit per page,
+/// set for every page when the save starts. The first write to a page whose
+/// bit is set copies its old bytes into `kept` first; the save takes each
+/// page, in order, from `kept` or from the RAM (clearing the bit). So the
+/// save sees the RAM of the instant it started while the guest goes on.
+struct Trap {
+    bits: Vec<AtomicU64>,
+    /// Bits set (0: no save, every write goes straight through).
+    armed: AtomicUsize,
+    /// Old bytes of the pages written before the save took them.
+    kept: Mutex<HashMap<usize, Box<[u8]>>>,
+    kept_bytes: AtomicUsize,
+    /// Grows with every start and every restore: a save started before is void.
+    epoch: AtomicU64,
 }
 
 // SAFETY: the bytes are only reached through `&self` methods that copy in and
@@ -238,7 +257,127 @@ impl Ram {
             watched: AtomicUsize::new(0),
             dirty: (0..n.max(1)).map(|_| Mutex::new(Vec::new())).collect(),
             consumers: AtomicUsize::new(1),
+            trap: Trap {
+                bits: (0..pages.div_ceil(64)).map(|_| AtomicU64::new(0)).collect(),
+                armed: AtomicUsize::new(0),
+                kept: Mutex::new(HashMap::new()),
+                kept_bytes: AtomicUsize::new(0),
+                epoch: AtomicU64::new(0),
+            },
         }
+    }
+
+    // ---- Deferred save (ADR 0046) ---------------------------------------
+
+    /// Number of pages (the last one may be shorter).
+    pub fn pages(&self) -> usize {
+        self.bytes.len.div_ceil(4096)
+    }
+
+    /// Starts the write trap over every page (see [`Trap`]); returns its
+    /// epoch, which [`Ram::trap_take`] checks (a later start or a restore
+    /// changes it). Whoever writes the RAM
+    /// directly (the JIT's software TLB) must stop doing so for pages with
+    /// the bit set ([`Ram::write_trapped`]).
+    pub fn trap_arm(&self) -> u64 {
+        self.trap_disarm();
+        let pages = self.pages();
+        for (w, a) in self.trap.bits.iter().enumerate() {
+            let n = (pages - (w * 64).min(pages)).min(64);
+            a.store(if n == 64 { u64::MAX } else { (1u64 << n) - 1 }, Ordering::SeqCst);
+        }
+        self.trap.armed.store(pages, Ordering::SeqCst);
+        self.trap.epoch.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// The trap's current epoch ([`Ram::trap_arm`]).
+    pub fn trap_epoch(&self) -> u64 {
+        self.trap.epoch.load(Ordering::SeqCst)
+    }
+
+    /// Ends the trap: bits cleared, kept pages dropped.
+    pub fn trap_disarm(&self) {
+        let mut kept = lock(&self.trap.kept);
+        for a in &self.trap.bits {
+            a.store(0, Ordering::SeqCst);
+        }
+        self.trap.armed.store(0, Ordering::SeqCst);
+        kept.clear();
+        self.trap.kept_bytes.store(0, Ordering::SeqCst);
+    }
+
+    /// True if page `page` (`pa >> 12`) is still to be copied by a deferred
+    /// save: a write must go through [`Ram::write`].
+    #[inline]
+    pub fn write_trapped(&self, page: u64) -> bool {
+        if self.trap.armed.load(Ordering::SeqCst) == 0 {
+            return false;
+        }
+        match (page << 12).checked_sub(map::RAM_BASE) {
+            Some(o) if o < self.size() => {
+                let i = (o >> 12) as usize;
+                self.trap.bits[i / 64].load(Ordering::SeqCst) & 1 << (i % 64) != 0
+            }
+            _ => false,
+        }
+    }
+
+    /// Bytes of the pages kept for a deferred save (written by the guest
+    /// before the save took them).
+    pub fn trap_kept_bytes(&self) -> usize {
+        self.trap.kept_bytes.load(Ordering::SeqCst)
+    }
+
+    /// Before writing `[o, o+len)`: the old bytes of trapped pages.
+    #[inline]
+    fn before_write(&self, o: usize, len: usize) {
+        if self.trap.armed.load(Ordering::SeqCst) != 0 && len != 0 {
+            self.keep(o, len);
+        }
+    }
+
+    #[cold]
+    fn keep(&self, o: usize, len: usize) {
+        for i in o >> 12..=(o + len - 1) >> 12 {
+            let (w, b) = (i / 64, 1u64 << (i % 64));
+            if self.trap.bits[w].load(Ordering::SeqCst) & b == 0 {
+                continue;
+            }
+            // Under the lock, the bit cleared only after the copy: a writer
+            // that saw it set waits here until the page is safe.
+            let mut kept = lock(&self.trap.kept);
+            if self.trap.bits[w].load(Ordering::SeqCst) & b != 0 {
+                let n = (self.bytes.len - i * 4096).min(4096);
+                kept.insert(i, self.bytes.get(i * 4096, n).into());
+                self.trap.bits[w].fetch_and(!b, Ordering::SeqCst);
+                self.trap.armed.fetch_sub(1, Ordering::SeqCst);
+                self.trap.kept_bytes.fetch_add(n, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// Appends to `out` the bytes, as of the trap's start, of pages
+    /// `[from, to)`: kept, or read now (and no longer trapped). `None` if a
+    /// restore came after the trap started at `epoch`, or the trap is not on.
+    pub fn trap_take(&self, epoch: u64, from: usize, to: usize, out: &mut Vec<u8>) -> Option<()> {
+        let mut kept = lock(&self.trap.kept);
+        if self.trap.epoch.load(Ordering::SeqCst) != epoch {
+            return None;
+        }
+        for i in from..to.min(self.pages()) {
+            let (w, b) = (i / 64, 1u64 << (i % 64));
+            let n = (self.bytes.len - i * 4096).min(4096);
+            if self.trap.bits[w].load(Ordering::SeqCst) & b != 0 {
+                out.extend_from_slice(self.bytes.get(i * 4096, n));
+                self.trap.bits[w].fetch_and(!b, Ordering::SeqCst);
+                self.trap.armed.fetch_sub(1, Ordering::SeqCst);
+            } else {
+                let page = kept.remove(&i)?;
+                self.trap.kept_bytes.fetch_sub(n, Ordering::SeqCst);
+                out.extend_from_slice(&page);
+            }
+        }
+        Some(())
     }
 
     /// Number of JITs following the written code pages (at most the number
@@ -380,6 +519,7 @@ impl Ram {
     /// outside RAM.
     pub fn write_watched(&self, pa: u64, data: &[u8]) -> Option<bool> {
         let o = self.range(pa, data.len())?;
+        self.before_write(o, data.len());
         self.bytes.store(o, data);
         Some(self.touch(o, data.len()))
     }
@@ -419,6 +559,7 @@ impl Ram {
             v[..n].copy_from_slice(b);
             u64::from_le_bytes(v)
         };
+        self.before_write(o, n);
         let ok = self.bytes.cmpxchg(o, n, le(old), le(new));
         if ok {
             self.touch(o, n);
@@ -485,6 +626,9 @@ impl Ram {
     /// [`RamSource`]. Nothing else may use the RAM meanwhile.
     pub fn restore_from(&self, r: &mut dyn RamSource) -> vetro_snapshot::Result<()> {
         const PAGE: usize = vetro_snapshot::BLOCK;
+        // A deferred save in progress no longer describes this RAM.
+        self.trap.epoch.fetch_add(1, Ordering::SeqCst);
+        self.trap_disarm();
         struct Src<'a>(&'a mut dyn RamSource);
         impl vetro_snapshot::blocks::Source for Src<'_> {
             fn take(&mut self, n: usize) -> vetro_snapshot::Result<&[u8]> {
@@ -1082,6 +1226,9 @@ impl SysPhys for Phys<'_> {
     }
     fn is_watched(&self, page: u64) -> bool {
         self.cell.ram.is_watched(page)
+    }
+    fn write_trapped(&self, page: u64) -> bool {
+        self.cell.ram.write_trapped(page)
     }
     fn take_code_dirty(&mut self, out: &mut Vec<u64>) {
         self.cell.ram.take_code_dirty_for(self.consumer, out)

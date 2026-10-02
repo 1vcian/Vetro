@@ -31,7 +31,7 @@ use vetro_machine::files::proto::display_name;
 use vetro_machine::files::{FilesError, Outcome as FilesOutcome};
 use vetro_machine::vetro_net::TcpReply;
 use vetro_machine::vetro_snapshot::{Snapshot, Writer, hash64};
-use vetro_machine::{Devices, FilesClient, Machine, MachineConfig, NetSetup, Stop};
+use vetro_machine::{DeferredSave, Devices, FilesClient, Machine, MachineConfig, NetSetup, Stop};
 use vetro_platform::virtio::{
     CowBackend, MemBackend, MemDisplay, VirtioBlk, VirtioBlkConfig, VsockConn, VsockState,
 };
@@ -50,6 +50,11 @@ enum Cut {
     /// the snapshot in the same machine (JIT included, with its blocks)
     /// and continues.
     Rewind { quanta: u64 },
+    /// Starts a deferred save (ADR 0046) and goes on: `piece` bytes of it are
+    /// taken after every quantum, while the guest keeps writing; once
+    /// complete, the assembled file must be the `save` of the instant it
+    /// started, and the run must be the same as without it.
+    Deferred { piece: usize },
 }
 
 /// When to cut: at a number of instructions, or a few quanta after a
@@ -73,6 +78,9 @@ struct Run {
     jit: bool,
     /// Cuts performed (instructions, kind).
     done: Vec<(u64, Cut)>,
+    /// A deferred save in progress: the save, its piece size, the raw stream
+    /// so far, the file `save` gave when it started.
+    deferred: Option<(DeferredSave, usize, Vec<u8>, Vec<u8>)>,
 }
 
 impl Run {
@@ -92,6 +100,7 @@ impl Run {
             marks: plan.marks.clone(),
             jit: plan.jit_from_start,
             done: Vec::new(),
+            deferred: None,
         }
     }
 
@@ -106,6 +115,13 @@ impl Run {
 
     fn cut(&mut self, cut: Cut) {
         let snap = self.m.save();
+        if let Cut::Deferred { piece } = cut {
+            assert!(self.deferred.is_none(), "one deferred save at a time");
+            let s = self.m.save_deferred(0).expect("deferred save");
+            self.deferred = Some((s, piece, Vec::new(), snap));
+            self.done.push((self.m.steps, cut));
+            return;
+        }
         assert!(snap == self.m.save(), "two saves at the same point give different bytes");
         match cut {
             Cut::Swap { jit } => {
@@ -118,6 +134,7 @@ impl Run {
                 self.jit |= jit;
                 self.m = n;
             }
+            Cut::Deferred { .. } => unreachable!(),
             Cut::Rewind { quanta } => {
                 for _ in 0..quanta {
                     if self.m.run(QUANTUM) != Stop::Budget {
@@ -143,7 +160,30 @@ impl Run {
         }
         let s = self.m.run(QUANTUM);
         self.log.extend(self.m.console_output());
+        self.pump(false);
         s
+    }
+
+    /// The next piece of the deferred save in progress (all of it with
+    /// `all`); once complete, its file is checked.
+    fn pump(&mut self, all: bool) {
+        let Some((s, piece, raw, _)) = self.deferred.as_mut() else { return };
+        let piece = if all { usize::MAX / 2 } else { *piece };
+        if !s.pump(piece, raw).expect("deferred save pump") {
+            return;
+        }
+        let (s, _, raw, expect) = self.deferred.take().unwrap();
+        let plan = s.plan().clone();
+        let t = Instant::now();
+        let file = vetro_machine::vetro_snapshot::deferred::assemble(plan, &raw, 4 << 20).expect("assemble");
+        eprintln!(
+            "deferred save at {} instructions: {} MiB raw, {} MiB file, assembled in {:.2} s",
+            self.m.steps,
+            raw.len() >> 20,
+            file.len() >> 20,
+            t.elapsed().as_secs_f64()
+        );
+        assert!(file == expect, "the deferred save is not the file of its instant");
     }
 
     fn until_with(&mut self, needle: &str, from: usize, mut host: impl FnMut(&mut Machine)) -> usize {
@@ -190,7 +230,8 @@ impl Run {
         v.into_iter().rev().collect::<Vec<_>>().join("\n")
     }
 
-    fn finish(self) -> Outcome {
+    fn finish(mut self) -> Outcome {
+        self.pump(true);
         assert!(self.pending.is_empty() && self.marks.is_empty(), "cuts not performed: {:?}", self.pending);
         let b = self.m.board.borrow();
         let mut mmu = Writer::new();
@@ -304,6 +345,7 @@ fn snapshot_durante_l_avvio_e_alla_shell() {
             (QUANTUM, Cut::Swap { jit: false }),
             (20 * QUANTUM, Cut::Swap { jit: false }),
             (70 * QUANTUM, Cut::Rewind { quanta: 3 }),
+            (75 * QUANTUM, Cut::Deferred { piece: 8 << 20 }),
             (110 * QUANTUM, Cut::Swap { jit: false }),
         ],
         marks: [("shell", (0, Cut::Swap { jit: false }))].into(),
@@ -318,6 +360,7 @@ fn snapshot_durante_l_avvio_e_alla_shell() {
         at: vec![
             (30 * QUANTUM, Cut::Swap { jit: true }),
             (60 * QUANTUM, Cut::Rewind { quanta: 5 }),
+            (66 * QUANTUM, Cut::Deferred { piece: 32 << 20 }),
             (90 * QUANTUM, Cut::Swap { jit: true }),
         ],
         marks: [("shell", (0, Cut::Swap { jit: false }))].into(),
@@ -515,6 +558,14 @@ fn snapshot_durante_l_uso_del_disco() {
         jit_from_start: false,
     };
     same("disk with cuts", &reference, &disk_script(&image, &initrd, &plan));
+    // A deferred save (ADR 0046) that starts before the guest writes the disk
+    // and is still being taken while it does, with the JIT.
+    let plan = Plan {
+        at: vec![],
+        marks: [("dd", (0, Cut::Deferred { piece: 32 << 20 }))].into(),
+        jit_from_start: true,
+    };
+    same("disk with a deferred save (JIT)", &reference, &disk_script(&image, &initrd, &plan));
 }
 
 // ---- GPU, input and vsock (the script of devices.rs, reduced) ----------------

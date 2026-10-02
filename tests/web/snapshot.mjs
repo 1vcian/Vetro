@@ -20,6 +20,10 @@
 //      and md5sum of the modified disk);
 //   F. the base image changes (another file on the server): the overlay is discarded,
 //      the guest reads the new base, the file is rewritten from scratch.
+//   G. (ADR 0046) at A's prompt a deferred save starts too and is taken piece by
+//      piece while A goes on writing the disk, assembled by a SaveJob on another
+//      vetro-wasm instance into a SnapshotStore: the file is the prompt snapshot
+//      byte for byte (and B and C, restored from that one, continue as A).
 // Prints save and restore timings and sizes in V8.
 //
 //   node tests/web/snapshot.mjs [--no-jit]
@@ -30,6 +34,7 @@ import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { DiskFeeder, MemoryCache, RangeSource } from '../../web/node/disk.mjs';
 import { DiskOverlay, MemFile, SnapshotStore, snapshotKey, staleReason } from '../../web/node/persist.mjs';
+import { BackgroundSave, SaveJob } from '../../web/node/background-save.mjs';
 import { serve } from '../../tools/web-serve.mjs';
 import { check, guestKernel, loadVetro, root, run, Session, SHELL_PROMPT } from './lib.mjs';
 
@@ -124,9 +129,16 @@ run(async () => {
       const bytes = s.m.snapshotSave();
       saves[label] = { bytes, ms: performance.now() - t0, steps: s.m.steps, pos: s.log.length, file: fileA.bytes(), gen: overlay.generation };
     };
+    // G: the deferred save, its saver on another instance (as in its Worker).
+    const { exports: x2 } = await loadVetro();
+    const bgStore = SnapshotStore.memory();
+    let bg = null;
+    let bgPieces = 0;
+    const job = new SaveJob(x2, bgStore, (msg) => bg.reply(msg));
     const A = await session('A', fileA, {
       onQuantum: (s, overlay) => {
         if (!saves.mid && s.m.steps >= MID) save('mid', s, overlay);
+        if (bg?.pump(1)) bgPieces++;
       },
     });
     check(A.overlay.opened.code === 'New', `new overlay expected: ${JSON.stringify(A.overlay.opened)}`);
@@ -134,6 +146,7 @@ run(async () => {
     const at = await A.s.until(SHELL_PROMPT);
     const bootMs = performance.now() - t0;
     save('prompt', A.s, A.overlay);
+    bg = new BackgroundSave(A.s.m, (msg) => job.handle(msg), 'bg', { steps: String(A.s.m.steps) });
     // The snapshot cache as in the app: key, metadata with the
     // overlay generation, read back the same.
     const key = await snapshotKey({ v: A.s.m.snapshotVersion, disk: A.src.key, cmdline: 'x' });
@@ -142,6 +155,16 @@ run(async () => {
     check(cached && Buffer.compare(cached.bytes, saves.prompt.bytes) === 0, 'snapshot read back from the cache differs');
     check(staleReason(cached.meta, [A.overlay]) === null, 'snapshot just saved already stale');
     await script(A, at);
+    while (bg.active) {
+      bg.pump();
+      await new Promise((ok) => setTimeout(ok, 0));
+    }
+    const done = await bg.done;
+    const deferred = await bgStore.load('bg');
+    check(deferred && Buffer.compare(deferred.bytes, saves.prompt.bytes) === 0, 'G: the deferred save differs from the prompt snapshot');
+    check(bgPieces > 2, `G: the deferred save went on while the guest ran (${bgPieces} slices)`);
+    console.log(`G: deferred save at the prompt equal to the synchronous one (${mib(done.size)}): ${bg.beginMs.toFixed(1)} ms to start, ` +
+      `${ms(bg.pumpMs)} of copies in ${bgPieces} slices on the machine's thread, ${ms(done.ms)} in the assembler, kept pages at most ${mib(bg.keptMax)}`);
     check(A.read.includes(`LETTO-${TEXT}-FINE`), `A: write not read back:\n${A.read}`);
     check(A.read.includes(`${md5(modified)}  /dev/vda`), `A: md5sum of the modified disk differs:\n${A.read}`);
     check(staleReason(cached.meta, [A.overlay]) !== null, 'after the write the prompt snapshot is no longer valid');

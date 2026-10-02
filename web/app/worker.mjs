@@ -84,6 +84,18 @@
 //   lost, like going back to the last saved state; without a snapshot the
 //   first boot runs again. Snapshots go to and come from OPFS in chunks.
 //
+// Deferred snapshots (ADR 0046): a save only copies on this thread. The
+// machine is captured as it is (devices and disk copy-on-write copied, the RAM
+// trapped copy-on-write: a page the guest writes is copied first), the guest
+// goes on at once, and between slices the RAM goes, page by page, to the
+// saver Worker (web/app/save-worker.mjs), which compresses it with our LZ and
+// writes the file to OPFS; the file is the one a synchronous save at that
+// instant writes, and replaces the previous snapshot only once complete. The
+// pieces are handed over only after SAVE_QUIET_MS without user inputs
+// (unless the kept pages pass KEPT_MAX), at most WINDOW bytes ahead of the
+// saver. Without a saver (no Worker, small level) the save is synchronous as
+// before.
+//
 // Accelerated graphics (ADR 0037), with `config.gpu === 'webgl'` and Android:
 // the machine's GPU offers 3D (DEV.GPU_3D) with the gfxstream decoder, the
 // image gets GFXSTREAM_PARAMS (gfxstream EGL instead of SwiftShader), and the
@@ -101,6 +113,7 @@ import { AdbClient } from '../node/adb.mjs';
 import { apkInfo } from '../node/apk.mjs';
 import { ANDROID_DISK, ANDROID_HOME_NS, ANDROID_PARAMS, ANDROID_WAKE, ANDROID_GRAPHICS, BootProgress, GFXSTREAM_PARAMS, gridColors, HOME_DRAW_NS, HOME_MIN_COLORS, HOME_POLL_NS, HOME_QUERY, isHome, machineDevices } from '../node/android.mjs';
 import { DiskOverlay, fromBase64, opfsFile, sha256Hex, SnapshotStore, snapshotKey, staleReason, toBase64 } from '../node/persist.mjs';
+import { BackgroundSave } from '../node/background-save.mjs';
 import { androidSnapshotKey, downloadPrebuilt, findPrebuilt, PREBUILT_CHUNK, prebuiltBlocksUrl, prebuiltSnapUrl } from '../node/prebuilt.mjs';
 
 /** Largest quantum (instructions). */
@@ -136,6 +149,12 @@ let stepsPerMs = 50_000;
 const SAVE_QUIET_MS = 4000;
 /** ... but no longer than this after they were requested. */
 const SAVE_DEFER_MAX_MS = 60_000;
+/**
+ * A deferred save (ADR 0046) hands its pages over regardless of the user's
+ * inputs once the guest has written this many bytes of pages it still has to
+ * take (each written page is kept until then).
+ */
+const KEPT_MAX = 256 << 20;
 /** Overlays are saved at most every this many ms while the guest works. */
 const PERSIST_MS = 1000;
 /** Guest time without activity after which the guest is at rest (1.5 s). */
@@ -165,6 +184,12 @@ const inputLog = [];
 let overlays = [];
 let store = null;
 let snapKey = null;
+/** The compiled vetro-wasm module (the saver Worker instantiates it too). */
+let wasmModule = null;
+/** The saver Worker (ADR 0046): a promise of it, or of null if there is none. */
+let saver = null;
+/** The deferred save in progress (BackgroundSave), or null. */
+let bgSave = null;
 /** Metadata of the last snapshot saved or restored in this session. */
 let lastSnapshot = null;
 let saveRequested = false;
@@ -304,6 +329,7 @@ function makeGlExecutor(c) {
 
 /** New machine with the disks (and their overlays). */
 async function build(c, sources) {
+  bgSave?.cancel('new machine');
   for (const o of overlays) o?.close();
   overlays = [];
   m?.free();
@@ -358,14 +384,83 @@ async function resumeCores() {
 async function saveSnapshot(why) {
   await pauseCores();
   try {
-    await saveSnapshotNow(why);
+    if (!(await saveSnapshotBackground(why))) await saveSnapshotNow(why);
   } finally {
     await resumeCores();
   }
 }
 
-async function saveSnapshotNow(why) {
+/** The saver Worker, started once; null if it cannot run (then saves are synchronous). */
+function getSaver() {
+  saver ??= new Promise((ok) => {
+    if (typeof Worker === 'undefined' || !wasmModule) return ok(null);
+    let w;
+    try {
+      w = new Worker(new URL('./save-worker.mjs', import.meta.url), { type: 'module' });
+    } catch (e) {
+      status(`snapshots in the foreground: no saver Worker (${e.message ?? e})`);
+      return ok(null);
+    }
+    w.onmessage = (e) => {
+      const msg = e.data;
+      if (msg.type === 'ready') return ok(w);
+      if (bgSave) {
+        bgSave.reply(msg);
+        wake?.();
+      } else if (msg.type === 'error') {
+        status(`snapshots in the foreground: ${msg.message}`);
+        ok(null);
+      }
+    };
+    w.onerror = (e) => {
+      status(`snapshots in the foreground: saver Worker failed (${e.message ?? e})`);
+      bgSave?.cancel('saver Worker failed');
+      saver = Promise.resolve(null);
+      ok(null);
+    };
+    w.postMessage({ type: 'init', module: wasmModule, dir: 'vetro-snapshots' });
+  });
+  return saver;
+}
+
+/**
+ * Starts a deferred save (ADR 0046): false if there is no saver or the
+ * machine refuses it (then the caller saves synchronously).
+ */
+async function saveSnapshotBackground(why) {
+  const w = await getSaver();
+  if (!w) return false;
   persistOverlays();
+  const meta = snapshotMeta(why);
+  const memory = m.memoryBytes;
+  let bg;
+  try {
+    bg = new BackgroundSave(m, (msg, transfer) => w.postMessage(msg, transfer), snapKey, meta);
+  } catch (e) {
+    status(`snapshot in the foreground: ${e.message ?? e}`);
+    return false;
+  }
+  bgSave = bg;
+  status(`saving the snapshot in the background (${why}, ${(bg.total / 2 ** 20).toFixed(0)} MiB to compress)`);
+  bg.done.then(
+    (r) => {
+      lastSnapshot = meta;
+      post({
+        type: 'snapshot', why, steps: Number(meta.steps), size: r.size, background: true,
+        // On this thread (copies) and in the saver (compression and writes, its wall time).
+        saveMs: bg.beginMs + bg.pumpMs, writeMs: r.wallMs, beginMs: bg.beginMs, pumpMs: bg.pumpMs, assembleMs: r.ms,
+        keptMax: bg.keptMax, raw: bg.total, generations: meta.generations, memory: Math.max(memory, m.memoryBytes),
+      });
+    },
+    (e) => status(`snapshot not saved: ${e.message ?? e}`),
+  ).finally(() => {
+    if (bgSave === bg) bgSave = null;
+  });
+  return true;
+}
+
+/** Metadata kept with a snapshot (as of now). */
+function snapshotMeta(why) {
   const meta = {
     steps: String(m.steps),
     generations: generations(),
@@ -374,6 +469,12 @@ async function saveSnapshotNow(why) {
     why,
   };
   if (android) meta.progress = android.progress.events;
+  return meta;
+}
+
+async function saveSnapshotNow(why) {
+  persistOverlays();
+  const meta = snapshotMeta(why);
   // In chunks, straight to OPFS: with Android it is hundreds of MiB, which
   // whole would not fit in the module's memory (ADR 0028).
   const t0 = performance.now();
@@ -419,7 +520,9 @@ async function start(c) {
   status('loading vetro-wasm');
   const wasm = await (await fetch(c.wasmUrl)).arrayBuffer();
   let jitEngine;
-  ({ exports, jit: jitEngine } = await instantiate(wasm));
+  // Compiled once: the saver Worker instantiates the same module (ADR 0046).
+  wasmModule = await WebAssembly.compile(wasm);
+  ({ exports, jit: jitEngine } = await instantiate(wasmModule));
   jitHost = jitEngine;
   times.wasm = performance.now() - t0;
   if (c.gpu === 'webgl') {
@@ -1263,7 +1366,13 @@ async function loop() {
     }
     // An automatic snapshot waits for a pause in the user's inputs (see SAVE_QUIET_MS).
     const saveNow = saveRequested && (saveWhy === 'requested' || now - lastUserInputAt >= SAVE_QUIET_MS || now - saveRequestedAt >= SAVE_DEFER_MAX_MS);
-    if (store && mode === 'live' && (saveNow || (!saveRequested && atRest && (!lastSnapshot || String(generations()) !== String(lastSnapshot.generations))))) {
+    // A deferred save in progress (ADR 0046): its next pieces once the inputs
+    // pause, or when the guest has written too many of the pages it still has
+    // to take. Another save waits for it.
+    // One piece per slice while the guest runs (a few ms of copies), as many
+    // as the saver takes while the guest waits.
+    if (bgSave) bgSave.pump(stop === 'Idle' ? Infinity : now - lastUserInputAt >= SAVE_QUIET_MS || m.snapshotKept > KEPT_MAX ? 1 : 0);
+    if (store && mode === 'live' && !bgSave && (saveNow || (!saveRequested && atRest && (!lastSnapshot || String(generations()) !== String(lastSnapshot.generations))))) {
       const why = saveNow ? saveWhy : lastSnapshot ? 'disks changed' : 'boot finished';
       saveRequested = false;
       saveWhy = 'requested';
@@ -1297,6 +1406,9 @@ async function loop() {
         quantum: Math.round(stepsPerMs * QUANTUM_MS),
         // Guest time ahead of the real clock (ms; > 0: the guest is early).
         aheadMs: aheadMs(),
+        // The deferred save in progress (ADR 0046): raw bytes handed over and
+        // in all, guest pages kept, ms on this thread.
+        save: bgSave ? { sent: bgSave.sent, total: bgSave.total, kept: m.snapshotKept, pumpMs: bgSave.pumpMs } : null,
       });
       if (mode !== 'live' || m.rrStatus().state === 'Recording') postRr();
       lastStats = now;
@@ -1306,8 +1418,9 @@ async function loop() {
     postAnalysis();
     if (stop === 'Idle' && mode === 'live') {
       status('the guest is waiting for input');
-      // A deferred snapshot is saved once the inputs pause (SAVE_QUIET_MS).
-      if (!inbox.length && !control.length) await rest(saveRequested ? SAVE_QUIET_MS : Infinity);
+      // A deferred snapshot is saved once the inputs pause (SAVE_QUIET_MS); a
+      // save in progress goes on when the saver answers (it wakes the loop).
+      if (!inbox.length && !control.length) await rest(saveRequested || bgSave ? SAVE_QUIET_MS : Infinity);
       continue;
     }
     if (stop !== 'Budget') {

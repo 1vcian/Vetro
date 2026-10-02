@@ -67,6 +67,31 @@ gives the same bytes.
   4096-entry table per code; any damage is an error or caught by the file
   checksum, never a panic.
 
+### Deferred saves (`vetro_snapshot::deferred`, ADR 0046)
+
+The same file, made on another thread. `Writer::deferred(n)` writes the
+uncompressed content: `compress` copies the data and notes a
+`Mark::Blocks { at, len }`, `section` notes a `Mark::Section { at, end }` (its
+length field, still the uncompressed one); `external_section(tag, len)` ends
+the content with a section of `len` bytes of large data streamed afterwards by
+the caller; `into_plan(config_hash, extra)` gives the `Plan` (configuration
+hash, marks, `raw_len`) and the bytes. The *raw stream* is those bytes followed
+by the external ones. `Plan::encode`/`decode` (u64 configuration hash, u64 raw
+length, u64 marks, each u8 kind (0 section, 1 blocks) and two u64; `decode`
+checks order and nesting).
+
+`Assembler::new(plan)`, `push(bytes, out)` (pieces of any size, in order),
+`finish(out) -> file length`; `out: &mut dyn Out` has `write_at` and
+`read_at`. Blocks are encoded as `blocks::encode` at `Level::Fast` does, one at
+a time: a repeated block is confirmed byte by byte against the first block
+with its hash, read back from `out` (decompressed if it was written with
+`lz`); block counts and section lengths are written once known; at the end the
+content is read back once for the checksum (`Hash64`, seeded with the
+length) and the header is written at 0. `assemble(plan, raw, piece)` does it in
+memory. Only the fast level (the app's own saves).
+
+`Hash64` (`new(total)`, `update`, `finish`): `hash64` in pieces.
+
 ## `vetro-machine`
 
 - `Machine::save(&self) -> Vec<u8>` (fast level) and
@@ -78,6 +103,17 @@ gives the same bytes.
   header is the result; the RAM (`Ram::save_chunks(level, emit)`, about 1 MiB
   chunks) is compressed twice, the first time for the length that enters the
   hash. `reserve`: expected size of the sections before the RAM.
+- `Machine::save_deferred(&mut self, reserve) -> Result<DeferredSave, _>`
+  (ADR 0046): the sections before the RAM into a deferred writer, then a
+  write trap over the RAM (`Ram::trap_arm`: one bit per page; the first write
+  to a page with its bit set keeps a copy of its old bytes; the JIT's
+  software TLB gets no write entries for such pages, `SysPhys::write_trapped`,
+  and its existing ones are forgotten). `DeferredSave::pump(max, out)`
+  appends the raw stream (the head, then every page as it was at the start,
+  kept or read now, clearing its bit) and says when it is complete (trap
+  off); `plan()`, `given()`, `kept_bytes()`. A restore (`Ram::restore_from`)
+  or another deferred save voids it (pump error); dropping an unfinished one
+  turns its trap off. Refused while the cores run in parallel.
 - `Machine::load_state_stream(&mut self, head, pull)` (ADR 0028): chunked
   restore: `head` = the file up to and including the header of the `RAM `
   section, `pull` provides the rest (`Ram::restore_from` with a `RamSource`).
@@ -158,12 +194,24 @@ translations and increments `Tlb::flushes`.
   restore onto a used machine, incompatible snapshots, virtio-blk in flight,
   `small_level_restores_the_same_state`: the small level whole and chunked,
   restored whole and in chunks, gives the same machine and the same
-  continuation).
+  continuation; `deferred_save_is_the_file_of_its_instant`: while the guest
+  and the "devices" write behind, ahead of and across the save's position,
+  the assembled file is the `save` of its instant and the machine runs as a
+  twin without the save; `deferred_save_voided_by_restore`).
+- `vetro-snapshot` `deferred` (deferred writer and assembler give the
+  normal file with pieces of any size, nested and empty sections, repeats
+  whose source was flushed long before; bad plans and streams rejected).
 - `tests/boot/tests/snapshot.rs` (guest kernel, release,
   `VETRO_REQUIRE_GUEST_KERNEL=1`): equivalence with cuts during boot, shell,
-  network, disk, GPU/input/vsock, interpreter and JIT; measurements.
+  network, disk, GPU/input/vsock, interpreter and JIT; deferred saves
+  (`Cut::Deferred`) taken over tens of quanta during boot (interpreter and
+  JIT) and while the guest writes the disk (JIT): the file is the `save` of
+  its instant and the run equals the uncut one; measurements.
 - `crates/vetro-cli/tests/boot_snapshot.rs`, `vetro-wasm`
-  `snapshot_dall_api` (also ABI 13).
+  `snapshot_dall_api` (also ABI 13), `deferred_snapshot_from_the_api`
+  (ABI 16); `tests/web/snapshot.mjs` case G (a deferred save in V8 through
+  `BackgroundSave` and `SaveJob` on two instances equals the synchronous
+  one).
 
 ## Persistent disk overlay (`vetro_snapshot::overlay`, ADR 0017)
 

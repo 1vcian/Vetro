@@ -352,6 +352,67 @@ export class SnapshotStore {
   }
 
   /**
+   * Where a snapshot assembled bit by bit is written (the deferred saves of
+   * ADR 0046, in their own Worker): `{ file, finish(meta, size), abort() }`.
+   * `file` (FileSystemSyncAccessHandle interface, positioned writes and
+   * reads) is a new file; `finish` truncates it to `size` and puts it in place
+   * of the snapshot `key` with its metadata (written last), `abort` drops it.
+   * As with `saveStream`, if the save does not finish the previous snapshot
+   * stays (where OPFS can move files).
+   */
+  async saveTarget(key) {
+    if (this.#mem) {
+      const file = new MemFile();
+      return {
+        file,
+        finish: async (meta, size) => {
+          file.truncate(size);
+          this.#mem.delete(`${key}.json`);
+          this.#mem.set(`${key}.snap`, file.bytes());
+          await this.#write(`${key}.json`, new TextEncoder().encode(JSON.stringify({ ...meta, size })));
+          return size;
+        },
+        abort: async () => {},
+      };
+    }
+    const fh = await this.#dir.getFileHandle(`${key}.new`, { create: true });
+    const movable = typeof fh.move === 'function';
+    if (!movable) await this.#remove(`${key}.json`);
+    const target = movable ? fh : await this.#dir.getFileHandle(`${key}.snap`, { create: true });
+    const file = await target.createSyncAccessHandle();
+    file.truncate(0);
+    let open = true;
+    const close = () => {
+      if (open) file.close();
+      open = false;
+    };
+    return {
+      file,
+      finish: async (meta, size) => {
+        try {
+          file.truncate(size);
+          file.flush();
+        } finally {
+          close();
+        }
+        if (movable) {
+          await this.#remove(`${key}.json`);
+          await this.#remove(`${key}.snap`);
+          await fh.move(`${key}.snap`);
+        } else {
+          await this.#remove(`${key}.new`);
+        }
+        await this.#write(`${key}.json`, new TextEncoder().encode(JSON.stringify({ ...meta, size })));
+        return size;
+      },
+      abort: async () => {
+        close();
+        await this.#remove(movable ? `${key}.new` : `${key}.snap`);
+      },
+    };
+  }
+
+  /**
    * Where a snapshot downloaded from elsewhere (the prebuilt one, ADR 0031)
    * is written: `{ file, resume, saveResume(state), finish(meta), close() }`.
    * `file` is the snapshot file itself; the metadata is removed first and

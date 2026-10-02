@@ -4,7 +4,7 @@
 
 import { CODE_BUDGET, JitEngine } from './jit-engine.mjs';
 
-export const ABI_VERSION = 15;
+export const ABI_VERSION = 16;
 /** Codes of vetro_run. */
 export const STOP = ['Budget', 'PowerOff', 'Reset', 'Idle', 'Unimplemented', 'Blocked'];
 
@@ -67,6 +67,11 @@ export function setGlExecutor(e) {
 }
 /** Where those of vetro_snapshot_restore_stream come from (import vetro_host.snapshot_read). */
 let snapshotSource = null;
+/**
+ * The file of the SnapshotAssembler at work (imports vetro_host.file_write and
+ * file_read): an object with the FileSystemSyncAccessHandle interface.
+ */
+let assemblerFile = null;
 
 /**
  * Bytes of a guest path from a string in *surrogateescape* (ADR
@@ -228,6 +233,16 @@ export async function instantiate(wasmBytes, { jitBudget } = {}) {
         if (!snapshotSink) throw new Error('vetro_host.snapshot_write outside Machine.snapshotSaveTo');
         snapshotSink(ptr >>> 0, len >>> 0);
       },
+      file_write: (at, ptr, len) => {
+        if (!assemblerFile) throw new Error('vetro_host.file_write outside SnapshotAssembler');
+        const view = new Uint8Array(exports.memory.buffer, ptr >>> 0, len >>> 0);
+        return assemblerFile.write(view, { at: Number(at) }) === view.length ? 0 : 1;
+      },
+      file_read: (at, ptr, len) => {
+        if (!assemblerFile) throw new Error('vetro_host.file_read outside SnapshotAssembler');
+        const view = new Uint8Array(exports.memory.buffer, ptr >>> 0, len >>> 0);
+        return assemblerFile.read(view, { at: Number(at) }) === view.length ? 0 : 1;
+      },
       gl_execute: (wp, wn, bp, bn, op, on) => {
         if (!glExecutor) return;
         const buf = exports.memory.buffer;
@@ -265,6 +280,77 @@ export function copyIn(x, bytes) {
   // View taken after the allocation: the memory may have grown.
   new Uint8Array(x.memory.buffer, ptr, bytes.length).set(bytes);
   return [ptr, bytes.length];
+}
+
+/**
+ * The assembler of a deferred save (ABI 16, ADR 0046), on any instance of
+ * vetro-wasm (usually its own, in a Worker of its own): `push` takes the raw
+ * stream of `Machine.snapshotPump` in order, `finish` writes the header and
+ * returns the file length. `file`: FileSystemSyncAccessHandle interface
+ * (positioned writes and reads; the assembler reads back earlier blocks and,
+ * at the end, the whole content for the checksum).
+ */
+export class SnapshotAssembler {
+  #x;
+  #a;
+  #file;
+  #buf = 0;
+  #cap = 0;
+
+  constructor(x, plan, file) {
+    this.#x = x;
+    this.#file = file;
+    const [p, n] = copyIn(x, plan);
+    try {
+      this.#a = x.vetro_asm_new(p, n) >>> 0;
+    } finally {
+      if (n) x.vetro_free(p, n);
+    }
+    if (!this.#a) throw new Error('deferred save: plan not valid');
+  }
+
+  #call(f) {
+    assemblerFile = this.#file;
+    try {
+      return f();
+    } finally {
+      assemblerFile = null;
+    }
+  }
+
+  #error() {
+    const x = this.#x;
+    return utf8.decode(unshared(new Uint8Array(x.memory.buffer, x.vetro_asm_error_ptr(this.#a) >>> 0, x.vetro_asm_error_len(this.#a) >>> 0)));
+  }
+
+  /** The next bytes of the raw stream. */
+  push(bytes) {
+    const x = this.#x;
+    if (bytes.length > this.#cap) {
+      if (this.#buf) x.vetro_free(this.#buf, this.#cap);
+      this.#cap = Math.max(bytes.length, 1 << 20);
+      this.#buf = x.vetro_alloc(this.#cap) >>> 0;
+      if (!this.#buf) throw new Error(`vetro_alloc(${this.#cap}) failed`);
+    }
+    new Uint8Array(x.memory.buffer, this.#buf, bytes.length).set(bytes);
+    if (this.#call(() => x.vetro_asm_push(this.#a, this.#buf, bytes.length)) !== 0) throw new Error(`deferred save: ${this.#error()}`);
+  }
+
+  /** Header written; returns the file length. */
+  finish() {
+    const n = Number(this.#call(() => this.#x.vetro_asm_finish(this.#a)));
+    if (!n) throw new Error(`deferred save: ${this.#error()}`);
+    return n;
+  }
+
+  free() {
+    const x = this.#x;
+    if (this.#buf) x.vetro_free(this.#buf, this.#cap);
+    this.#buf = 0;
+    this.#cap = 0;
+    if (this.#a) x.vetro_asm_free(this.#a);
+    this.#a = 0;
+  }
 }
 
 /** A vetro-wasm machine. */
@@ -586,6 +672,43 @@ export class Machine {
     write(head, 0);
     if (at !== total) throw new Error(`chunked snapshot: ${at} bytes instead of ${total}`);
     return total;
+  }
+
+  /**
+   * Starts a deferred save (ABI 16, ADR 0046) of the machine as it is now and
+   * returns its plan (Uint8Array): the guest goes on at once, and
+   * `snapshotPump` gives the raw stream that a `SnapshotAssembler` (another
+   * Worker) turns into the file `snapshotSaveTo` would write now. Read the
+   * console first. Throws if refused (cores in parallel, small level).
+   */
+  snapshotBackground() {
+    const x = this.#x;
+    const n = x.vetro_snapshot_bg_begin(this.#vm) >>> 0;
+    if (!n) throw new Error(`deferred save refused: ${this.#message()}`);
+    return new Uint8Array(x.memory.buffer, x.vetro_snapshot_ptr(this.#vm) >>> 0, n).slice();
+  }
+
+  /**
+   * The next bytes (about `max`) of the deferred save's raw stream, in a new
+   * buffer (to transfer), or null once everything has been given. Throws if
+   * a restore voided the save or there is none.
+   */
+  snapshotPump(max) {
+    const x = this.#x;
+    const n = Number(x.vetro_snapshot_bg_pump(this.#vm, max));
+    if (n === 0) return null;
+    if (n < 0) throw new Error(n === -1 ? 'no deferred save in progress' : `deferred save void: ${this.#message()}`);
+    return new Uint8Array(x.memory.buffer, x.vetro_snapshot_ptr(this.#vm) >>> 0, n).slice();
+  }
+
+  /** Ends the deferred save in progress, if any. */
+  snapshotCancelBackground() {
+    this.#x.vetro_snapshot_bg_cancel(this.#vm);
+  }
+
+  /** Bytes of guest pages kept for the deferred save in progress. */
+  get snapshotKept() {
+    return Number(this.#x.vetro_snapshot_bg_kept(this.#vm));
   }
 
   /**

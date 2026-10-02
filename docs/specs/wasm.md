@@ -204,6 +204,14 @@ The round trip with a network disk:
 | `vetro_snapshot_clear` | `(vm)` | frees the buffer |
 | `vetro_snapshot_restore_stream` | `(vm, head: *const u8, head_len: usize) -> u32` | ABI 12: restore without the whole file in memory: `head` = the file's bytes up to and including the header of the `RAM ` section; the RAM content is requested from the import `vetro_host.snapshot_read(ptr, cap) -> bytes written` (0 = end). Same codes as `vetro_snapshot_restore`; the checksum is verified at the end (`CORRUPT` = discard the machine). After a restore with a buffer as large as the snapshot, memory stayed high and fragmented and the next save found no contiguous space |
 | `vetro_snapshot_save_stream` | `(vm) -> u64` | ABI 12: the same file as `vetro_snapshot_save` in chunks, without holding it whole in memory (Android): the content's chunks go to the import `vetro_host.snapshot_write(ptr, len)` in order (to be written from offset 36 on), the header (36 bytes) stays in the `vetro_snapshot_ptr` buffer. Returns the file length. Besides the chunks (1 MiB) only the part before the RAM is in memory (devices and disk copy-on-write); the RAM is compressed twice (its length enters the hash) |
+| `vetro_snapshot_bg_begin` | `(vm) -> usize` | ABI 16 (ADR 0046): starts a deferred save of the machine as it is now: the sections before the RAM copied as they are (large data uncompressed), the RAM trapped copy-on-write (the first write to a page not yet given copies it first; the JIT's software TLB gets no write entry for such pages). The plan (`vetro_snapshot::deferred::Plan`) goes into the `vetro_snapshot_ptr` buffer; returns its length, 0 if refused (cores in parallel, small level; reason in the message). Replaces a deferred save in progress. Read the console first |
+| `vetro_snapshot_bg_pump` | `(vm, max: usize) -> i64` | ABI 16: the next bytes (about `max`, at least one page) of the raw stream into the `vetro_snapshot_ptr` buffer: their number; 0 once everything has been given (the save is closed); -1 without a deferred save; -2 if a restore came since it started (void, closed) |
+| `vetro_snapshot_bg_cancel` | `(vm)` | ABI 16: ends the deferred save in progress (trap off) |
+| `vetro_snapshot_bg_kept` | `(vm) -> u64` | ABI 16: bytes of pages kept for the deferred save (written by the guest before it took them) |
+| `vetro_asm_new` | `(plan: *const u8, len: usize) -> *mut Asm` | ABI 16: the assembler of a deferred save, on any instance (the app runs it in the saver Worker's own instance); null if the plan is not valid. The file goes through the imports `vetro_host.file_write/file_read` |
+| `vetro_asm_push` | `(asm, data: *const u8, len: usize) -> u32` | ABI 16: the next bytes of the raw stream, in order, pieces of any size; 0, or 1 on error (`vetro_asm_error_ptr/len`) |
+| `vetro_asm_finish` | `(asm) -> u64` | ABI 16: after the whole raw stream: reads the content back for the checksum, writes the header at 0, returns the file length (0 on error). The file is the one `vetro_snapshot_save` gave when the save started |
+| `vetro_asm_error_ptr` / `vetro_asm_error_len` / `vetro_asm_free` | `(asm)` | ABI 16: last error (UTF-8), freeing |
 | `vetro_snapshot_restore` | `(vm, data: *const u8, len: usize) -> u32` | restores; the buffer can be freed right after. Codes: 0 `OK`, 1 `BAD_MAGIC` (not a snapshot), 2 `VERSION` (other format), 3 `CONFIG` (machine configured differently), 4 `CORRUPT` (damaged or inconsistent: the machine must be discarded); reason in the message. With 1, 2 and 3 the machine does not change |
 
 To restore, build the machine with the same parameters of
@@ -441,6 +449,8 @@ JS provides them at instantiation (`web/node/vetro.mjs`):
 | `vetro_host.panic` | `(ptr: *const u8, len: usize)` | UTF-8 message of a panic, right before the `unreachable` trap |
 | `vetro_host.snapshot_write` | `(ptr: *const u8, len: usize)` | ABI 12: a chunk of `vetro_snapshot_save_stream` (the view is valid only during the call) |
 | `vetro_host.snapshot_read` | `(ptr: *mut u8, cap: usize) -> usize` | ABI 12: the next bytes (at most `cap`) for `vetro_snapshot_restore_stream`, 0 at the end |
+| `vetro_host.file_write` | `(at: u64, ptr: *const u8, len: usize) -> u32` | ABI 16: writes `len` bytes at offset `at` of the file of the `vetro_asm_*` call in progress; 0 if done |
+| `vetro_host.file_read` | `(at: u64, ptr: *mut u8, len: usize) -> u32` | ABI 16: reads `len` bytes at offset `at` of that file; 0 if done |
 | `vetro_jit.compile` | `(ptr: *const u8, len: usize) -> i32` | compiles and instantiates a generated module; index ≥ 0, or < 0 if rejected |
 | `vetro_jit.runtime` | `(ptr: *const u8, len: usize) -> i32` | compiles and instantiates the runtime module (with `env.mem`, `env.ld`, `env.st`, `env.vsync`, `env.simd` since ABI 11); its exports are the `rt.*` imports of the modules compiled afterwards, also after `reset`; 0, or < 0 if rejected (ABI 10) |
 | `vetro_jit.entry` | `(module: i32, index: u32) -> u32` | puts the module's export `b<index>` in a new entry of `__indirect_function_table` and returns it: `JsEngine::run` calls it as a function pointer, without going through JS |
@@ -536,6 +546,16 @@ in the Worker (`opfsFile(folder, name)`), `MemFile` in the tests.
   writes `<key>.snap` and then `<key>.json` (with `size`), `load(key)`
   returns `{ meta, bytes }` only if the metadata is there and the length
   matches; `remove`.
+- `SnapshotStore.saveTarget(key)` (ADR 0046): `{ file, finish(meta, size),
+  abort() }`, a new file (positioned writes and reads) that replaces snapshot
+  `key` only at `finish`.
+- `web/node/background-save.mjs` (ADR 0046): `BackgroundSave(machine,
+  send, key, meta)` (machine side: starts the deferred save, `pump(allowed)`
+  hands pieces of `PIECE` = 4 MiB over, at most `WINDOW` = 16 MiB
+  unacknowledged, `reply(msg)`, `cancel()`, `done`, and the costs on the
+  machine's thread `beginMs`, `pumpMs`, `keptMax`); `SaveJob(exports, store,
+  reply)` (saver side: `handle(msg)` for `begin`, `data`, `end`, `abort`;
+  answers `ack`, `done` { size, ms, wallMs }, `error`).
 - `snapshotKey(parts)`: SHA-256 (32 hex digits) of the JSON with sorted
   keys; `sha256Hex`; `staleReason(meta, overlays)`: null if every overlay
   is at the generation saved in the metadata, otherwise the reason;
@@ -547,10 +567,13 @@ The `Machine` class of `vetro.mjs` has `snapshotVersion`, `snapshotSave()`
 `snapshotRestoreStream(size, readAt)` (chunked: only the part before the
 RAM goes into the module's memory), `snapshotRestoreWith(n, fill)` (the
 bytes read straight into a buffer in the module's memory), `memoryBytes`,
-`snapshotRestore(bytes)` (throws an `Error` with `code`
+`snapshotBackground()` (ABI 16: the plan), `snapshotPump(max)` (a new
+buffer to transfer, or null at the end), `snapshotCancelBackground()`,
+`snapshotKept`, `snapshotRestore(bytes)` (throws an `Error` with `code`
 `BadMagic`/`Version`/`Config`/`Corrupt`), `overlayOpen(disk, identity,
 bytes)`, `overlayTake(disk)` (`{ truncate, writes: [{ at, bytes }] }` or null),
-`overlayInfo(disk)`.
+`overlayInfo(disk)`. `SnapshotAssembler(exports, plan, file)` (ABI 16):
+`push(bytes)`, `finish()` (file length), `free()`.
 
 ## The web app (`web/app`)
 
