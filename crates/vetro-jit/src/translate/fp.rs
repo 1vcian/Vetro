@@ -1944,7 +1944,11 @@ fn vsqrt(simd: u32, d: bool) -> Func {
 /// FPCR.AHP (bit 26) clear and FPCR.RMode round to nearest (i32 boolean):
 /// the IEEE half format of the fast paths.
 fn ieee_half(g: &mut G) {
-    g.f.local_get(P_STATE).i32_load(off::FPCR).i32_const(1 << 26 | FPCR_RMODE).op(op::I32_AND).op(op::I32_EQZ);
+    g.f.local_get(P_STATE)
+        .i32_load(off::FPCR)
+        .i32_const(1 << 26 | FPCR_RMODE)
+        .op(op::I32_AND)
+        .op(op::I32_EQZ);
 }
 
 /// v128 with `x` in every 32-bit lane.
@@ -2083,7 +2087,8 @@ fn cvt_s2h(simd: u32, vector: bool) -> Func {
         if vector {
             // Q = 0: [halves, 0]; Q = 1 (FCVTN2): [Vd low, halves].
             g.vload(0);
-            g.f.local_get(h).shuffle(core::array::from_fn(|j| if j < 8 { j as u8 } else { (16 + j - 8) as u8 }));
+            g.f.local_get(h)
+                .shuffle(core::array::from_fn(|j| if j < 8 { j as u8 } else { (16 + j - 8) as u8 }));
             g.f.local_get(h).v128_const(u64::MAX, 0).v(v::AND);
             g.q();
             g.f.op(op::SELECT).v128_store(off::V);

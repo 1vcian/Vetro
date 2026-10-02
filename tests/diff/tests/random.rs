@@ -14,7 +14,9 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use vetro_diff::harness::{Program, compare, run_qemu, run_vetro, run_vetro_jit};
 use vetro_diff::qemu;
-use vetro_diff::random::{Case, generate_focused, generate_fp_fast, generate_fp_focused, generate_with};
+use vetro_diff::random::{
+    Case, generate_focused, generate_fp_fast, generate_fp_focused, generate_templates, generate_with,
+};
 
 const BODY_LEN: usize = 48;
 
@@ -62,6 +64,36 @@ fn random_fp_fast_paths_match_qemu() {
         env_u64("VETRO_DIFF_FP_CASES", 600),
         generate_fp_fast,
     );
+}
+
+/// The FP/SIMD forms SwiftShader's code runs on the live path (ADR 0045),
+/// with the FPCR modes it may set: JIT (rt.fp fast paths), interpreter and
+/// QEMU identical. Encodings from tools/a64asm.sh (V0, V1, V2), and whether
+/// the form has an Rm.
+const SWIFTSHADER_FP: &[(u32, bool)] = &[
+    (0x0e217820, false), // fcvtl v0.4s, v1.4h
+    (0x4e217820, false), // fcvtl2 v0.4s, v1.8h
+    (0x0e216820, false), // fcvtn v0.4h, v1.4s
+    (0x4e216820, false), // fcvtn2 v0.8h, v1.4s
+    (0x1ee24020, false), // fcvt s0, h1
+    (0x1e23c020, false), // fcvt h0, s1
+    (0x4e22d420, true),  // fadd v0.4s, v1.4s, v2.4s
+    (0x6e22dc20, true),  // fmul v0.4s, v1.4s, v2.4s
+    (0x4e22cc20, true),  // fmla v0.4s, v1.4s, v2.4s
+    (0x4fa21020, true),  // fmla v0.4s, v1.4s, v2.s[1]
+    (0x6e22e420, true),  // fcmge v0.4s, v1.4s, v2.4s
+    (0x4e22f420, true),  // fmax v0.4s, v1.4s, v2.4s
+    (0x4ea1b820, false), // fcvtzs v0.4s, v1.4s
+    (0x4e21d820, false), // scvtf v0.4s, v1.4s
+    (0x1e222820, true),  // fadd s0, s1, s2
+    (0x1e220820, true),  // fmul s0, s1, s2
+];
+
+#[test]
+fn random_swiftshader_fp_match_qemu() {
+    run_with("random_swiftshader_fp_match_qemu", "ssfp-", env_u64("VETRO_DIFF_FP_CASES", 600), |seed| {
+        generate_templates(seed, SWIFTSHADER_FP)
+    });
 }
 
 /// Short programs of cryptographic instructions (AES, SHA1, SHA256, 64-bit

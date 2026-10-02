@@ -759,3 +759,77 @@ mod tests {
         }
     }
 }
+
+/// Short program (6 instructions) drawn from `templates` (encodings with
+/// Vd = V0, Vn = V1, Vm = V2 from tools/a64asm.sh, ADR 0045): Rd, Rn and Rm
+/// (bits 4:0, 9:5, and 19:16 for the templates marked as having an Rm) get
+/// random registers V0..V7. V registers hold
+/// values a fast path takes (moderate normals in single and double, halves
+/// over the whole half range) mixed with zeros, denormals, infinities and
+/// NaNs; FPCR is zero, FZ, DN, AHP, a rounding mode or a mix; IXC is set
+/// half of the time.
+pub fn generate_templates(seed: u64, templates: &[(u32, bool)]) -> Case {
+    let mut rng = Rng::new(seed ^ 0x55f0_0000_0000_0000);
+    let mut body = Vec::new();
+    for _ in 0..6 {
+        let (t, has_rm) = *rng.pick(templates);
+        let rm_mask = if has_rm { 0x000f_0000 } else { 0 };
+        let rm = (rng.below(8) as u32) << 16 & rm_mask;
+        body.push(t & !(rm_mask | 0x3ff) | rm | (rng.below(8) as u32) << 5 | rng.below(8) as u32);
+    }
+    let mut program = Program::new(body);
+    for (i, x) in program.x.iter_mut().enumerate() {
+        *x = match i as u32 {
+            BASE_REG => BASE_PTR,
+            INDEX_REG => rng.below(256),
+            _ => rng.interesting_u64(),
+        };
+    }
+    for v in program.v.iter_mut() {
+        *v = match rng.below(4) {
+            // single precision
+            0 | 1 => (0..4).fold(0u128, |v, i| {
+                let x = if rng.chance(1, 8) {
+                    rng.fp32()
+                } else {
+                    let e = if rng.chance(1, 2) {
+                        127 + rng.below(41) as u32 - 20
+                    } else {
+                        103 + rng.below(40) as u32
+                    };
+                    let m = match rng.below(3) {
+                        0 => (rng.next_u32() & 0x7f_ffff) >> (rng.below(4) * 6),
+                        // exact in half precision, or a tie of the rounding to it
+                        1 => rng.next_u32() & 0x7f_e000,
+                        _ => rng.next_u32() & 0x7f_e000 | 0x1000,
+                    };
+                    (rng.next_u32() & 0x8000_0000) | e << 23 | m
+                };
+                v | (x as u128) << (32 * i)
+            }),
+            // double precision
+            2 => (0..2).fold(0u128, |v, i| {
+                let x = if rng.chance(1, 8) {
+                    rng.fp64()
+                } else {
+                    (rng.next_u64() & (1 << 63)) | (1023 + rng.below(41) - 20) << 52 | rng.next_u64() >> 12
+                };
+                v | (x as u128) << (64 * i)
+            }),
+            // half precision
+            _ => (0..8).fold(0u128, |v, i| {
+                let h = if rng.chance(1, 6) {
+                    *rng.pick(&[0u16, 0x8000, 1, 0x83ff, 0x0400, 0x7bff, 0x7c00, 0xfc00, 0x7e00, 0x7d01])
+                } else {
+                    rng.next_u32() as u16 & 0xfbff
+                };
+                v | (h as u128) << (16 * i)
+            }),
+        };
+    }
+    const FPCR: [u32; 10] = [0, 0, 0, 1 << 24, 1 << 25, 3 << 24, 1 << 26, 1 << 22, 3 << 22, 0x0740_0000];
+    program.fpcr = *rng.pick(&FPCR);
+    program.fpsr = if rng.chance(1, 2) { 0x10 } else { 0 };
+    program.nzcv = (rng.below(16) as u32) << 28;
+    Case { seed, program, undefined_tail: None }
+}
