@@ -1,4 +1,4 @@
-# JIT to WASM: ABI and interfaces (ADR 0012, ADR 0013, ADR 0024, ADR 0026, ADR 0036, ADR 0041)
+# JIT to WASM: ABI and interfaces (ADR 0012, ADR 0013, ADR 0024, ADR 0026, ADR 0036, ADR 0041, ADR 0045)
 
 ## Regions
 The unit of translation is the **region** (ADR 0024): the basic blocks of a
@@ -52,7 +52,7 @@ A module compiled once per engine (`Engine::runtime`): it imports
 | `finish` | `(state, code, pc, steps) -> code` | end of a region with a code other than `NEXT` |
 | `vsync` | `(state)` | if `v_valid` = 0, `env.vsync(state)` |
 | `simd` | `(state, word: i32, x: i64, nzcv: i32) -> i64` | `env.simd` (ADR 0026) |
-| `fp<k>` | `(state, word)` (`-> i32` NZCV for FCMP, `-> i64` for FCVT to an integer; SCVTF/UCVTF: `(state, word, x: i64)`) | FP fast path of the instruction `word` (table in `translate::fp`): writes the result if it is certainly equal to the interpreter's (FPCR = 0, no NaN, no denormals or overflows, IXC already 1 or exact result), otherwise `env.simd` |
+| `fp<k>` | `(state, word)` (`-> i32` NZCV for FCMP, `-> i64` for FCVT to an integer; SCVTF/UCVTF: `(state, word, x: i64)`) | FP fast path of the instruction `word` (table in `translate::fp`): writes the result if it is certainly equal to the interpreter's (FPCR.RMode to nearest; with FPCR.FZ no denormal input or tiny result; DN and AHP matter only for NaNs and half precision; no NaN, no overflows; IXC raised by the function where it knows exactly that the result is inexact, otherwise already 1 or an exact result), otherwise `env.simd`. Half-precision conversions (FCVTL/FCVTN (2), FCVT S/H) need AHP = 0 (ADR 0045) |
 | `cr<k>` | on values (table in `translate::crypto`): `(d: v128, n: v128) -> v128` AESE/AESD/SHA256SU0/SHA1SU1, `(n: v128) -> v128` AESMC/AESIMC, `(x, y, w: v128) -> v128` SHA256H/SHA256H2/SHA256SU1, `(x: v128, y: i32, w: v128) -> v128` SHA1C/SHA1P/SHA1M, `(a: i64, b: i64) -> (i64, i64)` 64-bit PMULL | the cryptographic extension (ADR 0041), bit for bit the interpreter's; the region loads and stores the V registers. Internal (not imported): the S-boxes and the 32-bit carry-less product |
 | `ldt_<n>`, `stt_<n>` | as `ld<el>_<n>`/`st<el>_<n>` | LDTR/STTR at EL1 (ADR 0041): the EL0 software TLB if `JitState::utlb` = 1, otherwise the host with `SIZE_UNPRIV` |
 

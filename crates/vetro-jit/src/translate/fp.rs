@@ -6,20 +6,23 @@
 //! registers from `JitState`, computes with WASM and writes the result only if
 //! it is certainly the interpreter's (`vetro_cpu::simd::fp`):
 //!
-//! - FPCR = 0 (round to nearest even, no FZ or DN): it is
-//!   WASM's IEEE 754 rounding, and input denormals
-//!   count for what they are (with FZ Arm flushes them and signals IDC);
+//! - FPCR.RMode = round to nearest even: it is WASM's IEEE 754 rounding.
+//!   The other FPCR bits are allowed (ADR 0045): DN changes only NaN
+//!   results, which no fast path writes; AHP only half precision (the half
+//!   conversions require it clear); with FZ every function checks that no
+//!   input is a denormal and no result tiny (Arm would flush them and
+//!   signal IDC or UFC), otherwise input denormals count for what they are;
 //! - no NaN in input or output (the bits of WASM NaNs are not
 //!   fixed, and Arm propagates them with its own rules), no infinities produced
 //!   by an overflow, no tiny results where Arm signals UFC
 //!   (multiplications, divisions, FMA, narrowing conversions:
 //!   result normal and greater than the smallest normal, because Arm
 //!   checks tininess before rounding);
-//! - IXC: if it is already 1 in FPSR (cumulative flag) inexactness changes
-//!   nothing; otherwise the fast path applies only if the result is
-//!   exact, verified exactly (TwoSum for sums; in single
-//!   precision products, quotients and roots are rechecked in double,
-//!   where they are exact); where it cannot be verified IXC must be 1.
+//! - IXC: where the function knows exactly whether the result is inexact
+//!   (TwoSum for sums; in single precision products, quotients, roots and
+//!   FMA rechecked in double, where they are exact; conversions and
+//!   roundings compared with their input) it raises IXC itself (ADR 0045);
+//!   where it cannot know, IXC must already be 1 in FPSR (cumulative flag).
 //!
 //! Otherwise the function calls `env.simd` (the interpreter, [`crate::helper`]):
 //! same result, slower. Single-precision FMA is computed in
