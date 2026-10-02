@@ -368,9 +368,17 @@ async function main() {
     end(`cold boot ${cold} s`);
   } else {
     flow = script().then(() => (flowDone = true), (e) => (flowError = e));
+    let beat = performance.now();
     while (!flowDone && !stopNow) {
       if (flowError) throw flowError;
       await step();
+      if (performance.now() - beat > 60_000) {
+        // A heartbeat: guest time, the clock and the console's last line.
+        beat = performance.now();
+        log(`guest ${(Number(guest()) / 1e9).toFixed(1)} s, ${(Number(m.steps) / 1e6).toFixed(0)} M steps, adb ${adb ? 'connected' : 'not yet'}, ` +
+          `console: ${JSON.stringify(consoleTail.trimEnd().split('\n').at(-1)?.slice(-160) ?? '')}`);
+        writeFileSync(outPath.replace(/\.json$/, '.console.txt'), consoleTail);
+      }
       adb?.pump();
       for (let i = waiters.length - 1; i >= 0; i--) {
         const w = waiters[i];

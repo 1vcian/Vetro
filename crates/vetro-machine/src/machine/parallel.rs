@@ -476,6 +476,14 @@ impl ParCore {
                 self.flush(cores);
                 return Stop::Budget;
             }
+            if main && cell.borrow().host_wait {
+                // A virtio-blk request (from any core) waits for data only
+                // the host can bring (ADR 0014): core 0 returns to it. The
+                // other cores go on; they cannot jump time while core 0 is
+                // out, since it does not count as idle.
+                self.flush(cores);
+                return Stop::Blocked;
+            }
             slot.clear_kick();
             if !slot.on.load(Ordering::SeqCst) {
                 // Off: waits for PSCI CPU_ON.
@@ -898,6 +906,61 @@ mod tests {
             m.stop_parallel(cores);
             stop
         })
+    }
+
+    /// A virtio-blk request waiting for host data stops [`Machine::run`]
+    /// with `Stop::Blocked` with the cores in parallel too (the host's
+    /// disk feeder runs only then); once the data is there the request
+    /// completes. Red without the `host_wait` check in `ParCore::run`: the
+    /// machine kept answering `Budget` and the guest waited forever.
+    #[test]
+    fn a_disk_waiting_for_the_host_blocks_core_0_in_parallel() {
+        use super::super::tests::{DATA, Gate, USED, blk_machine_cpus};
+        use vetro_platform::virtio::VirtioBlk;
+        let (mut m, slot) = blk_machine_cpus(false, 2);
+        let read = |m: &Machine, pa: u64, n: usize| {
+            let mut v = vec![0u8; n];
+            assert!(m.board.borrow().ram.read(pa, &mut v));
+            v
+        };
+        let cores = m.start_parallel().expect("parallel");
+        // What the host sees, checked after the cores stopped (a failed
+        // assertion inside the scope would wait for them forever).
+        let (first, again, before, after) = std::thread::scope(|s| {
+            let handles: Vec<_> = cores
+                .into_iter()
+                .map(|mut c| {
+                    s.spawn(move || {
+                        c.set_jit(None);
+                        while !c.stopped() {
+                            let _ = c.run(1 << 16);
+                        }
+                        c
+                    })
+                })
+                .collect();
+            let first = (0..100).map(|_| m.run(1000)).find(|&s| s != Stop::Budget);
+            let again = m.run(1000);
+            let before = read(&m, USED + 2, 2);
+            m.host_link::<VirtioBlk, _>(Some(slot), |b| b.backend_as_mut::<Gate>().unwrap().open = true)
+                .unwrap();
+            for _ in 0..100 {
+                if m.run(1000) == Stop::Budget && read(&m, USED + 2, 2) == [1, 0] {
+                    break;
+                }
+            }
+            let after = read(&m, USED + 2, 2);
+            m.request_stop();
+            let cores: Vec<Core> = handles.into_iter().map(|h| h.join().expect("core thread")).collect();
+            m.stop_parallel(cores);
+            (first, again, before, after)
+        });
+        assert_eq!(first, Some(Stop::Blocked), "the disk is not ready");
+        assert_eq!(again, Stop::Blocked, "without data it stays stopped");
+        assert_eq!(before, [0, 0], "no response to the guest");
+        assert_eq!(after, [1, 0], "one response in the used ring");
+        let expected: Vec<u8> = (512..516u32).map(|i| (i * 7 + 1) as u8).collect();
+        assert_eq!(read(&m, DATA, 4), expected, "sector 1 of the disk");
     }
 
     /// The two-core probe of `smp.rs` with the cores on two host threads:

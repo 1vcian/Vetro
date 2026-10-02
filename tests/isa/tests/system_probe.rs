@@ -161,7 +161,10 @@ fn run_probe(jit: bool) -> (String, u64) {
             _ => Next::Jit,
         };
         match ev {
-            SysEvent::Executed | SysEvent::Exception { .. } | SysEvent::WaitForInterrupt | SysEvent::Yield => {}
+            SysEvent::Executed
+            | SysEvent::Exception { .. }
+            | SysEvent::WaitForInterrupt
+            | SysEvent::Yield => {}
             SysEvent::Hvc(_) if cpu.x[0] == PSCI_SYSTEM_OFF => {
                 done = true;
                 break;

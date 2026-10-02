@@ -1169,7 +1169,12 @@ mod tests {
     /// do) and a read of sector 1 published in the queue; the code
     /// notifies the queue and then counts in x2 forever.
     pub(super) fn blk_machine(open: bool) -> (Machine, u32) {
-        let cfg = MachineConfig { ram_size: 1 << 20, ..MachineConfig::default() };
+        blk_machine_cpus(open, 1)
+    }
+
+    /// [`blk_machine`] with `cpus` cores (the others off).
+    pub(super) fn blk_machine_cpus(open: bool, cpus: u32) -> (Machine, u32) {
+        let cfg = MachineConfig { ram_size: 1 << 20, cpus, ..MachineConfig::default() };
         let mut m = Machine::with_devices(&cfg, &Devices::none());
         let disk = MemBackend::from_vec((0..2048u32).map(|i| (i * 7 + i / 512) as u8).collect());
         let blk = VirtioBlk::new(Box::new(Gate { open, disk }), Default::default());
