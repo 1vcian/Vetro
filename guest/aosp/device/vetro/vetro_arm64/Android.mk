@@ -79,7 +79,9 @@ LOCAL_MODULE_RELATIVE_PATH := permissions
 # work-profile provisioning, the accessibility menu, the old browser's
 # bookmarks, music and calendar apps; Cuttlefish's host-service app and test
 # servers; vendor HAL APEXes for hardware the virt machine lacks or for
-# alternatives the bootconfig does not select.
+# alternatives the bootconfig does not select; cameraserver (no camera HAL;
+# config.disable_cameraservice in device.mk), update_engine (no OTA: Vetro
+# images are versioned and replaced whole), the input classifier HAL.
 LOCAL_OVERRIDES_MODULES := \
     TeleService \
     ONS \
@@ -134,5 +136,8 @@ LOCAL_OVERRIDES_MODULES := \
     com.android.hardware.keymint.rust_cf_remote \
     com.android.hardware.keymint.rust_cf_guest_trusty_nonsecure \
     com.android.hardware.graphics.composer.drm_hwcomposer \
-    com.google.cf.confirmationui
+    com.google.cf.confirmationui \
+    cameraserver \
+    update_engine \
+    com.android.hardware.input.processor
 include $(BUILD_PREBUILT)

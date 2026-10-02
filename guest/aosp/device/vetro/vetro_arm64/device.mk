@@ -25,7 +25,8 @@ PRODUCT_PACKAGES += VetroMissingHardware
 # on-device personalization system service off (its standard switch).
 PRODUCT_PACKAGES += VetroSlim
 PRODUCT_SYSTEM_PROPERTIES += \
-    ro.system_settings.service.odp_enabled=false
+    ro.system_settings.service.odp_enabled=false \
+    config.disable_cameraservice=true
 
 # Cuttlefish's audio policy (shared/config/audio/policy/
 # audio_policy_configuration.xml) always includes the Bluetooth audio policy,

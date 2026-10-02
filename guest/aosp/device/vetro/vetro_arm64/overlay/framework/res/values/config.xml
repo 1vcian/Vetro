@@ -12,4 +12,7 @@
          it never starts it. Apps that request a fixed orientation still get
          it. -->
     <bool name="config_supportAutoRotation">false</bool>
+    <!-- No screensavers (ADR 0043): the dream apps are not installed and the
+         screen stays on (as on Cuttlefish's watch). -->
+    <bool name="config_dreamsSupported">false</bool>
 </resources>

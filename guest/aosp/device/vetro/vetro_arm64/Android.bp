@@ -81,3 +81,15 @@ runtime_resource_overlay {
     manifest: "overlay/settingsprovider/AndroidManifest.xml",
     resource_dirs: ["overlay/settingsprovider/res"],
 }
+
+prebuilt_etc {
+    // System apps that start in the "stopped" state at first boot except
+    // these (config_stopSystemPackagesByDefault): instead of AOSP's
+    // initial-package-stopped-states-aosp.xml, without Contacts and
+    // DocumentsUI, which otherwise ran from their boot receivers until
+    // opened (ADR 0043). Stopped apps still open normally.
+    name: "initial-package-stopped-states-vetro.xml",
+    src: "initial-package-stopped-states-vetro.xml",
+    product_specific: true,
+    sub_dir: "sysconfig",
+}

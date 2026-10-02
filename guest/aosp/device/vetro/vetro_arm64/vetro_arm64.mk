@@ -30,7 +30,7 @@ $(call inherit-product, $(SRC_TARGET_DIR)/product/handheld_system_ext.mk)
 $(call inherit-product, $(SRC_TARGET_DIR)/product/handheld_product.mk)
 $(call inherit-product, frameworks/base/data/sounds/AudioPackage14.mk)
 PRODUCT_PACKAGES += \
-    initial-package-stopped-states-aosp.xml \
+    initial-package-stopped-states-vetro.xml \
     preinstalled-packages-platform-aosp-product.xml \
     ThemePicker
 # Default sounds from AudioPackage14 (handheld_system.mk's defaults are

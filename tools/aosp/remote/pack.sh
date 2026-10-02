@@ -71,11 +71,14 @@ for f in system/priv-app/TeleService/TeleService.apk system/app/PrintSpooler/Pri
     system_ext/priv-app/CarrierConfig/CarrierConfig.apk product/priv-app/Dialer/Dialer.apk \
     product/app/messaging/messaging.apk product/app/Camera2/Camera2.apk \
     vendor/priv-app/CuttlefishService/CuttlefishService.apk vendor/apex/com.google.emulated.camera.provider.hal.apex \
-    vendor/apex/com.android.hardware.neuralnetworks.apex vendor/bin/hw/android.hardware.biometrics.face-service.default; do
+    vendor/apex/com.android.hardware.neuralnetworks.apex vendor/bin/hw/android.hardware.biometrics.face-service.default \
+    system/bin/cameraserver system/bin/update_engine product/etc/sysconfig/initial-package-stopped-states-aosp.xml; do
   [ ! -e "$p/$f" ] || fail "/$f is still installed"
 done
 [ -f "$p/vendor/etc/permissions/vetro_slim.xml" ] || fail "vetro_slim.xml missing"
 grep -qx 'ro.system_settings.service.odp_enabled=false' "$p/system/build.prop" || fail "on-device personalization is not off"
+grep -qx 'config.disable_cameraservice=true' "$p/system/build.prop" || fail "the camera service proxy is not off"
+[ -f "$p/product/etc/sysconfig/initial-package-stopped-states-vetro.xml" ] || fail "initial-package-stopped-states-vetro.xml missing"
 rm -rf "$o"
 mkdir -p "$o/props"
 for f in boot.img vendor_boot.img init_boot.img super.img userdata.img; do

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Vetro (ADR 0043): system packages NOT put in the stopped state at first boot
+  (config_stopSystemPackagesByDefault). AOSP's list
+  (initial-package-stopped-states-aosp.xml) also has Calendar, Camera2,
+  Messaging, QuickSearchBox and STK, which Vetro does not install, and
+  Contacts and DocumentsUI, which then ran from their boot receivers.
+-->
+<config>
+    <initial-package-state package="com.android.settings" stopped="false"/>
+</config>
