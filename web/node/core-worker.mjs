@@ -9,15 +9,31 @@
 // stop (`vetro_parallel_request_stop` or the machine powered off)
 // { type: 'done', stop, executed, jit } or { type: 'error', error }.
 //
-// The loop never returns to the event loop while the core runs: a WFI waits
-// in Rust (Atomics.wait, allowed in Workers), and the stop request arrives
-// through the shared memory.
+// A WFI waits in Rust (Atomics.wait, allowed in Workers), and the stop
+// request arrives through the shared memory. The loop still returns to the
+// Worker's event loop every YIELD_MS: V8 runs its tasks for this isolate
+// there, the ones that free the code of dropped JIT modules included.
+// Without them the dead code piled up until "Commit wasm code space
+// Allocation failed" (Node, four cores, after a few minutes of Android).
 
 import { JitEngine } from './jit-engine.mjs';
 
 const STOP = ['Budget', 'PowerOff', 'Reset', 'Idle', 'Unimplemented', 'Blocked'];
+const YIELD_MS = 50;
 
-function run({ module, memory, core, stackTop, tls, jit, budget }, post) {
+/** A turn of the event loop (a macrotask: setTimeout(0) would be clamped). */
+function turn() {
+  return new Promise((ok) => {
+    const ch = new MessageChannel();
+    ch.port1.onmessage = () => {
+      ch.port1.close();
+      ok();
+    };
+    ch.port2.postMessage(0);
+  });
+}
+
+async function run({ module, memory, core, stackTop, tls, jit, budget }, post) {
   const engine = new JitEngine();
   let x = null;
   const imports = {
@@ -48,18 +64,23 @@ function run({ module, memory, core, stackTop, tls, jit, budget }, post) {
   x.vetro_core_set_jit(core, jit ? jit.threshold : 0, jit ? jit.batch : 0);
   post({ type: 'ready' });
   let stop = 'Budget';
+  let last = performance.now();
   while (!x.vetro_core_stopped(core)) {
     stop = STOP[x.vetro_core_run(core, BigInt(budget))] ?? 'Unknown';
     if (stop !== 'Budget' && stop !== 'Idle') break;
+    if (performance.now() - last >= YIELD_MS) {
+      await turn();
+      last = performance.now();
+    }
   }
   const executed = Number(x.vetro_core_executed(core));
   x.vetro_core_drop_jit(core);
   post({ type: 'done', stop, executed, jit: engine.stats });
 }
 
-function onMessage(m, post) {
+async function onMessage(m, post) {
   try {
-    run(m, post);
+    await run(m, post);
   } catch (e) {
     post({ type: 'error', error: String(e?.stack ?? e) });
   }
