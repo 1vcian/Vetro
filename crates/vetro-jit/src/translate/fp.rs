@@ -504,7 +504,11 @@ const S_INF: u32 = 0x7f80_0000;
 const S_MIN_NORMAL: u32 = 0x0080_0000;
 const D_INF: u64 = 0x7ff0_0000_0000_0000;
 const D_MIN_NORMAL: u64 = 0x0010_0000_0000_0000;
+/// 2^-126 (the smallest normal single) as a double.
+const S_MIN_NORMAL_AS_D: u64 = 0x3810_0000_0000_0000;
 const IXC: i32 = 0x10;
+/// FPCR.RMode (bits 23:22).
+const FPCR_RMODE: i32 = 3 << 22;
 
 /// Function parameters: state, word, [x].
 const P_STATE: u32 = 0;
@@ -596,9 +600,62 @@ impl G {
         self.f.v128_const(0, u64::MAX).v(v::AND);
     }
 
-    /// FPCR == 0 (i32 boolean).
-    fn fpcr_zero(&mut self) {
-        self.f.local_get(P_STATE).i32_load(off::FPCR).op(op::I32_EQZ);
+    /// FPCR.RMode = round to nearest (i32 boolean). The other FPCR bits do
+    /// not change a fast path's result: DN only changes NaN results (no fast
+    /// path writes one), AHP and FZ16 only half precision, and FZ only
+    /// denormal inputs and tiny results, which every function excludes with
+    /// [`G::fz_guard`] when FZ is set (or by its own range checks).
+    fn fpcr_ok(&mut self) {
+        self.f.local_get(P_STATE).i32_load(off::FPCR).i32_const(FPCR_RMODE).op(op::I32_AND).op(op::I32_EQZ);
+    }
+
+    /// FPCR.FZ (i32 boolean).
+    fn fz(&mut self) {
+        self.f.local_get(P_STATE).i32_load(off::FPCR).i32_const(24).op(op::I32_SHR_U);
+        self.f.i32_const(1).op(op::I32_AND);
+    }
+
+    /// `ok` &= !(FZ && `den`), where `den` pushes an i32 boolean "a denormal
+    /// is read or written" (with FZ Arm flushes it to zero and signals IDC or
+    /// UFC).
+    fn fz_guard(&mut self, ok: u32, den: impl FnOnce(&mut G)) {
+        self.fz();
+        self.f.if_(BLOCK_EMPTY);
+        den(self);
+        self.f.op(op::I32_EQZ).local_get(ok).op(op::I32_AND).local_set(ok);
+        self.f.end();
+    }
+
+    /// The float in `l` is a denormal (i32 boolean): |x| < smallest normal
+    /// and x != 0 (false for NaN).
+    fn den(&mut self, l: u32, d: bool) {
+        self.f.local_get(l).op(fop(d, op::F32_ABS, op::F64_ABS));
+        if d {
+            self.f.i64_const(D_MIN_NORMAL as i64).op(op::F64_REINTERPRET_I64).op(op::F64_LT);
+        } else {
+            self.f.i32_const(S_MIN_NORMAL as i32).op(op::F32_REINTERPRET_I32).op(op::F32_LT);
+        }
+        self.f.local_get(l);
+        self.fzero(d);
+        self.f.op(fop(d, op::F32_NE, op::F64_NE)).op(op::I32_AND);
+    }
+
+    /// Element 0 of the register (field at `shift`) is a denormal.
+    fn den_reg(&mut self, shift: i32, d: bool) {
+        let t = self.local(if d { ValType::F64 } else { ValType::F32 });
+        self.load(shift, d);
+        self.f.local_set(t);
+        self.den(t, d);
+    }
+
+    /// Some lane of the v128 in `l` that counts (Q) is a denormal (i32).
+    fn vden(&mut self, l: u32, d: bool) {
+        self.f.local_get(l).v(vop(d, v::F32X4_ABS, v::F64X2_ABS));
+        splat_const(self, d, if d { D_MIN_NORMAL } else { S_MIN_NORMAL as u64 });
+        self.f.v(vop(d, v::F32X4_LT, v::F64X2_LT));
+        self.f.local_get(l).v128_const(0, 0).v(vop(d, v::F32X4_NE, v::F64X2_NE)).v(v::AND);
+        self.himask();
+        self.f.v(v::ANDNOT).v(v::ANY_TRUE);
     }
 
     /// IXC already 1 in FPSR (i32 boolean, 0 or 1: combines with AND).
@@ -734,7 +791,7 @@ fn bin(simd: u32, d: bool, op_: Bin) -> Func {
     let mut g = G::new(simd, 2);
     let (a, b, r) = (g.local(ft), g.local(ft), g.local(ft));
     let (bits, ok) = (g.local(ValType::I64), g.local(ValType::I32));
-    g.fpcr_zero();
+    g.fpcr_ok();
     g.f.if_(BLOCK_EMPTY);
     g.load(5, d);
     g.f.local_set(a);
@@ -818,6 +875,15 @@ fn bin(simd: u32, d: bool, op_: Bin) -> Func {
             g.f.op(op::I32_AND).local_set(ok);
         }
     }
+    g.fz_guard(ok, |g| {
+        g.den(a, d);
+        g.den(b, d);
+        g.f.op(op::I32_OR);
+        if matches!(op_, Bin::Add | Bin::Sub) {
+            g.den(r, d);
+            g.f.op(op::I32_OR);
+        }
+    });
     g.commit(ok, |g| {
         if op_ == Bin::Nmul {
             // The sign is changed after rounding.
@@ -858,7 +924,7 @@ fn fma_s(simd: u32, neg_a: bool, neg_n: bool) -> Func {
     let (p, c, s, err) =
         (g.local(ValType::F64), g.local(ValType::F64), g.local(ValType::F64), g.local(ValType::F64));
     let (r, bits, ok) = (g.local(ValType::F32), g.local(ValType::I64), g.local(ValType::I32));
-    g.fpcr_zero();
+    g.fpcr_ok();
     g.f.if_(BLOCK_EMPTY);
     // p = f64(±n) * f64(m), exact
     g.load(5, false);
@@ -885,6 +951,13 @@ fn fma_s(simd: u32, neg_a: bool, neg_n: bool) -> Func {
     g.f.local_get(err).i64_const(0).op(op::F64_REINTERPRET_I64).op(op::F64_EQ);
     g.f.local_get(r).op(op::F64_PROMOTE_F32).local_get(s).op(op::F64_EQ).op(op::I32_AND);
     g.f.op(op::I32_OR).op(op::I32_AND).local_set(ok);
+    g.fz_guard(ok, |g| {
+        g.den_reg(5, false);
+        g.den_reg(16, false);
+        g.f.op(op::I32_OR);
+        g.den_reg(10, false);
+        g.f.op(op::I32_OR);
+    });
     g.commit(ok, |g| g.store_scalar_bits(bits));
     g.f.end();
     g.fallback(false);
@@ -950,7 +1023,7 @@ fn fma_d(simd: u32, neg_a: bool, neg_n: bool) -> Func {
     let mut g = G::new(simd, 2);
     let (a, b, c, z, bits, ok) =
         (g.local(F64), g.local(F64), g.local(F64), g.local(F64), g.local(I64), g.local(I32));
-    g.fpcr_zero();
+    g.fpcr_ok();
     g.ixc();
     g.f.op(op::I32_AND).if_(BLOCK_EMPTY);
     g.load(5, true);
@@ -990,7 +1063,7 @@ fn vfma_d(simd: u32, neg: bool, idx: bool) -> Func {
     let mut g = G::new(simd, 2);
     let (n, m, acc, r) = (g.local(V128), g.local(V128), g.local(V128), g.local(V128));
     let (a, b, c, z, ok) = (g.local(F64), g.local(F64), g.local(F64), g.local(F64), g.local(I32));
-    g.fpcr_zero();
+    g.fpcr_ok();
     g.ixc();
     g.f.op(op::I32_AND).if_(BLOCK_EMPTY);
     g.vload(5);
@@ -1036,7 +1109,7 @@ fn sqrt(simd: u32, d: bool) -> Func {
     let ft = if d { ValType::F64 } else { ValType::F32 };
     let mut g = G::new(simd, 2);
     let (a, r, bits, ok) = (g.local(ft), g.local(ft), g.local(ValType::I64), g.local(ValType::I32));
-    g.fpcr_zero();
+    g.fpcr_ok();
     g.f.if_(BLOCK_EMPTY);
     g.load(5, d);
     g.f.local_tee(a).op(fop(d, op::F32_SQRT, op::F64_SQRT)).local_set(r);
@@ -1054,6 +1127,7 @@ fn sqrt(simd: u32, d: bool) -> Func {
         f.local_get(a).op(op::F64_PROMOTE_F32).op(op::F64_EQ).op(op::I32_OR);
     }
     g.f.op(op::I32_AND).local_set(ok);
+    g.fz_guard(ok, |g| g.den(a, d));
     g.commit(ok, |g| g.store_scalar_bits(bits));
     g.f.end();
     g.fallback(false);
@@ -1067,7 +1141,7 @@ fn cmp(simd: u32, d: bool) -> Func {
     let mut g = G::new(simd, 2);
     let (a, b) = (g.local(ft), g.local(ft));
     let (lt, eq) = (fop(d, op::F32_LT, op::F64_LT), fop(d, op::F32_EQ, op::F64_EQ));
-    g.fpcr_zero();
+    g.fpcr_ok();
     g.f.if_(BLOCK_EMPTY);
     g.load(5, d);
     g.f.local_set(a);
@@ -1075,9 +1149,16 @@ fn cmp(simd: u32, d: bool) -> Func {
     g.fzero(d);
     g.load(16, d);
     g.f.local_get(P_WORD).i32_const(8).op(op::I32_AND).op(op::SELECT).local_set(b);
+    let ok = g.local(ValType::I32);
     g.not_nan(a, d);
     g.not_nan(b, d);
-    g.f.op(op::I32_AND).if_(BLOCK_EMPTY);
+    g.f.op(op::I32_AND).local_set(ok);
+    g.fz_guard(ok, |g| {
+        g.den(a, d);
+        g.den(b, d);
+        g.f.op(op::I32_OR);
+    });
+    g.f.local_get(ok).if_(BLOCK_EMPTY);
     // a < b: N; a == b: Z C; a > b: C
     let f = &mut g.f;
     f.i32_const(0x8000_0000u32 as i32);
@@ -1096,7 +1177,7 @@ fn cvt_ds(simd: u32) -> Func {
     let mut g = G::new(simd, 2);
     let (a, r, bits, ok) =
         (g.local(ValType::F64), g.local(ValType::F32), g.local(ValType::I64), g.local(ValType::I32));
-    g.fpcr_zero();
+    g.fpcr_ok();
     g.f.if_(BLOCK_EMPTY);
     g.load(5, true);
     g.f.local_tee(a).op(op::F32_DEMOTE_F64).local_set(r);
@@ -1119,14 +1200,17 @@ fn cvt_ds(simd: u32) -> Func {
 fn cvt_sd(simd: u32) -> Func {
     let mut g = G::new(simd, 2);
     let (a, r, bits) = (g.local(ValType::F32), g.local(ValType::F64), g.local(ValType::I64));
-    g.fpcr_zero();
+    g.fpcr_ok();
     g.f.if_(BLOCK_EMPTY);
     g.load(5, false);
     g.f.local_tee(a).op(op::F64_PROMOTE_F32).local_set(r);
     g.bits64(r, true);
     g.f.local_set(bits);
+    let ok = g.local(ValType::I32);
     g.not_nan(a, false);
-    g.f.if_(BLOCK_EMPTY);
+    g.f.local_set(ok);
+    g.fz_guard(ok, |g| g.den(a, false));
+    g.f.local_get(ok).if_(BLOCK_EMPTY);
     g.store_scalar_bits(bits);
     g.f.op(op::RETURN).end();
     g.f.end();
@@ -1172,7 +1256,7 @@ fn frint(simd: u32, d: bool, rnd: Rnd) -> Func {
     let ft = if d { ValType::F64 } else { ValType::F32 };
     let mut g = G::new(simd, 2);
     let (a, r, bits, ok) = (g.local(ft), g.local(ft), g.local(ValType::I64), g.local(ValType::I32));
-    g.fpcr_zero();
+    g.fpcr_ok();
     g.f.if_(BLOCK_EMPTY);
     g.load(5, d);
     g.f.local_tee(a);
@@ -1186,6 +1270,7 @@ fn frint(simd: u32, d: bool, rnd: Rnd) -> Func {
         g.f.local_get(r).local_get(a).op(fop(d, op::F32_EQ, op::F64_EQ)).op(op::I32_OR).op(op::I32_AND);
     }
     g.f.local_set(ok);
+    g.fz_guard(ok, |g| g.den(a, d));
     g.commit(ok, |g| g.store_scalar_bits(bits));
     g.f.end();
     g.fallback(false);
@@ -1198,7 +1283,7 @@ fn from_int(simd: u32, d: bool, sf: bool, u: bool) -> Func {
     let ft = if d { ValType::F64 } else { ValType::F32 };
     let mut g = G::new(simd, 3);
     let (x, r, bits, ok) = (g.local(ValType::I64), g.local(ft), g.local(ValType::I64), g.local(ValType::I32));
-    g.fpcr_zero();
+    g.fpcr_ok();
     g.f.if_(BLOCK_EMPTY);
     // x extended to 64 bits as the instruction reads it.
     g.f.local_get(P_X);
@@ -1243,7 +1328,7 @@ fn to_int(simd: u32, d: bool, sf: bool, u: bool, rnd: Rnd) -> Func {
     let mut g = G::new(simd, 2);
     let (a, t) = (g.local(ValType::F64), g.local(ValType::F64));
     let ok = g.local(ValType::I32);
-    g.fpcr_zero();
+    g.fpcr_ok();
     g.f.if_(BLOCK_EMPTY);
     g.load(5, d);
     if !d {
@@ -1264,6 +1349,7 @@ fn to_int(simd: u32, d: bool, sf: bool, u: bool, rnd: Rnd) -> Func {
     f.local_get(t).i64_const(hi.to_bits() as i64).op(op::F64_REINTERPRET_I64).op(op::F64_LT).op(op::I32_AND);
     g.ixc();
     g.f.local_get(t).local_get(a).op(op::F64_EQ).op(op::I32_OR).op(op::I32_AND).local_set(ok);
+    g.fz_guard(ok, |g| g.den_reg(5, d));
     g.f.local_get(ok).if_(BLOCK_EMPTY);
     g.f.local_get(t);
     match (sf, u) {
@@ -1326,7 +1412,7 @@ fn vbin(simd: u32, d: bool, op_: Bin) -> Func {
     let mut g = G::new(simd, 2);
     let (a, b, r, ok) =
         (g.local(ValType::V128), g.local(ValType::V128), g.local(ValType::V128), g.local(ValType::I32));
-    g.fpcr_zero();
+    g.fpcr_ok();
     g.f.if_(BLOCK_EMPTY);
     g.vload(5);
     g.f.local_set(a);
@@ -1401,6 +1487,15 @@ fn vbin(simd: u32, d: bool, op_: Bin) -> Func {
             g.f.op(op::I32_AND).local_set(ok);
         }
     }
+    g.fz_guard(ok, |g| {
+        g.vden(a, d);
+        g.vden(b, d);
+        g.f.op(op::I32_OR);
+        if matches!(op_, Bin::Add | Bin::Sub | Bin::Addp | Bin::Abd) {
+            g.vden(r, d);
+            g.f.op(op::I32_OR);
+        }
+    });
     if op_ == Bin::Abd {
         // The absolute value after rounding (without flags).
         g.f.local_get(r).v(vop(d, v::F32X4_ABS, v::F64X2_ABS)).local_set(r);
@@ -1418,7 +1513,7 @@ fn vto_int(simd: u32, d: bool, u: bool, rnd: Rnd) -> Func {
     use ValType::*;
     let mut g = G::new(simd, 2);
     let (a, t, r, ok) = (g.local(V128), g.local(V128), g.local(V128), g.local(I32));
-    g.fpcr_zero();
+    g.fpcr_ok();
     g.f.if_(BLOCK_EMPTY);
     g.vload(5);
     g.f.local_set(a);
@@ -1466,6 +1561,7 @@ fn vto_int(simd: u32, d: bool, u: bool, rnd: Rnd) -> Func {
             .v(if u { v::I32X4_TRUNC_SAT_F32X4_U } else { v::I32X4_TRUNC_SAT_F32X4_S })
             .local_set(r);
     }
+    g.fz_guard(ok, |g| g.vden(a, d));
     g.commit(ok, |g| g.store_vec(r));
     g.f.end();
     g.fallback(false);
@@ -1513,7 +1609,7 @@ fn vfrom_int(simd: u32, d: bool, u: bool) -> Func {
     use ValType::*;
     let mut g = G::new(simd, 2);
     let (a, r, ok) = (g.local(V128), g.local(V128), g.local(I32));
-    g.fpcr_zero();
+    g.fpcr_ok();
     g.f.if_(BLOCK_EMPTY);
     g.vload(5);
     g.f.local_set(a);
@@ -1569,7 +1665,7 @@ fn vcvtl(simd: u32) -> Func {
     use ValType::*;
     let mut g = G::new(simd, 2);
     let (r, ok) = (g.local(V128), g.local(I32));
-    g.fpcr_zero();
+    g.fpcr_ok();
     g.f.if_(BLOCK_EMPTY);
     // High half with Q = 1 (FCVTL2).
     g.vload(5);
@@ -1579,6 +1675,12 @@ fn vcvtl(simd: u32) -> Func {
     g.q();
     g.f.op(op::SELECT).v(v::F64X2_PROMOTE_LOW_F32X4).local_tee(r);
     g.f.local_get(r).v(v::F64X2_EQ).v(v::I64X2_ALL_TRUE).local_set(ok);
+    g.fz_guard(ok, |g| {
+        // A single-precision denormal: |r| < 2^-126 and r != 0.
+        g.f.local_get(r).v(v::F64X2_ABS);
+        splat_const(g, true, S_MIN_NORMAL_AS_D);
+        g.f.v(v::F64X2_LT).local_get(r).v128_const(0, 0).v(v::F64X2_NE).v(v::AND).v(v::ANY_TRUE);
+    });
     g.commit(ok, |g| {
         g.vaddr(0);
         g.f.local_get(r).v128_store(off::V);
@@ -1594,7 +1696,7 @@ fn vcvtn(simd: u32) -> Func {
     use ValType::*;
     let mut g = G::new(simd, 2);
     let (a, r, ok) = (g.local(V128), g.local(V128), g.local(I32));
-    g.fpcr_zero();
+    g.fpcr_ok();
     g.f.if_(BLOCK_EMPTY);
     g.vload(5);
     g.f.local_tee(a).v(v::F32X4_DEMOTE_F64X2_ZERO).local_set(r);
@@ -1606,6 +1708,7 @@ fn vcvtn(simd: u32) -> Func {
     vsafe(&mut g, false, r);
     g.f.v128_const(0, u64::MAX).v(v::OR).v(v::I32X4_ALL_TRUE).op(op::I32_AND);
     g.f.op(op::I32_OR).op(op::I32_AND).local_set(ok);
+    g.fz_guard(ok, |g| g.vden(r, false));
     g.commit(ok, |g| {
         // Q = 1: [Vd low, r low]; Q = 0: [r low, 0].
         g.vaddr(0);
@@ -1663,7 +1766,7 @@ fn vfma(simd: u32, neg: bool, idx: bool) -> Func {
         g.local(ValType::I32),
     );
     let (n2, m2, acc2) = (g.local(ValType::V128), g.local(ValType::V128), g.local(ValType::V128));
-    g.fpcr_zero();
+    g.fpcr_ok();
     g.ixc();
     g.f.op(op::I32_AND).if_(BLOCK_EMPTY);
     g.vload(5);
@@ -1691,6 +1794,13 @@ fn vfma(simd: u32, neg: bool, idx: bool) -> Func {
     vsafe(&mut g, false, r);
     all_true(&mut g, false);
     g.f.local_set(ok);
+    g.fz_guard(ok, |g| {
+        g.vden(n, false);
+        g.vden(m, false);
+        g.f.op(op::I32_OR);
+        g.vden(acc, false);
+        g.f.op(op::I32_OR);
+    });
     g.commit(ok, |g| g.store_vec(r));
     g.f.end();
     g.fallback(false);
@@ -1721,15 +1831,23 @@ fn elem_splat(g: &mut G, d: bool) {
 fn vidx_mul(simd: u32, d: bool) -> Func {
     let mut g = G::new(simd, 2);
     let (r, ok) = (g.local(ValType::V128), g.local(ValType::I32));
-    g.fpcr_zero();
+    g.fpcr_ok();
     g.ixc();
     g.f.op(op::I32_AND).if_(BLOCK_EMPTY);
+    let (a, b) = (g.local(ValType::V128), g.local(ValType::V128));
     g.vload(5);
+    g.f.local_tee(a);
     elem_splat(&mut g, d);
+    g.f.local_tee(b);
     g.f.v(vop(d, v::F32X4_MUL, v::F64X2_MUL)).local_set(r);
     vsafe(&mut g, d, r);
     all_true(&mut g, d);
     g.f.local_set(ok);
+    g.fz_guard(ok, |g| {
+        g.vden(a, d);
+        g.vden(b, d);
+        g.f.op(op::I32_OR);
+    });
     g.commit(ok, |g| g.store_vec(r));
     g.f.end();
     g.fallback(false);
@@ -1742,7 +1860,7 @@ fn vcmp(simd: u32, d: bool, op_: Cmp, zero: bool, swap: bool) -> Func {
     let mut g = G::new(simd, 2);
     let (a, b, r, ok) =
         (g.local(ValType::V128), g.local(ValType::V128), g.local(ValType::V128), g.local(ValType::I32));
-    g.fpcr_zero();
+    g.fpcr_ok();
     g.f.if_(BLOCK_EMPTY);
     g.vload(5);
     g.f.local_set(a);
@@ -1768,6 +1886,11 @@ fn vcmp(simd: u32, d: bool, op_: Cmp, zero: bool, swap: bool) -> Func {
     g.f.v(v::AND);
     all_true(&mut g, d);
     g.f.local_set(ok);
+    g.fz_guard(ok, |g| {
+        g.vden(a, d);
+        g.vden(b, d);
+        g.f.op(op::I32_OR);
+    });
     g.commit(ok, |g| g.store_vec(r));
     g.f.end();
     g.fallback(false);
@@ -1779,7 +1902,7 @@ fn vcmp(simd: u32, d: bool, op_: Cmp, zero: bool, swap: bool) -> Func {
 fn vsqrt(simd: u32, d: bool) -> Func {
     let mut g = G::new(simd, 2);
     let (a, r, ok) = (g.local(ValType::V128), g.local(ValType::V128), g.local(ValType::I32));
-    g.fpcr_zero();
+    g.fpcr_ok();
     g.ixc();
     g.f.op(op::I32_AND).if_(BLOCK_EMPTY);
     g.vload(5);
@@ -1787,6 +1910,7 @@ fn vsqrt(simd: u32, d: bool) -> Func {
     g.f.local_get(a).v128_const(0, 0).v(vop(d, v::F32X4_GE, v::F64X2_GE));
     all_true(&mut g, d);
     g.f.local_set(ok);
+    g.fz_guard(ok, |g| g.vden(a, d));
     g.commit(ok, |g| g.store_vec(r));
     g.f.end();
     g.fallback(false);

@@ -226,7 +226,7 @@ fn run_one(jit: &mut JitCpu<NativeEngine>, word: u32, cpu: &Cpu) -> (Cpu, Cpu) {
 fn casi_limite_come_interprete() {
     let mut jit = JitCpu::new(NativeEngine::new(), JitConfig { hot_threshold: 0, ..JitConfig::default() });
     let s: Vec<u64> = S.iter().map(|&x| x as u64).collect();
-    let fpcrs = [0u32, 1 << 24, 3 << 22, 1 << 25, 1 << 22];
+    let fpcrs = [0u32, 1 << 24, 3 << 22, 1 << 25, 1 << 22, 7 << 24];
     let mut runs = 0u64;
     for &(word, t, name) in CASES {
         let vals: &[u64] = match t {
@@ -294,18 +294,23 @@ fn percorsi_veloci_usati() {
                 0x3fb9_9999_9999_999a,
             ),
         };
-        let mut cpu = Cpu::new();
-        cpu.pc = CODE;
-        cpu.v[1] = a;
-        cpu.v[2] = b | b << 32 | b << 64 | b << 96;
-        cpu.v[3] = c;
-        cpu.v[0] = c;
-        cpu.x[1] = 12345;
-        cpu.fpsr = 0x10;
-        let before = vetro_jit::helper::calls();
-        let (want, got) = run_one(&mut jit, word, &cpu);
-        assert_eq!(want, got, "{name}");
-        assert_eq!(vetro_jit::helper::calls(), before, "{name}: called env.simd");
+        // FPCR = 0, and flush-to-zero with default NaN and AHP (ADR 0045:
+        // without denormals and NaNs they change nothing).
+        for fpcr in [0, 7 << 24] {
+            let mut cpu = Cpu::new();
+            cpu.pc = CODE;
+            cpu.v[1] = a;
+            cpu.v[2] = b | b << 32 | b << 64 | b << 96;
+            cpu.v[3] = c;
+            cpu.v[0] = c;
+            cpu.x[1] = 12345;
+            cpu.fpsr = 0x10;
+            cpu.fpcr = fpcr;
+            let before = vetro_jit::helper::calls();
+            let (want, got) = run_one(&mut jit, word, &cpu);
+            assert_eq!(want, got, "{name} fpcr={fpcr:#x}");
+            assert_eq!(vetro_jit::helper::calls(), before, "{name} fpcr={fpcr:#x}: called env.simd");
+        }
     }
 }
 
