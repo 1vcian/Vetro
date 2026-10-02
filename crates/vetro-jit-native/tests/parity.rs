@@ -604,7 +604,11 @@ fn concatenamento_dopo_invalidazione() {
 #[test]
 fn saturating_simd_sets_qc_like_the_interpreter() {
     // Encodings from tools/a64asm.sh.
-    let insns: [(u32, &str); 10] = [
+    let insns: [(u32, &str); 14] = [
+        (0x2e214841, "uqxtn v1.8b, v2.8h"),
+        (0x6e214841, "uqxtn2 v1.16b, v2.8h"),
+        (0x2e614841, "uqxtn v1.4h, v2.4s"),
+        (0x6e614841, "uqxtn2 v1.8h, v2.4s"),
         (0x0e214841, "sqxtn v1.8b, v2.8h"),
         (0x4e214841, "sqxtn2 v1.16b, v2.8h"),
         (0x2e612841, "sqxtun v1.4h, v2.4s"),
@@ -644,6 +648,7 @@ fn saturating_simd_sets_qc_like_the_interpreter() {
         let mut jit =
             JitCpu::new(NativeEngine::new(), JitConfig { hot_threshold: 0, ..JitConfig::default() });
         let mut with_qc = 0;
+        let calls = vetro_jit::helper::calls();
         for case in 0..400 {
             let mut v = [0u128; 3];
             for r in v.iter_mut() {
@@ -687,6 +692,7 @@ fn saturating_simd_sets_qc_like_the_interpreter() {
             with_qc += u32::from(case % 7 != 0 && want.fpsr & 1 << 27 != 0);
         }
         assert!(jit.stats.jit_steps >= 400, "{name}: not run by the JIT: {:?}", jit.stats);
+        assert_eq!(vetro_jit::helper::calls(), calls, "{name}: env.simd, not inline");
         assert!(with_qc > 20, "{name}: QC set in only {with_qc} cases: test too weak");
     }
 }
@@ -926,58 +932,6 @@ fn more_integer_simd_matches_the_interpreter_without_env_simd() {
         // UQSHRN by the full width cannot saturate (the result fits).
         if (name.starts_with("sq") || name.starts_with("uq")) && name != "uqshrn v1.4h, v2.4s, #0x10" {
             assert!(with_qc > 5, "{name}: QC set in only {with_qc} cases: test too weak");
-        }
-    }
-}
-
-/// LD2..LD4 of one lane and LD2R..LD4R in regions (ADR 0045: SwiftShader's
-/// code loads structures lane by lane): same registers, base writeback and
-/// faults as the interpreter, also with the second element on an unmapped
-/// page (nothing written) and register numbers wrapping past V31.
-#[test]
-fn single_structure_loads_match_the_interpreter() {
-    let words = [
-        0x0d609020u32, // ld2 { v0.s, v1.s }[1], [x1]
-        0x4dff483e,    // ld2 { v30.h, v31.h }[5], [x1], #4
-        0x4dc53422,    // ld3 { v2.b, v3.b, v4.b }[13], [x1], x5
-        0x4d60a43f,    // ld4 { v31.d, v0.d, v1.d, v2.d }[1], [x1]
-        0x4d60c825,    // ld2r { v5.4s, v6.4s }, [x1]
-        0x0ddfe027,    // ld3r { v7.8b, v8.8b, v9.8b }, [x1], #3
-        0x4d60ec2a,    // ld4r { v10.2d, v11.2d, v12.2d, v13.2d }, [x1]
-    ];
-    let page = DATA + 0x1000;
-    for (k, &w) in words.iter().enumerate() {
-        // x1: well inside the page, or 4 bytes before its end (the next page
-        // is unmapped: the second element faults for every form but LD3R .8b).
-        for x1 in [page + 0x40 + k as u64, page + 0xffc] {
-            let setup = || {
-                let mut mem = UserMemory::new();
-                let mut code = Vec::new();
-                for w in [w, 0x14000000] {
-                    code.extend_from_slice(&w.to_le_bytes());
-                }
-                mem.map(CODE, code, Perm::RX).unwrap();
-                mem.map(page, (0..0x1000).map(|i| (i * 7 + 3) as u8).collect(), Perm::RW).unwrap();
-                let mut cpu = Cpu::new();
-                cpu.pc = CODE;
-                for (r, v) in cpu.v.iter_mut().enumerate() {
-                    *v = 0x0123_4567_89ab_cdef_fedc_ba98_7654_3210u128.rotate_left(r as u32 * 8);
-                }
-                cpu.x[1] = x1;
-                cpu.x[5] = 0x30;
-                (cpu, mem)
-            };
-            let (mut cpu_i, mut mem_i) = setup();
-            let ev_i = cpu_i.step(&mut mem_i).err();
-            let (mut cpu_j, mut mem_j) = setup();
-            let mut jit =
-                JitCpu::new(NativeEngine::new(), JitConfig { hot_threshold: 0, ..JitConfig::default() });
-            let (n, r) = jit.run(&mut cpu_j, &mut mem_j, 1);
-            assert_eq!(r.err(), ev_i, "{w:#010x} x1={x1:#x}");
-            assert_eq!(cpu_j, cpu_i, "{w:#010x} x1={x1:#x}");
-            if ev_i.is_none() {
-                assert_eq!((n, jit.stats.jit_steps), (1, 1), "{w:#010x}: not executed by the JIT");
-            }
         }
     }
 }

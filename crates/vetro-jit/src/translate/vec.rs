@@ -473,8 +473,11 @@ impl Tx {
             (_, 0b10100) | (true, 0b10010) if size <= 1 => {
                 // SQXTN(2) (u=0, 10100), SQXTUN(2) (u=1, 10010): from 2*esize
                 // with saturation (WASM's narrow, which reads the input as
-                // signed); UQXTN (u=1, 10100) no. QC if the result, widened
-                // back (sign-extended for SQXTN, zero-extended for SQXTUN),
+                // signed); UQXTN(2) (u=1, 10100, ADR 0045): the input first
+                // clamped (unsigned) to the narrow maximum, so the signed
+                // reading of narrow_u sees it as it is. QC if the result,
+                // widened back (sign-extended for SQXTN, zero-extended for
+                // SQXTUN and UQXTN),
                 // differs from the input: a saturated result can equal the
                 // truncation (0x017f -> 0x7f), so that comparison is not enough.
                 let (narrow, widen) = match (u, opcode, size) {
@@ -482,11 +485,22 @@ impl Tx {
                     (true, 0b10010, 0) => (v::I8X16_NARROW_I16X8_U, v::I16X8_EXTEND_LOW_I8X16_U),
                     (false, 0b10100, _) => (v::I16X8_NARROW_I32X4_S, v::I32X4_EXTEND_LOW_I16X8_S),
                     (true, 0b10010, _) => (v::I16X8_NARROW_I32X4_U, v::I32X4_EXTEND_LOW_I16X8_U),
+                    (true, 0b10100, 0) => (v::I8X16_NARROW_I16X8_U, v::I16X8_EXTEND_LOW_I8X16_U),
+                    (true, 0b10100, _) => (v::I16X8_NARROW_I32X4_U, v::I32X4_EXTEND_LOW_I16X8_U),
                     _ => return false,
                 };
                 // Result (low 8 bytes) in L_V0.
                 self.vld(rn);
-                self.vld(rn);
+                if u && opcode == 0b10100 {
+                    let (max, min_u) = if size == 0 {
+                        (0x00ff_00ff_00ff_00ffu64, v::I16X8_MIN_U)
+                    } else {
+                        (0x0000_ffff_0000_ffff, v::I32X4_MIN_U)
+                    };
+                    self.f.v128_const(max, max).v(min_u).local_tee(L_V0 + 1).local_get(L_V0 + 1);
+                } else {
+                    self.vld(rn);
+                }
                 self.f.v(narrow).local_tee(L_V0);
                 self.f.v(widen);
                 self.vld(rn);
