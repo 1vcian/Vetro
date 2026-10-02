@@ -97,6 +97,12 @@ const SWIFTSHADER_FP: &[(u32, bool)] = &[
     (0x5fa29820, true),  // fmul s0, s1, v2.s[3]
     (0x5fa21020, true),  // fmla s0, s1, v2.s[1]
     (0x5fc25020, true),  // fmls d0, d1, v2.d[0]
+    (0x4f3dfc20, false), // fcvtzs v0.4s, v1.4s, #3
+    (0x6f3ffc20, false), // fcvtzu v0.4s, v1.4s, #1
+    (0x4f30fc20, false), // fcvtzs v0.4s, v1.4s, #16
+    (0x6f76fc20, false), // fcvtzu v0.2d, v1.2d, #10
+    (0x4fa29020, true),  // fmul v0.4s, v1.4s, v2.s[1]
+    (0x0ea2cc20, true),  // fmls v0.2s, v1.2s, v2.2s
     (0x1e222820, true),  // fadd s0, s1, s2
     (0x1e220820, true),  // fmul s0, s1, s2
 ];

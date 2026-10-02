@@ -236,6 +236,12 @@ const CASES: &[(u32, T, &str)] = &[
     (0x5fc21820, T::D, "fmla d0, d1, v2.d[1]"),
     (0x5fc25020, T::D, "fmls d0, d1, v2.d[0]"),
     (0x5fb29820, T::S, "fmul s0, s1, v18.s[3]"),
+    (0x4f3dfc20, T::S, "fcvtzs v0.4s, v1.4s, #3"),
+    (0x6f76fc20, T::D, "fcvtzu v0.2d, v1.2d, #10"),
+    (0x0f20fc20, T::S, "fcvtzs v0.2s, v1.2s, #32"),
+    (0x6f3ffc20, T::S, "fcvtzu v0.4s, v1.4s, #1"),
+    (0x4f40fc20, T::D, "fcvtzs v0.2d, v1.2d, #64"),
+    (0x4f30fc20, T::S, "fcvtzs v0.4s, v1.4s, #16"),
     (0x1e264020, T::S, "frinta s0, s1"),
     (0x1e664020, T::D, "frinta d0, d1"),
     (0x9e640020, T::D, "fcvtas x0, d1"),
@@ -348,6 +354,10 @@ fn casi_limite_come_interprete() {
 fn percorsi_veloci_usati() {
     let mut jit = JitCpu::new(NativeEngine::new(), JitConfig { hot_threshold: 0, ..JitConfig::default() });
     for &(word, t, name) in CASES {
+        // 1.5 × 2^32 and 2^64 do not fit: those conversions saturate (IOC).
+        if name.ends_with("#32") || name.ends_with("#64") {
+            continue;
+        }
         let (a, b, c) = match t {
             T::S => (0x3fc0_0000u128 * 0x1_0000_0001_0000_0001_0000_0001, 0x4040_0000u128, 0x3dcc_cccdu128),
             T::D => (
@@ -429,6 +439,43 @@ fn fast_paths_raise_ixc() {
         let (want, got) = run_one(&mut jit, word, &cpu);
         assert_eq!(want, got, "{name}");
         assert_eq!(got.fpsr, 0x10, "{name}: IXC");
+        assert_eq!(vetro_jit::helper::calls(), before, "{name}: called env.simd");
+    }
+}
+
+/// Products with a zero factor (vector FMUL, by-element FMUL, FMLA/FMLS
+/// whose product is zero) are exact zeros or the accumulator: fast paths,
+/// no `env.simd` (ADR 0045: SwiftShader multiplies by zero lanes often).
+#[test]
+fn zero_products_stay_in_the_fast_path() {
+    const ZERO: &[(u32, &str)] = &[
+        (0x6e22dc20, "fmul v0.4s, v1.4s, v2.4s"),
+        (0x6e62dc20, "fmul v0.2d, v1.2d, v2.2d"),
+        (0x4fa29020, "fmul v0.4s, v1.4s, v2.s[1]"),
+        (0x4fa21820, "fmla v0.4s, v1.4s, v2.s[3]"),
+        (0x4e22cc20, "fmla v0.4s, v1.4s, v2.4s"),
+        (0x0ea2cc20, "fmls v0.2s, v1.2s, v2.2s"),
+    ];
+    let mut jit = JitCpu::new(NativeEngine::new(), JitConfig { hot_threshold: 0, ..JitConfig::default() });
+    for &(word, name) in ZERO {
+        let d = name.contains(".2d");
+        let mut cpu = Cpu::new();
+        cpu.pc = CODE;
+        // v1: 1.5, -0, 2.5, +0 (single) / 1.5, -0 (double); v2: 0, 3, -0, 3 /
+        // 3, 3; accumulator: 0.1, -0, 0, 1.5
+        if d {
+            cpu.v[1] = 0x3ff8_0000_0000_0000 | (1u128 << 127);
+            cpu.v[2] = 0x4008_0000_0000_0000 | 0x4008_0000_0000_0000u128 << 64;
+            cpu.v[0] = 0x3fb9_9999_9999_999a;
+        } else {
+            cpu.v[1] = 0x3fc0_0000 | 0x8000_0000u128 << 32 | 0x4020_0000u128 << 64;
+            cpu.v[2] = 0x4040_0000u128 << 32 | 0x8000_0000u128 << 64 | 0x4040_0000u128 << 96;
+            cpu.v[0] = 0x3dcc_cccd | 0x8000_0000u128 << 32 | 0x3fc0_0000u128 << 96;
+        }
+        cpu.fpsr = 0x10;
+        let before = vetro_jit::helper::calls();
+        let (want, got) = run_one(&mut jit, word, &cpu);
+        assert_eq!(want, got, "{name}");
         assert_eq!(vetro_jit::helper::calls(), before, "{name}: called env.simd");
     }
 }

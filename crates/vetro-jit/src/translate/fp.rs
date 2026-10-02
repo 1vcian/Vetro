@@ -186,6 +186,11 @@ pub(super) enum FpRt {
         u: bool,
         r: Rnd,
     },
+    /// Vector FCVTZS/FCVTZU with fraction bits (ADR 0045).
+    VToFixed {
+        d: bool,
+        u: bool,
+    },
     /// Vector SCVTF/UCVTF.
     VFromInt {
         d: bool,
@@ -286,6 +291,11 @@ pub(super) fn rt_ops() -> &'static [FpRt] {
         }
         for max in [false, true] {
             v.push(FpRt::Across { max });
+        }
+        for d in [false, true] {
+            for u in [false, true] {
+                v.push(FpRt::VToFixed { d, u });
+            }
         }
         v
     })
@@ -578,6 +588,10 @@ impl Tx {
             }
             FpInsn::VAcross { a, .. } => {
                 call(self, FpRt::Across { max: !a });
+                true
+            }
+            FpInsn::VFixed { scalar: false, u, sz, to_int: true, .. } => {
+                call(self, FpRt::VToFixed { d: sz, u });
                 true
             }
             FpInsn::VIndexed { scalar: true, u: false, sz, opcode, .. } => {
@@ -945,7 +959,8 @@ pub(super) fn build(k: usize, simd: u32) -> Func {
         FpRt::VSqrt { d } => vsqrt(simd, d),
         FpRt::FmaD { neg_a, neg_n } => fma_d(simd, neg_a, neg_n, Src::Regs),
         FpRt::VFmaD { neg, idx } => vfma_d(simd, neg, idx),
-        FpRt::VToInt { d, u, r } => vto_int(simd, d, u, r),
+        FpRt::VToInt { d, u, r } => vto_int(simd, d, u, r, false),
+        FpRt::VToFixed { d, u } => vto_int(simd, d, u, Rnd::Trunc, true),
         FpRt::VFromInt { d, u } => vfrom_int(simd, d, u),
         FpRt::VCvtl => vcvtl(simd),
         FpRt::VCvtn => vcvtn(simd),
@@ -1621,6 +1636,21 @@ fn vsafe(g: &mut G, d: bool, r: u32) {
     g.f.v(v::AND);
 }
 
+/// Mask of the lanes where the product (quotient: `b` None) `r` is a zero
+/// with a zero factor (dividend): exact, no flags, the sign WASM's (IEEE's,
+/// like Arm's). A zero factor with a NaN or infinite other one gives NaN, so
+/// `r` is not a zero there; with FZ the callers' guard rejects denormal
+/// factors (Arm would flush them and signal IDC).
+fn vexact_zero(g: &mut G, d: bool, r: u32, a: u32, b: Option<u32>) {
+    let eq = vop(d, v::F32X4_EQ, v::F64X2_EQ);
+    g.f.local_get(r).v128_const(0, 0).v(eq);
+    g.f.local_get(a).v128_const(0, 0).v(eq);
+    if let Some(b) = b {
+        g.f.local_get(b).v128_const(0, 0).v(eq).v(v::OR);
+    }
+    g.f.v(v::AND);
+}
+
 /// Mask of the non-NaN lanes of `x`.
 fn vnot_nan(g: &mut G, d: bool, x: u32) {
     g.f.local_get(x).local_get(x).v(vop(d, v::F32X4_EQ, v::F64X2_EQ));
@@ -1708,8 +1738,11 @@ fn vbin(simd: u32, d: bool, op_: Bin) -> Func {
             g.f.local_set(ok);
         }
         Bin::Mul | Bin::Nmul | Bin::Div => {
-            // Safely normal and IXC at 1.
+            // Per lane safely normal, or an exact zero (ADR 0045), and IXC
+            // at 1.
             vsafe(&mut g, d, r);
+            vexact_zero(&mut g, d, r, a, if op_ == Bin::Div { None } else { Some(b) });
+            g.f.v(v::OR);
             all_true(&mut g, d);
             g.ixc();
             g.f.op(op::I32_AND).local_set(ok);
@@ -1740,15 +1773,31 @@ fn vbin(simd: u32, d: bool, op_: Bin) -> Func {
 
 /// Vector FCVT[NPMZA][SU] (without fixed point): rounding,
 /// range on the rounded value, saturating conversion (exact here).
-fn vto_int(simd: u32, d: bool, u: bool, rnd: Rnd) -> Func {
+fn vto_int(simd: u32, d: bool, u: bool, rnd: Rnd, fixed: bool) -> Func {
     use ValType::*;
     let mut g = G::new(simd, 2);
     let (a, t, r, ok) = (g.local(V128), g.local(V128), g.local(V128), g.local(I32));
     // Exact (every lane unchanged by the rounding): otherwise IXC, raised here.
     let ex = g.local(I32);
+    // The input before the scaling (FZ guard).
+    let a0 = g.local(V128);
     g.fpcr_ok();
     g.f.if_(BLOCK_EMPTY);
     g.vload(5);
+    g.f.local_tee(a0);
+    if fixed {
+        // × 2^fbits, fbits = 2 × esize - immh:immb (bits 22:16): exact, or
+        // an infinity that the range check rejects.
+        // the exponent of 2^fbits: bias + 2 × esize - imm7
+        g.f.i32_const(if d { 1023 + 128 } else { 127 + 64 });
+        g.f.local_get(P_WORD).i32_const(16).op(op::I32_SHR_U).i32_const(0x7f).op(op::I32_AND);
+        g.f.op(op::I32_SUB);
+        if d {
+            g.f.op(op::I64_EXTEND_I32_U).i64_const(52).op(op::I64_SHL).v(v::I64X2_SPLAT).v(v::F64X2_MUL);
+        } else {
+            g.f.i32_const(23).op(op::I32_SHL).v(v::I32X4_SPLAT).v(v::F32X4_MUL);
+        }
+    }
     g.f.local_set(a);
     if d {
         // Lane by lane, in scalar.
@@ -1794,7 +1843,7 @@ fn vto_int(simd: u32, d: bool, u: bool, rnd: Rnd) -> Func {
             .v(if u { v::I32X4_TRUNC_SAT_F32X4_U } else { v::I32X4_TRUNC_SAT_F32X4_S })
             .local_set(r);
     }
-    g.fz_guard(ok, |g| g.vden(a, d));
+    g.fz_guard(ok, |g| g.vden(a0, d));
     g.commit(ok, |g| {
         g.raise_unless(ex);
         g.store_vec(r);
@@ -2030,6 +2079,20 @@ fn vfma(simd: u32, neg: bool, idx: bool) -> Func {
     g.f.shuffle(core::array::from_fn(|j| if j < 8 { j as u8 } else { (16 + j - 8) as u8 }));
     g.f.local_set(r);
     vsafe(&mut g, false, r);
+    // or a zero product (a zero factor, the others finite): r is the
+    // accumulator, exactly (ADR 0045)
+    let eq0 = |g: &mut G, x: u32| {
+        g.f.local_get(x).v128_const(0, 0).v(v::F32X4_EQ);
+    };
+    eq0(&mut g, n);
+    eq0(&mut g, m);
+    g.f.v(v::OR);
+    vfinite(&mut g, false, n);
+    g.f.v(v::AND);
+    vfinite(&mut g, false, m);
+    g.f.v(v::AND);
+    vfinite(&mut g, false, acc);
+    g.f.v(v::AND).v(v::OR);
     all_true(&mut g, false);
     g.f.local_set(ok);
     g.fz_guard(ok, |g| {
@@ -2079,6 +2142,8 @@ fn vidx_mul(simd: u32, d: bool) -> Func {
     g.f.local_tee(b);
     g.f.v(vop(d, v::F32X4_MUL, v::F64X2_MUL)).local_set(r);
     vsafe(&mut g, d, r);
+    vexact_zero(&mut g, d, r, a, Some(b));
+    g.f.v(v::OR);
     all_true(&mut g, d);
     g.f.local_set(ok);
     g.fz_guard(ok, |g| {
