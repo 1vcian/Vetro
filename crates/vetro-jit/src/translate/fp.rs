@@ -164,6 +164,12 @@ pub(super) enum FpRt {
     /// FCVTL(2) and FCVTN(2) between single and double.
     VCvtl,
     VCvtn,
+    /// FCVTL(2) and FCVTN(2) between half and single precision (ADR 0045).
+    VCvtlH,
+    VCvtnH,
+    /// FCVT Sd, Hn and FCVT Hd, Sn.
+    CvtSH,
+    CvtHS,
 }
 
 /// All the `rt.fp<k>` functions, in index order (from `F_FP0`).
@@ -230,6 +236,7 @@ pub(super) fn rt_ops() -> &'static [FpRt] {
             v.push(FpRt::VFma { neg });
             v.push(FpRt::VIdxFma { neg });
         }
+        v.extend([FpRt::VCvtlH, FpRt::VCvtnH, FpRt::CvtSH, FpRt::CvtHS]);
         v
     })
 }
@@ -300,6 +307,14 @@ impl Tx {
             }
             FpInsn::Dp1 { ty: 0, opcode: 5, .. } => {
                 call(self, FpRt::CvtSD);
+                true
+            }
+            FpInsn::Dp1 { ty: 0, opcode: 7, .. } => {
+                call(self, FpRt::CvtHS);
+                true
+            }
+            FpInsn::Dp1 { ty: 3, opcode: 4, .. } => {
+                call(self, FpRt::CvtSH);
                 true
             }
             FpInsn::Dp1 { ty, opcode: opcode @ (8..=12 | 14 | 15), .. } if ty <= 1 => {
@@ -443,6 +458,8 @@ impl Tx {
                 let op_ = match (u, a, opcode) {
                     (false, false, 0b10110) if d => FpRt::VCvtn,
                     (false, false, 0b10111) if d => FpRt::VCvtl,
+                    (false, false, 0b10110) => FpRt::VCvtnH,
+                    (false, false, 0b10111) => FpRt::VCvtlH,
                     (_, false, 0b11010) => FpRt::VToInt { d, u, r: Rnd::Nearest },
                     (_, true, 0b11010) => FpRt::VToInt { d, u, r: Rnd::Ceil },
                     (_, false, 0b11011) => FpRt::VToInt { d, u, r: Rnd::Floor },
@@ -770,6 +787,10 @@ pub(super) fn build(k: usize, simd: u32) -> Func {
         FpRt::VFromInt { d, u } => vfrom_int(simd, d, u),
         FpRt::VCvtl => vcvtl(simd),
         FpRt::VCvtn => vcvtn(simd),
+        FpRt::VCvtlH => cvt_h2s(simd, true),
+        FpRt::VCvtnH => cvt_s2h(simd, true),
+        FpRt::CvtSH => cvt_h2s(simd, false),
+        FpRt::CvtHS => cvt_s2h(simd, false),
     }
 }
 
@@ -1912,6 +1933,164 @@ fn vsqrt(simd: u32, d: bool) -> Func {
     g.f.local_set(ok);
     g.fz_guard(ok, |g| g.vden(a, d));
     g.commit(ok, |g| g.store_vec(r));
+    g.f.end();
+    g.fallback(false);
+    g.f.op(op::DROP);
+    g.finish()
+}
+
+// --- half precision (ADR 0045) ----------------------------------------
+
+/// FPCR.AHP (bit 26) clear and FPCR.RMode round to nearest (i32 boolean):
+/// the IEEE half format of the fast paths.
+fn ieee_half(g: &mut G) {
+    g.f.local_get(P_STATE).i32_load(off::FPCR).i32_const(1 << 26 | FPCR_RMODE).op(op::I32_AND).op(op::I32_EQZ);
+}
+
+/// v128 with `x` in every 32-bit lane.
+fn splat32(g: &mut G, x: u32) {
+    let w = x as u64 * 0x1_0000_0001;
+    g.f.v128_const(w, w);
+}
+
+/// FCVTL(2) .4s from .4h/.8h (`vector`) or FCVT Sd, Hn: exact for every
+/// half that is not a NaN (the half format has no flush to zero on ARMv8.0,
+/// so denormals are values like the others; FZ and DN do not matter), no
+/// flags. The half bits, zero-extended to 32 bits: f = bits(abs << 13) ×
+/// 2^112 (exact: an exponent shift, a denormal half becomes the normal
+/// single it is), infinities set apart, then the sign.
+fn cvt_h2s(simd: u32, vector: bool) -> Func {
+    use ValType::*;
+    let mut g = G::new(simd, 2);
+    let (h, abs, r, ok) = (g.local(V128), g.local(V128), g.local(V128), g.local(I32));
+    ieee_half(&mut g);
+    g.f.if_(BLOCK_EMPTY);
+    g.vload(5);
+    if vector {
+        // Q = 1 (FCVTL2): the high four halves.
+        g.f.local_tee(h).v(v::I32X4_EXTEND_HIGH_I16X8_U);
+        g.f.local_get(h).v(v::I32X4_EXTEND_LOW_I16X8_U);
+        g.q();
+        g.f.op(op::SELECT);
+    } else {
+        g.f.v(v::I32X4_EXTEND_LOW_I16X8_U);
+    }
+    g.f.local_tee(h);
+    splat32(&mut g, 0x7fff);
+    g.f.v(v::AND).local_set(abs);
+    // f, or the infinity
+    splat32(&mut g, S_INF);
+    g.f.local_get(abs).i32_const(13).v(v::I32X4_SHL);
+    splat32(&mut g, 0x7780_0000); // 2^112
+    g.f.v(v::F32X4_MUL);
+    g.f.local_get(abs);
+    splat32(&mut g, 0x7c00);
+    g.f.v(v::I32X4_EQ).v(v::BITSELECT);
+    // | sign << 16
+    g.f.local_get(h);
+    splat32(&mut g, 0x8000);
+    g.f.v(v::AND).i32_const(16).v(v::I32X4_SHL).v(v::OR).local_set(r);
+    // no NaN (lanes that count: all four, or lane 0)
+    g.f.local_get(abs);
+    splat32(&mut g, 0x7c00);
+    g.f.v(v::I32X4_GT_U);
+    if !vector {
+        g.f.v128_const(0xffff_ffff, 0).v(v::AND);
+    }
+    g.f.v(v::ANY_TRUE).op(op::I32_EQZ).local_set(ok);
+    g.commit(ok, |g| {
+        if vector {
+            g.vaddr(0);
+            g.f.local_get(r).v128_store(off::V);
+        } else {
+            let b = g.local(I64);
+            g.f.local_get(r).lane(v::I32X4_EXTRACT_LANE, 0).op(op::I64_EXTEND_I32_U).local_set(b);
+            g.store_scalar_bits(b);
+        }
+    });
+    g.f.end();
+    g.fallback(false);
+    g.f.op(op::DROP);
+    g.finish()
+}
+
+/// FCVTN(2) .4h/.8h from .4s (`vector`) or FCVT Hd, Sn, rounding to nearest
+/// even with integer arithmetic on the single bits. Every lane must be
+/// ±0, ±infinity (exact) or of magnitude in [2^-14, 65520): a normal half
+/// after rounding, never tiny (so no UFC, and FZ cannot flush a denormal
+/// input: there is none) and no overflow. Inexact exactly when the 13 low
+/// bits of the mantissa are not zero: then FPSR.IXC is set here.
+fn cvt_s2h(simd: u32, vector: bool) -> Func {
+    use ValType::*;
+    let mut g = G::new(simd, 2);
+    let (x, abs, h, m, ok) = (g.local(V128), g.local(V128), g.local(V128), g.local(V128), g.local(I32));
+    let (zero, inf, inexact) = (g.local(V128), g.local(V128), g.local(I32));
+    ieee_half(&mut g);
+    g.f.if_(BLOCK_EMPTY);
+    g.vload(5);
+    g.f.local_tee(x);
+    splat32(&mut g, 0x7fff_ffff);
+    g.f.v(v::AND).local_set(abs);
+    // lanes that count: all four, or lane 0
+    if vector {
+        g.f.v128_const(u64::MAX, u64::MAX);
+    } else {
+        g.f.v128_const(0xffff_ffff, 0);
+    }
+    g.f.local_set(m);
+    g.f.local_get(abs).v128_const(0, 0).v(v::I32X4_EQ).local_set(zero);
+    g.f.local_get(abs);
+    splat32(&mut g, S_INF);
+    g.f.v(v::I32X4_EQ).local_set(inf);
+    // in range: abs - 0x38800000 < 0x477ff000 - 0x38800000 (unsigned)
+    g.f.local_get(abs);
+    splat32(&mut g, 0x3880_0000);
+    g.f.v(v::I32X4_SUB);
+    splat32(&mut g, 0x477f_f000 - 0x3880_0000);
+    g.f.v(v::I32X4_LT_U).local_tee(h);
+    g.f.local_get(zero).v(v::OR).local_get(inf).v(v::OR).local_get(m).v(v::NOT).v(v::OR);
+    g.f.v(v::I32X4_ALL_TRUE).local_set(ok);
+    // inexact: a lane in range (the others are exact) with low bits
+    g.f.local_get(abs);
+    splat32(&mut g, 0x1fff);
+    g.f.v(v::AND).v128_const(0, 0).v(v::I32X4_EQ).v(v::NOT);
+    g.f.local_get(h).v(v::AND).local_get(m).v(v::AND).v(v::ANY_TRUE).local_set(inexact);
+    // rounded = (abs - (112 << 23) + 0xfff + ((abs >> 13) & 1)) >> 13
+    g.f.local_get(abs);
+    splat32(&mut g, (112 << 23) - 0xfff);
+    g.f.v(v::I32X4_SUB);
+    g.f.local_get(abs).i32_const(13).v(v::I32X4_SHR_U);
+    splat32(&mut g, 1);
+    g.f.v(v::AND).v(v::I32X4_ADD).i32_const(13).v(v::I32X4_SHR_U);
+    // zeros give 0, infinities 0x7c00
+    let t = g.local(V128);
+    g.f.local_get(zero).v(v::ANDNOT).local_set(t);
+    splat32(&mut g, 0x7c00);
+    g.f.local_get(t).local_get(inf).v(v::BITSELECT);
+    // | sign
+    g.f.local_get(x).i32_const(16).v(v::I32X4_SHR_U);
+    splat32(&mut g, 0x8000);
+    g.f.v(v::AND).v(v::OR).local_set(h);
+    g.commit(ok, |g| {
+        // FPSR.IXC
+        g.f.local_get(inexact).if_(BLOCK_EMPTY);
+        g.f.local_get(P_STATE).local_get(P_STATE).i32_load(off::FPSR).i32_const(IXC).op(op::I32_OR);
+        g.f.i32_store(off::FPSR);
+        g.f.end();
+        // the four halves in the low 64 bits
+        g.f.local_get(h).local_get(h).v(v::I16X8_NARROW_I32X4_U).local_set(h);
+        g.vaddr(0);
+        if vector {
+            // Q = 0: [halves, 0]; Q = 1 (FCVTN2): [Vd low, halves].
+            g.vload(0);
+            g.f.local_get(h).shuffle(core::array::from_fn(|j| if j < 8 { j as u8 } else { (16 + j - 8) as u8 }));
+            g.f.local_get(h).v128_const(u64::MAX, 0).v(v::AND);
+            g.q();
+            g.f.op(op::SELECT).v128_store(off::V);
+        } else {
+            g.f.local_get(h).v128_const(0xffff, 0).v(v::AND).v128_store(off::V);
+        }
+    });
     g.f.end();
     g.fallback(false);
     g.f.op(op::DROP);

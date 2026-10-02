@@ -17,7 +17,7 @@ const CODE: u64 = 0x40_0000;
 /// brk #0: closes the region after the instruction under test.
 const BRK: u32 = 0xd420_0000;
 
-const S: [u32; 27] = [
+const S: [u32; 37] = [
     0,
     0x8000_0000,
     1,
@@ -45,6 +45,25 @@ const S: [u32; 27] = [
     0x3fc0_0000,
     0x4b80_0000,
     0x4b80_0001,
+    // Half-precision boundaries (ADR 0045): 65504, the largest that
+    // rounds to it, 65520 (overflows), 2^-14 and below, 2^-24, ties.
+    0x477f_e000,
+    0x477f_efff,
+    0x477f_f000,
+    0x3880_0000,
+    0x387f_ffff,
+    0x3380_0000,
+    0x3f80_1000,
+    0xbf80_3000,
+    0x3f80_1001,
+    0x4680_0fff,
+];
+
+/// Half-precision values (ADR 0045): zeros, denormals, the smallest normal,
+/// 1 ± ulp, maxima, infinities, quiet and signalling NaNs.
+const H: [u16; 18] = [
+    0, 0x8000, 1, 0x03ff, 0x8400, 0x0400, 0x3bff, 0x3c00, 0x3c01, 0x7bff, 0xfbff, 0x7c00, 0xfc00, 0x7e00,
+    0x7d01, 0x7c01, 0x3555, 0xd640,
 ];
 
 const D: [u64; 29] = [
@@ -100,6 +119,7 @@ const X: [u64; 13] = [
 enum T {
     S,
     D,
+    H,
 }
 
 /// Instructions under test (encodings from tools/a64asm.sh): V1, V2, V3 and X1
@@ -184,6 +204,12 @@ const CASES: &[(u32, T, &str)] = &[
     (0x6e62d420, T::D, "faddp v0.2d, v1.2d, v2.2d"),
     (0x6ea2d420, T::S, "fabd v0.4s, v1.4s, v2.4s"),
     (0x6ee2d420, T::D, "fabd v0.2d, v1.2d, v2.2d"),
+    (0x0e217820, T::H, "fcvtl v0.4s, v1.4h"),
+    (0x4e217820, T::H, "fcvtl2 v0.4s, v1.8h"),
+    (0x0e216820, T::S, "fcvtn v0.4h, v1.4s"),
+    (0x4e216820, T::S, "fcvtn2 v0.8h, v1.4s"),
+    (0x1ee24020, T::H, "fcvt s0, h1"),
+    (0x1e23c020, T::S, "fcvt h0, s1"),
     (0x1e264020, T::S, "frinta s0, s1"),
     (0x1e664020, T::D, "frinta d0, d1"),
     (0x9e640020, T::D, "fcvtas x0, d1"),
@@ -202,6 +228,13 @@ fn vreg(t: T, vals: &[u64], k: usize) -> u128 {
             v
         }
         T::D => vals[k % vals.len()] as u128 | (vals[(k + 5) % vals.len()] as u128) << 64,
+        T::H => {
+            let mut v = 0u128;
+            for lane in 0..8 {
+                v |= (vals[(k + lane * 5) % vals.len()] as u16 as u128) << (16 * lane);
+            }
+            v
+        }
     }
 }
 
@@ -226,12 +259,14 @@ fn run_one(jit: &mut JitCpu<NativeEngine>, word: u32, cpu: &Cpu) -> (Cpu, Cpu) {
 fn casi_limite_come_interprete() {
     let mut jit = JitCpu::new(NativeEngine::new(), JitConfig { hot_threshold: 0, ..JitConfig::default() });
     let s: Vec<u64> = S.iter().map(|&x| x as u64).collect();
-    let fpcrs = [0u32, 1 << 24, 3 << 22, 1 << 25, 1 << 22, 7 << 24];
+    let h: Vec<u64> = H.iter().map(|&x| x as u64).collect();
+    let fpcrs = [0u32, 1 << 24, 3 << 22, 1 << 25, 1 << 22, 7 << 24, 1 << 26];
     let mut runs = 0u64;
     for &(word, t, name) in CASES {
         let vals: &[u64] = match t {
             T::S => &s,
             T::D => &D,
+            T::H => &h,
         };
         let n = vals.len();
         for i in 0..n {
@@ -293,10 +328,12 @@ fn percorsi_veloci_usati() {
                 0x4008_0000_0000_0000,
                 0x3fb9_9999_9999_999a,
             ),
+            // 1.5, 3, 0.1 and a denormal in half precision
+            T::H => (0x3e00_4200_2e66_0001_3e00_4200_2e66_0001u128, 0x4200, 0x2e66),
         };
-        // FPCR = 0, and flush-to-zero with default NaN and AHP (ADR 0045:
+        // FPCR = 0, and flush-to-zero with default NaN (ADR 0045:
         // without denormals and NaNs they change nothing).
-        for fpcr in [0, 7 << 24] {
+        for fpcr in [0, 3 << 24] {
             let mut cpu = Cpu::new();
             cpu.pc = CODE;
             cpu.v[1] = a;
