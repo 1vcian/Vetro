@@ -353,3 +353,48 @@ fn same_inputs_same_frames() {
     };
     assert_eq!(run(), run());
 }
+
+/// The frames of the shared vectors (`relay/test/vectors.txt`), which the JS
+/// implementation (`relay/src/protocol.mjs`) builds and checks too.
+fn vector_frames() -> Vec<(&'static str, Side, Frame)> {
+    let dns_q = vec![0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
+    let dns_a = vec![0x12, 0x34, 0x81, 0x80, 0, 0, 0, 0, 0, 0, 0, 0];
+    vec![
+        ("connect", Side::Machine, Frame::Connect { id: 7, dst: SERVER }),
+        ("connect_name", Side::Machine, Frame::ConnectName { id: 8, name: "example.com".into(), port: 80 }),
+        ("data_machine", Side::Machine, Frame::Data { id: 7, data: b"hello".to_vec() }),
+        ("data_gateway", Side::Gateway, Frame::Data { id: 7, data: b"world".to_vec() }),
+        ("shutdown_machine", Side::Machine, Frame::Shutdown { id: 7 }),
+        ("shutdown_gateway", Side::Gateway, Frame::Shutdown { id: 7 }),
+        ("close_machine", Side::Machine, Frame::Close { id: 7, reset: false }),
+        ("close_gateway", Side::Gateway, Frame::Close { id: 9, reset: true }),
+        ("ack_machine", Side::Machine, Frame::Ack { id: 7, n: 1000 }),
+        ("ack_gateway", Side::Gateway, Frame::Ack { id: 7, n: WINDOW }),
+        ("dns", Side::Machine, Frame::Dns { id: 3, msg: dns_q, answer: false }),
+        ("dns_answer", Side::Gateway, Frame::Dns { id: 3, msg: dns_a, answer: true }),
+        ("connected", Side::Gateway, Frame::Connected { id: 7 }),
+        ("refused", Side::Gateway, Frame::Refused { id: 9, reason: Refusal::Platform }),
+        ("online", Side::Gateway, Frame::Online(true)),
+        ("down", Side::Gateway, Frame::Down),
+        ("big_id", Side::Machine, Frame::Data { id: 0xffff_fffe, data: vec![0xff] }),
+    ]
+}
+
+#[test]
+fn shared_vectors() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../relay/test/vectors.txt");
+    let mut text = String::from("# Gateway protocol vectors (ADR 0046): name, side, frame in hex.\n");
+    text.push_str("# Written by `VETRO_WRITE_VECTORS=1 cargo test -p vetro-net --test relay shared_vectors`,\n");
+    text.push_str("# checked by that test and by relay/test/unit.mjs.\n");
+    for (name, side, f) in vector_frames() {
+        let bytes = f.encode_from(side);
+        assert_eq!(Frame::decode(&bytes), Some((side, f.clone())));
+        let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        let side = if side == Side::Machine { "machine" } else { "gateway" };
+        text.push_str(&format!("{name} {side} {hex}\n"));
+    }
+    if std::env::var_os("VETRO_WRITE_VECTORS").is_some() {
+        std::fs::write(path, &text).unwrap();
+    }
+    assert_eq!(std::fs::read_to_string(path).expect("relay/test/vectors.txt"), text);
+}
