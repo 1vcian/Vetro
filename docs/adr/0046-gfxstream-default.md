@@ -1,6 +1,6 @@
 # ADR 0046 — The browser's GPU draws Android's UI: gfxstream on WebGL2 by default
 
-- Status: proposed (M5, 2026-10-02). Builds on ADR 0037 (gfxstream GLES over
+- Status: accepted (M5, 2026-10-02). Builds on ADR 0037 (gfxstream GLES over
   virtio-gpu 3D, WebGL2 executor), 0031 (prebuilt snapshot), 0043 (image
   f08b79e), 0044 (prefetch list, warmed prebuilt). Details:
   `docs/specs/gfxstream.md`; measurements: `docs/progress/M5.md`
@@ -56,7 +56,18 @@ host side (the guest image needed no change):
    and the boot parameters select it (ADR 0037).
 
 ## Measurements
-(see `docs/progress/M5.md`; filled in below by the results section.)
+`tools/aosp/live-path.mjs --webgl` on the build VM (light profile, one core,
+image f08b79e, each path's warmed prebuilt; two runs each; WebGL2 is
+Chrome's own SwiftShader on the host, the VM has no GPU), gfxstream against
+SwiftShader: app drawer drawn 2.5-3.0 s against 9.4-52.2 s after the swipe;
+Settings' window 16.3-20.6 s against 140.6-162.6 s after the tap, with 3-5
+instead of 34-37 s of guest time; a home tap's first frame 3.1-4.1 s against
+4.0-8.3 s; first frame after the restore 6.3-6.8 s against 10.1-13.4 s;
+install and first screen of a catalog app the same (dominated by
+package manager and dex work, not drawing). Full table:
+`docs/progress/M5.md`. Clearly better and stable over three runs after the
+fixes: published as the default (prebuilt `1779b7baf2263ed9b05d78ae538c0480`
+and its prefetch list on R2).
 
 ## Consequences
 - The prebuilt snapshot of the accelerated path is larger (GPU contents,
