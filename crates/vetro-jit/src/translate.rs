@@ -2630,12 +2630,18 @@ impl Tx {
         self.exit_fault();
         self.f.end();
         let s = t64(0);
-        let f = &mut self.f;
-        f.local_get(L_STATE).i64_load(off::TIME_BASE).local_get(L_STEPS).op(op::I64_ADD);
-        if self.index != 0 {
-            f.i64_const(self.index as i64).op(op::I64_ADD);
+        if self.sys.is_some_and(|t| t.yields || t.parallel) {
+            self.smp_steps(s);
+        } else {
+            let f = &mut self.f;
+            f.local_get(L_STATE).i64_load(off::TIME_BASE).local_get(L_STEPS).op(op::I64_ADD);
+            if self.index != 0 {
+                f.i64_const(self.index as i64).op(op::I64_ADD);
+            }
+            f.local_set(s);
         }
-        f.local_tee(s).i64_const(3).op(op::I64_SHR_U).i64_const(5).op(op::I64_MUL);
+        let f = &mut self.f;
+        f.local_get(s).i64_const(3).op(op::I64_SHR_U).i64_const(5).op(op::I64_MUL);
         f.local_get(s)
             .i64_const(7)
             .op(op::I64_AND)
@@ -2647,6 +2653,32 @@ impl Tx {
         if virt {
             f.local_get(L_STATE).i64_load(off::CNTVOFF).op(op::I64_SUB);
         }
+    }
+
+    /// Several cores (ADR 0042): into `s` the instructions whose counter this
+    /// instruction reads, `clock / div`. Cores in turns (`time_ok` 1):
+    /// `time_base` + steps of the run, as with one core. Cores in parallel
+    /// (`time_ok` 2): the steps since the last read are added to the shared
+    /// clock at `time_base` with an atomic add, whose result is the clock: so a
+    /// read on any core is never behind one made before on another.
+    fn smp_steps(&mut self, s: u32) {
+        let (cur, delta) = (t64(1), t64(2));
+        let f = &mut self.f;
+        f.local_get(L_STEPS);
+        if self.index != 0 {
+            f.i64_const(self.index as i64).op(op::I64_ADD);
+        }
+        f.local_set(cur);
+        f.local_get(L_STATE).i32_load(off::TIME_OK).i32_const(2).op(op::I32_EQ);
+        f.if_(ValType::I64 as u8);
+        f.local_get(cur).local_get(L_STATE).i64_load(area::TIME_FLUSHED).op(op::I64_SUB).local_set(delta);
+        f.local_get(L_STATE).local_get(cur).i64_store(area::TIME_FLUSHED);
+        f.local_get(L_STATE).i64_load(off::TIME_BASE).op(op::I32_WRAP_I64).local_get(delta);
+        f.i64_atomic_rmw_add(0).local_get(delta).op(op::I64_ADD);
+        f.else_();
+        f.local_get(L_STATE).i64_load(off::TIME_BASE).local_get(cur).op(op::I64_ADD);
+        f.end();
+        f.local_get(L_STATE).i64_load(area::TIME_DIV).op(op::I64_DIV_U).local_set(s);
     }
 
     /// If the top of the stack (i32) is not zero (interrupts unmasked), exits

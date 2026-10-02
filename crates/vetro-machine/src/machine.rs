@@ -881,13 +881,13 @@ impl Machine {
                 && let Some(limit) = self.jit_budget(end)
             {
                 let jit = self.jit.as_mut().expect("checked above");
-                // The clock for MRS CNTPCT/CNTVCT inside regions. With several
-                // cores the counter is that of steps / n, which the regions do
-                // not compute: they leave those MRS to the interpreter.
-                if !smp {
-                    let cntvoff = self.board.borrow().virt.timer().cntvoff;
-                    jit.set_time(vetro_jit::Clock { steps: self.steps, cntvoff });
-                }
+                // The clock for MRS CNTPCT/CNTVCT inside regions (with several
+                // cores the counter is that of steps / n).
+                let cntvoff = self.board.borrow().virt.timer().cntvoff;
+                jit.set_time(vetro_jit::Clock {
+                    div: self.ncpu,
+                    ..vetro_jit::Clock::new(self.steps, cntvoff)
+                });
                 let mut phys = Phys::single(&self.board, core, &mut self.waits);
                 let r = jit.run(&mut self.cpu, &mut self.mmu, &mut phys, limit);
                 self.steps += r.steps;

@@ -66,6 +66,8 @@ pub(crate) struct ParCore {
     waits: Vec<(usize, u64)>,
     /// The machine's cores.
     n: u64,
+    /// CNTVOFF of its generic timer (as of the last sync).
+    cntvoff: u64,
     /// Instructions executed (for measurements).
     pub executed: u64,
 }
@@ -123,6 +125,7 @@ impl ParCore {
             pending: 0,
             waits: Vec::new(),
             n,
+            cntvoff: 0,
             executed: 0,
         }
     }
@@ -158,6 +161,7 @@ impl ParCore {
             b.service_virtio();
         }
         b.update_irqs();
+        self.cntvoff = b.virt.timers[self.idx].cntvoff;
     }
 
     /// Its generic timer's next deadline (CNTPCT), as of the last
@@ -266,10 +270,19 @@ impl ParCore {
             {
                 slot.abort.store(false, Ordering::SeqCst);
                 let jit = self.jit.as_mut().expect("checked above");
+                // The shared clock for MRS CNTPCT/CNTVCT inside the regions
+                // (an atomic add, then the counter of clock / n).
+                jit.set_time(vetro_jit::Clock {
+                    steps: 0,
+                    cntvoff: self.cntvoff,
+                    div: self.n,
+                    shared: core::ptr::from_ref(&cores.clock).addr(),
+                });
                 let mut phys = Phys { cell, core: self.idx, consumer: self.idx, waits: &mut self.waits };
                 let r = jit.run(&mut self.cpu, &mut self.mmu, &mut phys, limit);
                 done += r.steps;
-                self.pending += r.steps;
+                // The regions already added `flushed` of them to the clock.
+                self.pending += r.steps - r.flushed;
                 self.executed += r.steps;
                 self.interp = if r.next == Next::Jit && r.steps == 0 { Next::One } else { r.next };
                 self.flush(cores);

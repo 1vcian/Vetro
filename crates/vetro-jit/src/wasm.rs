@@ -508,6 +508,10 @@ impl Func {
             _ => self.atomic(0x49, 3, offset),
         }
     }
+    /// `i64.atomic.rmw.add` (8 aligned bytes): [address, value] -> the old value.
+    pub fn i64_atomic_rmw_add(&mut self, offset: u32) -> &mut Self {
+        self.atomic(0x1f, 3, offset)
+    }
     /// Atomic store of the low `bytes` bytes of an i64 (naturally aligned).
     pub fn i64_atomic_store_n(&mut self, bytes: u32, offset: u32) -> &mut Self {
         match bytes {

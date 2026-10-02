@@ -167,9 +167,17 @@ pub mod area {
     pub const TLB_SIZE: u32 = TLB_ENTRIES * 16;
     /// Tag that matches no access (bit 11 set).
     pub const TLB_INVALID: u64 = 0x800;
+    /// The clock of several cores (ADR 0042): u64 divisor (the counter is
+    /// that of `instructions / div`; written by the host before every
+    /// dispatcher run with `time_ok` 1 or 2) ...
+    pub const TIME_DIV: u32 = TLB + 8 * TLB_SIZE;
+    /// ... and, with `time_ok` 2 (cores in parallel, `time_base` = the address
+    /// of the shared clock), the steps of this dispatcher run the regions
+    /// already added to the shared clock (u64, zeroed by the host).
+    pub const TIME_FLUSHED: u32 = TIME_DIV + 8;
     /// Total bytes of the area: 4 tables for aligned accesses and 4 for
-    /// unaligned ones ([`tlb_u`]).
-    pub const SIZE: u32 = TLB + 8 * TLB_SIZE;
+    /// unaligned ones ([`tlb_u`]), then the clock of several cores.
+    pub const SIZE: u32 = TIME_FLUSHED + 8;
 
     /// Offset of the table for level `el` and the access kind.
     pub const fn tlb(el: u8, write: bool) -> u32 {

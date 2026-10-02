@@ -79,9 +79,11 @@ impl Virt {
     /// The core that runs: its timer ([`Virt::timer`]) and its GIC CPU
     /// interface answer the system registers, and [`Virt::irq_line`] is its line.
     pub fn set_current_cpu(&mut self, cpu: usize) {
-        assert!(cpu < self.timers.len());
-        self.cur = cpu;
-        self.gic_mut().set_current(cpu);
+        if cpu != self.cur {
+            assert!(cpu < self.timers.len());
+            self.cur = cpu;
+            self.gic_mut().set_current(cpu);
+        }
     }
 
     pub fn current_cpu(&self) -> usize {

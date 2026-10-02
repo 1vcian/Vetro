@@ -293,14 +293,20 @@ struct NoEnv {
     steps: u64,
 }
 
+std::thread_local! {
+    /// The counter divisor of the case (ADR 0042: several cores, the counter
+    /// of `steps / div`), for the interpreter and the JIT alike.
+    static DIV: core::cell::Cell<u64> = const { core::cell::Cell::new(1) };
+}
+
 impl CpuEnv for NoEnv {
     fn irq_line(&mut self) -> bool {
         false
     }
     fn read_sysreg(&mut self, r: EnvReg) -> u64 {
         match r {
-            EnvReg::CntpctEl0 => counter(self.steps),
-            EnvReg::CntvctEl0 => counter(self.steps).wrapping_sub(CNTVOFF),
+            EnvReg::CntpctEl0 => counter(self.steps / DIV.get()),
+            EnvReg::CntvctEl0 => counter(self.steps / DIV.get()).wrapping_sub(CNTVOFF),
             _ => 0,
         }
     }
@@ -559,7 +565,7 @@ fn run_jit_on<E: Engine>(
             let budget = (STEP_LIMIT - n).min(1 + rng.below(300));
             // The clock (sometimes not: an MRS of the counter exits to the interpreter).
             if rng.below(8) != 0 {
-                jit.set_time(vetro_jit::Clock { steps: n, cntvoff: CNTVOFF });
+                jit.set_time(vetro_jit::Clock { div: DIV.get(), ..vetro_jit::Clock::new(n, CNTVOFF) });
             }
             let r = jit.run(&mut cpu, &mut mmu, &mut phys, budget);
             n += r.steps;
@@ -633,6 +639,9 @@ fn sistema_interprete_e_jit_identici() {
     let mut exceptions = 0;
     for seed in first..first + cases {
         let (cpu, ram) = setup(seed);
+        // The cases with the code of several cores (odd seeds: in turns; every
+        // third: in parallel) read a counter divided by 2 or 3.
+        DIV.set(if seed % 2 == 1 || seed % 3 == 2 { 2 + seed % 2 } else { 1 });
         let want = run_interp(cpu.clone(), ram.clone());
         if std::env::var_os("VETRO_JIT_SYS_PARITY_DEBUG").is_some() {
             eprintln!("seed {seed}: {:?}", &want.events[..want.events.len().min(8)]);

@@ -237,6 +237,9 @@ pub struct SysRun {
     pub steps: u64,
     /// What to do next.
     pub next: Next,
+    /// Of `steps`, those the regions already added to the shared clock
+    /// (`Clock::shared`); 0 otherwise.
+    pub flushed: u64,
 }
 
 /// After a JIT run.
@@ -699,6 +702,8 @@ pub struct SysJit<E: Engine> {
     parallel: bool,
     /// Set by another core to end the current run ([`SysJit::set_abort`]).
     abort: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Steps of the current run the regions added to the shared clock.
+    flushed: u64,
 }
 
 /// The guest clock for the regions (ADR 0026): instructions executed
@@ -708,6 +713,22 @@ pub struct SysJit<E: Engine> {
 pub struct Clock {
     pub steps: u64,
     pub cntvoff: u64,
+    /// Several cores (ADR 0042): the counter is that of `steps / div`
+    /// (1 = one core).
+    pub div: u64,
+    /// Cores in parallel: host address of the shared clock (a u64 the
+    /// regions add their steps to atomically before reading it, so time never
+    /// goes back from one core to the next), or 0. Used only if the engine
+    /// reaches that address (`Engine::host_address`); otherwise MRS of the
+    /// counter exits to the interpreter.
+    pub shared: usize,
+}
+
+impl Clock {
+    /// One core: the counter of `steps`.
+    pub fn new(steps: u64, cntvoff: u64) -> Self {
+        Clock { steps, cntvoff, div: 1, shared: 0 }
+    }
 }
 
 /// The blocks' host: accesses through the MMU with the permissions of EL and the
@@ -885,6 +906,7 @@ impl<E: Engine> SysJit<E> {
             yields: false,
             parallel: false,
             abort: None,
+            flushed: 0,
             profile: cfg.profile.then(|| {
                 crate::helper::profile(true);
                 Profile::default()
@@ -1339,7 +1361,7 @@ impl<E: Engine> SysJit<E> {
         if in_jit {
             JitState::load(self.engine.memory(), at).to_cpu_sys(cpu);
         }
-        SysRun { steps: done, next }
+        SysRun { steps: done, next, flushed: core::mem::take(&mut self.flushed) }
     }
 
     /// After a region's MSR TTBR0/TTBR1 (YIELD without unmasked
@@ -1379,13 +1401,26 @@ impl<E: Engine> SysJit<E> {
         // LDTR/STTR at EL1 through the EL0 tables (ADR 0041).
         state::write_u32(m, at, off::UTLB, utlb as u32);
         // Clock: `steps` of JitState restarts from 0 on every run.
-        match time {
-            Some(c) => {
+        let shared = match time {
+            Some(c) if c.shared != 0 => self.engine.host_address(c.shared as *const u8, 8),
+            _ => None,
+        };
+        let m = self.engine.memory();
+        match (time, shared) {
+            (Some(c), Some(addr)) => {
+                state::write_u64(m, at, off::TIME_BASE, u64::from(addr));
+                state::write_u64(m, at, off::CNTVOFF, c.cntvoff);
+                state::write_u64(m, at, area::TIME_DIV, c.div.max(1));
+                state::write_u64(m, at, area::TIME_FLUSHED, 0);
+                state::write_u32(m, at, off::TIME_OK, 2);
+            }
+            (Some(c), None) if c.shared == 0 => {
                 state::write_u64(m, at, off::TIME_BASE, c.steps + done);
                 state::write_u64(m, at, off::CNTVOFF, c.cntvoff);
+                state::write_u64(m, at, area::TIME_DIV, c.div.max(1));
                 state::write_u32(m, at, off::TIME_OK, 1);
             }
-            None => state::write_u32(m, at, off::TIME_OK, 0),
+            _ => state::write_u32(m, at, off::TIME_OK, 0),
         }
         let code = {
             let v = &cpu.v;
@@ -1403,6 +1438,9 @@ impl<E: Engine> SysJit<E> {
         let steps = state::read_u64(m, at, off::STEPS);
         *pc = state::read_u64(m, at, off::PC);
         self.cache.stats.jit_steps += steps;
+        if shared.is_some() {
+            self.flushed += state::read_u64(m, at, area::TIME_FLUSHED);
+        }
         let next = match code {
             NEXT => Flow::Go,
             STOP => {
