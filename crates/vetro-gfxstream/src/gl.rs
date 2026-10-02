@@ -2294,6 +2294,7 @@ impl Gl {
                 let v: Vec<u32> = (0..5).map(|k| a.u(k)).collect();
                 if let Some(ti) = self.tex_info_mut(t, v[0]) {
                     ti.storage = Some([v[1], v[2], v[3], v[4], 1]);
+                    storage_levels(ti, v[0], v[1], v[2], v[3], v[4]);
                 }
                 self.ops.op(Code::TexStorage2D, &v);
             }
@@ -3099,5 +3100,21 @@ impl Gl {
             }
         }
         used
+    }
+}
+
+/// glTexStorage2D: the specification of every level (and cube face) it
+/// allocates, so snapshots read their contents back and upload them again
+/// (Skia allocates its glyph atlases and most textures this way). Formats
+/// that cannot be read back get no level records, as before.
+fn storage_levels(ti: &mut TexInfo, target: u32, levels: u32, ifmt: u32, w: u32, h: u32) {
+    let Some((fmt, ty)) = crate::formats::storage_format(ifmt) else { return };
+    let images: Vec<u32> = if target == 0x8513 { (0x8515..=0x851A).collect() } else { vec![target] };
+    for level in 0..levels.min(16) {
+        let (lw, lh) = ((w >> level).max(1), (h >> level).max(1));
+        for &image in &images {
+            ti.levels
+                .insert((image, level), LevelSpec { ifmt, w: lw, h: lh, d: 1, fmt, ty, compressed: None });
+        }
     }
 }

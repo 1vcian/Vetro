@@ -361,6 +361,17 @@ fn snapshot_rebuilds_objects_and_the_guest_goes_on() {
     let mut s = call(g::glBindBuffer, &[V::S(0x8892), V::S(u64::from(buf))]);
     s.extend(call(g::glBufferData, &[V::S(0x8892), V::S(12), V::B(&[1; 12]), V::S(0x88E4)]));
     gu.send(1, &s);
+    // An immutable-storage texture (Skia's glyph atlases: glTexStorage2D
+    // R8, contents by glTexSubImage2D only): its contents come back too.
+    let mut s = call(g::glGenTextures, &[V::S(1), V::O(4)]);
+    s.extend(call(g::glFinishRoundTrip, &[]));
+    gu.send(1, &s);
+    let atlas = u32::from_le_bytes(gu.recv(1, 8)[..4].try_into().unwrap());
+    let mut s = call(g::glBindTexture, &[V::S(0x0DE1), V::S(u64::from(atlas))]);
+    s.extend(call(g::glTexStorage2D, &[V::S(0x0DE1), V::S(1), V::S(0x8229), V::S(32), V::S(16)]));
+    gu.send(1, &s);
+    let atlas_id =
+        gu.gfx.gl.shares.values().find_map(|s| s.textures.get(atlas)).expect("the atlas' host texture");
     let cb7 = gu.gfx.gl.cbs[&7].id;
     let prog_ids: Vec<u32> =
         gu.gfx.gl.shares.values().flat_map(|s| s.programs.values().map(|p| p.id)).collect();
@@ -383,6 +394,22 @@ fn snapshot_rebuilds_objects_and_the_guest_goes_on() {
         assert!(o.iter().any(|(c, a)| *c == Code::LinkProgram && a == &[*id]), "program {id} relinked");
     }
     assert!(o.iter().any(|(c, a)| *c == Code::BufferUpload && a[2] == 0x88E4), "buffer content back");
+    assert!(
+        ops(&log)
+            .iter()
+            .any(|(c, a)| *c == Code::ReadTextureLevel && a[0] == atlas_id && a[3..5] == [32, 16]),
+        "the storage texture is read back at the save"
+    );
+    let sub = o
+        .iter()
+        .find(|(c, a)| {
+            *c == Code::TexSubImage2D && a[..2] == [0x0DE1, 0] && a[4..8] == [32, 16, 0x1903, 0x1401]
+        })
+        .expect("the storage texture's level uploaded as RED bytes");
+    assert!(
+        o.iter().position(|(c, a)| *c == Code::TexStorage2D && a[2] == 0x8229)
+            < o.iter().position(|x| x == sub)
+    );
     assert!(o.iter().any(|(c, _)| *c == Code::SurfaceAttach));
     assert!(saves > 0);
 

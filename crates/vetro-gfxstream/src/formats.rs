@@ -56,6 +56,20 @@ pub const GL_UNSIGNED_INT_24_8: u32 = 0x84FA;
 pub const GL_FLOAT: u32 = 0x1406;
 pub const GL_FLOAT_32_UNSIGNED_INT_24_8_REV: u32 = 0x8DAD;
 
+/// The format and type of a sized internal format's texels (glTexStorage),
+/// for the formats whose levels snapshots read back and upload again; None
+/// for the others.
+pub fn storage_format(internal: u32) -> Option<(u32, u32)> {
+    const GL_SRGB8_ALPHA8: u32 = 0x8C43;
+    match internal {
+        GL_RGBA8 | GL_SRGB8_ALPHA8 => Some((GL_RGBA, GL_UNSIGNED_BYTE)),
+        GL_RGB8 => Some((GL_RGB, GL_UNSIGNED_BYTE)),
+        GL_RG8 => Some((GL_RG, GL_UNSIGNED_BYTE)),
+        GL_R8 => Some((GL_RED, GL_UNSIGNED_BYTE)),
+        _ => None,
+    }
+}
+
 /// How a ColorBuffer is stored: texture internal format, and the
 /// format/type of its bytes in guest memory after [`Tex::swizzle`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
