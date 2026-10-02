@@ -40,7 +40,7 @@ fn operazioni_sui_file_dalla_riga_di_comando() {
     ]);
     let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert_eq!(out.status.code(), Some(1), "--files-ls on a file is not a folder\n{stdout}\n{stderr}");
-    assert!(stderr.contains("vetro-files: scritto /tmp/x.txt (25 byte, -rw-r--r--)"), "{stderr}");
+    assert!(stderr.contains("vetro-files: wrote /tmp/x.txt (25 bytes, -rw-r--r--)"), "{stderr}");
     assert!(stderr.contains("vetro-files: /bin/sh: ENOTDIR (20)"), "{stderr}");
     let line = stdout.lines().find(|l| l.ends_with(" x.txt")).unwrap_or_else(|| panic!("{stdout}"));
     assert!(line.contains("-rw-r--r-- 0 0 25 "), "{line}");
