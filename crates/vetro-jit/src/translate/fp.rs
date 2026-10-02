@@ -716,6 +716,14 @@ impl G {
         self.f.end();
     }
 
+    /// FPSR.IXC |= !`exact` (an i32 boolean the fast path computed exactly).
+    fn raise_unless(&mut self, exact: u32) {
+        self.f.local_get(exact).op(op::I32_EQZ).if_(BLOCK_EMPTY);
+        self.f.local_get(P_STATE).local_get(P_STATE).i32_load(off::FPSR).i32_const(IXC).op(op::I32_OR);
+        self.f.i32_store(off::FPSR);
+        self.f.end();
+    }
+
     /// `env.simd` (the interpreter) with `x` and NZCV = 0; the result (i64)
     /// stays on the stack.
     fn fallback(&mut self, x: bool) {
@@ -848,6 +856,9 @@ fn bin(simd: u32, d: bool, op_: Bin) -> Func {
     let mut g = G::new(simd, 2);
     let (a, b, r) = (g.local(ft), g.local(ft), g.local(ft));
     let (bits, ok) = (g.local(ValType::I64), g.local(ValType::I32));
+    // Exact result (i32): where the fast path knows it, it raises IXC itself.
+    let ex = g.local(ValType::I32);
+    g.f.i32_const(1).local_set(ex);
     g.fpcr_ok();
     g.f.if_(BLOCK_EMPTY);
     g.load(5, d);
@@ -873,16 +884,16 @@ fn bin(simd: u32, d: bool, op_: Bin) -> Func {
         // FADDP and FABD exist only as vector instructions.
         Bin::Addp | Bin::Abd => unreachable!("{op_:?} scalar"),
         Bin::Add | Bin::Sub => {
-            // Finite, and exact (TwoSum) or with IXC already 1. A sum never
-            // gives an inexact tiny result.
+            // Finite; exact if TwoSum's error is zero (otherwise IXC). A sum
+            // never gives an inexact tiny result.
             let err = g.local(ft);
             two_sum(&mut g, d, a, b, r, err);
             g.f.local_get(bits);
             g.finite_bits(d);
-            g.ixc();
+            g.f.local_set(ok);
             g.f.local_get(err);
             g.fzero(d);
-            g.f.op(fop(d, op::F32_EQ, op::F64_EQ)).op(op::I32_OR).op(op::I32_AND).local_set(ok);
+            g.f.op(fop(d, op::F32_EQ, op::F64_EQ)).local_set(ex);
         }
         Bin::Max | Bin::Min | Bin::MaxNm | Bin::MinNm => {
             // No NaN: no flags, and zeros of opposite sign like
@@ -905,9 +916,11 @@ fn bin(simd: u32, d: bool, op_: Bin) -> Func {
                 g.fzero(d);
                 g.f.op(fop(d, op::F32_EQ, op::F64_EQ)).op(op::I32_OR).op(op::I32_AND).op(op::I32_OR);
             }
-            // Exact, or IXC already 1.
-            g.ixc();
-            if !d {
+            // Single precision: exact or not, checked in double (then IXC
+            // is raised here); double: IXC already 1.
+            if d {
+                g.ixc();
+            } else {
                 let f = &mut g.f;
                 if op_ == Bin::Div {
                     // f64(r) * f64(b) == f64(a): 24 + 24 bits, exact.
@@ -927,7 +940,7 @@ fn bin(simd: u32, d: bool, op_: Bin) -> Func {
                         .op(op::F64_MUL);
                     f.op(op::F64_EQ);
                 }
-                f.op(op::I32_OR);
+                f.local_set(ex).i32_const(1);
             }
             g.f.op(op::I32_AND).local_set(ok);
         }
@@ -949,6 +962,7 @@ fn bin(simd: u32, d: bool, op_: Bin) -> Func {
                 .op(op::I64_XOR)
                 .local_set(bits);
         }
+        g.raise_unless(ex);
         g.store_scalar_bits(bits);
     });
     g.f.end();
@@ -1003,11 +1017,11 @@ fn fma_s(simd: u32, neg_a: bool, neg_n: bool) -> Func {
     g.bits64(r, false);
     g.f.local_tee(bits);
     g.safe_bits(false);
-    // exact: err == 0 and f64(r) == s
-    g.ixc();
+    g.f.local_set(ok);
+    // exact: err == 0 and f64(r) == s (otherwise IXC, raised here)
+    let ex = g.local(ValType::I32);
     g.f.local_get(err).i64_const(0).op(op::F64_REINTERPRET_I64).op(op::F64_EQ);
-    g.f.local_get(r).op(op::F64_PROMOTE_F32).local_get(s).op(op::F64_EQ).op(op::I32_AND);
-    g.f.op(op::I32_OR).op(op::I32_AND).local_set(ok);
+    g.f.local_get(r).op(op::F64_PROMOTE_F32).local_get(s).op(op::F64_EQ).op(op::I32_AND).local_set(ex);
     g.fz_guard(ok, |g| {
         g.den_reg(5, false);
         g.den_reg(16, false);
@@ -1015,7 +1029,10 @@ fn fma_s(simd: u32, neg_a: bool, neg_n: bool) -> Func {
         g.den_reg(10, false);
         g.f.op(op::I32_OR);
     });
-    g.commit(ok, |g| g.store_scalar_bits(bits));
+    g.commit(ok, |g| {
+        g.raise_unless(ex);
+        g.store_scalar_bits(bits);
+    });
     g.f.end();
     g.fallback(false);
     g.f.op(op::DROP);
@@ -1176,16 +1193,22 @@ fn sqrt(simd: u32, d: bool) -> Func {
     g.f.local_get(a);
     g.fzero(d);
     g.f.op(fop(d, op::F32_GE, op::F64_GE));
-    g.ixc();
-    if !d {
-        // f64(r)² == f64(a), exact in double
+    let ex = g.local(ValType::I32);
+    g.f.i32_const(1).local_set(ex);
+    if d {
+        g.ixc();
+    } else {
+        // f64(r)² == f64(a), exact in double (otherwise IXC, raised here)
         let f = &mut g.f;
         f.local_get(r).op(op::F64_PROMOTE_F32).local_get(r).op(op::F64_PROMOTE_F32).op(op::F64_MUL);
-        f.local_get(a).op(op::F64_PROMOTE_F32).op(op::F64_EQ).op(op::I32_OR);
+        f.local_get(a).op(op::F64_PROMOTE_F32).op(op::F64_EQ).local_set(ex).i32_const(1);
     }
     g.f.op(op::I32_AND).local_set(ok);
     g.fz_guard(ok, |g| g.den(a, d));
-    g.commit(ok, |g| g.store_scalar_bits(bits));
+    g.commit(ok, |g| {
+        g.raise_unless(ex);
+        g.store_scalar_bits(bits);
+    });
     g.f.end();
     g.fallback(false);
     g.f.op(op::DROP);
@@ -1243,10 +1266,14 @@ fn cvt_ds(simd: u32) -> Func {
     g.safe_bits(false);
     // or zero from zero
     g.f.local_get(a).i64_const(0).op(op::F64_REINTERPRET_I64).op(op::F64_EQ).op(op::I32_OR);
-    g.ixc();
-    g.f.local_get(r).op(op::F64_PROMOTE_F32).local_get(a).op(op::F64_EQ).op(op::I32_OR);
-    g.f.op(op::I32_AND).local_set(ok);
-    g.commit(ok, |g| g.store_scalar_bits(bits));
+    g.f.local_set(ok);
+    // exact: the promotion gives the input back (otherwise IXC, raised here)
+    let ex = g.local(ValType::I32);
+    g.f.local_get(r).op(op::F64_PROMOTE_F32).local_get(a).op(op::F64_EQ).local_set(ex);
+    g.commit(ok, |g| {
+        g.raise_unless(ex);
+        g.store_scalar_bits(bits);
+    });
     g.f.end();
     g.fallback(false);
     g.f.op(op::DROP);
@@ -1322,13 +1349,17 @@ fn frint(simd: u32, d: bool, rnd: Rnd) -> Func {
     g.bits64(r, d);
     g.f.local_set(bits);
     g.not_nan(a, d);
-    if rnd == Rnd::NearestX {
-        g.ixc();
-        g.f.local_get(r).local_get(a).op(fop(d, op::F32_EQ, op::F64_EQ)).op(op::I32_OR).op(op::I32_AND);
-    }
     g.f.local_set(ok);
     g.fz_guard(ok, |g| g.den(a, d));
-    g.commit(ok, |g| g.store_scalar_bits(bits));
+    g.commit(ok, |g| {
+        if rnd == Rnd::NearestX {
+            // IXC when the value changed
+            let ex = g.local(ValType::I32);
+            g.f.local_get(r).local_get(a).op(fop(d, op::F32_EQ, op::F64_EQ)).local_set(ex);
+            g.raise_unless(ex);
+        }
+        g.store_scalar_bits(bits);
+    });
     g.f.end();
     g.fallback(false);
     g.f.op(op::DROP);
@@ -1361,16 +1392,31 @@ fn from_int(simd: u32, d: bool, sf: bool, u: bool) -> Func {
     g.f.local_set(r);
     g.bits64(r, d);
     g.f.local_set(bits);
-    // Exact if |x| fits in the mantissa, or IXC already 1.
-    let mant: i64 = if d { 1 << 53 } else { 1 << 24 };
-    g.ixc();
+    // Exact iff the significant bits of |x| (64 - clz - ctz) fit in the
+    // mantissa (24 or 53 bits); otherwise IXC, raised here. Never tiny or
+    // overflowing (FZ and DN do not matter).
+    let (m, ex) = (g.local(ValType::I64), g.local(ValType::I32));
+    g.f.i32_const(1).local_set(ok);
     if u {
-        g.f.local_get(x).i64_const(mant).op(op::I64_LE_U);
+        g.f.local_get(x);
     } else {
-        g.f.local_get(x).i64_const(mant).op(op::I64_ADD).i64_const(2 * mant).op(op::I64_LE_U);
+        // |x| (i64::MIN gives 2^63 as an unsigned value)
+        g.f.i64_const(0).local_get(x).op(op::I64_SUB).local_get(x);
+        g.f.local_get(x).i64_const(0).op(op::I64_LT_S).op(op::SELECT);
     }
-    g.f.op(op::I32_OR).local_set(ok);
-    g.commit(ok, |g| g.store_scalar_bits(bits));
+    g.f.local_set(m);
+    g.f.i64_const(64)
+        .local_get(m)
+        .op(op::I64_CLZ)
+        .op(op::I64_SUB)
+        .local_get(m)
+        .op(op::I64_CTZ)
+        .op(op::I64_SUB);
+    g.f.i64_const(if d { 53 } else { 24 }).op(op::I64_LE_S).local_set(ex);
+    g.commit(ok, |g| {
+        g.raise_unless(ex);
+        g.store_scalar_bits(bits);
+    });
     g.f.end();
     g.fallback(true);
     g.f.op(op::DROP);
@@ -1404,10 +1450,13 @@ fn to_int(simd: u32, d: bool, sf: bool, u: bool, rnd: Rnd) -> Func {
     let f = &mut g.f;
     f.local_get(t).i64_const(lo.to_bits() as i64).op(op::F64_REINTERPRET_I64).op(op::F64_GE);
     f.local_get(t).i64_const(hi.to_bits() as i64).op(op::F64_REINTERPRET_I64).op(op::F64_LT).op(op::I32_AND);
-    g.ixc();
-    g.f.local_get(t).local_get(a).op(op::F64_EQ).op(op::I32_OR).op(op::I32_AND).local_set(ok);
+    g.f.local_set(ok);
     g.fz_guard(ok, |g| g.den_reg(5, d));
     g.f.local_get(ok).if_(BLOCK_EMPTY);
+    // IXC when the rounding changed the value
+    let ex = g.local(ValType::I32);
+    g.f.local_get(t).local_get(a).op(op::F64_EQ).local_set(ex);
+    g.raise_unless(ex);
     g.f.local_get(t);
     match (sf, u) {
         (true, false) => {
@@ -1469,6 +1518,8 @@ fn vbin(simd: u32, d: bool, op_: Bin) -> Func {
     let mut g = G::new(simd, 2);
     let (a, b, r, ok) =
         (g.local(ValType::V128), g.local(ValType::V128), g.local(ValType::V128), g.local(ValType::I32));
+    let ex = g.local(ValType::I32);
+    g.f.i32_const(1).local_set(ex);
     g.fpcr_ok();
     g.f.if_(BLOCK_EMPTY);
     g.vload(5);
@@ -1524,10 +1575,11 @@ fn vbin(simd: u32, d: bool, op_: Bin) -> Func {
             f.local_get(b).local_get(t).v(sub).v(add).local_set(err);
             vfinite(&mut g, d, r);
             all_true(&mut g, d);
-            g.ixc();
+            g.f.local_set(ok);
+            // exact: every error zero (otherwise IXC, raised here)
             g.f.local_get(err).v128_const(0, 0).v(vop(d, v::F32X4_EQ, v::F64X2_EQ));
             all_true(&mut g, d);
-            g.f.op(op::I32_OR).op(op::I32_AND).local_set(ok);
+            g.f.local_set(ex);
         }
         Bin::Max | Bin::Min | Bin::MaxNm | Bin::MinNm => {
             vnot_nan(&mut g, d, a);
@@ -1557,7 +1609,10 @@ fn vbin(simd: u32, d: bool, op_: Bin) -> Func {
         // The absolute value after rounding (without flags).
         g.f.local_get(r).v(vop(d, v::F32X4_ABS, v::F64X2_ABS)).local_set(r);
     }
-    g.commit(ok, |g| g.store_vec(r));
+    g.commit(ok, |g| {
+        g.raise_unless(ex);
+        g.store_vec(r);
+    });
     g.f.end();
     g.fallback(false);
     g.f.op(op::DROP);
@@ -1570,12 +1625,15 @@ fn vto_int(simd: u32, d: bool, u: bool, rnd: Rnd) -> Func {
     use ValType::*;
     let mut g = G::new(simd, 2);
     let (a, t, r, ok) = (g.local(V128), g.local(V128), g.local(V128), g.local(I32));
+    // Exact (every lane unchanged by the rounding): otherwise IXC, raised here.
+    let ex = g.local(I32);
     g.fpcr_ok();
     g.f.if_(BLOCK_EMPTY);
     g.vload(5);
     g.f.local_set(a);
     if d {
         // Lane by lane, in scalar.
+        g.f.i32_const(1).local_set(ex);
         let (x, tt) = (g.local(F64), g.local(F64));
         g.f.i32_const(1).local_set(ok).v128_const(0, 0).local_set(r);
         let (lo, hi): (f64, f64) = if u {
@@ -1591,9 +1649,8 @@ fn vto_int(simd: u32, d: bool, u: bool, rnd: Rnd) -> Func {
             f.local_get(tt).i64_const(lo.to_bits() as i64).op(op::F64_REINTERPRET_I64).op(op::F64_GE);
             f.local_get(tt).i64_const(hi.to_bits() as i64).op(op::F64_REINTERPRET_I64).op(op::F64_LT);
             f.op(op::I32_AND);
-            g.ixc();
-            g.f.local_get(tt).local_get(x).op(op::F64_EQ).op(op::I32_OR).op(op::I32_AND);
             g.f.local_get(ok).op(op::I32_AND).local_set(ok);
+            g.f.local_get(tt).local_get(x).op(op::F64_EQ).local_get(ex).op(op::I32_AND).local_set(ex);
             g.f.local_get(r).local_get(tt);
             g.f.sat(if u { sat::I64_TRUNC_SAT_F64_U } else { sat::I64_TRUNC_SAT_F64_S });
             g.f.lane(v::I64X2_REPLACE_LANE, lane).local_set(r);
@@ -1610,16 +1667,19 @@ fn vto_int(simd: u32, d: bool, u: bool, rnd: Rnd) -> Func {
         splat_const(&mut g, false, hi.to_bits() as u64);
         g.f.v(v::F32X4_LT).v(v::AND);
         all_true(&mut g, false);
-        g.ixc();
+        g.f.local_set(ok);
         g.f.local_get(t).local_get(a).v(v::F32X4_EQ);
         all_true(&mut g, false);
-        g.f.op(op::I32_OR).op(op::I32_AND).local_set(ok);
+        g.f.local_set(ex);
         g.f.local_get(t)
             .v(if u { v::I32X4_TRUNC_SAT_F32X4_U } else { v::I32X4_TRUNC_SAT_F32X4_S })
             .local_set(r);
     }
     g.fz_guard(ok, |g| g.vden(a, d));
-    g.commit(ok, |g| g.store_vec(r));
+    g.commit(ok, |g| {
+        g.raise_unless(ex);
+        g.store_vec(r);
+    });
     g.f.end();
     g.fallback(false);
     g.f.op(op::DROP);
@@ -1757,16 +1817,18 @@ fn vcvtn(simd: u32) -> Func {
     g.f.if_(BLOCK_EMPTY);
     g.vload(5);
     g.f.local_tee(a).v(v::F32X4_DEMOTE_F64X2_ZERO).local_set(r);
-    // No NaN, and: all exact (equal promotion), or IXC at 1 and safely
-    // normal (lanes 0 and 1).
+    // No NaN, and: all exact (equal promotion), or safely normal (lanes 0
+    // and 1) with IXC raised here.
+    let ex = g.local(I32);
     g.f.local_get(a).local_get(a).v(v::F64X2_EQ).v(v::I64X2_ALL_TRUE);
     g.f.local_get(r).v(v::F64X2_PROMOTE_LOW_F32X4).local_get(a).v(v::F64X2_EQ).v(v::I64X2_ALL_TRUE);
-    g.ixc();
+    g.f.local_tee(ex);
     vsafe(&mut g, false, r);
-    g.f.v128_const(0, u64::MAX).v(v::OR).v(v::I32X4_ALL_TRUE).op(op::I32_AND);
+    g.f.v128_const(0, u64::MAX).v(v::OR).v(v::I32X4_ALL_TRUE);
     g.f.op(op::I32_OR).op(op::I32_AND).local_set(ok);
     g.fz_guard(ok, |g| g.vden(r, false));
     g.commit(ok, |g| {
+        g.raise_unless(ex);
         // Q = 1: [Vd low, r low]; Q = 0: [r low, 0].
         g.vaddr(0);
         g.vload(0);

@@ -360,6 +360,60 @@ fn percorsi_veloci_usati() {
     }
 }
 
+/// With IXC at 0 and inexact results, the fast paths that know exactly
+/// whether their result is inexact raise IXC themselves (ADR 0045) instead
+/// of calling `env.simd`: same result and FPSR as the interpreter, IXC set.
+#[test]
+fn fast_paths_raise_ixc() {
+    const INEXACT: &[(u32, T, &str)] = &[
+        (0x1e222820, T::S, "fadd s0, s1, s2"),
+        (0x1e623820, T::D, "fsub d0, d1, d2"),
+        (0x1e220820, T::S, "fmul s0, s1, s2"),
+        (0x1e221820, T::S, "fdiv s0, s1, s2"),
+        (0x1e21c020, T::S, "fsqrt s0, s1"),
+        (0x1f020c20, T::S, "fmadd s0, s1, s2, s3"),
+        (0x1e624020, T::D, "fcvt s0, d1"),
+        (0x1e274020, T::S, "frintx s0, s1"),
+        (0x1e380020, T::S, "fcvtzs w0, s1"),
+        (0x9e600020, T::D, "fcvtns x0, d1"),
+        (0x9e620020, T::D, "scvtf d0, x1"),
+        (0x9e230020, T::S, "ucvtf s0, x1"),
+        (0x4e22d420, T::S, "fadd v0.4s, v1.4s, v2.4s"),
+        (0x4ee2d420, T::D, "fsub v0.2d, v1.2d, v2.2d"),
+        (0x4ea1b820, T::S, "fcvtzs v0.4s, v1.4s"),
+        (0x6ee1b820, T::D, "fcvtzu v0.2d, v1.2d"),
+        (0x0e616820, T::D, "fcvtn v0.2s, v1.2d"),
+        (0x0e216820, T::S, "fcvtn v0.4h, v1.4s"),
+        (0x6e219820, T::S, "frintx v0.4s, v1.4s"),
+    ];
+    let mut jit = JitCpu::new(NativeEngine::new(), JitConfig { hot_threshold: 0, ..JitConfig::default() });
+    for &(word, t, name) in INEXACT {
+        // 1/3 and 3 (and 0.1): sums, products, quotients, roots, roundings
+        // and narrowing conversions all inexact.
+        let (a, b, c) = match t {
+            T::S => (0x3eaa_aaabu128 * 0x1_0000_0001_0000_0001_0000_0001, 0x4040_0000u128, 0x3dcc_cccdu128),
+            T::D => (
+                0x3fd5_5555_5555_5555u128 * 0x1_0000_0000_0000_0001,
+                0x4008_0000_0000_0000,
+                0x3fb9_9999_9999_999a,
+            ),
+            T::H => unreachable!(),
+        };
+        let mut cpu = Cpu::new();
+        cpu.pc = CODE;
+        cpu.v[1] = a;
+        cpu.v[2] = b | b << 32 | b << 64 | b << 96;
+        cpu.v[3] = c;
+        cpu.v[0] = c;
+        cpu.x[1] = (1 << 54) + 1;
+        let before = vetro_jit::helper::calls();
+        let (want, got) = run_one(&mut jit, word, &cpu);
+        assert_eq!(want, got, "{name}");
+        assert_eq!(got.fpsr, 0x10, "{name}: IXC");
+        assert_eq!(vetro_jit::helper::calls(), before, "{name}: called env.simd");
+    }
+}
+
 /// FMA (round-to-odd in single, emulated FMA in double) on
 /// random triples: arbitrary mantissas, close exponents (cancellations) and
 /// distant ones, with and without IXC. Bit for bit like the interpreter.

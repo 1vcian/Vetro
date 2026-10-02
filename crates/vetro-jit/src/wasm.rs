@@ -122,6 +122,7 @@ pub mod op {
     pub const I64_LT_U: u8 = 0x54;
     pub const I64_GT_S: u8 = 0x55;
     pub const I64_GT_U: u8 = 0x56;
+    pub const I64_LE_S: u8 = 0x57;
     pub const I64_LE_U: u8 = 0x58;
     pub const I64_GE_S: u8 = 0x59;
     pub const I64_GE_U: u8 = 0x5a;
@@ -139,6 +140,7 @@ pub mod op {
     pub const I32_ROTR: u8 = 0x78;
 
     pub const I64_CLZ: u8 = 0x79;
+    pub const I64_CTZ: u8 = 0x7a;
     pub const I64_ADD: u8 = 0x7c;
     pub const I64_SUB: u8 = 0x7d;
     pub const I64_MUL: u8 = 0x7e;
