@@ -98,9 +98,9 @@ with 3–5, 1 below. Selector 1/2/4/auto; **1 stays the default** until the
 parallel mode is proven on Android. Without cross-origin isolation the app
 falls back to 1. Record & replay forces one deterministic turn order (the
 parallel cores are stopped). Devices are serviced by whichever core touches
-them, under the board's lock; the accelerated graphics (ADR 0037,
-experimental) call WebGL on the app's Worker, which a core Worker cannot
-reach, so with `gpu=webgl` the cores stay in turns.
+them, under the board's lock; the accelerated graphics (ADR 0037, the
+default since ADR 0046) call WebGL on the app's Worker, which a core Worker
+cannot reach, so with `gpu=webgl` the cores stay in turns.
 
 ## Maintenance burden
 - Step 1: 1/5 (a build script, a vendored file, the loader).

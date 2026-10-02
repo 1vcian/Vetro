@@ -56,7 +56,7 @@
 // profile's bootloader parameters and after-boot adb commands
 // (web/node/profiles.mjs, starters in web/app/profiles/).
 //
-// Accelerated graphics (ADR 0037): `&gpu=webgl` with the AOSP image runs the
+// Accelerated graphics (ADR 0037, 0046): `&gpu=webgl` with the AOSP image runs the
 // guest's GLES on the browser's GPU (WebGL2 in the Worker); frames arrive as
 // ImageBitmaps. Without WebGL2 the Worker keeps SwiftShader by itself and
 // says so; `&gpu=swiftshader` asks for SwiftShader; without the parameter the
@@ -835,9 +835,9 @@ function chosenCpus() {
 /**
  * The guest's graphics without `&gpu=`: 'webgl' (gfxstream on WebGL2, the
  * Worker falls back to SwiftShader where WebGL2 is missing) or null
- * (SwiftShader on the emulated CPU).
+ * (SwiftShader on the emulated CPU). ADR 0046: the browser's GPU by default.
  */
-export const DEFAULT_GPU = null;
+export const DEFAULT_GPU = 'webgl';
 
 /** The graphics mode asked for by the address, or the default. */
 function gpuMode() {

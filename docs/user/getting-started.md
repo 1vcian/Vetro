@@ -104,7 +104,12 @@ nothing starts until you click **Start**.
 
 The same options work as address parameters on the normal page, which then
 starts by itself with them, for example `?profile=phone`, `?cold=1`,
-`?cpus=2`, `?gpu=webgl` or `?graphics=full`.
+`?cpus=2`, `?gpu=swiftshader` or `?graphics=full`.
+
+The system's screen is drawn by your browser's graphics card (WebGL2). On a
+browser without WebGL2 the app draws it on the emulated processor instead,
+by itself; it is slower, but everything works. `?gpu=swiftshader` asks for
+that on purpose.
 
 A **cold boot** boots the system from nothing instead of downloading the
 snapshot. It downloads only the boot images (about 136 MiB) and the disk
