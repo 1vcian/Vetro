@@ -592,8 +592,11 @@ impl<E: Engine> JitCpu<E> {
         // The region chains to itself (other entries) and to the others
         // through the dispatcher (ADR 0046): its code names its table entry.
         let memory = self.cfg.memory;
-        let generate =
-            |slot: u32| translate::module_chained(std::slice::from_ref(&block), memory, false, Some(slot));
+        let shared = self.engine.shared_table();
+        let generate = |slot: u32| {
+            let c = if shared { translate::Chaining::Shared } else { translate::Chaining::Own(slot) };
+            translate::module_chained(std::slice::from_ref(&block), memory, false, Some(c))
+        };
         let module = match self.engine.compile(&generate(self.next_slot)) {
             Ok(m) => m,
             Err(_) => {

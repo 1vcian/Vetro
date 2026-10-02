@@ -300,6 +300,8 @@ std::thread_local! {
     /// A fixed JIT configuration for the next runs (threshold, batch, names)
     /// instead of a random one.
     static CFG: core::cell::Cell<Option<(u32, usize, bool)>> = const { core::cell::Cell::new(None) };
+    /// The engine's `shared_table` for the next runs instead of one by seed.
+    static SHARED: core::cell::Cell<Option<bool>> = const { core::cell::Cell::new(None) };
 }
 
 impl CpuEnv for NoEnv {
@@ -525,7 +527,11 @@ fn run_jit(cpu: Cpu, ram: &[u8], seed: u64) -> (Trace, vetro_jit::SysJitStats) {
 /// Like [`run_jit`] with `SysJit::set_stops(stops)`; also counts the
 /// interpreter steps done with the PC in `stops`.
 fn run_jit_stops(cpu: Cpu, ram: &[u8], seed: u64, stops: &[u64]) -> (Trace, vetro_jit::SysJitStats, u64) {
-    run_jit_on(NativeEngine::new(), cpu, ram, seed, stops, false)
+    let mut engine = NativeEngine::new();
+    // Chaining through the shared table, or within the module and through
+    // the dispatcher (ADR 0046).
+    engine.set_shared_table(SHARED.get().unwrap_or(seed % 4 < 2));
+    run_jit_on(engine, cpu, ram, seed, stops, false)
 }
 
 /// Like [`run_jit_stops`] on any engine.
@@ -1393,9 +1399,10 @@ fn jump_cache_second_way_checks_the_context() {
 
 /// Chaining (ADR 0046): a loop calls a function in the next page, which
 /// calls one in the page after; every exit (BL off the page, RET) is a jump
-/// cache hit once the host resolved it. With the regions in one module (batch
-/// 8) they go on with tail calls; one module each (batch 1), the regions
-/// return `CHAIN` and the dispatcher calls the next one directly. Random
+/// cache hit once the host resolved it. With the shared table the regions go
+/// on with tail calls to any region; without, in one module (batch 8) they go
+/// on with tail calls, one module each (batch 1) they return `CHAIN` and the
+/// dispatcher calls the next one directly. Random
 /// budgets put the step limit everywhere. Same trace as the interpreter, and
 /// the chains really happen (both counters are zero with the chain tail
 /// removed, tried).
@@ -1445,14 +1452,23 @@ fn regions_chain_within_a_module_and_through_the_dispatcher() {
         (0, 200, 200 * 201 / 2),
         "the loop must finish"
     );
-    for (batch, what) in [(8, "tail calls"), (1, "CHAIN returns")] {
+    for (shared, batch, what) in [
+        (false, 8, "tail calls"),
+        (false, 1, "CHAIN returns"),
+        (true, 8, "tail calls"),
+        (true, 1, "tail calls"),
+    ] {
         for seed in 0..12 {
             CFG.set(Some((1, batch, true)));
+            SHARED.set(Some(shared));
             let (got, s) = run_jit(cpu.clone(), &ram, seed);
             CFG.set(None);
-            assert_eq!(got, want, "batch {batch}, seed {seed}: interpreter and JIT differ ({s:?})");
-            let chained = if batch == 1 { s.chain_calls } else { s.chains };
-            assert!(s.jit_steps > 1500 && chained > 300, "batch {batch}, seed {seed}: too few {what}: {s:?}");
+            SHARED.set(None);
+            let case = format!("shared table {shared}, batch {batch}, seed {seed}");
+            assert_eq!(got, want, "{case}: interpreter and JIT differ ({s:?})");
+            let chained = if !shared && batch == 1 { s.chain_calls } else { s.chains };
+            assert!(s.jit_steps > 1500 && chained > 300, "{case}: too few {what}: {s:?}");
+            assert!(!shared || s.chain_calls == 0, "{case}: CHAIN with the shared table: {s:?}");
         }
     }
 }

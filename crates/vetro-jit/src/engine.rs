@@ -62,6 +62,15 @@ pub trait Engine {
     fn host_address(&mut self, _p: *const u8, _len: usize) -> Option<u32> {
         None
     }
+    /// True if every region module may import `env.tbl` at no cost per
+    /// instance (ADR 0046): the regions then chain to any region with a tail
+    /// call through the shared table. False (the default): V8 before
+    /// version 13 gives every importing instance its own copy of the table's
+    /// dispatch data (5 MiB for [`TABLE_SIZE`] entries, ADR 0041), so the
+    /// regions chain only within their module and through the dispatcher.
+    fn shared_table(&mut self) -> bool {
+        false
+    }
 }
 
 /// Guest memory accesses on behalf of the blocks (`env.ld`,

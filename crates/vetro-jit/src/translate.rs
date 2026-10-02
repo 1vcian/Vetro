@@ -592,17 +592,27 @@ pub fn module_with(blocks: &[Region], memory: MemoryImport, names: bool) -> Vec<
     module_chained(blocks, memory, names, None)
 }
 
-/// Like [`module_with`]; with `base` = `Some(slot)` (region `i` goes to
-/// table entry `slot + i`) every `NEXT` exit chains (ADR 0046): it looks up
-/// the new `pc` in the jump cache as the dispatcher does and, on a hit with
-/// the steps within the limit, writes `JitState::entry` and goes on with a
-/// tail call to the region if it is in this module, otherwise it returns
-/// [`CHAIN`] with the jump cache word, and the dispatcher calls it without
-/// looking it up again. With `names` the tail calls are also counted
-/// (`area::CHAINS`).
-pub fn module_chained(blocks: &[Region], memory: MemoryImport, names: bool, base: Option<u32>) -> Vec<u8> {
+/// Like [`module_with`]; with `chaining` every `NEXT` exit chains (ADR 0046):
+/// it looks up the new `pc` in the jump cache as the dispatcher does and, on
+/// a hit with the steps within the limit, writes `JitState::entry` and goes
+/// on with a tail call: through the shared table (`Chaining::Shared`), or to
+/// the region if it is in this module (`Chaining::Own(slot)`: region `i` at
+/// table entry `slot + i`), otherwise it returns [`CHAIN`] with the jump cache
+/// word, and the dispatcher calls it without looking it up again. With
+/// `names` the tail calls are also counted (`area::CHAINS`), and the `NEXT`
+/// exits by kind (`area::EXITS`).
+pub fn module_chained(
+    blocks: &[Region],
+    memory: MemoryImport,
+    names: bool,
+    chaining: Option<Chaining>,
+) -> Vec<u8> {
     use ValType::*;
-    assert!(base.is_none_or(|b| b as usize + blocks.len() <= TABLE_SIZE as usize));
+    let base = match chaining {
+        Some(Chaining::Own(b)) => b,
+        _ => 0,
+    };
+    assert!(base as usize + blocks.len() <= TABLE_SIZE as usize);
     let mut m = Module::new();
     let t_blk = m.ty(&[I32], &[I32]);
     m.import_memory("env", "mem", memory);
@@ -611,7 +621,11 @@ pub fn module_chained(blocks: &[Region], memory: MemoryImport, names: bool, base
     // regions in order of first use (ADR 0026 for the fast paths, ADR 0041 for
     // all of them: fewer bytes and less work instantiating each module).
     let mut used = Vec::new();
-    let chain = base.map(|base| Chain { base, n: blocks.len() as u32, ty: t_blk, count: names });
+    let shared = chaining == Some(Chaining::Shared);
+    if shared {
+        m.import_table("env", "tbl", TABLE_SIZE);
+    }
+    let chain = chaining.map(|_| Chain { base, n: blocks.len() as u32, ty: t_blk, count: names, shared });
     let funcs: Vec<Func> = blocks.iter().map(|b| function_in(b, &mut used, chain)).collect();
     for id in used.iter().copied() {
         let (name, p, r) = rt_sig(id);
@@ -628,7 +642,7 @@ pub fn module_chained(blocks: &[Region], memory: MemoryImport, names: bool, base
             m.name_func(idx, &format!("r{el}_{:x}", blocks[i].pc));
         }
     }
-    if chain.is_some() {
+    if chaining.is_some() && !shared {
         m.own_table(idxs);
     }
     m.encode()
@@ -643,6 +657,19 @@ struct Chain {
     n: u32,
     ty: u32,
     count: bool,
+    /// Through the shared table instead (`Chaining::Shared`).
+    shared: bool,
+}
+
+/// How the regions of a module chain (ADR 0046).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Chaining {
+    /// The module's own table, its regions at table entries `base..`; the
+    /// others through the dispatcher (`CHAIN`).
+    Own(u32),
+    /// The module imports `env.tbl` and calls any region there
+    /// ([`crate::Engine::shared_table`]).
+    Shared,
 }
 
 /// Exit code of a region for the dispatcher only (ADR 0046): bits 31:8 are
@@ -1341,6 +1368,8 @@ fn function_in(r: &Region, used: &mut Vec<u32>, chain: Option<Chain>) -> Func {
         simd: false,
         inline_tlb: INLINE_TLB,
         fp_used: std::mem::take(used),
+        count: chain.is_some_and(|c| c.count),
+        why: None,
     };
     let n = r.bbs.len();
     if multi {
@@ -1460,15 +1489,26 @@ fn chain_tail(f: &mut Func, c: Chain) {
         .op(op::I64_ADD);
     f.local_get(L_STATE).i64_load(off::LIMIT).op(op::I64_GT_U).br_if(0);
     f.local_get(L_STATE).local_get(w).i32_const(26).op(op::I32_SHR_U).i32_store(off::ENTRY);
+    let count = |f: &mut Func| {
+        if c.count {
+            f.local_get(L_STATE).local_get(L_STATE).i64_load(area::CHAINS).i64_const(1).op(op::I64_ADD);
+            f.i64_store(area::CHAINS);
+        }
+    };
+    if c.shared {
+        // The shared table (ADR 0046): any region, at once.
+        count(f);
+        f.local_get(L_STATE).local_get(w).i32_const(8).op(op::I32_SHR_U);
+        f.i32_const((TABLE_SIZE - 1) as i32).op(op::I32_AND).return_call_indirect(c.ty);
+        f.end();
+        return;
+    }
     // Slot - base: a region of this module, or the dispatcher calls it.
     f.local_get(w).i32_const(8).op(op::I32_SHR_U).i32_const((TABLE_SIZE - 1) as i32).op(op::I32_AND);
     f.i32_const(c.base as i32).op(op::I32_SUB).local_tee(i);
     f.i32_const(c.n as i32).op(op::I32_LT_U);
     f.if_(BLOCK_EMPTY);
-    if c.count {
-        f.local_get(L_STATE).local_get(L_STATE).i64_load(area::CHAINS).i64_const(1).op(op::I64_ADD);
-        f.i64_store(area::CHAINS);
-    }
+    count(f);
     f.local_get(L_STATE).local_get(i).return_call_indirect(c.ty);
     f.end();
     f.local_get(w).i32_const(!0xff).op(op::I32_AND).i32_const(CHAIN as i32).op(op::I32_OR).op(op::RETURN);
@@ -1511,7 +1551,33 @@ struct Tx {
     /// `rt.fp<k>` and `rt.cr<k>` functions imported by the module, besides the
     /// fixed ones.
     fp_used: Vec<u32>,
+    /// Count the `NEXT` exits by kind (`area::EXITS`, measurements).
+    count: bool,
+    /// Kind of the next `NEXT` exit, for `count`.
+    why: Option<Exit>,
 }
+
+/// Why a region exits with `NEXT` (ADR 0046, counted in `area::EXITS` with
+/// `SysJitConfig::names`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Exit {
+    /// Constant target in the region's page but not in the region (the end of
+    /// a base block or a branch).
+    InPage = 0,
+    /// BL to another page.
+    CallOut = 1,
+    /// Another constant target in another page (branch, end of the page).
+    Out = 2,
+    /// RET, BR, BLR.
+    Ret = 3,
+    Br = 4,
+    Blr = 5,
+    /// The step limit at the start of a base block.
+    Limit = 6,
+}
+
+/// Counters in `area::EXITS`.
+pub const N_EXITS: usize = 7;
 
 impl Tx {
     /// Index in the module of runtime function `id` (imported in order of
@@ -1563,6 +1629,7 @@ impl Tx {
             // Steps beyond the limit: exit at the start of the base block.
             self.f.local_get(L_STEPS).i64_const(steps as i64).op(op::I64_ADD);
             self.f.local_get(L_LIMIT).op(op::I64_GT_U).if_(BLOCK_EMPTY);
+            self.why = Some(Exit::Limit);
             self.exit_const(NEXT, bb.pc, 0);
             self.f.end();
         }
@@ -1721,6 +1788,17 @@ impl Tx {
     /// (instructions done in the base block): jump to the shared tail (end
     /// of the function), which writes back the registers and `JitState`.
     fn exit(&mut self, code: u32, pc: PcSrc, done: u64) {
+        if self.count && code == NEXT {
+            let why = match (&pc, self.why) {
+                (_, Some(w)) => w,
+                (PcSrc::Const(v), None) if v >> 12 == self.pc0 >> 12 => Exit::InPage,
+                _ => Exit::Out,
+            };
+            let at = area::EXITS + 8 * why as u32;
+            let f = &mut self.f;
+            f.local_get(L_STATE).local_get(L_STATE).i64_load(at).i64_const(1).op(op::I64_ADD).i64_store(at);
+        }
+        self.why = None;
         if let PcSrc::Const(v) = pc {
             // Relative to the start of the page: shorter constants.
             let d = v.wrapping_sub(self.pc0) as i64;
@@ -3216,6 +3294,9 @@ impl Tx {
                     self.set_x(30);
                 }
                 let t = self.target(pc.wrapping_add(offset as u64));
+                if link && t >> 12 != self.pc0 >> 12 {
+                    self.why = Some(Exit::CallOut);
+                }
                 self.jump(t, self.index + 1, true);
             }
             Insn::BCond { cond, offset } => {
@@ -3250,6 +3331,11 @@ impl Tx {
                     self.set_x(30);
                 }
                 self.f.local_get(t64(3));
+                self.why = Some(match bop {
+                    BrOp::Blr => Exit::Blr,
+                    BrOp::Br => Exit::Br,
+                    BrOp::Ret => Exit::Ret,
+                });
                 self.exit_branch();
             }
 

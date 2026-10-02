@@ -86,7 +86,8 @@ async function stats() {
 }
 
 /** JIT counters kept per action (ADR 0046: transitions; dispatches and chains only with ?jitprofile=1). */
-const JIT_KEYS = ['jitSteps', 'runs', 'calls', 'resolves', 'jcProbes', 'modules', 'blocks', 'wasmBytes', 'dispatches', 'chains', 'chainCalls', 'yields', 'faults', 'svcs'];
+const JIT_KEYS = ['jitSteps', 'runs', 'calls', 'resolves', 'jcProbes', 'modules', 'blocks', 'wasmBytes', 'dispatches', 'chains', 'chainCalls', 'yields', 'faults', 'svcs',
+  'exitInPage', 'exitCallOut', 'exitOut', 'exitRet', 'exitBr', 'exitBlr', 'exitLimit'];
 const jitDelta = (a, b) => (a?.jit && b?.jit ? Object.fromEntries(Object.keys(b.jit).map((k) => [k, b.jit[k] - (a.jit[k] ?? 0)])) : null);
 
 let sampling = true;

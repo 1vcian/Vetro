@@ -29,6 +29,8 @@ pub struct NativeEngine {
     linker: Linker<Ctx>,
     /// The runtime module (`rt.*`), to re-instantiate after `reset`.
     runtime: Option<wasmtime::Module>,
+    /// [`Engine::shared_table`] (ADR 0046): true unless a test turns it off.
+    shared_table: bool,
 }
 
 /// Compiled and instantiated module: one function per block.
@@ -62,7 +64,7 @@ impl NativeEngine {
         config.wasm_threads(true);
         let engine = wasmtime::Engine::new(&config).expect("wasmtime configuration");
         let (store, memory, table, linker) = Self::store(&engine);
-        NativeEngine { store, memory, table, linker, runtime: None }
+        NativeEngine { store, memory, table, linker, runtime: None, shared_table: true }
     }
 
     /// New store with its memory and the `env.*` imports.
@@ -158,6 +160,13 @@ impl Default for NativeEngine {
 }
 
 impl NativeEngine {
+    /// Chaining as with an engine whose instances may not import the table
+    /// (`false`: within the module and through the dispatcher, ADR 0046), for
+    /// the tests of both kinds. Before the first module.
+    pub fn set_shared_table(&mut self, on: bool) {
+        self.shared_table = on;
+    }
+
     /// Instantiates the runtime in the store and offers its exports as `rt.*`.
     fn link_runtime(&mut self) -> Result<(), String> {
         let Some(m) = &self.runtime else { return Ok(()) };
@@ -227,6 +236,12 @@ impl Engine for NativeEngine {
         let size = self.memory.data_size(&self.store);
         let off = (p as usize).checked_sub(base)?;
         (off.checked_add(len)? <= size && off + len <= u32::MAX as usize).then_some(off as u32)
+    }
+
+    /// wasmtime's instances refer to the imported table (ADR 0046), unless the
+    /// tests ask for the chaining of engines without (`set_shared_table`).
+    fn shared_table(&mut self) -> bool {
+        self.shared_table
     }
 
     /// New store: the old instances (and the memory) are freed with it.

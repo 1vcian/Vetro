@@ -181,9 +181,13 @@ pub mod area {
     /// Regions that returned `CHAIN` to the dispatcher (u64, ADR 0046), with
     /// `SysJitConfig::names`.
     pub const CHAIN_CALLS: u32 = CHAINS + 8;
+    /// `NEXT` exits of the regions by kind (`translate::Exit`, u64 each, ADR
+    /// 0046), with `SysJitConfig::names`.
+    pub const EXITS: u32 = CHAIN_CALLS + 8;
     /// Total bytes of the area: 4 tables for aligned accesses and 4 for
-    /// unaligned ones ([`tlb_u`]), the clock of several cores, the chain counters.
-    pub const SIZE: u32 = CHAIN_CALLS + 8;
+    /// unaligned ones ([`tlb_u`]), the clock of several cores, the chain and
+    /// exit counters.
+    pub const SIZE: u32 = EXITS + 8 * 8;
 
     /// Offset of the table for level `el` and the access kind.
     pub const fn tlb(el: u8, write: bool) -> u32 {
