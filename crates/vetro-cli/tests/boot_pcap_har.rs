@@ -60,7 +60,7 @@ fn boot_con_pcap_e_har() {
     assert!(log.contains("vetro: har: 1 requests in"), "{log}");
 
     let file = pcapng::read(&std::fs::read(&pcap).expect("pcapng written")).expect("valid pcapng");
-    assert!(log.contains(&format!("vetro: pcapng: {} frame in", file.frames.len())), "{log}");
+    assert!(log.contains(&format!("vetro: pcapng: {} frames in", file.frames.len())), "{log}");
     let a = NetworkAnalysis::from_frames(&file.frames);
     assert_eq!(a.http.len(), 1);
     assert_eq!(a.http[0].url, "http://cli.example/pagina?a=1");
