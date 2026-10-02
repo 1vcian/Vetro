@@ -229,10 +229,17 @@ fn surface_program_and_frame() {
     let present = o.iter().position(|(c, _)| *c == Code::Present).unwrap();
     assert!(flip < present);
     assert_eq!(o[present].1, [cb_tex, 64, 32]);
+    // SurfaceFlinger binding the queued gralloc buffer while the app's
+    // surface still points at it does not copy the surface over it again
+    // (only a pbuffer's own ColorBuffer gets that).
+    gu.send(1, &call(rc::rcBindTexture, &[V::S(7)]));
+    Renderer3d::flush(&mut gu.gfx, 0, 7, Rect::new(0, 0, 64, 32));
+    let flushes = ops(&log).iter().filter(|(c, _)| *c == Code::SurfaceFlush).count();
+    assert_eq!(flushes, 1, "only the swap copies the window surface");
     // The shader text given to WebGL uses sampler2D.
     let lb = log.borrow();
-    let blob = &lb.batches.last().unwrap().1;
-    let text = String::from_utf8_lossy(blob);
+    let blob: Vec<u8> = lb.batches.iter().flat_map(|b| b.1.clone()).collect();
+    let text = String::from_utf8_lossy(&blob);
     assert!(text.contains("uniform sampler2D uTex"));
     assert!(!text.contains("GL_OES_EGL_image_external"));
     drop(lb);

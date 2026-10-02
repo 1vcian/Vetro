@@ -1048,8 +1048,14 @@ impl Gl {
 
     /// A pbuffer bound as a texture (eglBindTexImage = rcBindTexture of
     /// its ColorBuffer) or a renderbuffer: its color goes to the ColorBuffer
-    /// first, rows as GL drew them.
+    /// first, rows as GL drew them. Pbuffers own ColorBuffers made with
+    /// rcCreateColorBuffer; window surfaces draw into gralloc buffers
+    /// (virtio-gpu resources), which SurfaceFlinger binds while the app's
+    /// surface may still point at them: those keep what the flush copied.
     fn surface_to_cb(&mut self, cb: u32) {
+        if self.cbs.get(&cb).is_none_or(|c| c.resource) {
+            return;
+        }
         let pbuffers: Vec<u32> = self.surfaces.iter().filter(|(_, s)| s.cb == cb).map(|(&h, _)| h).collect();
         for s in pbuffers {
             self.surface_copy(s, false);
