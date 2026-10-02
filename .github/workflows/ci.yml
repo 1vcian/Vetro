@@ -219,6 +219,8 @@ jobs:
           node tests/web/pages.mjs 2>&1 | tee pages-test.log
         env:
           VETRO_REQUIRE_BROWSER: "1"
+          # R2's CORS allows http://127.0.0.1:8080: the default page reaches the phone's download.
+          VETRO_WEB_PORT: "8080"
       - if: failure()
         run: |
           for f in pages-build.log pages-test.log; do

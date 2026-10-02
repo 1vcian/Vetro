@@ -316,6 +316,7 @@ run(async () => {
       const $ = (id) => document.getElementById(id);
       // Rendered: not hidden, not under a hidden parent or a closed <details>.
       const shown = (id) => $(id)?.checkVisibility() ?? false;
+      if (!$('tools') || !window.vetroState) return null; // still loading
       return { form: shown('setup'), machine: shown('machine'), screen: shown('screen'), power: shown('power'), drop: shown('apk-drop'),
         tools: $('tools').open, toolsShown: shown('tools'), console: shown('console'), consoleInTools: !!$('console').closest('#tools'),
         analysis: shown('analysis-box'), forget: shown('forget'), status: shown('status'), progress: $('progress-text').textContent,
@@ -324,7 +325,7 @@ run(async () => {
     })()`;
     const zc = await page.waitFor('the failure on the progress line', async () => {
       const r = await page.eval(PAGE);
-      return r.kind === 'error' ? r : null;
+      return r?.kind === 'error' ? r : null;
     }, 60_000).catch(async (e) => {
       throw new Fail(`${e.message}: ${JSON.stringify(await page.eval(PAGE))}`);
     });

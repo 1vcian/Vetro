@@ -14,7 +14,10 @@
 //   node tests/web/pages.mjs [target/pages]
 //
 // Without Chrome it says SKIP (not a passed test), or fails with
-// VETRO_REQUIRE_BROWSER=1.
+// VETRO_REQUIRE_BROWSER=1. The phone's download comes from R2, whose CORS
+// allows the origin http://127.0.0.1:8080 only: with VETRO_WEB_PORT=8080 (CI)
+// the default page must reach the download; on another port it must start
+// and reach R2's refusal ("Failed to fetch"), and the test says so.
 
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
@@ -79,7 +82,8 @@ run(async () => {
     console.log(msg);
     return;
   }
-  const srv = await serve({ mounts: [['/Vetro/', site]], isolation: false });
+  const port = Number(process.env.VETRO_WEB_PORT ?? 0);
+  const srv = await serve({ mounts: [['/Vetro/', site]], isolation: false, port });
   const profile = mkdtempSync(join(tmpdir(), 'vetro-chrome-'));
   const { proc, cdp } = await launch(chrome, profile);
   try {
@@ -94,11 +98,16 @@ run(async () => {
       support: window.vetroState.support, form: document.getElementById('setup').checkVisibility(), tools: document.getElementById('tools').open })()`;
     const phone = await page.waitFor('the phone starting by itself', async () => {
       const r = await page.eval(START);
-      if (r?.kind === 'error') throw new Fail(`the default page failed: ${JSON.stringify(r)}`);
+      if (r?.kind === 'error') {
+        // R2 refuses origins other than :8080 (CORS): the page did start the phone.
+        if (port !== 8080 && r.progress.includes('Failed to fetch')) return { ...r, refused: true };
+        throw new Fail(`the default page failed: ${JSON.stringify(r)}`);
+      }
       return r && /^(Downloading the phone|Starting the phone from scratch|Ready)/.test(r.progress) ? r : null;
     }, 120_000);
     check(!phone.form && !phone.tools && JSON.stringify(phone.support) === '[]', `the default page: ${JSON.stringify(phone)}`);
-    console.log(`Launch Vetro: the phone starts by itself ("${phone.progress}"), no form, Tools closed, no browser notice`);
+    console.log(`Launch Vetro: the phone starts by itself ("${phone.progress}"), no form, Tools closed, no browser notice` +
+      (phone.refused ? ` (R2 refused origin ${srv.url}: VETRO_WEB_PORT=8080 to check the download too)` : ''));
     // The Linux demo link.
     const t0 = Date.now();
     await page.eval(`location.href = ${JSON.stringify(links.demo)}`);
