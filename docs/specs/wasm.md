@@ -763,6 +763,23 @@ R2; `tools/web-serve.mjs` also serves `target/aosp/out` at `/aosp/`) and
   Node up to the home screen, compaction, small level), `upload-snapshot.sh`,
   `prebuilt-key.mjs` (key of a vetro-wasm build, lookup on R2, the site's
   hint and guard).
+- Prefetch list (ADR 0044), optional, next to the snapshot:
+  `snapshots/<key>.blocks.json`, `{ format: 'vetro-prefetch', version: 1,
+  key, disk (SHA-256 of the disk map's text), blockSize, blocks: [block
+  indices, first needed first] }` (`prefetchBlocks` in `web/node/disk.mjs`
+  checks it against the open disk). After restoring any Android snapshot the
+  Worker fetches it (`prebuiltBlocksUrl`) and calls `DiskFeeder.prefetch(0,
+  blocks, { stop })`: into the OPFS block cache only (`cache.persistent`),
+  2 requests of at most 4 MiB in flight, none started while a guest request
+  is being served, cached blocks skipped; a guest request for a block on its
+  way waits for it. Missing, for another disk or block size: nothing.
+  `DiskFeeder.serve` sends the runs of one request in parallel (up to 6).
+  Stats: `feeder.prefetched`, `prefetchPending`, `prefetchWaitMs`;
+  `diskTrace` (per disk, blocks fetched from the network in order, at most
+  8192) and `jitHost` (the JIT host's counters, `compileMs`). Tools:
+  `tools/aosp/live-path.mjs --trace` (a session on the user's path in
+  headless Chrome), `prefetch-list.mjs` (traces to a list),
+  `upload-prefetch.sh`.
 
 ## Web tests
 

@@ -15,6 +15,13 @@
 //                    otherwise the app's DEFAULT_MANIFEST on R2)
 //   --out=DIR        output directory (default target/aosp/prebuilt)
 //   --no-compact     no in-guest compaction before the snapshot
+//   --warm           after settling, the user's first steps once, with adb
+//                    (ANDROID_WARMUP: the app drawer opened and closed,
+//                    Settings opened and closed), then settles again: a
+//                    visitor's first drawer and Settings then cost what a
+//                    second visit costs (the launcher's all-apps view built,
+//                    the code paths run once). With --restore: warms an
+//                    existing prebuilt snapshot without booting again.
 //   --level=L        snapshot compression: small (default) or fast
 //   --restore=FILE   resumes from a snapshot made by this tool (same machine)
 //                    instead of booting: to try compaction or compression
@@ -58,7 +65,7 @@ import { DEV, instantiate, Machine } from '../../web/node/vetro.mjs';
 import { AdbClient } from '../../web/node/adb.mjs';
 import { DiskFeeder, LayoutSource, MemoryCache } from '../../web/node/disk.mjs';
 import {
-  ANDROID_COMPACT, ANDROID_DISK, ANDROID_HOME_NS, ANDROID_MACHINE, ANDROID_PARAMS, ANDROID_WAKE, ANDROID_GRAPHICS, BootProgress, DEFAULT_MANIFEST,
+  ANDROID_COMPACT, ANDROID_DISK, ANDROID_HOME_NS, ANDROID_MACHINE, ANDROID_PARAMS, ANDROID_WAKE, ANDROID_WARMUP, ANDROID_GRAPHICS, BootProgress, DEFAULT_MANIFEST,
   gridColors, HOME_DRAW_NS, HOME_MIN_COLORS, HOME_POLL_NS, HOME_QUERY, isHome, machineDevices,
 } from '../../web/node/android.mjs';
 import { toBase64 } from '../../web/node/persist.mjs';
@@ -76,6 +83,7 @@ const arg = (name, def) => {
 const flag = (name) => process.argv.includes(`--${name}`);
 const outDir = arg('out', join(root, 'target/aosp/prebuilt'));
 const compact = !flag('no-compact');
+const warm = flag('warm');
 const restorePath = arg('restore', null);
 const wasmPath = arg('wasm', join(root, 'target/wasm32-unknown-unknown/release/vetro_wasm.wasm'));
 const guestLimit = Number(arg('guest-limit', 4000));
@@ -155,7 +163,7 @@ async function main() {
     tailLen += b.length;
     while (tailLen - tail[0].length >= CONSOLE_TAIL) tailLen -= tail.shift().length;
   };
-  const measures = { manifest: manifestUrl, compact, level };
+  const measures = { manifest: manifestUrl, compact, level, warm };
   if (restorePath) {
     const bytes = readFileSync(restorePath);
     const meta = JSON.parse(readFileSync(restorePath.replace(/\.snap$/, '.json'), 'utf8')).meta;
@@ -305,6 +313,25 @@ async function main() {
         st.error = e;
       }).finally(() => {
         st.checked = true;
+        st.busy = false;
+      });
+    } else if (settled && warm && !st.warmed) {
+      // The user's first steps, once (--warm), then settle again.
+      st.busy = true;
+      const tw = performance.now();
+      const g0 = m.guestNs;
+      (async () => {
+        for (const c of ANDROID_WARMUP(M.width, M.height)) {
+          const r = await st.adb.shell(c);
+          log(`warm-up: ${c}: ${`${r.stdout}${r.stderr}`.trim().split('\n').slice(-1)[0] ?? ''} (${(Number(m.guestNs - g0) / 1e9).toFixed(0)} s of guest time)`);
+        }
+        measures.warmup = { ms: performance.now() - tw, guestSecs: Number(m.guestNs - g0) / 1e9 };
+      })().catch((e) => {
+        st.error = e;
+      }).finally(() => {
+        st.warmed = true;
+        st.calm = settleMax === 0n;
+        st.settlePollNs = 0n;
         st.busy = false;
       });
     } else if (settled) {

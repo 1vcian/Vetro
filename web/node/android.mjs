@@ -102,6 +102,24 @@ export const ANDROID_GRAPHICS = {
     + 'settings put global animator_duration_scale 1; settings put global disable_window_blurs 0',
 };
 
+/**
+ * The user's first steps on the home screen, run once with adb before the
+ * prebuilt snapshot (`tools/aosp/prebuilt-snapshot.mjs --warm`): the app
+ * drawer opened with a swipe and closed, Settings opened and closed, back to
+ * the home screen. `sleep`s are guest time, long enough on one emulated CPU.
+ */
+export const ANDROID_WARMUP = (width, height) => {
+  const x = Math.round(width / 2);
+  return [
+    `input swipe ${x} ${Math.round(height * 0.85)} ${x} ${Math.round(height * 0.25)} 300; sleep 90`,
+    'input keyevent KEYCODE_HOME; sleep 30',
+    'am start -W -n com.android.settings/.Settings | tail -n 3; sleep 60',
+    'input keyevent KEYCODE_HOME; sleep 30',
+    `input swipe ${x} ${Math.round(height * 0.85)} ${x} ${Math.round(height * 0.25)} 300; sleep 45`,
+    'input keyevent KEYCODE_HOME; sleep 30; dumpsys window | grep mCurrentFocus',
+  ];
+};
+
 /** Guest time after the home screen is drawn before the Android snapshot. */
 export const ANDROID_HOME_NS = 5_000_000_000n;
 /** At most this much guest time from the launcher being focused to the home screen drawn. */
