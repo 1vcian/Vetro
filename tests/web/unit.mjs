@@ -553,8 +553,10 @@ test('Android boot phases (BootProgress)', () => {
 
 test('Android image versions and app colours (ADR 0032)', () => {
   eq(DEFAULT_MANIFEST, ANDROID_VERSIONS[0].manifest, 'the first version is the default');
-  check(DEFAULT_MANIFEST.endsWith('/aosp/android-15.0.0_r36-BP1A.250505.005.D1-64fcd35/manifest.json'), `default image 64fcd35: ${DEFAULT_MANIFEST}`);
-  check(ANDROID_VERSIONS.some((v) => v.version.endsWith('-bd09e2f') && v.manifest.endsWith(`/aosp/${v.version}/manifest.json`)), 'bd09e2f still selectable');
+  check(DEFAULT_MANIFEST.endsWith('/aosp/android-15.0.0_r36-BP1A.250505.005.D1-f08b79e/manifest.json'), `default image f08b79e: ${DEFAULT_MANIFEST}`);
+  for (const old of ['8b519e5', '64fcd35', 'bd09e2f']) {
+    check(ANDROID_VERSIONS.some((v) => v.version.endsWith(`-${old}`) && v.manifest.endsWith(`/aosp/${v.version}/manifest.json`)), `${old} still selectable`);
+  }
   // The test app's blue: the right order only (the default image converts to BGRX).
   const blue = [0x15, 0x65, 0xc0];
   check(colorSeen([0x15, 0x65, 0xc0], blue) && colorSeen([0x1a, 0x60, 0xc6], blue), 'blue, also within the tolerance');
