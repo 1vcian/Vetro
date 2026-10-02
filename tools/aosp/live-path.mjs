@@ -32,7 +32,11 @@ const arg = (name, def) => {
   const i = process.argv.indexOf(`--${name}`);
   return i > 0 ? process.argv[i + 1] : def;
 };
-const URL_ = arg('url', 'https://1vcian.me/Vetro/app/?os=android');
+// --jit-profile: the app with ?jitprofile=1 (a build that has it): per action,
+// the instruction classes the interpreter and env.simd ran, and the FP state
+// that made them miss the JIT's fast paths (ADR 0045).
+const JIT_PROFILE = process.argv.includes('--jit-profile');
+const URL_ = arg('url', 'https://1vcian.me/Vetro/app/?os=android') + (JIT_PROFILE ? '&jitprofile=1' : '');
 const PROFILE = arg('profile', '/tmp/vetro-live-profile');
 const OUT = arg('out', '/tmp/vetro-live');
 const VISIT = arg('visit', existsSync(PROFILE) ? 'second' : 'first');
@@ -64,7 +68,7 @@ async function stats() {
   const s = await ev('window.vetroState?.stats ?? null');
   if (!s) return null;
   const http = s.disks.reduce((a, d) => ({ requests: a.requests + d.http.requests, bytes: a.bytes + d.http.bytes }), { requests: 0, bytes: 0 });
-  return { wall: (Date.now() - t0) / 1000, guest: s.guestSecs, mips: s.mips, waitS: s.feeder.waitMs / 1000, served: s.feeder.served, fromSource: s.feeder.fromSource,
+  return { wall: (Date.now() - t0) / 1000, guest: s.guestSecs, steps: s.steps, mips: s.mips, waitS: s.feeder.waitMs / 1000, served: s.feeder.served, fromSource: s.feeder.fromSource,
     fromCache: s.feeder.fromCache, requests: http.requests, mib: http.bytes / 2 ** 20, memory: s.memory / 2 ** 20, aheadMs: s.aheadMs,
     prefetched: s.feeder.prefetched ?? null, jitModules: s.jit?.modules ?? null, jitCompileS: s.jitHost ? s.jitHost.compileMs / 1000 : null };
 }
@@ -87,6 +91,42 @@ const SIG = `(() => {
 })()`;
 const diff = (a, b) => (a && b && a.length === b.length ? a.reduce((n, v, i) => n + (v !== b[i]), 0) / a.length : 1);
 
+/**
+ * The JIT profile now (`vetroState.jitProfile`, cumulative, every 5 s), as
+ * counts per "section | class": `interp` (interpreter steps), `interp-fp`
+ * (their FP state), `simd` (env.simd calls), `simd-fp`.
+ */
+async function jitProf() {
+  if (!JIT_PROFILE) return null;
+  const p = await ev('window.vetroState.jitProfile ?? null');
+  if (!p) return null;
+  const out = {};
+  let sec = 'interp';
+  for (const line of p.text.split('\n')) {
+    if (line.startsWith('env.simd:')) sec = 'simd';
+    else if (line.startsWith('FP by state')) sec = sec.startsWith('simd') ? 'simd-fp' : 'interp-fp';
+    const m = line.match(/^\s*(\d+)\s+[\d.]+%\s+(.*)$/);
+    if (m) out[`${sec} | ${m[2]}`] = Number(m[1]);
+    const t = line.match(/instructions with the JIT active: (\d+)/);
+    if (t) out[`${sec} | total`] = Number(t[1]);
+  }
+  return out;
+}
+
+/** The `n` largest differences per section between two jitProf() results. */
+function profDelta(a, b, n = 40) {
+  if (!a || !b) return null;
+  const by = {};
+  for (const [k, v] of Object.entries(b)) {
+    const d = v - (a[k] ?? 0);
+    if (d <= 0) continue;
+    const [sec, ...rest] = k.split(' | ');
+    (by[sec] ??= []).push([rest.join(' | '), d]);
+  }
+  for (const sec of Object.keys(by)) by[sec] = by[sec].sort((x, y) => y[1] - x[1]).slice(0, n);
+  return by;
+}
+
 /** Client coordinates of guest pixel (gx, gy). */
 async function at(gx, gy) {
   return ev(`(() => { const c = document.getElementById('screen'); c.scrollIntoView({ block: 'center' }); const b = c.getBoundingClientRect();
@@ -103,6 +143,7 @@ async function timed(name, act, { minChange = 0.02, stillMs = 2000, limitMs = 90
   const before = await ev(SIG);
   const s0 = await stats();
   const n0 = await ev('window.vetroState.perf.taps.length');
+  const p0 = await jitProf();
   const ts = Date.now();
   await act();
   let changed = null;
@@ -127,10 +168,16 @@ async function timed(name, act, { minChange = 0.02, stillMs = 2000, limitMs = 90
   const frame = await ev(`window.vetroState.perf.taps[${n0}]?.frameMs ?? null`);
   const s1 = await stats();
   const a = { name, frameMs: frame, changedMs: changed, doneMs: done, settledMs: settled, diskWaitS: s1 && s0 ? s1.waitS - s0.waitS : null, httpReads: s1 && s0 ? s1.requests - s0.requests : null,
-    httpMiB: s1 && s0 ? s1.mib - s0.mib : null, guestS: s1 && s0 ? s1.guest - s0.guest : null, wallS: (Date.now() - ts) / 1000 };
+    httpMiB: s1 && s0 ? s1.mib - s0.mib : null, guestS: s1 && s0 ? s1.guest - s0.guest : null, wallS: (Date.now() - ts) / 1000,
+    mips: s1 && s0 ? (s1.steps - s0.steps) / 1e6 / ((s1.wall - s0.wall) || 1) : null };
+  if (JIT_PROFILE) {
+    // The profile is refreshed every 5 s: wait for one after the action.
+    await sleep(5500);
+    a.jitProfile = profDelta(p0, await jitProf());
+  }
   if (check) a.check = await check().catch((e) => `error: ${e.message}`);
   result.actions.push(a);
-  log(`${name}: first frame ${frame?.toFixed(0)} ms, changed ${changed} ms${until ? `, done ${done} ms` : ''}, settled ${settled} ms, disk wait ${a.diskWaitS?.toFixed(1)} s, ${a.httpReads} HTTP reads (${a.httpMiB?.toFixed(1)} MiB)${a.check ? `, ${a.check}` : ''}`);
+  log(`${name}: first frame ${frame?.toFixed(0)} ms, changed ${changed} ms${until ? `, done ${done} ms` : ''}, settled ${settled} ms, ${a.mips?.toFixed(1)} MIPS, guest ${a.guestS?.toFixed(1)} s in ${a.wallS.toFixed(1)} s, disk wait ${a.diskWaitS?.toFixed(1)} s, ${a.httpReads} HTTP reads (${a.httpMiB?.toFixed(1)} MiB)${a.check ? `, ${a.check}` : ''}`);
   await shot(name.replace(/\W+/g, '-'));
   save();
   return a;
@@ -310,6 +357,7 @@ try {
   }
   await guestLoad('end');
   result.stats = await ev('window.vetroState.stats');
+  if (JIT_PROFILE) result.jitProfile = await ev('window.vetroState.jitProfile?.text ?? null');
   if (TRACE) {
     const trace = result.stats?.diskTrace;
     if (!trace) log('no disk trace in the stats (a worker that records it is needed)');

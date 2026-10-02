@@ -1013,7 +1013,11 @@ impl<E: Engine> SysJit<E> {
         if let Ok(pa) = pa
             && phys.ram_read(pa, &mut w)
         {
-            p.note(u32::from_le_bytes(w), Some(target(cpu, self.yields, self.parallel)));
+            let w = u32::from_le_bytes(w);
+            p.note(w, Some(target(cpu, self.yields, self.parallel)));
+            if let Some(r) = crate::profile::fp_reason(w, cpu, None) {
+                p.note_fp(w, r);
+            }
         }
     }
 

@@ -848,6 +848,9 @@ async function start() {
     jit: el.jit.checked,
     // ADR 0038 (experimental): JIT modules compiled in a nested Worker.
     jitBackground: q.get('jitbg') === '1',
+    // Measurements (tools/aosp/live-path.mjs --jit-profile): the JIT's
+    // instruction classes and FP states in the stats (`stats.jitProfile`).
+    jitProfile: q.get('jitprofile') === '1',
     realtime: el.realtime.checked,
     opfs: el.opfs.checked,
     snapshot: el.snapshot.checked,
@@ -936,6 +939,7 @@ async function start() {
         vetroState.disks = msg.disks;
         vetroState.memory = Math.max(vetroState.memory ?? 0, msg.memory ?? 0);
         vetroState.stats = msg;
+        if (msg.jitProfile) vetroState.jitProfile = { at: performance.now(), text: msg.jitProfile };
         if (msg.input) perf.input = msg.input;
         break;
       case 'restored': {

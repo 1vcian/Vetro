@@ -128,10 +128,11 @@ pub fn exec(mem: &mut [u8], at: usize, word: u32, x: u64, nzcv: u32) -> u64 {
         panic!("env.simd with a non-SIMD instruction: {word:#010x}");
     };
     CALLS.set(CALLS.get() + 1);
-    PROFILE.with_borrow_mut(|p| {
+    let profiling = PROFILE.with_borrow_mut(|p| {
         if let Some(p) = p {
             p.note(word, None);
         }
+        p.is_some()
     });
     let io = io(&i);
     let st = &mut mem[at..at + off::SIZE];
@@ -145,7 +146,15 @@ pub fn exec(mem: &mut [u8], at: usize, word: u32, x: u64, nzcv: u32) -> u64 {
         if let Some(rn) = io.x_in {
             cpu.set_x(rn, x);
         }
-        vetro_cpu::simd::exec_dp(cpu, i);
+        if profiling {
+            let before = cpu.clone();
+            vetro_cpu::simd::exec_dp(cpu, i);
+            if let Some(r) = crate::profile::fp_reason(word, &before, Some(cpu.fpsr)) {
+                PROFILE.with_borrow_mut(|p| p.as_mut().map(|p| p.note_fp(word, r)));
+            }
+        } else {
+            vetro_cpu::simd::exec_dp(cpu, i);
+        }
         copy_v_out(&mut st[v..v + 512], &cpu.v);
         let f = off::FPSR as usize;
         st[f..f + 4].copy_from_slice(&cpu.fpsr.to_le_bytes());

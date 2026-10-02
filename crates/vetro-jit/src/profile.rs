@@ -136,7 +136,149 @@ impl std::hash::Hasher for WordHasher {
 #[derive(Clone, Debug, Default)]
 pub struct Profile {
     words: HashMap<(u32, Option<SysTarget>), u64, std::hash::BuildHasherDefault<WordHasher>>,
+    /// FP instructions by word and [`fp_reason`] (why a fast path could miss).
+    reasons: HashMap<(u32, u32), u64, std::hash::BuildHasherDefault<WordHasher>>,
     total: u64,
+}
+
+/// Bits of [`fp_reason`] besides FPCR\[26:19\] (bits 0..7).
+pub mod why {
+    /// FPSR.IXC was already 1.
+    pub const IXC_SET: u32 = 1 << 8;
+    /// Flags the instruction raised (shifted FPSR bits IOC, DZC, OFC, UFC,
+    /// IXC at 9..13, IDC at 14).
+    pub const NEW_SHIFT: u32 = 9;
+    /// An input lane is a NaN, a denormal, an infinity, a zero.
+    pub const IN_NAN: u32 = 1 << 16;
+    pub const IN_DEN: u32 = 1 << 17;
+    pub const IN_INF: u32 = 1 << 18;
+    pub const IN_ZERO: u32 = 1 << 19;
+}
+
+/// Source registers, element size (16/32/64) and whether all lanes count
+/// (vector Q = 1), for the input classes of [`fp_reason`].
+fn fp_sources(f: FpInsn) -> Option<(Vec<u8>, u32, u32)> {
+    let ty = |t: u8| match t {
+        0 => 32,
+        1 => 64,
+        _ => 16,
+    };
+    let sz = |s: bool| if s { 64 } else { 32 };
+    let lanes = |scalar: bool, q: bool| {
+        if scalar {
+            0
+        } else if q {
+            128
+        } else {
+            64
+        }
+    };
+    Some(match f {
+        FpInsn::Dp1 { ty: t, rn, .. } => (vec![rn], ty(t), 0),
+        FpInsn::Dp2 { ty: t, rn, rm, .. } => (vec![rn, rm], ty(t), 0),
+        FpInsn::Dp3 { ty: t, rn, rm, ra, .. } => (vec![rn, rm, ra], ty(t), 0),
+        FpInsn::Cmp { ty: t, rn, rm, zero, .. } => (if zero { vec![rn] } else { vec![rn, rm] }, ty(t), 0),
+        FpInsn::CondCmp { ty: t, rn, rm, .. } => (vec![rn, rm], ty(t), 0),
+        FpInsn::ToInt { ty: t, rn, .. } => (vec![rn], ty(t), 0),
+        FpInsn::VThreeSame { scalar, q, sz: s, rn, rm, rd, opcode, .. } => {
+            // FMLA/FMLS also read Vd.
+            let r = if opcode == 0b11001 { vec![rn, rm, rd] } else { vec![rn, rm] };
+            (r, sz(s), lanes(scalar, q))
+        }
+        FpInsn::VTwoMisc { scalar, q, sz: s, rn, opcode, a, .. } => {
+            // FCVTL reads halves (sz = 0) or singles.
+            let e = if !a && opcode == 0b10111 { if s { 32 } else { 16 } } else { sz(s) };
+            (vec![rn], e, lanes(scalar, q))
+        }
+        FpInsn::VAcross { rn, .. } => (vec![rn], 32, 128),
+        FpInsn::VPairScalar { sz: s, rn, .. } => (vec![rn], sz(s), 128),
+        FpInsn::VFixed { scalar, q, sz: s, rn, to_int: true, .. } => (vec![rn], sz(s), lanes(scalar, q)),
+        FpInsn::VIndexed { scalar, q, sz: s, rn, rm, rd, opcode, .. } => {
+            let r = if opcode & 0b1011 == 0b0001 { vec![rn, rm, rd] } else { vec![rn, rm] };
+            (r, sz(s), lanes(scalar, q))
+        }
+        _ => return None,
+    })
+}
+
+/// Why an FP instruction might miss a fast path, from the state before it
+/// executes (`before`) and, if known, the FPSR after it: FPCR\[26:19\] in bits
+/// 0..7 (FZ16, Stride, RMode, FZ, DN, AHP) and the [`why`] bits. None for
+/// instructions that are not FP arithmetic.
+pub fn fp_reason(word: u32, cpu: &vetro_cpu::Cpu, fpsr_after: Option<u32>) -> Option<u32> {
+    let Insn::Simd(SimdInsn::Fp(f)) = vetro_cpu::decode(word) else { return None };
+    let (regs, esize, width) = fp_sources(f)?;
+    let mut r = (cpu.fpcr >> 19) & 0xff;
+    if cpu.fpsr & 0x10 != 0 {
+        r |= why::IXC_SET;
+    }
+    if let Some(after) = fpsr_after {
+        let new = after & !cpu.fpsr;
+        r |= (new & 0x1f) << why::NEW_SHIFT | ((new >> 7) & 1) << (why::NEW_SHIFT + 5);
+    }
+    let (exp_bits, frac_bits) = match esize {
+        16 => (5, 10),
+        32 => (8, 23),
+        _ => (11, 52),
+    };
+    let n = (width.max(esize)) / esize;
+    for &reg in &regs {
+        let v = cpu.v[reg as usize];
+        for l in 0..n {
+            let x = (v >> (l * esize)) as u64 & (u64::MAX >> (64 - esize));
+            let e = (x >> frac_bits) & ((1 << exp_bits) - 1);
+            let m = x & ((1u64 << frac_bits) - 1);
+            r |= match (e, m) {
+                (0, 0) => why::IN_ZERO,
+                (0, _) => why::IN_DEN,
+                (e, 0) if e == (1 << exp_bits) - 1 => why::IN_INF,
+                (e, _) if e == (1 << exp_bits) - 1 => why::IN_NAN,
+                _ => 0,
+            };
+        }
+    }
+    Some(r)
+}
+
+/// Readable form of a [`fp_reason`].
+pub fn reason_text(r: u32) -> String {
+    let mut s = Vec::new();
+    let fpcr = (r & 0xff) << 19;
+    if fpcr == 0 {
+        s.push("fpcr=0".to_string());
+    } else {
+        let mut c = Vec::new();
+        if fpcr & 1 << 26 != 0 {
+            c.push("AHP");
+        }
+        if fpcr & 1 << 25 != 0 {
+            c.push("DN");
+        }
+        if fpcr & 1 << 24 != 0 {
+            c.push("FZ");
+        }
+        c.push(["RN", "RP", "RM", "RZ"][((fpcr >> 22) & 3) as usize]);
+        if fpcr & 3 << 20 != 0 {
+            c.push("stride");
+        }
+        if fpcr & 1 << 19 != 0 {
+            c.push("FZ16");
+        }
+        s.push(format!("fpcr={}", c.join("+")));
+    }
+    s.push(if r & why::IXC_SET != 0 { "ixc=1" } else { "ixc=0" }.into());
+    let new = r >> why::NEW_SHIFT & 0x3f;
+    if new != 0 {
+        let names = ["IOC", "DZC", "OFC", "UFC", "IXC", "IDC"];
+        let v: Vec<&str> = (0..6).filter(|b| new & 1 << b != 0).map(|b| names[b]).collect();
+        s.push(format!("raised={}", v.join("+")));
+    }
+    for (b, n) in [(why::IN_NAN, "nan"), (why::IN_DEN, "den"), (why::IN_INF, "inf"), (why::IN_ZERO, "zero")] {
+        if r & b != 0 {
+            s.push(format!("in:{n}"));
+        }
+    }
+    s.join(" ")
 }
 
 impl Profile {
@@ -146,6 +288,25 @@ impl Profile {
     pub fn note(&mut self, w: u32, sys: Option<SysTarget>) {
         *self.words.entry((w, sys)).or_default() += 1;
         self.total += 1;
+    }
+
+    /// Counts FP instruction `w` with its [`fp_reason`] `r`.
+    pub fn note_fp(&mut self, w: u32, r: u32) {
+        *self.reasons.entry((w, r)).or_default() += 1;
+    }
+
+    /// The `n` most frequent (class, reason) pairs of [`Profile::note_fp`],
+    /// with the instruction's mnemonic-like class.
+    pub fn top_reasons(&self, n: usize) -> Vec<(String, u64)> {
+        let mut counts: HashMap<String, u64> = HashMap::new();
+        for (&(w, r), &k) in &self.reasons {
+            let c = class(&vetro_cpu::decode(w));
+            *counts.entry(format!("{c} | {}", reason_text(r))).or_default() += k;
+        }
+        let mut v: Vec<(String, u64)> = counts.into_iter().collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        v.truncate(n);
+        v
     }
 
     /// Counts per class.
@@ -180,6 +341,12 @@ impl Profile {
         let mut s = format!("interpreter instructions with the JIT active: {}\n", self.total);
         for (c, k) in self.top(n) {
             s += &format!("{k:>12} {:5.1}%  {c}\n", 100.0 * k as f64 / self.total.max(1) as f64);
+        }
+        if !self.reasons.is_empty() {
+            s += "FP by state (FPCR, IXC before, flags raised, input classes):\n";
+            for (c, k) in self.top_reasons(n) {
+                s += &format!("{k:>12} {:5.1}%  {c}\n", 100.0 * k as f64 / self.total.max(1) as f64);
+            }
         }
         s
     }

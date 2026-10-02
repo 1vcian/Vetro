@@ -155,6 +155,7 @@ let exports = null;
 let feeder = null;
 /** The JIT's host side (web/node/jit-engine.mjs): its compile times go into the stats. */
 let jitHost = null;
+let jitProfileOn = false;
 let cfg = null;
 let running = false;
 const inbox = [];
@@ -529,7 +530,8 @@ async function start(c) {
     post({ type: 'cold', times });
   }
   if (c.jit && c.jitBackground) await jitEngine.startBackground();
-  if (c.jit) m.setJit();
+  if (c.jit) m.setJit(64, 16, { profile: !!c.jitProfile });
+  jitProfileOn = !!(c.jit && c.jitProfile);
   await resumeCores();
   if (c.files) openFiles();
   if (c.net) m.capture(true);
@@ -1167,6 +1169,7 @@ async function loop() {
   /** Guest time ahead of the real clock (ms). */
   const aheadMs = () => guestMs() - (performance.now() - clock.t0 - clock.paused);
   let lastStats = 0;
+  let lastProfile = 0;
   let lastPersist = performance.now();
   // Last guest activity (guest time) and rest already used.
   let activeNs = m.guestNs;
@@ -1285,6 +1288,9 @@ async function loop() {
         diskTrace: feeder.disks.map((d) => d.trace),
         jit: m.jitStats(),
         jitHost: jitHost?.stats ?? null,
+        // With ?jitprofile=1, every 5 s: the report of the classes run by
+        // the interpreter and by env.simd (cumulative), for live-path.mjs.
+        jitProfile: jitProfileOn && now - lastProfile > 5000 ? ((lastProfile = now), m.jitProfile(400)) : undefined,
         inputs: inputLog.length,
         memory: m.memoryBytes,
         input: { ...inputWait },
