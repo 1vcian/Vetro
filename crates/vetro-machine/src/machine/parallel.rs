@@ -409,8 +409,9 @@ impl ParCore {
                     out = Wait::Idle;
                 }
             } else {
-                let c = cores.clock.fetch_max(t, Ordering::SeqCst).max(t);
-                wake_due(cores, c);
+                let old = cores.clock.fetch_max(t, Ordering::SeqCst);
+                cores.skipped.fetch_add(t.saturating_sub(old), Ordering::SeqCst);
+                wake_due(cores, old.max(t));
             }
         }
         if !matches!(out, Wait::Idle) {
@@ -815,6 +816,7 @@ impl Machine {
             let before = core0.executed;
             let stop = core0.run(&board, step, true);
             let done = core0.executed - before;
+            self.perf.wfi_steps += cores.skipped.swap(0, Ordering::SeqCst);
             self.par = Some(core0);
             self.steps = cores.clock.load(Ordering::SeqCst);
             left = left.saturating_sub(done.max(1));
@@ -961,6 +963,57 @@ mod tests {
         assert_eq!(after, [1, 0], "one response in the used ring");
         let expected: Vec<u8> = (512..516u32).map(|i| (i * 7 + 1) as u8).collect();
         assert_eq!(read(&m, DATA, 4), expected, "sector 1 of the disk");
+    }
+
+    /// Time skipped while every core waits counts as WFI skip in
+    /// `perf.wfi_steps`, as with the cores in turns (otherwise the
+    /// measurements report idle time as executed instructions). Core 0 arms
+    /// its timer and waits in WFI; core 1 stays off.
+    #[test]
+    fn idle_jumps_count_as_wfi_steps() {
+        let cfg = crate::MachineConfig { ram_size: 1 << 20, cpus: 2, ..crate::MachineConfig::default() };
+        let mut m = Machine::with_devices(&cfg, &crate::Devices::none());
+        // From tools/a64asm.sh.
+        let code: [u32; 6] = [
+            0xd2820000, // mov x0, #0x1000
+            0xd51be200, // msr CNTP_TVAL_EL0, x0
+            0xd2800020, // mov x0, #0x1
+            0xd51be220, // msr CNTP_CTL_EL0, x0
+            0xd503207f, // wfi
+            0x17ffffff, // b .-4
+        ];
+        {
+            let b = m.board.borrow_mut();
+            for (i, c) in code.iter().enumerate() {
+                assert!(b.ram.write(vetro_platform::map::RAM_BASE + 4 * i as u64, &c.to_le_bytes()));
+            }
+        }
+        m.cpu.pc = vetro_platform::map::RAM_BASE;
+        let cores = m.start_parallel().expect("parallel");
+        std::thread::scope(|s| {
+            let handles: Vec<_> = cores
+                .into_iter()
+                .map(|mut c| {
+                    s.spawn(move || {
+                        c.set_jit(None);
+                        while !c.stopped() {
+                            let _ = c.run(1 << 16);
+                        }
+                        c
+                    })
+                })
+                .collect();
+            for _ in 0..4 {
+                let _ = m.run(1 << 16);
+            }
+            m.request_stop();
+            let cores: Vec<Core> = handles.into_iter().map(|h| h.join().expect("core thread")).collect();
+            m.stop_parallel(cores);
+        });
+        // The deadline: 4096 ticks of the counter, two cores' clock steps each.
+        let jump = steps_for(4096) * 2;
+        assert!(m.perf.wfi_steps >= jump / 2, "wfi_steps {} (jump of about {jump})", m.perf.wfi_steps);
+        assert!(m.perf.wfi_steps <= m.steps, "wfi_steps {} > clock {}", m.perf.wfi_steps, m.steps);
     }
 
     /// The two-core probe of `smp.rs` with the cores on two host threads:

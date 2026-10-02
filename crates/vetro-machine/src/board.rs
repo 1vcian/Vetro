@@ -706,6 +706,9 @@ pub(crate) struct Cores {
     /// of core 0): time never jumps beyond it, so the guest waits for the
     /// host as with the cores in turns (ADR 0039).
     pub horizon: AtomicU64,
+    /// Clock steps skipped by the all-idle time jumps since core 0 last
+    /// looked (its `perf.wfi_steps`, as with the cores in turns).
+    pub skipped: AtomicU64,
 }
 
 /// One core's shared state.
@@ -797,6 +800,7 @@ impl Cores {
             halt: AtomicU8::new(0),
             net_deadline: AtomicU64::new(u64::MAX),
             horizon: AtomicU64::new(u64::MAX),
+            skipped: AtomicU64::new(0),
         }
     }
 
