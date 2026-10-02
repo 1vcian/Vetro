@@ -28,6 +28,7 @@ pub mod op {
     pub const RETURN: u8 = 0x0f;
     pub const CALL: u8 = 0x10;
     pub const CALL_INDIRECT: u8 = 0x11;
+    pub const RETURN_CALL_INDIRECT: u8 = 0x13;
     pub const DROP: u8 = 0x1a;
     pub const SELECT: u8 = 0x1b;
     pub const LOCAL_GET: u8 = 0x20;
@@ -594,6 +595,13 @@ impl Func {
         self.code.push(0);
         self
     }
+    /// `return_call_indirect` on type `ty` in table 0 (tail call, ADR 0046).
+    pub fn return_call_indirect(&mut self, ty: u32) -> &mut Self {
+        self.code.push(op::RETURN_CALL_INDIRECT);
+        uleb(&mut self.code, ty as u64);
+        self.code.push(0);
+        self
+    }
     /// `loop` or `block` with type `bt`.
     pub fn loop_(&mut self, bt: u8) -> &mut Self {
         self.code.push(op::LOOP);
@@ -690,6 +698,9 @@ pub struct Module {
     table: Option<(String, String, u32)>,
     /// Function names (`name` custom section), for profilers: (index, name).
     names: Vec<(u32, String)>,
+    /// Table 0 defined by the module (not imported) and filled with these
+    /// functions, in order (ADR 0046: chaining between the regions of a module).
+    own_table: Option<Vec<u32>>,
 }
 
 impl Module {
@@ -717,6 +728,13 @@ impl Module {
         self.table = Some((module.into(), field.into(), min));
     }
 
+    /// Defines table 0 (`funcref`) holding functions `funcs` at entries
+    /// `0..funcs.len()` (an active element segment). Not with [`import_table`].
+    pub fn own_table(&mut self, funcs: Vec<u32>) {
+        assert!(self.table.is_none(), "table 0 is imported");
+        self.own_table = Some(funcs);
+    }
+
     /// Imports a function; returns its index. Must be called before
     /// defining functions.
     pub fn import_func(&mut self, module: &str, field: &str, ty: u32) -> u32 {
@@ -736,7 +754,7 @@ impl Module {
     }
 
     /// Names function `index` in the `name` custom section (what V8's CPU
-    /// profiles show). Indices in increasing order.
+    /// profiles show).
     pub fn name_func(&mut self, index: u32, name: &str) {
         self.names.push((index, name.into()));
     }
@@ -798,6 +816,15 @@ impl Module {
         }
         section(&mut out, 3, &sec);
 
+        if let Some(fs) = &self.own_table {
+            sec.clear();
+            uleb(&mut sec, 1);
+            sec.push(0x70); // funcref
+            sec.push(0x00);
+            uleb(&mut sec, fs.len() as u64);
+            section(&mut out, 4, &sec);
+        }
+
         sec.clear();
         uleb(&mut sec, self.exports.len() as u64);
         for (n, i) in &self.exports {
@@ -806,6 +833,21 @@ impl Module {
             uleb(&mut sec, *i as u64);
         }
         section(&mut out, 7, &sec);
+
+        if let Some(fs) = &self.own_table {
+            // One active segment for table 0 at offset 0.
+            sec.clear();
+            uleb(&mut sec, 1);
+            sec.push(0x00);
+            sec.push(op::I32_CONST);
+            sleb(&mut sec, 0);
+            sec.push(op::END);
+            uleb(&mut sec, fs.len() as u64);
+            for &f in fs {
+                uleb(&mut sec, f as u64);
+            }
+            section(&mut out, 9, &sec);
+        }
 
         sec.clear();
         uleb(&mut sec, self.funcs.len() as u64);
@@ -817,8 +859,10 @@ impl Module {
         if !self.names.is_empty() {
             // Custom section "name", subsection 1: function names.
             let mut sub = Vec::new();
-            uleb(&mut sub, self.names.len() as u64);
-            for (i, n) in &self.names {
+            let mut names: Vec<&(u32, String)> = self.names.iter().collect();
+            names.sort_by_key(|n| n.0);
+            uleb(&mut sub, names.len() as u64);
+            for (i, n) in names {
                 uleb(&mut sub, *i as u64);
                 name(&mut sub, n);
             }
@@ -908,6 +952,29 @@ mod tests {
         f.local_get(0).i64_const(7).i64_store_n(2, 0);
         f.i32_const(0);
         m.func(t, f);
+        validate(&m.encode());
+    }
+
+    #[test]
+    fn own_table_and_return_call_indirect_are_valid() {
+        use ValType::*;
+        let mut m = Module::new();
+        let t = m.ty(&[I32], &[I32]);
+        m.import_memory("env", "mem", MemoryImport { min: 1, shared_max: None });
+        let mut f = Func::default();
+        f.local_get(0)
+            .if_(I32 as u8)
+            .i32_const(0)
+            .else_()
+            .local_get(0)
+            .i32_const(1)
+            .return_call_indirect(t)
+            .end();
+        let a = m.func(t, f);
+        let mut g = Func::default();
+        g.local_get(0).i32_const(0).return_call_indirect(t);
+        let b = m.func(t, g);
+        m.own_table(vec![a, b]);
         validate(&m.encode());
     }
 

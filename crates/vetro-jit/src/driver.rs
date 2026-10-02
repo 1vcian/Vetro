@@ -586,16 +586,21 @@ impl<E: Engine> JitCpu<E> {
             self.stats.reused += 1;
             return Some(es.clone());
         }
-        let wasm = translate::module(std::slice::from_ref(&block), self.cfg.memory);
         if self.next_slot + 1 > TABLE_SIZE {
             self.reset();
         }
-        let module = match self.engine.compile(&wasm) {
+        // The region chains to itself (other entries) and to the others
+        // through the dispatcher (ADR 0046): its code names its table entry.
+        let memory = self.cfg.memory;
+        let generate =
+            |slot: u32| translate::module_chained(std::slice::from_ref(&block), memory, false, Some(slot));
+        let module = match self.engine.compile(&generate(self.next_slot)) {
             Ok(m) => m,
             Err(_) => {
                 // Engine full (wasmtime: instances per store): all compiled
                 // code is discarded and we retry once.
                 self.reset();
+                let wasm = generate(self.next_slot);
                 match self.engine.compile(&wasm) {
                     Ok(m) => m,
                     Err(e) => panic!("JIT module rejected by the engine at pc={pc:#x}: {e}"),

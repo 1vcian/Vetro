@@ -826,6 +826,8 @@ pub unsafe extern "C" fn vetro_jit_stats(vm: *const Vm, out: *mut u64, cap: usiz
         s.evictions,
         s.evicted_modules,
         s.dispatches,
+        s.chains,
+        s.chain_calls,
     ];
     let n = v.len().min(cap);
     if n > 0 {
