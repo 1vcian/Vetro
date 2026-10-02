@@ -263,7 +263,8 @@ fn guest_online_through_the_gateway_and_identical_replay() {
     let log = r.m.stop_recording().expect("recording");
     let log = Log::decode(&log.encode()).expect("the log reads back");
     let relay_inputs = log.events.iter().filter(|e| matches!(e.kind, EventKind::Input(Input::Relay(_)))).count();
-    assert!(relay_inputs > 100, "{relay_inputs} gateway frames recorded");
+    // 600 KB in 16 KiB frames, plus answers, acks and closes.
+    assert!(relay_inputs > 40, "{relay_inputs} gateway frames recorded");
     assert!(log.events.iter().all(|e| matches!(e.kind, EventKind::Input(_))), "no opaque event");
     let (steps, end, console) = (r.m.steps, r.m.digest(), r.log.clone());
 
