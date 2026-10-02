@@ -769,6 +769,36 @@ impl Tx {
                     }
                 }
             }
+            VecMemInsn::Single { load: true, q, selem, scale, index, replicate, rt, .. } if selem > 1 => {
+                // LD2..LD4 of one lane, LD2R..LD4R (ADR 0045): element `s` at
+                // base + s × bytes into V(rt + s). All the loads first (in
+                // v128 temporaries), then the registers.
+                let bytes = 1u32 << scale;
+                for s in 0..selem as u32 {
+                    self.f.local_get(base);
+                    if s > 0 {
+                        self.f.i64_const((s * bytes) as i64).op(op::I64_ADD);
+                    }
+                    self.f.local_set(addr);
+                    self.ld(addr, bytes);
+                    self.f.v(v::I64X2_SPLAT).local_set(L_V0 + 2 + s);
+                }
+                for s in 0..selem as u32 {
+                    let reg = ((rt as u32 + s) % 32) as u8;
+                    self.f.local_get(L_V0 + 2 + s).lane(v::I64X2_EXTRACT_LANE, 0).local_set(t64(5));
+                    if replicate {
+                        self.vst_begin();
+                        self.f.local_get(t64(5));
+                        if scale < 3 {
+                            self.f.op(op::I32_WRAP_I64);
+                        }
+                        self.f.v(SPLAT[scale as usize].expect("all sizes"));
+                        self.vst_end(reg, q);
+                    } else {
+                        self.v_insert(reg, index, 8 * bytes, t64(5));
+                    }
+                }
+            }
             VecMemInsn::Single { load, q, scale, index, replicate, rt, .. } => {
                 let bytes = 1u32 << scale;
                 if load {

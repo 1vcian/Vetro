@@ -1664,7 +1664,7 @@ fn eviction_keeps_the_execution() {
     for seed in 0..200u64 {
         let (cpu, ram) = setup(seed);
         let want = run_interp(cpu.clone(), ram.clone());
-        let (got, s, _) = run_jit_on(Budgeted::new(40_000), cpu, &ram, seed, &[], true);
+        let (got, s, _) = run_jit_on(Budgeted::new(30_000), cpu, &ram, seed, &[], true);
         assert_eq!(got, want, "seed {seed}: interpreter and JIT with a small code budget ({s:?})");
         evictions += s.evictions;
         resets += s.resets;

@@ -107,9 +107,11 @@ pub fn kind(insn: &Insn) -> Kind {
         // DUP/INS/UMOV/SMOV, immediate MOVI/MVNI/ORR/BIC.
         Insn::Simd(SimdInsn::Mem(VecMemInsn::Reg { .. } | VecMemInsn::Pair { .. })) => Linear,
         // LD1/ST1 of one or more integer registers, LD1R, LD1/ST1 of one lane,
-        // LD2..LD4/ST2..ST4 of multiple structures (ADR 0026); the interleaved
-        // single structures (LD2 of one lane, LD2R...) no.
-        Insn::Simd(SimdInsn::Mem(VecMemInsn::Multi { .. } | VecMemInsn::Single { selem: 1, .. })) => Linear,
+        // LD2..LD4/ST2..ST4 of multiple structures (ADR 0026), LD2..LD4 of one
+        // lane and LD2R..LD4R (ADR 0045); ST2..ST4 of one lane no.
+        Insn::Simd(SimdInsn::Mem(
+            VecMemInsn::Multi { .. } | VecMemInsn::Single { selem: 1, .. } | VecMemInsn::Single { load: true, .. },
+        )) => Linear,
         // All SIMD/FP instructions without memory (ADR 0026): those
         // without an inline form are executed by the interpreter from the region
         // (`env.simd`, [`crate::helper`]).
