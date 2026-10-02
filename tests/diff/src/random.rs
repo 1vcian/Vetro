@@ -740,26 +740,6 @@ pub fn generate_with(seed: u64, body_len: usize, simd: bool) -> Case {
     Case { seed, program, undefined_tail }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn deterministic_and_well_formed() {
-        let a = generate(7, 40);
-        let b = generate(7, 40);
-        assert_eq!(a.program.body, b.program.body);
-        for seed in 0..200 {
-            let c = generate(seed, 40);
-            let body = &c.program.body;
-            let n = body.len() - c.undefined_tail.is_some() as usize;
-            for &w in &body[..n] {
-                assert!(accepted(w), "seed {seed}: {w:#010x} rejected by the decoder");
-            }
-        }
-    }
-}
-
 /// Short program (6 instructions) drawn from `templates` (encodings with
 /// Vd = V0, Vn = V1, Vm = V2 from tools/a64asm.sh, ADR 0045): Rd, Rn and Rm
 /// (bits 4:0, 9:5, and 19:16 for the templates marked as having an Rm) get
@@ -832,4 +812,24 @@ pub fn generate_templates(seed: u64, templates: &[(u32, bool)]) -> Case {
     program.fpsr = if rng.chance(1, 2) { 0x10 } else { 0 };
     program.nzcv = (rng.below(16) as u32) << 28;
     Case { seed, program, undefined_tail: None }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deterministic_and_well_formed() {
+        let a = generate(7, 40);
+        let b = generate(7, 40);
+        assert_eq!(a.program.body, b.program.body);
+        for seed in 0..200 {
+            let c = generate(seed, 40);
+            let body = &c.program.body;
+            let n = body.len() - c.undefined_tail.is_some() as usize;
+            for &w in &body[..n] {
+                assert!(accepted(w), "seed {seed}: {w:#010x} rejected by the decoder");
+            }
+        }
+    }
 }

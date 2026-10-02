@@ -50,6 +50,17 @@ pub(super) enum Bin {
     Abd,
 }
 
+/// Where a scalar operation reads its operands (n, m, accumulator).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Src {
+    /// Element 0 of Vn, Vm, Va (bits 9:5, 20:16, 14:10).
+    Regs,
+    /// Elements 0 and 1 of Vn (scalar pairwise: FADDP, FMAXP...).
+    Pair,
+    /// Element 0 of Vn, Vm[index] (scalar by element), accumulator Vd.
+    Elem,
+}
+
 /// Rounding to an integer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Rnd {
@@ -78,6 +89,22 @@ pub(super) enum FpRt {
     Bin {
         d: bool,
         op: Bin,
+    },
+    /// Scalar FADDP, FMAXP, FMINP, FMAXNMP, FMINNMP (`Src::Pair`) and scalar
+    /// by-element FMUL (`Src::Elem`), ADR 0045.
+    SBin {
+        d: bool,
+        op: Bin,
+        src: Src,
+    },
+    /// Scalar by-element FMLA/FMLS (ADR 0045).
+    SIdxFma {
+        d: bool,
+        neg: bool,
+    },
+    /// FMAXV, FMINV, FMAXNMV, FMINNMV (.4s, ADR 0045).
+    Across {
+        max: bool,
     },
     /// FMADD, FMSUB, FNMADD, FNMSUB in single precision.
     Fma {
@@ -246,6 +273,16 @@ pub(super) fn rt_ops() -> &'static [FpRt] {
             for r in [Rnd::Nearest, Rnd::Ceil, Rnd::Floor, Rnd::Trunc, Rnd::NearestX, Rnd::Away] {
                 v.push(FpRt::VFrint { d, r });
             }
+            for op in [Bin::Add, Bin::Max, Bin::Min, Bin::MaxNm, Bin::MinNm] {
+                v.push(FpRt::SBin { d, op, src: Src::Pair });
+            }
+            v.push(FpRt::SBin { d, op: Bin::Mul, src: Src::Elem });
+            for neg in [false, true] {
+                v.push(FpRt::SIdxFma { d, neg });
+            }
+        }
+        for max in [false, true] {
+            v.push(FpRt::Across { max });
         }
         v
     })
@@ -524,6 +561,32 @@ impl Tx {
                 call(self, op_);
                 true
             }
+            FpInsn::VPairScalar { a, sz, opcode, .. } => {
+                let op_ = match (a, opcode) {
+                    (false, 0b01101) => Bin::Add,
+                    (false, 0b01100) => Bin::MaxNm,
+                    (true, 0b01100) => Bin::MinNm,
+                    (false, 0b01111) => Bin::Max,
+                    (true, 0b01111) => Bin::Min,
+                    _ => return false,
+                };
+                call(self, FpRt::SBin { d: sz, op: op_, src: Src::Pair });
+                true
+            }
+            FpInsn::VAcross { a, .. } => {
+                call(self, FpRt::Across { max: !a });
+                true
+            }
+            FpInsn::VIndexed { scalar: true, u: false, sz, opcode, .. } => {
+                let op_ = match opcode {
+                    0b1001 => FpRt::SBin { d: sz, op: Bin::Mul, src: Src::Elem },
+                    0b0001 => FpRt::SIdxFma { d: sz, neg: false },
+                    0b0101 => FpRt::SIdxFma { d: sz, neg: true },
+                    _ => return false,
+                };
+                call(self, op_);
+                true
+            }
             FpInsn::VIndexed { scalar: false, u: false, sz, opcode, .. } => {
                 let op_ = match opcode {
                     0b1001 => FpRt::VIdxMul { d: sz },
@@ -604,6 +667,55 @@ impl G {
         } else {
             self.f.f32_load(off::V);
         }
+    }
+
+    /// Operand `k` (0 = n, 1 = m, 2 = accumulator) of a scalar operation
+    /// reading from `src`, as f32/f64.
+    fn operand(&mut self, src: Src, k: u8, d: bool) {
+        let size: u32 = if d { 8 } else { 4 };
+        match (src, k) {
+            (Src::Regs, 0) | (Src::Pair, 0) | (Src::Elem, 0) => self.load(5, d),
+            (Src::Regs, 1) => self.load(16, d),
+            (Src::Regs, _) => self.load(10, d),
+            (Src::Pair, _) => {
+                self.vaddr(5);
+                if d {
+                    self.f.f64_load(off::V + size);
+                } else {
+                    self.f.f32_load(off::V + size);
+                }
+            }
+            (Src::Elem, 1) => {
+                // Vm (M:Rm) + index × size: index H:L (single) or H (double)
+                self.vaddr(16);
+                let f = &mut self.f;
+                f.local_get(P_WORD).i32_const(11).op(op::I32_SHR_U).i32_const(1).op(op::I32_AND);
+                if !d {
+                    f.i32_const(1).op(op::I32_SHL);
+                    f.local_get(P_WORD)
+                        .i32_const(21)
+                        .op(op::I32_SHR_U)
+                        .i32_const(1)
+                        .op(op::I32_AND)
+                        .op(op::I32_OR);
+                }
+                f.i32_const(size.trailing_zeros() as i32).op(op::I32_SHL).op(op::I32_ADD);
+                if d {
+                    f.f64_load(off::V);
+                } else {
+                    f.f32_load(off::V);
+                }
+            }
+            (Src::Elem, _) => self.load(0, d),
+        }
+    }
+
+    /// Operand `k` of `src` is a denormal (i32 boolean).
+    fn den_op(&mut self, src: Src, k: u8, d: bool) {
+        let t = self.local(if d { ValType::F64 } else { ValType::F32 });
+        self.operand(src, k, d);
+        self.f.local_set(t);
+        self.den(t, d);
     }
 
     /// The register (field at `shift`) as v128.
@@ -809,8 +921,12 @@ fn vop(d: bool, s: u32, dd: u32) -> u32 {
 /// Builds function `k` of [`rt_ops`].
 pub(super) fn build(k: usize, simd: u32) -> Func {
     match rt_ops()[k] {
-        FpRt::Bin { d, op } => bin(simd, d, op),
-        FpRt::Fma { neg_a, neg_n } => fma_s(simd, neg_a, neg_n),
+        FpRt::Bin { d, op } => bin(simd, d, op, Src::Regs),
+        FpRt::SBin { d, op, src } => bin(simd, d, op, src),
+        FpRt::SIdxFma { d: false, neg } => fma_s(simd, false, neg, Src::Elem),
+        FpRt::SIdxFma { d: true, neg } => fma_d(simd, false, neg, Src::Elem),
+        FpRt::Across { max } => across(simd, max),
+        FpRt::Fma { neg_a, neg_n } => fma_s(simd, neg_a, neg_n, Src::Regs),
         FpRt::Sqrt { d } => sqrt(simd, d),
         FpRt::Cmp { d } => cmp(simd, d),
         FpRt::CvtDS => cvt_ds(simd),
@@ -824,7 +940,7 @@ pub(super) fn build(k: usize, simd: u32) -> Func {
         FpRt::VIdxFma { neg } => vfma(simd, neg, true),
         FpRt::VCmp { d, op, zero, swap } => vcmp(simd, d, op, zero, swap),
         FpRt::VSqrt { d } => vsqrt(simd, d),
-        FpRt::FmaD { neg_a, neg_n } => fma_d(simd, neg_a, neg_n),
+        FpRt::FmaD { neg_a, neg_n } => fma_d(simd, neg_a, neg_n, Src::Regs),
         FpRt::VFmaD { neg, idx } => vfma_d(simd, neg, idx),
         FpRt::VToInt { d, u, r } => vto_int(simd, d, u, r),
         FpRt::VFromInt { d, u } => vfrom_int(simd, d, u),
@@ -851,7 +967,7 @@ fn two_sum(g: &mut G, d: bool, a: u32, b: u32, s: u32, err: u32) {
 }
 
 /// Scalar FADD, FSUB, FMUL, FDIV, FMAX, FMIN, FMAXNM, FMINNM, FNMUL.
-fn bin(simd: u32, d: bool, op_: Bin) -> Func {
+fn bin(simd: u32, d: bool, op_: Bin, src: Src) -> Func {
     let ft = if d { ValType::F64 } else { ValType::F32 };
     let mut g = G::new(simd, 2);
     let (a, b, r) = (g.local(ft), g.local(ft), g.local(ft));
@@ -861,9 +977,9 @@ fn bin(simd: u32, d: bool, op_: Bin) -> Func {
     g.f.i32_const(1).local_set(ex);
     g.fpcr_ok();
     g.f.if_(BLOCK_EMPTY);
-    g.load(5, d);
+    g.operand(src, 0, d);
     g.f.local_set(a);
-    g.load(16, d);
+    g.operand(src, 1, d);
     if op_ == Bin::Sub {
         // a - b = a + (-b), also for zeros.
         g.f.op(fop(d, op::F32_NEG, op::F64_NEG));
@@ -990,7 +1106,7 @@ fn round_odd(g: &mut G, s: u32, err: u32) {
 }
 
 /// FMADD/FMSUB/FNMADD/FNMSUB in single precision: fused (±a) + (±n) × m.
-fn fma_s(simd: u32, neg_a: bool, neg_n: bool) -> Func {
+fn fma_s(simd: u32, neg_a: bool, neg_n: bool, src: Src) -> Func {
     let mut g = G::new(simd, 2);
     let (p, c, s, err) =
         (g.local(ValType::F64), g.local(ValType::F64), g.local(ValType::F64), g.local(ValType::F64));
@@ -998,14 +1114,14 @@ fn fma_s(simd: u32, neg_a: bool, neg_n: bool) -> Func {
     g.fpcr_ok();
     g.f.if_(BLOCK_EMPTY);
     // p = f64(±n) * f64(m), exact
-    g.load(5, false);
+    g.operand(src, 0, false);
     if neg_n {
         g.f.op(op::F32_NEG);
     }
     g.f.op(op::F64_PROMOTE_F32);
-    g.load(16, false);
+    g.operand(src, 1, false);
     g.f.op(op::F64_PROMOTE_F32).op(op::F64_MUL).local_set(p);
-    g.load(10, false);
+    g.operand(src, 2, false);
     if neg_a {
         g.f.op(op::F32_NEG);
     }
@@ -1023,10 +1139,10 @@ fn fma_s(simd: u32, neg_a: bool, neg_n: bool) -> Func {
     g.f.local_get(err).i64_const(0).op(op::F64_REINTERPRET_I64).op(op::F64_EQ);
     g.f.local_get(r).op(op::F64_PROMOTE_F32).local_get(s).op(op::F64_EQ).op(op::I32_AND).local_set(ex);
     g.fz_guard(ok, |g| {
-        g.den_reg(5, false);
-        g.den_reg(16, false);
+        g.den_op(src, 0, false);
+        g.den_op(src, 1, false);
         g.f.op(op::I32_OR);
-        g.den_reg(10, false);
+        g.den_op(src, 2, false);
         g.f.op(op::I32_OR);
     });
     g.commit(ok, |g| {
@@ -1092,7 +1208,7 @@ fn emulated_fma(g: &mut G, a: u32, b: u32, c: u32, z: u32) {
 }
 
 /// FMADD/FMSUB/FNMADD/FNMSUB in double precision.
-fn fma_d(simd: u32, neg_a: bool, neg_n: bool) -> Func {
+fn fma_d(simd: u32, neg_a: bool, neg_n: bool, src: Src) -> Func {
     use ValType::*;
     let mut g = G::new(simd, 2);
     let (a, b, c, z, bits, ok) =
@@ -1100,14 +1216,14 @@ fn fma_d(simd: u32, neg_a: bool, neg_n: bool) -> Func {
     g.fpcr_ok();
     g.ixc();
     g.f.op(op::I32_AND).if_(BLOCK_EMPTY);
-    g.load(5, true);
+    g.operand(src, 0, true);
     if neg_n {
         g.f.op(op::F64_NEG);
     }
     g.f.local_set(a);
-    g.load(16, true);
+    g.operand(src, 1, true);
     g.f.local_set(b);
-    g.load(10, true);
+    g.operand(src, 2, true);
     if neg_a {
         g.f.op(op::F64_NEG);
     }
@@ -2222,6 +2338,31 @@ fn vfrint(simd: u32, d: bool, rnd: Rnd) -> Func {
         }
         g.store_vec(r);
     });
+    g.f.end();
+    g.fallback(false);
+    g.f.op(op::DROP);
+    g.finish()
+}
+
+/// FMAXV/FMINV/FMAXNMV/FMINNMV .4s: without NaNs the four forms agree,
+/// and WASM's max/min order zeros like Arm (-0 < +0); the tree of the
+/// interpreter, (e0 op e1) op (e2 op e3), gives the same value. No flags.
+fn across(simd: u32, max: bool) -> Func {
+    use ValType::*;
+    let mut g = G::new(simd, 2);
+    let (a, r, bits, ok) = (g.local(V128), g.local(V128), g.local(I64), g.local(I32));
+    let mm = if max { v::F32X4_MAX } else { v::F32X4_MIN };
+    g.fpcr_ok();
+    g.f.if_(BLOCK_EMPTY);
+    g.vload(5);
+    g.f.local_tee(a).local_get(a).local_get(a);
+    g.f.shuffle([4, 5, 6, 7, 0, 1, 2, 3, 12, 13, 14, 15, 8, 9, 10, 11]).v(mm).local_tee(r);
+    g.f.local_get(r).local_get(r).shuffle([8, 9, 10, 11, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3]).v(mm);
+    g.f.lane(v::I32X4_EXTRACT_LANE, 0).op(op::I64_EXTEND_I32_U).local_set(bits);
+    vnot_nan(&mut g, false, a);
+    g.f.v(v::I32X4_ALL_TRUE).local_set(ok);
+    g.fz_guard(ok, |g| g.vden(a, false));
+    g.commit(ok, |g| g.store_scalar_bits(bits));
     g.f.end();
     g.fallback(false);
     g.f.op(op::DROP);

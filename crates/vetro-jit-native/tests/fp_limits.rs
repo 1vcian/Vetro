@@ -219,6 +219,23 @@ const CASES: &[(u32, T, &str)] = &[
     (0x6e219820, T::S, "frintx v0.4s, v1.4s"),
     (0x6e619820, T::D, "frintx v0.2d, v1.2d"),
     (0x6ea19820, T::S, "frinti v0.4s, v1.4s"),
+    (0x7e30d820, T::S, "faddp s0, v1.2s"),
+    (0x7e70d820, T::D, "faddp d0, v1.2d"),
+    (0x7e30c820, T::S, "fmaxnmp s0, v1.2s"),
+    (0x7ef0f820, T::D, "fminp d0, v1.2d"),
+    (0x7e30f820, T::S, "fmaxp s0, v1.2s"),
+    (0x7eb0c820, T::S, "fminnmp s0, v1.2s"),
+    (0x6e30f820, T::S, "fmaxv s0, v1.4s"),
+    (0x6eb0c820, T::S, "fminnmv s0, v1.4s"),
+    (0x6e30c820, T::S, "fmaxnmv s0, v1.4s"),
+    (0x6eb0f820, T::S, "fminv s0, v1.4s"),
+    (0x5fa29820, T::S, "fmul s0, s1, v2.s[3]"),
+    (0x5fc29820, T::D, "fmul d0, d1, v2.d[1]"),
+    (0x5fa21020, T::S, "fmla s0, s1, v2.s[1]"),
+    (0x5f825820, T::S, "fmls s0, s1, v2.s[2]"),
+    (0x5fc21820, T::D, "fmla d0, d1, v2.d[1]"),
+    (0x5fc25020, T::D, "fmls d0, d1, v2.d[0]"),
+    (0x5fb29820, T::S, "fmul s0, s1, v18.s[3]"),
     (0x1e264020, T::S, "frinta s0, s1"),
     (0x1e664020, T::D, "frinta d0, d1"),
     (0x9e640020, T::D, "fcvtas x0, d1"),
@@ -290,6 +307,7 @@ fn casi_limite_come_interprete() {
                         cpu.v[1] = vreg(t, vals, i);
                         cpu.v[2] = vreg(t, vals, j);
                         cpu.v[3] = vreg(t, vals, k3);
+                        cpu.v[18] = vreg(t, vals, j + 3);
                         cpu.x[1] = X[(i + j) % X.len()];
                         cpu.nzcv = ((i + 2 * j) as u32 & 0xf) << 28;
                         cpu.fpcr = fpcr;
@@ -348,6 +366,7 @@ fn percorsi_veloci_usati() {
             cpu.v[1] = a;
             cpu.v[2] = b | b << 32 | b << 64 | b << 96;
             cpu.v[3] = c;
+            cpu.v[18] = cpu.v[2];
             cpu.v[0] = c;
             cpu.x[1] = 12345;
             cpu.fpsr = 0x10;
