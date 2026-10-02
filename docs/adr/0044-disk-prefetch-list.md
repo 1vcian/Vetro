@@ -1,4 +1,4 @@
-# ADR 0044 — Disk prefetch list and parallel block fetches
+# ADR 0044 — Disk prefetch list, parallel block fetches, a warmed prebuilt snapshot
 
 - Status: accepted (M5/M6, 2026-10-02). Builds on ADR 0014 (disks over
   HTTP Range), 0017 (OPFS block cache), 0028 (the AOSP disk map), 0031
@@ -40,10 +40,43 @@ missing runs of one guest request one after the other.
    (404), another disk or block size, or no OPFS: nothing happens.
 3. **Parallel demand fetches**: the runs of one guest request go out
    together, up to 6 in flight.
-4. **A disk trace in the stats** (`stats.diskTrace`: per disk, the blocks
+4. **A warmed prebuilt snapshot** (`prebuilt-snapshot.mjs --warm`, also on
+   an existing snapshot with `--restore`): after settling, the user's first
+   steps once with adb (`ANDROID_WARMUP`: the app drawer opened and closed
+   twice, Settings opened and closed), settle again, compact, save. The
+   launcher's all-apps view is then already built in the snapshot. Same key
+   (same image and machine): it replaces the prebuilt for the default image.
+5. **A disk trace in the stats** (`stats.diskTrace`: per disk, the blocks
    fetched from the network in order, at most 8192) and the JIT host's
    compile times (`stats.jitHost`), read by the tools from
    `window.vetroState.stats`; no change to the page.
+
+## Results
+Build VM, headless Chrome 154 (no GPU), `light` profile, image f08b79e,
+`tools/aosp/live-path.mjs` (fresh profile: the prebuilt downloaded; the same
+path every time; the live site vs the same app served from the VM with the
+list; runs in pairs, same host load). Times from the press to the outcome on
+screen:
+
+| first visit | live site (2 runs) | + prefetch list | + list, warmed prebuilt |
+|---|---|---|---|
+| disk wait, whole session | 14.6 / 14.8 s (193 requests) | 0.7 s | 1.3 s |
+| disk wait, first 2 minutes | 8.3 / 9.7 s | 0.4 s | 0.4 s |
+| adb ready after the start | 69 / 72 s | 60 s | 60 s |
+| app drawer (swipe to the drawer drawn) | 96 / 118 s | 93 s | **8.6 s** |
+| Settings (tap to its window) | 37* / 165 s | 41* s | 144 s |
+| Minesweeper opened (after install) | 86 / 55 s | 46 s | 43 s |
+
+\* the screen changed to Settings' splash; the window came later.
+Second visit (the user's own snapshot): disk wait 4.0 / 3.3 s on the live
+site, 0.8 / 1.3 s with the list. The prefetch itself (287 blocks, 287 MiB)
+finished within the first ~100 s.
+
+What the prefetch and the warm-up do not change: the guest is CPU-bound
+while the user acts (guest time runs at 0.3-0.5x the real clock during each
+step; `top` in the guest is 95% idle only between them). Settings' first
+start stays at minutes because the compaction's memory pressure lets lmkd
+kill the cached Settings process the warm-up left.
 
 ## Rejected
 - Downloading the whole disk in the background: 1.5 GB for a few hundred
@@ -57,7 +90,8 @@ missing runs of one guest request one after the other.
   for a fraction of the bytes, after the home screen is already usable.
 
 ## Consequences
-- A new prebuilt snapshot needs its own list (the key changes): the snapshot
-  tools say so; without one the app works as before.
+- A new prebuilt snapshot needs its own list (the key changes); without one
+  the app works as before. Making a prebuilt: `--warm`, then a traced session
+  (`live-path.mjs --trace`) against it, `prefetch-list.mjs`, upload both.
 - The list is made on the build VM with the app in headless Chrome against
   R2, then published; see `docs/specs/wasm.md`, "Prebuilt snapshot".
