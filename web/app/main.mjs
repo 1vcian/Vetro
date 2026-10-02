@@ -69,6 +69,7 @@ import { AnalysisPanels } from './analysis.mjs';
 import { ANDROID_MACHINE, ANDROID_VERSIONS, DEFAULT_MANIFEST, PHASES } from '../node/android.mjs';
 import { CatalogPanel } from './catalog.mjs';
 import { CATALOG_URL } from '../node/catalog.mjs';
+import { DEFAULT_GATEWAY } from '../node/relay.mjs';
 import { browserIssues, launchPlan, probeBrowser } from './launch.mjs';
 import { DEFAULT_PROFILE, parseProfile, PREBUILT_PROFILES, profileAdbCommands, profileBootParams, profileUrl, STARTER_PROFILES } from '../node/profiles.mjs';
 
@@ -861,6 +862,10 @@ async function start() {
       // with snapshots/<key>.json): next to the image by default.
       prebuiltBase: q.has('prebuilt') ? new URL(q.get('prebuilt'), location.href).href : null } : null,
     gpu: android && q.get('gpu') === 'webgl' ? 'webgl' : null,
+    // Internet through the network gateway (ADR 0046): on by default with no
+    // choice; `?net=offline` keeps the sinkhole (analysis), `?gateway=URL`
+    // uses another gateway (a local one: relay/src/node.mjs).
+    gateway: q.get('net') === 'offline' ? null : q.get('gateway') ? new URL(q.get('gateway'), location.href).href : DEFAULT_GATEWAY,
   };
   if (android) {
     config.net = true;

@@ -8,28 +8,44 @@ it: open **Tools**, the small toggle below the phone screen, to see them.
 ## What the phone's network is
 
 The phone believes it is on a normal network (address `10.0.2.15`, with a
-gateway and a DNS server), but today that network is a **sinkhole**: it does
-not reach the internet.
+gateway and a DNS server). Behind it, Vetro's own network stack, inside the
+emulator, answers it, and from there the traffic goes one of two ways.
 
-- Name lookups (DNS) get made-up addresses, so the phone can connect to
-  them.
-- Plain HTTP connections to port 80 get an empty "200 OK" answer.
-- Other connections are accepted and recorded, but nothing answers them
+**Online (the default).** The phone reaches the internet through Vetro's
+network gateway: a small server that opens the real connections, because a
+browser page cannot. Apps load, web pages open.
+
+- Only web traffic leaves: connections to ports 80 (HTTP) and 443 (HTTPS),
+  and name lookups (DNS), which the gateway resolves. Other ports, other
+  UDP traffic (such as QUIC) and private or local addresses are refused,
+  so apps fall back to ordinary HTTPS.
+- HTTPS stays encrypted from the app to the real server: the gateway only
+  passes encrypted bytes along. It keeps no record of the contents or of
+  the sites, only counters (how many connections, how many bytes), and each
+  session has limits on connections, speed and total data.
+- Everything still passes through Vetro's network card first, so the
+  **Network** and **Timeline** tabs work exactly as before.
+
+**Offline (the sinkhole).** Nothing leaves your browser:
+
+- name lookups get made-up addresses, so the phone can connect to them;
+- plain HTTP connections to port 80 get an empty "200 OK" answer;
+- other connections are accepted and recorded, but nothing answers them
   like the real server would; HTTPS connections do not get past the start
   of the encrypted handshake.
 
-This keeps the phone completely isolated: whatever an app sends stays in
-your browser. The flip side is that most apps that need their server will
-show an offline or error message. An optional relay, for people who want
-real server answers, is planned.
+This keeps the phone completely isolated, which is useful for analysis;
+apps that need their server will show an offline or error message. Add
+`?net=offline` to the app's address to start that way. If the site has no
+gateway configured, the phone is offline.
 
 ## The Network tab
 
 ![The Network tab, with the system's own connectivity check](images/tab-net.jpg)
 
-Right after start-up you will typically see two small HTTP requests: the
-system checking whether it is online (its connectivity check), answered by
-the sinkhole.
+Right after start-up you will typically see the system checking whether it
+is online (its connectivity check): answered by the real server when the
+phone is online, by the sinkhole when it is offline.
 
 Each row is one request: when it started, the method, the host and path,
 the response status, the sizes of the request and the response, the body

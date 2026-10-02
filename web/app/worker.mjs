@@ -84,6 +84,15 @@
 //   lost, like going back to the last saved state; without a snapshot the
 //   first boot runs again. Snapshots go to and come from OPFS in chunks.
 //
+// Internet access (ADR 0046), with `config.gateway` (the default gateway of
+// web/node/relay.mjs or `?gateway=URL`; `?net=offline` keeps the sinkhole):
+// the machine's uplink goes online at start and after every restore or
+// replay (a DOWN first: the connections recorded in the machine do not
+// exist at the gateway). Between one slice and the next the frames the
+// guest produced go to the gateway (GatewayClient: WebSocket lanes), and the
+// gateway's frames enter the machine with relayPush, a recorded input; in
+// replay the frames come from the log and the outputs are discarded.
+//
 // Accelerated graphics (ADR 0037), with `config.gpu === 'webgl'` and Android:
 // the machine's GPU offers 3D (DEV.GPU_3D) with the gfxstream decoder, the
 // image gets GFXSTREAM_PARAMS (gfxstream EGL instead of SwiftShader), and the
@@ -101,6 +110,7 @@ import { AdbClient } from '../node/adb.mjs';
 import { apkInfo } from '../node/apk.mjs';
 import { ANDROID_DISK, ANDROID_HOME_NS, ANDROID_PARAMS, ANDROID_WAKE, ANDROID_GRAPHICS, BootProgress, GFXSTREAM_PARAMS, gridColors, HOME_DRAW_NS, HOME_MIN_COLORS, HOME_POLL_NS, HOME_QUERY, isHome, machineDevices } from '../node/android.mjs';
 import { DiskOverlay, fromBase64, opfsFile, sha256Hex, SnapshotStore, snapshotKey, staleReason, toBase64 } from '../node/persist.mjs';
+import { down as relayDown, GatewayClient, online as relayOnline } from '../node/relay.mjs';
 import { androidSnapshotKey, downloadPrebuilt, findPrebuilt, PREBUILT_CHUNK, prebuiltBlocksUrl, prebuiltSnapUrl } from '../node/prebuilt.mjs';
 
 /** Largest quantum (instructions). */
@@ -535,6 +545,7 @@ async function start(c) {
   await resumeCores();
   if (c.files) openFiles();
   if (c.net) m.capture(true);
+  if (c.net) startGateway(c);
   try {
     recording = new Recording(m, c.opfs ? await SnapshotStore.opfs('vetro-recordings') : SnapshotStore.memory());
     const info = await recording.restore();
@@ -1087,11 +1098,48 @@ function replayEnded(st) {
   ignoredNotice = false;
   resetClock();
   if (cfg.files) openFiles();
+  goOnline();
   post({ type: 'replay-ended', status: st, steps: Number(m.steps) });
   postAnalysis(true);
   postRr();
   // The cores go parallel again at the next turn of the loop (ADR 0042).
   wantCores = true;
+}
+
+/** The network gateway's client (ADR 0046), or null offline. */
+let gateway = null;
+
+function startGateway(c) {
+  if (!c.gateway) {
+    status('network: offline (sinkhole)');
+    return;
+  }
+  gateway = new GatewayClient(c.gateway, { onData: () => wake?.() });
+  goOnline();
+  status(`network: online through ${new URL(c.gateway).host}`);
+}
+
+/** The machine's uplink online, its old gateway connections dropped. */
+function goOnline() {
+  if (!gateway) return;
+  gateway.reset();
+  m.relayPush(relayDown());
+  m.relayPush(relayOnline(true));
+}
+
+/**
+ * Frames between the machine and the gateway, between two slices. Returns
+ * true if the gateway gave the machine something (an input).
+ */
+function pumpRelay() {
+  if (!gateway) return false;
+  const out = m.relayTake();
+  // In replay the gateway's frames come from the log: outputs are dropped.
+  if (mode !== 'live') return false;
+  if (out.length) gateway.fromMachine(out);
+  const frames = gateway.take();
+  for (const f of frames) m.relayPush(f);
+  return frames.length > 0;
 }
 
 /** Set when the cores may go parallel again (after a replay). */
@@ -1113,6 +1161,7 @@ async function startReplay(step, stopAt) {
   files?.close();
   files = null;
   filesKey = '';
+  gateway?.reset();
   post({ type: 'files-status', status: { state: 'None', pending: 0, generation: 0, maxChunk: 0, selinux: false } });
   mode = 'replay';
   target = stopAt ? BigInt(step) : null;
@@ -1196,11 +1245,13 @@ async function loop() {
     if (input) activity();
     while (inbox.length) apply(inbox.shift());
     pumpFiles();
+    const relayed = pumpRelay();
+    if (relayed) activity();
     const realtime = cfg.realtime && mode === 'live';
     // Real time: a guest ahead of the clock waits for it (at most AHEAD_MS
     // and a quantum: a WFI stops at the end of the quantum), and an input
     // ends the wait at once.
-    if (realtime && !input) {
+    if (realtime && !input && !relayed) {
       const ahead = aheadMs();
       if (ahead > AHEAD_MS) {
         await rest(Math.min(ahead - AHEAD_MS, 50));
@@ -1246,6 +1297,7 @@ async function loop() {
     }
     if (mode === 'paused') continue;
     if (flush()) activity();
+    if (pumpRelay()) activity();
     pumpFiles();
     if (android) androidTick();
     const now = performance.now();
@@ -1288,6 +1340,8 @@ async function loop() {
         diskTrace: feeder.disks.map((d) => d.trace),
         jit: m.jitStats(),
         jitHost: jitHost?.stats ?? null,
+        // The network gateway (ADR 0046): state, lanes, connections, counters.
+        gateway: gateway ? { ...gateway.status(), machine: m.relayState() } : null,
         // With ?jitprofile=1, every 5 s: the report of the classes run by
         // the interpreter and by env.simd (cumulative), for live-path.mjs.
         jitProfile: jitProfileOn && now - lastProfile > 5000 ? ((lastProfile = now), m.jitProfile(400)) : undefined,

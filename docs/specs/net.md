@@ -3,7 +3,8 @@
 ## Scope
 Host-side network stack: the "other end of the cable" of virtio-net.
 Virtual IPv4 gateway like QEMU's user network, TCP and UDP terminated on the
-host (like slirp), trait-based backend (`Upstream`) with sinkhole and relay,
+host (like slirp), trait-based backend (`Upstream`); the machine's is the `Uplink`: sinkhole
+offline, the network gateway online (ADR 0046, `docs/specs/relay.md`),
 event log for analysis. Choices in ADR 0007.
 
 ## Virtual network (`NetConfig` defaults)
@@ -68,10 +69,12 @@ event log for analysis. Choices in ADR 0007.
   (198.18.0.1, .2, …), names lowercased; logs connections
   (`TcpRecord`: resolved name, guest bytes, close), UDP flows and
   DNS questions.
-- `Relay` (non-blocking transport of `RelayMessage`), `RelayUpstream<R>`
-  (`Upstream` → messages adapter), `MemoryRelay` (test relay: TCP/UDP
-  echo, DNS from a table). Wire encoding and host↔relay flow control:
-  M7.
+- `Uplink` (ADR 0046): the sinkhole plus the client half of the gateway
+  protocol, pure state. `input(Frame)` applies a gateway frame (or the
+  host's `ONLINE`/`DOWN`), `take_outbox()` gives the frames for the gateway
+  (an output), `online()`, `gateway_connections()`, `stats()`
+  (`UplinkStats`), `sinkhole()`. Module `relay`: `Frame`, `Side`,
+  `Refusal`, `WINDOW`, `MAX_DATA` and the encoding (`docs/specs/relay.md`).
 - Public format modules (`wire`, `dhcp`, `dns`) for tests and tools.
 - Port forwarding (host → guest, section below): `host_connect`,
   `host_send`, `host_recv`, `host_shutdown`, `host_abort`, `host_conn`
@@ -198,7 +201,10 @@ virtual time in seconds (`[     1.500000] tcp 3 syn 10.0.2.15:40000 ->
 - CLI: `vetro boot` has the network by default; `--no-net` removes it, `--net`
   puts it back even with `--no-devices`, `--net-events` prints the log on
   stderr (`vetro-net: …`).
-- The relay (M7) will be another upstream behind the same `NetLink`.
+- The stack is `NetStack` = `Stack<Uplink>` (ADR 0046): offline it behaves
+  exactly as the sinkhole; online its connections go to the gateway.
+  `Machine::relay_take()` (output, not recorded) and
+  `Machine::input(Input::Relay(frame))` (recorded) carry the frames.
 - Capture (M7, ADR 0016): `Machine::net_tap(on)` and `net_tap_take()`
   copy the Ethernet frames passing through `NetLink` in both directions, with
   the virtual instant; observation only (does not change execution, outside
@@ -277,6 +283,8 @@ Port forwarding:
 guest MAC, outgoing frames, complete TCP connections (state, sequences,
 windows, congestion, in-flight data, RTO and timers), UDP flows, indexes,
 `next_id`, `ip_ident`, counters, event log, connections opened by the host
-(port forwarding: queues, next ephemeral port) and upstream state. The
+(port forwarding: queues, next ephemeral port) and upstream state (the
+`Uplink`: the sinkhole, then an optional `GWAY` section with the online
+state, absent in older snapshots, so they still load). The
 configuration is not saved. Whoever adds a field to the state also adds it
 there and bumps `vetro_snapshot::FORMAT_VERSION`.

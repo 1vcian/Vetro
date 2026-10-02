@@ -21,6 +21,7 @@ instruction.
 | `NetLink(bool)` | `VirtioNet::set_link_up` | `Done` / `NoDevice` |
 | `Vsock(VsockOp)` | `Listen(p)`, `Unlisten(p)`, `Accept(p)`, `Connect(p)`, `Send(c, bytes)`, `Recv(c, max)`, `ShutdownSend(c)`, `Close(c)`, `Reset(c)`, `Release(c)`, `TransportReset` | `Vsock(Result)`, `Conn(Option)`, `Data`, `Done` |
 | `HostNet(HostNetOp)` | `Connect(port)`, `Send(id, bytes)`, `Recv(id, max)`, `Shutdown(id)`, `Abort(id)`, `Release(id)` on the stack (`Stack::host_*`), with a forced `poll` | `HostConn(Option<ConnId>)`, `Accepted(n)`, `Data`, `Done` |
+| `Relay(Vec<u8>)` | one frame of the network gateway's protocol (`docs/specs/relay.md`, ADR 0046) for the machine's uplink: a gateway answer (`CONNECTED`, `REFUSED`, `DATA`, `SHUTDOWN`, `CLOSE`, `ACK`, `DNS` answer) or the host's `ONLINE`/`DOWN`, with a forced `poll` | `Done` / `Rejected` (malformed, the machine-to-gateway direction, unknown connection) / `NoDevice` |
 
 In addition: `Reply::Deferred` (recording in progress and machine stalled on
 a disk: the input is applied and recorded at the end of the first quantum after
@@ -107,7 +108,11 @@ unlisten, 2 accept, 3 connect: u32 port; 4 send: conn, bytes; 5 recv:
 conn, u64; 6 shutdown_send, 7 close, 8 reset, 9 release: conn; 10
 transport reset), conn = u32 host port, u32 guest port; 8
 `HostNet` u8 operation (0 connect: u16; 1 send: u64 id, bytes; 2 recv: u64
-id, u64; 3 shutdown, 4 abort, 5 release: u64 id).
+id, u64; 3 shutdown, 4 abort, 5 release: u64 id); 9 `Relay` bytes (the frame
+as on the gateway's wire).
+
+The frames the machine produces for the gateway (`Machine::relay_take`) are an
+output: recomputed in replay, never recorded, out of snapshots and digests.
 
 `Log::decode` checks magic, version, checksum, sections, events in order
 (non-decreasing, within the start–end interval) and increasing
