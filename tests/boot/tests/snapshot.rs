@@ -422,8 +422,9 @@ fn net_script(image: &[u8], initrd: &[u8], plan: &Plan) -> (Outcome, String) {
     let at = r.command("ping -c 2 -W 5 10.0.2.2", at);
     let _ = r.command("sleep 5", at);
     r.poweroff();
-    let events =
-        r.m.net_view(|s| format!("{:?}{:?}", s.events(), s.upstream().tcp_connections().collect::<Vec<_>>()));
+    let events = r.m.net_view(|s| {
+        format!("{:?}{:?}", s.events(), s.upstream().sinkhole().tcp_connections().collect::<Vec<_>>())
+    });
     (r.finish(), events.unwrap())
 }
 

@@ -4,7 +4,6 @@ use vetro_cpu::sys::{CpuEnv, SysEvent};
 use vetro_cpu::{Cpu, SysConfig};
 use vetro_jit::{Next, SysJitDyn, SysJitStats};
 use vetro_mmu::{Mmu, MmuBus};
-use vetro_net::{Sinkhole, Stack};
 use vetro_platform::virtio::{
     GpuConfig, InputConfig, MemDisplay, VirtioGpu, VirtioInput, VirtioNet, VirtioVsock,
 };
@@ -13,7 +12,7 @@ use vetro_platform::{VirtDtbConfig, VirtioDevice, map, virt_dtb};
 use crate::board::{Board, BoardCell, Env, Phys};
 use crate::boot::{self, BootError, BootPlan, RamConfig};
 use crate::hooks::{Breakpoint, GuestView, Hooks, Tracer};
-use crate::net::{self, NetLink, NetSetup, TappedFrame};
+use crate::net::{self, NetLink, NetSetup, NetStack, TappedFrame};
 use crate::psci::{self, Call};
 
 mod parallel;
@@ -507,12 +506,12 @@ impl Machine {
     /// Like [`Machine::device`], during a recording it is an opaque access:
     /// host connections go through [`Machine::input`] with
     /// [`Input::HostNet`](crate::record::Input::HostNet).
-    pub fn net<R>(&mut self, f: impl FnOnce(&mut Stack<Sinkhole>) -> R) -> Option<R> {
+    pub fn net<R>(&mut self, f: impl FnOnce(&mut NetStack) -> R) -> Option<R> {
         self.note_opaque(self.slots.net);
         self.net_raw(f)
     }
 
-    fn net_raw<R>(&mut self, f: impl FnOnce(&mut Stack<Sinkhole>) -> R) -> Option<R> {
+    fn net_raw<R>(&mut self, f: impl FnOnce(&mut NetStack) -> R) -> Option<R> {
         self.net_input_link(|l| f(&mut l.stack))
     }
 
@@ -530,7 +529,7 @@ impl Machine {
     /// The network stack, read-only (log, connections, sinkhole bytes), with
     /// no effect on the machine: it can be called at any time without
     /// changing the execution.
-    pub fn net_view<R>(&self, f: impl FnOnce(&Stack<Sinkhole>) -> R) -> Option<R> {
+    pub fn net_view<R>(&self, f: impl FnOnce(&NetStack) -> R) -> Option<R> {
         let b = self.board.borrow();
         let d = b.virt.virtio(self.slots.net?)?.device_as::<VirtioNet>()?;
         Some(f(&d.backend_as::<NetLink>()?.stack))
@@ -548,6 +547,22 @@ impl Machine {
     /// order, with their instant in virtual time. Does not change the execution.
     pub fn net_tap_take(&mut self) -> Vec<TappedFrame> {
         self.net_link(NetLink::take_tapped).unwrap_or_default()
+    }
+
+    /// The frames the guest's connections produced for the network gateway
+    /// since the last call (ADR 0046), encoded as on the gateway's wire.
+    /// An output: taking them does not change the execution (in replay they
+    /// are produced again and must be discarded).
+    pub fn relay_take(&mut self) -> Vec<Vec<u8>> {
+        self.net_link(|l| {
+            l.stack
+                .upstream_mut()
+                .take_outbox()
+                .iter()
+                .map(|f| f.encode_from(vetro_net::Side::Machine))
+                .collect()
+        })
+        .unwrap_or_default()
     }
 
     /// The virtio-net backend without marking the devices to be serviced.

@@ -16,10 +16,15 @@
 //! The host can also deliver its own Ethernet frames to the guest
 //! (`Input::NetFrame`): they go ahead of the stack's and are also
 //! a recorded input.
+//!
+//! The stack's upstream is the [`Uplink`] (ADR 0046): the sinkhole offline,
+//! the network gateway online. The gateway's frames are inputs
+//! (`Input::Relay`); the frames for the gateway are an output the host takes
+//! with `Machine::relay_take`.
 
 use std::collections::VecDeque;
 
-use vetro_net::{NetConfig, Sinkhole, SinkholeConfig, Stack, VirtualTime};
+use vetro_net::{NetConfig, Sinkhole, SinkholeConfig, Stack, Uplink, VirtualTime};
 use vetro_platform::map;
 use vetro_platform::virtio::NetBackend;
 
@@ -63,10 +68,13 @@ pub struct TappedFrame {
     pub data: Vec<u8>,
 }
 
+/// The machine's network stack.
+pub type NetStack = Stack<Uplink>;
+
 /// virtio-net backend on top of the stack: guest frames go to
 /// [`Stack::receive`], the stack's go to the guest with [`Stack::pop_frame`].
 pub struct NetLink {
-    pub stack: Stack<Sinkhole>,
+    pub stack: NetStack,
     /// Current instant, set by the machine before each service.
     pub(crate) now: VirtualTime,
     /// Capture point: if active, a copy of every frame in both directions.
@@ -81,7 +89,7 @@ pub struct NetLink {
 impl NetLink {
     pub fn new(setup: &NetSetup) -> Self {
         NetLink {
-            stack: Stack::new(setup.config.clone(), Sinkhole::new(setup.sinkhole.clone())),
+            stack: Stack::new(setup.config.clone(), Uplink::new(Sinkhole::new(setup.sinkhole.clone()))),
             now: VirtualTime(0),
             tap: None,
             host_rx: VecDeque::new(),

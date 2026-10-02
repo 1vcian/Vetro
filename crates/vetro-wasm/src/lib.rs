@@ -42,6 +42,7 @@ pub mod gl;
 pub mod jit;
 pub mod net;
 pub mod parallel;
+pub mod relay;
 pub mod replay;
 
 use std::alloc::Layout;
@@ -86,7 +87,10 @@ use display::WebDisplay;
 /// 15: accelerated graphics (ADR 0037): device bit `GPU_3D`, import
 /// `vetro_host.gl_execute`, exports `vetro_gl_*` and `vetro_display_is_3d`,
 /// `vetro_display_read_3d`.
-pub const ABI_VERSION: u32 = 15;
+/// 16: the network gateway (ADR 0046): `vetro_relay_take`,
+/// `vetro_relay_push`, `vetro_relay_state`; the stack's upstream is the
+/// `Uplink`.
+pub const ABI_VERSION: u32 = 16;
 
 /// Alignment of the [`vetro_alloc`] buffers (enough for `JitState`).
 const ALLOC_ALIGN: usize = 16;

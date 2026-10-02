@@ -53,7 +53,7 @@ pub use board::Board;
 pub use files::FilesClient;
 pub use hooks::{Breakpoint, Event, GuestView, SyscallEntry, Tracer};
 pub use machine::{Core, Devices, Machine, MachineConfig, Perf, Pointer, RecordOptions, Slots, Stop, smp};
-pub use net::{FrameDir, NetLink, NetSetup, TappedFrame};
+pub use net::{FrameDir, NetLink, NetSetup, NetStack, TappedFrame};
 pub use record::{Digest, Divergence, HostNetOp, Input, Log, ReplayStatus, Reply, VsockOp};
 pub use vetro_analysis;
 pub use vetro_gfxstream;

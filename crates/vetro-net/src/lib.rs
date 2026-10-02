@@ -5,8 +5,9 @@
 //! [`Stack`] sits at the other end of the cable. It answers ARP, DHCP and ICMP like
 //! QEMU's "user" network (guest 10.0.2.15, gateway 10.0.2.2, DNS 10.0.2.3),
 //! terminates every TCP connection and every UDP flow of the guest and delivers the
-//! data to an [`Upstream`]: the [`Sinkhole`] (all fake and recorded) or a
-//! [`RelayUpstream`] (to M7's WebSocket relay). In the opposite direction,
+//! data to an [`Upstream`]. The machine's is the [`Uplink`]: the [`Sinkhole`]
+//! (all fake and recorded) offline, the network gateway (frames of
+//! [`relay`], ADR 0046) online. In the opposite direction,
 //! [`Stack::host_connect`] opens connections from the host to the guest's TCP
 //! services (port forwarding like QEMU's `hostfwd`: the basis for adb).
 //!
@@ -25,6 +26,7 @@ pub mod relay;
 pub mod sinkhole;
 mod stack;
 mod tcp;
+pub mod uplink;
 pub mod upstream;
 pub mod wire;
 
@@ -32,9 +34,10 @@ use std::net::SocketAddrV4;
 
 pub use events::{CloseReason, DhcpMessage, Direction, EventKind, NetEvent};
 pub use hostfwd::{HostConnInfo, HostConnState};
-pub use relay::{MemoryRelay, Relay, RelayMessage, RelayUpstream};
+pub use relay::{Frame, Refusal, Side};
 pub use sinkhole::{Sinkhole, SinkholeConfig, TcpReply};
 pub use stack::{NetConfig, Stack, Stats};
+pub use uplink::{Uplink, UplinkStats};
 pub use upstream::{TcpRead, TcpStatus, Upstream};
 pub use wire::Mac;
 

@@ -304,7 +304,9 @@ pub unsafe extern "C" fn vetro_log_events(vm: *mut Vm) -> usize {
                         Input::Pointer(_) => "pointer",
                         Input::Gpio { .. } => "gpio",
                         Input::Display { .. } => "display",
-                        Input::NetFrame(_) | Input::NetLink(_) | Input::HostNet(_) => "network",
+                        Input::NetFrame(_) | Input::NetLink(_) | Input::HostNet(_) | Input::Relay(_) => {
+                            "network"
+                        }
                         Input::Vsock(_) => "vsock",
                     };
                     (k, String::new(), true, false)
