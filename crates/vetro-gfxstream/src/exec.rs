@@ -161,11 +161,14 @@ codes! {
     /// tex, x, y, width, height, format, type → `out` (tightly packed rows,
     /// bottom row first like glReadPixels).
     ReadTexture,
-    /// fbo, tex (0 = none), depth-stencil renderbuffer (0 = none), width,
-    /// height: a window surface's framebuffer on its current ColorBuffer.
+    /// fbo, color texture, depth-stencil renderbuffer (0 = none), width,
+    /// height: a surface's framebuffer on its own color texture (RGBA8,
+    /// storage allocated again when the size changes, contents kept
+    /// otherwise: the surface is preserved across swaps, like upstream's
+    /// window surfaces).
     SurfaceAttach,
-    /// tex, width, height: draws a texture onto the canvas and hands the
-    /// frame to the page.
+    /// tex, width, height: draws a texture onto the canvas (row 0 at the
+    /// top) and hands the frame to the page.
     Present,
     // Snapshots (ADR 0037).
     /// Deletes every object and puts the context back in its initial state
@@ -180,6 +183,12 @@ codes! {
     ReadBufferData,
     /// buffer, element, usage, blob: the buffer's whole content.
     BufferUpload,
+    /// fbo, ColorBuffer texture, width, height, flip: copies a surface's
+    /// color into a ColorBuffer; with flip = 1 upside down (a window
+    /// surface at eglSwapBuffers: GL draws bottom row first, Android
+    /// buffers hold the top row first), with 0 as is (a pbuffer bound as a
+    /// texture).
+    SurfaceFlush,
 }
 
 /// Object kinds of [`Code::Create`] / [`Code::Delete`].

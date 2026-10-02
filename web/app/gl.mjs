@@ -25,14 +25,14 @@ const GL = {
   TEXTURE_MIN_FILTER: 0x2801, TEXTURE_MAG_FILTER: 0x2800, TEXTURE_WRAP_S: 0x2802, TEXTURE_WRAP_T: 0x2803,
   LINEAR: 0x2601, NEAREST: 0x2600, CLAMP_TO_EDGE: 0x812F, TRIANGLES: 4, RGBA: 0x1908, UNSIGNED_BYTE: 0x1401,
   BLEND: 0x0BE2, CULL_FACE: 0x0B44, DEPTH_TEST: 0x0B71, SCISSOR_TEST: 0x0C11, STENCIL_TEST: 0x0B90,
-  RASTERIZER_DISCARD: 0x8C89, QUERY_RESULT: 0x8866,
+  RASTERIZER_DISCARD: 0x8C89, QUERY_RESULT: 0x8866, RGBA8: 0x8058,
 };
 
 const BLIT_VS = `#version 300 es
 out vec2 uv;
 void main() {
   vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
-  uv = p;
+  uv = vec2(p.x, 1.0 - p.y);
   gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
 }`;
 const BLIT_FS = `#version 300 es
@@ -80,6 +80,7 @@ export class WebGlExecutor {
     this.scratchElements = gl.createBuffer();
     this.readFbo = gl.createFramebuffer();
     this.rbSizes = new Map();
+    this.texSizes = new Map();
     this.stats = { batches: 0, ops: 0, frames: 0, errors: 0 };
     this.log = [];
     const vs = this.#compile(gl.VERTEX_SHADER, BLIT_VS);
@@ -187,6 +188,7 @@ export class WebGlExecutor {
               gl[del](x);
             }
             this.objs[id] = null;
+            this.texSizes.delete(id);
             this.programs.delete(id);
             break;
           }
@@ -422,6 +424,7 @@ export class WebGlExecutor {
           }
           case O.SurfaceAttach: this.#surfaceAttach(...w.subarray(a, a + 5)); break;
           case O.Present: this.#present(w[a], w[a + 1], w[a + 2]); break;
+          case O.SurfaceFlush: this.#surfaceFlush(...w.subarray(a, a + 5)); break;
           case O.ResetAll: this.#resetAll(); break;
           case O.ResetState: this.#resetState(); break;
           case O.ReadTextureLevel: {
@@ -471,6 +474,7 @@ export class WebGlExecutor {
     this.programs.clear();
     this.program = 0;
     this.rbSizes.clear();
+    this.texSizes.clear();
     this.#resetState();
   }
 
@@ -585,12 +589,31 @@ export class WebGlExecutor {
     if (pbo) gl.bindBuffer(GL.PIXEL_PACK_BUFFER, pbo);
   }
 
+  /** A surface's framebuffer on its own color texture `tex` (RGBA8, storage
+   * allocated again only when the size changes: the contents survive swaps). */
   #surfaceAttach(fbo, tex, rb, width, height) {
     const gl = this.gl;
     const prevFb = gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING);
     const prevRb = gl.getParameter(gl.RENDERBUFFER_BINDING);
+    const color = this.#obj(tex);
+    const size = `${width}x${height}`;
+    if (color && this.texSizes.get(tex) !== size) {
+      const active = gl.getParameter(gl.ACTIVE_TEXTURE);
+      gl.activeTexture(GL.TEXTURE0);
+      const prevTex = gl.getParameter(gl.TEXTURE_BINDING_2D);
+      const unpack = gl.getParameter(gl.PIXEL_UNPACK_BUFFER_BINDING);
+      if (unpack) gl.bindBuffer(GL.PIXEL_UNPACK_BUFFER, null);
+      gl.bindTexture(GL.TEXTURE_2D, color);
+      gl.texImage2D(GL.TEXTURE_2D, 0, GL.RGBA8, width, height, 0, GL.RGBA, GL.UNSIGNED_BYTE, null);
+      gl.texParameteri(GL.TEXTURE_2D, GL.TEXTURE_MIN_FILTER, GL.NEAREST);
+      gl.texParameteri(GL.TEXTURE_2D, GL.TEXTURE_MAG_FILTER, GL.NEAREST);
+      gl.bindTexture(GL.TEXTURE_2D, prevTex);
+      gl.activeTexture(active);
+      if (unpack) gl.bindBuffer(GL.PIXEL_UNPACK_BUFFER, unpack);
+      this.texSizes.set(tex, size);
+    }
     gl.bindFramebuffer(GL.DRAW_FRAMEBUFFER, this.objs[fbo]);
-    gl.framebufferTexture2D(GL.DRAW_FRAMEBUFFER, GL.COLOR_ATTACHMENT0, GL.TEXTURE_2D, this.#obj(tex), 0);
+    gl.framebufferTexture2D(GL.DRAW_FRAMEBUFFER, GL.COLOR_ATTACHMENT0, GL.TEXTURE_2D, color, 0);
     if (rb) {
       const size = `${width}x${height}`;
       if (this.rbSizes.get(rb) !== size) {
@@ -604,8 +627,39 @@ export class WebGlExecutor {
     gl.bindRenderbuffer(GL.RENDERBUFFER, prevRb);
   }
 
-  /** Draws texture `tex` on the canvas (texture row 0 at the bottom, like
-   * upstream gfxstream's post) and hands the frame to the page. */
+  /**
+   * Copies a surface's color (its framebuffer `fbo`) into ColorBuffer
+   * texture `tex`; `flip`: upside down (a window surface at eglSwapBuffers,
+   * crates/vetro-gfxstream `Gl::surface_flush`).
+   */
+  #surfaceFlush(fbo, tex, width, height, flip) {
+    const gl = this.gl;
+    const t = this.#obj(tex);
+    const f = this.#obj(fbo);
+    if (!t || !f) return;
+    const prevRead = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING);
+    const prevDraw = gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING);
+    const scissor = gl.isEnabled(GL.SCISSOR_TEST);
+    const rasterizerDiscard = gl.isEnabled(GL.RASTERIZER_DISCARD);
+    const mask = gl.getParameter(gl.COLOR_WRITEMASK);
+    this.flushFbo ??= gl.createFramebuffer();
+    if (scissor) gl.disable(GL.SCISSOR_TEST);
+    if (rasterizerDiscard) gl.disable(GL.RASTERIZER_DISCARD);
+    gl.colorMask(true, true, true, true);
+    gl.bindFramebuffer(GL.READ_FRAMEBUFFER, f);
+    gl.bindFramebuffer(GL.DRAW_FRAMEBUFFER, this.flushFbo);
+    gl.framebufferTexture2D(GL.DRAW_FRAMEBUFFER, GL.COLOR_ATTACHMENT0, GL.TEXTURE_2D, t, 0);
+    gl.blitFramebuffer(0, 0, width, height, 0, flip ? height : 0, width, flip ? 0 : height, gl.COLOR_BUFFER_BIT, GL.NEAREST);
+    gl.framebufferTexture2D(GL.DRAW_FRAMEBUFFER, GL.COLOR_ATTACHMENT0, GL.TEXTURE_2D, null, 0);
+    gl.bindFramebuffer(GL.READ_FRAMEBUFFER, prevRead);
+    gl.bindFramebuffer(GL.DRAW_FRAMEBUFFER, prevDraw);
+    if (scissor) gl.enable(GL.SCISSOR_TEST);
+    if (rasterizerDiscard) gl.enable(GL.RASTERIZER_DISCARD);
+    gl.colorMask(...mask);
+  }
+
+  /** Draws texture `tex` on the canvas (texture row 0 at the top: Android's
+   * buffer order) and hands the frame to the page. */
   #present(tex, width, height) {
     const gl = this.gl;
     const s = {

@@ -205,7 +205,8 @@ fn surface_program_and_frame() {
     assert_eq!(codes[1], Code::TexAlloc);
     let cb_tex = o[0].1[1];
     let attach = o.iter().find(|(c, _)| *c == Code::SurfaceAttach).unwrap();
-    assert_eq!(attach.1[1], cb_tex, "surface framebuffer on the ColorBuffer");
+    let color = attach.1[1];
+    assert_ne!(color, cb_tex, "the surface draws into its own color texture, not the ColorBuffer");
     assert_eq!(&attach.1[3..5], &[64, 32]);
     // Viewport from the surface at the first make-current.
     assert!(o.iter().any(|(c, a)| *c == Code::Viewport && a == &[0, 0, 64, 32]));
@@ -219,8 +220,15 @@ fn surface_program_and_frame() {
     assert!(codes.contains(&Code::Uniformfv));
     assert!(codes.contains(&Code::VertexData));
     assert!(codes.contains(&Code::DrawArrays));
-    let present = o.iter().find(|(c, _)| *c == Code::Present).unwrap();
-    assert_eq!(present.1, [cb_tex, 64, 32]);
+    // The flush copies the surface into the ColorBuffer upside down (top
+    // row first, Android's buffer order), after the draw and before the
+    // present.
+    let flip = codes.iter().position(|c| *c == Code::SurfaceFlush).expect("the flush copies the surface");
+    assert_eq!(o[flip].1, [attach.1[0], cb_tex, 64, 32, 1]);
+    assert!(codes.iter().rposition(|c| *c == Code::DrawArrays).unwrap() < flip);
+    let present = o.iter().position(|(c, _)| *c == Code::Present).unwrap();
+    assert!(flip < present);
+    assert_eq!(o[present].1, [cb_tex, 64, 32]);
     // The shader text given to WebGL uses sampler2D.
     let lb = log.borrow();
     let blob = &lb.batches.last().unwrap().1;
