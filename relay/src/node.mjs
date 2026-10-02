@@ -22,6 +22,7 @@ import { DEFAULT_DOH, dohResolver } from './dns.mjs';
 export function nodeSocket({ hostname, port }) {
   const sock = netConnect({ host: hostname, port, allowHalfOpen: true });
   sock.setNoDelay(true);
+  sock.on('error', () => {}); // seen by the streams below; never uncaught
   const opened = new Promise((ok, no) => {
     sock.once('connect', () => ok({}));
     sock.once('error', no);
