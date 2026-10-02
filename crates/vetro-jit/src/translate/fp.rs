@@ -1651,6 +1651,30 @@ fn vexact_zero(g: &mut G, d: bool, r: u32, a: u32, b: Option<u32>) {
     g.f.v(v::AND);
 }
 
+/// Mask of the lanes where the single-precision product `r` = `a` × `b` is
+/// exact: rechecked in double, where the product of two singles is exact
+/// (ADR 0045). Covers tiny exact results (no UFC without FZ: the callers'
+/// FZ guard rejects denormal results) and zeros; NaN lanes compare unequal.
+fn vexact_mul_s(g: &mut G, r: u32, a: u32, b: u32) {
+    let hi: [u8; 16] = core::array::from_fn(|j| (8 + j % 8) as u8);
+    for half in [false, true] {
+        for x in [r, a, b] {
+            g.f.local_get(x);
+            if half {
+                g.f.local_get(x).shuffle(hi);
+            }
+            g.f.v(v::F64X2_PROMOTE_LOW_F32X4);
+            if x == b {
+                g.f.v(v::F64X2_MUL);
+            }
+        }
+        // r == a × b (lanes of 64 bits: true in both halves of the lane)
+        g.f.v(v::F64X2_EQ);
+    }
+    // the two halves' 64-bit masks narrowed to four 32-bit lanes
+    g.f.shuffle([0, 1, 2, 3, 8, 9, 10, 11, 16, 17, 18, 19, 24, 25, 26, 27]);
+}
+
 /// Mask of the non-NaN lanes of `x`.
 fn vnot_nan(g: &mut G, d: bool, x: u32) {
     g.f.local_get(x).local_get(x).v(vop(d, v::F32X4_EQ, v::F64X2_EQ));
@@ -1722,11 +1746,26 @@ fn vbin(simd: u32, d: bool, op_: Bin) -> Func {
             f.local_get(r).local_get(a).v(sub).local_set(t);
             f.local_get(a).local_get(r).local_get(t).v(sub).v(sub);
             f.local_get(b).local_get(t).v(sub).v(add).local_set(err);
+            // Finite, or an infinity from an infinite input (exact, no
+            // flags: ∞ − ∞ is a NaN, rejected; ADR 0045).
             vfinite(&mut g, d, r);
+            let isinf = |g: &mut G, x: u32| {
+                g.f.local_get(x).v(vop(d, v::F32X4_ABS, v::F64X2_ABS));
+                splat_const(g, d, if d { D_INF } else { S_INF as u64 });
+                g.f.v(vop(d, v::F32X4_EQ, v::F64X2_EQ));
+            };
+            let inf = g.local(ValType::V128);
+            isinf(&mut g, r);
+            g.f.local_tee(inf);
+            isinf(&mut g, a);
+            isinf(&mut g, b);
+            g.f.v(v::OR).v(v::AND).v(v::OR);
             all_true(&mut g, d);
             g.f.local_set(ok);
-            // exact: every error zero (otherwise IXC, raised here)
+            // exact: every error zero, or an infinite lane (its TwoSum error
+            // is a NaN); otherwise IXC, raised here
             g.f.local_get(err).v128_const(0, 0).v(vop(d, v::F32X4_EQ, v::F64X2_EQ));
+            g.f.local_get(inf).v(v::OR);
             all_true(&mut g, d);
             g.f.local_set(ex);
         }
@@ -1738,21 +1777,33 @@ fn vbin(simd: u32, d: bool, op_: Bin) -> Func {
             g.f.local_set(ok);
         }
         Bin::Mul | Bin::Nmul | Bin::Div => {
-            // Per lane safely normal, or an exact zero (ADR 0045), and IXC
-            // at 1.
+            // Per lane safely normal, or exact (single products, rechecked
+            // in double) or an exact zero (ADR 0045); IXC at 1, or every
+            // lane exact (single products: IXC raised here otherwise).
             vsafe(&mut g, d, r);
-            vexact_zero(&mut g, d, r, a, if op_ == Bin::Div { None } else { Some(b) });
-            g.f.v(v::OR);
-            all_true(&mut g, d);
-            g.ixc();
-            g.f.op(op::I32_AND).local_set(ok);
+            if !d && op_ == Bin::Mul {
+                let exact = g.local(ValType::V128);
+                vexact_mul_s(&mut g, r, a, b);
+                g.f.local_tee(exact).v(v::OR);
+                all_true(&mut g, d);
+                g.f.local_set(ok);
+                g.f.local_get(exact);
+                all_true(&mut g, d);
+                g.f.local_set(ex);
+            } else {
+                vexact_zero(&mut g, d, r, a, if op_ == Bin::Div { None } else { Some(b) });
+                g.f.v(v::OR);
+                all_true(&mut g, d);
+                g.ixc();
+                g.f.op(op::I32_AND).local_set(ok);
+            }
         }
     }
     g.fz_guard(ok, |g| {
         g.vden(a, d);
         g.vden(b, d);
         g.f.op(op::I32_OR);
-        if matches!(op_, Bin::Add | Bin::Sub | Bin::Addp | Bin::Abd) {
+        if matches!(op_, Bin::Add | Bin::Sub | Bin::Addp | Bin::Abd) || !d && op_ == Bin::Mul {
             g.vden(r, d);
             g.f.op(op::I32_OR);
         }
@@ -2142,13 +2193,20 @@ fn vidx_mul(simd: u32, d: bool) -> Func {
     g.f.local_tee(b);
     g.f.v(vop(d, v::F32X4_MUL, v::F64X2_MUL)).local_set(r);
     vsafe(&mut g, d, r);
-    vexact_zero(&mut g, d, r, a, Some(b));
+    if d {
+        vexact_zero(&mut g, d, r, a, Some(b));
+    } else {
+        // exact lanes (rechecked in double): tiny or zero results too
+        vexact_mul_s(&mut g, r, a, b);
+    }
     g.f.v(v::OR);
     all_true(&mut g, d);
     g.f.local_set(ok);
     g.fz_guard(ok, |g| {
         g.vden(a, d);
         g.vden(b, d);
+        g.f.op(op::I32_OR);
+        g.vden(r, d);
         g.f.op(op::I32_OR);
     });
     g.commit(ok, |g| g.store_vec(r));

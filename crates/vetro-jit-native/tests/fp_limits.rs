@@ -480,6 +480,39 @@ fn zero_products_stay_in_the_fast_path() {
     }
 }
 
+/// Sums with an infinite input and exact tiny products stay in the fast
+/// paths too (ADR 0045): ∞ ± finite is exact without flags, and a product of
+/// singles rechecked exact in double raises no UFC without FZ.
+#[test]
+fn infinities_and_exact_tiny_products_stay_in_the_fast_path() {
+    let mut jit = JitCpu::new(NativeEngine::new(), JitConfig { hot_threshold: 0, ..JitConfig::default() });
+    // v1: +inf, 1.5, -inf, 2^-126; v2: 3, -inf, 1.5, 0.5
+    let v1 = 0x7f80_0000u128 | 0x3fc0_0000u128 << 32 | 0xff80_0000u128 << 64 | 0x0080_0000u128 << 96;
+    let v2 = 0x4040_0000u128 | 0xff80_0000u128 << 32 | 0x3fc0_0000u128 << 64 | 0x3f00_0000u128 << 96;
+    for (word, name) in
+        [(0x4ea2d420u32, "fsub v0.4s, v1.4s, v2.4s"), (0x4e22d420, "fadd v0.4s, v1.4s, v2.4s")]
+    {
+        let mut cpu = Cpu::new();
+        cpu.pc = CODE;
+        cpu.v[1] = v1;
+        cpu.v[2] = v2;
+        let before = vetro_jit::helper::calls();
+        let (want, got) = run_one(&mut jit, word, &cpu);
+        assert_eq!(want, got, "{name}");
+        assert_eq!(vetro_jit::helper::calls(), before, "{name}: called env.simd");
+    }
+    // 2^-126 × 0.5 (exact denormal), 1.5 × 3, 3 × 0.5, 0.5 × 1.5, IXC at 0
+    let mut cpu = Cpu::new();
+    cpu.pc = CODE;
+    cpu.v[1] = 0x0080_0000u128 | 0x3fc0_0000u128 << 32 | 0x4040_0000u128 << 64 | 0x3f00_0000u128 << 96;
+    cpu.v[2] = 0x3f00_0000u128 | 0x4040_0000u128 << 32 | 0x3f00_0000u128 << 64 | 0x3fc0_0000u128 << 96;
+    let before = vetro_jit::helper::calls();
+    let (want, got) = run_one(&mut jit, 0x6e22dc20, &cpu); // fmul v0.4s, v1.4s, v2.4s
+    assert_eq!(want, got);
+    assert_eq!(got.fpsr, 0);
+    assert_eq!(vetro_jit::helper::calls(), before, "fmul: called env.simd");
+}
+
 /// FMA (round-to-odd in single, emulated FMA in double) on
 /// random triples: arbitrary mantissas, close exponents (cancellations) and
 /// distant ones, with and without IXC. Bit for bit like the interpreter.

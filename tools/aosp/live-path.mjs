@@ -36,6 +36,9 @@ const arg = (name, def) => {
 // the instruction classes the interpreter and env.simd ran, and the FP state
 // that made them miss the JIT's fast paths (ADR 0045).
 const JIT_PROFILE = process.argv.includes('--jit-profile');
+// --cpu-profile-actions SECS: a Worker CPU profile of the first SECS seconds of
+// the app drawer, Settings and the catalog app's opening (ADR 0045).
+const CPU_ACTIONS = Number(arg('cpu-profile-actions', 0));
 const URL_ = arg('url', 'https://1vcian.me/Vetro/app/?os=android') + (JIT_PROFILE ? '&jitprofile=1' : '');
 const PROFILE = arg('profile', '/tmp/vetro-live-profile');
 const OUT = arg('out', '/tmp/vetro-live');
@@ -144,6 +147,8 @@ async function timed(name, act, { minChange = 0.02, stillMs = 2000, limitMs = 90
   const s0 = await stats();
   const n0 = await ev('window.vetroState.perf.taps.length');
   const p0 = await jitProf();
+  const cpu = CPU_ACTIONS && /drawer|Settings|open (?!app)/.test(name)
+    ? profileWorker(name.replace(/\W+/g, '-'), CPU_ACTIONS).catch((e) => log(`no Worker profile: ${e.message}`)) : null;
   const ts = Date.now();
   await act();
   let changed = null;
@@ -165,6 +170,7 @@ async function timed(name, act, { minChange = 0.02, stillMs = 2000, limitMs = 90
     }
     if (now - ts > limitMs) break;
   }
+  if (cpu) await cpu;
   const frame = await ev(`window.vetroState.perf.taps[${n0}]?.frameMs ?? null`);
   const s1 = await stats();
   const a = { name, frameMs: frame, changedMs: changed, doneMs: done, settledMs: settled, diskWaitS: s1 && s0 ? s1.waitS - s0.waitS : null, httpReads: s1 && s0 ? s1.requests - s0.requests : null,
@@ -256,7 +262,7 @@ async function profileWorker(label, secs) {
       self.set(k, (self.get(k) ?? 0) + dt);
     }
     const total = [...self.values()].reduce((a, b) => a + b, 0);
-    const top = [...self.entries()].sort((a, b) => b[1] - a[1]).slice(0, 25).map(([k, ms]) => ({ fn: k, ms: Math.round(ms), pct: +(100 * ms / total).toFixed(1) }));
+    const top = [...self.entries()].sort((a, b) => b[1] - a[1]).slice(0, 40).map(([k, ms]) => ({ fn: k, ms: Math.round(ms), pct: +(100 * ms / total).toFixed(1) }));
     result[`profile_${label}`] = { secs, totalMs: Math.round(total), guestS: s1.guest - s0.guest, top };
     log(`Worker profile (${label}, ${secs} s, guest ${(s1.guest - s0.guest).toFixed(1)} s):\n${top.map((t) => `  ${t.pct}% ${t.fn}`).join('\n')}`);
     save();
