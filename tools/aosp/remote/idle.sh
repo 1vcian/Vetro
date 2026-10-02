@@ -83,7 +83,16 @@ sh_ ps -A -o PID,NAME > "$d/ps.txt"
 # framework's RAM summary and per-process PSS, packages, APEXes, features and
 # system services; boot_completed from the serial console (init.vetro.rc).
 sh_ cat /proc/meminfo > "$d/meminfo.txt"
-sh_ dumpsys meminfo > "$d/dumpsys-meminfo.txt"
+# Per-process PSS from smaps_rollup (`dumpsys meminfo` times out, even
+# with 600 s, on one emulated CPU).
+cat > "$d/pss.sh" <<'EOF'
+for p in /proc/[0-9]*; do
+  k=$(sed -n 's/^Pss: *\([0-9]*\) kB/\1/p' $p/smaps_rollup 2>/dev/null)
+  [ -n "$k" ] && [ "$k" != 0 ] && echo "$k $(tr '\0' ' ' < $p/cmdline | cut -c1-80)"
+done
+EOF
+"$A" -s "$s" push "$d/pss.sh" /data/local/tmp/vetro-pss.sh >/dev/null
+timeout 600 "$A" -s "$s" shell su 0 sh /data/local/tmp/vetro-pss.sh 2>/dev/null | tr -d '\r' | sort -rn > "$d/pss.txt"
 sh_ pm list packages -f > "$d/packages.txt"
 sh_ pm list features > "$d/features.txt"
 sh_ ls /apex > "$d/apex.txt"

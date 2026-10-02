@@ -101,17 +101,12 @@ if mem:
           f"used (total - available) {used // 1024} MiB, free {mem['MemFree'] // 1024} MiB, "
           f"cached {mem['Cached'] // 1024} MiB, anon {(mem.get('AnonPages', 0)) // 1024} MiB, "
           f"shmem {mem.get('Shmem', 0) // 1024} MiB, slab {mem.get('Slab', 0) // 1024} MiB")
-dm = optional("dumpsys-meminfo.txt")
-for key in ("Total RAM", "Free RAM", "Used RAM", "Lost RAM"):
-    m = re.search(rf"^\s*{key}:\s*([0-9,]+)K(.*)$", dm, re.M)
-    if m:
-        print(f"dumpsys {key}: {int(m.group(1).replace(',', '')) // 1024} MiB{m.group(2)[:100]}")
-m = re.search(r"Total PSS by process:\n(.*?)\n\s*\n", dm, re.S)
-if m:
-    procs = m.group(1).splitlines()
-    print(f"processes with PSS: {len(procs)}; largest:")
-    for line in procs[:12]:
-        print("  " + line.strip()[:100])
+pss = [line.split(" ", 1) for line in optional("pss.txt").splitlines() if line.strip()]
+pss = [(int(k), (n[0] if n else "").strip()) for k, *n in pss if k.isdigit()]
+if pss:
+    print(f"PSS of user-space processes: {sum(k for k, _ in pss) // 1024} MiB in {len(pss)} processes; largest:")
+    for k, name in pss[:12]:
+        print(f"  {k // 1024:5d} MiB  {name[:80]}")
 for name, label in (("packages.txt", "packages"), ("apex.txt", "/apex entries"),
                     ("features.txt", "features"), ("services.txt", "binder services"),
                     ("ps.txt", "processes (ps -A)")):

@@ -18,7 +18,11 @@ d="$work/qemu/$name/apps"
 cache="$work/cache"
 A="$tree/out/host/linux-x86/bin/adb"
 s="127.0.0.1:$port"
-rm -rf "$d"; mkdir -p "$d" "$cache"
+mkdir -p "$work/qemu/$name" "$cache"
+# One check per guest at a time.
+exec 9>"$work/qemu/$name/apps.lock"
+flock -n 9 || { echo "apps.sh already running for $name" >&2; exit 1; }
+rm -rf "$d"; mkdir -p "$d"
 log() { echo "$(date -u +%T) $*" >> "$d/log"; }
 st() { echo "$*" > "$d/status"; log "$*"; }
 # stdin from /dev/null: adb would read the loop's list of apps.
