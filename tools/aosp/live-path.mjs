@@ -41,10 +41,14 @@ const arg = (name, def) => {
 // the instruction classes the interpreter and env.simd ran, and the FP state
 // that made them miss the JIT's fast paths (ADR 0045).
 const JIT_PROFILE = process.argv.includes('--jit-profile');
+// --jit-count: ?jitcount=1, the region names and the JIT's call, chain and
+// exit counters per action without the class profile (ADR 0046), so a Worker
+// CPU profile is not skewed by it (the class profile alone is ~15%).
+const JIT_COUNT = process.argv.includes('--jit-count');
 // --cpu-profile-actions SECS: a Worker CPU profile of the first SECS seconds of
 // the app drawer, Settings and the catalog app's opening (ADR 0045).
 const CPU_ACTIONS = Number(arg('cpu-profile-actions', 0));
-const URL_ = arg('url', 'https://1vcian.me/Vetro/app/?os=android') + (JIT_PROFILE ? '&jitprofile=1' : '');
+const URL_ = arg('url', 'https://1vcian.me/Vetro/app/?os=android') + (JIT_PROFILE ? '&jitprofile=1' : '') + (JIT_COUNT ? '&jitcount=1' : '');
 const PROFILE = arg('profile', '/tmp/vetro-live-profile');
 const OUT = arg('out', '/tmp/vetro-live');
 const VISIT = arg('visit', existsSync(PROFILE) ? 'second' : 'first');

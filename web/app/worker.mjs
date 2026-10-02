@@ -652,8 +652,9 @@ async function start(c) {
     post({ type: 'cold', times });
   }
   if (c.jit && c.jitBackground) await jitEngine.startBackground();
-  // ?jitprofile=1 also names the regions and counts their calls and chains (ADR 0041, 0046).
-  if (c.jit) m.setJit(64, 16, { profile: !!c.jitProfile, names: !!c.jitProfile });
+  // ?jitprofile=1 and ?jitcount=1 name the regions and count their calls,
+  // chains and exits (ADR 0041, 0046); only ?jitprofile=1 counts the classes.
+  if (c.jit) m.setJit(64, 16, { profile: !!c.jitProfile, names: !!(c.jitProfile || c.jitCount) });
   jitProfileOn = !!(c.jit && c.jitProfile);
   // The uplink's mode before the cores go parallel: its inputs enter the
   // machine while the cores are still in turns, and the cores' status line
