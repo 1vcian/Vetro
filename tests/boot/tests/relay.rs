@@ -97,7 +97,11 @@ impl Gateway {
                     } else {
                         (dns::RCODE_NXDOMAIN, vec![])
                     };
-                    out.push(Frame::Dns { id, msg: dns::build_response(&q, rcode, &addrs, 60), answer: true });
+                    out.push(Frame::Dns {
+                        id,
+                        msg: dns::build_response(&q, rcode, &addrs, 60),
+                        answer: true,
+                    });
                 }
                 Frame::Connect { id, dst } => {
                     self.connects.push((id, dst.port()));
@@ -115,7 +119,8 @@ impl Gateway {
                     out.push(Frame::Ack { id, n: data.len() as u32 });
                     if !c.answered && c.request.windows(4).any(|w| w == b"\r\n\r\n") {
                         c.answered = true;
-                        let path = String::from_utf8_lossy(&c.request).split(' ').nth(1).unwrap_or("").to_owned();
+                        let path =
+                            String::from_utf8_lossy(&c.request).split(' ').nth(1).unwrap_or("").to_owned();
                         let body = if path == "/big" { big_body() } else { b"VETRO-GATEWAY-OK\n".to_vec() };
                         c.pending.extend(http_ok(&body));
                     }
@@ -164,7 +169,8 @@ impl Run {
         for f in gw.serve(frames) {
             assert_eq!(self.m.input(Input::Relay(f.encode_from(Side::Gateway))), Reply::Done, "{f:?}");
         }
-        self.max_in_flight = self.max_in_flight.max(gw.conns.values().map(|c| c.in_flight).max().unwrap_or(0));
+        self.max_in_flight =
+            self.max_in_flight.max(gw.conns.values().map(|c| c.in_flight).max().unwrap_or(0));
     }
 
     fn until(&mut self, needle: &str, from: usize) -> usize {
@@ -262,7 +268,8 @@ fn guest_online_through_the_gateway_and_identical_replay() {
     });
     let log = r.m.stop_recording().expect("recording");
     let log = Log::decode(&log.encode()).expect("the log reads back");
-    let relay_inputs = log.events.iter().filter(|e| matches!(e.kind, EventKind::Input(Input::Relay(_)))).count();
+    let relay_inputs =
+        log.events.iter().filter(|e| matches!(e.kind, EventKind::Input(Input::Relay(_)))).count();
     // 600 KB in 16 KiB frames, plus answers, acks and closes.
     assert!(relay_inputs > 40, "{relay_inputs} gateway frames recorded");
     assert!(log.events.iter().all(|e| matches!(e.kind, EventKind::Input(_))), "no opaque event");

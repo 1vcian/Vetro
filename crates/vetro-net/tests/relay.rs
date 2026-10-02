@@ -384,7 +384,9 @@ fn vector_frames() -> Vec<(&'static str, Side, Frame)> {
 fn shared_vectors() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../relay/test/vectors.txt");
     let mut text = String::from("# Gateway protocol vectors (ADR 0046): name, side, frame in hex.\n");
-    text.push_str("# Written by `VETRO_WRITE_VECTORS=1 cargo test -p vetro-net --test relay shared_vectors`,\n");
+    text.push_str(
+        "# Written by `VETRO_WRITE_VECTORS=1 cargo test -p vetro-net --test relay shared_vectors`,\n",
+    );
     text.push_str("# checked by that test and by relay/test/unit.mjs.\n");
     for (name, side, f) in vector_frames() {
         let bytes = f.encode_from(side);
