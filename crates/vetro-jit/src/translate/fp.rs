@@ -170,6 +170,11 @@ pub(super) enum FpRt {
     /// FCVT Sd, Hn and FCVT Hd, Sn.
     CvtSH,
     CvtHS,
+    /// Vector FRINT[NPMZAXI] (ADR 0045).
+    VFrint {
+        d: bool,
+        r: Rnd,
+    },
 }
 
 /// All the `rt.fp<k>` functions, in index order (from `F_FP0`).
@@ -237,6 +242,11 @@ pub(super) fn rt_ops() -> &'static [FpRt] {
             v.push(FpRt::VIdxFma { neg });
         }
         v.extend([FpRt::VCvtlH, FpRt::VCvtnH, FpRt::CvtSH, FpRt::CvtHS]);
+        for d in [false, true] {
+            for r in [Rnd::Nearest, Rnd::Ceil, Rnd::Floor, Rnd::Trunc, Rnd::NearestX, Rnd::Away] {
+                v.push(FpRt::VFrint { d, r });
+            }
+        }
         v
     })
 }
@@ -471,6 +481,22 @@ impl Tx {
                 call(self, op_);
                 true
             }
+            FpInsn::VTwoMisc { scalar: false, u, a, sz, opcode: opcode @ (0b11000 | 0b11001), .. } => {
+                // FRINTN/P/M/Z/A/X/I (I and X with FPCR's rounding, which
+                // the fast path requires to be to nearest).
+                let r = match (u, a, opcode) {
+                    (false, false, 0b11000) => Rnd::Nearest,
+                    (false, true, 0b11000) => Rnd::Ceil,
+                    (false, false, 0b11001) => Rnd::Floor,
+                    (false, true, 0b11001) => Rnd::Trunc,
+                    (true, false, 0b11000) => Rnd::Away,
+                    (true, false, 0b11001) => Rnd::NearestX,
+                    (true, true, 0b11001) => Rnd::Nearest,
+                    _ => return false,
+                };
+                call(self, FpRt::VFrint { d: sz, r });
+                true
+            }
             FpInsn::VTwoMisc { scalar: false, q, u, a: true, sz, opcode, rn, rd } => {
                 let d = sz;
                 let op_ = match (u, opcode) {
@@ -681,6 +707,15 @@ impl G {
         self.f.op(op::I32_SHR_U).i32_const(1).op(op::I32_AND);
     }
 
+    /// FPSR.IXC |= the i32 boolean in `inexact` (the fast path knows
+    /// exactly whether its result is inexact).
+    fn raise_ixc(&mut self, inexact: u32) {
+        self.f.local_get(inexact).if_(BLOCK_EMPTY);
+        self.f.local_get(P_STATE).local_get(P_STATE).i32_load(off::FPSR).i32_const(IXC).op(op::I32_OR);
+        self.f.i32_store(off::FPSR);
+        self.f.end();
+    }
+
     /// `env.simd` (the interpreter) with `x` and NZCV = 0; the result (i64)
     /// stays on the stack.
     fn fallback(&mut self, x: bool) {
@@ -791,6 +826,7 @@ pub(super) fn build(k: usize, simd: u32) -> Func {
         FpRt::VCvtnH => cvt_s2h(simd, true),
         FpRt::CvtSH => cvt_h2s(simd, false),
         FpRt::CvtHS => cvt_s2h(simd, false),
+        FpRt::VFrint { d, r } => vfrint(simd, d, r),
     }
 }
 
@@ -2076,11 +2112,7 @@ fn cvt_s2h(simd: u32, vector: bool) -> Func {
     splat32(&mut g, 0x8000);
     g.f.v(v::AND).v(v::OR).local_set(h);
     g.commit(ok, |g| {
-        // FPSR.IXC
-        g.f.local_get(inexact).if_(BLOCK_EMPTY);
-        g.f.local_get(P_STATE).local_get(P_STATE).i32_load(off::FPSR).i32_const(IXC).op(op::I32_OR);
-        g.f.i32_store(off::FPSR);
-        g.f.end();
+        g.raise_ixc(inexact);
         // the four halves in the low 64 bits
         g.f.local_get(h).local_get(h).v(v::I16X8_NARROW_I32X4_U).local_set(h);
         g.vaddr(0);
@@ -2095,6 +2127,38 @@ fn cvt_s2h(simd: u32, vector: bool) -> Func {
         } else {
             g.f.local_get(h).v128_const(0xffff, 0).v(v::AND).v128_store(off::V);
         }
+    });
+    g.f.end();
+    g.fallback(false);
+    g.f.op(op::DROP);
+    g.finish()
+}
+
+/// Vector FRINT[NPMZAXI]: every lane that counts not a NaN (infinities and
+/// zeros round to themselves, with their sign; no flags), FZ guard on the
+/// inputs; FRINTX raises IXC exactly when a lane changed.
+fn vfrint(simd: u32, d: bool, rnd: Rnd) -> Func {
+    use ValType::*;
+    let mut g = G::new(simd, 2);
+    let (a, r, ok, inexact) = (g.local(V128), g.local(V128), g.local(I32), g.local(I32));
+    g.fpcr_ok();
+    g.f.if_(BLOCK_EMPTY);
+    g.vload(5);
+    g.f.local_tee(a);
+    vround(&mut g, d, rnd);
+    g.f.local_set(r);
+    vnot_nan(&mut g, d, a);
+    all_true(&mut g, d);
+    g.f.local_set(ok);
+    g.fz_guard(ok, |g| g.vden(a, d));
+    g.commit(ok, |g| {
+        if rnd == Rnd::NearestX {
+            g.f.local_get(r).local_get(a).v(vop(d, v::F32X4_NE, v::F64X2_NE));
+            g.himask();
+            g.f.v(v::ANDNOT).v(v::ANY_TRUE).local_set(inexact);
+            g.raise_ixc(inexact);
+        }
+        g.store_vec(r);
     });
     g.f.end();
     g.fallback(false);
