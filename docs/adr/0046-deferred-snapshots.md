@@ -78,10 +78,42 @@ being opened. The owner's rule: automatic saves must never slow the guest.
 - **Not incremental**: see "Incremental saves" below.
 
 ## Measurements
-(see below)
+`tools/aosp/live-path.mjs --cpu-profile-actions 30` on the build VM (headless
+Chrome, the app served locally, image f08b79e from R2, the light prebuilt;
+first visit then second visit), main (d96814b) against this branch, one run
+each, one after the other:
+
+| | main | this branch |
+|---|---|---|
+| "app installed" save on the machine's thread | 18.7 s (16.4 s compression, 2.4 s writes) | **1.1 s** (start 346 ms, copies 758 ms spread over the slices) |
+| the same save in the saver Worker | - | 12.8 s wall |
+| Worker profile, first 30 s of opening Minesweeper | 52% in `lz::compress`, `literals`, `blocks::encode`; guest 3.0 s | **1.3%** (`snapshotPump` 1.1%); guest **7.8 s** |
+| Minesweeper's screen after Open | 45.7 s | 34.6 s |
+| pages kept by the trap at most | - | 29 MiB |
+| snapshot size | 747 MiB | 747 MiB (same format) |
+| second start: ready, Minesweeper on screen | 5.3 s, 15.0 s | 7.0 s, 13.8 s |
+
+The save started 3 s after the install, while the app was opening (the case
+of the finding). The app drawer and Settings profiles are unchanged (0.3-0.4%
+in functions matching snapshot code, the same in both builds). The second visit
+restores the background-saved snapshot and finds the app installed. Tap
+timings on this VM vary by several seconds between runs (home taps from 0.1 to
+13 s in both builds), so one run says nothing about them beyond "not worse".
+The remaining cost on the machine's thread is the start (346 ms: copying
+devices and the disk's copy-on-write layer, about 90 MiB) and 4 MiB copies,
+one per slice (about 1 ms each).
 
 ## Incremental saves
-(see below)
+Measured, not done. Between the prebuilt snapshot a visitor restores and the
+"app installed" one, 77 972 of 390 217 non-zero RAM pages differ (304 of 1524
+MiB, 20%); a RAM section of only those pages would be 101 MiB at the fast
+level instead of 656 MiB, and the head (devices, disk copy-on-write) is 90
+MiB either way. With the compression off the machine's thread this would save
+the saver's time and OPFS writes, not guest time, and it needs a format with a
+base reference (the restore reads two files, the base must stay in OPFS, a
+dirty bitmap kept across restores). Not a clear win for the goal of this
+ADR; the write trap above is the dirty tracking it would use, if OPFS writes
+or the saver's CPU become the problem.
 
 ## Verification
 - `vetro-snapshot` `deferred` tests: deferred writer + assembler give the
