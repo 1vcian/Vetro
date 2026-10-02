@@ -142,6 +142,9 @@ node tests/web/browser-analysis.mjs
 echo "==> app catalog panel in Chrome (M6)"
 node tests/web/browser-catalog.mjs
 
+echo "==> accelerated graphics: WebGL2 executor, GPU snapshot, graphics mode and fallback (ADR 0037)"
+node tests/web/gl.mjs
+
 echo "==> litmus tests of the parallel cores in V8 (ADR 0042)"
 tools/wasm-threads.sh
 node tests/web/litmus.mjs
