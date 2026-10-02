@@ -334,11 +334,15 @@ async function pauseCores() {
 
 /**
  * Cores 1..n in their Workers again (if the machine has several, the page
- * is isolated and no recording or replay is in progress).
+ * is isolated, no recording or replay is in progress and the graphics are
+ * not the accelerated ones).
  */
 async function resumeCores() {
   if (!m || m.parallel || (cfg.cpus ?? 1) < 2 || mode !== 'live' || !exports.module) return;
   if (m.rrStatus?.().state === 'Recording') return;
+  // The accelerated graphics' WebGL context lives on this Worker: a 3D batch
+  // a core Worker serviced would run nowhere. The cores stay in turns.
+  if (cfg.gpu === 'webgl') return status('cores in turns: accelerated graphics need them on this Worker');
   try {
     const n = await m.startParallel({ jit: cfg.jit ? { threshold: 64, batch: 16 } : null });
     status(`${n + 1} cores in parallel`);
