@@ -38,6 +38,9 @@
 //
 //   --cpus=N         guest cores (ADR 0042; default 1): the snapshot key
 //                    changes with the number (the configuration hash).
+//   --parallel       with --cpus=N and the threads build (--wasm=...threads):
+//                    cores 1..N in worker_threads while booting, back in turns
+//                    (deterministic) for the snapshot
 //
 // Also writes <out>/<key>.png, the scanout at the home screen.
 //
@@ -174,6 +177,9 @@ async function main() {
     log(`vetro: ${desc.split(';')[0]}`);
   }
   m.setJit();
+  // ADR 0042: --parallel (threads build): cores 1..N in worker_threads while
+  // booting; back in turns (deterministic) for the snapshot.
+  if (flag('parallel')) log(`parallel: cores 1..${await m.startParallel({ jit: { threshold: 64, batch: 16 } })} in worker_threads`);
 
   // The Worker's Android logic (web/app/worker.mjs, androidTick), sequential.
   const st = { bootedNs: restorePath ? m.guestNs : null, adb: null, ready: false, retryNs: 0n, focusNs: restorePath ? m.guestNs : null, homeNs: restorePath ? m.guestNs : null, pollNs: 0n, query: false, done: false, busy: false,
@@ -319,6 +325,7 @@ async function main() {
     if (st.adb || st.query || st.busy) await new Promise((ok) => setImmediate(ok));
   }
 
+  if (m.parallel) await m.stopParallel();
   // Like the app: the adb connection stays in the snapshot (the next session
   // gets a new client and the old connection closes).
   mkdirSync(outDir, { recursive: true });
