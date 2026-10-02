@@ -161,6 +161,18 @@ conversions. Double products, quotients, roots and FMA still need IXC = 1.
   QEMU identical. The broken tie bit is found there too.
 - The nightly differential configuration on the build VM.
 
+## Results
+Same path, one run each (numbers in `docs/progress/M4.md`): the FP/SIMD
+helpers went from 4.8% to 0.5% of the Worker during the app drawer's first
+30 s and from 1.6% to 0.2% during Settings'. Guest MIPS during the actions
+did not change (drawer 27.0 → 26.4, Settings 22.2 → 23.1, app opening 19.1 →
+20.0); the step times (drawer 34.6 → 9.1 s, Settings 147 → 1.3 s) vary more
+between runs of the same build than this change can explain (a profiled run
+of the old build: 12.4 s and 28.5 s). On this path the FP helpers are not
+what keeps the guest at 0.2–0.5x real time: the dispatcher loop, region
+code, host bookkeeping, the interpreter on cold code, `Cache::lookup` and
+WASM compilation are.
+
 ## Consequences
 - `docs/specs/jit.md`: the `rt.fp<k>` conditions.
 - No ABI change: new `rt.fp<k>` functions are appended (imports are by
