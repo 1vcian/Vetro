@@ -56,10 +56,11 @@
 // profile's bootloader parameters and after-boot adb commands
 // (web/node/profiles.mjs, starters in web/app/profiles/).
 //
-// Accelerated graphics (ADR 0037, experimental): `&gpu=webgl` with the AOSP
-// image runs the guest's GLES on the browser's GPU (WebGL2 in the Worker);
-// frames arrive as ImageBitmaps. Without WebGL2 the Worker keeps SwiftShader
-// and says so; `window.vetroState.gpu` holds the mode and the counters.
+// Accelerated graphics (ADR 0037): `&gpu=webgl` with the AOSP image runs the
+// guest's GLES on the browser's GPU (WebGL2 in the Worker); frames arrive as
+// ImageBitmaps. Without WebGL2 the Worker keeps SwiftShader by itself and
+// says so; `&gpu=swiftshader` asks for SwiftShader; without the parameter the
+// mode is DEFAULT_GPU. `window.vetroState.gpu` holds the mode and the counters.
 
 import { absAxis, BUTTONS, evdevCode } from './keymap.mjs';
 import { keyToBytes, Terminal } from './terminal.mjs';
@@ -831,6 +832,21 @@ function chosenCpus() {
   return n;
 }
 
+/**
+ * The guest's graphics without `&gpu=`: 'webgl' (gfxstream on WebGL2, the
+ * Worker falls back to SwiftShader where WebGL2 is missing) or null
+ * (SwiftShader on the emulated CPU).
+ */
+export const DEFAULT_GPU = null;
+
+/** The graphics mode asked for by the address, or the default. */
+function gpuMode() {
+  const g = q.get('gpu');
+  if (g === 'webgl') return 'webgl';
+  if (g === 'swiftshader') return null;
+  return DEFAULT_GPU;
+}
+
 async function start() {
   const el = form.elements;
   const android = osValue() === 'android';
@@ -870,7 +886,7 @@ async function start() {
       // Where to look for prebuilt snapshots (`?prebuilt=URL`, a directory
       // with snapshots/<key>.json): next to the image by default.
       prebuiltBase: q.has('prebuilt') ? new URL(q.get('prebuilt'), location.href).href : null } : null,
-    gpu: android && q.get('gpu') === 'webgl' ? 'webgl' : null,
+    gpu: android ? gpuMode() : null,
   };
   if (android) {
     config.net = true;

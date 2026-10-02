@@ -142,10 +142,19 @@ executor; `vetro_gl_stats`, `vetro_gl_take_log`; `vetro_display_is_3d`,
 `vetro_display_read_3d` (host readback of the scanout for the home-screen
 detector and screenshots: rows from the top). `?gpu=webgl` (Android only):
 the Worker creates `WebGlExecutor` on an `OffscreenCanvas`, adds
-`GFXSTREAM_PARAMS` to the boot parameters, turns snapshots off, and sends
-presented frames as ImageBitmaps (`frame3d`); `drawBitmap` on both
-presenters. Without WebGL2 (or below the limits) it falls back to
-SwiftShader and says why (`gpu` message, `vetroState.gpu`).
+`GFXSTREAM_PARAMS` to the boot parameters and sends presented frames as
+ImageBitmaps (`frame3d`, counted in `vetroState.perf` like 2D frames);
+`drawBitmap` on both presenters. `?gpu=swiftshader` asks for SwiftShader;
+without `gpu=` the page uses `DEFAULT_GPU` (web/app/main.mjs). Without WebGL2
+(or below the limits) it falls back to SwiftShader by itself and says why
+(`gpu` message, `vetroState.gpu`): no choice for the user. Snapshots are on:
+their key differs from the SwiftShader path's (the `GPU_3D` device bit and
+the boot parameters), so each path finds only its own snapshots and its own
+prebuilt one. A restore presents the restored scanout at once (the guest may
+not flush again until something changes). The prebuilt snapshot of this
+path is made by the app itself in headless Chrome
+(`tools/aosp/prebuilt-chrome.mjs`): the GPU contents need a WebGL2 context
+to be read back, which the Node tool does not have.
 
 ## Snapshots (snapshot.rs)
 Written only by a machine whose GPU has virgl (the 2D format is unchanged).
@@ -166,8 +175,6 @@ call of each context applies its state vector again. Not restored: depth and
 stencil contents, renderbuffer contents, float or packed-format texture
 contents, 3D and array texture contents, queries, transform feedback.
 Readbacks at save time are host reads (like screenshots), not guest inputs.
-In the page the Worker still turns snapshots off on this path until the
-snapshot key and the prebuilt snapshot (ADR 0031) cover it.
 
 ## Natively
 `vetro boot --gpu=gfxstream [--gl-record=FILE] [--gl-trace=1]`: virgl GPU,
@@ -191,7 +198,7 @@ Chrome with `node tests/web/gl.mjs --recording=FILE`.
   expected image.
 
 ## Missing (next slices)
-Readbacks in the replay log, snapshots in the page, native fence sync, host
+Readbacks in the replay log, native fence sync, host
 composition, compressed textures (ETC2),
 YUV buffers, program binaries, transform feedback varyings, uniform block
 data sizes beyond a bound, Vulkan (gfxstream Vulkan → WebGPU, separate ADR).
