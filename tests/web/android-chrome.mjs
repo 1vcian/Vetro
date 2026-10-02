@@ -177,12 +177,22 @@ async function session(chrome, profile, url, kind) {
     const shot = prebuilt ? 'chrome-home-prebuilt.png' : 'chrome-home-2.png';
     await screenshot(page, shot);
     if (prebuilt) await pageShot(page, 'home');
-    const screen = await page.eval(SCREEN);
+    let screen = await page.eval(SCREEN);
     misure[prebuilt ? 'home_prebuilt' : 'home_2'] = screen;
     if (kind === 'second') {
       // The last snapshot was saved right after the test app was opened: the
-      // app is on screen (blue, or orange if the click came first).
-      check(near(screen.center, BLU) || near(screen.center, ARANCIONE), `second start: the test app is not on screen (centre ${screen.center})`);
+      // app is on screen (blue, or orange if the click came first). The save
+      // may come while its launch is still showing the splash screen: then
+      // the restored guest finishes the launch.
+      const onScreen = (c) => near(c, BLU) || near(c, ARANCIONE);
+      if (!onScreen(screen.center)) {
+        const t1 = Date.now();
+        await page.waitFor('the test app on screen after the restore', async () => onScreen((screen = await page.eval(SCREEN)).center), 120_000)
+          .catch(() => {});
+        misure.app_after_restore_ms = Date.now() - t1;
+        console.log(`the restored guest finished the app's launch ${secs(misure.app_after_restore_ms)} s later`);
+      }
+      check(onScreen(screen.center), `second start: the test app is not on screen (centre ${screen.center})`);
     } else {
       check(screen.colors > 20, `screen after the restore: almost uniform (${screen.colors} colours)`);
     }
