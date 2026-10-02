@@ -329,9 +329,14 @@ Translated:
   SHA1P, SHA1M, SHA1H, SHA1SU0, SHA1SU1, SHA256H, SHA256H2, SHA256SU0,
   SHA256SU1) and 64-bit PMULL/PMULL2 without `env.simd` (`rt.cr<k>`); LDTR/STTR
   at EL1 through the EL0 software TLB.
+- ADR 0045: single-lane LD2..LD4 and LD2R..LD4R; UQXTN(2) inline; more
+  `rt.fp<k>` fast paths (half-precision FCVTL/FCVTN and FCVT S/H, vector
+  FRINT*, scalar pairwise FADDP/FMAXP/FMINP/FMAXNMP/FMINNMP, FMAXV/FMINV/
+  FMAXNMV/FMINNMV, scalar by-element FMUL/FMLA/FMLS, vector FCVTZS/FCVTZU
+  with fraction bits).
 
-Left to the interpreter: literal LDR of V registers, interleaved single
-structures (single-lane LD2..LD4, LD2R..LD4R), the other system
+Left to the interpreter: literal LDR of V registers, single-lane ST2..ST4,
+the other system
 registers (MSR FPCR included), SVC/BRK/HVC, ERET, and in system mode also
 WFI and cache maintenance at EL0. Coverage grows only with parity tests.
 
