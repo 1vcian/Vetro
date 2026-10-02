@@ -1,9 +1,9 @@
 # ADR 0043 — A slim image
 
-- Status: proposed (M5/M6, 2026-10-01). Builds on ADR 0022 (AOSP image),
+- Status: accepted (M5/M6, 2026-10-02). Builds on ADR 0022 (AOSP image),
   0033 (app catalog), 0040 (idle guest). Details:
   `docs/specs/guest-image.md`, "Slim image"; measurements:
-  `docs/progress/M5.md` (2026-10-01).
+  `docs/progress/M5.md` (2026-10-02).
 
 ## Context
 After ADR 0040 the settled home screen is idle, but the image is still
@@ -57,6 +57,14 @@ Remove with AOSP's own configuration, no source patches:
    biometric or IR services, as on the watches and TVs that lack them.
 5. `ro.system_settings.service.odp_enabled=false`: the standard switch that
    keeps the on-device personalization system service from starting.
+6. Second batch: no `cameraserver` (no camera HAL is left;
+   `config.disable_cameraservice=true` keeps SystemServer's CameraServiceProxy
+   off, as automotive and TV builds do), no `update_engine` (no OTA: a Vetro
+   image is a version replaced whole), no input classifier HAL, no
+   screensavers (`config_dreamsSupported=false` in VetroFrameworkOverlay),
+   and our own `initial-package-stopped-states-vetro.xml` instead of AOSP's:
+   only Settings is exempt from the first-boot "stopped" state, so Contacts
+   and DocumentsUI no longer run from their boot receivers until opened.
 
 Kept: everything an ordinary app needs (package, activity and window
 managers, input, graphics, network with Ethernet and the Wi-Fi service,
@@ -64,6 +72,27 @@ storage, WebView, notifications, the keyboard, the contacts, calendar,
 telephony, media and download providers, DocumentsUI, the photo picker, the
 permission controller, Telecom), sensors, GNSS, vibrator, audio and DRM,
 microG, and every mainline APEX.
+
+## Results
+QEMU 10 on the build VM, the app's `light` machine (one vCPU, 2 GiB,
+960x600 at 180 dpi), first boot, `tools/aosp/qemu-vm.sh idle` then `apps`
+(ADR 0040's method, now also recording RAM, boot time and inventory). Full
+table in `docs/progress/M5.md` (2026-10-02):
+
+| | 8b519e5 (before) | batch 1 | batch 2 (f08b79e) |
+|---|---|---|---|
+| `boot_completed` (guest s) | 552 | 475 | 502 |
+| launcher focused (guest s, ±30) | 750 | 584 | 613 |
+| RAM used (MemTotal − MemAvailable) | 1037 MiB | 941 MiB | 877 MiB |
+| anonymous memory | 513 MiB | 471 MiB | 402 MiB |
+| processes (`ps -A`) | 273 | 228 | 223 |
+| packages / APEX entries / features | 147 / 156 / 83 | 102 / 124 / 62 | 102 / 122 / 62 |
+| `super.img` (sparse) | 1727 MB | 1564 MB | 1557 MB |
+| catalog apps installed and opened | 4/4 | 4/4 | 4/4 |
+
+Boot times vary by about ±30 s between runs of the same image; the "before"
+run was still doing its first media scan 10 minutes after the launcher (30.6%
+idle), the slim runs had finished theirs (88.4–88.8% idle, load 0.2–1.6).
 
 ## Rejected
 - Removing mainline APEXes (AdServices, on-device personalization, Health
