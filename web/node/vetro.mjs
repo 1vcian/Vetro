@@ -1124,6 +1124,15 @@ export class Machine {
   }
 
   /**
+   * Resolves once every core Worker has answered a ping from its event loop
+   * (which it returns to while its core runs, so V8's tasks for it run).
+   */
+  async pingCores() {
+    if (!this.#par) return;
+    await Promise.all(this.#par.workers.map((w) => w.ping()));
+  }
+
+  /**
    * Stops cores 1..n and takes them back (the cores are in turns again,
    * deterministic): resolves with each Worker's report ({ stop, executed, jit }).
    */
@@ -1155,8 +1164,10 @@ async function spawnCore(url, msg) {
     fail = ko;
   });
   const pDone = new Promise((ok) => (done = ok));
+  const pongs = [];
   const onMsg = (m) => {
-    if (m.type === 'ready') ready();
+    if (m.type === 'pong') pongs.shift()?.();
+    else if (m.type === 'ready') ready();
     else if (m.type === 'done') done(m);
     else if (m.type === 'error') {
       console.error(`core Worker: ${m.error}`);
@@ -1168,14 +1179,22 @@ async function spawnCore(url, msg) {
     const w = new Worker(url, { type: 'module' });
     w.onmessage = (e) => onMsg(e.data);
     w.postMessage(msg);
-    return { ready: pReady, done: pDone, terminate: () => w.terminate() };
+    const ping = () => new Promise((ok) => {
+      pongs.push(ok);
+      w.postMessage({ type: 'ping' });
+    });
+    return { ready: pReady, done: pDone, ping, terminate: () => w.terminate() };
   }
   const { Worker: NodeWorker } = await import('node:worker_threads');
   const w = new NodeWorker(url);
   w.on('message', onMsg);
   w.on('error', (e) => onMsg({ type: 'error', error: String(e?.stack ?? e) }));
   w.postMessage(msg);
-  return { ready: pReady, done: pDone, terminate: () => w.terminate() };
+  const ping = () => new Promise((ok) => {
+    pongs.push(ok);
+    w.postMessage({ type: 'ping' });
+  });
+  return { ready: pReady, done: pDone, ping, terminate: () => w.terminate() };
 }
 
 /**

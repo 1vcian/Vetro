@@ -275,6 +275,26 @@ run(async () => {
       console.log(`${name} (${tag}): flag,data = 00: ${mp[0]}, 01: ${mp[1]}, 10: ${mp[2]}, 11: ${mp[3]}`);
       check(mp[2] === 0, `${name}: the flag without the data (${tag})`);
     }
+    // The core Worker returns to its event loop while its core runs (V8
+    // frees dead JIT code in tasks there): a ping is answered mid-run.
+    {
+      const m = new Machine(x, { ramSize: 1n << 20n, devices: 0, cpus: 2 });
+      try {
+        check(m.loadRaw(R, new Uint8Array(new Uint32Array(ATOM).buffer), BigInt(R)), 'program outside RAM');
+        check(m.loadRaw(R + 0x800, new Uint8Array(new BigUint64Array([1n << 40n]).buffer)), 'N outside RAM');
+        if (jit) m.setJit(1, 1);
+        await m.startParallel({ jit: jit ? { threshold: 1, batch: 1 } : null });
+        // Core 0 starts core 1 (CPU_ON), then both count for hours.
+        for (let i = 0; i < 20; i++) m.run(1 << 20);
+        const t0 = performance.now();
+        const answered = await Promise.race([m.pingCores().then(() => true), new Promise((ok) => setTimeout(() => ok(false), 10_000))]);
+        console.log(`core Worker ping (${tag}): ${answered ? `answered in ${(performance.now() - t0).toFixed(0)} ms` : 'no answer in 10 s'}`);
+        check(answered, `the core Worker never returns to its event loop (${tag})`);
+        await m.stopParallel();
+      } finally {
+        m.free();
+      }
+    }
     const A = jit ? 2_000_000 : 200_000;
     const read = await runParallel(x, ATOM, A, jit);
     const total = read(R + 0x6_0000, 1)[0];

@@ -7,7 +7,8 @@
 // Protocol: in { module, memory, core, stackTop, tls, jit, budget } (jit:
 // { threshold, batch } or null) -> out { type: 'ready' }, then once the cores
 // stop (`vetro_parallel_request_stop` or the machine powered off)
-// { type: 'done', stop, executed, jit } or { type: 'error', error }.
+// { type: 'done', stop, executed, jit } or { type: 'error', error }. In
+// { type: 'ping' } at any time -> out { type: 'pong' } from the event loop.
 //
 // A WFI waits in Rust (Atomics.wait, allowed in Workers), and the stop
 // request arrives through the shared memory. The loop still returns to the
@@ -86,9 +87,23 @@ async function onMessage(m, post) {
   }
 }
 
+/** The first message starts the core; the others are pings. */
+function listen(post) {
+  let started = false;
+  return (m) => {
+    if (m?.type === 'ping') post({ type: 'pong' });
+    else if (!started) {
+      started = true;
+      onMessage(m, post);
+    }
+  };
+}
+
 if (typeof self !== 'undefined' && typeof self.postMessage === 'function' && typeof process === 'undefined') {
-  self.onmessage = (e) => onMessage(e.data, (m) => self.postMessage(m));
+  const on = listen((m) => self.postMessage(m));
+  self.onmessage = (e) => on(e.data);
 } else {
   const { parentPort } = await import('node:worker_threads');
-  parentPort.once('message', (m) => onMessage(m, (r) => parentPort.postMessage(r)));
+  const on = listen((r) => parentPort.postMessage(r));
+  parentPort.on('message', on);
 }
