@@ -29,15 +29,13 @@ const R2_AOSP = 'https://pub-06e88fdd7f374fffb06844d60083f2ae.r2.dev/aosp';
  * The versions of Vetro's AOSP image the app offers, on R2 (ADR 0022, 0028,
  * 0030), newest first: the first is the default. `…-f08b79e` (ADR 0043) is
  * the slim image (no telephony, printing, backup, cameras, biometrics, demo
- * apps or unused HALs) on top of `…-8b519e5`'s idle guest (ADR 0040);
- * `…-64fcd35` (ADR 0032) has the right colours in the scanout and a lighter
- * first boot; `…-bd09e2f` stays selectable (red and blue swapped, ADR 0028).
+ * apps or unused HALs) on top of `…-8b519e5`'s idle guest (ADR 0040), which
+ * stays selectable. The older images (`…-64fcd35`, `…-bd09e2f`, `…-9d91633`)
+ * were removed from R2 on 2026-10-09 to stay within the free tier.
  */
 export const ANDROID_VERSIONS = [
   { version: 'android-15.0.0_r36-BP1A.250505.005.D1-f08b79e', label: 'AOSP 15, image f08b79e (default: slim)' },
   { version: 'android-15.0.0_r36-BP1A.250505.005.D1-8b519e5', label: 'AOSP 15, image 8b519e5 (idle guest)' },
-  { version: 'android-15.0.0_r36-BP1A.250505.005.D1-64fcd35', label: 'AOSP 15, image 64fcd35' },
-  { version: 'android-15.0.0_r36-BP1A.250505.005.D1-bd09e2f', label: 'AOSP 15, image bd09e2f (previous: red and blue swapped)' },
 ].map((v) => ({ ...v, manifest: `${R2_AOSP}/${v.version}/manifest.json` }));
 
 /** The version of Vetro's AOSP image the app uses by default. */
