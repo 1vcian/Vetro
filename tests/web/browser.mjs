@@ -302,8 +302,7 @@ run(async () => {
     check(JSON.stringify(sel.options) === JSON.stringify([...ANDROID_VERSIONS.map((v) => v.manifest), '']), `versions offered: ${JSON.stringify(sel.options)}`);
     const pick = (value) => page.eval(`(() => { const f = document.getElementById('setup').elements; f.androidVersion.value = ${JSON.stringify(value)};
       f.androidVersion.dispatchEvent(new Event('change')); return f.manifestUrl.value; })()`);
-    const previous = ANDROID_VERSIONS.find((v) => v.version.endsWith('-8b519e5')).manifest;
-    check((await pick(previous)) === previous, '8b519e5 selected: the manifest field follows');
+    check((await pick(DEFAULT_MANIFEST)) === DEFAULT_MANIFEST, 'default selected: the manifest field follows');
     const typed = await page.eval(`(() => { const f = document.getElementById('setup').elements; f.manifestUrl.value = '/aosp/manifest.json';
       f.manifestUrl.dispatchEvent(new Event('change')); return f.androidVersion.value; })()`);
     check(typed === '', `a typed URL selects "other": ${JSON.stringify(typed)}`);

@@ -647,8 +647,7 @@ test('Android boot phases (BootProgress)', () => {
 test('Android image versions and app colours (ADR 0032)', () => {
   eq(DEFAULT_MANIFEST, ANDROID_VERSIONS[0].manifest, 'the first version is the default');
   check(DEFAULT_MANIFEST.endsWith('/aosp/android-15.0.0_r36-BP1A.250505.005.D1-f08b79e/manifest.json'), `default image f08b79e: ${DEFAULT_MANIFEST}`);
-  check(ANDROID_VERSIONS.some((v) => v.version.endsWith('-8b519e5') && v.manifest.endsWith(`/aosp/${v.version}/manifest.json`)), '8b519e5 still selectable');
-  for (const gone of ['64fcd35', 'bd09e2f', '9d91633']) {
+  for (const gone of ['8b519e5', '64fcd35', 'bd09e2f', '9d91633']) {
     check(!ANDROID_VERSIONS.some((v) => v.version.endsWith(`-${gone}`)), `${gone} no longer offered (removed from R2)`);
   }
   // The test app's blue: the right order only (the default image converts to BGRX).
