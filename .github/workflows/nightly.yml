@@ -1,10 +1,9 @@
 name: nightly
 
 on:
-  schedule:
-    - cron: "0 2 * * *"
-    # Sundays: also the Android cold boot (ADR 0031).
-    - cron: "0 4 * * 0"
+  # Paused on 2026-10-10 with the project: no scheduled runs, by hand only.
+  # To resume, restore the schedule (nightly "0 2 * * *"; Sundays "0 4 * * 0"
+  # also runs the Android cold boot, ADR 0031).
   workflow_dispatch:
     inputs:
       cold:

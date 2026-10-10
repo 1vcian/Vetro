@@ -3,9 +3,8 @@ name: ci
 on:
   push:
   pull_request:
-  # Full run every night (all jobs, kselftest included) and by hand.
-  schedule:
-    - cron: "0 3 * * *"
+  # Full run by hand (all jobs, kselftest included). The nightly schedule
+  # ("0 3 * * *") is paused since 2026-10-10 with the project.
   workflow_dispatch:
 
 env:
