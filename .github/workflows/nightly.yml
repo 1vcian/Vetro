@@ -10,6 +10,11 @@ on:
         description: "Also run the Android cold boot in Chrome (hours)"
         type: boolean
         default: false
+  # On demand from git alone: pushing a branch named android-run/<anything>
+  # runs the Android jobs (from the prebuilt snapshot, and online) on that
+  # commit. No differential run, no cold boot. Delete the branch afterwards.
+  push:
+    branches: ["android-run/**"]
 
 env:
   CARGO_TERM_COLOR: always
@@ -17,7 +22,7 @@ env:
 
 jobs:
   differential:
-    if: github.event.schedule != '0 4 * * 0'
+    if: github.event_name != 'push' && github.event.schedule != '0 4 * * 0'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -88,6 +93,53 @@ jobs:
           path: |
             target/aosp/*.png
             target/aosp/chrome-measurements.json
+          if-no-files-found: ignore
+
+  # Android online (ADR 0048), in headless Chrome: the app with the Node
+  # gateway (relay/src/node.mjs) started by the test on the runner, on the
+  # real internet. From the prebuilt snapshot: the uplink goes online, the
+  # browser app shows https://example.com/ (DNS and HTTPS through the
+  # gateway, the page's text on the screen), a catalog app is installed and
+  # makes a real HTTPS request. The image, the snapshot and the catalog come
+  # from R2 through the test's same-origin proxy (any port).
+  android-online:
+    if: github.event.schedule != '0 4 * * 0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cargo build --release --target wasm32-unknown-unknown -p vetro-wasm
+      # The Node gateway's only dependency (ws, pinned in relay/package-lock.json).
+      - run: npm ci --prefix relay --omit=dev --ignore-scripts --no-audit --no-fund
+      - name: Prebuilt snapshot for this vetro-wasm
+        run: node tools/aosp/prebuilt-key.mjs --require
+      - name: Android online in Chrome through the Node gateway
+        run: |
+          set -o pipefail
+          node tests/web/android-online.mjs 2>&1 | tee android-online.log
+        env:
+          VETRO_ANDROID: "1"
+      - if: always()
+        run: |
+          [ -f target/aosp/online-measurements.json ] && echo "::notice title=Android online measurements::$(tr -d '\n' < target/aosp/online-measurements.json | cut -c1-3000)" || true
+          if [ -s android-online.log ]; then
+            grep -E '^(ready|adb ready|browser:|gateway:|[a-z0-9-]+: (installed|HTTPS))' android-online.log | head -n 9 | sed 's/^/::notice title=Android online::/' || true
+          fi
+      - if: failure()
+        run: |
+          [ -s android-online.log ] && echo "::error title=android-online.log::$(grep -vE '^\s*$' android-online.log | tail -n 60 | awk '{gsub(/%/, "%25"); gsub(/\r/, ""); printf "%s%%0A", $0}')" || true
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-online
+          path: |
+            target/aosp/online-*.png
+            target/aosp/online-measurements.json
           if-no-files-found: ignore
 
   # The first boot from scratch to the home screen in Chrome: about 45 minutes
