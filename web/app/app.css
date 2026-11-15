@@ -249,6 +249,15 @@ main {
   flex-wrap: wrap;
 }
 
+#nav {
+  display: flex;
+  gap: 8px;
+}
+
+#nav[hidden] {
+  display: none;
+}
+
 #stats,
 #snapinfo {
   color: var(--dim);

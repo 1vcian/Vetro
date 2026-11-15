@@ -103,6 +103,49 @@ const near = colorSeen;
 const BLU = [0x15, 0x65, 0xc0];
 const ARANCIONE = [0xef, 0x6c, 0x00];
 
+/**
+ * The page's Back, Home and Recents buttons (the image navigates by gestures,
+ * which the page's pointer cannot do reliably): with the test app in front,
+ * Home brings the launcher, the app is started again and Back closes it.
+ * Recents (Meta+Tab) is reported, not enforced: what it shows depends on the
+ * launcher.
+ */
+async function navigationKeys(page) {
+  const focus = async () => (await page.eval("window.vetroAndroid.shell('dumpsys window | grep -m1 mCurrentFocus')")).stdout.trim();
+  const press = (id) => page.eval(`document.getElementById('nav-${id}').click()`);
+  const until = (what, pred) => {
+    let last = -Infinity;
+    return page.waitFor(what, async () => {
+      if (Date.now() - last < 5000) return null;
+      last = Date.now();
+      const f = await focus();
+      return pred(f) ? f : null;
+    }, 5 * 60_000);
+  };
+  const app = (f) => f.includes('it.vetro.tocco');
+  const launcher = (f) => /launcher/i.test(f);
+  check(!(await page.eval("document.getElementById('nav').hidden")), 'the navigation keys are hidden with Android');
+  await until('the test app in front', app);
+  let t = Date.now();
+  await press('home');
+  const home = await until('Home: the launcher in front', launcher);
+  misure.nav_home_ms = Date.now() - t;
+  console.log(`navigation keys: Home brought ${home} in ${secs(misure.nav_home_ms)} s`);
+  await page.eval("window.vetroAndroid.shell('am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER it.vetro.tocco')");
+  await until('the test app in front again', app);
+  t = Date.now();
+  await press('back');
+  const back = await until('Back: the app closed', (f) => !app(f));
+  misure.nav_back_ms = Date.now() - t;
+  console.log(`navigation keys: Back left the app for ${back} in ${secs(misure.nav_back_ms)} s`);
+  await press('recents');
+  await new Promise((ok) => setTimeout(ok, 20_000));
+  misure.nav_recents_focus = await focus();
+  const recents = (await page.eval("window.vetroAndroid.shell('dumpsys activity service SystemUIService 2>/dev/null | grep -m1 -i overview; dumpsys window | grep -m1 -i recents')")).stdout.trim();
+  console.log(`navigation keys: 20 s after Recents the focus is ${misure.nav_recents_focus}${recents ? ` (${recents.slice(0, 200)})` : ''}`);
+  await press('home');
+}
+
 async function session(chrome, profile, url, kind) {
   const { proc, cdp } = await launch(chrome, profile);
   try {
@@ -221,6 +264,7 @@ async function session(chrome, profile, url, kind) {
       console.log(`taps after the second start: median ${misure.tap_median.centre_ms?.toFixed(0)} ms from the press to the app's redraw ` +
         `(first frame ${misure.tap_median.frame_ms?.toFixed(0)} ms, pixel polled ${misure.tap_median.polled_ms} ms)`);
       check(misure.taps.every((t) => t.ripple), 'the page did not draw its touch feedback');
+      await navigationKeys(page);
       return;
     }
     const apk = join(root, 'target/apps/tocco.apk');

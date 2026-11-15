@@ -40,6 +40,16 @@ export function evdevCode(code) {
 /** Pointer buttons: MouseEvent.button -> BTN_*. */
 export const BUTTONS = Object.freeze({ 0: 0x110, 1: 0x112, 2: 0x111, 3: 0x113, 4: 0x114 });
 
+/**
+ * Android's navigation keys as presses of the virtio keyboard, in press
+ * order (released in reverse): KEY_BACK and KEY_HOMEPAGE (BACK and HOME in
+ * Android's Generic.kl), and Meta+Tab, the framework's shortcut for the
+ * recent apps. All are keys the keyboard already advertises (QEMU's table,
+ * `KEYBOARD_KEY_RANGES` in vetro-platform), so the device and the snapshots
+ * do not change: the guest's kernel drops keys a device does not advertise.
+ */
+export const NAV_KEYS = Object.freeze({ back: [158], home: [172], recents: [125, 15] });
+
 /** Absolute virtio-input coordinate (0..32767) from a fraction 0..1. */
 export function absAxis(fraction) {
   return Math.max(0, Math.min(0x7fff, Math.round(fraction * 0x7fff)));
