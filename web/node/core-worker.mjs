@@ -50,6 +50,13 @@ async function run({ module, memory, core, stackTop, tls, jit, jitBudget, budget
       snapshot_write: () => {
         throw new Error('snapshot_write in a core Worker');
       },
+      // The snapshot assembler runs in the saver Worker only (ADR 0046).
+      file_write: () => {
+        throw new Error('file_write in a core Worker');
+      },
+      file_read: () => {
+        throw new Error('file_read in a core Worker');
+      },
       // Devices are serviced by whichever core touches them; WebGL lives
       // with the page's Worker, so 3D batches from here run nowhere.
       gl_execute: () => {},
