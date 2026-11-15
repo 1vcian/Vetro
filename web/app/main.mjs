@@ -63,7 +63,7 @@
 // mode is DEFAULT_GPU (web/node/android.mjs). `window.vetroState.gpu` holds the
 // mode and the counters.
 
-import { absAxis, BUTTONS, evdevCode } from './keymap.mjs';
+import { absAxis, BUTTONS, evdevCode, NAV_KEYS } from './keymap.mjs';
 import { keyToBytes, Terminal } from './terminal.mjs';
 import { Canvas2DRenderer, WebGpuRenderer } from './display.mjs';
 import { FilePanel } from './files.mjs';
@@ -396,6 +396,22 @@ const power = $('power');
 power.addEventListener('pointerdown', () => send({ type: 'power', down: true }));
 power.addEventListener('pointerup', () => send({ type: 'power', down: false }));
 power.addEventListener('pointerleave', (e) => e.buttons && send({ type: 'power', down: false }));
+
+// Back, Home and Recents (Android only). The image navigates by gestures
+// (the tablet taskbar): swipes from the screen's edge, hardly usable with a
+// mouse on a slow guest. The buttons press keys instead (NAV_KEYS).
+const NAV_HOLD_MS = 80;
+for (const [name, codes] of Object.entries(NAV_KEYS)) {
+  const b = $(`nav-${name}`);
+  // The keyboard focus stays on the screen.
+  b.addEventListener('mousedown', (e) => e.preventDefault());
+  b.addEventListener('click', () => {
+    for (const code of codes) send({ type: 'key', code, down: true });
+    setTimeout(() => {
+      for (const code of [...codes].reverse()) send({ type: 'key', code, down: false });
+    }, NAV_HOLD_MS);
+  });
+}
 
 // ---- Boot ------------------------------------------------------------------
 
@@ -908,6 +924,7 @@ async function start() {
   $('machine').hidden = false;
   $('files-box').hidden = !config.files;
   $('android-box').hidden = !android;
+  $('nav').hidden = !android;
   $('android-dev').hidden = !android;
   $('screen-demo').hidden = android;
   $('screen-linux').hidden = android;

@@ -153,6 +153,19 @@ run(async () => {
     at = await page.until('vetro-dev: evento 1 30 0', at);
     console.log('keyboard: KeyA from the canvas reached the guest as KEY_A (virtio-input)');
     at = await page.until('# ', at);
+    // The page's Back, Home and Recents (shown with Android only, wired
+    // always): KEY_BACK, KEY_HOMEPAGE and Meta+Tab, pressed in order and
+    // released in reverse. A key the keyboard did not advertise would be
+    // dropped by the guest's kernel.
+    await page.type('vetro-dev input-read /dev/input/event1 16');
+    at = await page.until('VETRO-INPUT-PRONTO', at);
+    check(await page.eval("document.getElementById('nav').hidden"), 'the navigation keys are shown with the Linux demo');
+    for (const [id, events] of [['back', ['1 158 1', '1 158 0']], ['home', ['1 172 1', '1 172 0']], ['recents', ['1 125 1', '1 15 1', '1 15 0', '1 125 0']]]) {
+      await page.eval(`document.getElementById('nav-${id}').click()`);
+      for (const e of events) at = await page.until(`vetro-dev: evento ${e}`, at);
+    }
+    console.log('navigation keys: Back, Home and Recents reached the guest as KEY_BACK, KEY_HOMEPAGE and Meta+Tab');
+    at = await page.until('# ', at);
 
     // File manager (M8, ADR 0020): the panel shows the roots
     // set, updates by itself when a guest process creates a

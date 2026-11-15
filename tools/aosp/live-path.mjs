@@ -9,7 +9,8 @@
 // exist: a first visit downloads the prebuilt snapshot), presses Start, waits
 // for the machine to be ready and adb, then follows the path: three taps on
 // the home screen, a swipe up to the app drawer, Settings opened from the
-// drawer, Home (the swipe up from the bottom edge), a catalog app (Minesweeper)
+// drawer, Home (the page's Home key, or the swipe up from the bottom edge on a
+// page without it), a catalog app (Minesweeper)
 // installed and opened from the Apps panel, Home. For each action: press to
 // the first frame (`vetroState.perf`), press to the screen changing and to it
 // settling (canvas sampled every 100 ms), the disk wait and HTTP reads it
@@ -361,8 +362,12 @@ try {
   // (--settings X,Y in guest pixels; the light profile's 960x600 by default).
   const [sx, sy] = (arg('settings', '') || `${W * 0.1},${H * 0.473}`).split(',').map(Number);
   await timed('open Settings', () => tap(sx, sy), { minChange: 0.3, limitMs: LONG, check: focus });
-  // Home (the user's gesture: swipe up from the bottom edge).
-  await timed('home (swipe up)', () => swipe(W * 0.5, H - 2, W * 0.5, H * 0.5, 200), { until: DARK, limitMs: LONG });
+  // Home: the page's Home key where the page has one (the tablet taskbar does
+  // not recognise the swipe up from the bottom edge), else that swipe.
+  const hasHomeKey = await ev("!!document.getElementById('nav-home')");
+  const goHome = () => (hasHomeKey ? ev("document.getElementById('nav-home').click()") : swipe(W * 0.5, H - 2, W * 0.5, H * 0.5, 200));
+  const HOME = hasHomeKey ? 'home (key)' : 'home (swipe up)';
+  await timed(HOME, goHome, { until: DARK, limitMs: LONG });
   // 4. A catalog app from the Apps panel: Install, then Open.
   const sel = `#catalog-list li[data-app=${CATALOG_APP}] button`;
   await page.waitFor('catalog card', () => ev(`!!document.querySelector(${JSON.stringify(sel)})`), 120_000);
@@ -372,7 +377,7 @@ try {
   result.install = { app: CATALOG_APP, ms: Date.now() - ti };
   log(`${CATALOG_APP} installed in ${((Date.now() - ti) / 1000).toFixed(1)} s`);
   await timed(`open ${CATALOG_APP}`, () => ev(`document.querySelector(${JSON.stringify(sel)}).click()`), { minChange: 0.3, check: focus, limitMs: LONG });
-  await timed('home (swipe up) 2', () => swipe(W * 0.5, H - 2, W * 0.5, H * 0.5, 200), { until: DARK, limitMs: LONG });
+  await timed(`${HOME} 2`, goHome, { until: DARK, limitMs: LONG });
   await guestLoad('after the path');
 
   // 5. The rest of the session: a tap every 30 s.
