@@ -142,6 +142,56 @@ jobs:
             target/aosp/online-measurements.json
           if-no-files-found: ignore
 
+  # The owner's path with its measurements (tools/aosp/live-path.mjs), on the
+  # app built here, from the prebuilt snapshot, with the accelerated graphics
+  # (WebGL2 on Chrome's own SwiftShader: the runner has no GPU): taps, the app
+  # drawer, Settings, Home, a catalog app installed and opened. Per action
+  # the times and the guest's MIPS, and a Worker CPU profile of the first 30 s
+  # of the drawer, Settings and the app's opening. The summary is in the
+  # notices (readable without signing in), everything else in the artifact.
+  # Measurements only: slow is not red, a path that does not finish is.
+  live-path:
+    if: github.event.schedule != '0 4 * * 0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cargo build --release --target wasm32-unknown-unknown -p vetro-wasm
+      - name: Prebuilt snapshot for this vetro-wasm
+        run: node tools/aosp/prebuilt-key.mjs --require
+      - name: The live path in Chrome
+        run: |
+          set -o pipefail
+          node tools/web-serve.mjs --port 8080 > web-serve.log 2>&1 &
+          sleep 2
+          # Region counters without the class profile, where the build has them (ADR 0049).
+          extra=""
+          grep -q -- "--jit-count" tools/aosp/live-path.mjs && extra="--jit-count"
+          node tools/aosp/live-path.mjs --url "http://127.0.0.1:8080/app/?os=android" --webgl $extra \
+            --cpu-profile-actions 30 --minutes 12 --profile "$RUNNER_TEMP/live-profile" --out target/aosp/live 2>&1 | tee live-path.log
+      - if: always()
+        run: |
+          f=target/aosp/live/measurements-first.json
+          [ -f "$f" ] || exit 0
+          notice() { echo "::notice title=$1::$(awk '{gsub(/%/, "%25"); gsub(/\r/, ""); printf "%s%%0A", $0}')"; }
+          node tools/aosp/live-summary.mjs "$f" actions | notice "live path"
+          node tools/aosp/live-summary.mjs "$f" profiles | notice "live path profiles"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-path
+          path: |
+            target/aosp/live/*.json
+            target/aosp/live/*.png
+            target/aosp/live/*.cpuprofile
+            live-path.log
+          if-no-files-found: ignore
+
   # The first boot from scratch to the home screen in Chrome: about 45 minutes
   # on an Apple silicon Mac, several times that on a hosted runner (ADR 0031):
   # weekly (Sundays) and by hand, not every night.
