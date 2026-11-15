@@ -131,8 +131,13 @@ async function navigationKeys(page) {
   const home = await until('Home: the launcher in front', launcher);
   misure.nav_home_ms = Date.now() - t;
   console.log(`navigation keys: Home brought ${home} in ${secs(misure.nav_home_ms)} s`);
-  await page.eval("window.vetroAndroid.shell('am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER it.vetro.tocco')");
-  await until('the test app in front again', app);
+  // (On the first run the launcher intent with the package alone did not bring
+  // the app back in 300 s: the component is named, and the answer is logged.)
+  const started = await page.eval("window.vetroAndroid.shell('am start -n it.vetro.tocco/.Main 2>&1')");
+  console.log(`navigation keys: am start: ${JSON.stringify((started.stdout ?? '').trim().slice(0, 300))}`);
+  await until('the test app in front again', app).catch(async (e) => {
+    throw new Fail(`${e.message}; focus ${await focus()}`);
+  });
   t = Date.now();
   await press('back');
   const back = await until('Back: the app closed', (f) => !app(f));
