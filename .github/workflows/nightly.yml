@@ -106,7 +106,9 @@ jobs:
   android-online:
     if: github.event.schedule != '0 4 * * 0'
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    # The run that passed took 7 minutes; four others waited on a step until
+    # they were cancelled (which step: the notices below, also when cancelled).
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - run: rustup show active-toolchain || rustup toolchain install
@@ -131,7 +133,7 @@ jobs:
           if [ -s android-online.log ]; then
             grep -E '^(ready|adb ready|browser:|gateway:|[a-z0-9-]+: (installed|HTTPS))' android-online.log | head -n 9 | sed 's/^/::notice title=Android online::/' || true
           fi
-      - if: failure()
+      - if: failure() || cancelled()
         run: |
           [ -s android-online.log ] && echo "::error title=android-online.log::$(grep -vE '^\s*$' android-online.log | tail -n 60 | awk '{gsub(/%/, "%25"); gsub(/\r/, ""); printf "%s%%0A", $0}')" || true
       - if: always()

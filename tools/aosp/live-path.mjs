@@ -391,7 +391,13 @@ try {
   // 3. Settings from the drawer: its icon's place in Launcher3's grid
   // (--settings X,Y in guest pixels; the light profile's 960x600 by default).
   const [sx, sy] = (arg('settings', '') || `${W * 0.1},${H * 0.473}`).split(',').map(Number);
-  await timed('open Settings', () => tap(sx, sy), { minChange: 0.3, limitMs: LONG, check: focus });
+  await timed('open Settings', () => tap(sx, sy), { minChange: 0.3, limitMs: 30_000, check: focus });
+  // The icon is not always there (on the hosted runners' runs of 2026-11-15
+  // the tap changed nothing): then Settings is started with an intent, so
+  // its opening is still measured (the time includes `am` itself).
+  if (!/settings/i.test(result.actions.at(-1).check ?? '')) {
+    await timed('start Settings (am start)', () => sh('am start -a android.settings.SETTINGS >/dev/null 2>&1 &'), { minChange: 0.3, limitMs: LONG, check: focus });
+  }
   // Home: the page's Home key where the page has one (the tablet taskbar does
   // not recognise the swipe up from the bottom edge), else that swipe.
   const hasHomeKey = await ev("!!document.getElementById('nav-home')");
