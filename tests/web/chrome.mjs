@@ -18,6 +18,8 @@ export class Cdp {
   #ws;
   #id = 0;
   #pending = new Map();
+  /** Listeners of protocol events: `(method, params, sessionId) => void`. */
+  events = new Set();
 
   static async connect(url) {
     const ws = new WebSocket(url);
@@ -32,6 +34,7 @@ export class Cdp {
     this.#ws = ws;
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data);
+      if (msg.method) for (const l of this.events) l(msg.method, msg.params, msg.sessionId);
       const p = msg.id !== undefined && this.#pending.get(msg.id);
       if (!p) return;
       this.#pending.delete(msg.id);
@@ -144,12 +147,23 @@ export async function launch(chrome, profile, { webgl = false } = {}) {
  * Opens `url` in a new tab. `before`: a script run in every document of the
  * tab before its own scripts (to stand in for a browser that lacks a feature).
  */
-export async function openPage(cdp, url, { before = null } = {}) {
+export async function openPage(cdp, url, { before = null, beforeWorker = null } = {}) {
   const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
   const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
   const page = new Page(cdp, sessionId);
   await cdp.send('Page.enable', {}, sessionId);
   if (before) await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: before }, sessionId);
+  // `beforeWorker`: a script run in every dedicated Worker of the tab before
+  // its own code (the Worker waits for it), e.g. to remove a feature there.
+  if (beforeWorker) {
+    cdp.events.add((method, params) => {
+      if (method !== 'Target.attachedToTarget' || params.targetInfo.type !== 'worker') return;
+      const s = params.sessionId;
+      cdp.send('Runtime.evaluate', { expression: beforeWorker }, s)
+        .finally(() => cdp.send('Runtime.runIfWaitingForDebugger', {}, s).catch(() => {}));
+    });
+    await cdp.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, sessionId);
+  }
   await cdp.send('Page.navigate', { url }, sessionId);
   return { page, targetId };
 }

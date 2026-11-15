@@ -13,6 +13,12 @@
 // 2. With --recording=FILE (a `vetro boot --gpu=gfxstream --gl-record=FILE`
 //    run), the whole guest session is replayed: no op may fail, the frames
 //    are counted and the last one is written to FILE.png.
+// 3. The graphics mode the app chooses (no image needed: the Worker decides
+//    before it fetches the image): `&gpu=webgl` on a Chrome with WebGL2 ->
+//    'webgl'; without `gpu=` -> DEFAULT_GPU (web/app/main.mjs); on a Chrome
+//    without WebGL2 in its Workers (getContext('webgl2') gives null, as
+//    where the GPU is blocklisted) -> 'swiftshader' by itself,
+//    with the reason, for both.
 // Also checks that web/node/android.mjs and vetro-machine agree on the boot
 // parameters of the accelerated path.
 
@@ -21,7 +27,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { deflateSync } from 'node:zlib';
-import { serve } from '../../tools/web-serve.mjs';
+import { appMounts, serve } from '../../tools/web-serve.mjs';
 import { closeChrome, findChrome, launch, openPage } from './chrome.mjs';
 import { GFXSTREAM_PARAMS } from '../../web/node/android.mjs';
 import { check, Fail, root, run } from './lib.mjs';
@@ -176,4 +182,46 @@ run(async () => {
     await closeChrome(proc, cdp, profile);
     srv.close();
   }
+  await graphicsMode(chrome);
 });
+
+/**
+ * The mode the app's Worker reports for the AOSP image, in a Chrome with or
+ * without WebGL2 (3 in the header). The manifest does not exist: the mode is
+ * chosen before the image is fetched.
+ */
+async function graphicsMode(chrome) {
+  const NO_WEBGL2 = `{ const g = OffscreenCanvas.prototype.getContext;
+    OffscreenCanvas.prototype.getContext = function (kind, ...a) { return kind === 'webgl2' ? null : g.call(this, kind, ...a); }; }`;
+  const main = readFileSync(join(root, 'web/app/main.mjs'), 'utf8');
+  const def = /export const DEFAULT_GPU = (null|'webgl');/.exec(main)?.[1];
+  check(def, 'DEFAULT_GPU not found in web/app/main.mjs');
+  const srv = await serve({ mounts: appMounts() });
+  try {
+    for (const webgl of [true, false]) {
+      const profile = mkdtempSync(join(tmpdir(), 'vetro-chrome-'));
+      const { proc, cdp } = await launch(chrome, profile, { webgl: true });
+      try {
+        for (const q of ['&gpu=webgl', '', '&gpu=swiftshader']) {
+          const { page } = await openPage(cdp, `${srv.url}/app/?os=android&cpus=1&manifest=${encodeURIComponent(`${srv.url}/none/manifest.json`)}${q}`, {
+            beforeWorker: webgl ? null : NO_WEBGL2,
+          });
+          const asked = q === '&gpu=webgl' || (q === '' && def === "'webgl'");
+          // The Worker answers with a `gpu` message only on the accelerated
+          // path, right after loading vetro-wasm and before the image (whose
+          // manifest is missing here: the page then says so).
+          await page.waitFor('the missing manifest', () => page.eval("document.getElementById('status')?.textContent.includes('manifest')"), 60_000);
+          const r = (await page.eval('window.vetroState?.gpu ?? null')) ?? { mode: 'none' };
+          const want = !asked ? 'none' : webgl ? 'webgl' : 'swiftshader';
+          check(r?.mode === want, `Chrome ${webgl ? 'with' : 'without'} WebGL2, query '${q}': mode ${JSON.stringify(r)}, expected ${want}`);
+          if (want === 'swiftshader') check(r.why, 'the fallback gives no reason');
+          console.log(`graphics mode, Chrome ${webgl ? 'with' : 'without'} WebGL2, '${q || '(default)'}': ${r.mode}${r.why ? ` (${r.why})` : ''}`);
+        }
+      } finally {
+        await closeChrome(proc, cdp, profile);
+      }
+    }
+  } finally {
+    srv.close();
+  }
+}

@@ -320,6 +320,8 @@ fn snapshot_keeps_contexts_resources_and_renderer_state() {
     assert_eq!(other.scanout_3d(0), Some((40, Rect::new(0, 0, 64, 64))));
     assert_eq!(other.renderer_as::<Mock>().unwrap().state, 1234);
     assert_eq!(other.backend_as::<MemDisplay>().unwrap().updates_3d, 1, "display told again");
+    // The restored scanout is presented again (the guest may not flush soon).
+    assert_eq!(other.renderer_as::<Mock>().unwrap().log, ["flush 0 40 64x64+0+0"]);
 
     // A 2D-only device keeps the old format: its snapshot doesn't restore
     // into a 3D one (the configuration differs, the key already says so).

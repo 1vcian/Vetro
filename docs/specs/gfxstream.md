@@ -53,8 +53,11 @@ and CLAMP_TO_EDGE, like upstream.
 TRANSFER_TO_HOST_3D of a ColorBuffer uploads the box (rows `stride` apart in
 the backing, or width × bytes per pixel); TRANSFER_FROM_HOST_3D reads the box
 back (a readback). Texture row 0 = the first row in guest memory, as
-upstream; GL rendering into a window surface puts GL's y = 0 at row 0, and
-presenting draws row 0 at the bottom of the screen (upstream's post).
+upstream, and every ColorBuffer holds its image **top row first**, Android's
+buffer order (gralloc memory, CPU uploads, SurfaceFlinger's sampling and its
+own render target, an FBO with Skia's top-left origin): window surfaces are
+turned top row first when they are flushed (below), and presenting draws row
+0 at the top of the screen.
 
 ## EGL objects (renderControl)
 - Configs (`caps::CONFIGS`): RGBA8888, RGBX8888, RGB565, each without and
@@ -63,11 +66,25 @@ presenting draws row 0 at the bottom of the screen (upstream's post).
   sorting rules and accepts unknown attributes.
 - Contexts: a share group (new or the `share` context's), a host vertex array
   standing for vertex array 0, the GL state vector (`state::GlState`).
-- Window surfaces: a host framebuffer (and a depth-stencil renderbuffer if
-  the config has depth or stencil) on the current ColorBuffer
-  (`rcSetWindowColorBuffer` → `SurfaceAttach`); framebuffer 0 of a context
-  is its draw/read surface's framebuffer. EGL's first make-current with a
-  surface sets viewport and scissor to its size.
+- Window surfaces, like upstream's: a host framebuffer on the surface's
+  **own color texture** (RGBA8, sized by `rcSetWindowColorBuffer` →
+  `SurfaceAttach`, allocated again only when the size changes) and a
+  depth-stencil renderbuffer if the config has depth or stencil;
+  framebuffer 0 of a context is its draw/read surface's framebuffer. The
+  texture keeps what was drawn across swaps (the configs offer
+  `EGL_SWAP_BEHAVIOR_PRESERVED_BIT` and the guest's EGL reports
+  `EGL_BUFFER_PRESERVED`, so HWUI redraws only the damaged region).
+  `rcFlushWindowColorBuffer(Async)` (eglSwapBuffers) copies it into the
+  current ColorBuffer upside down (`SurfaceFlush`, a flipped
+  `blitFramebuffer`; upstream copies at the same point,
+  `ColorBufferGl::blitFromCurrentReadBuffer`): GL drew bottom row first,
+  the buffer must hold the top row first, as a real driver's window surface
+  does. A pbuffer bound as a texture or renderbuffer (`rcBindTexture`,
+  `rcBindRenderbuffer` of its own `rcCreateColorBuffer` ColorBuffer) gets
+  the copy unflipped first; gralloc buffers (virtio-gpu resources) never do:
+  SurfaceFlinger binds them while the app's surface may still point at
+  them. EGL's first make-current with a surface sets viewport and scissor to
+  its size.
 - `rcBindTexture(cb)`: the guest texture bound to TEXTURE_2D on the active
   unit becomes an alias of the ColorBuffer's texture (the EGLImage of a
   gralloc buffer); `rcBindRenderbuffer(cb)`: attachments of the current
@@ -129,8 +146,8 @@ referenced by (offset, length), 8-aligned. Codes: `exec::CODES`, exported to
 global; the executor keeps them in one array. Client-side vertex data and
 inline indices use the executor's scratch buffers and name the binding to
 restore. Helper ops (`TexAlloc`, `TexUpload`, `ReadTexture`,
-`SurfaceAttach`, `Present`) save and restore every binding and pixel-store
-value they touch.
+`SurfaceAttach`, `SurfaceFlush`, `Present`) save and restore every binding
+and pixel-store value they touch.
 
 All guest contexts share the executor's one WebGL2 context: when a render
 thread whose context is not the active one sends a call,
@@ -142,10 +159,19 @@ executor; `vetro_gl_stats`, `vetro_gl_take_log`; `vetro_display_is_3d`,
 `vetro_display_read_3d` (host readback of the scanout for the home-screen
 detector and screenshots: rows from the top). `?gpu=webgl` (Android only):
 the Worker creates `WebGlExecutor` on an `OffscreenCanvas`, adds
-`GFXSTREAM_PARAMS` to the boot parameters, turns snapshots off, and sends
-presented frames as ImageBitmaps (`frame3d`); `drawBitmap` on both
-presenters. Without WebGL2 (or below the limits) it falls back to
-SwiftShader and says why (`gpu` message, `vetroState.gpu`).
+`GFXSTREAM_PARAMS` to the boot parameters and sends presented frames as
+ImageBitmaps (`frame3d`, counted in `vetroState.perf` like 2D frames);
+`drawBitmap` on both presenters. `?gpu=swiftshader` asks for SwiftShader;
+without `gpu=` the page uses `DEFAULT_GPU` (web/app/main.mjs). Without WebGL2
+(or below the limits) it falls back to SwiftShader by itself and says why
+(`gpu` message, `vetroState.gpu`): no choice for the user. Snapshots are on:
+their key differs from the SwiftShader path's (the `GPU_3D` device bit and
+the boot parameters), so each path finds only its own snapshots and its own
+prebuilt one. A restore presents the restored scanout at once (the guest may
+not flush again until something changes). The prebuilt snapshot of this
+path is made by the app itself in headless Chrome
+(`tools/aosp/prebuilt-chrome.mjs`): the GPU contents need a WebGL2 context
+to be read back, which the Node tool does not have.
 
 ## Snapshots (snapshot.rs)
 Written only by a machine whose GPU has virgl (the 2D format is unchanged).
@@ -155,9 +181,11 @@ whole `Gl` (names, shaders with their text, programs with their link results
 and uniform values, per-context state vectors, vertex array and framebuffer
 records, texture/renderbuffer/sampler specifications, surfaces, ColorBuffers,
 images, owners). Contents read back at save time, in one batch through the
-executor (`ReadTexture` for ColorBuffers, `ReadTextureLevel` as RGBA8 for 2D
-and cube levels of 8-bit unsigned formats, `ReadBufferData` for buffers),
-compressed. A restore sends `ResetAll`, recreates every object under its old
+executor (`ReadTexture` for ColorBuffers and for window surfaces' own color
+textures, `ReadTextureLevel` as RGBA8 for 2D and cube levels of 8-bit
+unsigned formats, including the levels `glTexStorage2D` allocates (RGBA8,
+SRGB8_ALPHA8, RGB8, RG8, R8: Skia's glyph atlases and bitmaps),
+`ReadBufferData` for buffers), compressed (gfxstream snapshot version 2). A restore sends `ResetAll`, recreates every object under its old
 id (textures with their levels and parameters, buffers with `BufferUpload`,
 renderbuffer storage, samplers, shaders compiled, programs relinked with the
 same attribute locations and uniform values, framebuffer attachments,
@@ -166,8 +194,6 @@ call of each context applies its state vector again. Not restored: depth and
 stencil contents, renderbuffer contents, float or packed-format texture
 contents, 3D and array texture contents, queries, transform feedback.
 Readbacks at save time are host reads (like screenshots), not guest inputs.
-In the page the Worker still turns snapshots off on this path until the
-snapshot key and the prebuilt snapshot (ADR 0031) cover it.
 
 ## Natively
 `vetro boot --gpu=gfxstream [--gl-record=FILE] [--gl-trace=1]`: virgl GPU,
@@ -191,7 +217,7 @@ Chrome with `node tests/web/gl.mjs --recording=FILE`.
   expected image.
 
 ## Missing (next slices)
-Readbacks in the replay log, snapshots in the page, native fence sync, host
+Readbacks in the replay log, native fence sync, host
 composition, compressed textures (ETC2),
 YUV buffers, program binaries, transform feedback varyings, uniform block
 data sizes beyond a bound, Vulkan (gfxstream Vulkan → WebGPU, separate ADR).

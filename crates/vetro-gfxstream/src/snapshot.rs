@@ -23,7 +23,7 @@ use crate::gl::{
 use crate::state::{self, GlState};
 use crate::{Gfxstream, Pipe, Res, ResKind, VCtx, glsl};
 
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 // ---- small helpers ----
 
@@ -280,6 +280,7 @@ fn from_rgba(fmt: u32, rgba: &[u8]) -> Vec<u8> {
 
 enum Item {
     Cb(u32, usize),
+    Surface(u32, usize),
     Level { tex: u32, image: u32, level: u32, n: usize },
     Buffer(u32, usize),
 }
@@ -301,6 +302,17 @@ impl Gfxstream {
                     n,
                 );
                 items.push(Item::Cb(h, n));
+            }
+        }
+        for (&h, s) in &gl.surfaces {
+            if s.cb != 0 && s.width > 0 && s.height > 0 {
+                let n = (s.width * s.height * 4) as usize;
+                ops.op_read(
+                    Code::ReadTexture,
+                    &[s.color, 0, 0, s.width, s.height, 0x1908, 0x1401, n as u32],
+                    n,
+                );
+                items.push(Item::Surface(h, n));
             }
         }
         for s in gl.shares.values() {
@@ -339,9 +351,11 @@ impl Gfxstream {
         let mut cbs = BTreeMap::new();
         let mut levels = BTreeMap::new();
         let mut bufs = BTreeMap::new();
+        let mut surfs = BTreeMap::new();
         for it in &items {
             let (n, slot) = match it {
                 Item::Cb(h, n) => (*n, (0u8, *h, 0, 0)),
+                Item::Surface(h, n) => (*n, (3, *h, 0, 0)),
                 Item::Level { tex, image, level, n } => (*n, (1, *tex, *image, *level)),
                 Item::Buffer(id, n) => (*n, (2, *id, 0, 0)),
             };
@@ -354,8 +368,11 @@ impl Gfxstream {
                 1 => {
                     levels.insert((slot.1, slot.2, slot.3), bytes);
                 }
-                _ => {
+                2 => {
                     bufs.insert(slot.1, bytes);
+                }
+                _ => {
+                    surfs.insert(slot.1, bytes);
                 }
             }
         }
@@ -371,6 +388,10 @@ impl Gfxstream {
         });
         w.seq(&bufs, |w, (&id, b)| {
             w.u32(id);
+            vetro_snapshot::compress(w, b);
+        });
+        w.seq(&surfs, |w, (&h, b)| {
+            w.u32(h);
             vetro_snapshot::compress(w, b);
         });
 
@@ -447,6 +468,8 @@ impl Gfxstream {
             .collect();
         let bufs: BTreeMap<u32, Vec<u8>> =
             r.seq(4, |r| Ok((r.u32()?, vetro_snapshot::decompress(r)?)))?.into_iter().collect();
+        let surfs: BTreeMap<u32, Vec<u8>> =
+            r.seq(4, |r| Ok((r.u32()?, vetro_snapshot::decompress(r)?)))?.into_iter().collect();
 
         let n = r.len_of(4)?;
         let mut ctxs = BTreeMap::new();
@@ -516,7 +539,7 @@ impl Gfxstream {
         self.resources = resources;
         self.scanouts = scanouts;
         restore_gl(&mut self.gl, r)?;
-        rebuild(&mut self.gl, &cbs, &levels, &bufs);
+        rebuild(&mut self.gl, &cbs, &levels, &bufs, &surfs);
         Ok(())
     }
 }
@@ -655,7 +678,7 @@ fn save_gl(gl: &Gl, w: &mut Writer) {
     });
     w.seq(&gl.surfaces, |w, (&h, s)| {
         w.u32(h);
-        for x in [s.config, s.width, s.height, s.cb, s.fbo, s.depth] {
+        for x in [s.config, s.width, s.height, s.cb, s.fbo, s.depth, s.color] {
             w.u32(x);
         }
     });
@@ -809,7 +832,7 @@ fn restore_gl(gl: &mut Gl, r: &mut Reader<'_>) -> Result<()> {
         ctxs.insert(h, c);
     }
     let mut surfaces = BTreeMap::new();
-    for _ in 0..r.len_of(28)? {
+    for _ in 0..r.len_of(32)? {
         let h = r.u32()?;
         let s = Surface {
             config: r.u32()?,
@@ -818,6 +841,7 @@ fn restore_gl(gl: &mut Gl, r: &mut Reader<'_>) -> Result<()> {
             cb: r.u32()?,
             fbo: r.u32()?,
             depth: r.u32()?,
+            color: r.u32()?,
         };
         surfaces.insert(h, s);
     }
@@ -874,6 +898,7 @@ fn rebuild(
     cbs: &BTreeMap<u32, Vec<u8>>,
     levels: &BTreeMap<(u32, u32, u32), Vec<u8>>,
     bufs: &BTreeMap<u32, Vec<u8>>,
+    surfs: &BTreeMap<u32, Vec<u8>>,
 ) {
     let o = &gl.ops;
     o.op(Code::ResetAll, &[]);
@@ -1070,11 +1095,16 @@ fn rebuild(
         }
         o.op(Code::BindVertexArray, &[0]);
     }
-    for s in gl.surfaces.values() {
+    for (h, s) in &gl.surfaces {
         create(Kind::Framebuffer, s.fbo, 0);
         create(Kind::Renderbuffer, s.depth, 0);
-        let tex = gl.cbs.get(&s.cb).map_or(0, |c| c.id);
-        o.op(Code::SurfaceAttach, &[s.fbo, tex, s.depth, s.width, s.height]);
+        create(Kind::Texture, s.color, 0);
+        if s.cb != 0 {
+            o.op(Code::SurfaceAttach, &[s.fbo, s.color, s.depth, s.width, s.height]);
+            if let Some(px) = surfs.get(h) {
+                o.op_blob(Code::TexUpload, &[s.color, 0, 0, s.width, s.height, 0x1908, 0x1401], px);
+            }
+        }
     }
     o.op(Code::ResetState, &[]);
     gl.applied = GlState::default();

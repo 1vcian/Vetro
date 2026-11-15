@@ -120,3 +120,4 @@ export const ResetState = 116;
 export const ReadTextureLevel = 117;
 export const ReadBufferData = 118;
 export const BufferUpload = 119;
+export const SurfaceFlush = 120;

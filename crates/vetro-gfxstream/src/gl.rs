@@ -254,6 +254,9 @@ pub struct Surface {
     pub fbo: u32,
     /// Depth-stencil renderbuffer (0 if the config has none).
     pub depth: u32,
+    /// The surface's own color texture (what GL draws into; copied into the
+    /// ColorBuffer at each flush).
+    pub color: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -780,8 +783,13 @@ impl Gl {
                 }
             }
             rc::rcSetWindowColorBuffer => self.surface_set_cb(a.u(0), a.u(1)),
-            rc::rcFlushWindowColorBuffer => r.ret = 0,
-            rc::rcFlushWindowColorBufferAsync | rc::rcFlushWindowColorBufferAsyncWithFrameNumber => {}
+            rc::rcFlushWindowColorBuffer => {
+                self.surface_flush(a.u(0));
+                r.ret = 0;
+            }
+            rc::rcFlushWindowColorBufferAsync | rc::rcFlushWindowColorBufferAsyncWithFrameNumber => {
+                self.surface_flush(a.u(0));
+            }
             rc::rcMakeCurrent | rc::rcMakeCurrentAsync => {
                 let ok = self.make_current(t, a.u(0), a.u(1), a.u(2));
                 r.ret = ok as u64;
@@ -992,8 +1000,9 @@ impl Gl {
         let fbo = self.create(Kind::Framebuffer, 0);
         let cfg = crate::caps::CONFIGS.get(config as usize).copied().unwrap_or(crate::caps::CONFIGS[0]);
         let depth = if cfg.depth > 0 || cfg.stencil > 0 { self.create(Kind::Renderbuffer, 0) } else { 0 };
+        let color = self.create(Kind::Texture, 0);
         let h = self.new_handle();
-        self.surfaces.insert(h, Surface { config, width, height, cb: 0, fbo, depth });
+        self.surfaces.insert(h, Surface { config, width, height, cb: 0, fbo, depth, color });
         h
     }
 
@@ -1001,17 +1010,56 @@ impl Gl {
         if let Some(s) = self.surfaces.remove(&h) {
             self.delete(Kind::Framebuffer, s.fbo);
             self.delete(Kind::Renderbuffer, s.depth);
+            self.delete(Kind::Texture, s.color);
         }
     }
 
+    /// rcSetWindowColorBuffer: the ColorBuffer the surface's next flush
+    /// goes to. GL keeps drawing into the surface's own color texture, so
+    /// what the guest drew before the swap is still there after it
+    /// (EGL_SWAP_BEHAVIOR_PRESERVED, which HWUI relies on to redraw only
+    /// the damaged region), as with upstream's window surfaces.
     fn surface_set_cb(&mut self, surface: u32, cb: u32) {
-        let Some((w, h, tex)) = self.cbs.get(&cb).map(|c| (c.width, c.height, c.id)) else { return };
+        let Some((w, h)) = self.cbs.get(&cb).map(|c| (c.width, c.height)) else { return };
         let Some(s) = self.surfaces.get_mut(&surface) else { return };
         s.cb = cb;
         s.width = w;
         s.height = h;
-        let (fbo, depth) = (s.fbo, s.depth);
-        self.ops.op(Code::SurfaceAttach, &[fbo, tex, depth, w, h]);
+        let (fbo, depth, color) = (s.fbo, s.depth, s.color);
+        self.ops.op(Code::SurfaceAttach, &[fbo, color, depth, w, h]);
+    }
+
+    /// rcFlushWindowColorBuffer (eglSwapBuffers): the surface's color is
+    /// copied into its ColorBuffer, like upstream
+    /// (`ColorBufferGl::blitFromCurrentReadBuffer`), upside down: GL drew
+    /// the window bottom row first, while Android's buffers, like a real
+    /// driver's window surfaces, hold the image's top row first.
+    /// SurfaceFlinger samples app buffers that way, renders its own target
+    /// that way (an FBO, top-left origin) and the scanout is read that way.
+    fn surface_flush(&mut self, surface: u32) {
+        self.surface_copy(surface, true);
+    }
+
+    fn surface_copy(&mut self, surface: u32, flip: bool) {
+        let Some((fbo, cb)) = self.surfaces.get(&surface).map(|s| (s.fbo, s.cb)) else { return };
+        let Some((id, w, h)) = self.cbs.get(&cb).map(|c| (c.id, c.width, c.height)) else { return };
+        self.ops.op(Code::SurfaceFlush, &[fbo, id, w, h, flip as u32]);
+    }
+
+    /// A pbuffer bound as a texture (eglBindTexImage = rcBindTexture of
+    /// its ColorBuffer) or a renderbuffer: its color goes to the ColorBuffer
+    /// first, rows as GL drew them. Pbuffers own ColorBuffers made with
+    /// rcCreateColorBuffer; window surfaces draw into gralloc buffers
+    /// (virtio-gpu resources), which SurfaceFlinger binds while the app's
+    /// surface may still point at them: those keep what the flush copied.
+    fn surface_to_cb(&mut self, cb: u32) {
+        if self.cbs.get(&cb).is_none_or(|c| c.resource) {
+            return;
+        }
+        let pbuffers: Vec<u32> = self.surfaces.iter().filter(|(_, s)| s.cb == cb).map(|(&h, _)| h).collect();
+        for s in pbuffers {
+            self.surface_copy(s, false);
+        }
     }
 
     fn make_current(&mut self, t: &mut Thread, ctx: u32, draw: u32, read: u32) -> bool {
@@ -1056,6 +1104,7 @@ impl Gl {
     /// rcBindTexture: the texture bound to TEXTURE_2D on the active unit of
     /// the current context becomes the ColorBuffer's texture.
     fn bind_cb_texture(&mut self, t: &Thread, cb: u32) {
+        self.surface_to_cb(cb);
         let Some(tex) = self.cbs.get(&cb).map(|c| c.id) else { return };
         if !self.activate(t) {
             return;
@@ -1082,6 +1131,7 @@ impl Gl {
     /// rcBindRenderbuffer: the current renderbuffer is backed by the
     /// ColorBuffer (attachments of it attach the ColorBuffer's texture).
     fn bind_cb_renderbuffer(&mut self, t: &Thread, cb: u32) {
+        self.surface_to_cb(cb);
         let Some(tex) = self.cbs.get(&cb).map(|c| c.id) else { return };
         let Some(c) = self.ctxs.get(&t.ctx) else { return };
         let rb = c.state.renderbuffer;
@@ -2250,6 +2300,7 @@ impl Gl {
                 let v: Vec<u32> = (0..5).map(|k| a.u(k)).collect();
                 if let Some(ti) = self.tex_info_mut(t, v[0]) {
                     ti.storage = Some([v[1], v[2], v[3], v[4], 1]);
+                    storage_levels(ti, v[0], v[1], v[2], v[3], v[4]);
                 }
                 self.ops.op(Code::TexStorage2D, &v);
             }
@@ -3055,5 +3106,21 @@ impl Gl {
             }
         }
         used
+    }
+}
+
+/// glTexStorage2D: the specification of every level (and cube face) it
+/// allocates, so snapshots read their contents back and upload them again
+/// (Skia allocates its glyph atlases and most textures this way). Formats
+/// that cannot be read back get no level records, as before.
+fn storage_levels(ti: &mut TexInfo, target: u32, levels: u32, ifmt: u32, w: u32, h: u32) {
+    let Some((fmt, ty)) = crate::formats::storage_format(ifmt) else { return };
+    let images: Vec<u32> = if target == 0x8513 { (0x8515..=0x851A).collect() } else { vec![target] };
+    for level in 0..levels.min(16) {
+        let (lw, lh) = ((w >> level).max(1), (h >> level).max(1));
+        for &image in &images {
+            ti.levels
+                .insert((image, level), LevelSpec { ifmt, w: lw, h: lh, d: 1, fmt, ty, compressed: None });
+        }
     }
 }

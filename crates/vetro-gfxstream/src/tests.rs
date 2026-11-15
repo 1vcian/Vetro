@@ -205,7 +205,8 @@ fn surface_program_and_frame() {
     assert_eq!(codes[1], Code::TexAlloc);
     let cb_tex = o[0].1[1];
     let attach = o.iter().find(|(c, _)| *c == Code::SurfaceAttach).unwrap();
-    assert_eq!(attach.1[1], cb_tex, "surface framebuffer on the ColorBuffer");
+    let color = attach.1[1];
+    assert_ne!(color, cb_tex, "the surface draws into its own color texture, not the ColorBuffer");
     assert_eq!(&attach.1[3..5], &[64, 32]);
     // Viewport from the surface at the first make-current.
     assert!(o.iter().any(|(c, a)| *c == Code::Viewport && a == &[0, 0, 64, 32]));
@@ -219,12 +220,26 @@ fn surface_program_and_frame() {
     assert!(codes.contains(&Code::Uniformfv));
     assert!(codes.contains(&Code::VertexData));
     assert!(codes.contains(&Code::DrawArrays));
-    let present = o.iter().find(|(c, _)| *c == Code::Present).unwrap();
-    assert_eq!(present.1, [cb_tex, 64, 32]);
+    // The flush copies the surface into the ColorBuffer upside down (top
+    // row first, Android's buffer order), after the draw and before the
+    // present.
+    let flip = codes.iter().position(|c| *c == Code::SurfaceFlush).expect("the flush copies the surface");
+    assert_eq!(o[flip].1, [attach.1[0], cb_tex, 64, 32, 1]);
+    assert!(codes.iter().rposition(|c| *c == Code::DrawArrays).unwrap() < flip);
+    let present = o.iter().position(|(c, _)| *c == Code::Present).unwrap();
+    assert!(flip < present);
+    assert_eq!(o[present].1, [cb_tex, 64, 32]);
+    // SurfaceFlinger binding the queued gralloc buffer while the app's
+    // surface still points at it does not copy the surface over it again
+    // (only a pbuffer's own ColorBuffer gets that).
+    gu.send(1, &call(rc::rcBindTexture, &[V::S(7)]));
+    Renderer3d::flush(&mut gu.gfx, 0, 7, Rect::new(0, 0, 64, 32));
+    let flushes = ops(&log).iter().filter(|(c, _)| *c == Code::SurfaceFlush).count();
+    assert_eq!(flushes, 1, "only the swap copies the window surface");
     // The shader text given to WebGL uses sampler2D.
     let lb = log.borrow();
-    let blob = &lb.batches.last().unwrap().1;
-    let text = String::from_utf8_lossy(blob);
+    let blob: Vec<u8> = lb.batches.iter().flat_map(|b| b.1.clone()).collect();
+    let text = String::from_utf8_lossy(&blob);
     assert!(text.contains("uniform sampler2D uTex"));
     assert!(!text.contains("GL_OES_EGL_image_external"));
     drop(lb);
@@ -353,6 +368,17 @@ fn snapshot_rebuilds_objects_and_the_guest_goes_on() {
     let mut s = call(g::glBindBuffer, &[V::S(0x8892), V::S(u64::from(buf))]);
     s.extend(call(g::glBufferData, &[V::S(0x8892), V::S(12), V::B(&[1; 12]), V::S(0x88E4)]));
     gu.send(1, &s);
+    // An immutable-storage texture (Skia's glyph atlases: glTexStorage2D
+    // R8, contents by glTexSubImage2D only): its contents come back too.
+    let mut s = call(g::glGenTextures, &[V::S(1), V::O(4)]);
+    s.extend(call(g::glFinishRoundTrip, &[]));
+    gu.send(1, &s);
+    let atlas = u32::from_le_bytes(gu.recv(1, 8)[..4].try_into().unwrap());
+    let mut s = call(g::glBindTexture, &[V::S(0x0DE1), V::S(u64::from(atlas))]);
+    s.extend(call(g::glTexStorage2D, &[V::S(0x0DE1), V::S(1), V::S(0x8229), V::S(32), V::S(16)]));
+    gu.send(1, &s);
+    let atlas_id =
+        gu.gfx.gl.shares.values().find_map(|s| s.textures.get(atlas)).expect("the atlas' host texture");
     let cb7 = gu.gfx.gl.cbs[&7].id;
     let prog_ids: Vec<u32> =
         gu.gfx.gl.shares.values().flat_map(|s| s.programs.values().map(|p| p.id)).collect();
@@ -375,6 +401,22 @@ fn snapshot_rebuilds_objects_and_the_guest_goes_on() {
         assert!(o.iter().any(|(c, a)| *c == Code::LinkProgram && a == &[*id]), "program {id} relinked");
     }
     assert!(o.iter().any(|(c, a)| *c == Code::BufferUpload && a[2] == 0x88E4), "buffer content back");
+    assert!(
+        ops(&log)
+            .iter()
+            .any(|(c, a)| *c == Code::ReadTextureLevel && a[0] == atlas_id && a[3..5] == [32, 16]),
+        "the storage texture is read back at the save"
+    );
+    let sub = o
+        .iter()
+        .find(|(c, a)| {
+            *c == Code::TexSubImage2D && a[..2] == [0x0DE1, 0] && a[4..8] == [32, 16, 0x1903, 0x1401]
+        })
+        .expect("the storage texture's level uploaded as RED bytes");
+    assert!(
+        o.iter().position(|(c, a)| *c == Code::TexStorage2D && a[2] == 0x8229)
+            < o.iter().position(|x| x == sub)
+    );
     assert!(o.iter().any(|(c, _)| *c == Code::SurfaceAttach));
     assert!(saves > 0);
 

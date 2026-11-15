@@ -103,7 +103,9 @@
 // (web/app/gl.mjs). A presented scanout reaches the page as an ImageBitmap
 // (`frame3d`), not as RGBA rectangles. Without WebGL2 or with limits below
 // the fixed profile the Worker falls back to SwiftShader (`gpu` status).
-// Snapshots are off on this path (the decoder cannot save its state yet).
+// Snapshots include the decoder's state and the GPU's contents (read back from
+// WebGL2 at save time, uploaded to a fresh context at restore); their key
+// differs from the SwiftShader path's (devices and boot parameters).
 
 import { DEV, INOTIFY, INPUT, instantiate, Machine, setGlExecutor, TIMELINE_EFFECT, TIMELINE_INPUT } from '../node/vetro.mjs';
 import { WebGlExecutor } from './gl.mjs';
@@ -319,7 +321,7 @@ function makeGlExecutor(c) {
     probe.getExtension('WEBGL_lose_context')?.loseContext();
     if (short.length) return { why: `WebGL2 limits below the profile: ${short.join(', ')}` };
     const exec = new WebGlExecutor(new OffscreenCanvas(c.width, c.height), (bitmap, width, height) => {
-      post({ type: 'frame3d', bitmap, width, height }, [bitmap]);
+      post({ type: 'frame3d', bitmap, width, height, at: performance.timeOrigin + performance.now() }, [bitmap]);
     });
     return { exec };
   } catch (e) {
@@ -428,6 +430,10 @@ function getSaver() {
  * machine refuses it (then the caller saves synchronously).
  */
 async function saveSnapshotBackground(why) {
+  // The accelerated path saves in the foreground: a deferred save's head
+  // would hold the GPU contents uncompressed (hundreds of MiB more in wasm32
+  // memory), and the two have not been run together yet (ADR 0047).
+  if (glExec) return false;
   const w = await getSaver();
   if (!w) return false;
   persistOverlays();
@@ -530,8 +536,6 @@ async function start(c) {
     if (g.exec) {
       glExec = g.exec;
       setGlExecutor(glExec);
-      // The decoder's state is not in snapshots yet (ADR 0037).
-      c.snapshot = false;
       post({ type: 'gpu', mode: 'webgl' });
     } else {
       c.gpu = null;
@@ -560,9 +564,14 @@ async function start(c) {
       };
       // Android: the key does not depend on where the image is served from,
       // and is the prebuilt snapshot's key too (ADR 0031).
-      snapKey = android
-        ? (await androidSnapshotKey(m, { machine: c, devices: devicesOf(c), manifest: android.manifest, images: android.images, params: android.params, layout: sources[0] })).key
-        : await snapshotKey({ ...common, kernel: await sha256Hex(kernel), initrd: initrd ? await sha256Hex(initrd) : null, cmdline: c.cmdline });
+      if (android) {
+        const k = await androidSnapshotKey(m, { machine: c, devices: devicesOf(c), manifest: android.manifest, images: android.images, params: android.params, layout: sources[0] });
+        snapKey = k.key;
+        // For tools (tools/aosp/prebuilt-chrome.mjs): the key and its parts.
+        post({ type: 'snapshot-key', key: k.key, parts: k.parts });
+      } else {
+        snapKey = await snapshotKey({ ...common, kernel: await sha256Hex(kernel), initrd: initrd ? await sha256Hex(initrd) : null, cmdline: c.cmdline });
+      }
       times.key = performance.now() - t1;
       const t2 = performance.now();
       let meta = await store.loadMeta(snapKey);

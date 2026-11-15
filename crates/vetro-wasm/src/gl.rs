@@ -61,8 +61,8 @@ pub fn enable(gpu: &mut VirtioGpu) -> bool {
 }
 
 /// The pixels of the ColorBuffer shown on `scanout`, as RGBA rows from the
-/// top of the screen (the texture's row 0 is the bottom, like upstream's
-/// post). A host read for the page (screenshots, home-screen detection):
+/// top of the screen (the texture's row 0 is the top: Android's buffer
+/// order, see `Gl::surface_flush`). A host read for the page (screenshots, home-screen detection):
 /// never visible to the guest.
 pub fn scanout_rgba(gpu: &mut VirtioGpu, scanout: u32) -> Option<(u32, u32, Vec<u8>)> {
     let (res, rect) = gpu.scanout_3d(scanout)?;
@@ -79,8 +79,8 @@ pub fn scanout_rgba(gpu: &mut VirtioGpu, scanout: u32) -> Option<(u32, u32, Vec<
     let (rw, rh) = (rect.width.min(w), rect.height.min(h));
     let mut out = vec![0u8; (rw * rh * 4) as usize];
     for y in 0..rh {
-        // Scanout row y (from the top) = texture row h - 1 - (rect.y + y).
-        let src_row = h - 1 - (rect.y + y);
+        // Scanout row y (from the top) = texture row rect.y + y.
+        let src_row = rect.y + y;
         let s = ((src_row * w + rect.x) * 4) as usize;
         let d = (y * rw * 4) as usize;
         out[d..d + (rw * 4) as usize].copy_from_slice(&px[s..s + (rw * 4) as usize]);
