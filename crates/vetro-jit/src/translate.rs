@@ -510,7 +510,7 @@ pub fn discover(
 const L_STATE: u32 = 0;
 const L_NZCV: u32 = 33;
 const L_T64: u32 = 34;
-const N_T64: u32 = 18;
+const N_T64: u32 = 19;
 /// `steps` at the start of the current base block.
 const L_STEPS: u32 = L_T64 + 10;
 /// `limit` of `JitState` (regions with several blocks).
@@ -526,6 +526,9 @@ const L_FR: u32 = L_T64 + 17;
 /// Current exit: new `pc`, steps done and code (for the shared tail).
 const L_EXIT_PC: u32 = L_T64 + 11;
 const L_EXIT_DONE: u32 = L_T64 + 12;
+/// The two values of an inline pair or Q load (ADR 0049), pushed after it.
+const L_P1: u32 = L_T64 + 9;
+const L_P2: u32 = L_T64 + 18;
 const L_T32: u32 = L_T64 + N_T64;
 const N_T32: u32 = 7;
 const L_EXIT_CODE: u32 = L_T32 + 4;
@@ -586,7 +589,30 @@ pub fn module(blocks: &[Region], memory: MemoryImport) -> Vec<u8> {
 /// `r<el>_<pc>` in the `name` section, so a V8 CPU profile attributes the
 /// time to guest code (measurement only: the code is the same).
 pub fn module_with(blocks: &[Region], memory: MemoryImport, names: bool) -> Vec<u8> {
+    module_chained(blocks, memory, names, None)
+}
+
+/// Like [`module_with`]; with `chaining` every `NEXT` exit chains (ADR 0049):
+/// it looks up the new `pc` in the jump cache as the dispatcher does and, on
+/// a hit with the steps within the limit, writes `JitState::entry` and goes
+/// on with a tail call: through the shared table (`Chaining::Shared`), or to
+/// the region if it is in this module (`Chaining::Own(slot)`: region `i` at
+/// table entry `slot + i`), otherwise it returns [`CHAIN`] with the jump cache
+/// word, and the dispatcher calls it without looking it up again. With
+/// `names` the tail calls are also counted (`area::CHAINS`), and the `NEXT`
+/// exits by kind (`area::EXITS`).
+pub fn module_chained(
+    blocks: &[Region],
+    memory: MemoryImport,
+    names: bool,
+    chaining: Option<Chaining>,
+) -> Vec<u8> {
     use ValType::*;
+    let base = match chaining {
+        Some(Chaining::Own(b)) => b,
+        _ => 0,
+    };
+    assert!(base as usize + blocks.len() <= TABLE_SIZE as usize);
     let mut m = Module::new();
     let t_blk = m.ty(&[I32], &[I32]);
     m.import_memory("env", "mem", memory);
@@ -595,22 +621,63 @@ pub fn module_with(blocks: &[Region], memory: MemoryImport, names: bool) -> Vec<
     // regions in order of first use (ADR 0026 for the fast paths, ADR 0041 for
     // all of them: fewer bytes and less work instantiating each module).
     let mut used = Vec::new();
-    let funcs: Vec<Func> = blocks.iter().map(|b| function_with(b, &mut used)).collect();
+    let shared = chaining == Some(Chaining::Shared);
+    if shared {
+        m.import_table("env", "tbl", TABLE_SIZE);
+    }
+    let chain = chaining.map(|_| Chain { base, n: blocks.len() as u32, ty: t_blk, count: names, shared });
+    let funcs: Vec<Func> = blocks.iter().map(|b| function_in(b, &mut used, chain)).collect();
     for id in used.iter().copied() {
         let (name, p, r) = rt_sig(id);
         let t = m.ty(&p, &r);
         m.import_func("rt", &name, t);
     }
+    let mut idxs = Vec::new();
     for (i, f) in funcs.into_iter().enumerate() {
         let idx = m.func(t_blk, f);
+        idxs.push(idx);
         m.export_func(&format!("b{i}"), idx);
         if names {
             let el = blocks[i].sys.map_or(0, |s| s.el);
             m.name_func(idx, &format!("r{el}_{:x}", blocks[i].pc));
         }
     }
+    if chaining.is_some() && !shared {
+        m.own_table(idxs);
+    }
     m.encode()
 }
+
+/// Chaining of a module's regions (ADR 0049): table entries `base..base + n`,
+/// the type of the region functions, and whether to count the tail calls
+/// (`area::CHAINS`, measurements).
+#[derive(Clone, Copy, Debug)]
+struct Chain {
+    base: u32,
+    n: u32,
+    ty: u32,
+    count: bool,
+    /// Through the shared table instead (`Chaining::Shared`).
+    shared: bool,
+}
+
+/// How the regions of a module chain (ADR 0049).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Chaining {
+    /// The module's own table, its regions at table entries `base..`; the
+    /// others through the dispatcher (`CHAIN`).
+    Own(u32),
+    /// The module imports `env.tbl` and calls any region there
+    /// ([`crate::Engine::shared_table`]).
+    Shared,
+}
+
+/// Exit code of a region for the dispatcher only (ADR 0049): bits 31:8 are
+/// those of the jump cache word of the next region (entry and table slot),
+/// whose `JitState::entry` the region already wrote after the same checks the
+/// dispatcher does. Never returned to the host.
+pub const CHAIN: u32 = 5;
+const _: () = assert!(CHAIN > YIELD && CHAIN < 0x100);
 
 /// Functions of the runtime module (ADR 0024), imported by every region
 /// module as `rt.<name>` at indices `0..N_RT` (in the same order):
@@ -821,6 +888,8 @@ pub fn runtime(memory: MemoryImport) -> Vec<u8> {
         let t = m.ty(&p, &r);
         assert_eq!(m.func(t, f), rt(id));
         m.export_func(&name, rt(id));
+        // Named in V8's CPU profiles too (compiled once: a few bytes).
+        m.name_func(rt(id), &format!("rt.{name}"));
     }
 
     let mut f = Func::default();
@@ -1222,6 +1291,10 @@ pub fn dispatcher_with(memory: MemoryImport, count: bool) -> Vec<u8> {
     f.local_get(s).i64_load(off::LIMIT).op(op::I64_GT_U);
     f.if_(BLOCK_EMPTY).i32_const(crate::NEXT as i32).op(op::RETURN).end();
     // entry = w >> 26; code = table[(w >> 8) & (TABLE_SIZE - 1)](s)
+    f.local_get(s).local_get(w).i32_const(26).op(op::I32_SHR_U).i32_store(off::ENTRY);
+    // A region that returns `CHAIN` already checked the next one and wrote
+    // its entry (ADR 0049): called at once with the slot of its code.
+    f.loop_(BLOCK_EMPTY);
     if count {
         f.local_get(s)
             .local_get(s)
@@ -1230,11 +1303,18 @@ pub fn dispatcher_with(memory: MemoryImport, count: bool) -> Vec<u8> {
             .op(op::I64_ADD)
             .i64_store(off::DISPATCHES);
     }
-    f.local_get(s).local_get(w).i32_const(26).op(op::I32_SHR_U).i32_store(off::ENTRY);
     f.local_get(s).local_get(w).i32_const(8).op(op::I32_SHR_U);
     f.i32_const((TABLE_SIZE - 1) as i32).op(op::I32_AND).call_indirect(t);
-    f.local_tee(code).if_(BLOCK_EMPTY).local_get(code).op(op::RETURN).end();
-    f.br(0);
+    f.local_tee(code).op(op::I32_EQZ).br_if(1);
+    f.local_get(code).i32_const(0xff).op(op::I32_AND).i32_const(CHAIN as i32).op(op::I32_EQ);
+    f.if_(BLOCK_EMPTY);
+    if count {
+        f.local_get(s).local_get(s).i64_load(area::CHAIN_CALLS).i64_const(1).op(op::I64_ADD);
+        f.i64_store(area::CHAIN_CALLS);
+    }
+    f.local_get(code).local_set(w).br(1).end();
+    f.local_get(code).op(op::RETURN);
+    f.end();
     f.end();
     f.op(op::UNREACHABLE);
     let idx = m.func(t, f);
@@ -1253,14 +1333,14 @@ pub fn dispatcher_with(memory: MemoryImport, count: bool) -> Vec<u8> {
 /// steps fit within the limit (`limit`), otherwise it exits with `NEXT` at
 /// its start: the instruction count stays exact even in loops.
 pub fn function(r: &Region) -> Func {
-    function_with(r, &mut Vec::new())
+    function_in(r, &mut Vec::new(), None)
 }
 
 /// Like [`function`]; `used` are the `rt.fp<k>` functions (runtime
 /// indices) that the module imports after the fixed ones, in order: the
 /// region calls them with index `F_FP0 + position` and adds those
 /// that are missing.
-fn function_with(r: &Region, used: &mut Vec<u32>) -> Func {
+fn function_in(r: &Region, used: &mut Vec<u32>, chain: Option<Chain>) -> Func {
     assert!(!r.bbs.is_empty() && r.len() <= MAX_REGION.max(MAX_BLOCK));
     // The `loop` is needed with several base blocks or with a block that jumps to itself.
     let multi = r.bbs.len() > 1
@@ -1288,6 +1368,8 @@ fn function_with(r: &Region, used: &mut Vec<u32>) -> Func {
         simd: false,
         inline_tlb: INLINE_TLB,
         fp_used: std::mem::take(used),
+        count: chain.is_some_and(|c| c.count),
+        why: None,
     };
     let n = r.bbs.len();
     if multi {
@@ -1329,7 +1411,11 @@ fn function_with(r: &Region, used: &mut Vec<u32>) -> Func {
     f.local_get(L_STEPS).local_get(L_EXIT_DONE).op(op::I64_ADD).call(finish);
     f.else_();
     f.local_get(L_STATE).local_get(L_EXIT_PC).i64_store(off::PC);
-    f.local_get(L_STATE).local_get(L_STEPS).local_get(L_EXIT_DONE).op(op::I64_ADD).i64_store(off::STEPS);
+    f.local_get(L_STEPS).local_get(L_EXIT_DONE).op(op::I64_ADD).local_set(L_STEPS);
+    f.local_get(L_STATE).local_get(L_STEPS).i64_store(off::STEPS);
+    if let Some(c) = chain {
+        chain_tail(f, c);
+    }
     f.i32_const(NEXT as i32);
     f.end();
     // Prologue: `steps`, `limit`, the entry block and the registers read or
@@ -1369,6 +1455,66 @@ fn function_with(r: &Region, used: &mut Vec<u32>) -> Func {
     pro
 }
 
+/// The `NEXT` exit of a chained region (ADR 0049), with `pc` in `L_EXIT_PC`
+/// and the steps in `L_STEPS` (both already in `JitState`): the dispatcher's
+/// checks inline (jump cache entry for `pc` and `ctx` in either way, steps
+/// within the limit), then a tail call within the module or [`CHAIN`]. On a
+/// miss it falls through (`NEXT` follows).
+fn chain_tail(f: &mut Func, c: Chain) {
+    let (i, e, w) = (t32(0), t32(1), t32(2));
+    f.block(BLOCK_EMPTY);
+    f.local_get(L_EXIT_PC).i64_const(2).op(op::I64_SHR_U).op(op::I32_WRAP_I64);
+    f.i32_const((area::JC_ENTRIES - 1) as i32).op(op::I32_AND).local_tee(i);
+    f.i32_const(4).op(op::I32_SHL).local_get(L_STATE).op(op::I32_ADD).local_set(e);
+    let miss = |f: &mut Func| {
+        f.local_get(e).i64_load(area::JC).local_get(L_EXIT_PC).op(op::I64_NE);
+        f.local_get(e).i32_load(area::JC + 8).local_get(L_STATE).i32_load(off::CTX).op(op::I32_NE);
+        f.op(op::I32_OR);
+    };
+    miss(f);
+    f.if_(BLOCK_EMPTY);
+    f.local_get(i).i32_const(1).op(op::I32_XOR).i32_const(4).op(op::I32_SHL);
+    f.local_get(L_STATE).op(op::I32_ADD).local_set(e);
+    miss(f);
+    f.br_if(1);
+    f.end();
+    // Steps of the entry within the limit (read again: another core may
+    // lower it to end the run, ADR 0042).
+    f.local_get(e).i32_load(area::JC + 12).local_set(w);
+    f.local_get(L_STEPS)
+        .local_get(w)
+        .i32_const(0xff)
+        .op(op::I32_AND)
+        .op(op::I64_EXTEND_I32_U)
+        .op(op::I64_ADD);
+    f.local_get(L_STATE).i64_load(off::LIMIT).op(op::I64_GT_U).br_if(0);
+    f.local_get(L_STATE).local_get(w).i32_const(26).op(op::I32_SHR_U).i32_store(off::ENTRY);
+    let count = |f: &mut Func| {
+        if c.count {
+            f.local_get(L_STATE).local_get(L_STATE).i64_load(area::CHAINS).i64_const(1).op(op::I64_ADD);
+            f.i64_store(area::CHAINS);
+        }
+    };
+    if c.shared {
+        // The shared table (ADR 0049): any region, at once.
+        count(f);
+        f.local_get(L_STATE).local_get(w).i32_const(8).op(op::I32_SHR_U);
+        f.i32_const((TABLE_SIZE - 1) as i32).op(op::I32_AND).return_call_indirect(c.ty);
+        f.end();
+        return;
+    }
+    // Slot - base: a region of this module, or the dispatcher calls it.
+    f.local_get(w).i32_const(8).op(op::I32_SHR_U).i32_const((TABLE_SIZE - 1) as i32).op(op::I32_AND);
+    f.i32_const(c.base as i32).op(op::I32_SUB).local_tee(i);
+    f.i32_const(c.n as i32).op(op::I32_LT_U);
+    f.if_(BLOCK_EMPTY);
+    count(f);
+    f.local_get(L_STATE).local_get(i).return_call_indirect(c.ty);
+    f.end();
+    f.local_get(w).i32_const(!0xff).op(op::I32_AND).i32_const(CHAIN as i32).op(op::I32_OR).op(op::RETURN);
+    f.end();
+}
+
 /// Translator of a region.
 struct Tx {
     f: Func,
@@ -1405,7 +1551,33 @@ struct Tx {
     /// `rt.fp<k>` and `rt.cr<k>` functions imported by the module, besides the
     /// fixed ones.
     fp_used: Vec<u32>,
+    /// Count the `NEXT` exits by kind (`area::EXITS`, measurements).
+    count: bool,
+    /// Kind of the next `NEXT` exit, for `count`.
+    why: Option<Exit>,
 }
+
+/// Why a region exits with `NEXT` (ADR 0049, counted in `area::EXITS` with
+/// `SysJitConfig::names`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Exit {
+    /// Constant target in the region's page but not in the region (the end of
+    /// a base block or a branch).
+    InPage = 0,
+    /// BL to another page.
+    CallOut = 1,
+    /// Another constant target in another page (branch, end of the page).
+    Out = 2,
+    /// RET, BR, BLR.
+    Ret = 3,
+    Br = 4,
+    Blr = 5,
+    /// The step limit at the start of a base block.
+    Limit = 6,
+}
+
+/// Counters in `area::EXITS`.
+pub const N_EXITS: usize = 7;
 
 impl Tx {
     /// Index in the module of runtime function `id` (imported in order of
@@ -1457,6 +1629,7 @@ impl Tx {
             // Steps beyond the limit: exit at the start of the base block.
             self.f.local_get(L_STEPS).i64_const(steps as i64).op(op::I64_ADD);
             self.f.local_get(L_LIMIT).op(op::I64_GT_U).if_(BLOCK_EMPTY);
+            self.why = Some(Exit::Limit);
             self.exit_const(NEXT, bb.pc, 0);
             self.f.end();
         }
@@ -1615,6 +1788,17 @@ impl Tx {
     /// (instructions done in the base block): jump to the shared tail (end
     /// of the function), which writes back the registers and `JitState`.
     fn exit(&mut self, code: u32, pc: PcSrc, done: u64) {
+        if self.count && code == NEXT {
+            let why = match (&pc, self.why) {
+                (_, Some(w)) => w,
+                (PcSrc::Const(v), None) if v >> 12 == self.pc0 >> 12 => Exit::InPage,
+                _ => Exit::Out,
+            };
+            let at = area::EXITS + 8 * why as u32;
+            let f = &mut self.f;
+            f.local_get(L_STATE).local_get(L_STATE).i64_load(at).i64_const(1).op(op::I64_ADD).i64_store(at);
+        }
+        self.why = None;
         if let PcSrc::Const(v) = pc {
             // Relative to the start of the page: shorter constants.
             let d = v.wrapping_sub(self.pc0) as i64;
@@ -2136,6 +2320,31 @@ impl Tx {
         f.op(op::I64_EQ);
     }
 
+    /// Like [`tlb_hit`](Self::tlb_hit) for `total` bytes at `addr` aligned to
+    /// `align` (a pair or a Q, ADR 0049): also all within the page.
+    fn pair_hit(&mut self, addr: u32, align: u32, total: u32, tlb: u32) {
+        self.tlb_hit(addr, align, tlb);
+        if total > align {
+            let f = &mut self.f;
+            f.local_get(addr).op(op::I32_WRAP_I64).i32_const(0xfff).op(op::I32_AND);
+            f.i32_const((0x1000 - total) as i32).op(op::I32_LE_U).op(op::I32_AND);
+        }
+    }
+
+    /// Two inline stores of `n` bytes, `v1` at `addr` and `v2` at `addr + n`,
+    /// through the TLB entry in `t32(2)` of table `tlb` (a hit of
+    /// [`pair_hit`](Self::pair_hit)); no STOP (the write TLB has no pages with
+    /// code).
+    fn store2(&mut self, addr: u32, tlb: u32, n: u32, v1: u32, v2: u32, stop: Option<u32>) {
+        let f = &mut self.f;
+        f.local_get(t32(2)).i64_load(tlb + 8).local_get(addr).op(op::I64_ADD);
+        f.op(op::I32_WRAP_I64).local_tee(t32(2)).local_get(v1).i64_store_n(n, 0);
+        f.local_get(t32(2)).local_get(v2).i64_store_n(n, n);
+        if let Some(s) = stop {
+            f.i32_const(0).local_set(t32(s));
+        }
+    }
+
     /// Outcome of a store (0, FAULT or STOP) on the stack: fault → exit;
     /// STOP → exit after the instruction (`stop` = `None`) or recorded in
     /// `t32(stop)`.
@@ -2153,6 +2362,28 @@ impl Tx {
     /// Pair of loads of `bytes` bytes (4 or 8) from `addr` and `addr + bytes`:
     /// the two values on the stack (exits with FAULT if one fails).
     fn ld_pair(&mut self, addr: u32, bytes: u32) {
+        if let Some(sys) = self.sys
+            && self.inline_tlb
+        {
+            // Both accesses aligned in one page of the EL's aligned TLB
+            // (ADR 0049): the entry `rt.ldp` would hit twice.
+            self.pair_hit(addr, bytes, 2 * bytes, area::tlb(sys.el, false));
+            self.f.if_(BLOCK_EMPTY);
+            self.f.local_get(t32(2)).i64_load(area::tlb(sys.el, false) + 8).local_get(addr).op(op::I64_ADD);
+            self.f.op(op::I32_WRAP_I64).local_tee(t32(2)).i64_load_n(bytes, 0).local_set(L_P1);
+            self.f.local_get(t32(2)).i64_load_n(bytes, bytes).local_set(L_P2);
+            self.f.else_();
+            self.f.local_get(L_STATE).local_get(addr);
+            self.slow_args();
+            self.call_rt(f_pair(F_LDP_TLB, sys.el, bytes));
+            self.f.if_(BLOCK_EMPTY);
+            self.exit_fault_saved();
+            self.f.end();
+            self.f.local_set(L_P2).local_set(L_P1);
+            self.f.end();
+            self.f.local_get(L_P1).local_get(L_P2);
+            return;
+        }
         self.f.local_get(L_STATE).local_get(addr);
         match self.sys {
             Some(sys) => {
@@ -2172,6 +2403,22 @@ impl Tx {
 
     /// Pair of stores of the values in `v1` and `v2`, like [`st`](Self::st).
     fn st_pair(&mut self, addr: u32, bytes: u32, v1: u32, v2: u32, stop: Option<u32>) {
+        if let Some(sys) = self.sys
+            && self.inline_tlb
+        {
+            // As in `ld_pair`, with the write TLB (pages without code: no STOP).
+            let tlb = area::tlb(sys.el, true);
+            self.pair_hit(addr, bytes, 2 * bytes, tlb);
+            self.f.if_(BLOCK_EMPTY);
+            self.store2(addr, tlb, bytes, v1, v2, stop);
+            self.f.else_();
+            self.f.local_get(L_STATE).local_get(addr).local_get(v1).local_get(v2);
+            self.slow_args();
+            self.call_rt(f_pair(F_STP_TLB, sys.el, bytes));
+            self.st_result(stop);
+            self.f.end();
+            return;
+        }
         self.f.local_get(L_STATE).local_get(addr);
         match self.sys {
             Some(sys) => {
@@ -2293,6 +2540,29 @@ impl Tx {
     /// Load of 16 bytes (Q) from `addr`: low and high half on the stack (exits
     /// with FAULT if the access fails, or if it must be redone by the interpreter).
     fn ld_q(&mut self, addr: u32) {
+        if let Some(sys) = self.sys
+            && self.inline_tlb
+        {
+            // Aligned to 16 in the EL's aligned TLB (ADR 0049): both halves
+            // of `rt.ldq` hit that entry.
+            let tlb = area::tlb(sys.el, false);
+            self.pair_hit(addr, 16, 16, tlb);
+            self.f.if_(BLOCK_EMPTY);
+            self.f.local_get(t32(2)).i64_load(tlb + 8).local_get(addr).op(op::I64_ADD);
+            self.f.op(op::I32_WRAP_I64).local_tee(t32(2)).i64_load_n(8, 0).local_set(L_P1);
+            self.f.local_get(t32(2)).i64_load_n(8, 8).local_set(L_P2);
+            self.f.else_();
+            self.f.local_get(L_STATE).local_get(addr);
+            self.slow_args();
+            self.call_rt(F_LDQ_TLB + sys.el as u32);
+            self.f.if_(BLOCK_EMPTY);
+            self.exit_fault_saved();
+            self.f.end();
+            self.f.local_set(L_P2).local_set(L_P1);
+            self.f.end();
+            self.f.local_get(L_P1).local_get(L_P2);
+            return;
+        }
         self.f.local_get(L_STATE).local_get(addr);
         self.slow_args();
         self.call_rt(match self.sys {
@@ -2306,6 +2576,21 @@ impl Tx {
 
     /// Store of 16 bytes (Q) of the halves in `lo` and `hi`, like [`st`](Self::st).
     fn st_q(&mut self, addr: u32, lo: u32, hi: u32, stop: Option<u32>) {
+        if let Some(sys) = self.sys
+            && self.inline_tlb
+        {
+            let tlb = area::tlb(sys.el, true);
+            self.pair_hit(addr, 16, 16, tlb);
+            self.f.if_(BLOCK_EMPTY);
+            self.store2(addr, tlb, 8, lo, hi, stop);
+            self.f.else_();
+            self.f.local_get(L_STATE).local_get(addr).local_get(lo).local_get(hi);
+            self.slow_args();
+            self.call_rt(F_STQ_TLB + sys.el as u32);
+            self.st_result(stop);
+            self.f.end();
+            return;
+        }
         self.f.local_get(L_STATE).local_get(addr).local_get(lo).local_get(hi);
         self.slow_args();
         self.call_rt(match self.sys {
@@ -3009,6 +3294,9 @@ impl Tx {
                     self.set_x(30);
                 }
                 let t = self.target(pc.wrapping_add(offset as u64));
+                if link && t >> 12 != self.pc0 >> 12 {
+                    self.why = Some(Exit::CallOut);
+                }
                 self.jump(t, self.index + 1, true);
             }
             Insn::BCond { cond, offset } => {
@@ -3043,6 +3331,11 @@ impl Tx {
                     self.set_x(30);
                 }
                 self.f.local_get(t64(3));
+                self.why = Some(match bop {
+                    BrOp::Blr => Exit::Blr,
+                    BrOp::Br => Exit::Br,
+                    BrOp::Ret => Exit::Ret,
+                });
                 self.exit_branch();
             }
 

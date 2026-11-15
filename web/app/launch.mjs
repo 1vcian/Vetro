@@ -46,16 +46,26 @@ const CHROMIUM_BRANDS = ['Google Chrome', 'Microsoft Edge', 'Chromium', 'Headles
 /** Memory the computer should have (GB, as `navigator.deviceMemory` reports it) for each system. */
 export const MEMORY_GB = { android: 8, linux: 2 };
 
+/**
+ * The smallest module with a tail call (wasm-feature-detect's probe): the
+ * JIT's regions chain to each other with `return_call_indirect` (ADR 0049).
+ */
+export const TAIL_CALL_PROBE = Uint8Array.of(0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 2, 1, 0, 10, 6, 1, 4, 0, 18, 0, 11);
+
 /** What the page needs to know about the browser, read from `g` (globalThis). */
 export function probeBrowser(g = globalThis) {
   const nav = g.navigator ?? {};
-  let simd = false;
-  try {
-    simd = typeof g.WebAssembly?.validate === 'function' && g.WebAssembly.validate(SIMD_PROBE);
-  } catch {}
+  const valid = (probe) => {
+    try {
+      return typeof g.WebAssembly?.validate === 'function' && g.WebAssembly.validate(probe);
+    } catch {
+      return false;
+    }
+  };
   return {
     wasm: typeof g.WebAssembly?.instantiate === 'function',
-    simd,
+    simd: valid(SIMD_PROBE),
+    tailCall: valid(TAIL_CALL_PROBE),
     worker: typeof g.Worker === 'function',
     bigint: typeof g.BigInt64Array === 'function',
     opfs: typeof nav.storage?.getDirectory === 'function',
@@ -79,6 +89,7 @@ export function browserIssues(b, os = 'android') {
   const warn = (id, text) => issues.push({ id, fatal: false, text });
   if (!b.wasm) fatal('wasm', 'This browser has no WebAssembly: Vetro cannot run here.');
   else if (!b.simd) fatal('simd', 'This browser has no WebAssembly SIMD: Vetro cannot run here. Update the browser, or use a recent desktop Chrome or Edge.');
+  else if (!b.tailCall) fatal('tailcall', 'This browser has no WebAssembly tail calls: Vetro cannot run here. Update the browser, or use a recent desktop Chrome or Edge.');
   if (!b.worker) fatal('worker', 'This browser has no Web Workers: Vetro cannot run here.');
   if (!b.bigint) fatal('bigint', 'This browser is too old (no BigInt64Array): use a recent desktop Chrome or Edge.');
   if (b.mobile) warn('mobile', 'Phones and tablets are not supported: Vetro needs a desktop computer.');

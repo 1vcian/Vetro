@@ -23,7 +23,7 @@
 // interpreter (same guest execution). `place` is deferred to the arrival. A
 // module needed at once (`entry`: the dispatcher) is compiled here.
 //
-// vetro-wasm calls it through the imports `vetro_jit.compile/entry/place/drop/reset/ready`
+// vetro-wasm calls it through the imports `vetro_jit.compile/entry/place/drop/reset/ready/shared`
 // (crates/vetro-wasm/src/jit.rs). No dependencies: only the
 // WebAssembly API, the same in Node and in the browser.
 
@@ -63,8 +63,47 @@ export class JitEngine {
   /** Compiled modules, bytes and resets, for the benchmarks. */
   stats = { modules: 0, bytes: 0, resets: 0, compileMs: 0, refused: 0, background: 0, workerMs: 0, instantiateMs: 0, forced: 0, stale: 0, dropped: 0 };
 
-  constructor({ budget = CODE_BUDGET } = {}) {
+  /** Whether region modules import the block table (ADR 0049): null = not probed yet. */
+  #shared = null;
+
+  /**
+   * `sharedTable`: true or false forces the chaining kind (ADR 0049); by
+   * default it is probed (`sharedTables()`).
+   */
+  constructor({ budget = CODE_BUDGET, sharedTable = null } = {}) {
     this.#budget = budget;
+    this.#shared = sharedTable;
+  }
+
+  /**
+   * ADR 0049: true if V8 shares a table's dispatch data among the instances
+   * that import it (V8 13 and later), so every region module may import the
+   * block table and chain to any region with a tail call. V8 12 (Node 22)
+   * gives every importing instance its own copy, 5 MiB for TABLE_SIZE entries
+   * (ADR 0041). Node: the V8 version. Elsewhere a probe: with a copy per
+   * instance, four instantiations of a module importing such a table take
+   * milliseconds (allocating and filling 20 MiB); shared, microseconds.
+   */
+  static sharedTables() {
+    if (typeof process !== 'undefined' && process.versions?.v8) return Number(process.versions.v8.split('.')[0]) >= 13;
+    try {
+      // (module (import "env" "tbl" (table 262144 funcref)))
+      const bytes = new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 2, 0x0f, 1, 3, 0x65, 0x6e, 0x76, 3, 0x74, 0x62, 0x6c, 1, 0x70, 0, 0x80, 0x80, 0x10]);
+      const m = new WebAssembly.Module(bytes);
+      const tbl = new WebAssembly.Table({ element: 'anyfunc', initial: TABLE_SIZE });
+      const keep = [];
+      const t0 = performance.now();
+      for (let i = 0; i < 4; i++) keep.push(new WebAssembly.Instance(m, { env: { tbl } }));
+      return performance.now() - t0 < 2;
+    } catch {
+      return false;
+    }
+  }
+
+  /** 1 if region modules import the block table (ADR 0049). */
+  shared() {
+    this.#shared ??= JitEngine.sharedTables();
+    return this.#shared ? 1 : 0;
   }
 
   /**
@@ -309,6 +348,7 @@ export class JitEngine {
       place: (id, count, base) => this.place(id, count, base),
       reset: () => this.reset(),
       ready: (id) => this.ready(id),
+      shared: () => this.shared(),
     };
   }
 }

@@ -872,6 +872,10 @@ async function start() {
     // Measurements (tools/aosp/live-path.mjs --jit-profile): the JIT's
     // instruction classes and FP states in the stats (`stats.jitProfile`).
     jitProfile: q.get('jitprofile') === '1',
+    // (live-path.mjs --jit-count): region names in CPU profiles and the
+    // counters of region calls, chains and exits, without the per-step class
+    // profile (ADR 0049: that one costs ~15% of the Worker).
+    jitCount: q.get('jitcount') === '1',
     realtime: el.realtime.checked,
     opfs: el.opfs.checked,
     snapshot: el.snapshot.checked,
