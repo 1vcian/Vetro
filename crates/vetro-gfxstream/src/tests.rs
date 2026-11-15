@@ -16,6 +16,8 @@ use crate::tables::{gles2 as g, rc};
 #[derive(Default)]
 struct Log {
     batches: Vec<(Vec<u32>, Vec<u8>)>,
+    /// Bytes each batch's read ops had to fill.
+    outs: Vec<usize>,
 }
 
 struct FakeExec(Rc<RefCell<Log>>);
@@ -25,7 +27,9 @@ impl GlExecutor for FakeExec {
         for (i, b) in out.iter_mut().enumerate() {
             *b = (i % 251) as u8;
         }
-        self.0.borrow_mut().batches.push((words.to_vec(), blob.to_vec()));
+        let mut log = self.0.borrow_mut();
+        log.batches.push((words.to_vec(), blob.to_vec()));
+        log.outs.push(out.len());
     }
 }
 
@@ -428,5 +432,53 @@ fn snapshot_rebuilds_objects_and_the_guest_goes_on() {
     let o = ops(&log2);
     let n = o.len();
     assert!(o[n - 3..].iter().any(|(c, _)| *c == Code::Clear), "{:?}", &o[n - 6..]);
+    assert!(other.gfx.gl.log.is_empty(), "{:?}", other.gfx.gl.log);
+}
+
+/// A deferred save (ADR 0046) of the renderer: the writer keeps what the
+/// executor read back as it is, and the assembler makes of it the file a
+/// normal save writes. `save_bytes_hint` is exactly what the save's
+/// readbacks fill (the bytes a deferred save holds uncompressed), and it
+/// counts every kind of content (it is 0 if `readbacks` forgets them).
+#[test]
+fn deferred_save_is_the_normal_save_and_the_hint_is_its_readbacks() {
+    let (mut gu, log) = guest();
+    crate::guest::scene(&mut gu);
+    // A buffer object with content, as in the snapshot test.
+    let mut s = call(g::glGenBuffers, &[V::S(1), V::O(4)]);
+    s.extend(call(g::glFinishRoundTrip, &[]));
+    gu.send(1, &s);
+    let buf = u32::from_le_bytes(gu.recv(1, 8)[..4].try_into().unwrap());
+    let mut s = call(g::glBindBuffer, &[V::S(0x8892), V::S(u64::from(buf))]);
+    s.extend(call(g::glBufferData, &[V::S(0x8892), V::S(12), V::B(&[1; 12]), V::S(0x88E4)]));
+    gu.send(1, &s);
+
+    let hint = gu.gfx.save_bytes_hint();
+    // The scene's 64x64 RGBA colour buffers and the 12-byte buffer at least.
+    assert!(hint > 2 * 64 * 64 * 4 + 12, "hint {hint}");
+
+    let mut n = vetro_snapshot::Writer::new();
+    n.section(b"GFXS", |w| gu.gfx.save_state(w));
+    let normal = vetro_snapshot::encode_file(0x77, n.as_bytes());
+    assert_eq!(*log.borrow().outs.last().unwrap(), hint, "the hint is what the readbacks fill");
+
+    let mut d = vetro_snapshot::Writer::deferred(0);
+    d.section(b"GFXS", |w| gu.gfx.save_state(w));
+    assert_eq!(*log.borrow().outs.last().unwrap(), hint);
+    let (plan, raw) = d.into_plan(0x77, 0);
+    // The deferred writer holds the contents uncompressed.
+    assert!(raw.len() >= hint, "{} bytes of raw stream for {hint} of contents", raw.len());
+    assert!(normal.len() < raw.len(), "the normal save compresses ({} against {})", normal.len(), raw.len());
+    for piece in [4096, raw.len()] {
+        let file = vetro_snapshot::deferred::assemble(plan.clone(), &raw, piece).unwrap();
+        assert!(file == normal, "pieces of {piece}: {} against {} bytes", file.len(), normal.len());
+    }
+
+    // The assembled file restores like the normal one.
+    let (_, payload) = vetro_snapshot::decode_file(&normal).unwrap();
+    let mut r = vetro_snapshot::Reader::new(payload);
+    let (mut other, _) = guest();
+    let mut sec = r.section(b"GFXS").unwrap();
+    other.gfx.restore_state(&mut sec).unwrap();
     assert!(other.gfx.gl.log.is_empty(), "{:?}", other.gfx.gl.log);
 }

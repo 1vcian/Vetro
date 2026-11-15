@@ -286,11 +286,10 @@ enum Item {
 }
 
 impl Gfxstream {
-    /// Writes the renderer's state (see the module).
-    pub(crate) fn save(&self, w: &mut Writer) {
+    /// The readbacks a save needs, in one batch: what each one is and the ops
+    /// that read it (`OpBuf::out_len` is the bytes they fill).
+    fn readbacks(&self) -> (Vec<Item>, OpBuf) {
         let gl = &self.gl;
-        gl.run_ops();
-        // Readbacks, in one batch.
         let mut items = Vec::new();
         let mut ops = OpBuf::default();
         for (&h, cb) in &gl.cbs {
@@ -340,6 +339,21 @@ impl Gfxstream {
                 }
             }
         }
+        (items, ops)
+    }
+
+    /// Bytes of contents [`Gfxstream::save`] reads back from the executor and
+    /// writes (colour buffers, surfaces, texture levels, buffer data): what a
+    /// deferred save holds uncompressed (ADR 0046).
+    pub(crate) fn save_bytes(&self) -> usize {
+        self.readbacks().1.out_len
+    }
+
+    /// Writes the renderer's state (see the module).
+    pub(crate) fn save(&self, w: &mut Writer) {
+        let gl = &self.gl;
+        gl.run_ops();
+        let (items, ops) = self.readbacks();
         let mut out = vec![0u8; ops.out_len];
         if !ops.is_empty() {
             gl.exec.borrow_mut().execute(&ops.words, &ops.blob, &mut out);

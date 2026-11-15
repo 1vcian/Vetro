@@ -431,6 +431,10 @@ impl Renderer3d for Gfxstream {
         self.gl.flush();
     }
 
+    fn save_bytes_hint(&self) -> usize {
+        self.save_bytes()
+    }
+
     fn save_state(&self, w: &mut vetro_snapshot::Writer) {
         self.save(w);
     }

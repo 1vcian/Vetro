@@ -1510,7 +1510,8 @@ pub unsafe extern "C" fn vetro_snapshot_save_stream(vm: *mut Vm) -> u64 {
 /// (a page the guest writes is copied first), so the guest goes on at once.
 /// The plan (`vetro_snapshot::deferred::Plan::encode`) goes into the
 /// [`vetro_snapshot_ptr`] buffer; returns its length, 0 if refused (cores in
-/// parallel, small level: the reason is in the message). A deferred save
+/// parallel, small level, no memory for the GPU's contents: the reason is in
+/// the message). A deferred save
 /// already in progress is replaced. Read the console first, as for
 /// [`vetro_snapshot_save`].
 #[unsafe(no_mangle)]
@@ -1523,7 +1524,26 @@ pub unsafe extern "C" fn vetro_snapshot_bg_begin(vm: *mut Vm) -> usize {
         return 0;
     }
     let cow: usize = (0..vm.disks.len() as u32).map(|i| vm.disk_dirty_clusters(i)).sum();
-    match vm.m.save_deferred(cow * (4096 + 64) + (16 << 20)) {
+    // With accelerated graphics the part before the RAM also holds the GPU's
+    // contents (textures, surfaces), uncompressed in a deferred save, and
+    // while the renderer reads them back there is a second copy. Both are
+    // asked for here, fallibly: on wasm32 a snapshot that does not fit must be
+    // refused (the caller then saves in the foreground, compressing as it
+    // goes), not abort the machine. The buffer is given back at once: the
+    // writer and the readback take its place.
+    let gpu = vm.m.gpu_view(|g| g.save_bytes_hint()).unwrap_or(0);
+    let reserve = cow * (4096 + 64) + (16 << 20) + gpu;
+    if gpu > 0 {
+        let mut probe: Vec<u8> = Vec::new();
+        if probe.try_reserve_exact(reserve + gpu + (8 << 20)).is_err() {
+            vm.message = format!(
+                "no memory for a deferred save with {} MiB of GPU contents: save in the foreground",
+                gpu >> 20
+            );
+            return 0;
+        }
+    }
+    match vm.m.save_deferred(reserve) {
         Ok(s) => {
             vm.snapshot = s.plan().encode();
             vm.deferred = Some((s, false));
@@ -2065,6 +2085,134 @@ mod tests {
 
     fn message(vm: *const Vm) -> String {
         unsafe { String::from_utf8_lossy(bytes(vetro_message_ptr(vm), vetro_message_len(vm))).into_owned() }
+    }
+
+    /// A 3D renderer with `len` bytes of contents in its snapshot, written
+    /// with `compress` as gfxstream writes its textures; `hint` is what it
+    /// says they take (a lie in the test of the refusal).
+    struct Contents {
+        len: usize,
+        hint: usize,
+    }
+
+    impl Contents {
+        fn data(&self) -> Vec<u8> {
+            (0..self.len).map(|i| (i / 7 % 251) as u8).collect()
+        }
+    }
+
+    impl vetro_platform::virtio::gpu::Renderer3d for Contents {
+        fn context_create(&mut self, _: u32, _: u32, _: &[u8]) -> Result<(), u32> {
+            Ok(())
+        }
+        fn context_destroy(&mut self, _: u32) {}
+        fn context_attach(&mut self, _: u32, _: u32) {}
+        fn context_detach(&mut self, _: u32, _: u32) {}
+        fn resource_create(&mut self, _: u32, _: &vetro_platform::virtio::gpu::Create3d) -> Result<u64, u32> {
+            Ok(0)
+        }
+        fn resource_destroy(&mut self, _: u32) {}
+        fn transfer_to_host(
+            &mut self,
+            _: u32,
+            _: u32,
+            _: &vetro_platform::virtio::gpu::Transfer3d,
+            _: &mut vetro_platform::virtio::gpu::Backing<'_>,
+        ) -> Result<(), u32> {
+            Ok(())
+        }
+        fn transfer_from_host(
+            &mut self,
+            _: u32,
+            _: u32,
+            _: &vetro_platform::virtio::gpu::Transfer3d,
+            _: &mut vetro_platform::virtio::gpu::Backing<'_>,
+        ) -> Result<(), u32> {
+            Ok(())
+        }
+        fn submit(&mut self, _: u32, _: &[u8]) -> Result<(), u32> {
+            Ok(())
+        }
+        fn scanout(&mut self, _: u32, _: Option<(u32, vetro_platform::virtio::gpu::Rect)>) {}
+        fn flush(&mut self, _: u32, _: u32, _: vetro_platform::virtio::gpu::Rect) {}
+        fn save_state(&self, w: &mut vetro_machine::vetro_snapshot::Writer) {
+            vetro_machine::vetro_snapshot::compress(w, &self.data());
+        }
+        fn restore_state(
+            &mut self,
+            r: &mut vetro_machine::vetro_snapshot::Reader<'_>,
+        ) -> vetro_machine::vetro_snapshot::Result<()> {
+            let back = vetro_machine::vetro_snapshot::decompress(r)?;
+            assert!(back == self.data(), "the renderer's contents came back different");
+            Ok(())
+        }
+        fn save_bytes_hint(&self) -> usize {
+            self.hint
+        }
+    }
+
+    /// A deferred save with a 3D renderer's contents before the RAM (the
+    /// accelerated graphics, ADR 0046 and 0047): the assembled file is the
+    /// one `vetro_snapshot_save` gives and restores with the contents; when
+    /// the contents cannot be held (here: a hint no allocation can satisfy)
+    /// the deferred save is refused with a message and nothing else changes:
+    /// the foreground save still works.
+    #[test]
+    fn deferred_snapshot_with_gpu_contents_or_refused() {
+        const LEN: usize = 3 << 20;
+        let machine = |hint: usize| {
+            let vm = vetro_machine_new_with(64 << 20, 0, 0, dev::DEFAULT | dev::GPU_3D, 320, 200);
+            let set = unsafe { &mut *vm }.m.gpu(|g| g.set_renderer(Box::new(Contents { len: LEN, hint })));
+            assert!(set.is_some(), "no GPU");
+            vm
+        };
+        unsafe {
+            let vm = machine(LEN);
+            assert_eq!(vetro_run(vm, 1000), stop::BUDGET);
+            let n = vetro_snapshot_save(vm);
+            let snap = bytes(vetro_snapshot_ptr(vm), n).to_vec();
+            let p = vetro_snapshot_bg_begin(vm);
+            assert!(p > 0, "{}", message(vm));
+            let plan =
+                vetro_machine::vetro_snapshot::deferred::Plan::decode(bytes(vetro_snapshot_ptr(vm), p))
+                    .unwrap();
+            // The contents are in the raw stream as they are, before the RAM.
+            assert!(plan.raw_len >= (64 << 20) + LEN as u64, "raw stream of {} bytes", plan.raw_len);
+            let asm = vetro_asm_new(vetro_snapshot_ptr(vm), p);
+            assert!(!asm.is_null());
+            loop {
+                assert_eq!(vetro_run(vm, 2000), stop::BUDGET);
+                let k = vetro_snapshot_bg_pump(vm, 3 << 20);
+                assert!(k >= 0);
+                if k == 0 {
+                    break;
+                }
+                assert_eq!(vetro_asm_push(asm, vetro_snapshot_ptr(vm), k as usize), 0);
+            }
+            let len = vetro_asm_finish(asm) as usize;
+            assert!((&*asm).file[..len] == snap[..], "deferred file differs");
+            // It restores on a machine with the same renderer (which checks its contents).
+            let other = machine(LEN);
+            assert_eq!(
+                vetro_snapshot_restore(other, (&*asm).file.as_ptr(), len),
+                restore::OK,
+                "{}",
+                message(other)
+            );
+            vetro_asm_free(asm);
+            vetro_machine_free(other);
+            vetro_machine_free(vm);
+
+            // Contents that cannot be held: refused, the machine as before.
+            let vm = machine(usize::MAX / 4);
+            assert_eq!(vetro_run(vm, 1000), stop::BUDGET);
+            assert_eq!(vetro_snapshot_bg_begin(vm), 0);
+            assert!(message(vm).contains("foreground"), "{}", message(vm));
+            assert_eq!(vetro_snapshot_bg_pump(vm, 1 << 16), -1, "no deferred save was started");
+            let n = vetro_snapshot_save(vm);
+            assert!(bytes(vetro_snapshot_ptr(vm), n) == &snap[..], "the foreground save changed");
+            vetro_machine_free(vm);
+        }
     }
 
     /// Snapshot from the C API (ABI 4): saved into a buffer, copied by JS,

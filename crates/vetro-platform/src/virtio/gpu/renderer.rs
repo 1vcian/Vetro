@@ -172,5 +172,13 @@ pub trait Renderer3d: Any {
     /// Renderer state for snapshots (ADR 0015). The device saves its own part
     /// (ids, backing, scanouts) around it.
     fn save_state(&self, w: &mut vetro_snapshot::Writer);
+    /// Bytes of large contents `save_state` writes with
+    /// `vetro_snapshot::compress` (textures, buffers): a deferred save
+    /// (ADR 0046) keeps them uncompressed until its saver has taken them, so
+    /// whoever starts one sizes its buffer with this and can refuse when
+    /// they do not fit. 0: nothing large.
+    fn save_bytes_hint(&self) -> usize {
+        0
+    }
     fn restore_state(&mut self, r: &mut vetro_snapshot::Reader<'_>) -> vetro_snapshot::Result<()>;
 }

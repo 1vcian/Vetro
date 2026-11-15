@@ -7,8 +7,10 @@
 // actions: one line per action (press to first frame, to the screen changed,
 // to the awaited outcome, to settled; guest MIPS; guest seconds in wall
 // seconds), the install time, the median MIPS of the 5 s timeline and the
-// error, if the run ended with one. profiles: for each Worker CPU profile the
-// 14 functions with the most self time.
+// error, if the run ended with one, and the snapshots saved (in the
+// background or in the foreground, with the time the machine's thread spent).
+// profiles: for each Worker CPU profile the self time by kind of code and
+// the 8 functions with the most.
 
 import { readFileSync } from 'node:fs';
 
@@ -25,11 +27,50 @@ if (what === 'actions') {
   if (r.install) console.log(`${r.install.app} installed in ${ms(r.install.ms)}`);
   const mips = (r.timeline ?? []).map((t) => t.mips).filter((v) => typeof v === 'number').sort((a, b) => a - b);
   if (mips.length) console.log(`timeline: ${mips.length} samples, MIPS median ${num(mips[mips.length >> 1])}, max ${num(mips.at(-1))}`);
+  // The snapshots saved in the session: in the background (ADR 0046: the
+  // machine's thread only starts the save and copies) or in the foreground
+  // (the machine stops for the whole time).
+  for (const s of r.snapshots ?? []) {
+    const how = s.background
+      ? `in the background: machine thread ${num(s.beginMs, 0)} ms to start + ${num(s.pumpMs, 0)} ms of copies, saver ${ms(s.writeMs)}, ${num((s.raw ?? 0) / 2 ** 20, 0)} MiB raw`
+      : `in the foreground: the machine stopped for ${ms((s.saveMs ?? 0) + (s.writeMs ?? 0))}`;
+    console.log(`snapshot "${s.why}": ${num((s.size ?? 0) / 2 ** 20, 0)} MiB, ${how}`);
+  }
   if (r.gpu) console.log(`graphics: ${JSON.stringify(r.gpu).slice(0, 300)}`);
 } else {
+  // Rust symbols (v0 mangling) are long: their identifiers are enough here.
+  // Outside an identifier, `s…_` (a disambiguator) and `B…_` (a back
+  // reference) are skipped; an identifier is its length, then its characters.
+  const idents = (sym) => {
+    const out = [];
+    for (let i = 2; i < sym.length;) {
+      const c = sym[i];
+      if (c === 's' || c === 'B') {
+        const j = sym.indexOf('_', i);
+        if (j < 0) break;
+        i = j + 1;
+      } else if (c >= '0' && c <= '9') {
+        let j = i;
+        while (sym[j] >= '0' && sym[j] <= '9') j++;
+        const n = Number(sym.slice(i, j));
+        if (sym[j] === '_') j++;
+        out.push(sym.slice(j, j + n));
+        i = j + n;
+      } else i++;
+    }
+    return out;
+  };
+  const short = (fn) => {
+    const [sym, where] = fn.split(' ');
+    if (!sym.startsWith('_R') || !where?.startsWith('vetro_wasm')) return fn;
+    const ids = idents(sym);
+    return ids.length > 6 ? `${ids.slice(0, 6).join('::')}::…::${ids.at(-1)}` : ids.join('::');
+  };
   for (const [k, p] of Object.entries(r)) {
     if (!k.startsWith('profile_')) continue;
     console.log(`${k.slice(8)} (${p.secs}s, guest ${num(p.guestS)}s):`);
-    for (const t of p.top.slice(0, 14)) console.log(`  ${t.pct}% ${t.fn}`);
+    for (const c of (p.categories ?? []).slice(0, 12)) console.log(`  ${c.pct}% ${c.category}`);
+    console.log('  top functions:');
+    for (const t of p.top.slice(0, 8)) console.log(`    ${t.pct}% ${short(t.fn)}`);
   }
 }

@@ -194,6 +194,10 @@ call of each context applies its state vector again. Not restored: depth and
 stencil contents, renderbuffer contents, float or packed-format texture
 contents, 3D and array texture contents, queries, transform feedback.
 Readbacks at save time are host reads (like screenshots), not guest inputs.
+`Renderer3d::save_bytes_hint` is the bytes those readbacks fill (the same
+list, `Gfxstream::readbacks`): a deferred save (ADR 0046) holds them
+uncompressed until its saver has taken them, and whoever starts one sizes
+its buffer with the hint or refuses.
 
 ## Natively
 `vetro boot --gpu=gfxstream [--gl-record=FILE] [--gl-trace=1]`: virgl GPU,

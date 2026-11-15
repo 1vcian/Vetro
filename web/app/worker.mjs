@@ -440,10 +440,9 @@ function getSaver() {
  * machine refuses it (then the caller saves synchronously).
  */
 async function saveSnapshotBackground(why) {
-  // The accelerated path saves in the foreground: a deferred save's head
-  // would hold the GPU contents uncompressed (hundreds of MiB more in wasm32
-  // memory), and the two have not been run together yet (ADR 0047).
-  if (glExec) return false;
+  // With accelerated graphics the save's first part also holds the GPU's
+  // contents, uncompressed: vetro-wasm refuses the deferred save when they do
+  // not fit in its memory, and the save is then done in the foreground.
   const w = await getSaver();
   if (!w) return false;
   persistOverlays();

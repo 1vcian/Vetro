@@ -81,7 +81,8 @@ jobs:
         run: |
           [ -f target/aosp/chrome-measurements.json ] && echo "::notice title=Android measurements::$(tr -d '\n' < target/aosp/chrome-measurements.json | cut -c1-3000)" || true
           if [ -s android.log ]; then
-            grep -E '^(first start|second start|APK installed|touch received|adb after|taps after|navigation keys)' android.log | sed 's/^/::notice title=Android::/' || true
+            # One notice (a step shows at most ten): the lines that matter.
+            echo "::notice title=Android::$(grep -E '^(first start|second start|APK installed|touch received|snapshot after|adb ready|taps after|navigation keys)' android.log | awk '{gsub(/%/, "%25"); gsub(/\r/, ""); printf "%s%%0A", $0}')" || true
           fi
       - if: failure()
         run: |

@@ -312,7 +312,12 @@ async function session(chrome, profile, url, kind) {
     const top = await page.eval("window.vetroAndroid.shell('dumpsys window | grep -m1 mCurrentFocus')");
     check(top.stdout.includes('it.vetro.tocco'), `focused window: ${top.stdout}`);
     misure.snapshot_app = await page.waitFor('snapshot after the install', async () => (await page.state())?.snapshots.find((x) => x.why === 'app installed'), 10 * 60_000);
-    console.log(`snapshot after the install: ${(misure.snapshot_app.size / 2 ** 20).toFixed(0)} MiB in ${(misure.snapshot_app.saveMs + misure.snapshot_app.writeMs).toFixed(0)} ms`);
+    const sa = misure.snapshot_app;
+    // In the background (ADR 0046) the machine's thread only starts the save
+    // and copies; in the foreground the machine stops for the whole time.
+    console.log(`snapshot after the install: ${(sa.size / 2 ** 20).toFixed(0)} MiB ` + (sa.background
+      ? `in the background (machine thread: ${sa.beginMs.toFixed(0)} ms to start + ${sa.pumpMs.toFixed(0)} ms of copies; saver ${sa.writeMs.toFixed(0)} ms; ${(sa.raw / 2 ** 20).toFixed(0)} MiB raw)`
+      : `in the foreground: the machine stopped for ${(sa.saveMs + sa.writeMs).toFixed(0)} ms`));
   } finally {
     await Promise.race([cdp.send('Browser.close').catch(() => {}), new Promise((ok) => setTimeout(ok, 3000))]);
     cdp.close();

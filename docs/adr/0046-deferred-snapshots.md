@@ -131,10 +131,44 @@ or the saver's CPU become the problem.
 - `vetro-wasm` `deferred_snapshot_from_the_api` (ABI 16), `tests/web/snapshot.mjs`
   case G (V8, two instances, `BackgroundSave` and `SaveJob`).
 
+## With accelerated graphics (2026-11-16)
+The gfxstream default (ADR 0047) was merged while deferred saves declined
+on that path: the part before the RAM also holds the GPU's contents
+(colour buffers, surfaces, texture levels, buffer data, read back from the
+executor at save time), and a deferred writer keeps large data
+uncompressed. The first Android runs on hosted runners showed what the
+foreground save costs there: 12.7–12.9 s with the machine stopped for the
+713 MiB snapshot after an install, and 33–41% of the Worker's time in
+`vetro_snapshot::lz` while the app just installed is opening.
+
+Decision: deferred saves on that path too, with the memory accounted for.
+- `Renderer3d::save_bytes_hint` (default 0; gfxstream: the bytes its
+  readbacks fill, from the same list the save uses) says how much large
+  data the renderer writes; `VirtioGpu::save_bytes_hint` passes it on.
+- `vetro_snapshot_bg_begin` sizes the writer with it (no doubling while it
+  grows) and, before starting, asks the allocator for the two copies there
+  will be for a moment (the readback buffer and the writer), **fallibly**:
+  if they do not fit (wasm32 has 4 GiB) the deferred save is refused with a
+  message and the app saves in the foreground, compressing as it goes, as
+  before. A refusal must never be an abort: the machine is the user's
+  session.
+- Nothing else changes: the marks of `compress` in a deferred writer are
+  the same for the GPU's data as for any other, so the assembled file is
+  the file a foreground save writes (`vetro-gfxstream`
+  `deferred_save_is_the_normal_save_and_the_hint_is_its_readbacks`,
+  `vetro-wasm` `deferred_snapshot_with_gpu_contents_or_refused`).
+- On the machine's thread a save now costs the readbacks and one copy of
+  the GPU's contents at the start, then the page copies between slices.
+
+Measured on Android: see `docs/progress/M6.md` (2026-11-16).
+
 ## Consequences
 - ABI 16; `SysPhys::write_trapped` (default false) in the JIT's interface.
+- `Renderer3d::save_bytes_hint` in the renderer's interface (2026-11-16).
 - Memory during a save: the head (devices and disk copy-on-write, as large as
-  today's head buffer), the pages written before the save took them (at most
+  today's head buffer; with accelerated graphics also the GPU's contents,
+  uncompressed, and a second copy of them while they are read back), the
+  pages written before the save took them (at most
   KEPT_MAX before pieces are forced), 16 MiB in flight; the saver Worker's own
   instance (a few tens of MiB).
 - Whoever adds a direct write path to guest RAM (outside `Ram`'s methods and

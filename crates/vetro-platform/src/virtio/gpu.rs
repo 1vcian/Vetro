@@ -465,6 +465,12 @@ impl VirtioGpu {
         self.renderer = Some(renderer);
     }
 
+    /// Bytes of large contents the 3D renderer writes in a snapshot
+    /// ([`Renderer3d::save_bytes_hint`]); 0 without one.
+    pub fn save_bytes_hint(&self) -> usize {
+        self.renderer.as_ref().map_or(0, |r| r.save_bytes_hint())
+    }
+
     /// Typed access to the renderer.
     pub fn renderer_as_mut<T: Renderer3d>(&mut self) -> Option<&mut T> {
         let r: &mut dyn Any = self.renderer.as_mut()?.as_mut();

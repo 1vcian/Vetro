@@ -77,9 +77,9 @@ and its prefetch list on R2).
   runs one core anyway.
 - Guest Vulkan (`ro.hardware.vulkan=pastel`) is still SwiftShader; HWUI and
   SurfaceFlinger use GLES.
-- Snapshots of the accelerated path are saved in the foreground, as in the
-  measurements above: ADR 0046's deferred save copies the sections before
-  the RAM uncompressed, and here they hold the GPU contents (hundreds of MiB
-  more in wasm32 memory). The two were merged without having run together,
-  so `saveSnapshotBackground` declines while the WebGL2 executor is in use;
-  measuring them together is open work.
+- Snapshots of the accelerated path were saved in the foreground until
+  2026-11-16 (as in the measurements above): ADR 0046's deferred save copies
+  the sections before the RAM uncompressed, and here they hold the GPU
+  contents. Since then they are deferred too, with that memory asked for
+  first and the foreground save as the fallback (ADR 0046, "With accelerated
+  graphics").

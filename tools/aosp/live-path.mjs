@@ -237,6 +237,29 @@ const focus = async () => (await sh('dumpsys window | grep -m1 mCurrentFocus')).
  * the profile in <out>/<visit>-<label>.cpuprofile and the functions with the
  * most self time in the measurements.
  */
+/**
+ * The kind of code a CPU profile's frame belongs to: idle, the collector,
+ * JS by file, WebAssembly compilation, vetro-wasm by crate (from the Rust
+ * symbol), and the JIT's own modules (regions, dispatcher, runtime: every
+ * other wasm module).
+ */
+function profileCategory(f) {
+  const name = f.functionName || '';
+  const file = f.url.split('/').pop();
+  if (name === '(idle)') return 'idle';
+  if (name === '(garbage collector)') return 'garbage collector';
+  if (name === '(program)') return 'browser (program)';
+  if (f.url.startsWith('wasm://')) {
+    if (!file.startsWith('vetro_wasm')) return 'JIT modules (regions, dispatcher, runtime)';
+    const crate = /vetro_(snapshot|cpu|mmu|jit_native|jit|machine|platform|gfxstream|net|analysis|wasm)/.exec(name)?.[1];
+    return crate ? `vetro-wasm: vetro_${crate}` : 'vetro-wasm: other (core, alloc, compiler builtins)';
+  }
+  if (/\.mjs$/.test(file)) return `JS: ${file}`;
+  if (!f.url && /^(Module|Instance|compile|instantiate|validate)$/.test(name)) return 'WebAssembly compilation (Module, Instance)';
+  if (!f.url) return `browser: ${name || '(anonymous)'}`;
+  return `other: ${file}`;
+}
+
 async function profileWorker(label, secs) {
   const { readFileSync } = await import('node:fs');
   const [port, path] = readFileSync(join(PROFILE, 'DevToolsActivePort'), 'utf8').trim().split('\n');
@@ -272,6 +295,7 @@ async function profileWorker(label, secs) {
     const s1 = await stats();
     writeFileSync(join(OUT, `${VISIT}-${label}.cpuprofile`), JSON.stringify(profile));
     const self = new Map();
+    const cats = new Map();
     const dt = (profile.endTime - profile.startTime) / profile.samples.length / 1000;
     const byId = new Map(profile.nodes.map((n) => [n.id, n]));
     for (const sid of profile.samples) {
@@ -279,10 +303,16 @@ async function profileWorker(label, secs) {
       const f = n.callFrame;
       const k = `${f.functionName || '(anonymous)'} ${f.url.split('/').pop()}:${f.lineNumber}`;
       self.set(k, (self.get(k) ?? 0) + dt);
+      const c = profileCategory(f);
+      cats.set(c, (cats.get(c) ?? 0) + dt);
     }
     const total = [...self.values()].reduce((a, b) => a + b, 0);
-    const top = [...self.entries()].sort((a, b) => b[1] - a[1]).slice(0, 40).map(([k, ms]) => ({ fn: k, ms: Math.round(ms), pct: +(100 * ms / total).toFixed(1) }));
-    result[`profile_${label}`] = { secs, totalMs: Math.round(total), guestS: s1.guest - s0.guest, top };
+    const pct = ([k, ms]) => ({ fn: k, ms: Math.round(ms), pct: +(100 * ms / total).toFixed(1) });
+    const top = [...self.entries()].sort((a, b) => b[1] - a[1]).slice(0, 40).map(pct);
+    // Self time by kind of code: the regions are thousands of small functions
+    // and never show in a list of the top functions.
+    const categories = [...cats.entries()].sort((a, b) => b[1] - a[1]).map(pct).map(({ fn, ...r }) => ({ category: fn, ...r }));
+    result[`profile_${label}`] = { secs, totalMs: Math.round(total), guestS: s1.guest - s0.guest, categories, top };
     log(`Worker profile (${label}, ${secs} s, guest ${(s1.guest - s0.guest).toFixed(1)} s):\n${top.map((t) => `  ${t.pct}% ${t.fn}`).join('\n')}`);
     save();
   } finally {
