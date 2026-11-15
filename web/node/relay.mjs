@@ -85,7 +85,9 @@ export class GatewayClient {
     this.#origin = origin;
     this.#url = String(url).replace(/\/+$/, '');
     this.#WS = WebSocketImpl;
-    this.#fetch = fetchImpl;
+    // Called as a plain function: a browser's `fetch` invoked as a method of
+    // this object throws "Illegal invocation" (Node's does not mind).
+    this.#fetch = (...args) => fetchImpl(...args);
     this.#now = now;
     this.#onData = onData;
     this.#timer = setInterval(() => this.#tick(), PING_MS);

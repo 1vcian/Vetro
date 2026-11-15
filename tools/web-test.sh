@@ -70,6 +70,10 @@
 #  18. two guest cores in parallel in the app in Chrome (tests/web/browser-smp.mjs,
 #      ADR 0042): threads build, core 1 in a Worker, two processors seen, the
 #      snapshot with the cores in turns, restored with the cores parallel again.
+#  19. the app online in headless Chrome (tests/web/browser-online.mjs, ADR
+#      0048): the Worker's gateway client with the browser's fetch and
+#      WebSocket against the Node gateway, DNS, a 600 KB GET, a refusal, a
+#      second session from the snapshot, `&net=offline`.
 #
 #   tools/web-test.sh [--no-jit]
 #
@@ -163,3 +167,6 @@ node tests/web/litmus.mjs
 
 echo "==> two guest cores in parallel in the app in Chrome (ADR 0042)"
 node tests/web/browser-smp.mjs
+
+echo "==> the app online through the gateway in Chrome (ADR 0048)"
+node tests/web/browser-online.mjs
