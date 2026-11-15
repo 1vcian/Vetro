@@ -233,7 +233,7 @@ pub struct SysJitStats {
     /// Region calls by the dispatcher, with `SysJitConfig::names` (ADR 0041).
     pub dispatches: u64,
     /// Tail calls between the regions of a module, with `SysJitConfig::names`
-    /// (ADR 0046).
+    /// (ADR 0049).
     pub chains: u64,
     /// Regions that returned `CHAIN` (the next region in another module,
     /// called by the dispatcher without a lookup), with `SysJitConfig::names`.
@@ -1582,7 +1582,7 @@ impl<E: Engine> SysJit<E> {
         assert!(n as usize <= self.cfg.batch, "a module has at most `batch` regions");
         let blocks: Vec<Region> = self.cache.pending.iter().map(|p| p.block.clone()).collect();
         let per = self.cfg.batch as u32;
-        // The regions chain within the module (ADR 0046): its code names its
+        // The regions chain within the module (ADR 0049): its code names its
         // table entries, so the chunk comes first.
         let (memory, names) = (self.cfg.memory, self.cfg.names);
         let shared = self.engine.shared_table();

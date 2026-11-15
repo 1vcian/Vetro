@@ -29,7 +29,7 @@ pub struct NativeEngine {
     linker: Linker<Ctx>,
     /// The runtime module (`rt.*`), to re-instantiate after `reset`.
     runtime: Option<wasmtime::Module>,
-    /// [`Engine::shared_table`] (ADR 0046): true unless a test turns it off.
+    /// [`Engine::shared_table`] (ADR 0049): true unless a test turns it off.
     shared_table: bool,
 }
 
@@ -161,7 +161,7 @@ impl Default for NativeEngine {
 
 impl NativeEngine {
     /// Chaining as with an engine whose instances may not import the table
-    /// (`false`: within the module and through the dispatcher, ADR 0046), for
+    /// (`false`: within the module and through the dispatcher, ADR 0049), for
     /// the tests of both kinds. Before the first module.
     pub fn set_shared_table(&mut self, on: bool) {
         self.shared_table = on;
@@ -238,7 +238,7 @@ impl Engine for NativeEngine {
         (off.checked_add(len)? <= size && off + len <= u32::MAX as usize).then_some(off as u32)
     }
 
-    /// wasmtime's instances refer to the imported table (ADR 0046), unless the
+    /// wasmtime's instances refer to the imported table (ADR 0049), unless the
     /// tests ask for the chaining of engines without (`set_shared_table`).
     fn shared_table(&mut self) -> bool {
         self.shared_table

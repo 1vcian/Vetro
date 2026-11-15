@@ -526,7 +526,7 @@ const L_FR: u32 = L_T64 + 17;
 /// Current exit: new `pc`, steps done and code (for the shared tail).
 const L_EXIT_PC: u32 = L_T64 + 11;
 const L_EXIT_DONE: u32 = L_T64 + 12;
-/// The two values of an inline pair or Q load (ADR 0046), pushed after it.
+/// The two values of an inline pair or Q load (ADR 0049), pushed after it.
 const L_P1: u32 = L_T64 + 9;
 const L_P2: u32 = L_T64 + 18;
 const L_T32: u32 = L_T64 + N_T64;
@@ -592,7 +592,7 @@ pub fn module_with(blocks: &[Region], memory: MemoryImport, names: bool) -> Vec<
     module_chained(blocks, memory, names, None)
 }
 
-/// Like [`module_with`]; with `chaining` every `NEXT` exit chains (ADR 0046):
+/// Like [`module_with`]; with `chaining` every `NEXT` exit chains (ADR 0049):
 /// it looks up the new `pc` in the jump cache as the dispatcher does and, on
 /// a hit with the steps within the limit, writes `JitState::entry` and goes
 /// on with a tail call: through the shared table (`Chaining::Shared`), or to
@@ -648,7 +648,7 @@ pub fn module_chained(
     m.encode()
 }
 
-/// Chaining of a module's regions (ADR 0046): table entries `base..base + n`,
+/// Chaining of a module's regions (ADR 0049): table entries `base..base + n`,
 /// the type of the region functions, and whether to count the tail calls
 /// (`area::CHAINS`, measurements).
 #[derive(Clone, Copy, Debug)]
@@ -661,7 +661,7 @@ struct Chain {
     shared: bool,
 }
 
-/// How the regions of a module chain (ADR 0046).
+/// How the regions of a module chain (ADR 0049).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Chaining {
     /// The module's own table, its regions at table entries `base..`; the
@@ -672,7 +672,7 @@ pub enum Chaining {
     Shared,
 }
 
-/// Exit code of a region for the dispatcher only (ADR 0046): bits 31:8 are
+/// Exit code of a region for the dispatcher only (ADR 0049): bits 31:8 are
 /// those of the jump cache word of the next region (entry and table slot),
 /// whose `JitState::entry` the region already wrote after the same checks the
 /// dispatcher does. Never returned to the host.
@@ -1293,7 +1293,7 @@ pub fn dispatcher_with(memory: MemoryImport, count: bool) -> Vec<u8> {
     // entry = w >> 26; code = table[(w >> 8) & (TABLE_SIZE - 1)](s)
     f.local_get(s).local_get(w).i32_const(26).op(op::I32_SHR_U).i32_store(off::ENTRY);
     // A region that returns `CHAIN` already checked the next one and wrote
-    // its entry (ADR 0046): called at once with the slot of its code.
+    // its entry (ADR 0049): called at once with the slot of its code.
     f.loop_(BLOCK_EMPTY);
     if count {
         f.local_get(s)
@@ -1455,7 +1455,7 @@ fn function_in(r: &Region, used: &mut Vec<u32>, chain: Option<Chain>) -> Func {
     pro
 }
 
-/// The `NEXT` exit of a chained region (ADR 0046), with `pc` in `L_EXIT_PC`
+/// The `NEXT` exit of a chained region (ADR 0049), with `pc` in `L_EXIT_PC`
 /// and the steps in `L_STEPS` (both already in `JitState`): the dispatcher's
 /// checks inline (jump cache entry for `pc` and `ctx` in either way, steps
 /// within the limit), then a tail call within the module or [`CHAIN`]. On a
@@ -1496,7 +1496,7 @@ fn chain_tail(f: &mut Func, c: Chain) {
         }
     };
     if c.shared {
-        // The shared table (ADR 0046): any region, at once.
+        // The shared table (ADR 0049): any region, at once.
         count(f);
         f.local_get(L_STATE).local_get(w).i32_const(8).op(op::I32_SHR_U);
         f.i32_const((TABLE_SIZE - 1) as i32).op(op::I32_AND).return_call_indirect(c.ty);
@@ -1557,7 +1557,7 @@ struct Tx {
     why: Option<Exit>,
 }
 
-/// Why a region exits with `NEXT` (ADR 0046, counted in `area::EXITS` with
+/// Why a region exits with `NEXT` (ADR 0049, counted in `area::EXITS` with
 /// `SysJitConfig::names`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Exit {
@@ -2321,7 +2321,7 @@ impl Tx {
     }
 
     /// Like [`tlb_hit`](Self::tlb_hit) for `total` bytes at `addr` aligned to
-    /// `align` (a pair or a Q, ADR 0046): also all within the page.
+    /// `align` (a pair or a Q, ADR 0049): also all within the page.
     fn pair_hit(&mut self, addr: u32, align: u32, total: u32, tlb: u32) {
         self.tlb_hit(addr, align, tlb);
         if total > align {
@@ -2366,7 +2366,7 @@ impl Tx {
             && self.inline_tlb
         {
             // Both accesses aligned in one page of the EL's aligned TLB
-            // (ADR 0046): the entry `rt.ldp` would hit twice.
+            // (ADR 0049): the entry `rt.ldp` would hit twice.
             self.pair_hit(addr, bytes, 2 * bytes, area::tlb(sys.el, false));
             self.f.if_(BLOCK_EMPTY);
             self.f.local_get(t32(2)).i64_load(area::tlb(sys.el, false) + 8).local_get(addr).op(op::I64_ADD);
@@ -2543,7 +2543,7 @@ impl Tx {
         if let Some(sys) = self.sys
             && self.inline_tlb
         {
-            // Aligned to 16 in the EL's aligned TLB (ADR 0046): both halves
+            // Aligned to 16 in the EL's aligned TLB (ADR 0049): both halves
             // of `rt.ldq` hit that entry.
             let tlb = area::tlb(sys.el, false);
             self.pair_hit(addr, 16, 16, tlb);

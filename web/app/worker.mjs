@@ -653,7 +653,7 @@ async function start(c) {
   }
   if (c.jit && c.jitBackground) await jitEngine.startBackground();
   // ?jitprofile=1 and ?jitcount=1 name the regions and count their calls,
-  // chains and exits (ADR 0041, 0046); only ?jitprofile=1 counts the classes.
+  // chains and exits (ADR 0041, 0049); only ?jitprofile=1 counts the classes.
   if (c.jit) m.setJit(64, 16, { profile: !!c.jitProfile, names: !!(c.jitProfile || c.jitCount) });
   jitProfileOn = !!(c.jit && c.jitProfile);
   // The uplink's mode before the cores go parallel: its inputs enter the

@@ -63,7 +63,7 @@ pub trait Engine {
         None
     }
     /// True if every region module may import `env.tbl` at no cost per
-    /// instance (ADR 0046): the regions then chain to any region with a tail
+    /// instance (ADR 0049): the regions then chain to any region with a tail
     /// call through the shared table. False (the default): V8 before
     /// version 13 gives every importing instance its own copy of the table's
     /// dispatch data (5 MiB for [`TABLE_SIZE`] entries, ADR 0041), so the

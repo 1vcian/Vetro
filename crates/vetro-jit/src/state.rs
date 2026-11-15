@@ -175,14 +175,14 @@ pub mod area {
     /// of the shared clock), the steps of this dispatcher run the regions
     /// already added to the shared clock (u64, zeroed by the host).
     pub const TIME_FLUSHED: u32 = TIME_DIV + 8;
-    /// Tail calls between the regions of a module (u64, ADR 0046), counted
+    /// Tail calls between the regions of a module (u64, ADR 0049), counted
     /// only with `SysJitConfig::names` (measurements).
     pub const CHAINS: u32 = TIME_FLUSHED + 8;
-    /// Regions that returned `CHAIN` to the dispatcher (u64, ADR 0046), with
+    /// Regions that returned `CHAIN` to the dispatcher (u64, ADR 0049), with
     /// `SysJitConfig::names`.
     pub const CHAIN_CALLS: u32 = CHAINS + 8;
     /// `NEXT` exits of the regions by kind (`translate::Exit`, u64 each, ADR
-    /// 0046), with `SysJitConfig::names`.
+    /// 0049), with `SysJitConfig::names`.
     pub const EXITS: u32 = CHAIN_CALLS + 8;
     /// Total bytes of the area: 4 tables for aligned accesses and 4 for
     /// unaligned ones ([`tlb_u`]), the clock of several cores, the chain and

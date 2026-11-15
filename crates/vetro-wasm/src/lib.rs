@@ -93,7 +93,9 @@ use display::WebDisplay;
 /// 17: the network gateway (ADR 0048): `vetro_relay_take`,
 /// `vetro_relay_push`, `vetro_relay_state`; the stack's upstream is the
 /// `Uplink`.
-pub const ABI_VERSION: u32 = 17;
+/// 18: region chaining (ADR 0049): import `vetro_jit.shared`; `chains`,
+/// `chainCalls` and the `NEXT` exits by kind at the end of `vetro_jit_stats`.
+pub const ABI_VERSION: u32 = 18;
 
 /// Alignment of the [`vetro_alloc`] buffers (enough for `JitState`).
 const ALLOC_ALIGN: usize = 16;

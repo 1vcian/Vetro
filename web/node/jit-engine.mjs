@@ -63,11 +63,11 @@ export class JitEngine {
   /** Compiled modules, bytes and resets, for the benchmarks. */
   stats = { modules: 0, bytes: 0, resets: 0, compileMs: 0, refused: 0, background: 0, workerMs: 0, instantiateMs: 0, forced: 0, stale: 0, dropped: 0 };
 
-  /** Whether region modules import the block table (ADR 0046): null = not probed yet. */
+  /** Whether region modules import the block table (ADR 0049): null = not probed yet. */
   #shared = null;
 
   /**
-   * `sharedTable`: true or false forces the chaining kind (ADR 0046); by
+   * `sharedTable`: true or false forces the chaining kind (ADR 0049); by
    * default it is probed (`sharedTables()`).
    */
   constructor({ budget = CODE_BUDGET, sharedTable = null } = {}) {
@@ -76,7 +76,7 @@ export class JitEngine {
   }
 
   /**
-   * ADR 0046: true if V8 shares a table's dispatch data among the instances
+   * ADR 0049: true if V8 shares a table's dispatch data among the instances
    * that import it (V8 13 and later), so every region module may import the
    * block table and chain to any region with a tail call. V8 12 (Node 22)
    * gives every importing instance its own copy, 5 MiB for TABLE_SIZE entries
@@ -100,7 +100,7 @@ export class JitEngine {
     }
   }
 
-  /** 1 if region modules import the block table (ADR 0046). */
+  /** 1 if region modules import the block table (ADR 0049). */
   shared() {
     this.#shared ??= JitEngine.sharedTables();
     return this.#shared ? 1 : 0;

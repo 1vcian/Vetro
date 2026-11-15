@@ -590,7 +590,7 @@ impl<E: Engine> JitCpu<E> {
             self.reset();
         }
         // The region chains to itself (other entries) and to the others
-        // through the dispatcher (ADR 0046): its code names its table entry.
+        // through the dispatcher (ADR 0049): its code names its table entry.
         let memory = self.cfg.memory;
         let shared = self.engine.shared_table();
         let generate = |slot: u32| {

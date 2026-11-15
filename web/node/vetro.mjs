@@ -4,7 +4,7 @@
 
 import { CODE_BUDGET, JitEngine } from './jit-engine.mjs';
 
-export const ABI_VERSION = 17;
+export const ABI_VERSION = 18;
 /** Codes of vetro_run. */
 export const STOP = ['Budget', 'PowerOff', 'Reset', 'Idle', 'Unimplemented', 'Blocked'];
 

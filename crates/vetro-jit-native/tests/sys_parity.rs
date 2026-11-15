@@ -529,7 +529,7 @@ fn run_jit(cpu: Cpu, ram: &[u8], seed: u64) -> (Trace, vetro_jit::SysJitStats) {
 fn run_jit_stops(cpu: Cpu, ram: &[u8], seed: u64, stops: &[u64]) -> (Trace, vetro_jit::SysJitStats, u64) {
     let mut engine = NativeEngine::new();
     // Chaining through the shared table, or within the module and through
-    // the dispatcher (ADR 0046).
+    // the dispatcher (ADR 0049).
     engine.set_shared_table(SHARED.get().unwrap_or(seed % 4 < 2));
     run_jit_on(engine, cpu, ram, seed, stops, false)
 }
@@ -745,7 +745,7 @@ fn tlb_non_allineata_non_sconfina() {
     assert!(checked > 0, "no suitable case");
 }
 
-/// Inline pairs and Qs (ADR 0046): LDP/STP of W and X registers, LDR/STR Q
+/// Inline pairs and Qs (ADR 0049): LDP/STP of W and X registers, LDR/STR Q
 /// and LDP/STP Q at the end of a Normal page followed by an unmapped one (the
 /// pair or Q inside the page, or straddling it: the second half faults), and
 /// unaligned on a Device page (alignment faults), in a loop that gets
@@ -1397,7 +1397,7 @@ fn jump_cache_second_way_checks_the_context() {
     }
 }
 
-/// Chaining (ADR 0046): a loop calls a function in the next page, which
+/// Chaining (ADR 0049): a loop calls a function in the next page, which
 /// calls one in the page after; every exit (BL off the page, RET) is a jump
 /// cache hit once the host resolved it. With the shared table the regions go
 /// on with tail calls to any region; without, in one module (batch 8) they go

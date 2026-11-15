@@ -103,7 +103,7 @@ impl Engine for JsEngine {
         unsafe { js::ready(m.0) != 0 }
     }
 
-    /// ADR 0046: the JS engine knows whether V8 shares the table's dispatch
+    /// ADR 0049: the JS engine knows whether V8 shares the table's dispatch
     /// data among the instances that import it.
     fn shared_table(&mut self) -> bool {
         // SAFETY: JS import, no memory access.
@@ -270,7 +270,7 @@ mod js {
         /// (ADR 0038).
         pub fn ready(module: i32) -> u32;
         /// 1 if every region module may import the block table at no cost
-        /// per instance (ADR 0046).
+        /// per instance (ADR 0049).
         pub fn shared() -> u32;
     }
 

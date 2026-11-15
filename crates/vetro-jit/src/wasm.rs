@@ -595,7 +595,7 @@ impl Func {
         self.code.push(0);
         self
     }
-    /// `return_call_indirect` on type `ty` in table 0 (tail call, ADR 0046).
+    /// `return_call_indirect` on type `ty` in table 0 (tail call, ADR 0049).
     pub fn return_call_indirect(&mut self, ty: u32) -> &mut Self {
         self.code.push(op::RETURN_CALL_INDIRECT);
         uleb(&mut self.code, ty as u64);
@@ -699,7 +699,7 @@ pub struct Module {
     /// Function names (`name` custom section), for profilers: (index, name).
     names: Vec<(u32, String)>,
     /// Table 0 defined by the module (not imported) and filled with these
-    /// functions, in order (ADR 0046: chaining between the regions of a module).
+    /// functions, in order (ADR 0049: chaining between the regions of a module).
     own_table: Option<Vec<u32>>,
 }
 

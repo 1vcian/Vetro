@@ -42,7 +42,7 @@ const arg = (name, def) => {
 // that made them miss the JIT's fast paths (ADR 0045).
 const JIT_PROFILE = process.argv.includes('--jit-profile');
 // --jit-count: ?jitcount=1, the region names and the JIT's call, chain and
-// exit counters per action without the class profile (ADR 0046), so a Worker
+// exit counters per action without the class profile (ADR 0049), so a Worker
 // CPU profile is not skewed by it (the class profile alone is ~15%).
 const JIT_COUNT = process.argv.includes('--jit-count');
 // --cpu-profile-actions SECS: a Worker CPU profile of the first SECS seconds of
@@ -89,7 +89,7 @@ async function stats() {
     save: s.save ?? null };
 }
 
-/** JIT counters kept per action (ADR 0046: transitions; dispatches and chains only with ?jitprofile=1). */
+/** JIT counters kept per action (ADR 0049: transitions; dispatches and chains only with ?jitprofile=1). */
 const JIT_KEYS = ['jitSteps', 'runs', 'calls', 'resolves', 'jcProbes', 'modules', 'blocks', 'wasmBytes', 'dispatches', 'chains', 'chainCalls', 'yields', 'faults', 'svcs',
   'exitInPage', 'exitCallOut', 'exitOut', 'exitRet', 'exitBr', 'exitBlr', 'exitLimit'];
 const jitDelta = (a, b) => (a?.jit && b?.jit ? Object.fromEntries(Object.keys(b.jit).map((k) => [k, b.jit[k] - (a.jit[k] ?? 0)])) : null);
