@@ -103,6 +103,13 @@ impl Engine for JsEngine {
         unsafe { js::ready(m.0) != 0 }
     }
 
+    /// ADR 0049: the JS engine knows whether V8 shares the table's dispatch
+    /// data among the instances that import it.
+    fn shared_table(&mut self) -> bool {
+        // SAFETY: JS import, no memory access.
+        unsafe { js::shared() != 0 }
+    }
+
     /// Runs block `b<index>` on the state at offset `state` of the
     /// shared memory; during execution `ld`/`st` call `host`.
     fn run(&mut self, m: &JsModule, index: u32, state: u32, host: &mut dyn Host) -> u32 {
@@ -262,6 +269,9 @@ mod js {
         /// 1 if the module can run, 0 while a Worker still compiles it
         /// (ADR 0038).
         pub fn ready(module: i32) -> u32;
+        /// 1 if every region module may import the block table at no cost
+        /// per instance (ADR 0049).
+        pub fn shared() -> u32;
     }
 
     /// Calls the function at entry `entry` of the function table
@@ -298,6 +308,9 @@ mod js {
     pub unsafe fn reset() {}
     pub unsafe fn ready(_module: i32) -> u32 {
         1
+    }
+    pub unsafe fn shared() -> u32 {
+        0
     }
 }
 

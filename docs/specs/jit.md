@@ -1,4 +1,4 @@
-# JIT to WASM: ABI and interfaces (ADR 0012, ADR 0013, ADR 0024, ADR 0026, ADR 0036, ADR 0041, ADR 0045)
+# JIT to WASM: ABI and interfaces (ADR 0012, ADR 0013, ADR 0024, ADR 0026, ADR 0036, ADR 0041, ADR 0045, ADR 0049)
 
 ## Regions
 The unit of translation is the **region** (ADR 0024): the basic blocks of a
@@ -31,6 +31,19 @@ It exports `b<N>: (state: i32) -> i32` for each region `N`; with
 | 2 `STOP` | stop after the current instruction (write to watched code): `pc` is the next one |
 | 3 `SVC` | the region ends with SVC: `pc` points to the instruction (the host executes it with the interpreter). BRK and HVC close the block *before* themselves with `NEXT` |
 | 4 `YIELD` | (system mode) MSR DAIF/DAIFClr unmasked interrupts: `pc` is the next instruction, the host rechecks interrupts before continuing. After MSR TTBR0/TTBR1 the region also writes `exit_detail` = 3: the host follows the new regime (contexts, TLB groups) and goes on within the same run (ADR 0041) |
+| 5 `CHAIN` | (dispatcher only, ADR 0049) bits 31:8 are those of the jump cache word of the next region, in another module: the region already wrote `pc`, `steps` and `entry` after the dispatcher's own checks, and the dispatcher calls table entry `(code >> 8) & (TABLE_SIZE - 1)` at once. Never returned to the host |
+
+**Chaining** (ADR 0049). A module compiled for table entries `base..base +
+n` (`translate::module_chained`) defines its own table 0 with its regions
+(an active element segment). At a `NEXT` exit, after writing back the
+registers, `pc` and `steps`, a region does what the dispatcher would do next:
+the jump cache entry for `pc` and `ctx` (either way), `steps` + the entry's
+maximum steps <= `limit` (read from `JitState`), then `entry` = `w >> 26`; if
+the slot is in `base..base + n` it goes on with `return_call_indirect` to
+that region of its own table (`area::CHAINS` counts these with
+`SysJitConfig::names`), otherwise it returns `CHAIN`. On a jump cache miss or
+beyond the limit it returns `NEXT` as before. The checks are exactly the
+dispatcher's, so what runs and the instruction count do not change.
 
 Every basic block, before starting, checks that `steps + block steps
 <= limit`, otherwise it exits with `NEXT` at its start: the instruction count
@@ -85,7 +98,9 @@ another `ctx` it calls `env.resolve` (1 = the host wrote the entry, 0 = return
 with `NEXT`); if `steps + maximum steps of the entry > limit` it returns with
 `NEXT`; otherwise it writes the entry into `JitState::entry` and calls the region
 (`call_indirect` on the table entry) and continues as long as the region
-returns `NEXT`. It returns the exit code of the last region.
+returns `NEXT`; after `CHAIN` it calls the region named by the code without
+a lookup (ADR 0049; with `count` it also increments `area::CHAIN_CALLS`). It
+returns the exit code of the last region.
 
 Regions do not import the table: the engine puts them there
 (`Engine::place`). V8 gives every instance that imports a table its own
@@ -170,13 +185,16 @@ Offsets from the start of `JitState`:
 | 1024 | jump cache: 8192 entries of 16 bytes `{pc: u64, ctx: u32, w: u32}`, `w = entry << 26 \| slot << 8 \| maximum steps of the entry` |
 | 132096 | software TLB for aligned accesses: 4 tables (EL0 read, EL0 write, EL1 read, EL1 write) of 512 entries of 16 bytes `{tag: u64, addend: u64}`, index `(va >> 12) & 511` |
 | 164864 | TLB for unaligned accesses: 4 tables as above (`area::tlb_u`) |
+| 197632 | `TIME_DIV`, `TIME_FLUSHED`: the clock of several cores (ADR 0042) |
+| 197648 | `CHAINS`, `CHAIN_CALLS`: u64 counters of tail calls between regions and of `CHAIN` returns (ADR 0049, only with `SysJitConfig::names`) |
+| 197664 | `EXITS`: 8 u64 slots, the `NEXT` exits of the regions by kind (`translate::Exit`: in the page, call out, out, RET, BR, BLR, step limit; ADR 0049, only with `SysJitConfig::names`) |
 
 An aligned access of `n` bytes at `va` uses the entry if `tag == va & (!0xfff
 | (n - 1))`; an unaligned one uses the unaligned TLB if `tag == va &
 !0xfff` and it does not spill into the next page. The address in the engine's
 memory is `(va + addend) mod 2³²`. `tag = 0x800` is an empty entry. An
 entry of the unaligned TLB exists only after a successful unaligned access
-(Normal memory, SCTLR_EL1.A = 0). Total area: 197632 bytes.
+(Normal memory, SCTLR_EL1.A = 0). Total area: 197728 bytes.
 
 `ctx` = context number << 7 | region parameters (EL, TBI0, TBI1, SPSel,
 FP and, at EL0, CNTKCTL_EL1.EL0PCTEN/EL0VCTEN): a jump cache entry is valid

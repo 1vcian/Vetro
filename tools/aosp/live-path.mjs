@@ -42,10 +42,14 @@ const arg = (name, def) => {
 // the instruction classes the interpreter and env.simd ran, and the FP state
 // that made them miss the JIT's fast paths (ADR 0045).
 const JIT_PROFILE = process.argv.includes('--jit-profile');
+// --jit-count: ?jitcount=1, the region names and the JIT's call, chain and
+// exit counters per action without the class profile (ADR 0049), so a Worker
+// CPU profile is not skewed by it (the class profile alone is ~15%).
+const JIT_COUNT = process.argv.includes('--jit-count');
 // --cpu-profile-actions SECS: a Worker CPU profile of the first SECS seconds of
 // the app drawer, Settings and the catalog app's opening (ADR 0045).
 const CPU_ACTIONS = Number(arg('cpu-profile-actions', 0));
-const URL_ = arg('url', 'https://1vcian.me/Vetro/app/?os=android') + (JIT_PROFILE ? '&jitprofile=1' : '');
+const URL_ = arg('url', 'https://1vcian.me/Vetro/app/?os=android') + (JIT_PROFILE ? '&jitprofile=1' : '') + (JIT_COUNT ? '&jitcount=1' : '');
 const PROFILE = arg('profile', '/tmp/vetro-live-profile');
 const OUT = arg('out', '/tmp/vetro-live');
 const VISIT = arg('visit', existsSync(PROFILE) ? 'second' : 'first');
@@ -81,9 +85,15 @@ async function stats() {
   return { wall: (Date.now() - t0) / 1000, guest: s.guestSecs, steps: s.steps, mips: s.mips, waitS: s.feeder.waitMs / 1000, served: s.feeder.served, fromSource: s.feeder.fromSource,
     fromCache: s.feeder.fromCache, requests: http.requests, mib: http.bytes / 2 ** 20, memory: s.memory / 2 ** 20, aheadMs: s.aheadMs,
     frames: s.frames, prefetched: s.feeder.prefetched ?? null, jitModules: s.jit?.modules ?? null, jitCompileS: s.jitHost ? s.jitHost.compileMs / 1000 : null,
+    jit: s.jit ? Object.fromEntries(JIT_KEYS.filter((k) => k in s.jit).map((k) => [k, s.jit[k]])) : null,
     // A deferred snapshot save in progress (ADR 0046).
     save: s.save ?? null };
 }
+
+/** JIT counters kept per action (ADR 0049: transitions; dispatches and chains only with ?jitprofile=1). */
+const JIT_KEYS = ['jitSteps', 'runs', 'calls', 'resolves', 'jcProbes', 'modules', 'blocks', 'wasmBytes', 'dispatches', 'chains', 'chainCalls', 'yields', 'faults', 'svcs',
+  'exitInPage', 'exitCallOut', 'exitOut', 'exitRet', 'exitBr', 'exitBlr', 'exitLimit'];
+const jitDelta = (a, b) => (a?.jit && b?.jit ? Object.fromEntries(Object.keys(b.jit).map((k) => [k, b.jit[k] - (a.jit[k] ?? 0)])) : null);
 
 let sampling = true;
 (async () => {
@@ -184,7 +194,7 @@ async function timed(name, act, { minChange = 0.02, stillMs = 2000, limitMs = 90
   const s1 = await stats();
   const a = { name, frameMs: frame, changedMs: changed, doneMs: done, settledMs: settled, diskWaitS: s1 && s0 ? s1.waitS - s0.waitS : null, httpReads: s1 && s0 ? s1.requests - s0.requests : null,
     httpMiB: s1 && s0 ? s1.mib - s0.mib : null, guestS: s1 && s0 ? s1.guest - s0.guest : null, wallS: (Date.now() - ts) / 1000,
-    mips: s1 && s0 ? (s1.steps - s0.steps) / 1e6 / ((s1.wall - s0.wall) || 1) : null };
+    mips: s1 && s0 ? (s1.steps - s0.steps) / 1e6 / ((s1.wall - s0.wall) || 1) : null, steps: s1 && s0 ? s1.steps - s0.steps : null, jit: jitDelta(s0, s1) };
   if (JIT_PROFILE) {
     // The profile is refreshed every 5 s: wait for one after the action.
     await sleep(5500);

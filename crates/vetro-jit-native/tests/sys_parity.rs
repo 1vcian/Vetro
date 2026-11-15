@@ -297,6 +297,11 @@ std::thread_local! {
     /// The counter divisor of the case (ADR 0042: several cores, the counter
     /// of `steps / div`), for the interpreter and the JIT alike.
     static DIV: core::cell::Cell<u64> = const { core::cell::Cell::new(1) };
+    /// A fixed JIT configuration for the next runs (threshold, batch, names)
+    /// instead of a random one.
+    static CFG: core::cell::Cell<Option<(u32, usize, bool)>> = const { core::cell::Cell::new(None) };
+    /// The engine's `shared_table` for the next runs instead of one by seed.
+    static SHARED: core::cell::Cell<Option<bool>> = const { core::cell::Cell::new(None) };
 }
 
 impl CpuEnv for NoEnv {
@@ -522,7 +527,11 @@ fn run_jit(cpu: Cpu, ram: &[u8], seed: u64) -> (Trace, vetro_jit::SysJitStats) {
 /// Like [`run_jit`] with `SysJit::set_stops(stops)`; also counts the
 /// interpreter steps done with the PC in `stops`.
 fn run_jit_stops(cpu: Cpu, ram: &[u8], seed: u64, stops: &[u64]) -> (Trace, vetro_jit::SysJitStats, u64) {
-    run_jit_on(NativeEngine::new(), cpu, ram, seed, stops, false)
+    let mut engine = NativeEngine::new();
+    // Chaining through the shared table, or within the module and through
+    // the dispatcher (ADR 0049).
+    engine.set_shared_table(SHARED.get().unwrap_or(seed % 4 < 2));
+    run_jit_on(engine, cpu, ram, seed, stops, false)
 }
 
 /// Like [`run_jit_stops`] on any engine.
@@ -536,11 +545,9 @@ fn run_jit_on<E: Engine>(
 ) -> (Trace, vetro_jit::SysJitStats, u64) {
     let mut rng = Rng(seed ^ 0xb0d9e7);
     vetro_jit::Engine::reserve(&mut engine, RAM_IN_ENGINE + RAM_LEN);
-    let cfg = SysJitConfig {
-        hot_threshold: rng.below(3) as u32,
-        batch: 1 + rng.below(4) as usize,
-        ..Default::default()
-    };
+    let (hot_threshold, batch, names) =
+        CFG.get().unwrap_or((rng.below(3) as u32, 1 + rng.below(4) as usize, rng.below(2) == 1));
+    let cfg = SysJitConfig { hot_threshold, batch, names, ..Default::default() };
     let mut jit = SysJit::new(engine, cfg);
     jit.set_stops(stops);
     // Odd seeds: WFE and YIELD stay with the interpreter (several cores).
@@ -736,6 +743,85 @@ fn tlb_non_allineata_non_sconfina() {
         }
     }
     assert!(checked > 0, "no suitable case");
+}
+
+/// Inline pairs and Qs (ADR 0049): LDP/STP of W and X registers, LDR/STR Q
+/// and LDP/STP Q at the end of a Normal page followed by an unmapped one (the
+/// pair or Q inside the page, or straddling it: the second half faults), and
+/// unaligned on a Device page (alignment faults), in a loop that gets
+/// compiled. Same trace as the interpreter. Fails if the inline path drops
+/// the within-page check or the alignment check (both tried).
+#[test]
+fn inline_pairs_and_qs_stay_in_their_page() {
+    let l3 = TABLES + 0x2000;
+    let pte = |ram: &[u8], i: u64| {
+        let o = (l3 + 8 * i - RAM_BASE) as usize;
+        u64::from_le_bytes(ram[o..o + 8].try_into().unwrap())
+    };
+    let prog = [
+        0xa9001023u32, // stp x3, x4, [x1]
+        0xa9401825,    // ldp x5, x6, [x1]
+        0x29001163,    // stp w3, w4, [x11]
+        0x2940356c,    // ldp w12, w13, [x11]
+        0xa9001043,    // stp x3, x4, [x2]
+        0xa9402047,    // ldp x7, x8, [x2]
+        0x3d800020,    // str q0, [x1]
+        0x3dc00021,    // ldr q1, [x1]
+        0xad000520,    // stp q0, q1, [x9]
+        0xad400d22,    // ldp q2, q3, [x9]
+        0xad401544,    // ldp q4, q5, [x10]
+        0xad001544,    // stp q4, q5, [x10]
+        0x91000c63,    // add x3, x3, #0x3
+        0xd1000673,    // sub x19, x19, #0x1
+        0xb5fffe53,    // cbnz x19, 0x0
+        0x14000000,    // b .
+    ];
+    let mut checked = [0; 2];
+    for seed in 0..400 {
+        let (mut cpu, mut ram) = setup(seed);
+        if cpu.sys.el != 1 {
+            continue;
+        }
+        let rw = |d: u64| d & 3 == VALID_PAGE && d & (0b10 << 6) == 0;
+        let normal = |d: u64| rw(d) && d & (1 << 2) == ATTR_NORMAL;
+        let device = |d: u64| rw(d) && d & (1 << 2) == ATTR_DEVICE;
+        let o = (START - RAM_BASE) as usize;
+        for (k, w) in prog.iter().enumerate() {
+            ram[o + 4 * k..o + 4 * k + 4].copy_from_slice(&w.to_le_bytes());
+        }
+        cpu.sys.sctlr_el1 &= !sctlr::A;
+        cpu.sys.cpacr_el1 = 0b11 << 20;
+        cpu.pc = START;
+        cpu.x[19] = 40;
+        // Kind 0: the end of a Normal page before an unmapped one; kind 1:
+        // unaligned on a Device page.
+        let kind = if checked[0] <= checked[1] { 0 } else { 1 };
+        let found = if kind == 0 {
+            (1..511).find(|&i| normal(pte(&ram, i)) && pte(&ram, i + 1) == 0)
+        } else {
+            (1..511).find(|&i| device(pte(&ram, i)))
+        };
+        let Some(i) = found else { continue };
+        let page = DATA + i * 0x1000;
+        let at = |off: u64| page + off;
+        if kind == 0 {
+            (cpu.x[1], cpu.x[2], cpu.x[11], cpu.x[9], cpu.x[10]) =
+                (at(0xff0), at(0xff8), at(0xffc), at(0xfe0), at(0xff0));
+        } else {
+            (cpu.x[1], cpu.x[2], cpu.x[11], cpu.x[9], cpu.x[10]) =
+                (at(0x108), at(0x204), at(0x302), at(0x408), at(0x500));
+        }
+        let want = run_interp(cpu.clone(), ram.clone());
+        assert!(want.events.len() >= 40, "seed {seed}: the straddling or unaligned accesses must fault");
+        let (got, s) = run_jit(cpu, &ram, seed);
+        assert_eq!(got, want, "seed {seed}, kind {kind}");
+        assert!(s.jit_steps > 100, "seed {seed}: not run in regions: {s:?}");
+        checked[kind] += 1;
+        if checked == [6, 6] {
+            break;
+        }
+    }
+    assert!(checked[0] > 0 && checked[1] > 0, "no suitable case: {checked:?}");
 }
 
 /// MSR DAIFClr that unmasks an interrupt (ADR 0024): the block exits with
@@ -1308,6 +1394,82 @@ fn jump_cache_second_way_checks_the_context() {
         let (got, s) = run_jit(cpu.clone(), &ram, seed);
         assert_eq!(got, want, "seed {seed}: interpreter and JIT differ ({s:?})");
         assert!(s.jit_steps > 1000 && s.resolves > 100, "seed {seed}: not run in regions: {s:?}");
+    }
+}
+
+/// Chaining (ADR 0049): a loop calls a function in the next page, which
+/// calls one in the page after; every exit (BL off the page, RET) is a jump
+/// cache hit once the host resolved it. With the shared table the regions go
+/// on with tail calls to any region; without, in one module (batch 8) they go
+/// on with tail calls, one module each (batch 1) they return `CHAIN` and the
+/// dispatcher calls the next one directly. Random
+/// budgets put the step limit everywhere. Same trace as the interpreter, and
+/// the chains really happen (both counters are zero with the chain tail
+/// removed, tried).
+#[test]
+fn regions_chain_within_a_module_and_through_the_dispatcher() {
+    let seed = (0..100).find(|&s| setup(s).0.sys.el == 1).expect("a case at EL1");
+    let (mut cpu, mut ram) = setup(seed);
+    let mut put = |at: u64, ws: &[u32]| {
+        let o = (at - RAM_BASE) as usize;
+        for (k, w) in ws.iter().enumerate() {
+            ram[o + 4 * k..o + 4 * k + 4].copy_from_slice(&w.to_le_bytes());
+        }
+    };
+    put(
+        START,
+        &[
+            0x94000400, // bl 0x1000
+            0xd1000673, // sub x19, x19, #0x1
+            0xb5ffffd3, // cbnz x19, 0x0
+            0x14000000, // b .
+        ],
+    );
+    put(
+        START + 0x1000,
+        &[
+            0x91000400, // add x0, x0, #0x1
+            0xaa1e03ea, // mov x10, x30
+            0x94000400, // bl 0x1000
+            0xaa0a03fe, // mov x30, x10
+            0xd65f03c0, // ret
+        ],
+    );
+    put(
+        START + 0x2008,
+        &[
+            0x8b000021, // add x1, x1, x0
+            0xd65f03c0, // ret
+        ],
+    );
+    cpu.pc = START;
+    cpu.x[0] = 0;
+    cpu.x[1] = 0;
+    cpu.x[19] = 200;
+    let want = run_interp(cpu.clone(), ram.clone());
+    assert_eq!(
+        (want.cpu.x[19], want.cpu.x[0], want.cpu.x[1]),
+        (0, 200, 200 * 201 / 2),
+        "the loop must finish"
+    );
+    for (shared, batch, what) in [
+        (false, 8, "tail calls"),
+        (false, 1, "CHAIN returns"),
+        (true, 8, "tail calls"),
+        (true, 1, "tail calls"),
+    ] {
+        for seed in 0..12 {
+            CFG.set(Some((1, batch, true)));
+            SHARED.set(Some(shared));
+            let (got, s) = run_jit(cpu.clone(), &ram, seed);
+            CFG.set(None);
+            SHARED.set(None);
+            let case = format!("shared table {shared}, batch {batch}, seed {seed}");
+            assert_eq!(got, want, "{case}: interpreter and JIT differ ({s:?})");
+            let chained = if !shared && batch == 1 { s.chain_calls } else { s.chains };
+            assert!(s.jit_steps > 1500 && chained > 300, "{case}: too few {what}: {s:?}");
+            assert!(!shared || s.chain_calls == 0, "{case}: CHAIN with the shared table: {s:?}");
+        }
     }
 }
 

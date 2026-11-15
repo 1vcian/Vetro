@@ -72,7 +72,7 @@ use vetro_mmu::{BusError, Inval, Mmu, MmuBus, PhysMemory, tcr};
 use crate::engine::{Engine, Host, TABLE_SIZE};
 use crate::profile::Profile;
 use crate::state::{self, JitState, area, off};
-use crate::translate::{self, MAX_REGION, Region, SysTarget, ZVA_BYTES};
+use crate::translate::{self, Chaining, MAX_REGION, Region, SysTarget, ZVA_BYTES};
 use crate::wasm::MemoryImport;
 use crate::{FAULT, NEXT, STOP, SVC, YIELD};
 
@@ -232,6 +232,15 @@ pub struct SysJitStats {
     pub evicted_modules: u64,
     /// Region calls by the dispatcher, with `SysJitConfig::names` (ADR 0041).
     pub dispatches: u64,
+    /// Tail calls between the regions of a module, with `SysJitConfig::names`
+    /// (ADR 0049).
+    pub chains: u64,
+    /// Regions that returned `CHAIN` (the next region in another module,
+    /// called by the dispatcher without a lookup), with `SysJitConfig::names`.
+    pub chain_calls: u64,
+    /// `NEXT` exits of the regions by kind (`translate::Exit`: in the page,
+    /// BL out, other out, RET, BR, BLR, step limit), with `SysJitConfig::names`.
+    pub exits: [u64; translate::N_EXITS],
     /// Bytes of WebAssembly compiled (modules and dispatcher).
     pub wasm_bytes: u64,
 }
@@ -1447,6 +1456,15 @@ impl<E: Engine> SysJit<E> {
         if self.cfg.names {
             self.cache.stats.dispatches += state::read_u64(m, at, off::DISPATCHES);
             state::write_u64(m, at, off::DISPATCHES, 0);
+            self.cache.stats.chains += state::read_u64(m, at, area::CHAINS);
+            state::write_u64(m, at, area::CHAINS, 0);
+            self.cache.stats.chain_calls += state::read_u64(m, at, area::CHAIN_CALLS);
+            state::write_u64(m, at, area::CHAIN_CALLS, 0);
+            for (k, e) in self.cache.stats.exits.iter_mut().enumerate() {
+                let o = area::EXITS + 8 * k as u32;
+                *e += state::read_u64(m, at, o);
+                state::write_u64(m, at, o, 0);
+            }
         }
         let steps = state::read_u64(m, at, off::STEPS);
         *pc = state::read_u64(m, at, off::PC);
@@ -1563,8 +1581,15 @@ impl<E: Engine> SysJit<E> {
         }
         assert!(n as usize <= self.cfg.batch, "a module has at most `batch` regions");
         let blocks: Vec<Region> = self.cache.pending.iter().map(|p| p.block.clone()).collect();
-        let wasm = translate::module_with(&blocks, self.cfg.memory, self.cfg.names);
-        self.cache.stats.wasm_bytes += wasm.len() as u64;
+        let per = self.cfg.batch as u32;
+        // The regions chain within the module (ADR 0049): its code names its
+        // table entries, so the chunk comes first.
+        let (memory, names) = (self.cfg.memory, self.cfg.names);
+        let shared = self.engine.shared_table();
+        let generate = |chunk: u32| {
+            let c = if shared { Chaining::Shared } else { Chaining::Own(chunk * per) };
+            translate::module_chained(&blocks, memory, names, Some(c))
+        };
         // Table full or engine full (the browser's code budget, wasmtime's
         // instances per store): first the modules not entered since the last
         // eviction go (ADR 0041), then, if that is not enough, everything.
@@ -1572,6 +1597,7 @@ impl<E: Engine> SysJit<E> {
         if chunk.is_none() && self.evict() {
             chunk = self.alloc_chunk();
         }
+        let mut wasm = chunk.map(generate).unwrap_or_default();
         let mut compiled = chunk.and_then(|_| self.engine.compile(&wasm).ok());
         if chunk.is_some() && compiled.is_none() && self.evict() {
             compiled = self.engine.compile(&wasm).ok();
@@ -1581,13 +1607,15 @@ impl<E: Engine> SysJit<E> {
             _ => {
                 self.reset();
                 let k = self.alloc_chunk().expect("an empty table has chunks");
+                wasm = generate(k);
                 match self.engine.compile(&wasm) {
                     Ok(m) => (m, k),
                     Err(e) => panic!("JIT module of {} bytes rejected by the engine: {e}", wasm.len()),
                 }
             }
         };
-        let base = chunk * self.cfg.batch as u32;
+        self.cache.stats.wasm_bytes += wasm.len() as u64;
+        let base = chunk * per;
         self.engine.place(&module, n, base);
         self.cache.stats.modules += 1;
         let ready = Rc::new(Cell::new(self.engine.ready(&module)));
