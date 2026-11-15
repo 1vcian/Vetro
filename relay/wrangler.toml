@@ -1,0 +1,30 @@
+# Vetro's network gateway on Cloudflare Workers (ADR 0048).
+# Deploy: relay/deploy.sh (wrangler pinned in package.json). Kill switch:
+# relay/kill.sh (GATEWAY_ENABLED = "0"). The token secret is not here:
+# deploy.sh sets it with `wrangler secret put TOKEN_SECRET` on the first deploy.
+name = "vetro-gateway"
+main = "src/worker.mjs"
+compatibility_date = "2025-09-01"
+workers_dev = true
+preview_urls = false
+# No usage telemetry from wrangler (deploys and local runs).
+send_metrics = false
+
+[vars]
+GATEWAY_ENABLED = "1"
+# The Vetro site only: GitHub Pages serves it from its custom domain
+# (https://1vcian.github.io/Vetro/ redirects to https://1vcian.me/Vetro/, so
+# the page's origin is 1vcian.me); vetro.lol next.
+ALLOWED_ORIGINS = "https://1vcian.me,https://1vcian.github.io,https://vetro.lol,https://app.vetro.lol"
+DOH_URL = "https://cloudflare-dns.com/dns-query"
+
+[[durable_objects.bindings]]
+name = "SESSIONS"
+class_name = "SessionLedger"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SessionLedger"]
+
+[observability]
+enabled = true

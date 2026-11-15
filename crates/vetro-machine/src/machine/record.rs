@@ -226,6 +226,12 @@ impl Machine {
                     }
                 })
                 .unwrap_or(Reply::NoDevice),
+            Input::Relay(bytes) => match vetro_net::Frame::decode(bytes) {
+                Some((vetro_net::Side::Gateway, f)) => self
+                    .net_raw(|s| if s.upstream_mut().input(f) { Reply::Done } else { Reply::Rejected })
+                    .unwrap_or(Reply::NoDevice),
+                _ => Reply::Rejected,
+            },
         }
     }
 
@@ -946,5 +952,29 @@ mod tests {
         assert_eq!(n.replay_status(), Some(&ReplayStatus::Finished));
         assert_eq!(n.digest(), log.end);
         assert_eq!(n.board.borrow().virt.uart().pending_input(), 1, "the byte reached the UART");
+    }
+
+    /// The gateway's frames are inputs (ADR 0048): applied to the uplink,
+    /// rejected when malformed, sent the wrong way or for an unknown
+    /// connection; without a network, `NoDevice`.
+    #[test]
+    fn frames_of_the_gateway() {
+        use vetro_net::{Frame, Side};
+        let gw = |f: Frame| Input::Relay(f.encode_from(Side::Gateway));
+        let mut m = Machine::with_devices(
+            &cfg(),
+            &Devices { net: Some(crate::NetSetup::default()), ..Devices::none() },
+        );
+        assert_eq!(m.net_view(|s| s.upstream().online()), Some(false));
+        assert_eq!(m.input(gw(Frame::Online(true))), Reply::Done);
+        assert_eq!(m.net_view(|s| s.upstream().online()), Some(true));
+        assert_eq!(m.input(gw(Frame::Connected { id: 3 })), Reply::Rejected, "unknown connection");
+        assert_eq!(m.input(Input::Relay(vec![0x81, 0, 0])), Reply::Rejected, "malformed");
+        let wrong_way = Frame::Shutdown { id: 1 }.encode_from(Side::Machine);
+        assert_eq!(m.input(Input::Relay(wrong_way)), Reply::Rejected, "machine-to-gateway frame");
+        assert_eq!(m.input(gw(Frame::Down)), Reply::Done);
+        assert!(m.relay_take().is_empty());
+        let mut none = Machine::with_devices(&cfg(), &Devices::none());
+        assert_eq!(none.input(gw(Frame::Online(true))), Reply::NoDevice);
     }
 }

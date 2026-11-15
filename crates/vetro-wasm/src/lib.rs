@@ -42,6 +42,7 @@ pub mod gl;
 pub mod jit;
 pub mod net;
 pub mod parallel;
+pub mod relay;
 pub mod replay;
 
 use std::alloc::Layout;
@@ -89,7 +90,10 @@ use display::WebDisplay;
 /// 16: deferred snapshots (ADR 0046): `vetro_snapshot_bg_*` on the machine,
 /// `vetro_asm_*` (the assembler, any instance), imports
 /// `vetro_host.file_write/file_read`.
-pub const ABI_VERSION: u32 = 16;
+/// 17: the network gateway (ADR 0048): `vetro_relay_take`,
+/// `vetro_relay_push`, `vetro_relay_state`; the stack's upstream is the
+/// `Uplink`.
+pub const ABI_VERSION: u32 = 17;
 
 /// Alignment of the [`vetro_alloc`] buffers (enough for `JitState`).
 const ALLOC_ALIGN: usize = 16;

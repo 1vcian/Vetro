@@ -47,5 +47,5 @@ echo "rust=$(match '^(crates/|tests/[^/]+/(Cargo\.toml|src/|tests/|c/|[^/]+\.rs$
 echo "linux=$(match '^(crates/vetro-(cpu|mmu|jit|jit-native|cli)/|tests/(linux|diff|isa)/|tools/(ltp|risu|guest-bins|oracle)/|Cargo\.lock$|rust-toolchain\.toml$)')"
 echo "boot=$(match '^(crates/|tests/boot/|guest/kernel/|tools/(guest-kernel|guest-bins|analysis)/|tools/wasm-boot\.sh$|Cargo\.lock$|rust-toolchain\.toml$)')"
 echo "kernel=$(match '^(guest/kernel/(config|initramfs|kselftest)/|tools/guest-kernel/|tools/guest-bins/)')"
-echo "web=$(match '^(web/|docs/user/|tests/web/|crates/vetro-(wasm|analysis|machine)/|tools/(web-test\.sh|web-serve\.mjs|pages/))')"
+echo "web=$(match '^(web/|relay/|docs/user/|tests/web/|crates/vetro-(wasm|analysis|machine|net)/|tools/(web-test\.sh|web-serve\.mjs|pages/))')"
 echo "site=$(match '^(web/|docs/user/|crates/|guest/kernel/|tools/(pages|guest-kernel)/|tests/web/(pages|chrome|lib)\.mjs$|Cargo\.lock$)')"

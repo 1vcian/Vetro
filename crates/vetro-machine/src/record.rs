@@ -55,6 +55,10 @@ pub enum Input {
     /// A host operation on one of its TCP connections to the guest
     /// (port forwarding, `Stack::host_*` of `vetro-net`).
     HostNet(HostNetOp),
+    /// A frame of the network gateway's protocol for the machine's uplink
+    /// (ADR 0048, `vetro_net::relay`): an answer of the gateway, or the
+    /// host's `ONLINE`/`DOWN`. The bytes as on the wire.
+    Relay(Vec<u8>),
 }
 
 /// Host operations on the connections to the guest (the
@@ -115,6 +119,11 @@ pub enum Reply {
     HostConn(Option<ConnId>),
     /// Bytes accepted by `host_send`.
     Accepted(u64),
+    /// A gateway frame (`Input::Relay`) that is malformed, goes the other
+    /// way, or does not apply (unknown connection): nothing changed for the
+    /// guest, except the reset of a connection whose gateway broke the
+    /// protocol.
+    Rejected,
 }
 
 impl Input {
@@ -277,6 +286,10 @@ impl Input {
                     }
                 }
             }
+            Input::Relay(f) => {
+                w.u8(9);
+                w.bytes(f);
+            }
         }
     }
 
@@ -318,6 +331,7 @@ impl Input {
                 5 => HostNetOp::Release(r.u64()?),
                 k => return Err(Error::invalid(format!("host network operation {k}"))),
             }),
+            9 => Input::Relay(r.vec()?),
             k => return Err(Error::invalid(format!("input type {k}"))),
         })
     }
@@ -709,6 +723,7 @@ mod tests {
             Input::HostNet(HostNetOp::Shutdown(1)),
             Input::HostNet(HostNetOp::Abort(2)),
             Input::HostNet(HostNetOp::Release(1)),
+            Input::Relay(vec![0x81, 0, 0, 0, 1]),
             Input::Keyboard(Input::key_events(BTN_LEFT, false)),
         ];
         let mut events: Vec<Event> = inputs

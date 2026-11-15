@@ -1,0 +1,20 @@
+# Gateway protocol vectors (ADR 0048): name, side, frame in hex.
+# Written by `VETRO_WRITE_VECTORS=1 cargo test -p vetro-net --test relay shared_vectors`,
+# checked by that test and by relay/test/unit.mjs.
+connect machine 01000000075db8d70e01bb
+connect_name machine 020000000800506578616d706c652e636f6d
+data_machine machine 030000000768656c6c6f
+data_gateway gateway 8300000007776f726c64
+shutdown_machine machine 0400000007
+shutdown_gateway gateway 8400000007
+close_machine machine 050000000700
+close_gateway gateway 850000000901
+ack_machine machine 0600000007000003e8
+ack_gateway gateway 860000000700040000
+dns machine 0700000003123401000001000000000000
+dns_answer gateway 8700000003123481800000000000000000
+connected gateway 8100000007
+refused gateway 820000000905
+online gateway f00000000001
+down gateway f100000000
+big_id machine 03fffffffeff

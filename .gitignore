@@ -7,3 +7,4 @@ dist/
 /plan.docx
 .claude/worktrees/
 __pycache__/
+.wrangler/

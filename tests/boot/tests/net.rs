@@ -216,7 +216,7 @@ fn check_host_view(m: &Machine) -> String {
         );
 
         // Connections: name, port, bytes in both directions, clean close.
-        let conns: Vec<_> = s.upstream().tcp_connections().collect();
+        let conns: Vec<_> = s.upstream().sinkhole().tcp_connections().collect();
         assert_eq!(conns.len(), 3, "{conns:#?}");
         let expect = [
             ("vetro.example", 80, http_ok(b"VETRO-SINKHOLE-OK\n").len()),

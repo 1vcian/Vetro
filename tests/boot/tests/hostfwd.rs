@@ -26,8 +26,8 @@ use std::process::Command;
 use std::time::Duration;
 
 use vetro_boot_tests::*;
-use vetro_machine::vetro_net::{CloseReason, ConnId, EventKind, HostConnState, Sinkhole, Stack};
-use vetro_machine::{Devices, Machine, MachineConfig, NetSetup, Stop};
+use vetro_machine::vetro_net::{CloseReason, ConnId, EventKind, HostConnState};
+use vetro_machine::{Devices, Machine, MachineConfig, NetSetup, NetStack, Stop};
 
 const PHASE_BUDGET: u64 = 6_000_000_000;
 const PORT: u16 = 5555;
@@ -72,7 +72,7 @@ impl Run {
     /// Runs quanta of instructions and, between one quantum and the next, gives the
     /// network stack the host function until it returns
     /// true. It is the point where the host's inputs enter the machine.
-    fn pump(&mut self, what: &str, mut host: impl FnMut(&mut Stack<Sinkhole>) -> bool) {
+    fn pump(&mut self, what: &str, mut host: impl FnMut(&mut NetStack) -> bool) {
         let limit = self.m.steps + PHASE_BUDGET;
         loop {
             if self.m.net(&mut host).expect("virtio-net") {
@@ -133,13 +133,13 @@ struct Transfer {
 }
 
 impl Transfer {
-    fn new(s: &mut Stack<Sinkhole>, data: Vec<u8>, expect: usize) -> Self {
+    fn new(s: &mut NetStack, data: Vec<u8>, expect: usize) -> Self {
         let id = s.host_connect(PORT).expect("ephemeral port");
         Transfer { id, data, sent: 0, got: Vec::new(), expect, shut: false }
     }
 
     /// One host round; true when the connection is closed.
-    fn turn(&mut self, s: &mut Stack<Sinkhole>) -> bool {
+    fn turn(&mut self, s: &mut NetStack) -> bool {
         self.sent += s.host_send(self.id, &self.data[self.sent..]);
         let mut buf = [0u8; 65536];
         loop {

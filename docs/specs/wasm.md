@@ -39,7 +39,7 @@ linear memory (two 1 GiB machines) they come out negative.
 
 ## Exports
 
-Version: `vetro_abi_version() -> u32`, currently **12**. It changes with every
+Version: `vetro_abi_version() -> u32`, currently **16**. It changes with every
 incompatible change to the signatures or codes below; the JS loader
 (`web/node/vetro.mjs`) checks it.
 
@@ -76,6 +76,11 @@ incompatible change to the signatures or codes below; the JS loader
   `vetro_snapshot_restore_stream`, imports `vetro_host.snapshot_write` and
   `snapshot_read`). Existing signatures are unchanged; the RAM may exceed
   2 GiB on wasm32 too (below, "RAM beyond 2 GiB").
+- 13–15: snapshot configuration hash and compression, background JIT,
+  accelerated graphics (the list in `ABI_VERSION`, `crates/vetro-wasm/src/lib.rs`).
+- 17 (M7): the network gateway (ADR 0048): `vetro_relay_take`,
+  `vetro_relay_push`, `vetro_relay_state`; the stack's upstream is the
+  `Uplink`.
 
 ### Memory
 
@@ -282,6 +287,20 @@ guestEof, unsent }`, names in `NET_STATE` and `NET_REASON`). Test:
 `tests/web/hostfwd.mjs` (in `tools/web-test.sh`): `nc -l -e cat` in the
 guest, echo of 200 KB from JS, close, port without a service, same
 instructions with and without JIT and in two executions.
+
+### Network gateway (ABI 17, ADR 0048, `docs/specs/relay.md`)
+
+The frames between the machine's uplink and the network gateway, which JS
+carries over WebSocket lanes (`GatewayClient` in `web/node/relay.mjs`).
+
+| Export | Signature | Meaning |
+|---|---|---|
+| `vetro_relay_take` | `(vm) -> usize` | the frames for the gateway since the last call, in the result buffer: each one a `u32` little-endian length and the frame as on the gateway's wire; 0 = none. An output: it does not change the execution |
+| `vetro_relay_push` | `(vm, src: *const u8, len: usize) -> u32` | one frame of the gateway (or the host's `ONLINE`/`DOWN`): an input (`Input::Relay`, recorded). 0 done, 1 rejected (malformed, wrong direction, unknown connection), 2 no network, 3 ignored (replay), 4 deferred (recording, machine waiting for a disk) |
+| `vetro_relay_state` | `(vm, out: *mut u32, cap: usize) -> u32` | 1 online, 0 offline, 2 no network. In `out`: connections through the gateway, frames not yet taken, connections sent, refused, DNS queries sent, UDP datagrams dropped, frames that did not apply. It does not touch the machine |
+
+In JS: `Machine.relayTake()` (array of `Uint8Array`), `relayPush(frame)`
+(a name of `RELAY_PUSH`), `relayState()`.
 
 ### File manager (ABI 7, ADR 0020; ABI 9, ADR 0021; `docs/specs/files.md`)
 

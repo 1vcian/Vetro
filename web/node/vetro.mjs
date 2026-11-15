@@ -4,7 +4,7 @@
 
 import { CODE_BUDGET, JitEngine } from './jit-engine.mjs';
 
-export const ABI_VERSION = 16;
+export const ABI_VERSION = 17;
 /** Codes of vetro_run. */
 export const STOP = ['Budget', 'PowerOff', 'Reset', 'Idle', 'Unimplemented', 'Blocked'];
 
@@ -352,6 +352,9 @@ export class SnapshotAssembler {
     this.#a = 0;
   }
 }
+
+/** Outcomes of `Machine.relayPush` (vetro_relay_push codes). */
+export const RELAY_PUSH = ['Done', 'Rejected', 'NoNetwork', 'Ignored', 'Deferred'];
 
 /** A vetro-wasm machine. */
 export class Machine {
@@ -857,6 +860,47 @@ export class Machine {
     if (!n) return null;
     const v = new BigUint64Array(this.#x.memory.buffer, p, names.length);
     return Object.fromEntries(names.map((k, i) => [k, Number(v[i])]));
+  }
+
+  // ---- Network gateway (ABI 17, ADR 0048, docs/specs/relay.md) -------------
+
+  /**
+   * The frames the guest's connections produced for the network gateway
+   * since the last call (Uint8Array each, as on the gateway's wire). An
+   * output: taking them does not change the execution.
+   */
+  relayTake() {
+    const all = this.#result(this.#x.vetro_relay_take(this.#vm));
+    const out = [];
+    const dv = new DataView(all.buffer, all.byteOffset, all.byteLength);
+    for (let at = 0; at + 4 <= all.length;) {
+      const n = dv.getUint32(at, true);
+      out.push(all.subarray(at + 4, at + 4 + n));
+      at += 4 + n;
+    }
+    return out;
+  }
+
+  /**
+   * Gives the machine one frame of the gateway (or the host's ONLINE/DOWN):
+   * an input, recorded for replay. Returns a name of RELAY_PUSH.
+   */
+  relayPush(frame) {
+    const x = this.#x;
+    const [p, n] = copyIn(x, frame);
+    const r = x.vetro_relay_push(this.#vm, p, n);
+    if (n) x.vetro_free(p, n);
+    return RELAY_PUSH[r] ?? 'Rejected';
+  }
+
+  /** The uplink's state (null without a network); does not touch the machine. */
+  relayState() {
+    const names = ['connections', 'outbox', 'connects', 'refused', 'dnsQueries', 'udpDropped', 'ignored'];
+    const p = this.#scratch(4 * names.length);
+    const r = this.#x.vetro_relay_state(this.#vm, p, names.length);
+    if (r === 2) return null;
+    const v = new Uint32Array(this.#x.memory.buffer, p, names.length);
+    return { online: r === 1, ...Object.fromEntries(names.map((k, i) => [k, v[i]])) };
   }
 
   // ---- Network inspector and timeline (ABI 8, ADR 0023) ---------------------

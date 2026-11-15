@@ -1,6 +1,6 @@
 #!/bin/sh
 # M5: tests of the web app (web/app) and of vetro-wasm's device API,
-# without npm dependencies:
+# without npm dependencies (except the gateway's `ws`, pinned in relay/):
 #   1. syntax check of the JS modules (node --check);
 #   2. JS unit tests (tests/web/unit.mjs): server with Range, DiskFeeder,
 #      key map, terminal, persistence (MemFile, snapshot cache),
@@ -17,6 +17,9 @@
 #   6. connections from JS to a TCP service of the guest
 #      (tests/web/hostfwd.mjs, GuestSocket, port forwarding): echo of
 #      200 KB, close, refusal; two identical runs;
+#   6b. the guest online through the network gateway (tests/web/online.mjs,
+#      ADR 0048): GatewayClient and the Node gateway (relay/, its unit and
+#      WebSocket tests first), DNS, a 600 KB GET, a refused private address;
 #   7. snapshots and persistent disk overlay via the API (tests/web/snapshot.mjs,
 #      M6): saves at the prompt and halfway through boot, restores on new machines (JIT
 #      and interpreter), same continuation of the log, same instructions, same overlay
@@ -91,12 +94,18 @@ echo "==> vetro-wasm (release, wasm32-unknown-unknown)"
 cargo build --release --target wasm32-unknown-unknown -p vetro-wasm
 
 echo "==> syntax of the JS modules"
-for f in web/app/*.mjs web/node/*.mjs tools/web-serve.mjs tests/web/*.mjs; do
+for f in web/app/*.mjs web/node/*.mjs tools/web-serve.mjs tests/web/*.mjs relay/src/*.mjs relay/test/*.mjs; do
   node --check "$f"
 done
 
 echo "==> JS unit tests"
 node tests/web/unit.mjs
+
+echo "==> network gateway (relay/, ADR 0048): unit, Node gateway, guest online"
+node relay/test/unit.mjs
+# The Node gateway's only dependency (ws, pinned in relay/package-lock.json).
+[ -d relay/node_modules/ws ] || npm ci --prefix relay --omit=dev --ignore-scripts --no-audit --no-fund
+node relay/test/node.mjs
 
 echo "==> native reference (same scripts, interpreter, local disk)"
 cargo test --release -p vetro-boot-tests --test web -- --nocapture
@@ -111,6 +120,9 @@ node tests/web/devices.mjs "$@"
 
 echo "==> connections to the guest via the API"
 node tests/web/hostfwd.mjs "$@"
+
+echo "==> the guest online through the Node gateway (ADR 0048)"
+node tests/web/online.mjs "$@"
 
 echo "==> snapshots and persistent disk overlay via the API (M6)"
 node tests/web/snapshot.mjs "$@"

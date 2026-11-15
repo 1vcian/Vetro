@@ -1,0 +1,19 @@
+{
+  "name": "vetro-gateway",
+  "private": true,
+  "description": "Vetro's network gateway (ADR 0048): the guest's TCP connections and DNS over WebSocket, on Cloudflare Workers or Node.",
+  "type": "module",
+  "license": "SEE LICENSE IN ../LICENSE.md",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node test/unit.mjs && node test/node.mjs",
+    "test:workerd": "node test/workerd.mjs",
+    "start": "node src/node.mjs"
+  },
+  "dependencies": {
+    "ws": "8.22.0"
+  },
+  "devDependencies": {
+    "wrangler": "4.146.0"
+  }
+}
