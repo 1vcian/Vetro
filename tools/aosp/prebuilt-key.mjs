@@ -3,11 +3,13 @@
 // whether R2 has that snapshot: the site build's guard, so the site never
 // points at a snapshot its vetro-wasm cannot restore.
 //
-//   node tools/aosp/prebuilt-key.mjs [--wasm=FILE] [--manifest=URL] [--profile=ID] [--write=FILE] [--require]
+//   node tools/aosp/prebuilt-key.mjs [--wasm=FILE] [--manifest=URL] [--profile=ID] [--gpu=webgl|swiftshader] [--write=FILE] [--require]
 //
 // Builds the app's Android machine for a device profile (default: the one the
 // app selects, DEFAULT_PROFILE, ADR 0039; its machine and boot parameters,
-// ANDROID_DISK) with the given vetro-wasm, without booting it, and computes
+// ANDROID_DISK) and a graphics path (default: the one the page uses,
+// DEFAULT_GPU, ADR 0047: each path has its own snapshot, the accelerated one
+// with the GPU's contents) with the given vetro-wasm, without booting it, and computes
 // the key exactly as the
 // Worker does (androidSnapshotKey: snapshot format, configuration hash,
 // machine, image version and boot image hashes, disk map). Then looks for
@@ -22,7 +24,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEV, instantiate, Machine } from '../../web/node/vetro.mjs';
 import { DiskFeeder } from '../../web/node/disk.mjs';
-import { ANDROID_DISK, DEFAULT_MANIFEST, machineDevices } from '../../web/node/android.mjs';
+import { ANDROID_DISK, DEFAULT_GPU, DEFAULT_MANIFEST, GFXSTREAM_PARAMS, machineDevices } from '../../web/node/android.mjs';
 import { DEFAULT_PROFILE, parseProfile, profileBootParams, profileMachine, STARTER_PROFILES } from '../../web/node/profiles.mjs';
 import { androidSnapshotKey, findPrebuilt, prebuiltSnapUrl } from '../../web/node/prebuilt.mjs';
 
@@ -36,12 +38,23 @@ const manifestUrl = arg('manifest', DEFAULT_MANIFEST);
 const write = arg('write', null);
 const require_ = process.argv.includes('--require');
 const profileArg = arg('profile', DEFAULT_PROFILE);
+const gpuArg = arg('gpu', null);
+if (gpuArg !== null && gpuArg !== 'webgl' && gpuArg !== 'swiftshader') {
+  console.error(`ERROR: --gpu=${gpuArg}: webgl or swiftshader`);
+  process.exit(2);
+}
+/** The graphics path of the key: 'webgl' or null (SwiftShader), as in the page's config. */
+const gpuMode = gpuArg === null ? DEFAULT_GPU : gpuArg === 'webgl' ? 'webgl' : null;
 const profile = parseProfile(readFileSync(STARTER_PROFILES.includes(profileArg) ? join(root, 'web/app/profiles', `${profileArg}.json`) : profileArg, 'utf8'));
 
-/** The key of `wasm` for the image at `manifestUrl` and device profile `p`: { key, parts }. */
-export async function prebuiltKey(wasm, manifestUrl, f = fetch, p = profile) {
-  const machine = profileMachine(p);
-  const params = profileBootParams(p);
+/**
+ * The key of `wasm` for the image at `manifestUrl`, device profile `p` and
+ * graphics path `gpu` ('webgl' or null), built as the Worker builds it:
+ * { key, parts }.
+ */
+export async function prebuiltKey(wasm, manifestUrl, f = fetch, p = profile, gpu = gpuMode) {
+  const machine = { ...profileMachine(p), gpu };
+  const params = [profileBootParams(p), gpu === 'webgl' ? GFXSTREAM_PARAMS : ''].filter(Boolean).join(' ');
   const manifest = await (await f(manifestUrl)).json();
   const images = ['boot.img', 'vendor_boot.img', 'init_boot.img'].map((p) => {
     const x = manifest.files.find((y) => y.path === p);
@@ -66,13 +79,13 @@ export async function prebuiltKey(wasm, manifestUrl, f = fetch, p = profile) {
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const { key, parts } = await prebuiltKey(readFileSync(wasmPath), manifestUrl);
-  console.log(`profile ${profile.id}: key ${key}: format ${parts.format}, configuration ${parts.config}, image ${parts.android}`);
+  console.log(`profile ${profile.id}, graphics ${gpuMode ?? 'swiftshader'}: key ${key}: format ${parts.format}, configuration ${parts.config}, image ${parts.android}`);
   const found = await findPrebuilt(manifestUrl, key);
   if (found.info) {
     const { info } = found;
     console.log(`prebuilt snapshot: ${found.url} (${(info.size / 2 ** 20).toFixed(0)} MiB, sha256 ${info.sha256})`);
     if (write) {
-      writeFileSync(write, `${JSON.stringify({ manifest: manifestUrl, profile: profile.id, key, size: info.size, sha256: info.sha256, url: prebuiltSnapUrl(manifestUrl, key) }, null, 1)}\n`);
+      writeFileSync(write, `${JSON.stringify({ manifest: manifestUrl, profile: profile.id, gpu: gpuMode ?? 'swiftshader', key, size: info.size, sha256: info.sha256, url: prebuiltSnapUrl(manifestUrl, key) }, null, 1)}\n`);
       console.log(`hint: ${write}`);
     }
   } else {

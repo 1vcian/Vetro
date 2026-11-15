@@ -15,7 +15,7 @@
 //    are counted and the last one is written to FILE.png.
 // 3. The graphics mode the app chooses (no image needed: the Worker decides
 //    before it fetches the image): `&gpu=webgl` on a Chrome with WebGL2 ->
-//    'webgl'; without `gpu=` -> DEFAULT_GPU (web/app/main.mjs); on a Chrome
+//    'webgl'; without `gpu=` -> DEFAULT_GPU (web/node/android.mjs); on a Chrome
 //    without WebGL2 in its Workers (getContext('webgl2') gives null, as
 //    where the GPU is blocklisted) -> 'swiftshader' by itself,
 //    with the reason, for both.
@@ -193,9 +193,9 @@ run(async () => {
 async function graphicsMode(chrome) {
   const NO_WEBGL2 = `{ const g = OffscreenCanvas.prototype.getContext;
     OffscreenCanvas.prototype.getContext = function (kind, ...a) { return kind === 'webgl2' ? null : g.call(this, kind, ...a); }; }`;
-  const main = readFileSync(join(root, 'web/app/main.mjs'), 'utf8');
-  const def = /export const DEFAULT_GPU = (null|'webgl');/.exec(main)?.[1];
-  check(def, 'DEFAULT_GPU not found in web/app/main.mjs');
+  const src = readFileSync(join(root, 'web/node/android.mjs'), 'utf8');
+  const def = /export const DEFAULT_GPU = (null|'webgl');/.exec(src)?.[1];
+  check(def, 'DEFAULT_GPU not found in web/node/android.mjs');
   const srv = await serve({ mounts: appMounts() });
   try {
     for (const webgl of [true, false]) {

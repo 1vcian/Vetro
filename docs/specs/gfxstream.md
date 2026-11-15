@@ -162,7 +162,7 @@ the Worker creates `WebGlExecutor` on an `OffscreenCanvas`, adds
 `GFXSTREAM_PARAMS` to the boot parameters and sends presented frames as
 ImageBitmaps (`frame3d`, counted in `vetroState.perf` like 2D frames);
 `drawBitmap` on both presenters. `?gpu=swiftshader` asks for SwiftShader;
-without `gpu=` the page uses `DEFAULT_GPU` (web/app/main.mjs). Without WebGL2
+without `gpu=` the page uses `DEFAULT_GPU` (web/node/android.mjs). Without WebGL2
 (or below the limits) it falls back to SwiftShader by itself and says why
 (`gpu` message, `vetroState.gpu`): no choice for the user. Snapshots are on:
 their key differs from the SwiftShader path's (the `GPU_3D` device bit and

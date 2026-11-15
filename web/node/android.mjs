@@ -54,6 +54,15 @@ export const ANDROID_PARAMS = 'nokaslr';
 export const GFXSTREAM_PARAMS = 'androidboot.hardware.egl=emulation androidboot.hardware.gltransport=virtio-gpu-pipe androidboot.hardware.hwcomposer.mode=client androidboot.hardware.hwcomposer.display_framebuffer_format=rgba androidboot.opengles.version=196608';
 
 /**
+ * The guest's graphics without `&gpu=`: 'webgl' (gfxstream on WebGL2, the
+ * Worker falls back to SwiftShader where WebGL2 is missing) or null
+ * (SwiftShader on the emulated CPU). ADR 0047: the browser's GPU by default.
+ * Here, not in the page's script, so the site build can compute the key of
+ * the prebuilt snapshot the default path restores (tools/aosp/prebuilt-key.mjs).
+ */
+export const DEFAULT_GPU = 'webgl';
+
+/**
  * The machine the app builds for Vetro's AOSP image (ADR 0028): the
  * prebuilt snapshot (ADR 0031) is made with exactly this machine, and its key
  * contains it. `files`: virtio-vsock for the file manager (on by default in

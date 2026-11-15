@@ -47,7 +47,7 @@ host side (the guest image needed no change):
    compaction, the snapshot read out of OPFS), because the GPU contents can
    only be read back through WebGL2; published next to the image like
    ADR 0031's, with its own prefetch list (ADR 0044).
-3. **The page chooses by itself**: `DEFAULT_GPU` in `web/app/main.mjs`;
+3. **The page chooses by itself**: `DEFAULT_GPU` in `web/node/android.mjs`;
    `?gpu=webgl` / `?gpu=swiftshader` override it for tests. Without WebGL2
    in the Worker (or below the profile's limits) the Worker keeps
    SwiftShader and says why: no choice for the user

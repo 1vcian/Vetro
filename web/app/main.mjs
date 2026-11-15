@@ -60,14 +60,15 @@
 // guest's GLES on the browser's GPU (WebGL2 in the Worker); frames arrive as
 // ImageBitmaps. Without WebGL2 the Worker keeps SwiftShader by itself and
 // says so; `&gpu=swiftshader` asks for SwiftShader; without the parameter the
-// mode is DEFAULT_GPU. `window.vetroState.gpu` holds the mode and the counters.
+// mode is DEFAULT_GPU (web/node/android.mjs). `window.vetroState.gpu` holds the
+// mode and the counters.
 
 import { absAxis, BUTTONS, evdevCode } from './keymap.mjs';
 import { keyToBytes, Terminal } from './terminal.mjs';
 import { Canvas2DRenderer, WebGpuRenderer } from './display.mjs';
 import { FilePanel } from './files.mjs';
 import { AnalysisPanels } from './analysis.mjs';
-import { ANDROID_MACHINE, ANDROID_VERSIONS, DEFAULT_MANIFEST, PHASES } from '../node/android.mjs';
+import { ANDROID_MACHINE, ANDROID_VERSIONS, DEFAULT_GPU, DEFAULT_MANIFEST, PHASES } from '../node/android.mjs';
 import { CatalogPanel } from './catalog.mjs';
 import { CATALOG_URL } from '../node/catalog.mjs';
 import { DEFAULT_GATEWAY } from '../node/relay.mjs';
@@ -832,13 +833,6 @@ function chosenCpus() {
   }
   return n;
 }
-
-/**
- * The guest's graphics without `&gpu=`: 'webgl' (gfxstream on WebGL2, the
- * Worker falls back to SwiftShader where WebGL2 is missing) or null
- * (SwiftShader on the emulated CPU). ADR 0047: the browser's GPU by default.
- */
-export const DEFAULT_GPU = 'webgl';
 
 /** The graphics mode asked for by the address, or the default. */
 function gpuMode() {
