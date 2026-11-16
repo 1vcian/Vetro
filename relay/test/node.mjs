@@ -167,3 +167,44 @@ test('a lane lost resets its connections; the kill switch; a foreign origin', as
   assert.equal(evil.c.status().state, 'unreachable');
   evil.c.close();
 });
+
+test('a gateway restarted with another secret: the client renews its session at the next lane', async () => {
+  const start = (secret, port) => startGateway({
+    port,
+    vars: { TOKEN_SECRET: secret, ALLOWED_ORIGINS: ORIGIN },
+    connect: ({ hostname, port: p }) => nodeSocket({ hostname: '127.0.0.1', port: servers[`${hostname}:${p}`] }),
+    log: () => {},
+  });
+  const first = await start('a'.repeat(48), 0);
+  const port = Number(new URL(first.url).port);
+  const c = new GatewayClient(first.url, { origin: ORIGIN });
+  const got = [];
+  const pull = () => {
+    for (const f of c.take()) got.push(decode(f));
+    return got;
+  };
+  c.fromMachine([encode.connect(1, '93.184.215.14', 443)]);
+  await until(() => pull().some((f) => f.id === 1 && f.type === 'connected'), 'connected through the first gateway');
+  await first.close();
+  await until(() => pull().some((f) => f.id === 1 && f.type === 'close'), 'the lost lane resets its connection');
+  // Same address, another secret: the token the client holds (good for
+  // minutes) is refused. New connections are tried until one opens; without
+  // the renewal none does before the token expires.
+  const second = await start('b'.repeat(48), port);
+  try {
+    let id = 1;
+    let last = 0;
+    await until(() => {
+      if (Date.now() - last > 300) {
+        last = Date.now();
+        c.fromMachine([encode.connect(++id, '93.184.215.14', 443)]);
+      }
+      return pull().some((f) => f.id > 1 && f.type === 'connected');
+    }, 'connected through the restarted gateway');
+    assert.ok(c.stats.laneFailures >= 1, 'the old token was refused first');
+    assert.equal(c.status().state, 'online');
+  } finally {
+    c.close();
+    await second.close();
+  }
+});

@@ -285,6 +285,12 @@ export class GatewayClient {
     if (lane.state === 'closed') return;
     this.stats.laneFailures++;
     this.stats.lastError = String(e?.message ?? e);
+    // A refused lane may mean a token the gateway no longer accepts (a
+    // gateway on the user's computer makes a new secret at every start, and
+    // the token would otherwise be tried again until it expires, minutes
+    // later): the next attempt renews the session. The same gateway keeps
+    // the session and its limits in a renewal; another one gives a new one.
+    if (this.#session) this.#session.expires = 0;
     this.#retryAt = this.#now() + this.#backoff;
     this.#backoff = Math.min(BACKOFF_MAX_MS, this.#backoff * 2);
     this.#closeLane(lane, true);

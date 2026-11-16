@@ -7,9 +7,10 @@ lets you watch what apps do from the outside: their network traffic, the
 files they write, and a recording you can replay instruction by
 instruction.
 
-Nothing is installed on your computer and nothing is sent to a server: the
-whole machine runs in your browser, and what it saves stays in your
-browser's private storage.
+Nothing is sent to a server: the whole machine runs in your browser, and
+what it saves stays in your browser's private storage. The phone itself
+needs nothing installed; to give it internet access you run one small
+program on your computer ([Internet for the phone](internet.md)).
 
 > Vetro is an independent project. It is not affiliated with or endorsed by
 > Google. Android is a trademark of Google LLC.
@@ -20,6 +21,8 @@ browser's private storage.
    visit downloads, and why later visits are fast.
 2. [Using the phone](using-the-phone.md): touch, keyboard, the power
    button, installing an APK by drag and drop, and the adb line.
+3. [Internet for the phone](internet.md): Vetro Connect, the small program
+   on your own computer that puts the phone online.
 
 ## Looking inside
 
