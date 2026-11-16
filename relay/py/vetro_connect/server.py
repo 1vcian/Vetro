@@ -73,6 +73,20 @@ class TcpSocket:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, linger)
             except (OSError, ValueError):
                 pass
+        if sys.platform == "win32":
+            # asyncio's proactor transport shuts the socket down before it
+            # closes it, and a shutdown sends a FIN: the remote would see an
+            # orderly end (seen on the first Windows build: "fin", not
+            # "reset"). Closing the socket itself first, with the linger of 0
+            # set above, sends the reset; the transport then finds it closed.
+            # `_sock` is asyncio's own field: without it, the abort below
+            # still ends the connection, with a FIN.
+            raw = getattr(self._writer.transport, "_sock", None)
+            if raw is not None:
+                try:
+                    raw.close()
+                except OSError:
+                    pass
         self._writer.transport.abort()
 
 
