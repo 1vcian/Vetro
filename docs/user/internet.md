@@ -17,10 +17,9 @@ own connection.
   the app "Vetro Connect"
 
 Both are attached to the releases named "Vetro Connect" on the project's
-[releases page](https://github.com/1vcian/Vetro/releases). The packaged
-programs are new: if no such release is there yet, or on another system
-(an Intel Mac, Linux), run it from the source code instead. It needs only
-Python 3.10 or newer, nothing else to install:
+[releases page](https://github.com/1vcian/Vetro/releases). On another
+system (an Intel Mac, Linux), run it from the source code instead. It needs
+only Python 3.10 or newer, nothing else to install:
 
 ```sh
 python3 relay/py/connect.py

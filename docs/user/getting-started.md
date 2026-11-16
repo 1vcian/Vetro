@@ -9,7 +9,7 @@
   own, and the tab needs close to 3 GiB in total while it runs.
 - **About 1 GB of free disk space** for the saved phone, plus room for the
   apps you install.
-- **A good connection for the first visit**: it downloads about 0.5 GB once.
+- **A good connection for the first visit**: it downloads about 0.7 GB once.
 
 Phones and tablets cannot run Vetro yet: it needs a desktop browser.
 
@@ -32,10 +32,10 @@ does the same: bookmark it to go straight to the phone.
 Booting the phone system from nothing takes tens of minutes on an emulated
 processor, so Vetro does not make you wait for it. Instead, the first start
 downloads a **ready-made snapshot**: the whole machine saved at the home
-screen, about 0.5 GB.
+screen, about 0.7 GB.
 
 - One line at the top of the page says what is happening: how much of the
-  download is done (for example "Downloading the phone: 120 MiB of 512 MiB,
+  download is done (for example "Downloading the phone: 120 MiB of 700 MiB,
   about 30 s left"), then "Starting the phone…", then **Ready**.
 - Every piece is checked (SHA-256) before it is written, so a damaged
   download is never used.

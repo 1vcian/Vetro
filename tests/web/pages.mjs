@@ -59,6 +59,8 @@ run(async () => {
   check(/href="docs\/"/.test(readFileSync(join(site, 'index.html'), 'utf8')), 'the landing page does not link the user guide');
   const index = readFileSync(join(guide, 'index.html'), 'utf8');
   check(index.includes('<title>Vetro user guide</title>') && index.includes('href="getting-started.html"'), 'docs/index.html: title or links');
+  // Every page of the guide leads back to the site, to the phone, to the source and to the support section.
+  for (const href of ['../', '../app/', '../#support', 'https://github.com/1vcian/Vetro']) check(index.includes(`href="${href}"`), `docs/index.html does not link ${href}`);
   console.log(`user guide: ${pagesMd.length} pages in docs/, linked from the landing page`);
 
   // The prebuilt Android snapshot (ADR 0031): if the site announces one, it

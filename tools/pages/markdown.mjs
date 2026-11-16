@@ -143,36 +143,78 @@ function list(lines, i, indent, out) {
   return i;
 }
 
-/** A complete page of the guide. */
+/** The project's source, linked from every page. */
+const SOURCE = 'https://github.com/1vcian/Vetro';
+
+/** A complete page of the guide, with the site's look (web/site/index.html). */
 export function page({ title, body, home = '../', nav = true }) {
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
   <title>${escapeHtml(title.includes('user guide') ? title : `${title} - Vetro user guide`)}</title>
   <link rel="icon" type="image/png" sizes="32x32" href="${home}app/icons/icon-32.png">
   <style>
-    :root { color-scheme: light dark; --fg: #1b1b1b; --bg: #fafafa; --dim: #555; --line: #ddd; --code: #eee; --accent: #0b57d0; }
-    @media (prefers-color-scheme: dark) { :root { --fg: #e8e8e8; --bg: #161616; --dim: #aaa; --line: #333; --code: #262626; --accent: #8ab4f8; } }
-    body { font: 16px/1.6 system-ui, sans-serif; max-width: 46rem; margin: 2rem auto; padding: 0 1rem; color: var(--fg); background: var(--bg); }
-    a { color: var(--accent); }
-    nav { font-size: .9rem; margin-bottom: 1.5rem; color: var(--dim); }
-    code { background: var(--code); padding: .1em .3em; border-radius: .2em; font-size: .92em; }
-    pre { background: var(--code); padding: .8rem 1rem; overflow-x: auto; border-radius: .4rem; }
-    pre code { background: none; padding: 0; }
-    blockquote { margin: 1rem 0; padding: .2rem 1rem; border-left: .25rem solid var(--line); color: var(--dim); }
+    :root { color-scheme: dark; --bg: #0a0e14; --panel: #121923; --line: #223042; --fg: #e3eaf3; --dim: #a4b2c4; --code: #151e2b; --accent: #6aa8ff; --cyan: #7fe3ff; --violet: #a58bff; }
+    * { box-sizing: border-box; }
+    html { scroll-padding-top: 4.5rem; }
+    body { margin: 0; font: 16px/1.65 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif; color: var(--fg); background: radial-gradient(70% 40% at 90% -10%, rgba(165, 139, 255, .09), transparent 60%), radial-gradient(60% 40% at 5% -10%, rgba(127, 227, 255, .08), transparent 60%), var(--bg); background-attachment: fixed; }
+    a { color: var(--accent); text-underline-offset: 2px; }
+    a:hover { color: var(--cyan); }
+    :focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+    nav { position: sticky; top: 0; z-index: 2; border-bottom: 1px solid var(--line); background: rgba(10, 14, 20, .86); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
+    nav > div { max-width: 62rem; margin: 0 auto; padding: .65rem 1rem; display: flex; align-items: center; gap: .5rem; }
+    nav a { text-decoration: none; white-space: nowrap; }
+    nav .brand { display: inline-flex; align-items: center; gap: .55rem; color: var(--fg); font-weight: 750; font-size: 1.05rem; }
+    nav .brand img { width: 26px; height: 26px; border: 0; border-radius: 7px; }
+    nav .crumb { color: var(--dim); font-size: .93rem; margin-right: auto; padding-left: .7rem; border-left: 1px solid var(--line); margin-left: .4rem; }
+    nav .crumb:hover { color: var(--fg); }
+    nav .link { color: var(--fg); font-size: .9rem; font-weight: 600; padding: .38rem .8rem; border: 1px solid var(--line); border-radius: .6rem; background: rgba(22, 31, 43, .7); }
+    nav .link:hover { border-color: var(--accent); color: var(--fg); }
+    nav .launch { color: #06121f; font-size: .9rem; font-weight: 700; padding: .42rem .95rem; border-radius: .6rem; background: linear-gradient(95deg, var(--cyan), var(--accent), var(--violet)); }
+    nav .launch:hover { color: #06121f; filter: brightness(1.08); }
+    main { max-width: 46rem; margin: 0 auto; padding: 1.6rem 1rem 3rem; }
+    h1 { font-size: 2.1rem; line-height: 1.2; letter-spacing: -.015em; margin: 1rem 0 1.2rem; }
+    h2 { font-size: 1.4rem; line-height: 1.3; margin: 2.4rem 0 .8rem; }
+    h3 { font-size: 1.08rem; margin: 1.8rem 0 .5rem; }
+    li { margin: .25rem 0; }
+    code { background: var(--code); border: 1px solid var(--line); padding: .08em .35em; border-radius: .3em; font: .9em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    pre { background: var(--code); border: 1px solid var(--line); padding: .85rem 1rem; overflow-x: auto; border-radius: .6rem; }
+    pre code { background: none; border: 0; padding: 0; }
+    blockquote { margin: 1.2rem 0; padding: .5rem 1rem; border: 1px solid var(--line); border-left: .2rem solid var(--accent); border-radius: .5rem; background: rgba(18, 25, 35, .7); color: var(--dim); }
     .table { overflow-x: auto; }
     table { border-collapse: collapse; margin: 1rem 0; }
-    th, td { border: 1px solid var(--line); padding: .3rem .6rem; text-align: left; vertical-align: top; }
-    img { max-width: 100%; border: 1px solid var(--line); border-radius: .3rem; }
+    th, td { border: 1px solid var(--line); padding: .4rem .7rem; text-align: left; vertical-align: top; }
+    th { background: var(--panel); }
+    img { max-width: 100%; border: 1px solid var(--line); border-radius: .6rem; }
     h1 img { border: 0; }
     hr { border: 0; border-top: 1px solid var(--line); margin: 2rem 0; }
+    footer { border-top: 1px solid var(--line); color: var(--dim); font-size: .88rem; }
+    footer > div { max-width: 46rem; margin: 0 auto; padding: 1.2rem 1rem 2rem; display: flex; flex-wrap: wrap; gap: .4rem 1.2rem; }
+    footer span { margin-right: auto; }
+    footer a { color: var(--dim); }
+    footer a:hover { color: var(--fg); }
+    @media (max-width: 560px) { nav .link { display: none; } h1 { font-size: 1.7rem; } }
   </style>
 </head>
 <body>
-${nav ? `  <nav><a href="${home}">Vetro</a> · <a href="index.html">User guide</a> · <a href="${home}app/">Launch Vetro</a></nav>\n` : ''}${body}
-</body>
+${nav ? `  <nav aria-label="Vetro"><div>
+    <a class="brand" href="${home}"><img src="${home}app/icons/icon-64.png" alt="" width="26" height="26">Vetro</a>
+    <a class="crumb" href="index.html">User guide</a>
+    <a class="link" href="${SOURCE}">Source</a>
+    <a class="link" href="${home}#support">Support</a>
+    <a class="launch" href="${home}app/">Launch Vetro</a>
+  </div></nav>\n` : ''}  <main>
+${body}
+  </main>
+${nav ? `  <footer><div>
+    <span>Vetro, a whole phone in a browser tab.</span>
+    <a href="index.html">User guide</a>
+    <a href="${SOURCE}">Source</a>
+    <a href="${home}#support">Support Vetro</a>
+  </div></footer>\n` : ''}</body>
 </html>
 `;
 }
