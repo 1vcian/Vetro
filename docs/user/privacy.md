@@ -4,7 +4,7 @@
 install, the analysis of what they do, your recordings and your saved data
 never leave your computer. There is no account, no login and no server
 that receives your sessions. Only the phone's own internet traffic goes out,
-through Vetro's network gateway (below).
+and only while you run Vetro Connect (below).
 
 ## What your browser downloads
 
@@ -42,30 +42,32 @@ phone, inside your browser. It is not uploaded anywhere.
 
 ## The phone's own network traffic
 
-The emulated phone is online: like a real phone, its apps talk to their
-servers. Because a browser page cannot open network connections itself,
-that traffic goes through **Vetro's network gateway**, a small server we
-operate, which opens the connections for the phone. What it does and does
-not do:
+By itself the emulated phone is offline: its network is a sinkhole inside
+the page and nothing it sends reaches the internet. It goes online, like a
+real phone whose apps talk to their servers, only while you run **Vetro
+Connect** ([Internet for the phone](internet.md)): a small program on your
+own computer, not a server of ours, which opens the connections a browser
+page cannot open. What it does and does not do:
 
+- it listens only on your own computer and answers only the Vetro site;
 - it carries only web traffic (HTTP and HTTPS, ports 80 and 443) and name
-  lookups, and refuses private and local addresses;
-- HTTPS stays encrypted from the app to the real server: the gateway sees
+  lookups, and refuses private and local addresses, so the phone cannot
+  reach your router or the other devices of your network;
+- HTTPS stays encrypted from the app to the real server: Vetro Connect sees
   only encrypted bytes, never what an app sends or receives over HTTPS;
 - it keeps no log of contents, sites or addresses: only counters (how many
-  connections and bytes, how long), and each session is short-lived and
-  limited in connections, speed and total data;
+  connections and bytes), shown in its window and gone when you quit;
 - it does not see your files, the phone's screen, the analysis or your
   recordings: those never leave your browser.
 
-The sites the phone contacts see the gateway's address, not yours. What
-apps try to send, including any personal data they collect, is still
-visible to you first, in the **Network** tab (see
+The sites the phone contacts see your own internet address, as they do when
+you browse yourself, and name lookups go to the DNS your computer already
+uses. What apps try to send, including any personal data they collect, is
+still visible to you first, in the **Network** tab (see
 [Network inspector and timeline](network-and-timeline.md)).
 
-To keep the phone completely offline, add `?net=offline` to the app's
-address: then its network is a sinkhole inside the page and nothing it
-sends reaches the internet.
+To keep the phone completely offline, do not start Vetro Connect, or add
+`?net=offline` to the app's address.
 
 ## Exports
 

@@ -11,22 +11,24 @@ The phone believes it is on a normal network (address `10.0.2.15`, with a
 gateway and a DNS server). Behind it, Vetro's own network stack, inside the
 emulator, answers it, and from there the traffic goes one of two ways.
 
-**Online (the default).** The phone reaches the internet through Vetro's
-network gateway: a small server that opens the real connections, because a
-browser page cannot. Apps load, web pages open.
+**Online, with Vetro Connect.** While
+[Vetro Connect](internet.md) runs on your computer, the phone reaches the
+internet through it: a small program that opens the real connections,
+because a browser page cannot. Apps load, web pages open.
 
 - Only web traffic leaves: connections to ports 80 (HTTP) and 443 (HTTPS),
-  and name lookups (DNS), which the gateway resolves. Other ports, other
-  UDP traffic (such as QUIC) and private or local addresses are refused,
-  so apps fall back to ordinary HTTPS.
-- HTTPS stays encrypted from the app to the real server: the gateway only
+  and name lookups (DNS), which Vetro Connect answers from your computer's
+  own DNS settings. Other ports, other UDP traffic (such as QUIC) and
+  private or local addresses are refused, so apps fall back to ordinary
+  HTTPS.
+- HTTPS stays encrypted from the app to the real server: Vetro Connect only
   passes encrypted bytes along. It keeps no record of the contents or of
-  the sites, only counters (how many connections, how many bytes), and each
-  session has limits on connections, speed and total data.
+  the sites, only counters (how many connections, how many bytes).
 - Everything still passes through Vetro's network card first, so the
   **Network** and **Timeline** tabs work exactly as before.
 
-**Offline (the sinkhole).** Nothing leaves your browser:
+**Offline (the sinkhole), when Vetro Connect is not running.** Nothing
+leaves your browser:
 
 - name lookups get made-up addresses, so the phone can connect to them;
 - plain HTTP connections to port 80 get an empty "200 OK" answer;
@@ -36,8 +38,8 @@ browser page cannot. Apps load, web pages open.
 
 This keeps the phone completely isolated, which is useful for analysis;
 apps that need their server will show an offline or error message. Add
-`?net=offline` to the app's address to start that way. If the site has no
-gateway configured, the phone is offline.
+`?net=offline` to the app's address to start that way even while Vetro
+Connect is running.
 
 ## The Network tab
 

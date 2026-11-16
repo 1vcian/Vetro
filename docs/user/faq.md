@@ -30,9 +30,11 @@ boot), and the JIT keeps the rest usable. See
 
 ## Why do apps say they are offline?
 
-The phone reaches the internet through Vetro's network gateway, for web
-traffic only (HTTP and HTTPS). An app that needs other ports, or a session
-started offline (`?net=offline`, the sinkhole), cannot reach its server.
+The phone is online only while Vetro Connect runs on your computer (see
+[Internet for the phone](internet.md)), and then for web traffic only (HTTP
+and HTTPS). Without it, in a session started offline (`?net=offline`, the
+sinkhole), or for an app that needs other ports, the app cannot reach its
+server.
 See [Network inspector and timeline](network-and-timeline.md#what-the-phones-network-is).
 
 ## Can apps tell they are running in Vetro?
@@ -45,9 +47,9 @@ that looks for signs of an emulator can find some.
 ## Does anything I do get uploaded?
 
 No: the phone, its files and the analysis stay in your browser. When the
-phone is online, its own internet traffic goes through Vetro's network
-gateway to the sites it contacts (HTTPS stays encrypted end to end, and the
-gateway keeps only counters). See [Privacy](privacy.md).
+phone is online, its own internet traffic goes through Vetro Connect, on
+your own computer, to the sites it contacts (HTTPS stays encrypted end to
+end, and Vetro Connect keeps only counters). See [Privacy](privacy.md).
 
 ## Where are my apps and files kept?
 
