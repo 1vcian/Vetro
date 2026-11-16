@@ -22,12 +22,17 @@
        essential controls; the developer panels are under "Tools".
        `?advanced=1` shows the setup form below, `?os=linux` the Linux demo. -->
   <header>
-    <h1>Vetro</h1>
+    <a class="brand" href="../" title="About Vetro"><img src="icons/icon-64.png" alt="" width="28" height="28"><h1>Vetro</h1></a>
     <div id="progress-line" role="status" aria-live="polite">
       <span id="progress-text">Starting Vetro…</span>
       <progress id="progress-bar" max="1" hidden></progress>
     </div>
     <span id="status">ready</span>
+    <nav class="header-links" aria-label="Vetro">
+      <a href="../docs/" target="_blank" rel="noopener">Guide</a>
+      <a href="https://github.com/1vcian/Vetro" target="_blank" rel="noopener">Source</a>
+      <a href="../#support" target="_blank" rel="noopener">Support</a>
+    </nav>
   </header>
 
   <div id="unsupported" role="alert" hidden>
@@ -138,11 +143,11 @@
       </div>
       <div id="controls">
         <span id="nav" hidden>
-          <button id="nav-back" type="button" title="Back">&#9664; Back</button>
-          <button id="nav-home" type="button" title="Home screen">&#9679; Home</button>
-          <button id="nav-recents" type="button" title="Recent apps">&#9632; Recents</button>
+          <button id="nav-back" type="button" title="Back"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M11.5 2.5v11L3.5 8z" fill="currentColor"/></svg>Back</button>
+          <button id="nav-home" type="button" title="Home screen"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5" fill="currentColor"/></svg>Home</button>
+          <button id="nav-recents" type="button" title="Recent apps"><svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="2" fill="currentColor"/></svg>Recents</button>
         </span>
-        <button id="power" type="button" title="Power button: hold it down to turn the screen off or on">Power</button>
+        <button id="power" type="button" title="Power button: hold it down to turn the screen off or on"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.8v6M4.4 4.2a5.2 5.2 0 107.2 0" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Power</button>
       </div>
       <p id="net-hint" class="dim" hidden>The phone is offline. <a href="../docs/internet.html" target="_blank" rel="noopener">Give it internet with Vetro Connect</a>, a small program for your computer.</p>
     </section>
@@ -311,5 +316,12 @@
       </div>
     </details>
   </main>
+  <footer class="app-foot">
+    <span>Vetro runs in your browser: what you do here is not sent anywhere.</span>
+    <a href="../docs/privacy.html" target="_blank" rel="noopener">Privacy</a>
+    <a href="../docs/" target="_blank" rel="noopener">User guide</a>
+    <a href="https://github.com/1vcian/Vetro" target="_blank" rel="noopener">Source</a>
+    <a href="../#support" target="_blank" rel="noopener">Support Vetro</a>
+  </footer>
 </body>
 </html>

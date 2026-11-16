@@ -11,14 +11,20 @@ emulator written in Rust and compiled to WebAssembly. Because all
 observation happens in the emulator, apps have nothing injected into them to
 detect.
 
-**Try it:** [1vcian.github.io/Vetro](https://1vcian.github.io/Vetro/) boots
-the current milestone — a small Linux guest with a BusyBox shell — in your
-browser (Chrome or Edge desktop). Android arrives with milestone M5.
+**Try it:** [1vcian.me/Vetro](https://1vcian.me/Vetro/) starts the phone in
+your browser (Chrome or Edge on a desktop): the project's own AOSP 15 image
+with microG, from a prebuilt snapshot. A small Linux guest with a BusyBox
+shell is there too, as a [quick demo](https://1vcian.me/Vetro/app/?os=linux).
 
 **User guide:** [docs/user](docs/user/README.md) (also on the site, under
-[docs/](https://1vcian.github.io/Vetro/docs/)): getting started, using the
-phone, the network inspector and timeline, the file manager, record and
-replay, snapshots, device profiles, troubleshooting, privacy and FAQ.
+[docs/](https://1vcian.me/Vetro/docs/)): getting started, using the phone,
+internet with Vetro Connect, the network inspector and timeline, the file
+manager, record and replay, snapshots, device profiles, troubleshooting,
+privacy and FAQ.
+
+**Support:** Vetro has no ads and no telemetry. If it is useful to you, you
+can [sponsor it on GitHub](https://github.com/sponsors/1vcian) or
+[buy me a coffee](https://buymeacoffee.com/1vcian).
 
 > Vetro is an independent project. It is not affiliated with or endorsed by
 > Google. Android is a trademark of Google LLC.
@@ -70,11 +76,13 @@ flowchart TD
 - **Platform:** a replica of QEMU's `virt` board (GICv3, generic timer,
   PL011, PL031, virtio-mmio) with a generated device tree.
 - **Guest:** GKI kernel and AOSP 15 (API 35) arm64, built from source as
-  `userdebug` with full symbols; software rendering (SwiftShader).
-- **Host:** virtio-gpu 2D to a WebGPU canvas, virtio-input from pointer
-  events, virtio-blk over HTTP Range with an OPFS cache, virtio-net into a
-  WASM TCP/IP stack (sinkhole or optional WebSocket relay), adb over a virtio
-  channel.
+  `userdebug` with full symbols.
+- **Host:** virtio-gpu to a canvas, with the guest's OpenGL ES drawn by the
+  browser's GPU (gfxstream to WebGL, ADR 0047; SwiftShader in the guest as
+  the fallback), virtio-input from pointer events, virtio-blk over HTTP
+  Range with an OPFS cache, virtio-net into a WASM TCP/IP stack (a sinkhole,
+  or real internet through Vetro Connect, a small gateway on your own
+  computer, ADR 0050), adb over a virtio channel.
 - **Analysis:** guest-address hooks inserted by the JIT (invisible to apps);
   decoders for syscalls, Binder, TLS (BoringSSL/Conscrypt) and ART.
 
@@ -93,12 +101,12 @@ done only when that command passes in CI.
 | M2 | Linux user-mode syscalls | LTP subset, static BusyBox runs | ✅ done |
 | M3 | System mode, kernel boot | kernel + initramfs reaches a shell; kselftest subset | ✅ done |
 | M4 | JIT to WebAssembly | M1/M2 tests pass with JIT; interpreter/JIT parity | ✅ done |
-| M5 | Android boots | home screen in Chrome; `adb install` of an APK works | 🚧 next |
-| M6 | Snapshots and install | home in < 15 s from snapshot; drag-and-drop APK | — |
-| M7 | Network analysis and timeline | HTTPS in clear text, linked to user actions; HAR export | — |
-| M8 | Binder and privacy | every sensitive access reported; decoy data tracked to the network | — |
+| M5 | Android boots | home screen in Chrome; `adb install` of an APK works | ✅ done |
+| M6 | Snapshots and install | home in < 15 s from snapshot; drag-and-drop APK | ✅ done |
+| M7 | Network analysis and timeline | HTTPS in clear text, linked to user actions; HAR export | 🚧 in progress |
+| M8 | Binder and privacy | every sensitive access reported; decoy data tracked to the network | 🚧 in progress |
 | M9 | Code tracing and scripting | ART method hooks, dynamic dex capture, Frida-like API | — |
-| M10 | Record & replay, 1.0 | deterministic replay; all 30 reference apps; 1.0 goals met | — |
+| M10 | Record & replay, 1.0 | deterministic replay; all 30 reference apps; 1.0 goals met | 🚧 in progress |
 
 **Where we are.** Vetro runs unmodified Linux arm64 programs in user mode.
 It has the complete ARMv8.0 integer, SIMD/FP and crypto instruction set of a
@@ -124,10 +132,15 @@ kernel faster than the native interpreter (3.9 s against 4.4 s on the CI
 runner), with an identical log and instruction count. Every test runs with
 both the interpreter and the JIT, and the two must agree (ADR 0012, 0013).
 
-Next is M5, Android. So far:
-- the virtio display, input and vsock devices are in place;
-- Android 15's GKI kernel and userspace reach zygote under Vetro exactly as
-  under QEMU.
+Android runs in the browser (M5, M6). The project's AOSP 15 image reaches
+the home screen in Chrome from a prebuilt snapshot; an APK dropped on the
+page installs and opens; a second start from the snapshot saved in the
+browser takes under 15 seconds. The phone is online when Vetro Connect runs
+on the same computer.
+
+In progress: network analysis on Android (M7), Binder and privacy (M8),
+record and replay with the 30 reference apps (M10). It is usable and slow:
+an app takes several seconds to open.
 
 Detailed plan and progress log: [`docs/PLAN.md`](docs/PLAN.md),
 [`docs/progress/`](docs/progress/), architecture decisions in
@@ -164,11 +177,18 @@ crates/   vetro-cpu, vetro-mmu, vetro-jit, vetro-platform, vetro-net,
           vetro-analysis, vetro-snapshot, vetro-wasm, vetro-cli
 web/      browser app (workers, host services, UI)
 guest/    kernel config, AOSP device target, image packaging
-relay/    optional WebSocket network relay
+relay/    network gateway for real internet (Vetro Connect, Python)
 tests/    per-instruction, differential (vs QEMU), boot, apps, e2e
 tools/    CI script, QEMU oracle wrapper, benchmarks
 docs/     plan, ADRs, component specs, progress log
 ```
+
+## Support
+
+Vetro is free for noncommercial use, with no ads and no telemetry. Bug
+reports and test results help. If you want to support its development, you
+can do it through [GitHub Sponsors](https://github.com/sponsors/1vcian) or
+[buy me a coffee](https://buymeacoffee.com/1vcian). It is entirely optional.
 
 ## License
 

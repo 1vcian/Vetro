@@ -19,12 +19,12 @@ says so in a box above the screen instead of failing silently.
 
 ## Open the site
 
-Go to [1vcian.github.io/Vetro](https://1vcian.github.io/Vetro/) and click
+Go to [1vcian.me/Vetro](https://1vcian.me/Vetro/) and click
 **Launch Vetro**. That is all: there is nothing to choose. The phone starts
 by itself, with the settings that suit most people (the current system
 image, the light landscape screen, one processor core).
 
-The app's own address, [1vcian.github.io/Vetro/app/](https://1vcian.github.io/Vetro/app/),
+The app's own address, [1vcian.me/Vetro/app/](https://1vcian.me/Vetro/app/),
 does the same: bookmark it to go straight to the phone.
 
 ## The first visit
@@ -88,7 +88,7 @@ until you open it:
 ## The Linux demo
 
 The landing page also links a small **Linux demo**
-([app/?os=linux](https://1vcian.github.io/Vetro/app/?os=linux)): a Linux 6.18
+([app/?os=linux](https://1vcian.me/Vetro/app/?os=linux)): a Linux 6.18
 system with a BusyBox shell, ready in a few seconds. Its shell is the
 console next to the screen: click it and type commands.
 

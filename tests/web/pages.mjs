@@ -93,9 +93,24 @@ run(async () => {
   try {
     const { page } = await openPage(cdp, `${srv.url}/Vetro/`);
     const links = await page.waitFor('landing page', () => page.eval(`(() => { const b = [...document.querySelectorAll('a.button')];
-      return b.length && { buttons: b.map((a) => [a.textContent, a.href]), demo: document.querySelector('a.demo')?.href ?? '' }; })()`), 30_000);
+      const hrefs = [...document.querySelectorAll('a[href]')].map((a) => a.href);
+      return b.length && { buttons: b.map((a) => [a.textContent, a.href]), demo: document.querySelector('a.demo')?.href ?? '', hrefs,
+        // Nothing from another site: the page says so about itself.
+        foreign: [...document.querySelectorAll('script[src], link[href], img[src], iframe[src]')].map((e) => e.src || e.href).filter((u) => !u.startsWith(location.origin)),
+        wide: document.documentElement.scrollWidth > document.documentElement.clientWidth }; })()`), 30_000);
     check(JSON.stringify(links.buttons) === JSON.stringify([['Launch Vetro', `${srv.url}/Vetro/app/`]]), `one button, Launch Vetro to app/: ${JSON.stringify(links.buttons)}`);
     check(links.demo === `${srv.url}/Vetro/app/?os=linux`, `the Linux demo link: ${links.demo}`);
+    // The source, the two ways to support the project, Vetro Connect's
+    // downloads, and no link to a page of the site that does not exist.
+    for (const u of ['https://github.com/1vcian/Vetro', 'https://github.com/sponsors/1vcian', 'https://buymeacoffee.com/1vcian', 'https://github.com/1vcian/Vetro/releases']) {
+      check(links.hrefs.includes(u), `the landing page does not link ${u}`);
+    }
+    for (const u of new Set(links.hrefs.filter((h) => h.startsWith(`${srv.url}/Vetro/`)).map((h) => h.split('#')[0].split('?')[0]))) {
+      const rel = u.slice(`${srv.url}/Vetro/`.length);
+      check(existsSync(join(site, rel.endsWith('/') || rel === '' ? `${rel}index.html` : rel)), `the landing page links ${rel || '/'}, which the site does not have`);
+    }
+    check(links.foreign.length === 0, `the landing page loads from other sites: ${links.foreign}`);
+    check(!links.wide, 'the landing page scrolls sideways');
     // The button: the phone starts by itself, nothing to choose.
     await page.eval(`location.href = ${JSON.stringify(links.buttons[0][1])}`);
     const START = `(() => window.vetroState && { progress: window.vetroState.progress ?? '', kind: document.getElementById('progress-line').dataset.kind,
