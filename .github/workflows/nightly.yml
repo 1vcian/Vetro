@@ -102,10 +102,16 @@ jobs:
   # browser app shows https://example.com/ (DNS and HTTPS through the
   # gateway, the page's text on the screen), a catalog app is installed and
   # makes a real HTTPS request. The image, the snapshot and the catalog come
-  # from R2 through the test's same-origin proxy (any port).
+  # from R2 through the test's same-origin proxy (any port). The same path
+  # once more through Vetro Connect (relay/py/connect.py, ADR 0050), the
+  # gateway users run: the system's Python, no dependencies.
   android-online:
     if: github.event.schedule != '0 4 * * 0'
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        gateway: [node, python]
     # The run that passed took 7 minutes; four others waited on a step until
     # they were cancelled (which step: the notices below, also when cancelled).
     timeout-minutes: 45
@@ -121,25 +127,26 @@ jobs:
       - run: npm ci --prefix relay --omit=dev --ignore-scripts --no-audit --no-fund
       - name: Prebuilt snapshot for this vetro-wasm
         run: node tools/aosp/prebuilt-key.mjs --require
-      - name: Android online in Chrome through the Node gateway
+      - name: Android online in Chrome through the ${{ matrix.gateway }} gateway
         run: |
           set -o pipefail
           node tests/web/android-online.mjs 2>&1 | tee android-online.log
         env:
           VETRO_ANDROID: "1"
+          VETRO_GATEWAY: ${{ matrix.gateway }}
       - if: always()
         run: |
-          [ -f target/aosp/online-measurements.json ] && echo "::notice title=Android online measurements::$(tr -d '\n' < target/aosp/online-measurements.json | cut -c1-3000)" || true
+          [ -f target/aosp/online-measurements.json ] && echo "::notice title=Android online measurements (${{ matrix.gateway }})::$(tr -d '\n' < target/aosp/online-measurements.json | cut -c1-3000)" || true
           if [ -s android-online.log ]; then
-            grep -E '^(ready|adb ready|browser:|gateway:|[a-z0-9-]+: (installed|HTTPS|no request))' android-online.log | head -n 9 | sed 's/^/::notice title=Android online::/' || true
+            grep -E '^(ready|adb ready|browser:|gateway:|[a-z0-9-]+: (installed|HTTPS|no request))' android-online.log | head -n 10 | sed 's/^/::notice title=Android online (${{ matrix.gateway }})::/' || true
           fi
       - if: failure() || cancelled()
         run: |
-          [ -s android-online.log ] && echo "::error title=android-online.log::$(grep -vE '^\s*$' android-online.log | tail -n 60 | awk '{gsub(/%/, "%25"); gsub(/\r/, ""); printf "%s%%0A", $0}')" || true
+          [ -s android-online.log ] && echo "::error title=android-online.log (${{ matrix.gateway }})::$(grep -vE '^\s*$' android-online.log | tail -n 60 | awk '{gsub(/%/, "%25"); gsub(/\r/, ""); printf "%s%%0A", $0}')" || true
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: android-online
+          name: android-online-${{ matrix.gateway }}
           path: |
             target/aosp/online-*.png
             target/aosp/online-measurements.json
