@@ -137,9 +137,15 @@ host; the automatic adjustment keeps that within about a factor of two.
   clock's limit), 3.47 s with the automatic speed (×4 while the loop runs,
   the host doing 365–420 M instructions per second; ×8 by its end);
   `sleep 2` 2.05 s.
-- Android: see `docs/progress/M4.md` (2026-11-16) for the hosted runners'
-  run. A hosted runner has little to spare over 100 M instructions per
-  second, so little is expected there; the gain is on faster hosts.
+- Android on hosted runners (`android-run/exp-speed2`, three runs with the
+  automatic speed and two at speed 1; `docs/progress/M4.md`, 2026-11-16):
+  ×1 while an app opens (the host executes about 30 M instructions per
+  second of the guest's new code there, so the clock is not its limit), ×2
+  with the phone at rest. The times overlap: Settings on screen in
+  10.3–13.0 s against 9.3–10.1 s, an installed app in 9.6–12.8 s against
+  11.1–12.0 s. Nothing gained and nothing clearly lost, as expected; the
+  gain is for a host faster than the clock, and that is not measured with
+  Android yet.
 
 ## Maintenance burden
 2/5. Two fields and three conversions in the machine (`clock`, `rate`,
