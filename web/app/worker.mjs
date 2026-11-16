@@ -132,8 +132,15 @@ import { androidSnapshotKey, downloadPrebuilt, findPrebuilt, PREBUILT_CHUNK, pre
  * The system JIT's defaults: entries with the interpreter before a block is
  * compiled, and blocks per module (`?jitthreshold=`, `?jitbatch=` and
  * `?jitbudget=` MiB change them for measurements).
+ *
+ * 256 entries, not the 64 of the benchmarks: while an Android app opens, 64
+ * compiles 70-80 MiB of wasm every 30 s against a budget of 96 (CODE_BUDGET),
+ * so modules are evicted and translated again all the time; 256 compiles
+ * half of it and evicts nothing (hosted runner, 2026-11-16: the app on
+ * screen in 11 s instead of 17-18, installed in 28 s instead of 41-44). The
+ * Linux guest's boot is 7% slower with it (1.67 s against 1.56 s).
  */
-const JIT_THRESHOLD = 64;
+const JIT_THRESHOLD = 256;
 const JIT_BATCH = 16;
 
 /** Largest quantum (instructions). */
@@ -393,7 +400,7 @@ async function resumeCores() {
   // a core Worker serviced would run nowhere. The cores stay in turns.
   if (cfg.gpu === 'webgl') return status('cores in turns: accelerated graphics need them on this Worker');
   try {
-    const n = await m.startParallel({ jit: cfg.jit ? { threshold: 64, batch: 16 } : null });
+    const n = await m.startParallel({ jit: cfg.jit ? { threshold: cfg.jitThreshold ?? JIT_THRESHOLD, batch: cfg.jitBatch ?? JIT_BATCH } : null });
     status(`${n + 1} cores in parallel`);
   } catch (e) {
     status(`cores in turns: ${e.message ?? e}`);
