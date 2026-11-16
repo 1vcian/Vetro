@@ -53,7 +53,8 @@ pub use board::Board;
 pub use files::FilesClient;
 pub use hooks::{Breakpoint, Event, GuestView, SyscallEntry, Tracer};
 pub use machine::{
-    Core, DeferredSave, Devices, Machine, MachineConfig, Perf, Pointer, RecordOptions, Slots, Stop, smp,
+    Core, DeferredSave, Devices, GuestClock, MAX_SPEED, Machine, MachineConfig, Perf, Pointer, RecordOptions,
+    Slots, Stop, smp,
 };
 pub use net::{FrameDir, NetLink, NetSetup, NetStack, TappedFrame};
 pub use record::{Digest, Divergence, HostNetOp, Input, Log, ReplayStatus, Reply, VsockOp};

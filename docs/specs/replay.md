@@ -22,6 +22,7 @@ instruction.
 | `Vsock(VsockOp)` | `Listen(p)`, `Unlisten(p)`, `Accept(p)`, `Connect(p)`, `Send(c, bytes)`, `Recv(c, max)`, `ShutdownSend(c)`, `Close(c)`, `Reset(c)`, `Release(c)`, `TransportReset` | `Vsock(Result)`, `Conn(Option)`, `Data`, `Done` |
 | `HostNet(HostNetOp)` | `Connect(port)`, `Send(id, bytes)`, `Recv(id, max)`, `Shutdown(id)`, `Abort(id)`, `Release(id)` on the stack (`Stack::host_*`), with a forced `poll` | `HostConn(Option<ConnId>)`, `Accepted(n)`, `Data`, `Done` |
 | `Relay(Vec<u8>)` | one frame of the network gateway's protocol (`docs/specs/relay.md`, ADR 0048) for the machine's uplink: a gateway answer (`CONNECTED`, `REFUSED`, `DATA`, `SHUTDOWN`, `CLOSE`, `ACK`, `DNS` answer) or the host's `ONLINE`/`DOWN`, with a forced `poll` | `Done` / `Rejected` (malformed, the machine-to-gateway direction, unknown connection) / `NoDevice` |
+| `Speed(u32)` | the guest CPU speed from this instruction on (ADR 0051, `docs/specs/platform.md`, "Timer"): tag 10, u32. `Rejected` out of 1..=64 or with the cores in parallel. The web app's Worker sends it when it adjusts the speed to the host (`web/app/worker.mjs`), so a recording made in the app carries the changes and its replay repeats them |
 
 In addition: `Reply::Deferred` (recording in progress and machine stalled on
 a disk: the input is applied and recorded at the end of the first quantum after

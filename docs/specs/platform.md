@@ -192,7 +192,16 @@ RAM does not go through the MMIO bus: the CPU/MMU memory handles it.
   the lines to update before the next instruction.
 - **Timer**: ISTATUS = ENABLE && counter >= CVAL (unsigned), 0 with
   ENABLE off; TVAL 32-bit signed (like QEMU). Default CNTFRQ
-  62.5 MHz.
+  62.5 MHz. The machine's counter is that of its *nominal steps*
+  (`vetro-machine`): 5 ticks every 8, that is 10 ns of guest time each. A
+  nominal step is `cores × speed` steps of the clock, and the clock is the
+  instruction count plus a bias: with one core at speed 1 (the default, the
+  reference machine compared with QEMU) one instruction is one nominal
+  step, 100 M instructions per second of guest time. The guest CPU speed
+  (ADR 0051) changes with `Machine::input(Input::Speed(k))`, `k` in 1..=64,
+  recorded for replay: the bias is set so that the nominal steps, and with
+  them CNTPCT and guest time, go on from their value, and from then on `k`
+  instructions per core make one. Refused while the cores run in parallel.
 - **virtio-mmio** (version 2, virtio 1.2 §4.2.2): VendorID `0x554D4551`
   like QEMU; registers below 0x100 only 32-bit aligned, write-only
   registers read as 0; transport features VERSION_1

@@ -427,6 +427,7 @@ function fmtStats(s) {
     `${(s.steps / 1e6).toFixed(0)} M instructions`,
     `guest ${s.guestSecs.toFixed(2)} s`,
     `${s.mips.toFixed(1)} MIPS`,
+    ...(s.speed > 1 ? [`speed ×${s.speed}`] : []),
   ];
   if (s.memory) parts.push(`memory ${(s.memory / 2 ** 20).toFixed(0)} MiB`);
   for (const [i, d] of s.disks.entries()) {
@@ -894,6 +895,9 @@ async function start() {
     jitCount: q.get('jitcount') === '1',
     // Measurement knobs (tools/aosp/live-path.mjs, ADR 0041): entries before
     // a block is compiled, blocks per module, MiB of live JIT modules.
+    // A fixed guest CPU speed (ADR 0051; 1 = the reference 100 MHz) instead
+    // of the Worker's automatic one.
+    speed: Number(q.get('speed')) || null,
     jitThreshold: Number(q.get('jitthreshold')) || null,
     jitBatch: Number(q.get('jitbatch')) || null,
     jitBudget: Number(q.get('jitbudget')) ? Number(q.get('jitbudget')) << 20 : null,

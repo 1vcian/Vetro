@@ -232,6 +232,13 @@ impl Machine {
                     .unwrap_or(Reply::NoDevice),
                 _ => Reply::Rejected,
             },
+            Input::Speed(k) => {
+                if self.set_speed(*k) {
+                    Reply::Done
+                } else {
+                    Reply::Rejected
+                }
+            }
         }
     }
 

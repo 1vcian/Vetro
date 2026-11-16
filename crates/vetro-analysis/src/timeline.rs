@@ -37,7 +37,11 @@ pub const MAX_EFFECTS: usize = 50_000;
 /// Text characters kept for a console effect.
 pub const CONSOLE_TEXT: usize = 160;
 
-/// Microseconds of guest time at an instruction number.
+/// Microseconds of guest time at an instruction number, for one core at
+/// guest CPU speed 1 (100 M instructions per second). A machine with
+/// another speed or several cores gives its own guest time
+/// ([`UserInput::at`], ADR 0051): the frames and the effects are stamped
+/// with it, and an input stamped otherwise would fall out of order.
 pub fn step_us(step: u64) -> u64 {
     step / 100
 }
@@ -115,8 +119,16 @@ pub struct UserInput {
 }
 
 impl UserInput {
+    /// An input at instruction `step`, at the guest time of one core at
+    /// speed 1 ([`step_us`]).
     pub fn new(step: u64, kind: InputKind, label: impl Into<String>, weak: bool) -> Self {
-        UserInput { step, at_us: step_us(step), kind, label: label.into(), weak, seq: 0 }
+        Self::at(step, step_us(step), kind, label, weak)
+    }
+
+    /// An input at instruction `step`, which is `at_us` microseconds of the
+    /// machine's guest time.
+    pub fn at(step: u64, at_us: u64, kind: InputKind, label: impl Into<String>, weak: bool) -> Self {
+        UserInput { step, at_us, kind, label: label.into(), weak, seq: 0 }
     }
 }
 

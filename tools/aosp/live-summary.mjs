@@ -22,7 +22,7 @@ const num = (v, d = 1) => (v === null || v === undefined ? '-' : v.toFixed(d));
 if (what === 'actions') {
   console.log(`url ${r.url}, ${r.visit} visit${r.error ? `, ERROR: ${String(r.error).split('\n')[0]}` : ''}`);
   for (const a of r.actions ?? []) {
-    console.log(`${a.name}: frame ${ms(a.frameMs)}, changed ${ms(a.changedMs)}, done ${ms(a.doneMs)}, settled ${ms(a.settledMs)}, ${num(a.mips)} MIPS, guest ${num(a.guestS)}s in ${num(a.wallS)}s`);
+    console.log(`${a.name}: frame ${ms(a.frameMs)}, changed ${ms(a.changedMs)}, done ${ms(a.doneMs)}, settled ${ms(a.settledMs)}, ${num(a.mips)} MIPS, guest ${num(a.guestS)}s in ${num(a.wallS)}s${a.speed > 1 ? `, speed ×${a.speed}` : ''}`);
     // The JIT's counters for the actions that keep the guest busy (the
     // others are the idle loop's).
     const j = a.jit;
@@ -41,6 +41,10 @@ if (what === 'actions') {
   if (r.install) console.log(`${r.install.app} installed in ${ms(r.install.ms)}`);
   const mips = (r.timeline ?? []).map((t) => t.mips).filter((v) => typeof v === 'number').sort((a, b) => a - b);
   if (mips.length) console.log(`timeline: ${mips.length} samples, MIPS median ${num(mips[mips.length >> 1])}, max ${num(mips.at(-1))}`);
+  // The guest CPU speed over the session (ADR 0051): how long at each.
+  const speeds = {};
+  for (const t of r.timeline ?? []) speeds[t.speed ?? 1] = (speeds[t.speed ?? 1] ?? 0) + 1;
+  if (Object.keys(speeds).some((k) => k !== '1')) console.log(`guest CPU speed, 5 s samples at each: ${Object.entries(speeds).map(([k, n]) => `×${k}: ${n}`).join(', ')}`);
   // The snapshots saved in the session: in the background (ADR 0046: the
   // machine's thread only starts the save and copies) or in the foreground
   // (the machine stops for the whole time).

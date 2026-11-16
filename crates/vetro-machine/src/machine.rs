@@ -175,6 +175,14 @@ pub struct Machine {
     smp: Option<Box<smp::Smp>>,
     /// Cores (`cfg.cpus`): the counter advances once every `ncpu` steps.
     ncpu: u64,
+    /// Guest CPU speed (ADR 0051): instructions per core in a nominal one
+    /// (10 ns of guest time), 1 by default. The counter advances once every
+    /// `ncpu * speed` steps of the clock.
+    speed: u64,
+    /// What the clock adds to `steps` (ADR 0051): chosen at every change of
+    /// speed so that the counter goes on from where it was. 0 until the
+    /// first change.
+    bias: i64,
     /// Broadcasts of the running core still to be acknowledged (cores in
     /// parallel, ADR 0042; always empty in turns).
     waits: Vec<(usize, u64)>,
@@ -207,7 +215,52 @@ pub struct Perf {
     pub services: u64,
 }
 
-/// CNTPCT after `steps` instructions: 62.5 MHz over a nominal 100 MHz.
+/// Largest guest CPU speed ([`Machine::set_speed`], ADR 0051).
+pub const MAX_SPEED: u32 = 64;
+
+/// How instructions become guest time (ADR 0051): the cores, the guest CPU
+/// speed and the clock's bias. [`Machine::guest_clock`] gives the machine's;
+/// whoever follows a record log without running it (the replay's timeline)
+/// applies the log's speed changes to a copy with [`GuestClock::set_speed`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GuestClock {
+    pub cores: u64,
+    pub speed: u64,
+    pub bias: i64,
+}
+
+impl GuestClock {
+    /// The clock at instruction count `steps`.
+    pub fn clock(&self, steps: u64) -> u64 {
+        (i128::from(steps) + i128::from(self.bias)).max(0) as u64
+    }
+
+    /// Clock steps per nominal step (10 ns of guest time).
+    pub fn rate(&self) -> u64 {
+        self.cores * self.speed
+    }
+
+    /// Nominal steps at instruction count `steps`.
+    pub fn nominal(&self, steps: u64) -> u64 {
+        self.clock(steps) / self.rate()
+    }
+
+    /// Guest time in nanoseconds at instruction count `steps`.
+    pub fn guest_ns(&self, steps: u64) -> u64 {
+        self.nominal(steps) * 10
+    }
+
+    /// The speed changes at instruction count `steps`: the nominal steps so
+    /// far stay what they are (the new bias makes the clock an exact
+    /// multiple of the new rate there).
+    pub fn set_speed(&mut self, steps: u64, speed: u64) {
+        let nominal = self.nominal(steps);
+        self.speed = speed;
+        self.bias = (i128::from(nominal) * i128::from(self.rate()) - i128::from(steps)) as i64;
+    }
+}
+
+/// CNTPCT after `steps` nominal steps: 62.5 MHz over a nominal 100 MHz.
 fn counter(steps: u64) -> u64 {
     steps / 8 * 5 + steps % 8 * 5 / 8
 }
@@ -291,6 +344,8 @@ impl Machine {
             perf: Perf::default(),
             smp: (cfg.cpus > 1).then(|| Box::new(smp::Smp::new(cfg.cpus as usize))),
             ncpu: u64::from(cfg.cpus),
+            speed: 1,
+            bias: 0,
             waits: Vec::new(),
             par: None,
         }
@@ -323,14 +378,59 @@ impl Machine {
         }
     }
 
-    /// CNTPCT at the current clock.
-    fn now(&self) -> u64 {
-        counter(self.steps / self.ncpu)
+    /// The clock the guest's time is counted from: the instruction count
+    /// plus the bias of the speed changes (ADR 0051).
+    pub(crate) fn clock(&self) -> u64 {
+        (i128::from(self.steps) + i128::from(self.bias)).max(0) as u64
     }
 
-    /// First clock value at which CNTPCT is at least `c`.
+    /// Clock steps per nominal step (10 ns of guest time): one per core and
+    /// per unit of speed.
+    pub(crate) fn rate(&self) -> u64 {
+        self.ncpu * self.speed
+    }
+
+    /// The instruction count at clock value `clock` (the inverse of
+    /// [`Machine::clock`]).
+    pub(crate) fn steps_of(&self, clock: u64) -> u64 {
+        (i128::from(clock) - i128::from(self.bias)).clamp(0, i128::from(u64::MAX)) as u64
+    }
+
+    /// CNTPCT at the current clock.
+    fn now(&self) -> u64 {
+        counter(self.clock() / self.rate())
+    }
+
+    /// First instruction count at which CNTPCT is at least `c`.
     fn steps_at(&self, c: u64) -> u64 {
-        steps_for(c).saturating_mul(self.ncpu)
+        let clock = i128::from(steps_for(c)) * i128::from(self.rate());
+        (clock - i128::from(self.bias)).clamp(0, i128::from(u64::MAX)) as u64
+    }
+
+    /// How this machine's instructions become guest time now (ADR 0051).
+    pub fn guest_clock(&self) -> GuestClock {
+        GuestClock { cores: self.ncpu, speed: self.speed, bias: self.bias }
+    }
+
+    /// Guest CPU speed (ADR 0051): how many instructions per core make 10 ns
+    /// of guest time. 1 is the 100 MHz of the reference machine.
+    pub fn speed(&self) -> u32 {
+        self.speed as u32
+    }
+
+    /// Changes the guest CPU speed from this instruction on (ADR 0051): the
+    /// counter goes on from its current value, `speed` times slower per
+    /// instruction. Through [`Machine::input`] it is recorded
+    /// ([`crate::Input::Speed`]). False (nothing changes) if `speed` is not
+    /// in `1..=MAX_SPEED` or the cores run in parallel (stop them first).
+    pub(crate) fn set_speed(&mut self, speed: u32) -> bool {
+        if speed == 0 || speed > MAX_SPEED || self.is_parallel() {
+            return false;
+        }
+        let mut c = self.guest_clock();
+        c.set_speed(self.steps, u64::from(speed));
+        (self.speed, self.bias) = (c.speed, c.bias);
+        true
     }
 
     /// Turns on (or removes) the system mode JIT. The result of the
@@ -656,9 +756,10 @@ impl Machine {
         self.board.borrow().host_wait
     }
 
-    /// Guest time in nanoseconds (10 ns per instruction, per core).
+    /// Guest time in nanoseconds (10 ns per nominal step: one instruction
+    /// per core at speed 1).
     pub fn guest_ns(&self) -> u64 {
-        self.steps / self.ncpu * 10
+        self.clock() / self.rate() * 10
     }
 
     fn sync_irqs(&mut self) {
@@ -896,14 +997,13 @@ impl Machine {
                 && self.jit.is_some()
                 && let Some(limit) = self.jit_budget(end)
             {
+                // The clock for MRS CNTPCT/CNTVCT inside regions: the counter
+                // is that of clock / rate (several cores, ADR 0042; the guest
+                // CPU speed, ADR 0051).
+                let (clock, rate) = (self.clock(), self.rate());
                 let jit = self.jit.as_mut().expect("checked above");
-                // The clock for MRS CNTPCT/CNTVCT inside regions (with several
-                // cores the counter is that of steps / n).
                 let cntvoff = self.board.borrow().virt.timer().cntvoff;
-                jit.set_time(vetro_jit::Clock {
-                    div: self.ncpu,
-                    ..vetro_jit::Clock::new(self.steps, cntvoff)
-                });
+                jit.set_time(vetro_jit::Clock { div: rate, ..vetro_jit::Clock::new(clock, cntvoff) });
                 let mut phys = Phys::single(&self.board, core, &mut self.waits);
                 let r = jit.run(&mut self.cpu, &mut self.mmu, &mut phys, limit);
                 self.steps += r.steps;
@@ -1123,6 +1223,115 @@ mod tests {
         assert_eq!(small.steps, large.steps);
         assert_eq!(small.cpu.x[2], 1, "woken at the deadline");
         assert_eq!((small.cpu.pc, small.cpu.x), (large.cpu.pc, large.cpu.x));
+    }
+
+    /// The guest CPU speed (ADR 0051): at a change the counter goes on from
+    /// its value and then needs `speed` times the instructions per tick; the
+    /// conversions invert each other with a positive and a negative bias;
+    /// speeds out of range change nothing.
+    #[test]
+    fn speed_change_keeps_the_counter_and_scales_it() {
+        let mut m = Machine::new(&MachineConfig { ram_size: 1 << 20, ..MachineConfig::default() });
+        m.steps = 10_000_007;
+        let (c0, ns0) = (m.now(), m.guest_ns());
+        assert_eq!(c0, counter(10_000_007));
+        assert!(!m.set_speed(0) && !m.set_speed(MAX_SPEED + 1));
+        assert_eq!((m.speed(), m.now()), (1, c0));
+        assert!(m.set_speed(4));
+        assert_eq!((m.speed(), m.now(), m.guest_ns()), (4, c0, ns0), "the counter goes on from where it was");
+        // 4 instructions per nominal step now: 8 nominal steps are 5 ticks.
+        let s0 = m.steps;
+        m.steps += 4 * 800;
+        assert_eq!(m.guest_ns() - ns0, 8000);
+        assert!((m.now() - c0).abs_diff(500) <= 1, "{} ticks", m.now() - c0);
+        // steps_at is the first instruction count at which the counter is there.
+        for c in [c0 + 1, c0 + 7, c0 + 12_345, c0 + 625_000] {
+            let at = m.steps_at(c);
+            let mut probe = Machine::new(&MachineConfig { ram_size: 1 << 20, ..MachineConfig::default() });
+            (probe.speed, probe.bias) = (m.speed, m.bias);
+            probe.steps = at;
+            assert!(probe.now() >= c, "c = {c}");
+            probe.steps = at - 1;
+            assert!(probe.now() < c, "c = {c}");
+        }
+        assert_eq!(m.steps_of(m.clock()), m.steps);
+        assert!(m.bias > 0);
+        // Slower again: the bias becomes negative, the counter still goes on.
+        m.steps = s0 + 1_000_000_000;
+        let c1 = m.now();
+        assert!(m.set_speed(1));
+        assert!(m.bias < 0, "bias {}", m.bias);
+        assert_eq!(m.now(), c1);
+        m.steps += 8;
+        assert_eq!(m.now(), c1 + 5);
+        assert_eq!(m.steps_of(m.clock()), m.steps);
+        // A deadline already past is now.
+        assert!(m.steps_at(1) <= m.steps);
+    }
+
+    /// With the speed raised (an input, ADR 0051) a timer deadline comes
+    /// after `speed` times the instructions: from the start, and from the
+    /// middle of the wait, where only what is left is stretched.
+    #[test]
+    fn timer_deadline_follows_the_speed() {
+        // printf '...' | tools/a64asm.sh (as in `wfi_stops_at_the_end_of_the_quantum`)
+        let code = [
+            0xd51be340u32, // msr CNTV_CVAL_EL0, x0
+            0xd2800021,    // mov x1, #0x1
+            0xd51be321,    // msr CNTV_CTL_EL0, x1
+            0xd503207f,    // wfi
+            0x91000442,    // add x2, x2, #0x1
+            0x14000000,    // b .
+        ];
+        let machine = || {
+            let mut m = Machine::new(&MachineConfig { ram_size: 1 << 20, ..MachineConfig::default() });
+            {
+                let b = m.board.borrow_mut();
+                for (i, w) in code.iter().enumerate() {
+                    assert!(b.ram.write(map::RAM_BASE + 4 * i as u64, &w.to_le_bytes()));
+                }
+            }
+            m.cpu.pc = map::RAM_BASE;
+            // Deadline at CNTVCT 625 000: 1 000 000 nominal steps.
+            m.cpu.x[0] = 625_000;
+            m
+        };
+        let run_to = |m: &mut Machine, steps: u64| {
+            while m.steps < steps {
+                assert_eq!(m.run(100_000.min(steps - m.steps)), Stop::Budget);
+            }
+        };
+        // Speed 4 from the first instruction: woken at 4 000 000 instructions.
+        let mut m = machine();
+        assert_eq!(m.input(crate::Input::Speed(4)), crate::Reply::Done);
+        run_to(&mut m, 3_999_000);
+        assert_eq!(m.cpu.x[2], 0, "still in the WFI at {}", m.steps);
+        run_to(&mut m, 4_000_100);
+        assert_eq!(m.cpu.x[2], 1, "woken at the deadline");
+        assert_eq!(m.guest_ns() / 1_000_000, 10, "10 ms of guest time");
+        // Speed 4 halfway (500 000 instructions, counter 312 500): the other
+        // half takes 2 000 000.
+        let mut m = machine();
+        run_to(&mut m, 500_000);
+        assert_eq!(m.input(crate::Input::Speed(4)), crate::Reply::Done);
+        run_to(&mut m, 2_499_000);
+        assert_eq!(m.cpu.x[2], 0, "still in the WFI at {}", m.steps);
+        run_to(&mut m, 2_500_100);
+        assert_eq!(m.cpu.x[2], 1, "woken at the deadline");
+        // Out of range: rejected, nothing changes.
+        assert_eq!(m.input(crate::Input::Speed(0)), crate::Reply::Rejected);
+        assert_eq!(m.speed(), 4);
+        // The snapshot carries speed and bias; one at speed 1 does not.
+        let bytes = m.save();
+        let mut other = machine();
+        other.load_state(&bytes).unwrap();
+        assert_eq!((other.speed(), other.bias, other.now(), other.steps), (4, m.bias, m.now(), m.steps));
+        assert_eq!(other.save(), bytes);
+        let plain = machine().save();
+        assert!(!plain.windows(4).any(|w| w == b"CLK "), "no CLK section at speed 1");
+        assert!(bytes.windows(4).any(|w| w == b"CLK "));
+        other.load_state(&plain).unwrap();
+        assert_eq!((other.speed(), other.bias), (1, 0), "a snapshot without the section is speed 1");
     }
 
     /// Devices in the slots of QEMU's `-device`s, in the same order

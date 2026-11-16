@@ -647,8 +647,16 @@ fn sistema_interprete_e_jit_identici() {
     for seed in first..first + cases {
         let (cpu, ram) = setup(seed);
         // The cases with the code of several cores (odd seeds: in turns; every
-        // third: in parallel) read a counter divided by 2 or 3.
-        DIV.set(if seed % 2 == 1 || seed % 3 == 2 { 2 + seed % 2 } else { 1 });
+        // third: in parallel) read a counter divided by 2 or 3; half of the
+        // others, with the code of one core, read one divided by 4 (the guest
+        // CPU speed, ADR 0051: one core's regions did not divide at all).
+        DIV.set(if seed % 2 == 1 || seed % 3 == 2 {
+            2 + seed % 2
+        } else if seed % 4 == 0 {
+            4
+        } else {
+            1
+        });
         let want = run_interp(cpu.clone(), ram.clone());
         if std::env::var_os("VETRO_JIT_SYS_PARITY_DEBUG").is_some() {
             eprintln!("seed {seed}: {:?}", &want.events[..want.events.len().min(8)]);

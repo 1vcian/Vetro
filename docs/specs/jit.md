@@ -185,7 +185,7 @@ Offsets from the start of `JitState`:
 | 1024 | jump cache: 8192 entries of 16 bytes `{pc: u64, ctx: u32, w: u32}`, `w = entry << 26 \| slot << 8 \| maximum steps of the entry` |
 | 132096 | software TLB for aligned accesses: 4 tables (EL0 read, EL0 write, EL1 read, EL1 write) of 512 entries of 16 bytes `{tag: u64, addend: u64}`, index `(va >> 12) & 511` |
 | 164864 | TLB for unaligned accesses: 4 tables as above (`area::tlb_u`) |
-| 197632 | `TIME_DIV`, `TIME_FLUSHED`: the clock of several cores (ADR 0042) |
+| 197632 | `TIME_DIV`, `TIME_FLUSHED`: `TIME_DIV` is what the clock (`time_base` + the run's steps) is divided by before the counter is computed, in every region that reads CNTPCT or CNTVCT: cores × guest CPU speed (ADR 0042, ADR 0051; the host writes it before every dispatcher run with `time_ok` 1 or 2). `TIME_FLUSHED`: the cores in parallel (ADR 0042) |
 | 197648 | `CHAINS`, `CHAIN_CALLS`: u64 counters of tail calls between regions and of `CHAIN` returns (ADR 0049, only with `SysJitConfig::names`) |
 | 197664 | `EXITS`: 8 u64 slots, the `NEXT` exits of the regions by kind (`translate::Exit`: in the page, call out, out, RET, BR, BLR, step limit; ADR 0049, only with `SysJitConfig::names`) |
 

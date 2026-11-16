@@ -81,6 +81,10 @@
 #  20. the app online through the Python gateway in headless Chrome
 #      (relay/test/python-browser.mjs, ADR 0050): the browser's fetch (CORS)
 #      and WebSocket against relay/py, DNS, a 600 KB GET, a refusal.
+#  20. the guest CPU speed in the app in headless Chrome
+#      (tests/web/browser-speed.mjs, ADR 0051): at speed 1 a busy loop takes
+#      its instructions' worth of real time, with the automatic speed less,
+#      guest seconds stay real seconds, the snapshot carries the speed.
 #
 #   tools/web-test.sh [--no-jit]
 #
@@ -190,6 +194,9 @@ node tests/web/browser-smp.mjs
 
 echo "==> the app online through the gateway in Chrome (ADR 0048)"
 node tests/web/browser-online.mjs
+
+echo "==> the guest CPU speed in the app in Chrome (ADR 0051)"
+node tests/web/browser-speed.mjs
 
 echo "==> the app online through the Python gateway in Chrome (ADR 0050)"
 node relay/test/python-browser.mjs

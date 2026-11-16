@@ -59,6 +59,9 @@ pub enum Input {
     /// (ADR 0048, `vetro_net::relay`): an answer of the gateway, or the
     /// host's `ONLINE`/`DOWN`. The bytes as on the wire.
     Relay(Vec<u8>),
+    /// The guest CPU speed from this instruction on (ADR 0051): how many
+    /// instructions per core make 10 ns of guest time.
+    Speed(u32),
 }
 
 /// Host operations on the connections to the guest (the
@@ -290,6 +293,10 @@ impl Input {
                 w.u8(9);
                 w.bytes(f);
             }
+            Input::Speed(k) => {
+                w.u8(10);
+                w.u32(*k);
+            }
         }
     }
 
@@ -332,6 +339,7 @@ impl Input {
                 k => return Err(Error::invalid(format!("host network operation {k}"))),
             }),
             9 => Input::Relay(r.vec()?),
+            10 => Input::Speed(r.u32()?),
             k => return Err(Error::invalid(format!("input type {k}"))),
         })
     }
@@ -724,6 +732,7 @@ mod tests {
             Input::HostNet(HostNetOp::Abort(2)),
             Input::HostNet(HostNetOp::Release(1)),
             Input::Relay(vec![0x81, 0, 0, 0, 1]),
+            Input::Speed(4),
             Input::Keyboard(Input::key_events(BTN_LEFT, false)),
         ];
         let mut events: Vec<Event> = inputs

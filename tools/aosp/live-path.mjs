@@ -84,7 +84,7 @@ async function stats() {
   const http = s.disks.reduce((a, d) => ({ requests: a.requests + d.http.requests, bytes: a.bytes + d.http.bytes }), { requests: 0, bytes: 0 });
   return { wall: (Date.now() - t0) / 1000, guest: s.guestSecs, steps: s.steps, mips: s.mips, waitS: s.feeder.waitMs / 1000, served: s.feeder.served, fromSource: s.feeder.fromSource,
     fromCache: s.feeder.fromCache, requests: http.requests, mib: http.bytes / 2 ** 20, memory: s.memory / 2 ** 20, aheadMs: s.aheadMs,
-    frames: s.frames, prefetched: s.feeder.prefetched ?? null, jitModules: s.jit?.modules ?? null, jitCompileS: s.jitHost ? s.jitHost.compileMs / 1000 : null,
+    speed: s.speed ?? 1, frames: s.frames, prefetched: s.feeder.prefetched ?? null, jitModules: s.jit?.modules ?? null, jitCompileS: s.jitHost ? s.jitHost.compileMs / 1000 : null,
     // Every JIT counter (cumulative: an action's are the difference).
     jit: s.jit ? Object.fromEntries(Object.entries(s.jit).filter(([, v]) => typeof v === 'number')) : null,
     // A deferred snapshot save in progress (ADR 0046).
@@ -193,7 +193,9 @@ async function timed(name, act, { minChange = 0.02, stillMs = 2000, limitMs = 90
   const s1 = await stats();
   const a = { name, frameMs: frame, changedMs: changed, doneMs: done, settledMs: settled, diskWaitS: s1 && s0 ? s1.waitS - s0.waitS : null, httpReads: s1 && s0 ? s1.requests - s0.requests : null,
     httpMiB: s1 && s0 ? s1.mib - s0.mib : null, guestS: s1 && s0 ? s1.guest - s0.guest : null, wallS: (Date.now() - ts) / 1000,
-    mips: s1 && s0 ? (s1.steps - s0.steps) / 1e6 / ((s1.wall - s0.wall) || 1) : null, steps: s1 && s0 ? s1.steps - s0.steps : null, jit: jitDelta(s0, s1) };
+    mips: s1 && s0 ? (s1.steps - s0.steps) / 1e6 / ((s1.wall - s0.wall) || 1) : null, steps: s1 && s0 ? s1.steps - s0.steps : null, jit: jitDelta(s0, s1),
+    // The guest CPU speed at the end of the action (ADR 0051).
+    speed: s1?.speed ?? null };
   if (JIT_PROFILE) {
     // The profile is refreshed every 5 s: wait for one after the action.
     await sleep(5500);

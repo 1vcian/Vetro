@@ -8,6 +8,7 @@
 //
 //   node web/node/boot.mjs [--wasm FILE] [--kernel DIR] [--expect-steps N]
 //                          [--jit [--jit-threshold N] [--jit-batch N] [--jit-background]]
+//                          [--speed N]
 //                          [--cpus N]
 //
 // With --jit it runs with the system-mode JIT (ADR 0013, modules compiled
@@ -51,6 +52,7 @@ const expectSteps = opt('--expect-steps', null);
 const jit = args.includes('--jit');
 const jitThreshold = Number(opt('--jit-threshold', '64'));
 const jitBatch = Number(opt('--jit-batch', '16'));
+const speed = Number(opt('--speed', '1'));
 const background = jit && args.includes('--jit-background');
 /** ADR 0042: guest cores, in turns on this thread (deterministic). */
 const cpus = Number(opt('--cpus', '1'));
@@ -75,6 +77,8 @@ async function main() {
   m.loadLinux(image, initrd, CMDLINE);
   if (background) await engine.startBackground();
   if (jit) m.setJit(jitThreshold, jitBatch);
+  // --speed N: the guest CPU speed (ADR 0051), from the first instruction.
+  if (speed !== 1 && !m.setSpeed(speed)) throw new Error(`speed ${speed} refused`);
   if (parallel) await m.startParallel({ jit: jit ? { threshold: jitThreshold, batch: jitBatch } : null });
   const tLoad = performance.now();
 

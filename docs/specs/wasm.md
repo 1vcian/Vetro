@@ -86,6 +86,7 @@ incompatible change to the signatures or codes below; the JS loader
 - 18 (M4): region chaining (ADR 0049): import `vetro_jit.shared`; the
   counters `chains`, `chainCalls` and the `NEXT` exits by kind at the end of
   `vetro_jit_stats`.
+- 19 (M4): the guest CPU speed (ADR 0051): `vetro_speed`, `vetro_speed_set`.
 
 ### Memory
 
@@ -107,7 +108,9 @@ practice: take the view after every call that may allocate.
 | `vetro_load_linux` | `(vm, image, image_len, initrd, initrd_len, cmdline, cmdline_len) -> u32` | like `Machine::load_linux`; `initrd` null or 0 long = none; `cmdline` UTF-8. The buffers can be freed right after |
 | `vetro_run` | `(vm, budget: u64) -> u32` | executes at most `budget` instructions (`Machine::run`) |
 | `vetro_steps` | `(vm) -> u64` | instructions executed (the guest clock, ADR 0011) |
-| `vetro_guest_ns` | `(vm) -> u64` | guest time in ns (10 ns per instruction) |
+| `vetro_guest_ns` | `(vm) -> u64` | guest time in ns (10 ns per nominal step: one instruction per core at speed 1) |
+| `vetro_speed` | `(vm) -> u32` | ABI 19 (ADR 0051): the guest CPU speed: instructions per core in 10 ns of guest time; 1 by default and after a snapshot without a `CLK ` section |
+| `vetro_speed_set` | `(vm, speed: u32) -> u32` | ABI 19: changes it from this instruction on (`Input::Speed`, recorded): the guest's clock goes on from its value. 0 done; 1 refused (out of 1..=64, cores in parallel, replay in progress) and nothing changes |
 | `vetro_console_read` | `(vm, dst: *mut u8, cap: usize) -> usize` | copies and consumes at most `cap` bytes of PL011 output; 0 = nothing new. The rest stays for the next call |
 | `vetro_console_write` | `(vm, src: *const u8, len: usize)` | queues input bytes, as if from the keyboard |
 | `vetro_message_ptr` / `vetro_message_len` | `(vm) -> *const u8` / `usize` | last UTF-8 message: load error or `what` of an unimplemented instruction. Valid until the next call on the machine |

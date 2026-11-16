@@ -95,7 +95,8 @@ use display::WebDisplay;
 /// `Uplink`.
 /// 18: region chaining (ADR 0049): import `vetro_jit.shared`; `chains`,
 /// `chainCalls` and the `NEXT` exits by kind at the end of `vetro_jit_stats`.
-pub const ABI_VERSION: u32 = 18;
+/// 19: the guest CPU speed (ADR 0051): `vetro_speed`, `vetro_speed_set`.
+pub const ABI_VERSION: u32 = 19;
 
 /// Alignment of the [`vetro_alloc`] buffers (enough for `JitState`).
 const ALLOC_ALIGN: usize = 16;
@@ -610,7 +611,7 @@ impl Vm {
         }
         let new = self.m.console_output();
         if !new.is_empty() {
-            let at = vetro_analysis::timeline::step_us(self.m.steps);
+            let at = self.m.guest_ns() / 1000;
             self.timeline.push_console(at, &new);
             self.out.extend(new);
         }
@@ -897,6 +898,26 @@ pub unsafe extern "C" fn vetro_steps(vm: *const Vm) -> u64 {
 pub unsafe extern "C" fn vetro_guest_ns(vm: *const Vm) -> u64 {
     // SAFETY: `vm` comes from `vetro_machine_new`.
     unsafe { &*vm }.m.guest_ns()
+}
+
+/// The guest CPU speed (ABI 19, ADR 0051): how many instructions per core
+/// make 10 ns of guest time. 1 is the reference machine's 100 MHz.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_speed(vm: *const Vm) -> u32 {
+    // SAFETY: `vm` comes from `vetro_machine_new`.
+    unsafe { &*vm }.m.speed()
+}
+
+/// Changes the guest CPU speed from this instruction on (ABI 19, ADR 0051):
+/// the guest's clock goes on from its value and then needs `speed` times the
+/// instructions per tick. A host input, recorded for replay. 0 if done, 1 if
+/// refused (`speed` not in 1..=`MAX_SPEED`, the cores in parallel, a replay
+/// in progress): then nothing changes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vetro_speed_set(vm: *mut Vm, speed: u32) -> u32 {
+    // SAFETY: `vm` comes from `vetro_machine_new`.
+    let vm = unsafe { &mut *vm };
+    (vm.m.input(Input::Speed(speed)) != Reply::Done) as u32
 }
 
 /// Reads and consumes at most `cap` bytes of console output into `dst`;

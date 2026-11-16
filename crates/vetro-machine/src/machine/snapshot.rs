@@ -253,6 +253,15 @@ impl Machine {
             w.bool(b.virtio_dirty);
             w.bool(b.host_wait);
         });
+        // The guest CPU speed and its clock bias (ADR 0051): only when they
+        // are not the default, so every snapshot of a machine at speed 1 is
+        // the file it always was, and snapshots made before read as speed 1.
+        if self.speed != 1 || self.bias != 0 {
+            w.section(b"CLK ", |w| {
+                w.u64(self.speed);
+                w.u64(self.bias as u64);
+            });
+        }
         w.section(b"CPU ", |w| w.put(&self.cpu));
         if let Some(s) = &self.smp {
             w.section(b"SMP ", |w| s.save(w));
@@ -307,6 +316,17 @@ impl Machine {
             b.lines_changed();
         }
         s.finish()?;
+        (self.speed, self.bias) = (1, 0);
+        if r.peek_tag() == Some(*b"CLK ") {
+            let mut s = r.section(b"CLK ")?;
+            let speed = s.u64()?;
+            if speed == 0 || speed > u64::from(super::MAX_SPEED) {
+                return Err(vetro_snapshot::Error::invalid(format!("guest CPU speed {speed}")));
+            }
+            self.speed = speed;
+            self.bias = s.u64()? as i64;
+            s.finish()?;
+        }
         let mut s = r.section(b"CPU ")?;
         self.cpu.restore(&mut s)?;
         s.finish()?;

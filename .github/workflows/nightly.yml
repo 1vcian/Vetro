@@ -131,7 +131,7 @@ jobs:
         run: |
           [ -f target/aosp/online-measurements.json ] && echo "::notice title=Android online measurements::$(tr -d '\n' < target/aosp/online-measurements.json | cut -c1-3000)" || true
           if [ -s android-online.log ]; then
-            grep -E '^(ready|adb ready|browser:|gateway:|[a-z0-9-]+: (installed|HTTPS))' android-online.log | head -n 9 | sed 's/^/::notice title=Android online::/' || true
+            grep -E '^(ready|adb ready|browser:|gateway:|[a-z0-9-]+: (installed|HTTPS|no request))' android-online.log | head -n 9 | sed 's/^/::notice title=Android online::/' || true
           fi
       - if: failure() || cancelled()
         run: |

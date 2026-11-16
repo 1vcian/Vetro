@@ -70,11 +70,24 @@ impl Vm {
         self.describer = Describer::default();
         let Some(log) = &self.log else { return };
         let mut d = Describer::default();
+        // Guest time at each event: the machine's clock at the keyframe the
+        // replay starts from, then the log's own speed changes (ADR 0051).
+        let mut clock = self.m.guest_clock();
         for e in &log.events[from.min(log.events.len())..] {
-            if let EventKind::Input(i) = &e.kind
-                && let Some((kind, label, weak)) = d.describe(i)
+            let EventKind::Input(i) = &e.kind else { continue };
+            if let vetro_machine::Input::Speed(k) = i
+                && (1..=vetro_machine::MAX_SPEED).contains(k)
             {
-                self.timeline.push_input(UserInput::new(e.step, kind, label, weak));
+                clock.set_speed(e.step, u64::from(*k));
+            }
+            if let Some((kind, label, weak)) = d.describe(i) {
+                self.timeline.push_input(UserInput::at(
+                    e.step,
+                    clock.guest_ns(e.step) / 1000,
+                    kind,
+                    label,
+                    weak,
+                ));
             }
         }
     }
@@ -308,6 +321,7 @@ pub unsafe extern "C" fn vetro_log_events(vm: *mut Vm) -> usize {
                             "network"
                         }
                         Input::Vsock(_) => "vsock",
+                        Input::Speed(_) => "speed",
                     };
                     (k, String::new(), true, false)
                 }

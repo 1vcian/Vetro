@@ -133,13 +133,13 @@ impl Vm {
     /// A user input: annotates it in the timeline (if it is an action and
     /// the machine accepts it) and passes it to `Machine::input`.
     pub fn user_input(&mut self, input: Input) -> Reply {
-        let step = self.m.steps;
+        let (step, at_us) = (self.m.steps, self.m.guest_ns() / 1000);
         let desc = self.describer.describe(&input);
         let r = self.m.input(input);
         if let Some((kind, label, weak)) = desc
             && !matches!(r, Reply::Ignored | Reply::NoDevice)
         {
-            self.timeline.push_input(UserInput::new(step, kind, label, weak));
+            self.timeline.push_input(UserInput::at(step, at_us, kind, label, weak));
         }
         r
     }
@@ -304,8 +304,8 @@ pub unsafe extern "C" fn vetro_timeline_input(
 ) {
     let vm = unsafe { vm_ref(vm) };
     let label = String::from_utf8_lossy(unsafe { crate::bytes(text, len) }).into_owned();
-    let step = vm.m.steps;
-    vm.timeline.push_input(UserInput::new(step, InputKind::from_code(kind), label, weak != 0));
+    let (step, at_us) = (vm.m.steps, vm.m.guest_ns() / 1000);
+    vm.timeline.push_input(UserInput::at(step, at_us, InputKind::from_code(kind), label, weak != 0));
 }
 
 /// Annotates an effect observed by JS (a changed file: `EffectKind::code`)
@@ -315,7 +315,7 @@ pub unsafe extern "C" fn vetro_timeline_effect(vm: *mut Vm, kind: u32, text: *co
     let vm = unsafe { vm_ref(vm) };
     let Some(kind) = EffectKind::from_code(kind) else { return 0 };
     let label = String::from_utf8_lossy(unsafe { crate::bytes(text, len) }).into_owned();
-    let at_us = timeline::step_us(vm.m.steps);
+    let at_us = vm.m.guest_ns() / 1000;
     vm.timeline.push_effect(Effect::new(at_us, kind, label));
     1
 }

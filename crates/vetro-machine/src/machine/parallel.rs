@@ -680,7 +680,11 @@ impl Machine {
         let board = self.board.clone();
         let cores = &board.cores;
         let smp = self.smp.as_ref().expect("several cores");
-        cores.clock.store(self.steps, Ordering::SeqCst);
+        // The shared clock is the machine's clock (the instruction count plus
+        // the bias of the speed changes, ADR 0051), and the cores divide it by
+        // the rate: nothing else needs to know about the speed.
+        let rate = self.rate();
+        cores.clock.store(self.clock(), Ordering::SeqCst);
         cores.idle.store(0, Ordering::SeqCst);
         cores.stop.store(false, Ordering::SeqCst);
         cores.halt.store(0, Ordering::SeqCst);
@@ -696,7 +700,7 @@ impl Machine {
         cores.parallel.store(true, Ordering::SeqCst);
         {
             let mut b = board.borrow_mut();
-            b.cntpct = b.cntpct.max(counter(self.steps / n));
+            b.cntpct = b.cntpct.max(counter(self.clock() / rate));
             b.update_irqs();
         }
         let others: Vec<Core> = (1..n as usize)
@@ -707,7 +711,7 @@ impl Machine {
                     smp.vcpus[i].cpu.clone(),
                     Mmu::new(PA_BITS),
                     smp.vcpus[i].wfi_pending,
-                    n,
+                    rate,
                 ),
             })
             .collect();
@@ -716,7 +720,7 @@ impl Machine {
             core::mem::take(&mut self.cpu),
             core::mem::replace(&mut self.mmu, Mmu::new(PA_BITS)),
             self.wfi_pending,
-            n,
+            rate,
         );
         core0.interp = self.interp;
         core0.jit = self.jit.take().map(|mut j| {
@@ -749,7 +753,7 @@ impl Machine {
         let board = self.board.clone();
         let cores = &board.cores;
         let core0 = *core0;
-        self.steps = cores.clock.load(Ordering::SeqCst);
+        self.steps = self.steps_of(cores.clock.load(Ordering::SeqCst));
         self.cpu = core0.cpu;
         self.mmu = core0.mmu;
         self.mmu.tlb_mut().flush_all();
@@ -806,11 +810,11 @@ impl Machine {
         loop {
             // The network stack (core 0's duty) and the devices it feeds.
             let clock = cores.clock.load(Ordering::SeqCst);
-            self.steps = clock;
-            self.par_sync(counter(clock / self.ncpu));
+            self.steps = self.steps_of(clock);
+            self.par_sync(counter(clock / self.rate()));
             let mut core0 = self.par.take().expect("parallel");
             let step = match self.net_deadline {
-                Some(d) => left.min(steps_for(d).saturating_mul(self.ncpu).saturating_sub(clock).max(1)),
+                Some(d) => left.min(steps_for(d).saturating_mul(self.rate()).saturating_sub(clock).max(1)),
                 None => left,
             };
             let before = core0.executed;
@@ -818,9 +822,10 @@ impl Machine {
             let done = core0.executed - before;
             self.perf.wfi_steps += cores.skipped.swap(0, Ordering::SeqCst);
             self.par = Some(core0);
-            self.steps = cores.clock.load(Ordering::SeqCst);
+            let clock = cores.clock.load(Ordering::SeqCst);
+            self.steps = self.steps_of(clock);
             left = left.saturating_sub(done.max(1));
-            if stop != Stop::Budget || left == 0 || self.steps >= end || cores.stop.load(Ordering::SeqCst) {
+            if stop != Stop::Budget || left == 0 || clock >= end || cores.stop.load(Ordering::SeqCst) {
                 return stop;
             }
         }
@@ -866,7 +871,7 @@ impl Machine {
             b.service_virtio();
         }
         b.update_irqs();
-        let nd = self.net_deadline.map_or(u64::MAX, |d| steps_for(d).saturating_mul(self.ncpu));
+        let nd = self.net_deadline.map_or(u64::MAX, |d| steps_for(d).saturating_mul(self.rate()));
         b.cores.net_deadline.store(nd, Ordering::SeqCst);
     }
 }

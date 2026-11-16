@@ -4,7 +4,7 @@
 
 import { CODE_BUDGET, JitEngine } from './jit-engine.mjs';
 
-export const ABI_VERSION = 18;
+export const ABI_VERSION = 19;
 /** Codes of vetro_run. */
 export const STOP = ['Budget', 'PowerOff', 'Reset', 'Idle', 'Unimplemented', 'Blocked'];
 
@@ -1248,6 +1248,23 @@ export class Machine {
   /** Guest time in ns (BigInt). */
   get guestNs() {
     return this.#x.vetro_guest_ns(this.#vm);
+  }
+
+  /**
+   * The guest CPU speed (ADR 0051): instructions per core in 10 ns of guest
+   * time; 1 is the reference machine's 100 MHz.
+   */
+  get speed() {
+    return this.#x.vetro_speed(this.#vm) >>> 0;
+  }
+
+  /**
+   * Changes the guest CPU speed from this instruction on: the guest's clock
+   * goes on from its value. An input, recorded for replay. False if refused
+   * (out of 1..64, the cores in parallel, a replay in progress).
+   */
+  setSpeed(speed) {
+    return this.#x.vetro_speed_set(this.#vm, speed) === 0;
   }
 
   free() {

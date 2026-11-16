@@ -2907,8 +2907,9 @@ impl Tx {
     }
 
     /// CNTPCT (or CNTVCT if `virt`) of the current instruction on the stack
-    /// (i64), like the machine (`Machine::counter`): the instruction count
-    /// `s` = `time_base` + steps done, and CNTPCT = s / 8 × 5 + (s mod 8) × 5
+    /// (i64), like the machine (`Machine::counter`): the nominal steps
+    /// `s` = (`time_base` + steps done) / `TIME_DIV` (cores and guest CPU
+    /// speed, ADR 0042 and 0051), and CNTPCT = s / 8 × 5 + (s mod 8) × 5
     /// / 8 (62.5 MHz out of a nominal 100 MHz); CNTVCT = CNTPCT - CNTVOFF. Without
     /// `time_ok` (the host did not provide the clock) it exits and the
     /// interpreter reads it.
@@ -2920,11 +2921,17 @@ impl Tx {
         if self.sys.is_some_and(|t| t.yields || t.parallel) {
             self.smp_steps(s);
         } else {
+            // One core: the clock is `time_base` + the steps of the run, and
+            // the counter is that of clock / div. `div` is 1 unless the guest
+            // CPU speed was raised (ADR 0051): without the division the
+            // regions' counter ran `speed` times faster than the machine's
+            // (the guest kernel reported RCU stalls at speed 4).
             let f = &mut self.f;
             f.local_get(L_STATE).i64_load(off::TIME_BASE).local_get(L_STEPS).op(op::I64_ADD);
             if self.index != 0 {
                 f.i64_const(self.index as i64).op(op::I64_ADD);
             }
+            f.local_get(L_STATE).i64_load(area::TIME_DIV).op(op::I64_DIV_U);
             f.local_set(s);
         }
         let f = &mut self.f;

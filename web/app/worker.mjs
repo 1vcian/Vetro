@@ -143,6 +143,27 @@ import { androidSnapshotKey, downloadPrebuilt, findPrebuilt, PREBUILT_CHUNK, pre
 const JIT_THRESHOLD = 256;
 const JIT_BATCH = 16;
 
+/**
+ * The guest CPU speed (ADR 0051): how many instructions per core make 10 ns
+ * of guest time. At 1 (the reference machine's 100 MHz) a host that can run
+ * more than 100 M instructions per second waits for real time while the
+ * guest still has work. The Worker measures what the host really executes
+ * (instructions run, not the idle time the clock skips, over the time spent
+ * running them) in windows of SPEED_WINDOW_MS, and sets the speed to the
+ * power of two that covers SPEED_FILL of it: the guest's clock then allows
+ * what the host can do, and guest time stays between about half of real
+ * time and real time while the guest works. A window with little work
+ * (SPEED_MIN_STEPS, SPEED_MIN_MS) says nothing and changes nothing; going
+ * up is at once, going down after SPEED_PATIENCE windows that agree. Every
+ * change is a recorded input. `?speed=N` fixes it instead.
+ */
+const SPEED_WINDOW_MS = 1000;
+const SPEED_FILL = 0.85;
+const SPEED_MIN_STEPS = 20_000_000;
+const SPEED_MIN_MS = 150;
+const SPEED_PATIENCE = 2;
+const SPEED_MAX = 16;
+
 /** Largest quantum (instructions). */
 const QUANTUM = 1_000_000;
 /**
@@ -1346,6 +1367,37 @@ async function rr(cmd) {
 async function loop() {
   resetClock();
   const guestMs = () => Number(m.guestNs - clock.g0) / 1e6;
+  // The guest CPU speed (ADR 0051): the machine's (a snapshot keeps it), a
+  // fixed one if asked for, and the window of its automatic adjustment.
+  let speed = m.speed;
+  if (cfg.speed && cfg.speed !== speed && m.setSpeed(cfg.speed)) speed = cfg.speed;
+  // Instructions really executed: the clock's steps without the idle time it skipped.
+  const executed = () => Number(m.steps) - (m.perf()?.wfiSteps ?? 0);
+  const speedWindow = { t: performance.now(), x: executed(), runMs: 0, lower: 0 };
+  const adjustSpeed = (now) => {
+    const w = speedWindow;
+    if (now - w.t < SPEED_WINDOW_MS) return;
+    // The machine's own value: a replay or a restore may have changed it.
+    speed = m.speed;
+    const x = executed();
+    const ran = x - w.x;
+    // Not while replaying (the changes come from the log) and not with the
+    // cores in parallel (the machine refuses it there).
+    if (!cfg.speed && mode === 'live' && !m.parallel && ran >= SPEED_MIN_STEPS && w.runMs >= SPEED_MIN_MS) {
+      // Instructions per ms the host ran, against the 100 000 per core that
+      // speed 1 allows.
+      const fits = (SPEED_FILL * ran) / w.runMs / (STEPS_PER_MS * (cfg.cpus ?? 1));
+      const target = Math.min(SPEED_MAX, 2 ** Math.max(0, Math.ceil(Math.log2(fits))));
+      if (target >= speed) w.lower = 0;
+      if (target > speed || (target < speed && ++w.lower >= SPEED_PATIENCE)) {
+        if (m.setSpeed(target)) speed = target;
+        w.lower = 0;
+      }
+    }
+    w.t = now;
+    w.x = x;
+    w.runMs = 0;
+  };
   /** Guest time ahead of the real clock (ms). */
   const aheadMs = () => guestMs() - (performance.now() - clock.t0 - clock.paused);
   let lastStats = 0;
@@ -1386,16 +1438,22 @@ async function loop() {
       const ahead = aheadMs();
       if (ahead > AHEAD_MS) {
         await rest(Math.min(ahead - AHEAD_MS, 50));
+        adjustSpeed(performance.now());
         continue;
       }
     }
     const slice = performance.now();
     let stop;
     for (;;) {
-      const size = Math.max(MIN_QUANTUM, Math.min(QUANTUM, Math.round(stepsPerMs * QUANTUM_MS)));
+      // The quantum's bounds are stretches of guest time (10 ms at most, 0.2
+      // ms at least): in instructions they grow with the guest CPU speed
+      // (ADR 0051). Unscaled, an idle guest at speed 16 would need 1600
+      // slices for a second of its time, each with its bookkeeping and its
+      // messages to the page.
+      const size = Math.max(MIN_QUANTUM * speed, Math.min(QUANTUM * speed, Math.round(stepsPerMs * QUANTUM_MS)));
       let budget = target === null ? size : Math.min(size, Number(target - m.steps));
       // Real time: no further than AHEAD_MS past the clock.
-      if (realtime) budget = Math.min(budget, Math.max(MIN_QUANTUM, Math.floor((AHEAD_MS - aheadMs()) * STEPS_PER_MS)));
+      if (realtime) budget = Math.min(budget, Math.max(MIN_QUANTUM * speed, Math.floor((AHEAD_MS - aheadMs()) * STEPS_PER_MS * speed)));
       const q0 = performance.now();
       const s0 = m.steps;
       stop = budget > 0 ? m.run(budget) : 'Budget';
@@ -1403,6 +1461,7 @@ async function loop() {
       // Speed from whole quanta that took measurable time (a WFI jump counts
       // as fast: the next quantum corrects it).
       if (stop === 'Budget' && qMs > 0.5) stepsPerMs = 0.7 * stepsPerMs + 0.3 * (Number(m.steps - s0) / qMs);
+      speedWindow.runMs += qMs;
       if (stop === 'Blocked') {
         activity();
         const w = performance.now();
@@ -1427,6 +1486,7 @@ async function loop() {
       if (realtime && aheadMs() > AHEAD_MS) break;
     }
     if (mode === 'paused') continue;
+    adjustSpeed(performance.now());
     if (flush()) activity();
     if (pumpRelay()) activity();
     pumpFiles();
@@ -1486,6 +1546,8 @@ async function loop() {
         memory: m.memoryBytes,
         input: { ...inputWait },
         quantum: Math.round(stepsPerMs * QUANTUM_MS),
+        // The guest CPU speed (ADR 0051): instructions per 10 ns of guest time.
+        speed,
         // Guest time ahead of the real clock (ms; > 0: the guest is early).
         aheadMs: aheadMs(),
         // The deferred save in progress (ADR 0046): raw bytes handed over and
