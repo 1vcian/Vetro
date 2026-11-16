@@ -85,14 +85,13 @@ async function stats() {
   return { wall: (Date.now() - t0) / 1000, guest: s.guestSecs, steps: s.steps, mips: s.mips, waitS: s.feeder.waitMs / 1000, served: s.feeder.served, fromSource: s.feeder.fromSource,
     fromCache: s.feeder.fromCache, requests: http.requests, mib: http.bytes / 2 ** 20, memory: s.memory / 2 ** 20, aheadMs: s.aheadMs,
     frames: s.frames, prefetched: s.feeder.prefetched ?? null, jitModules: s.jit?.modules ?? null, jitCompileS: s.jitHost ? s.jitHost.compileMs / 1000 : null,
-    jit: s.jit ? Object.fromEntries(JIT_KEYS.filter((k) => k in s.jit).map((k) => [k, s.jit[k]])) : null,
+    // Every JIT counter (cumulative: an action's are the difference).
+    jit: s.jit ? Object.fromEntries(Object.entries(s.jit).filter(([, v]) => typeof v === 'number')) : null,
     // A deferred snapshot save in progress (ADR 0046).
     save: s.save ?? null };
 }
 
-/** JIT counters kept per action (ADR 0049: transitions; dispatches and chains only with ?jitprofile=1). */
-const JIT_KEYS = ['jitSteps', 'runs', 'calls', 'resolves', 'jcProbes', 'modules', 'blocks', 'wasmBytes', 'dispatches', 'chains', 'chainCalls', 'yields', 'faults', 'svcs',
-  'exitInPage', 'exitCallOut', 'exitOut', 'exitRet', 'exitBr', 'exitBlr', 'exitLimit'];
+/** An action's JIT counters (dispatches, chains and exits by kind only with ?jitprofile=1 or ?jitcount=1). */
 const jitDelta = (a, b) => (a?.jit && b?.jit ? Object.fromEntries(Object.keys(b.jit).map((k) => [k, b.jit[k] - (a.jit[k] ?? 0)])) : null);
 
 let sampling = true;

@@ -23,6 +23,20 @@ if (what === 'actions') {
   console.log(`url ${r.url}, ${r.visit} visit${r.error ? `, ERROR: ${String(r.error).split('\n')[0]}` : ''}`);
   for (const a of r.actions ?? []) {
     console.log(`${a.name}: frame ${ms(a.frameMs)}, changed ${ms(a.changedMs)}, done ${ms(a.doneMs)}, settled ${ms(a.settledMs)}, ${num(a.mips)} MIPS, guest ${num(a.guestS)}s in ${num(a.wallS)}s`);
+    // The JIT's counters for the actions that keep the guest busy (the
+    // others are the idle loop's).
+    const j = a.jit;
+    if (j && a.steps > 2e8 && /drawer|Settings|open |start /.test(a.name)) {
+      const M = (v) => `${num((v ?? 0) / 1e6)}M`;
+      const k = (v) => `${num((v ?? 0) / 1e3, 0)}k`;
+      const per = (x, y) => (y ? num(x / y) : '-');
+      const exits = ['exitInPage', 'exitCallOut', 'exitOut', 'exitRet', 'exitBr', 'exitBlr', 'exitLimit'].filter((e) => j[e]).map((e) => `${e.slice(4)} ${M(j[e])}`).join(', ');
+      console.log(`  jit: ${M(a.steps)} instructions, ${num(100 * j.jitSteps / a.steps, 0)}% in regions; ${M(j.calls)} region calls (${per(j.jitSteps, j.calls)} instr each), ` +
+        `${M(j.runs)} runs, ${M(j.resolves)} resolves, ${M(j.jcProbes)} jump cache probes, ${M(j.memoHits)} memo hits; chains ${M(j.chains)}, CHAIN returns ${M(j.chainCalls)}, dispatches ${M(j.dispatches)}`);
+      console.log(`  jit: ${exits ? `NEXT exits: ${exits}; ` : ''}faults ${k(j.faults)}, svcs ${k(j.svcs)}, yields ${k(j.yields)}, stops ${k(j.stops)}; TLB fills ${k(j.tlbFills)}, host loads ${k(j.hostLds)}, host stores ${k(j.hostSts)}, ` +
+        `TLB flushes ${k(j.tlbFlushes)}, epochs ${k(j.epochs)} (regs ${k(j.epochsRegs)}, tlbi ${k(j.epochsTlbi)}, code ${k(j.epochsCode)}), regime switches ${k(j.regimeSwitches)}, base switches ${k(j.baseSwitches)}; ` +
+        `+${j.modules} modules, +${j.blocks} blocks, +${num((j.wasmBytes ?? 0) / 2 ** 20)} MiB wasm, ${j.reused} reused, ${j.invalidatedPages} pages invalidated, ${j.evictedModules} modules evicted`);
+    }
   }
   if (r.install) console.log(`${r.install.app} installed in ${ms(r.install.ms)}`);
   const mips = (r.timeline ?? []).map((t) => t.mips).filter((v) => typeof v === 'number').sort((a, b) => a - b);
