@@ -925,6 +925,9 @@ async function start() {
   $('files-box').hidden = !config.files;
   $('android-box').hidden = !android;
   $('nav').hidden = !android;
+  // Android without a gateway is offline (the sinkhole): one line says how to
+  // get internet (Vetro Connect, ADR 0050), unless offline was asked for.
+  $('net-hint').hidden = !(android && !config.gateway && q.get('net') !== 'offline');
   $('android-dev').hidden = !android;
   $('screen-demo').hidden = android;
   $('screen-linux').hidden = android;

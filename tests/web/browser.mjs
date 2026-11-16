@@ -342,6 +342,10 @@ run(async () => {
       throw new Fail(`${e.message}: ${JSON.stringify(await page.eval(PAGE))}`);
     });
     check(!zc.form && zc.machine && zc.screen && zc.power && zc.drop, `default page: the phone and its controls, no form: ${JSON.stringify(zc)}`);
+    // No gateway given: one line says the phone is offline and how to get
+    // internet (the user guide's page on Vetro Connect).
+    const hint = await page.eval("(() => { const h = document.getElementById('net-hint'); return { shown: h.checkVisibility(), href: h.querySelector('a').getAttribute('href') }; })()");
+    check(hint.shown && hint.href === '../docs/internet.html', `the offline hint: ${JSON.stringify(hint)}`);
     check(!zc.tools && zc.toolsShown && !zc.analysis && !zc.forget && !zc.console && zc.consoleInTools && !zc.status,
       `default page: the developer panels under a closed Tools toggle: ${JSON.stringify(zc)}`);
     check(JSON.stringify(zc.support) === '[]' && !zc.unsupported, `headless Chrome: no browser notice expected: ${JSON.stringify(zc.support)}`);

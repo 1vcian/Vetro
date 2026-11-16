@@ -95,8 +95,9 @@ you browse yourself. What apps send is still visible to you first, in the
   reload the page.
 - **You opened the phone's page yourself.** The page uses Vetro Connect only
   when it is opened with its address: use the **Open Vetro** button.
-- **You restarted Vetro Connect.** Use the page it opens (or reload the old
-  one): a page left open from before does not find the new one at once.
+- **You restarted Vetro Connect.** A page left open from before finds it
+  again by itself within a few seconds. If it does not (the window shows
+  another address than before), use the page it opens.
 - **Only some apps fail.** An app that needs something other than web
   traffic cannot reach its server; see the
   [FAQ](faq.md#why-do-apps-say-they-are-offline).

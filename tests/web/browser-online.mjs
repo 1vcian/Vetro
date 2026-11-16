@@ -99,6 +99,7 @@ run(async () => {
       await page.type(cmd);
       at = await page.until(marker, at);
     };
+    check(!(await page.eval("document.getElementById('net-hint').checkVisibility()")), 'the offline hint is shown with a gateway');
     await run1('udhcpc -i eth0 -n -q >/dev/null 2>&1; echo VETRO-DHCP-$?', 'VETRO-DHCP-0');
     await run1('echo "N"S=$(nslookup vetro.example | grep -c "Address: 93.184.215.14")', 'NS=1');
     await run1('echo "G"ET=$(wget -q -O - http://vetro.example/hello)', 'GET=VETRO-ONLINE-OK');
