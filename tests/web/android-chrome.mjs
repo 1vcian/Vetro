@@ -107,8 +107,8 @@ const ARANCIONE = [0xef, 0x6c, 0x00];
  * The page's Back, Home and Recents buttons (the image navigates by gestures,
  * which the page's pointer cannot do reliably): with the test app in front,
  * Home brings the launcher, the app is started again and Back closes it.
- * Recents (Meta+Tab) is reported, not enforced: what it shows depends on the
- * launcher.
+ * Recents (Meta+Tab) is reported, not enforced: pressed with the app in
+ * front, it should take the focus to the launcher's overview.
  */
 async function navigationKeys(page) {
   const focus = async () => (await page.eval("window.vetroAndroid.shell('dumpsys window | grep -m1 mCurrentFocus')")).stdout.trim();
@@ -143,11 +143,17 @@ async function navigationKeys(page) {
   const back = await until('Back: the app closed', (f) => !app(f));
   misure.nav_back_ms = Date.now() - t;
   console.log(`navigation keys: Back left the app for ${back} in ${secs(misure.nav_back_ms)} s`);
+  // Recents with the app in front (reported, not enforced): the overview is
+  // the launcher's, so the focus leaves the app if the key did something.
+  await page.eval("window.vetroAndroid.shell('am start -n it.vetro.tocco/.Main 2>&1')");
+  await until('the test app in front for Recents', app);
+  t = Date.now();
   await press('recents');
-  await new Promise((ok) => setTimeout(ok, 20_000));
-  misure.nav_recents_focus = await focus();
-  const recents = (await page.eval("window.vetroAndroid.shell('dumpsys activity service SystemUIService 2>/dev/null | grep -m1 -i overview; dumpsys window | grep -m1 -i recents')")).stdout.trim();
-  console.log(`navigation keys: 20 s after Recents the focus is ${misure.nav_recents_focus}${recents ? ` (${recents.slice(0, 200)})` : ''}`);
+  const left = await until('Recents: the focus leaves the app', (f) => !app(f)).catch(() => null);
+  misure.nav_recents = left ? { ms: Date.now() - t, focus: left } : { missing: true, focus: await focus() };
+  console.log(left
+    ? `navigation keys: Recents took the focus to ${left} in ${secs(misure.nav_recents.ms)} s`
+    : `navigation keys: Recents changed nothing in 5 minutes (reported, not enforced): focus ${misure.nav_recents.focus}`);
   await press('home');
 }
 
