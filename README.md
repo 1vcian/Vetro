@@ -190,6 +190,16 @@ reports and test results help. If you want to support its development, you
 can do it through [GitHub Sponsors](https://github.com/sponsors/1vcian) or
 [buy me a coffee](https://buymeacoffee.com/1vcian). It is entirely optional.
 
+<details>
+<summary>Support with Bitcoin or Monero</summary>
+
+| | Address |
+|---|---|
+| <img src="web/site/img/btc-qr.png" alt="Bitcoin QR" width="110"> | **Bitcoin**<br>`bc1qee8a06x886ng8ce6qy84l6u6x54jnjsesgqym7` |
+| <img src="web/site/img/xmr-qr.png" alt="Monero QR" width="110"> | **Monero**<br>`46qDyafRkn1at3E2GMwuESBeqzpt74xE8S2kjPe35EUyKiS57Ho7cLB1vD2zH4hPmjYcYzWWxSSLZAYB5Hp1yDFrKnPWkR7` |
+
+</details>
+
 ## License
 
 Vetro is **source-available**, not open source: it is licensed under the

@@ -99,7 +99,11 @@ run(async () => {
       return b.length && { buttons: b.map((a) => [a.textContent, a.href]), demo: document.querySelector('a.demo')?.href ?? '', hrefs,
         // Nothing from another site: the page says so about itself.
         foreign: [...document.querySelectorAll('script[src], link[href], img[src], iframe[src]')].map((e) => e.src || e.href).filter((u) => !u.startsWith(location.origin)),
+        crypto: [...document.querySelectorAll('.crypto-item')].map((e) => [e.querySelector('.c-name')?.textContent, e.querySelector('code')?.textContent, e.querySelector('img')?.getAttribute('src')]),
         wide: document.documentElement.scrollWidth > document.documentElement.clientWidth }; })()`), 30_000);
+    // Bitcoin and Monero: the address and its QR code, served by the site.
+    check(JSON.stringify(links.crypto.map((c) => c[0])) === '["Bitcoin","Monero"]' && links.crypto.every((c) => c[1]?.length > 30), `support in crypto: ${JSON.stringify(links.crypto)}`);
+    for (const [, , src] of links.crypto) check(existsSync(join(site, src)), `the landing page's ${src} is not in the site`);
     check(JSON.stringify(links.buttons) === JSON.stringify([['Launch Vetro', `${srv.url}/Vetro/app/`]]), `one button, Launch Vetro to app/: ${JSON.stringify(links.buttons)}`);
     check(links.demo === `${srv.url}/Vetro/app/?os=linux`, `the Linux demo link: ${links.demo}`);
     // The source, the two ways to support the project, Vetro Connect's

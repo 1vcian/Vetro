@@ -137,6 +137,7 @@ EOF
 # The landing page (web/site/index.html): self-contained, it loads nothing
 # from another site. Its relative links are the site's layout above.
 cp "$root/web/site/index.html" "$root/web/site/phone-home.jpg" "$out/"
+mkdir -p "$out/img" && cp "$root/web/site/img/"*.png "$out/img/"
 {
   echo '<!doctype html><meta charset="utf-8"><title>Vetro - sources</title><h1>GPL sources</h1><pre>'
   sed 's/&/\&amp;/g; s/</\&lt;/g' "$src/README"

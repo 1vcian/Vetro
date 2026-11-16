@@ -169,6 +169,15 @@
     }
     .support .lead { margin-left: auto; margin-right: auto; }
     .support .cta { justify-content: center; }
+    .crypto { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; max-width: 760px; margin: 28px auto 0; text-align: left; }
+    @media (max-width: 640px) { .crypto { grid-template-columns: 1fr; } }
+    .crypto-item { display: flex; gap: 14px; align-items: center; background: var(--panel2); border: 1px solid var(--line-soft); border-radius: 14px; padding: 14px; min-width: 0; }
+    .crypto-item img { width: 96px; height: 96px; border-radius: 8px; background: #fff; padding: 4px; flex: none; }
+    .crypto-item div { min-width: 0; }
+    .crypto-item .c-name { font-weight: 700; margin: 0 0 4px; }
+    /* No script on this page: a click selects the whole address, to copy it. */
+    .crypto-item code { display: block; font: .74rem/1.45 ui-monospace, Menlo, monospace; color: var(--muted); word-break: break-all; user-select: all; -webkit-user-select: all; cursor: text; }
+    .crypto-note { margin: 14px 0 0; text-align: center; color: var(--dim); font-size: .8rem; }
 
     /* ---------- footer ---------- */
     footer { border-top: 1px solid var(--line-soft); padding: 40px 0 48px; color: var(--dim); font-size: .87rem; line-height: 1.75; }
@@ -380,6 +389,23 @@ Refused       0</pre>
             <a class="btn btn-ghost" href="https://buymeacoffee.com/1vcian" rel="noopener">Buy me a coffee</a>
             <a class="btn btn-ghost" href="https://github.com/1vcian/Vetro" rel="noopener">Star the source</a>
           </div>
+          <div class="crypto">
+            <div class="crypto-item">
+              <img src="img/btc-qr.png" alt="Bitcoin donation QR code" width="96" height="96" loading="lazy">
+              <div>
+                <p class="c-name">Bitcoin</p>
+                <code>bc1qee8a06x886ng8ce6qy84l6u6x54jnjsesgqym7</code>
+              </div>
+            </div>
+            <div class="crypto-item">
+              <img src="img/xmr-qr.png" alt="Monero donation QR code" width="96" height="96" loading="lazy">
+              <div>
+                <p class="c-name">Monero</p>
+                <code>46qDyafRkn1at3E2GMwuESBeqzpt74xE8S2kjPe35EUyKiS57Ho7cLB1vD2zH4hPmjYcYzWWxSSLZAYB5Hp1yDFrKnPWkR7</code>
+              </div>
+            </div>
+          </div>
+          <p class="crypto-note">Click an address to select it.</p>
         </div>
       </div>
     </section>
