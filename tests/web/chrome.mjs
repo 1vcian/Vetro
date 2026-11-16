@@ -129,7 +129,9 @@ export async function launch(chrome, profile, { webgl = false } = {}) {
   ], { stdio: ['ignore', 'ignore', 'pipe'], detached: true });
   const url = await new Promise((ok, ko) => {
     let err = '';
-    const t = setTimeout(() => ko(new Fail(`Chrome does not answer:\n${err}`)), 30_000);
+    // 60 s: a hosted runner's first Chrome start once took more than 30 s
+    // (CI run 43845468766, nothing wrong but the wait).
+    const t = setTimeout(() => ko(new Fail(`Chrome does not answer:\n${err}`)), 60_000);
     proc.stderr.on('data', (d) => {
       err += d;
       const m = /DevTools listening on (ws:\/\/\S+)/.exec(err);
