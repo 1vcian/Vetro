@@ -1121,6 +1121,10 @@ impl Machine {
         }
         match self.timer_deadline {
             Some(d) if self.steps_at(d) > end => {
+                // Skipped too, though the WFI goes on: whoever measures the
+                // instructions really executed (the page's guest CPU speed,
+                // ADR 0051) subtracts these from the clock.
+                self.perf.wfi_steps += end.saturating_sub(self.steps);
                 self.steps = self.steps.max(end);
                 self.wfi_pending = true;
                 Some(Stop::Budget)
@@ -1134,6 +1138,7 @@ impl Machine {
                 None
             }
             None if self.smp.is_some() && !self.others_idle() => {
+                self.perf.wfi_steps += end.saturating_sub(self.steps);
                 self.steps = self.steps.max(end);
                 self.wfi_pending = true;
                 Some(Stop::Budget)
@@ -1215,6 +1220,10 @@ mod tests {
         assert_eq!(small.run(10_000), Stop::Budget);
         assert_eq!(small.steps, 10_000, "time stops at the end of the quantum, not at the deadline");
         assert_eq!(small.cpu.x[2], 0, "still in the WFI");
+        // The time skipped to the end of the quantum counts as skipped, like
+        // the time skipped to a deadline: only the four instructions before
+        // the WFI were executed.
+        assert_eq!(small.perf().wfi_steps, 10_000 - 4, "skipped steps");
         while small.steps < deadline + 100 {
             assert_eq!(small.run(10_000.min(deadline + 100 - small.steps)), Stop::Budget);
         }
