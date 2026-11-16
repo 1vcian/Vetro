@@ -5,15 +5,18 @@ name: connect
 # (relay/py/build-requirements.txt; a build-time tool only: the program
 # itself uses the Python standard library).
 #
-# By hand: the two files are the run's artifacts. On a tag connect-v<version>
-# (the version in relay/py/vetro_connect/__init__.py): they are also attached
-# to a release, with their SHA-256.
+# By hand, or on a push of a branch named connect-build/<anything> (a build
+# from git alone, to try the workflow before a release): the two files are
+# the run's artifacts. On a tag connect-v<version> (the version in
+# relay/py/vetro_connect/__init__.py): they are also attached to a release,
+# with their SHA-256.
 #
 # The executables are not signed: docs/user/internet.md says how to open them.
 on:
   workflow_dispatch:
   push:
     tags: ["connect-v*"]
+    branches: ["connect-build/**"]
 
 permissions:
   contents: read

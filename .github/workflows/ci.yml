@@ -2,8 +2,9 @@ name: ci
 
 on:
   push:
-    # android-run/* branches only run nightly.yml's Android jobs.
-    branches-ignore: ["android-run/**"]
+    # android-run/* branches only run nightly.yml's Android jobs,
+    # connect-build/* only connect.yml's builds.
+    branches-ignore: ["android-run/**", "connect-build/**"]
   pull_request:
   # Full run by hand (all jobs, kselftest included). The nightly schedule
   # ("0 3 * * *") is paused since 2026-10-10 with the project.
