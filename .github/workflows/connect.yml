@@ -1,0 +1,116 @@
+name: connect
+
+# Vetro Connect (relay/py, ADR 0050): the network gateway for the user's own
+# computer, packaged for Windows and macOS with a pinned PyInstaller
+# (relay/py/build-requirements.txt; a build-time tool only: the program
+# itself uses the Python standard library).
+#
+# By hand: the two files are the run's artifacts. On a tag connect-v<version>
+# (the version in relay/py/vetro_connect/__init__.py): they are also attached
+# to a release, with their SHA-256.
+#
+# The executables are not signed: docs/user/internet.md says how to open them.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["connect-v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            file: vetro-connect-windows-x64.exe
+          - os: macos-latest
+            file: vetro-connect-macos-arm64.zip
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Unit tests on this system (standard library only)
+        run: python -m unittest discover -s relay/py -t relay/py
+      - name: The status window's toolkit is in this Python
+        run: python -c "import tkinter; print('Tk', tkinter.TkVersion)"
+      - name: PyInstaller, pinned
+        run: |
+          python -m pip install --no-deps -r relay/py/build-requirements.txt
+          python -m pip check
+      # One .exe, without a console window (the status is in the program's own).
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name "Vetro Connect" \
+            --distpath dist --workpath build/pyinstaller --specpath build/pyinstaller relay/py/connect.py
+          mv "dist/Vetro Connect.exe" "${{ matrix.file }}"
+          echo "PROGRAM=./${{ matrix.file }}" >> "$GITHUB_ENV"
+      # An .app in a .zip: PyInstaller deprecates a one-file .app, and a bare
+      # executable would lose its executable bit in a browser download.
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          python -m PyInstaller --noconfirm --clean --windowed --name "Vetro Connect" \
+            --osx-bundle-identifier me.1vcian.vetro.connect \
+            --distpath dist --workpath build/pyinstaller --specpath build/pyinstaller relay/py/connect.py
+          ditto -c -k --sequesterRsrc --keepParent "dist/Vetro Connect.app" "${{ matrix.file }}"
+          echo "PROGRAM=dist/Vetro Connect.app/Contents/MacOS/Vetro Connect" >> "$GITHUB_ENV"
+      - name: The built program starts and answers
+        run: |
+          "$PROGRAM" --no-browser --no-ui --port 18787 &
+          health=$(curl --fail --silent --show-error --retry 30 --retry-connrefused --retry-delay 1 http://127.0.0.1:18787/health)
+          echo "$health"
+          test "$health" = '{"ok":true,"enabled":true}'
+          session() { curl --silent -o /dev/null -w '%{http_code}' -X POST -H "Origin: $1" -d '{}' http://127.0.0.1:18787/session; }
+          test "$(session https://1vcian.me)" = 200
+          test "$(session https://evil.example)" = 403
+          kill $! || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.file }}
+          path: ${{ matrix.file }}
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/connect-v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: The tag is the program's version
+        run: |
+          version=$(python3 -c "import sys; sys.path.insert(0, 'relay/py'); import vetro_connect; print(vetro_connect.__version__)")
+          test "$GITHUB_REF_NAME" = "connect-v$version" || { echo "tag $GITHUB_REF_NAME, but the program is version $version" >&2; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - name: Release with the two files and their SHA-256
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd out
+          sha256sum vetro-connect-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          {
+            echo "Vetro Connect gives the phone in the browser real internet through your own computer."
+            echo
+            echo "- Windows: \`vetro-connect-windows-x64.exe\`"
+            echo "- macOS (Apple silicon): \`vetro-connect-macos-arm64.zip\`"
+            echo "- Any system with Python 3.10 or newer: \`python3 relay/py/connect.py\` from the repository"
+            echo
+            echo "The files are not signed, so Windows and macOS warn before opening them:"
+            echo "see docs/user/internet.md in the repository. Their SHA-256 are in \`SHA256SUMS.txt\`."
+          } > notes.md
+          gh release create "$GITHUB_REF_NAME" vetro-connect-* SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" \
+            --title "Vetro Connect ${GITHUB_REF_NAME#connect-v}" --notes-file notes.md

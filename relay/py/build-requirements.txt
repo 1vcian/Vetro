@@ -1,0 +1,16 @@
+# Build-time tools for the packaged Vetro Connect (ADR 0050): PyInstaller and
+# everything it brings with it, pinned. Never needed to run the gateway,
+# which uses the standard library only (python3 relay/py/connect.py).
+#
+#   python -m pip install --no-deps -r relay/py/build-requirements.txt
+#
+# (--no-deps: nothing that is not listed here gets installed; `pip check`
+# then says if something is missing. Used by .github/workflows/connect.yml.)
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.10
+altgraph==0.17.5
+packaging==26.3
+setuptools==84.2.1
+macholib==1.16.4 ; sys_platform == "darwin"
+pefile==2023.2.7 ; sys_platform == "win32"
+pywin32-ctypes==0.2.3 ; sys_platform == "win32"
