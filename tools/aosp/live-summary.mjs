@@ -10,7 +10,7 @@
 // error, if the run ended with one, and the snapshots saved (in the
 // background or in the foreground, with the time the machine's thread spent).
 // profiles: for each Worker CPU profile the self time by kind of code and
-// the 8 functions with the most.
+// the 22 functions with the most.
 
 import { readFileSync } from 'node:fs';
 
@@ -85,6 +85,6 @@ if (what === 'actions') {
     console.log(`${k.slice(8)} (${p.secs}s, guest ${num(p.guestS)}s):`);
     for (const c of (p.categories ?? []).slice(0, 12)) console.log(`  ${c.pct}% ${c.category}`);
     console.log('  top functions:');
-    for (const t of p.top.slice(0, 8)) console.log(`    ${t.pct}% ${short(t.fn)}`);
+    for (const t of p.top.slice(0, 22)) console.log(`    ${t.pct}% ${short(t.fn)}`);
   }
 }

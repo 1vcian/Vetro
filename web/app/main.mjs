@@ -892,6 +892,11 @@ async function start() {
     // counters of region calls, chains and exits, without the per-step class
     // profile (ADR 0049: that one costs ~15% of the Worker).
     jitCount: q.get('jitcount') === '1',
+    // Measurement knobs (tools/aosp/live-path.mjs, ADR 0041): entries before
+    // a block is compiled, blocks per module, MiB of live JIT modules.
+    jitThreshold: Number(q.get('jitthreshold')) || null,
+    jitBatch: Number(q.get('jitbatch')) || null,
+    jitBudget: Number(q.get('jitbudget')) ? Number(q.get('jitbudget')) << 20 : null,
     realtime: el.realtime.checked,
     opfs: el.opfs.checked,
     snapshot: el.snapshot.checked,

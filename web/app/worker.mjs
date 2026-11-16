@@ -128,6 +128,14 @@ import { BackgroundSave } from '../node/background-save.mjs';
 import { down as relayDown, GatewayClient, online as relayOnline } from '../node/relay.mjs';
 import { androidSnapshotKey, downloadPrebuilt, findPrebuilt, PREBUILT_CHUNK, prebuiltBlocksUrl, prebuiltSnapUrl } from '../node/prebuilt.mjs';
 
+/**
+ * The system JIT's defaults: entries with the interpreter before a block is
+ * compiled, and blocks per module (`?jitthreshold=`, `?jitbatch=` and
+ * `?jitbudget=` MiB change them for measurements).
+ */
+const JIT_THRESHOLD = 64;
+const JIT_BATCH = 16;
+
 /** Largest quantum (instructions). */
 const QUANTUM = 1_000_000;
 /**
@@ -537,7 +545,7 @@ async function start(c) {
   let jitEngine;
   // Compiled once: the saver Worker instantiates the same module (ADR 0046).
   wasmModule = await WebAssembly.compile(wasm);
-  ({ exports, jit: jitEngine } = await instantiate(wasmModule));
+  ({ exports, jit: jitEngine } = await instantiate(wasmModule, c.jitBudget ? { jitBudget: c.jitBudget } : {}));
   jitHost = jitEngine;
   times.wasm = performance.now() - t0;
   if (c.gpu === 'webgl') {
@@ -653,7 +661,7 @@ async function start(c) {
   if (c.jit && c.jitBackground) await jitEngine.startBackground();
   // ?jitprofile=1 and ?jitcount=1 name the regions and count their calls,
   // chains and exits (ADR 0041, 0049); only ?jitprofile=1 counts the classes.
-  if (c.jit) m.setJit(64, 16, { profile: !!c.jitProfile, names: !!(c.jitProfile || c.jitCount) });
+  if (c.jit) m.setJit(c.jitThreshold ?? JIT_THRESHOLD, c.jitBatch ?? JIT_BATCH, { profile: !!c.jitProfile, names: !!(c.jitProfile || c.jitCount) });
   jitProfileOn = !!(c.jit && c.jitProfile);
   // The uplink's mode before the cores go parallel: its inputs enter the
   // machine while the cores are still in turns, and the cores' status line

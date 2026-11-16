@@ -157,6 +157,15 @@ jobs:
     if: github.event.schedule != '0 4 * * 0'
     runs-on: ubuntu-24.04
     timeout-minutes: 150
+    # One job per variant of the app's address (measurement knobs such as
+    # &jitthreshold=256): an experiment is a branch android-run/<name> whose
+    # commit lists its variants here; main keeps the default alone.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: default
+            query: ""
     steps:
       - uses: actions/checkout@v4
       - run: rustup show active-toolchain || rustup toolchain install
@@ -175,19 +184,19 @@ jobs:
           # Region counters without the class profile, where the build has them (ADR 0049).
           extra=""
           grep -q -- "--jit-count" tools/aosp/live-path.mjs && extra="--jit-count"
-          node tools/aosp/live-path.mjs --url "http://127.0.0.1:8080/app/?os=android" --webgl $extra \
+          node tools/aosp/live-path.mjs --url "http://127.0.0.1:8080/app/?os=android${{ matrix.query }}" --webgl $extra \
             --cpu-profile-actions 30 --minutes 12 --profile "$RUNNER_TEMP/live-profile" --out target/aosp/live 2>&1 | tee live-path.log
       - if: always()
         run: |
           f=target/aosp/live/measurements-first.json
           [ -f "$f" ] || exit 0
           notice() { echo "::notice title=$1::$(awk '{gsub(/%/, "%25"); gsub(/\r/, ""); printf "%s%%0A", $0}')"; }
-          node tools/aosp/live-summary.mjs "$f" actions | notice "live path"
-          node tools/aosp/live-summary.mjs "$f" profiles | notice "live path profiles"
+          node tools/aosp/live-summary.mjs "$f" actions | notice "live path (${{ matrix.name }})"
+          node tools/aosp/live-summary.mjs "$f" profiles | notice "live path profiles (${{ matrix.name }})"
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: live-path
+          name: live-path-${{ matrix.name }}
           path: |
             target/aosp/live/*.json
             target/aosp/live/*.png
