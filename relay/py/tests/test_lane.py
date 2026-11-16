@@ -326,7 +326,9 @@ class LaneCases(unittest.IsolatedAsyncioTestCase):
             await gate.wait()
             return late
 
-        t = Harness(sockets={PUBLIC + ":443": slow, "93.184.215.15:443": lambda: asyncio.Event().wait()}, connect_timeout_ms=30, lane_conns=10)
+        # 500 ms, not less: the first assertion below needs the timeout still
+        # pending, and a slow runner once took longer than 30 ms to get there.
+        t = Harness(sockets={PUBLIC + ":443": slow, "93.184.215.15:443": lambda: asyncio.Event().wait()}, connect_timeout_ms=500, lane_conns=10)
         await t.msg(encode.connect(1, "93.184.215.15", 443))
         self.assertEqual(t.answers(), {})
         await until(lambda: 1 in t.answers(), "timeout")
