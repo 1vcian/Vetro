@@ -99,8 +99,8 @@
     .fine { color: var(--dim); font-size: .88rem; margin: 20px 0 0; max-width: 34rem; }
     .fine b { color: var(--muted); font-weight: 600; }
 
-    /* The illustration: a browser window with the phone in it. Drawn here,
-       not a screenshot. */
+    /* A browser window with the phone in it: a real screenshot of the app
+       (tests/web/android-chrome.mjs with VETRO_SCREENSHOTS). */
     .window {
       position: relative; border: 1px solid var(--line); border-radius: 18px; overflow: hidden;
       background: linear-gradient(180deg, var(--panel2), var(--bg2));
@@ -110,30 +110,7 @@
     .window-bar i { width: 10px; height: 10px; border-radius: 50%; background: #2a394d; }
     .window-bar span { flex: 1; margin-left: 10px; height: 24px; border-radius: 7px; background: #0a1019; border: 1px solid var(--line-soft); color: var(--dim); font: .72rem/22px ui-monospace, Menlo, monospace; padding: 0 10px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
     .window-body { padding: 22px; display: grid; place-items: center; }
-    .phone {
-      width: 100%; aspect-ratio: 16 / 10; border-radius: 14px; position: relative; overflow: hidden;
-      background:
-        radial-gradient(70% 90% at 80% 0%, rgba(165, 139, 255, .5), transparent 60%),
-        radial-gradient(70% 90% at 0% 100%, rgba(127, 227, 255, .42), transparent 62%),
-        linear-gradient(140deg, #14304a, #1b2350 60%, #2a1c52);
-      border: 1px solid rgba(255, 255, 255, .08);
-    }
-    .phone .status { position: absolute; top: 9px; left: 14px; right: 14px; display: flex; justify-content: space-between; font: 600 .62rem/1 system-ui, sans-serif; color: rgba(255, 255, 255, .82); }
-    .phone .search { position: absolute; top: 12%; left: 6%; right: 6%; height: 11%; border-radius: 999px; background: rgba(255, 255, 255, .92); }
-    .phone .search::before { content: ""; position: absolute; left: 4%; top: 32%; width: 22%; height: 36%; border-radius: 999px; background: rgba(15, 25, 40, .28); }
-    .phone .apps { position: absolute; left: 6%; right: 6%; bottom: 16%; display: grid; grid-template-columns: repeat(6, 1fr); gap: 4.5%; }
-    .phone .apps i { aspect-ratio: 1; border-radius: 26%; box-shadow: 0 6px 14px -6px rgba(0, 0, 0, .7), inset 0 1px 0 rgba(255, 255, 255, .28); }
-    .phone .apps i:nth-child(1) { background: linear-gradient(140deg, #ffd166, #ff8a3c); }
-    .phone .apps i:nth-child(2) { background: linear-gradient(140deg, #7fe3ff, #3d8bff); }
-    .phone .apps i:nth-child(3) { background: linear-gradient(140deg, #9ef0b4, #1fae7a); }
-    .phone .apps i:nth-child(4) { background: linear-gradient(140deg, #ff9ecb, #e2468b); }
-    .phone .apps i:nth-child(5) { background: linear-gradient(140deg, #c9b6ff, #7a5cf0); }
-    .phone .apps i:nth-child(6) { background: linear-gradient(140deg, #f4f7fb, #b7c4d6); }
-    .phone .navbar { position: absolute; left: 0; right: 0; bottom: 0; height: 9%; display: flex; justify-content: center; align-items: center; gap: 12%; background: rgba(0, 0, 0, .22); }
-    .phone .navbar i { width: 2.2%; aspect-ratio: 1; background: rgba(255, 255, 255, .78); }
-    .phone .navbar i:nth-child(1) { clip-path: polygon(100% 0, 100% 100%, 8% 50%); }
-    .phone .navbar i:nth-child(2) { border-radius: 50%; }
-    .phone .navbar i:nth-child(3) { border-radius: 18%; }
+    .shot { display: block; width: 100%; height: auto; border-radius: 12px; border: 1px solid rgba(255, 255, 255, .08); }
     .window-caption { margin: 12px 0 0; text-align: center; color: var(--dim); font-size: .8rem; }
 
     /* ---------- sections ---------- */
@@ -257,18 +234,13 @@
           <p class="fine">Desktop <b>Chrome or Edge</b>, 8 GB of memory. The first visit downloads the phone once (about 700 MiB); after that it resumes in seconds.</p>
         </div>
         <div>
-          <div class="window" role="img" aria-label="Illustration: a browser window with a phone's home screen in it">
+          <div class="window">
             <div class="window-bar"><i></i><i></i><i></i><span>1vcian.me/Vetro/app</span></div>
             <div class="window-body">
-              <div class="phone">
-                <div class="status"><span>12:00</span><span>Vetro</span></div>
-                <div class="search"></div>
-                <div class="apps"><i></i><i></i><i></i><i></i><i></i><i></i></div>
-                <div class="navbar"><i></i><i></i><i></i></div>
-              </div>
+              <img class="shot" src="phone-home.jpg" width="841" height="524" alt="The phone's home screen, running in Vetro in a browser tab">
             </div>
           </div>
-          <p class="window-caption">An illustration. The real thing is one click away.</p>
+          <p class="window-caption">The real thing: the phone at its home screen, in Chrome on a Mac.</p>
         </div>
       </div>
     </div>
