@@ -40,8 +40,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # A failure's text goes to an annotation: the only part of a run that
+      # can be read without signing in.
       - name: Unit tests on this system (standard library only)
-        run: python -m unittest discover -s relay/py -t relay/py
+        run: |
+          python -m unittest discover -s relay/py -t relay/py 2> unit.log && { tail -n 3 unit.log; exit 0; }
+          cat unit.log
+          echo "::error title=unit tests::$(grep -vE '^\s*$' unit.log | tail -n 150 | awk '{gsub(/%/, "%25"); gsub(/\r/, ""); printf "%s%%0A", $0}')"
+          exit 1
       - name: The status window's toolkit is in this Python
         run: python -c "import tkinter; print('Tk', tkinter.TkVersion)"
       - name: PyInstaller, pinned
