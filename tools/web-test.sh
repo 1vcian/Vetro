@@ -20,6 +20,10 @@
 #   6b. the guest online through the network gateway (tests/web/online.mjs,
 #      ADR 0048): GatewayClient and the Node gateway (relay/, its unit and
 #      WebSocket tests first), DNS, a 600 KB GET, a refused private address;
+#   6c. the Python gateway (relay/py, ADR 0050): its unit tests (standard
+#      library only), the page's GatewayClient against it as a child process
+#      (relay/test/python.mjs: the scenarios of the Node gateway's test), and
+#      the same guest online through it (relay/test/python-online.mjs);
 #   7. snapshots and persistent disk overlay via the API (tests/web/snapshot.mjs,
 #      M6): saves at the prompt and halfway through boot, restores on new machines (JIT
 #      and interpreter), same continuation of the log, same instructions, same overlay
@@ -74,10 +78,14 @@
 #      0048): the Worker's gateway client with the browser's fetch and
 #      WebSocket against the Node gateway, DNS, a 600 KB GET, a refusal, a
 #      second session from the snapshot, `&net=offline`.
+#  20. the app online through the Python gateway in headless Chrome
+#      (relay/test/python-browser.mjs, ADR 0050): the browser's fetch (CORS)
+#      and WebSocket against relay/py, DNS, a 600 KB GET, a refusal.
 #
 #   tools/web-test.sh [--no-jit]
 #
-# Needs Node >= 22 and target/guest-kernel (tools/guest-kernel/build.sh).
+# Needs Node >= 22, Python >= 3.10 (python3, or VETRO_PYTHON) and
+# target/guest-kernel (tools/guest-kernel/build.sh).
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -91,6 +99,11 @@ done
 command -v node >/dev/null || { echo "ERROR: node not found (Node >= 22 needed)" >&2; exit 1; }
 major=$(node -p 'process.versions.node.split(".")[0]')
 [ "$major" -ge 22 ] || { echo "ERROR: Node $(node --version), >= 22 needed" >&2; exit 1; }
+# The Python gateway (relay/py) and its tests.
+python=${VETRO_PYTHON:-python3}
+command -v "$python" >/dev/null || { echo "ERROR: $python not found (Python >= 3.10 needed)" >&2; exit 1; }
+"$python" -c 'import sys; sys.exit(sys.version_info < (3, 10))' \
+  || { echo "ERROR: $("$python" --version), >= 3.10 needed" >&2; exit 1; }
 [ -f target/guest-kernel/Image ] && [ -f target/guest-kernel/initramfs.cpio.gz ] \
   || { echo "ERROR: target/guest-kernel missing: run tools/guest-kernel/build.sh" >&2; exit 1; }
 
@@ -111,6 +124,10 @@ node relay/test/unit.mjs
 [ -d relay/node_modules/ws ] || npm ci --prefix relay --omit=dev --ignore-scripts --no-audit --no-fund
 node relay/test/node.mjs
 
+echo "==> Python gateway (relay/py, ADR 0050): unit, the page's client against it"
+"$python" -m unittest discover -s relay/py -t relay/py
+node relay/test/python.mjs
+
 echo "==> native reference (same scripts, interpreter, local disk)"
 cargo test --release -p vetro-boot-tests --test web -- --nocapture
 # The Node tests must give the same instructions and the same log.
@@ -127,6 +144,9 @@ node tests/web/hostfwd.mjs "$@"
 
 echo "==> the guest online through the Node gateway (ADR 0048)"
 node tests/web/online.mjs "$@"
+
+echo "==> the guest online through the Python gateway (ADR 0050)"
+node relay/test/python-online.mjs "$@"
 
 echo "==> snapshots and persistent disk overlay via the API (M6)"
 node tests/web/snapshot.mjs "$@"
@@ -170,3 +190,6 @@ node tests/web/browser-smp.mjs
 
 echo "==> the app online through the gateway in Chrome (ADR 0048)"
 node tests/web/browser-online.mjs
+
+echo "==> the app online through the Python gateway in Chrome (ADR 0050)"
+node relay/test/python-browser.mjs
