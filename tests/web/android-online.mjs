@@ -224,6 +224,11 @@ run(async () => {
     const t0 = Date.now();
     const { page } = await openPage(cdp, url);
     const shell = async (cmd) => (await page.eval(`window.vetroAndroid.shell(${JSON.stringify(cmd)})`)).stdout ?? '';
+    // After the install the steps are reported, not enforced: an adb command
+    // that never answers (seen on hosted runners, the job then hit its
+    // 45-minute limit with nothing said) ends the step with its name instead.
+    const shellWithin = (cmd, ms = 3 * 60_000) =>
+      Promise.race([shell(cmd), new Promise((_, no) => setTimeout(() => no(new Error(`adb shell did not answer in ${ms / 1000} s: ${cmd}`)), ms))]);
     const boot = await page.waitFor('prebuilt snapshot restored', async () => {
       const st = await page.state();
       const pb = (await page.eval(ANDROID)).prebuilt;
@@ -276,11 +281,12 @@ run(async () => {
     const site = 'www.wikipedia.org';
     if (pkg === 'org.chromium.chrome') {
       // No first-run screens (userdebug image: Chromium reads its command-line file).
-      await shell("echo '_ --disable-fre --no-default-browser-check --no-first-run' > /data/local/tmp/chrome-command-line; chmod 644 /data/local/tmp/chrome-command-line; am set-debug-app --persistent org.chromium.chrome");
+      await shellWithin("echo '_ --disable-fre --no-default-browser-check --no-first-run' > /data/local/tmp/chrome-command-line; chmod 644 /data/local/tmp/chrome-command-line; am set-debug-app --persistent org.chromium.chrome");
     }
     const ta = Date.now();
     const pyBeforeApp = py && (await py.counters());
-    await shell(`am start -a android.intent.action.VIEW -d https://${site}/ ${pkg}`);
+    console.log(`${APP}: opening https://${site}/`);
+    await shellWithin(`am start -a android.intent.action.VIEW -d https://${site}/ ${pkg}`);
     // Reported, not enforced: on hosted runners (2026-11-15/16) the request
     // came in one run (57 s after the intent) and never in four others, which
     // waited here until they were cancelled, after everything above had
@@ -295,8 +301,8 @@ run(async () => {
       m.app_request = { ...req, ms: Date.now() - ta };
       console.log(`${APP}: HTTPS to ${site} (${req.ip ?? `${req.conns} new connections`}): ${req.toRemote} bytes out, ${req.toGuest} in, ${secs(Date.now() - ta)} s after the intent (target/aosp/online-app.png)`);
     } else {
-      const focus = (await shell('dumpsys window | grep -m1 mCurrentFocus')).trim();
-      const procs = (await shell(`ps -A -o NAME | grep -c ${pkg}`)).trim();
+      const focus = (await shellWithin('dumpsys window | grep -m1 mCurrentFocus').catch((e) => e.message)).trim();
+      const procs = (await shellWithin(`ps -A -o NAME | grep -c ${pkg}`).catch((e) => e.message)).trim();
       const names = [...new Set(conns.filter((c) => c.at >= ta).map((c) => c.name ?? c.ip))].slice(0, 12);
       m.app_request = { missing: true, focus, processes: procs, contacted: names };
       console.log(`${APP}: no request to ${site} in 8 minutes (reported, not enforced): focus ${focus}; ${procs} processes of ${pkg}; contacted since the intent: ${names.join(', ') || 'nothing'}`);
