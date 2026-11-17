@@ -123,7 +123,7 @@ import { BlobSource, DiskFeeder, LayoutSource, MemoryCache, OpfsCache, prefetchB
 import { AdbClient } from '../node/adb.mjs';
 import { apkInfo } from '../node/apk.mjs';
 import { ANDROID_DISK, ANDROID_HOME_NS, ANDROID_PARAMS, ANDROID_WAKE, ANDROID_GRAPHICS, BootProgress, GFXSTREAM_PARAMS, gridColors, HOME_DRAW_NS, HOME_MIN_COLORS, HOME_POLL_NS, HOME_QUERY, isHome, machineDevices } from '../node/android.mjs';
-import { DiskOverlay, fromBase64, opfsFile, sha256Hex, SnapshotStore, snapshotKey, staleReason, toBase64 } from '../node/persist.mjs';
+import { autoSaveDue, DiskOverlay, fromBase64, opfsFile, SAVE_QUIET_MS, sha256Hex, SnapshotStore, snapshotKey, staleReason, toBase64 } from '../node/persist.mjs';
 import { BackgroundSave } from '../node/background-save.mjs';
 import { down as relayDown, GatewayClient, online as relayOnline } from '../node/relay.mjs';
 import { androidSnapshotKey, downloadPrebuilt, findPrebuilt, PREBUILT_CHUNK, prebuiltBlocksUrl, prebuiltSnapUrl } from '../node/prebuilt.mjs';
@@ -189,14 +189,6 @@ const STEPS_PER_MS = 100_000;
 const MIN_QUANTUM = 20_000;
 /** Measured guest speed (instructions per ms of wall time), for QUANTUM_MS. */
 let stepsPerMs = 50_000;
-/**
- * Automatic snapshots (after the home screen, after an install) wait until the
- * user has not touched the machine for this long: saving stops the guest for
- * seconds (tens on slow machines), during which a tap would do nothing.
- */
-const SAVE_QUIET_MS = 4000;
-/** ... but no longer than this after they were requested. */
-const SAVE_DEFER_MAX_MS = 60_000;
 /**
  * A deferred save (ADR 0046) hands its pages over regardless of the user's
  * inputs once the guest has written this many bytes of pages it still has to
@@ -1374,6 +1366,8 @@ async function loop() {
   // Instructions really executed: the clock's steps without the idle time it skipped.
   const executed = () => Number(m.steps) - (m.perf()?.wfiSteps ?? 0);
   const speedWindow = { t: performance.now(), x: executed(), runMs: 0, lower: 0 };
+  /** Share of the last speed window the Worker spent running the machine. */
+  let busy = 1;
   const adjustSpeed = (now) => {
     const w = speedWindow;
     if (now - w.t < SPEED_WINDOW_MS) return;
@@ -1394,6 +1388,7 @@ async function loop() {
         w.lower = 0;
       }
     }
+    busy = w.runMs / (now - w.t);
     w.t = now;
     w.x = x;
     w.runMs = 0;
@@ -1504,8 +1499,9 @@ async function loop() {
       rested = true;
       if (persistOverlays()) activity();
     }
-    // An automatic snapshot waits for a pause in the user's inputs (see SAVE_QUIET_MS).
-    const saveNow = saveRequested && (saveWhy === 'requested' || now - lastUserInputAt >= SAVE_QUIET_MS || now - saveRequestedAt >= SAVE_DEFER_MAX_MS);
+    // An automatic snapshot waits for a pause in the user's inputs and for the
+    // guest at rest (autoSaveDue).
+    const saveNow = saveRequested && autoSaveDue({ why: saveWhy, sinceInputMs: now - lastUserInputAt, sinceRequestMs: now - saveRequestedAt, busy });
     // A deferred save in progress (ADR 0046): its next pieces once the inputs
     // pause, or when the guest has written too many of the pages it still has
     // to take. Another save waits for it.

@@ -173,3 +173,14 @@ Measured on Android: see `docs/progress/M6.md` (2026-11-16).
   instance (a few tens of MiB).
 - Whoever adds a direct write path to guest RAM (outside `Ram`'s methods and
   the JIT's software TLB) must respect the trap.
+
+## Update (2026-11-17): automatic saves start with the guest at rest
+An automatic save (home screen, app installed) also waits until the Worker
+ran the machine for less than half of the last second (`autoSaveDue`,
+`SAVE_BUSY_MAX` in `web/node/persist.mjs`; still at most SAVE_DEFER_MAX_MS
+after the request). The inputs' pause alone let the "app installed" save
+start while the app it had just opened was still starting: the trap then
+copied every page the app wrote (`Ram::trap_take` and `Ram::read` about 13%
+of the Worker in that window on the Mac). Minesweeper on screen after its
+install, Mac, one run each: 12.4 s before, 6.5 s after
+(`docs/progress/M6.md`).

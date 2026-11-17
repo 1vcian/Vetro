@@ -494,3 +494,32 @@ export function toBase64(bytes) {
 export function fromBase64(text) {
   return Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
 }
+
+/**
+ * Automatic snapshots (after the home screen, after an install) wait until the
+ * user has not touched the machine for this long: saving stops the guest for
+ * seconds (tens on slow machines), during which a tap would do nothing.
+ */
+export const SAVE_QUIET_MS = 4000;
+/** ... but no longer than this after they were requested. */
+export const SAVE_DEFER_MAX_MS = 60_000;
+/**
+ * ... and until the guest is at rest: the Worker ran the machine for less
+ * than this share of the last second. A save started while the guest works
+ * (an app opening right after its install) costs it a copy of every page it
+ * writes until the save has taken it (`Ram::trap_take`): on the Mac the
+ * opening took 12.4 s with it and 6.5 s without.
+ */
+export const SAVE_BUSY_MAX = 0.5;
+
+/**
+ * Whether a requested snapshot is saved now: one the user asked for at once,
+ * an automatic one (`why` anything else) once the inputs have paused for
+ * SAVE_QUIET_MS and the guest is at rest (`busy`, the share of the last
+ * second the machine ran), or SAVE_DEFER_MAX_MS after the request anyway.
+ */
+export function autoSaveDue({ why, sinceInputMs, sinceRequestMs, busy }) {
+  if (why === 'requested') return true;
+  if (sinceRequestMs >= SAVE_DEFER_MAX_MS) return true;
+  return sinceInputMs >= SAVE_QUIET_MS && busy < SAVE_BUSY_MAX;
+}

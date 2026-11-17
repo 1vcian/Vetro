@@ -32,7 +32,7 @@ import {
 import { parseRange, serve } from '../../tools/web-serve.mjs';
 import { absAxis, BUTTONS, evdevCode } from '../../web/app/keymap.mjs';
 import { keyToBytes, Terminal } from '../../web/app/terminal.mjs';
-import { fromBase64, MemFile, readAll, SnapshotStore, snapshotKey, staleReason, toBase64 } from '../../web/node/persist.mjs';
+import { autoSaveDue, fromBase64, MemFile, readAll, SAVE_DEFER_MAX_MS, SAVE_QUIET_MS, SnapshotStore, snapshotKey, staleReason, toBase64 } from '../../web/node/persist.mjs';
 import { deleteRowSql, formatValue, insertRowSql, isSqlite, parseCreateTable, SqliteDb, updateCellSql, varint, walPages } from '../../web/app/sqlite.mjs';
 import {
   asText, checkPrefValue, detectView, displayName, hexDump, imageType, javaFloatString, modeString, parseHex, parsePrefs, parseXml,
@@ -48,6 +48,20 @@ const eq = (a, b, what) => check(JSON.stringify(a) === JSON.stringify(b), `${wha
 let count = 0;
 const cases = [];
 const test = (name, f) => cases.push([name, f]);
+
+test('automatic snapshots wait for the guest at rest', () => {
+  const q = SAVE_QUIET_MS;
+  // Asked for by the user: at once, busy or not.
+  check(autoSaveDue({ why: 'requested', sinceInputMs: 0, sinceRequestMs: 0, busy: 1 }), 'requested');
+  // After an install, inputs quiet but the app still opening: not yet.
+  check(!autoSaveDue({ why: 'app installed', sinceInputMs: q, sinceRequestMs: q, busy: 0.95 }), 'busy guest');
+  // Quiet and at rest: now.
+  check(autoSaveDue({ why: 'app installed', sinceInputMs: q, sinceRequestMs: q, busy: 0.1 }), 'at rest');
+  // At rest but the user is still tapping: not yet.
+  check(!autoSaveDue({ why: 'app installed', sinceInputMs: q - 1, sinceRequestMs: q, busy: 0.1 }), 'inputs');
+  // A guest that never rests still gets its snapshot.
+  check(autoSaveDue({ why: 'home screen', sinceInputMs: 0, sinceRequestMs: SAVE_DEFER_MAX_MS, busy: 1 }), 'deferred at most');
+});
 
 test('parseRange', () => {
   eq(parseRange(undefined, 100), null, 'without Range');

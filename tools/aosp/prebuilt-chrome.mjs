@@ -28,6 +28,13 @@
 //   --out=DIR       output directory (default target/aosp/prebuilt-chrome)
 //   --minutes=N     gives up after N minutes (default 300)
 //   --settle=S, --settle-load=L, --warm, --no-compact: see above
+//   --cpus=N        guest cores (ADR 0042; default 1), in parallel in the page
+//                   (`cpus=N`: cross-origin isolation through the app's
+//                   service worker); the snapshot's key changes with N
+//   --chrome-profile=DIR  Chrome's profile in DIR, kept afterwards (default: a
+//                   temporary one, deleted): the page's own saved snapshot
+//                   stays in its OPFS, so tools/aosp/live-path.mjs
+//                   --visit second --profile DIR measures from it
 //
 // Chrome runs with WebGL2 on its own SwiftShader (no GPU on the build VM):
 // the guest only ever sees the decoder's fixed answers (ADR 0037), so the
@@ -59,23 +66,28 @@ const settleMs = Number(arg('settle', 0)) * 1000;
 const settleLoad = Number(arg('settle-load', 3));
 const warm = flag('warm');
 const compact = !flag('no-compact');
+const cpus = String(Number(arg('cpus', 1)));
+const keepProfile = arg('chrome-profile', null);
 
 const t0 = Date.now();
 const log = (s) => console.log(`[${((Date.now() - t0) / 1000).toFixed(0)} s] ${s}`);
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
 
 const srv = await serve({ mounts: appMounts(), port });
-const query = new URLSearchParams({ os: 'android', cold: '1', cpus: '1', profile: profileId, manifest });
-if (gpu === 'webgl') query.set('gpu', 'webgl');
+const query = new URLSearchParams({ os: 'android', cold: '1', cpus, profile: profileId, manifest });
+// Always explicit: the app's default is webgl since ADR 0047, so leaving the
+// parameter out for swiftshader made a webgl snapshot.
+query.set('gpu', gpu);
 const url = `${srv.url}/app/?${query}`;
 log(`page ${url}`);
 const chrome = findChrome();
 if (!chrome) throw new Error('Chrome not found (VETRO_CHROME)');
-const profileDir = mkdtempSync(join(tmpdir(), 'vetro-prebuilt-chrome-'));
+const profileDir = keepProfile ?? mkdtempSync(join(tmpdir(), 'vetro-prebuilt-chrome-'));
+if (keepProfile) mkdirSync(keepProfile, { recursive: true });
 const { proc, cdp } = await launch(chrome, profileDir, { webgl: true });
 const { page } = await openPage(cdp, url);
 const ev = (e) => page.eval(e);
-const measures = { url, gpu, profile: profileId, warm, compact };
+const measures = { url, gpu, profile: profileId, cpus: Number(cpus), warm, compact };
 
 /** Waits until `expr` is truthy (polled every `every` ms), with the overall limit. */
 async function until(what, expr, every = 5000) {
@@ -177,6 +189,7 @@ try {
   writeFileSync(join(outDir, `${key}.png`), Buffer.from(shot.split(',')[1], 'base64'));
   log(`written ${join(outDir, `${key}.snap`)} and .json (sha256 ${info.sha256.slice(0, 12)}…)`);
 } finally {
-  await closeChrome(proc, cdp, profileDir);
+  // closeChrome deletes the profile it is given: not the one to keep.
+  await closeChrome(proc, cdp, keepProfile ? mkdtempSync(join(tmpdir(), 'vetro-prebuilt-keep-')) : profileDir);
   srv.close();
 }
